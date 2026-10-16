@@ -39,10 +39,14 @@ This guide covers setup, builds, tests, running on a console, and how to change 
 
 ## Requirements
 
-- macOS on Apple Silicon (the only host the build supports today).
-- Xcode command line tools.
-- Homebrew packages: `brew install cmake ninja pkgconf sdl2-compat llvm@18 python`.
+- macOS on Apple Silicon for the host app and the tests. The PS5 package also builds on Ubuntu Linux, including
+  Ubuntu under WSL2 on Windows (see [Build on Ubuntu](#build-on-ubuntu)).
+- On macOS: Xcode command line tools and the Homebrew packages
+  `brew install cmake ninja pkgconf sdl2-compat llvm@18 python`.
   LLVM 18 builds the PS5 code. Apple clang builds the macOS host.
+- On Ubuntu: the apt packages `cmake ninja-build pkgconf libsdl2-dev llvm-18 llvm-18-dev clang-18 lld-18 python3
+  python3-dev python3-pip python3-venv unzip zstd binutils git curl perl xz-utils`, plus [Homebrew](https://brew.sh)
+  and `brew install llvm@18`. Ubuntu's clang builds the host-side tools, Homebrew's LLVM builds the PS5 code.
 - About 2 GB of free space for `deps/` and `build/`.
 - A checkout path without symbolic links. Playden refuses symlinked paths when it reads its data, so two tests fail
   in a link such as macOS `/tmp` (use `/private/tmp` or a folder in your home directory).
@@ -97,6 +101,45 @@ The build checks the pinned revisions and hashes. If it stops with a mismatch, d
 the input changed. The PS5 build is reproducible, so the same sources give the same `eboot.bin` in any checkout.
 
 `FAKE77031` is allocated to Playden. Do not use it for another application.
+
+## Build on Ubuntu
+
+The PS5 package builds on Ubuntu Linux with the same scripts. This has been tested on Ubuntu under WSL2 on
+Windows; a native Ubuntu install should behave the same. The host app and the tests have not been built on
+Linux yet because the ps5-homebrew-ui library only supports macOS at this time.
+
+Install the apt packages from [Requirements](#requirements), then Homebrew and its LLVM 18:
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+brew install llvm@18
+"$(brew --prefix llvm@18)/bin/clang" --version   # the first line must start with "Homebrew clang version 18.1.8"
+```
+
+Homebrew's LLVM is required because every object clang emits carries the compiler's vendor string in its
+`.comment` section. The hashes in `dependencies.lock.json` for the network libraries, the title remover and the
+root helper were recorded with Homebrew's LLVM, so Ubuntu's `clang-18` package builds the same code but fails
+the hash check. `scripts/with-env.sh` prefers Homebrew's `llvm@18` whenever a `brew` command is on `PATH`, so
+nothing else needs configuring.
+
+Then build as on macOS:
+
+```sh
+scripts/fetch-deps.sh
+scripts/build-lapy-helper.sh
+scripts/build-homebrew-ps5.sh
+```
+
+If you built anything with Ubuntu's clang before installing Homebrew you will need to rebuild the pinned pieces,
+since the build scripts only rebuild them when they are missing:
+
+```sh
+scripts/network-deps/prepare-ps5-deps.sh
+scripts/build-title-remover.sh
+scripts/build-lapy-helper.sh
+scripts/build-homebrew-ps5.sh
+```
 
 ## Running on a console
 
