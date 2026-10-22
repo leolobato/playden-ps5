@@ -167,6 +167,20 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // The recipes Playden ships (runtime/recipes) besides the kit's own. A record
   // prepared with one of them resolves whatever recipe the kit carries.
   void AcceptShippedRecipes(std::vector<std::string> recipe_ids);
+  // Records of other recipes this resolves too (community recipes: the host decides by their id's
+  // form and the game it names). Whether the recipe's object is at hand is the host's question when
+  // it builds a plan, not this layer's: a record must stay inspectable and removable without it.
+  void AcceptRecipes(std::function<bool(const RuntimeInstall&)> accept) { accept_recipe_ = std::move(accept); }
+  // After a recipe switch committed (the record names the new recipe; RuntimeHost::RepublishSettings):
+  // rewrites the recipe lines of the title and bottle owner markers to the record's. Only markers that
+  // are there, name this install and differ in those lines are rewritten (anything else is for Inspect
+  // and the start check to report); the kit lines stay, so a title made from an earlier kit still reads
+  // as needing Update. Fails only when a rewrite fails. The title must be stopped.
+  PackageActionResult RebindRecipe(const RuntimeInstall& record);
+  // The runtime revision the title's owner marker names (the kit's runtime.artifact_revision when the
+  // title was made or last updated), when the marker is there and names this install. A title keeps
+  // that runtime after a kit swap until Update, so this says which kit version it runs.
+  std::optional<std::string> TitleRuntimeRevision(const RuntimeInstall& record) const;
   // The kit has bottle-profile-shared: bottles of titles made from it are made and repaired with
   // their way to the user profile 0711 and the profile open to FTP (0777/0666); titles of older
   // kits keep 0700 until Update. Reads always admit 0711.
@@ -249,6 +263,7 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   PackageInstallPaths paths_;
   PackageInstallerOperations operations_;
   std::vector<std::string> shipped_recipe_ids_;
+  std::function<bool(const RuntimeInstall&)> accept_recipe_;
   bool profile_shared_ = false;
 };
 

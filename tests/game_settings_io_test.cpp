@@ -160,6 +160,25 @@ int main(int argc, char** argv) {
     CHECK(ParseGameSettingsRecord("{\"steam_launch\":\"Bin\\\\Game.exe\"}", &parsed, &reason) &&
           parsed.steam_launch == "Bin/Game.exe");
     CHECK(ParseGameSettingsRecord("{\"steam_launch\":\"../x.exe\"}", &parsed, &reason) && parsed.steam_launch.empty());
+    // The community recipe the player chose, and the recipe a share made, are saved only when set, even
+    // as the record's only values.
+    const std::string revision(64, 'c');
+    GameSettingsRecord only_recipe;
+    only_recipe.community_recipe = {"community-274520-fast", revision};
+    GameSettingsRecord only_shared;
+    only_shared.shared_recipe = {"sub-7", "community-274520-fast"};
+    const auto recipes = root / "recipes.json";
+    CHECK(SaveGameSettingsFile(recipes.string(), {{SteamId(274520), only_recipe}, {SteamId(220), only_shared}, {SteamId(3), {}}},
+                               &reason));
+    const auto recipes_text = Read(recipes);
+    CHECK(recipes_text.find("\"community_recipe\":{\"id\":\"community-274520-fast\",\"revision\":\"" + revision + "\"}") !=
+          std::string::npos);
+    CHECK(recipes_text.find("\"shared_recipe\":{\"submission_id\":\"sub-7\",\"recipe_id\":\"community-274520-fast\"}") !=
+          std::string::npos);
+    CHECK(recipes_text.find("\"3\":") == std::string::npos);
+    std::map<playden::GameId, GameSettingsRecord> recipes_loaded;
+    CHECK(LoadGameSettingsFile(recipes.string(), &recipes_loaded, &reason) && recipes_loaded.size() == 2 &&
+          recipes_loaded.at(SteamId(274520)) == only_recipe && recipes_loaded.at(SteamId(220)) == only_shared);
   }
 
   const auto public_private_root = root / "public-settings";

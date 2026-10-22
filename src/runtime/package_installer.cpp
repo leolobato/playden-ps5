@@ -554,6 +554,7 @@ bool FilesystemPackageInstaller::RecipeAccepted(const RuntimeInstall& record) co
   if (record.recipe_version.empty()) return false;
   if (std::find(shipped_recipe_ids_.begin(), shipped_recipe_ids_.end(), record.recipe_id) != shipped_recipe_ids_.end())
     return true;
+  if (accept_recipe_ && accept_recipe_(record)) return true;
   if (record.runtime_number == 0) return false;
   if (record.game != GameId{}) return record.game.valid() && record.recipe_id == playden::GeneratedRecipeId(record.game);
   // A copy that doesn't carry its game (read back from a journal): the Steam game its number names,
@@ -1601,7 +1602,72 @@ std::optional<std::string> WithFilesDigest(const std::string& marker, const std:
   if (end == std::string::npos) return std::nullopt;
   return marker.substr(0, at) + "\nfiles_sha256=" + digest + marker.substr(end);
 }
+
+// Marker text with its recipe_id and recipe_version lines replaced by the record's; nothing when
+// the marker doesn't carry each exactly once.
+std::optional<std::string> WithRecipeLines(const std::string& marker, const RuntimeInstall& record) {
+  std::string rebuilt;
+  unsigned ids = 0, versions = 0;
+  std::size_t start = 0;
+  while (start < marker.size()) {
+    auto end = marker.find('\n', start);
+    if (end == std::string::npos) end = marker.size();
+    const auto line = marker.substr(start, end - start);
+    if (line.rfind("recipe_id=", 0) == 0) { rebuilt += "recipe_id=" + record.recipe_id; ++ids; }
+    else if (line.rfind("recipe_version=", 0) == 0) { rebuilt += "recipe_version=" + record.recipe_version; ++versions; }
+    else rebuilt += line;
+    if (end < marker.size()) rebuilt += '\n';
+    start = end + 1;
+  }
+  if (ids != 1 || versions != 1) return std::nullopt;
+  return rebuilt;
+}
 }  // namespace
+
+PackageActionResult FilesystemPackageInstaller::RebindRecipe(const RuntimeInstall& record) {
+  const auto paths = Resolve(record);
+  if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
+  struct Marker { fs::path folder; const char* name; const char* kind; };
+  for (const Marker& marker : {Marker{paths->title, kTitleOwner, "title"}, Marker{paths->bottle, kTemplateOwner, "template"}}) {
+    const auto path = marker.folder / marker.name;
+    // A marker that is missing, malformed or another install's is left for the inspection and start
+    // checks to report, whose refusals say more than this one could.
+    const auto current = ReadBounded(path, 4096);
+    if (!current) continue;
+    const auto wanted = WithRecipeLines(*current, record);
+    if (!wanted || *wanted == *current) continue;
+    // Only this install's marker, and only its recipe lines, are rewritten.
+    if (!MarkerIdentifies(path, record, marker.kind)) continue;
+    const auto temporary = marker.folder / (std::string(marker.name) + ".rebind");
+    ::unlink(temporary.c_str());
+    const bool written = WriteFile(temporary, *wanted, 0600) && SyncPath(temporary, false) &&
+                         ::rename(temporary.c_str(), path.c_str()) == 0 && SyncPath(marker.folder, true);
+    if (!written) {
+      ::unlink(temporary.c_str());
+      return Failed("rebind-write", std::string("the ") + marker.kind + " owner marker could not be rewritten");
+    }
+    if (operations_.log) operations_.log(std::string("owner marker rebound kind=") + marker.kind + " install=" + record.install_id +
+                                         " recipe=" + record.recipe_id + ":" + record.recipe_version);
+  }
+  return Complete();
+}
+
+std::optional<std::string> FilesystemPackageInstaller::TitleRuntimeRevision(const RuntimeInstall& record) const {
+  const auto paths = Resolve(record);
+  if (!paths) return std::nullopt;
+  const auto path = paths->title / kTitleOwner;
+  const auto marker = ReadBounded(path, 4096);
+  if (!marker || !MarkerIdentifies(path, record, "title")) return std::nullopt;
+  std::size_t start = 0;
+  while (start < marker->size()) {
+    auto end = marker->find('\n', start);
+    if (end == std::string::npos) end = marker->size();
+    const auto line = marker->substr(start, end - start);
+    if (line.rfind("runtime_revision=", 0) == 0) return line.substr(std::strlen("runtime_revision="));
+    start = end + 1;
+  }
+  return std::nullopt;
+}
 
 bool FilesystemPackageInstaller::TitleCurrent(const RuntimeInstall& record) {
   const auto paths = Resolve(record);

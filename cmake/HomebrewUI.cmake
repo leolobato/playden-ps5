@@ -72,6 +72,7 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_files.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/kit_version.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/community_rules.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/recipe_choice.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/install_script.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/msi_package.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/lzx_decoder.cpp"

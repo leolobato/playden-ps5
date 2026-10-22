@@ -199,7 +199,23 @@ struct GameRecipe {
   std::vector<std::string> game_files;
   // What the kit's template bottle must provide ("audio": "ps5"); see UnmetRecipeRequirements.
   std::map<std::string, std::string> requirements;
+  // A community recipe's identity besides its id: the SHA-256 (64 lowercase hex) of its file as
+  // published, set by whoever loaded it from the cache; never serialized. Empty for the recipes
+  // Playden ships and generates, whose identity is `version`. See RecipeVersionTag.
+  std::string revision;
 };
+
+// What an installed game's record (RuntimeInstall::recipe_version) and its publication carry as the
+// recipe's version: the first kCommunityRevisionPrefixBytes of a community recipe's revision, else
+// the whole number `version` as text. Every match of a recipe to an install compares this.
+inline constexpr std::size_t kCommunityRevisionBytes = 64;
+inline constexpr std::size_t kCommunityRevisionPrefixBytes = 32;
+std::string RecipeVersionTag(const GameRecipe& recipe);
+// 64 lowercase hex characters; a prefix: exactly 32.
+bool IsCommunityRevision(std::string_view text);
+bool IsCommunityRevisionPrefix(std::string_view text);
+// Whether a tag (a record's recipe_version) names this revision: its first 32 characters.
+bool RevisionHasTag(std::string_view revision, std::string_view tag);
 
 struct SettingsPreset {
   std::string id;
@@ -208,6 +224,28 @@ struct SettingsPreset {
   std::string short_hint;
   std::map<std::string, std::string> settings;  // only the settings it changes
 };
+
+// The community recipe the player wants for a game (docs/community-recipes.md): its id and the
+// revision (64 hex) it was chosen at. A newer revision of the same recipe is never applied
+// silently: the choice keeps its revision until the player chooses the updated one.
+struct CommunityRecipeChoice {
+  std::string id;
+  std::string revision;
+};
+inline bool operator==(const CommunityRecipeChoice& left, const CommunityRecipeChoice& right) {
+  return left.id == right.id && left.revision == right.revision;
+}
+inline bool operator!=(const CommunityRecipeChoice& left, const CommunityRecipeChoice& right) { return !(left == right); }
+// The recipe a game's shared settings were sent as (Phase 5): the submission the service answered
+// with and the recipe id it belongs to, so a later share updates it instead of making a new one.
+struct SharedRecipeRef {
+  std::string submission_id;
+  std::string recipe_id;
+};
+inline bool operator==(const SharedRecipeRef& left, const SharedRecipeRef& right) {
+  return left.submission_id == right.submission_id && left.recipe_id == right.recipe_id;
+}
+inline bool operator!=(const SharedRecipeRef& left, const SharedRecipeRef& right) { return !(left == right); }
 
 // What Playden persists per game.
 struct GameSettingsRecord {
@@ -220,13 +258,25 @@ struct GameSettingsRecord {
   // A Steam game whose launch options are all for other branches: the program the player chose at
   // Install. Its option goes first when the game is prepared. Empty: not set. Saved only when set.
   std::string steam_launch;
+  // The game's base is one choice: Playden default (both empty), a preset, or a community recipe.
+  // ChooseCommunityRecipe and ChoosePreset keep them exclusive; a saved file naming both loads as the
+  // community recipe alone. Saved only when set.
+  CommunityRecipeChoice community_recipe;
+  // Set once the game's settings were shared from Playden. Saved only when set.
+  SharedRecipeRef shared_recipe;
 };
 
 inline bool operator==(const GameSettingsRecord& left, const GameSettingsRecord& right) {
   return left.preset_id == right.preset_id && left.overrides == right.overrides && left.revision == right.revision &&
-         left.steam_app_id == right.steam_app_id && left.steam_launch == right.steam_launch;
+         left.steam_app_id == right.steam_app_id && left.steam_launch == right.steam_launch &&
+         left.community_recipe == right.community_recipe && left.shared_recipe == right.shared_recipe;
 }
 inline bool operator!=(const GameSettingsRecord& left, const GameSettingsRecord& right) { return !(left == right); }
+
+// The player chooses a community recipe as the game's base: clears the preset. Both bump revision.
+void ChooseCommunityRecipe(GameSettingsRecord* record, std::string id, std::string revision);
+// The player chooses a preset (empty: Playden default) as the base: clears the community recipe.
+void ChoosePreset(GameSettingsRecord* record, std::string preset_id);
 
 struct EffectiveValue {
   std::string value;  // empty = not written

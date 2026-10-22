@@ -2,6 +2,8 @@
 #include "steam_id.h"
 #include "runtime/game_probe.h"
 #include "runtime/install_script.h"
+#include "runtime/kit_version.h"
+#include "runtime/recipe_choice.h"
 #include "runtime/settings_publication.h"
 
 #include <algorithm>
@@ -2535,6 +2537,186 @@ int main(int argc, char** argv) {
     auto listed = named_text;
     listed.replace(listed.find("[\"Bo\""), 5, "[7");
     CHECK(!ParseCommunityRecipe(listed, &parsed, &reason) && reason.find("contributors") != std::string::npos);
+  }
+
+  // Community recipes in use: identity by revision, the player's one base (preset or recipe), which
+  // recipe a game runs with, what a switch drops, and the registry values a recipe leaves in the bottle.
+  {
+    const std::string rev_a(64, 'a'), rev_b(64, 'b');
+    GameRecipe a = hl2;
+    a.id = "community-220-fast";
+    a.revision = rev_a;
+    a.locked.clear();
+    a.registry = {{"Software\\Wine\\AppDefaults\\hl2.exe", "Version", "\"win7\""}, {"Software\\Playden\\Test", "A", "\"1\""}};
+    GameRecipe b = a;
+    b.revision = rev_b;
+    b.registry = {{"Software\\Wine\\AppDefaults\\hl2.exe", "Version", "\"win10\""}, {"Software\\Playden\\Test", "B", "\"2\""}};
+    // The tag an install record carries: the whole number for Playden's recipes, 32 hex for a community one.
+    CHECK(RecipeVersionTag(hl2) == "1" && RecipeVersionTag(a) == std::string(32, 'a') && RecipeVersionTag(b) == std::string(32, 'b'));
+    CHECK(IsCommunityRevision(rev_a) && !IsCommunityRevision(std::string(63, 'a')) && !IsCommunityRevision(std::string(64, 'A')));
+    CHECK(IsCommunityRevisionPrefix(std::string(32, 'a')) && !IsCommunityRevisionPrefix(rev_a) && !IsCommunityRevisionPrefix(""));
+    CHECK(RevisionHasTag(rev_a, std::string(32, 'a')) && !RevisionHasTag(rev_a, std::string(32, 'b')) && !RevisionHasTag(rev_a, rev_a));
+    // Two revisions of one community recipe are never confused with each other.
+    RuntimeInstall record;
+    record.runtime_number = 220;
+    record.recipe_id = a.id;
+    record.recipe_version = RecipeVersionTag(a);
+    CHECK(RecipeForGame(a, record) && RecipeMatchesInstall(a, record) && !RecipeMatchesInstall(b, record));
+    record.recipe_version = RecipeVersionTag(b);
+    CHECK(RecipeMatchesInstall(b, record) && !RecipeMatchesInstall(a, record));
+    record.recipe_id = hl2.id;
+    record.recipe_version = "1";
+    CHECK(RecipeMatchesInstall(hl2, record) && !RecipeMatchesInstall(a, record));
+    record.runtime_number = 221;
+    CHECK(!RecipeForGame(hl2, record) && !RecipeMatchesInstall(hl2, record));
+
+    // One base: choosing a recipe clears the preset and the reverse; each is a new revision.
+    GameSettingsRecord choice{"mouse-driven", {{"resolution", "1280x720"}}, 3};
+    ChooseCommunityRecipe(&choice, a.id, rev_a);
+    CHECK(choice.preset_id.empty() && choice.community_recipe.id == a.id && choice.community_recipe.revision == rev_a &&
+          choice.revision == 4 && choice.overrides.size() == 1);
+    GameSettingsRecord reread;
+    CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice);
+    CHECK(SerializeGameSettingsRecord(choice).find("\"community_recipe\":{\"id\":\"community-220-fast\",\"revision\":\"" + rev_a + "\"}") !=
+          std::string::npos);
+    ChoosePreset(&choice, "mouse-driven");
+    CHECK(choice.preset_id == "mouse-driven" && choice.community_recipe.id.empty() && choice.community_recipe.revision.empty() &&
+          choice.revision == 5);
+    CHECK(SerializeGameSettingsRecord(choice).find("community_recipe") == std::string::npos);
+    choice.shared_recipe = {"sub-1", a.id};
+    CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice &&
+          reread.shared_recipe.submission_id == "sub-1");
+    // A malformed choice is dropped, not the record.
+    CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"community-220-fast\",\"revision\":\"abc\"}}", &reread, &reason) &&
+          reread.community_recipe.id.empty());
+    CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"steam-220-auto\",\"revision\":\"" + rev_a + "\"}}", &reread, &reason) &&
+          reread.community_recipe.id.empty());
+    // A file naming both a preset and a recipe loads as the recipe alone: one base, never stacked.
+    CHECK(ParseGameSettingsRecord("{\"preset\":\"mouse-driven\",\"community_recipe\":{\"id\":\"community-220-fast\",\"revision\":\"" +
+                                      rev_a + "\"}}", &reread, &reason) &&
+          reread.preset_id.empty() && reread.community_recipe.id == "community-220-fast");
+
+    // Precedence: the wanted community recipe when it loaded and fits, else shipped, else generated.
+    CommunityRecipe ca;
+    ca.recipe = a;
+    ca.executable = "hl2.exe";
+    ca.title = "Fast";
+    ca.status = "works";
+    GameRecipe generated = hl2;
+    generated.id = "steam-220-auto";
+    VerifiedKitView kit;
+    kit.template_audio_ps5 = true;
+    RecipeCandidates candidates;
+    candidates.shipped = &hl2;
+    candidates.generated = &generated;
+    candidates.kit = &kit;
+    candidates.kit_version = ParseKitVersion("0.12");
+    candidates.title_kit_version = candidates.kit_version;
+    auto selection = SelectRecipe(candidates);
+    CHECK(selection.recipe == &hl2 && !selection.community && selection.fallback_reason.empty());
+    candidates.shipped = nullptr;
+    CHECK(SelectRecipe(candidates).recipe == &generated);
+    candidates.shipped = &hl2;
+    const CommunityRecipeChoice wanted{a.id, rev_a};
+    candidates.wanted = &wanted;
+    candidates.community = &ca;
+    candidates.community_state = CommunityObjectState::kLoaded;
+    selection = SelectRecipe(candidates);
+    CHECK(selection.recipe == &ca.recipe && selection.community && selection.fallback_reason.empty());
+    // The object missing, unreadable, or another revision: Playden's recipe, with the reason.
+    candidates.community = nullptr;
+    candidates.community_state = CommunityObjectState::kMissing;
+    selection = SelectRecipe(candidates);
+    CHECK(selection.recipe == &hl2 && !selection.community && selection.fallback_reason == kCommunityRecipeRemoved);
+    candidates.community_state = CommunityObjectState::kUnreadable;
+    CHECK(SelectRecipe(candidates).fallback_reason == kCommunityRecipeUnreadable);
+    CommunityRecipe cb = ca;
+    cb.recipe = b;
+    candidates.community = &cb;
+    candidates.community_state = CommunityObjectState::kLoaded;
+    CHECK(SelectRecipe(candidates).fallback_reason == kCommunityRecipeUnreadable);
+    // The kit: a min_kit newer than the kit, and one the kit has but the game's title (older runtime) doesn't.
+    candidates.community = &ca;
+    ca.min_kit = "0.13";
+    selection = SelectRecipe(candidates);
+    CHECK(selection.recipe == &hl2 && selection.fallback_reason == "The recipe needs kit 0.13.");
+    ca.min_kit = "0.12";
+    CHECK(SelectRecipe(candidates).community);
+    candidates.title_kit_version.reset();
+    selection = SelectRecipe(candidates);
+    CHECK(!selection.community && selection.fallback_reason == std::string("The recipe needs kit 0.12.") + kCommunityRecipeNeedsRuntimeUpdate);
+    candidates.title_kit_version = candidates.kit_version;
+    ca.min_kit.clear();
+    ca.recipe.requirements = {{"audio", "ps5"}};
+    kit.template_audio_ps5 = false;
+    CHECK(SelectRecipe(candidates).fallback_reason.find("lacks what this recipe needs") != std::string::npos);
+    kit.template_audio_ps5 = true;
+    candidates.kit = nullptr;
+    CHECK(!SelectRecipe(candidates).community);
+
+    // Dropped overrides: a launch option the new recipe doesn't have, a row it locks.
+    GameRecipe two = a;
+    two.launch_entries.push_back({"editor", "Editor", "hammer.exe", ""});
+    const std::map<std::string, std::string> overrides = {
+        {"launch_option", "editor"}, {"resolution", "1280x720"}, {"graphics", "opengl"}};
+    auto dropped = DroppedOverrides(two, nullptr, hl2, nullptr, overrides, KitCapabilities{});
+    CHECK(dropped.size() == 2);
+    CHECK(dropped[0].setting_id == "graphics" && dropped[0].reason == "Locked by the recipe.");
+    CHECK(dropped[1].setting_id == "launch_option" && dropped[1].value == "editor" &&
+          dropped[1].reason.find("no launch option") != std::string::npos);
+    // Nothing is dropped going the other way, and a value that didn't apply before is no loss.
+    CHECK(DroppedOverrides(hl2, nullptr, two, nullptr, overrides, KitCapabilities{}).empty());
+    CHECK(DroppedOverrides(hl2, nullptr, a, nullptr, {{"launch_option", "nowhere"}}, KitCapabilities{}).empty());
+
+    // Registry: A, then B (A's value B doesn't set is removed), then Playden's own (everything removed).
+    RecipeRegistryState after_a, after_b, after_default;
+    auto values = RecipeRegistryTransition(nullptr, a, &after_a);
+    CHECK(values.size() == 2 && values[0].data == "\"win7\"" && after_a.recipe_id == a.id && after_a.revision == rev_a &&
+          after_a.values.size() == 2);
+    values = RecipeRegistryTransition(&after_a, b, &after_b);
+    CHECK(values.size() == 3 && values[0].key == "Software\\Playden\\Test" && values[0].name == "A" && values[0].data.empty() &&
+          values[1].data == "\"win10\"" && values[2].name == "B" && after_b.revision == rev_b && after_b.values.size() == 2);
+    values = RecipeRegistryTransition(&after_b, hl2, &after_default);
+    CHECK(values.size() == 2 && values[0].data.empty() && values[1].data.empty() && after_default.values.empty() &&
+          after_default.recipe_id == hl2.id && after_default.revision.empty());
+    CHECK(RecipeRegistryTransition(&after_b, b, &after_default).size() == 2);  // the same recipe again: nothing removed
+    RecipeRegistryState parsed_state;
+    CHECK(ParseRecipeRegistryState(SerializeRecipeRegistryState(after_b), &parsed_state, &reason) &&
+          parsed_state.recipe_id == after_b.recipe_id && parsed_state.revision == rev_b && parsed_state.values == after_b.values);
+    CHECK(!ParseRecipeRegistryState("{\"recipe_id\":1}", &parsed_state, &reason) && !ParseRecipeRegistryState("[]", &parsed_state, &reason));
+    // Case: Wine folds it, so a value in both recipes is only assigned (a removal plus an assignment would be
+    // refused as a duplicate), whether the value name, the key, or both differ in case.
+    {
+      GameRecipe upper = a, lower = a, keyed = a;
+      upper.registry = {{"Software\\Publisher\\Game", "Quality", "\"1\""}, {"Software\\Publisher\\Game", "Old", "\"1\""}};
+      lower.registry = {{"Software\\Publisher\\Game", "quality", "\"2\""}};
+      keyed.registry = {{"SOFTWARE\\publisher\\GAME", "QUALITY", "\"3\""}};
+      RecipeRegistryState state_upper, state_lower, state_keyed;
+      RecipeRegistryTransition(nullptr, upper, &state_upper);
+      auto moved = RecipeRegistryTransition(&state_upper, lower, &state_lower);
+      CHECK(moved.size() == 2 && moved[0].name == "Old" && moved[0].data.empty() && moved[1].name == "quality" && moved[1].data == "\"2\"");
+      moved = RecipeRegistryTransition(&state_lower, keyed, &state_keyed);
+      CHECK(moved.size() == 1 && moved[0].key == "SOFTWARE\\publisher\\GAME" && moved[0].data == "\"3\"");
+      std::string user_reg = "WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000\n\n";
+      CHECK(ApplyRegistryValues(&user_reg, upper.registry, 1760000000, &reason));
+      CHECK(ApplyRegistryValues(&user_reg, moved, 1760000000, &reason));
+    }
+    // Interruption: the interim state lists the old values too, so after the bottle took the new recipe's
+    // values but the final state never got written, a switch to Playden's own removes both recipes' values.
+    {
+      const auto interim = RecipeRegistryInterim(&after_a, after_b);
+      CHECK(interim.recipe_id == after_b.recipe_id && interim.revision == rev_b);
+      for (const auto& value : after_a.values)
+        CHECK(std::find(interim.values.begin(), interim.values.end(), value) != interim.values.end());
+      for (const auto& value : after_b.values)
+        CHECK(std::find(interim.values.begin(), interim.values.end(), value) != interim.values.end());
+      CHECK(interim.values.size() == 3);  // the shared value is listed once
+      RecipeRegistryState back;
+      const auto removed = RecipeRegistryTransition(&interim, hl2, &back);
+      CHECK(removed.size() == 3 && back.values.empty());
+      for (const auto& value : removed) CHECK(value.data.empty());
+      CHECK(RecipeRegistryInterim(nullptr, after_b).values == after_b.values);
+    }
   }
 
   std::puts("game settings tests passed");

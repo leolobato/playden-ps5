@@ -7108,6 +7108,506 @@ void KeepsUnrecordedBottlesAsKeptSaves() {
   }
 }
 
+// --- Community recipes (docs/community-recipes.md): wanted vs applied, switches, registry tracking ---
+
+// A fake recipes cache: objects by their full revision, found by revision or 32-hex prefix.
+struct RecipeCache {
+  std::map<std::string, std::string> objects;
+  std::string Add(const std::string& text) {
+    const auto revision = *HashArtifactBytes(text);
+    objects[revision] = text;
+    return revision;
+  }
+  void Wire(RuntimeHostConfig& config) {
+    config.community_recipe_bytes = [this](std::string_view key) -> std::optional<std::string> {
+      for (const auto& [revision, text] : objects)
+        if (revision == key || (key.size() == 32 && revision.compare(0, 32, key) == 0)) return text;
+      return std::nullopt;
+    };
+  }
+};
+
+// Half-Life 2's shipped recipe as a community recipe with its own registry values.
+std::string CommunityHl2(const std::string& slug, std::vector<RegistryValue> registry, const std::string& min_kit = {}) {
+  GameRecipe recipe;
+  std::string reason;
+  CHECK(ParseGameRecipe(Read(fs::path(g_runtime_dir) / "recipes/steam-220-hl2-v1.json"), &recipe, &reason));
+  recipe.id = "community-220-" + slug;
+  recipe.locked.clear();
+  recipe.requirements.clear();
+  recipe.registry = std::move(registry);
+  CommunityRecipe community;
+  community.recipe = recipe;
+  community.executable = "hl2.exe";
+  community.title = "Fast " + slug;
+  community.status = "works";
+  community.tested_kit = "0.12";
+  community.min_kit = min_kit;
+  community.author = "Ana";
+  return SerializeCommunityRecipe(community);
+}
+
+RuntimeHostConfig CommunityConfig(Fixture& fixture, const RuntimeKit& kit, unsigned* uuids, std::int64_t* now) {
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.session_data_root = fixture.root / "data";
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  config.admit_kit = [kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  config.uuid = [uuids]() -> std::optional<std::string> {
+    ++*uuids; return std::string("00000000-0000-4000-8000-0000000000") + (*uuids < 10 ? "0" : "") + std::to_string(*uuids);
+  };
+  config.unix_time = [now] { return *now; };
+  return config;
+}
+
+// A community recipe chosen at Install prepares the game (community > shipped); the choice is pinned to
+// its revision across a cache refresh and a restart; choosing another revision, or Playden's own recipe
+// again, is a publication that changes the record only when it commits, with the earlier recipe's
+// registry values removed and the game's own kept; an interrupted switch finishes later.
+void CommunityRecipeSwitches() {
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  kit.view.template_audio_ps5 = true;
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  RecipeCache cache;
+  cache.Wire(config);
+  const std::string id = "community-220-fast";
+  const auto text_a = CommunityHl2("fast", {{"Software\\Wine\\AppDefaults\\hl2.exe\\Direct3D", "VideoMemorySize", "\"4096\""},
+                                            {"Software\\Valve\\Test", "A", "\"1\""}});
+  const auto text_b = CommunityHl2("fast", {{"Software\\Wine\\AppDefaults\\hl2.exe\\Direct3D", "VideoMemorySize", "\"2048\""},
+                                            {"Software\\Valve\\Test", "B", "\"2\""}});
+  const auto rev_a = cache.Add(text_a);
+  const auto tag_a = rev_a.substr(0, 32);
+  const auto rev_b = *HashArtifactBytes(text_b);  // not in the cache yet
+  const auto tag_b = rev_b.substr(0, 32);
+  // Two more revisions of the same recipe, for the choices that fall back first and apply later.
+  const auto text_c = CommunityHl2("fast", {{"Software\\Wine\\AppDefaults\\hl2.exe\\Direct3D", "VideoMemorySize", "\"1024\""},
+                                            {"Software\\Valve\\Test", "C", "\"3\""}});
+  const auto text_d = CommunityHl2("fast", {{"Software\\Wine\\AppDefaults\\hl2.exe\\Direct3D", "VideoMemorySize", "\"512\""},
+                                            {"Software\\Valve\\Test", "D", "\"4\""}});
+  const auto rev_c = *HashArtifactBytes(text_c), rev_d = *HashArtifactBytes(text_d);
+  const auto tag_c = rev_c.substr(0, 32), tag_d = rev_d.substr(0, 32);
+  GameSettingsRecord saved;
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  std::vector<std::pair<std::string, std::vector<std::string>>> launches;
+  config.launch_title = [&launches](const std::string& title, const std::vector<std::string>& arguments) {
+    launches.emplace_back(title, arguments);
+    return TitleResult{true, 0, "launch"};
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  const auto staged = fixture.root / "data/homebrew/FAKE78001";
+  const auto data = fixture.root / "data/playden/games/steam-220";
+  const auto bottle = data / "library/prefixes/game";
+  const auto user_reg = bottle / "user.reg";
+  const auto state_file = fixture.root / "data/runtime-state/recipe-registry-steam-220.json";
+  bool loosen_next = false, break_after_commit = false;
+  std::vector<std::string> lines;
+  std::mutex lines_mutex;
+  config.log = [&](const std::string& line) {
+    { std::lock_guard<std::mutex> lock(lines_mutex); lines.push_back(line); }
+    if (loosen_next && line.rfind("settings update request", 0) == 0 && line.find(" state=0 ") != std::string::npos) {
+      loosen_next = false;
+      CHECK(chmod(staged.c_str(), 0777) == 0);
+    }
+    if (break_after_commit && line.rfind("settings update resume app=220", 0) == 0 && line.find(" state=0 ") != std::string::npos) {
+      break_after_commit = false;
+      CHECK(chmod(bottle.c_str(), 0500) == 0);
+    }
+  };
+  const auto logged = [&](const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    return std::any_of(lines.begin(), lines.end(), [&](const std::string& line) { return line.rfind(prefix, 0) == 0; });
+  };
+  Write(game / "hl2.exe", "existing-game", 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto has = [](const std::string& text, const std::string& needle) { return text.find(needle) != std::string::npos; };
+  const auto references = [](const RuntimeSnapshot& s, const std::string& value) {
+    return std::find(s.community_references.begin(), s.community_references.end(), value) != s.community_references.end();
+  };
+  // Plays the game through Handoff and ends the session the way the title shell reports it.
+  const auto play = [&](RuntimeHost& h) {
+    launches.clear();
+    h.Play(220);
+    WaitFor(h, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(220); }, 30);
+    if (h.Snapshot().play_refusals.count(220)) std::fprintf(stderr, "Play refused: %s\n", h.Snapshot().play_refusals.at(220).c_str());
+    CHECK(h.Handoff() && launches.size() == 1 && launches[0].first == "FAKE78001");
+    const auto session = launches[0].second[0].substr(std::strlen("session="));
+    const auto sessions = data / "logs/sessions";
+    fs::create_directories(sessions);
+    CHECK(chmod((data / "logs").c_str(), 0700) == 0 && chmod(sessions.c_str(), 0700) == 0);
+    const auto revision = h.Snapshot().installs[0].settings_revision;
+    const auto record = [&](const std::string& phase) {
+      return R"({"schema_version":1,"session_id":")" + session + R"(","install_id":"steam-220","title_id":"FAKE78001",)" +
+             R"("origin":"playden","settings_revision":)" + std::to_string(revision) +
+             R"(,"runtime_bundle_id":"wine-wow64","phase":")" + phase + "\"}\n";
+    };
+    Write(sessions / (session + ".json"), record("running"), 0600);
+    WaitFor(h, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kRunning; }, 30);
+    Write(sessions / (session + ".json"), record("exited"), 0600);
+    WaitFor(h, [](const RuntimeSnapshot& s) {
+      return s.launch && s.launch->state != LaunchState::kRunning && s.launch->state != LaunchState::kLaunching;
+    }, 30);
+  };
+
+  // Chosen at Install: the community recipe wins over the shipped one.
+  ChooseCommunityRecipe(&saved, id, rev_a);
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
+    CHECK(!done.refusals.count(220) && done.installs.size() == 1 && done.installs[0].state == PreparationState::kReady);
+    if (done.recipe_fallbacks.count(220)) std::fprintf(stderr, "Recipe fallback: %s\n", done.recipe_fallbacks.at(220).c_str());
+    if (done.installs[0].recipe_id != id) {
+      std::lock_guard<std::mutex> lock(lines_mutex);
+      for (const auto& line : lines)
+        if (line.rfind("community recipe", 0) == 0 || line.rfind("recipe selection", 0) == 0) std::fprintf(stderr, "%s\n", line.c_str());
+    }
+    CHECK(done.installs[0].recipe_id == id && done.installs[0].recipe_version == tag_a);
+    CHECK(!done.recipe_fallbacks.count(220) && !done.recipe_switch_failures.count(220));
+    CHECK(has(Read(staged / "game-launch.json"), "\"recipe_version\":\"" + tag_a + "\"") ||
+          has(Read(staged / "game-launch.json"), tag_a));
+    CHECK(has(Read(user_reg), "\"VideoMemorySize\"=\"4096\"") && has(Read(user_reg), "\"A\"=\"1\""));
+    CHECK(has(Read(state_file), rev_a) && references(done, tag_a) && references(done, rev_a));
+    CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_id=" + id + "\nrecipe_version=" + tag_a + "\n"));
+    // The game writes a value of its own: the recipe steps never touch it.
+    std::string reason;
+    CHECK(ApplyBottleRegistryValues({{"Software\\Valve\\Own", "Mine", "\"yes\""}}, bottle.string(), now, "user.reg", &reason));
+    host.Shutdown();
+  }
+  // A restart finds the applied recipe by its revision prefix, and the game plays.
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(started.installs.size() == 1 && started.installs[0].state == PreparationState::kReady && started.installs[0].title_current);
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    play(host);
+    host.Shutdown();
+  }
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto maintain = [&host](RuntimeMaintenance action) {
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(220, action);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  };
+  // The player chooses the updated recipe before the cache has it: the settings publish at the new
+  // revision with the applied recipe, and the sheet learns why. Nothing is switched.
+  ChooseCommunityRecipe(&saved, id, rev_b);
+  auto result = maintain(RuntimeMaintenance::kApplySettings);
+  if (!result.maintenance.at(220).ok) std::fprintf(stderr, "fallback apply: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(result.maintenance.at(220).ok && result.installs[0].recipe_version == tag_a && result.installs[0].settings_revision == saved.revision);
+  CHECK(result.recipe_fallbacks.count(220) && result.recipe_fallbacks.at(220) == kCommunityRecipeRemoved);
+  CHECK(!result.recipe_switch_failures.count(220) && has(Read(user_reg), "\"VideoMemorySize\"=\"4096\""));
+  // The cache gets it: the next Apply settings switches, at the same settings revision, although B only
+  // changes registry values (the profile reads the same). A's value B doesn't set goes, B's come, the
+  // game's own stays.
+  cache.Add(text_b);
+  result = maintain(RuntimeMaintenance::kApplySettings);
+  if (!result.maintenance.at(220).ok) std::fprintf(stderr, "switch to B: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(!result.recipe_fallbacks.count(220));
+  CHECK(result.maintenance.at(220).ok && result.installs[0].recipe_id == id && result.installs[0].recipe_version == tag_b);
+  CHECK(result.installs[0].title_current && !result.installs[0].recovery_pending && !result.recipe_switch_failures.count(220));
+  {
+    const auto reg = Read(user_reg);
+    CHECK(has(reg, "\"VideoMemorySize\"=\"2048\"") && has(reg, "\"B\"=\"2\"") && !has(reg, "\"A\"=\"1\"") && has(reg, "\"Mine\"=\"yes\""));
+  }
+  CHECK(has(Read(state_file), rev_b) && !has(Read(state_file), rev_a));
+  CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_version=" + tag_b + "\n") &&
+        has(Read(bottle / ".playden-template-owner"), "\nrecipe_version=" + tag_b + "\n"));
+  CHECK(has(Read(staged / "game-launch.json"), tag_b) && references(result, tag_b) && !references(result, tag_a));
+  CHECK(logged("recipe switch app=220 from=" + id + ":" + tag_a + " to=" + id + ":" + tag_b));
+  // A choice that fell back is switched to by Play once its object is cached.
+  ChooseCommunityRecipe(&saved, id, rev_c);
+  result = maintain(RuntimeMaintenance::kApplySettings);
+  CHECK(result.maintenance.at(220).ok && result.installs[0].recipe_version == tag_b && result.recipe_fallbacks.count(220));
+  cache.Add(text_c);
+  play(host);
+  result = host.Snapshot();
+  CHECK(result.installs[0].recipe_version == tag_c && !result.recipe_fallbacks.count(220) && !result.recipe_switch_failures.count(220));
+  CHECK(has(Read(user_reg), "\"VideoMemorySize\"=\"1024\"") && has(Read(user_reg), "\"C\"=\"3\"") && !has(Read(user_reg), "\"B\"=\"2\""));
+  CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_version=" + tag_c + "\n") && result.installs[0].title_current);
+  // ... and by Update.
+  ChooseCommunityRecipe(&saved, id, rev_d);
+  result = maintain(RuntimeMaintenance::kApplySettings);
+  CHECK(result.maintenance.at(220).ok && result.installs[0].recipe_version == tag_c && result.recipe_fallbacks.count(220));
+  cache.Add(text_d);
+  const auto prepares = host.Snapshot().prepares_handled;
+  host.Prepare(Hl2());
+  result = WaitFor(host, [prepares](const RuntimeSnapshot& s) {
+    return s.prepares_handled > prepares;
+  }, 60);
+  if (result.refusals.count(220)) std::fprintf(stderr, "Update after fallback: %s\n", result.refusals.at(220).c_str());
+  CHECK(!result.refusals.count(220) && result.installs[0].recipe_version == tag_d && !result.recipe_fallbacks.count(220));
+  CHECK(has(Read(user_reg), "\"VideoMemorySize\"=\"512\"") && has(Read(user_reg), "\"D\"=\"4\"") && !has(Read(user_reg), "\"C\"=\"3\""));
+  CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_version=" + tag_d + "\n") && result.installs[0].title_current);
+  // Back to Playden's own recipe: every value the community recipes wrote goes, the game's own stays.
+  ChoosePreset(&saved, "");
+  result = maintain(RuntimeMaintenance::kApplySettings);
+  if (!result.maintenance.at(220).ok) std::fprintf(stderr, "switch to default: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(result.maintenance.at(220).ok && result.installs[0].recipe_id == "steam-220-hl2-v1" && result.installs[0].recipe_version == "1");
+  {
+    const auto reg = Read(user_reg);
+    CHECK(!has(reg, "\"VideoMemorySize\"=") && !has(reg, "\"B\"=\"2\"") && !has(reg, "\"D\"=\"4\"") && has(reg, "\"Mine\"=\"yes\""));
+  }
+  CHECK(!fs::exists(state_file) && result.community_references.empty() && result.installs[0].title_current);
+  CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_id=steam-220-hl2-v1\nrecipe_version=1\n"));
+  // A switch interrupted before its publication commits: the record keeps the applied recipe, the sheet
+  // says the switch didn't finish, and Resume (Prepare) finishes it from the saved request.
+  ChooseCommunityRecipe(&saved, id, rev_a);
+  loosen_next = true;
+  result = maintain(RuntimeMaintenance::kApplySettings);
+  CHECK(!result.maintenance.at(220).ok && result.installs[0].recovery_pending);
+  CHECK(result.installs[0].recipe_id == "steam-220-hl2-v1" && result.installs[0].recipe_version == "1");
+  CHECK(result.recipe_switch_failures.count(220) && has(result.recipe_switch_failures.at(220), "The switch didn't finish"));
+  CHECK(!has(Read(user_reg), "\"VideoMemorySize\"=") && references(result, tag_a));  // the unfinished transaction keeps A alive
+  CHECK(chmod(staged.c_str(), 0755) == 0);
+  host.Prepare(Hl2());
+  result = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (!s.installs[0].recovery_pending || s.refusals.count(220));
+  }, 60);
+  if (result.refusals.count(220)) std::fprintf(stderr, "Resume refused: %s\n", result.refusals.at(220).c_str());
+  CHECK(!result.refusals.count(220) && !result.installs[0].recovery_pending && result.installs[0].recipe_version == tag_a);
+  CHECK(!result.recipe_switch_failures.count(220) && result.installs[0].title_current);
+  CHECK(has(Read(user_reg), "\"VideoMemorySize\"=\"4096\"") && has(Read(user_reg), "\"A\"=\"1\"") && has(Read(state_file), rev_a));
+  CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_version=" + tag_a + "\n"));
+  // A switch interrupted after its publication committed (the bottle can't be written): the record already
+  // names the new recipe, the sheet says the switch didn't finish, and the next Play finishes it.
+  ChooseCommunityRecipe(&saved, id, rev_b);
+  break_after_commit = true;
+  result = maintain(RuntimeMaintenance::kApplySettings);
+  CHECK(chmod(bottle.c_str(), 0700) == 0);
+  CHECK(!result.maintenance.at(220).ok && result.installs[0].recipe_version == tag_b && !result.installs[0].recovery_pending);
+  CHECK(result.recipe_switch_failures.count(220) && has(result.recipe_switch_failures.at(220), "The switch didn't finish"));
+  CHECK(has(Read(user_reg), "\"VideoMemorySize\"=\"4096\""));  // B's values are not in yet
+  play(host);
+  result = host.Snapshot();
+  if (result.recipe_switch_failures.count(220)) std::fprintf(stderr, "after Play: %s\n", result.recipe_switch_failures.at(220).c_str());
+  CHECK(!result.recipe_switch_failures.count(220));
+  CHECK(result.installs[0].title_current);
+  {
+    const auto reg = Read(user_reg);
+    CHECK(has(reg, "\"VideoMemorySize\"=\"2048\"") && has(reg, "\"B\"=\"2\"") && !has(reg, "\"A\"=\"1\"") && has(reg, "\"Mine\"=\"yes\""));
+  }
+  CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_version=" + tag_b + "\n") && has(Read(state_file), rev_b));
+  host.Shutdown();
+  // A switch cut off between its commit and its markers (here: the markers put back by hand) is finished
+  // at startup, before anything reads them: the title reads as current from the first installs view.
+  for (const auto& marker : {staged / ".playden-title-owner", bottle / ".playden-template-owner"}) {
+    auto text = Read(marker);
+    const auto at = text.find("recipe_version=" + tag_b);
+    CHECK(at != std::string::npos);
+    text.replace(at + std::strlen("recipe_version="), 32, tag_a);
+    Write(marker, text, 0600);
+  }
+  {
+    RuntimeHost restarted(config);
+    CHECK(restarted.Start());
+    const auto started = WaitFor(restarted, Started);
+    CHECK(started.installs.size() == 1 && started.installs[0].title_current && started.installs[0].recipe_version == tag_b);
+    CHECK(has(Read(staged / ".playden-title-owner"), "\nrecipe_version=" + tag_b + "\n") &&
+          has(Read(bottle / ".playden-template-owner"), "\nrecipe_version=" + tag_b + "\n"));
+    restarted.Shutdown();
+  }
+  // The recipe's object gone from the cache (removed upstream, then collected): the game still plays with
+  // its applied recipe; a settings change needs the object, and says so.
+  cache.objects.clear();
+  {
+    RuntimeHost restarted(config);
+    CHECK(restarted.Start());
+    CHECK(WaitFor(restarted, Started).installs[0].state == PreparationState::kReady);
+    play(restarted);
+    saved.overrides["resolution"] = "1280x720";
+    ++saved.revision;
+    const auto before = restarted.Snapshot().maintenance_handled;
+    restarted.Maintain(220, RuntimeMaintenance::kApplySettings);
+    const auto refused = WaitFor(restarted, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+    CHECK(!refused.maintenance.at(220).ok && has(refused.maintenance.at(220).message, "no longer knows how to start this game"));
+    CHECK(refused.installs[0].recipe_version == tag_b);
+    restarted.Shutdown();
+  }
+}
+
+// A community recipe with a min_kit the kit met when the game was prepared stays applied after a kit
+// swap: the title still runs the runtime that met it (its marker says which), so Apply settings and
+// Play are not refused for the recipe; only the title's own update is pending.
+void AppliedCommunityRecipeSurvivesKitSwap() {
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  kit.view.template_audio_ps5 = true;
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  RecipeCache cache;
+  cache.Wire(config);
+  const auto revision = cache.Add(CommunityHl2("fast", {{"Software\\Valve\\Test", "A", "\"1\""}}, "0.12"));
+  GameSettingsRecord saved;
+  ChooseCommunityRecipe(&saved, "community-220-fast", revision);
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  Write(game / "hl2.exe", "existing-game", 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
+    CHECK(!done.refusals.count(220) && done.installs[0].recipe_id == "community-220-fast" && !done.recipe_fallbacks.count(220));
+    host.Shutdown();
+  }
+  // Another build of the same kit version: the title is not current, but runs a 0.12 runtime.
+  auto swapped = SyntheticKit(fixture.root / "kit-2", "native-2", "kit-1", 'c', "runtime", "a1b2c3d-kit-0.12");
+  swapped.view.template_audio_ps5 = true;
+  config.admit_kit = [swapped](std::string*) { return std::optional<RuntimeKit>(swapped); };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.kit_available && started.installs.size() == 1 && !started.installs[0].title_current);
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto before = host.Snapshot().maintenance_handled;
+  host.Maintain(220, RuntimeMaintenance::kApplySettings);
+  const auto result = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  if (!result.maintenance.at(220).ok) std::fprintf(stderr, "after kit swap: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(result.maintenance.at(220).ok && result.maintenance.at(220).message == "Settings are up to date.");
+  CHECK(result.installs[0].recipe_id == "community-220-fast" && !result.recipe_fallbacks.count(220));
+  host.Shutdown();
+}
+
+// Without a shipped recipe: the chosen community recipe wins over the generated one, which is kept beside
+// it so Playden's own recipe is there to switch back to (offline). A recipe the kit can't run (min_kit newer
+// than the kit), or whose object is missing, falls back to the generated one with the reason for the sheet.
+void CommunityRecipeOverGeneratedAndKitFallback() {
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  // Removal between preparations: the one-shot remover answers, and the console drops the title.
+  config.removal_confirm_polls = 3;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  config.unregister_title = [&fixture](const std::string&, const std::string&) {
+    fixture.registered = false;
+    fixture.submitted = false;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  RecipeCache cache;
+  cache.Wire(config);
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4242";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Bin/Game.exe", pe, 0644);
+  Write(game / "Bin/Fast.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto community = [&](const std::string& min_kit) {
+    GameRecipe recipe;
+    recipe.id = "community-4242-fast";
+    recipe.version = 1;
+    recipe.app_id = 4242;
+    recipe.name = "Example Game";
+    recipe.launch_entries = {{"game", "Fast", "Bin/Fast.exe", ""}};
+    recipe.architecture = "pe64";
+    recipe.graphics = "dxvk";
+    recipe.defaults["steam_features"] = "emulate";
+    recipe.registry = {{"Software\\Wine\\AppDefaults\\Fast.exe\\Direct3D", "VideoMemorySize", "\"4096\""}};
+    CommunityRecipe out;
+    out.recipe = recipe;
+    out.executable = "Bin/Fast.exe";
+    out.title = "Fast";
+    out.status = "works";
+    out.tested_kit = "0.12";
+    out.min_kit = min_kit;
+    out.author = "Ana";
+    return SerializeCommunityRecipe(out);
+  };
+  const auto rev_new = cache.Add(community("0.13"));
+  const auto rev_fit = cache.Add(community(""));
+  const std::string rev_gone(64, 'd');
+  GameSettingsRecord saved;
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  RuntimePrepareRequest request{4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"};
+  request.launches = {{"", "", "Bin\\Game.exe", "", ""}};
+  const auto profile = fixture.root / "data/playden/games/steam-4242/library/profiles/playden-steam-4242.profile";
+  const auto generated_file = fixture.root / "data/runtime-state/recipe-steam-4242-auto.json";
+  const auto has = [](const std::string& text, const std::string& needle) { return text.find(needle) != std::string::npos; };
+  RuntimeHost host(config);
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto prepare = [&] {
+    host.Prepare(request);
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4242) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(4242)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(4242).c_str());
+    CHECK(!done.refusals.count(4242) && done.installs.size() == 1);
+    return done;
+  };
+  const auto remove = [&] {
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    const auto before = host.Snapshot().removals_handled;
+    host.Remove(4242, true);
+    const auto removed = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.removals_handled > before; }, 60);
+    if (removed.removal_failures.count(4242)) std::fprintf(stderr, "Remove: %s\n", removed.removal_failures.at(4242).c_str());
+    CHECK(removed.installs.empty());
+  };
+  // The recipe needs a newer kit: the generated recipe prepares the game, and the sheet learns why.
+  ChooseCommunityRecipe(&saved, "community-4242-fast", rev_new);
+  auto done = prepare();
+  CHECK(done.installs[0].recipe_id == "steam-4242-auto" && done.recipe_fallbacks.at(4242) == "The recipe needs kit 0.13.");
+  CHECK(has(Read(profile), "Game.exe"));
+  remove();
+  // Its object is missing from the cache: the same, with that reason.
+  ChooseCommunityRecipe(&saved, "community-4242-fast", rev_gone);
+  done = prepare();
+  CHECK(done.installs[0].recipe_id == "steam-4242-auto" && done.recipe_fallbacks.at(4242) == kCommunityRecipeRemoved);
+  remove();
+  // A recipe the kit runs: it wins over the generated one, which is kept beside it.
+  ChooseCommunityRecipe(&saved, "community-4242-fast", rev_fit);
+  done = prepare();
+  CHECK(done.installs[0].recipe_id == "community-4242-fast" && done.installs[0].recipe_version == rev_fit.substr(0, 32));
+  CHECK(!done.recipe_fallbacks.count(4242) && has(Read(profile), "Fast.exe") && done.installs[0].launch_path == "Bin/Fast.exe");
+  CHECK(fs::is_regular_file(generated_file) && done.generated_recipes.size() == 1 && done.generated_recipes[0].id == "steam-4242-auto");
+  const auto user_reg = fixture.root / "data/playden/games/steam-4242/library/prefixes/game/user.reg";
+  CHECK(has(Read(user_reg), "\"VideoMemorySize\"=\"4096\""));
+  // Back to Playden's own recipe without Steam: the kept generated recipe, its program, no registry value.
+  ChoosePreset(&saved, "");
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto before = host.Snapshot().maintenance_handled;
+  host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+  const auto switched = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  if (!switched.maintenance.at(4242).ok) std::fprintf(stderr, "switch to generated: %s\n", switched.maintenance.at(4242).message.c_str());
+  CHECK(switched.maintenance.at(4242).ok && switched.installs[0].recipe_id == "steam-4242-auto" && switched.installs[0].launch_path == "Bin/Game.exe");
+  CHECK(has(Read(profile), "Game.exe") && !has(Read(user_reg), "\"VideoMemorySize\"=\"4096\""));
+  host.Shutdown();
+  // After a restart the kept generated recipe is still there for the game.
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+  CHECK(reloaded.generated_recipes[0].id == "steam-4242-auto" && reloaded.installs[0].state == PreparationState::kReady);
+  restarted.Shutdown();
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
@@ -7207,6 +7707,9 @@ int main(int argc, char** argv) {
   RelocationFallsBackToANewTitle();
   RelocationKeepsTheTitleWhenTheRepublishWaits();
   RelocationStopsWaitingWhenPlaydenCloses();
+  CommunityRecipeSwitches();
+  AppliedCommunityRecipeSurvivesKitSwap();
+  CommunityRecipeOverGeneratedAndKitFallback();
   std::puts("runtime host tests passed");
   return 0;
 }

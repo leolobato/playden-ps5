@@ -11,6 +11,7 @@
 #include "runtime/launch_service.h"
 #include "runtime/leftover_titles.h"
 #include "runtime/package_installer.h"
+#include "runtime/recipe_choice.h"
 #include "runtime/redist_install.h"
 
 #include <algorithm>
@@ -86,6 +87,11 @@ struct RuntimeHostConfig {
   std::string steamworks_dir;
   // The player's saved settings for a game; nothing means Playden defaults.
   std::function<std::optional<runtime::GameSettingsRecord>(const GameId& game)> settings_record;
+  // A community recipe's file from the recipes cache, by its revision (the SHA-256 of the file, 64
+  // hex) or the first 32 hex of it (an install record's recipe_version); nothing when the cache has
+  // no such object. Runs on the worker. The host parses it, checks the hash, applies the community
+  // rules and refuses a file that fails any of them. Empty: no community recipes.
+  std::function<std::optional<std::string>(std::string_view revision_or_prefix)> community_recipe_bytes;
   // Canonical lower-case UUID for a publication transaction, or nothing when no
   // secure random source is available. Empty uses /dev/urandom.
   std::function<std::optional<std::string>()> uuid;
@@ -209,6 +215,12 @@ struct RuntimeInstallView {
   // The settings revision its published profile was made from, and the launch entry the
   // title was prepared with (a different Launch option needs the bottle made again).
   std::uint64_t settings_revision = 0;
+  // The recipe the title plays under (applied): its id and version tag (runtime::RecipeVersionTag; a
+  // community recipe's first 32 hex of its revision). The player's wanted recipe is the settings
+  // record's community_recipe; when they differ, Play or Apply settings switches (RuntimeSnapshot::
+  // recipe_switch_failures says when that didn't finish).
+  std::string recipe_id;
+  std::string recipe_version;
   std::string launch_entry_id;
   std::string launch_path;               // its program, relative to the install root
   std::string launch_working_directory;  // its folder; empty: the program's own, or the install root:
@@ -377,6 +389,21 @@ struct RuntimeSnapshot {
   // The Steam app ID each game from another store was last prepared with, by runtime number. Steam
   // games are not listed: theirs is their own.
   std::map<std::uint32_t, SteamworksAppView> steamworks_apps;
+  // Community recipes (docs/community-recipes.md), by runtime number:
+  // - why the wanted community recipe was not used the last time the game was prepared or its
+  //   settings published, and Playden's own recipe was ("The recipe needs kit 0.13.",
+  //   runtime::kCommunityRecipeRemoved, runtime::kCommunityRecipeUnreadable); absent when it was
+  //   used, or none is wanted;
+  std::map<std::uint32_t, std::string> recipe_fallbacks;
+  // - a recipe switch (wanted differs from the applied recipe) that did not finish, for the sheet
+  //   ("The switch didn't finish: …"); the game keeps playing with its applied recipe, and the next
+  //   Play or Apply settings tries again. Erased once a switch commits.
+  std::map<std::uint32_t, std::string> recipe_switch_failures;
+  // Community recipe objects the installed games still need, for the cache's garbage collection:
+  // the applied recipes (32-hex prefixes), the full revisions whose registry values are in a bottle,
+  // and the recipes unfinished settings transactions carry. The wanted choices of games are in the
+  // settings file, which the cache's owner reads itself.
+  std::vector<std::string> community_references;
 };
 
 // Whether the game's preparation waits in the runtime's queue.
@@ -556,17 +583,56 @@ class RuntimeHost {
   std::string RunPrepare(Composition& composition, const RuntimePrepareRequest& request, bool* awaiting = nullptr);
   const runtime::GameRecipe* RecipeForPrepare(Composition& composition, const RuntimePrepareRequest& request,
                                               std::string* reason);
+  // The recipe generated from Steam's launch options and the game's files, saved for later
+  // preparations and switches; null with the reason for the player. quiet: a fallback made beside a
+  // chosen community recipe, so a refusal publishes no draft and waits for no program choice.
+  const runtime::GameRecipe* GenerateRecipeForPrepare(Composition& composition, const RuntimePrepareRequest& request,
+                                                      std::string* reason, bool quiet);
   void LoadGeneratedRecipes(Composition& composition);
   // A generated recipe set up with older defaults for its engine takes the current ones and its title is published
   // again. Nothing of the game may be running. A refusal leaves the game as it was, for the next try.
   void RefreshGeneratedRecipeDefaults(Composition& composition, const runtime::RuntimeInstall& record);
+  // A community recipe from the cache (RuntimeHostConfig::community_recipe_bytes) by revision or
+  // 32-hex prefix: parsed, hash-checked, the community rules applied, kept for the session.
+  struct CommunityLoad {
+    const runtime::CommunityRecipe* recipe = nullptr;
+    runtime::CommunityObjectState state = runtime::CommunityObjectState::kMissing;
+    std::string reason;  // why not loaded
+  };
+  CommunityLoad LoadCommunityRecipe(Composition& composition, std::string_view revision_or_prefix);
+  // The recipe an install record was prepared with (runtime::RecipeMatchesInstall): a shipped or
+  // generated one from the loaded list, or a community one by the record's revision prefix. Null when
+  // Playden no longer has it.
+  const runtime::GameRecipe* RecipeOf(Composition& composition, const runtime::RuntimeInstall& record);
+  const runtime::CommunityRecipe* CommunityOf(Composition& composition, const runtime::RuntimeInstall& record);
+  // The kit version a game's title runs with: the installed kit's when the title runs its runtime (or
+  // the title is not made yet), otherwise unknown (CommunityRecipeFits then refuses a min_kit).
+  std::optional<runtime::KitVersion> TitleKitVersion(const Composition& composition,
+                                                     const runtime::RuntimeInstall* record) const;
+  // runtime::SelectRecipe for a game: its shipped and generated recipes, the saved record's wanted
+  // community recipe (loaded from the cache) and the kit as the game's title (record, or none yet) runs it.
+  runtime::RecipeSelection SelectRecipeFor(Composition& composition, const GameId& game, std::uint32_t runtime_number,
+                                           const runtime::RuntimeInstall* record, const runtime::GameSettingsRecord& saved);
+  // The shipped and generated recipes of a game, from the loaded list.
+  const runtime::GameRecipe* ShippedRecipeFor(const Composition& composition, const GameId& game,
+                                              std::uint32_t runtime_number) const;
+  const runtime::GameRecipe* GeneratedRecipeFor(const Composition& composition, const GameId& game,
+                                                std::uint32_t runtime_number) const;
+  // After a recipe switch committed: the title and bottle owner markers get the record's recipe
+  // (FilesystemPackageInstaller::RebindRecipe). Idempotent; also run before Play and Update so a
+  // switch interrupted between its commit and this finishes. Empty, or why not.
+  std::string RebindRecipeMarkers(Composition& composition, const runtime::RuntimeInstall& record);
+  // RuntimeSnapshot::community_references from the records, the registry state files and the
+  // unfinished settings transactions.
+  void PublishCommunityReferences(const Composition& composition);
   void PublishRecipes(const Composition& composition);
   runtime::PackageActionResult DrivePublication(Composition& composition, const runtime::RuntimeInstall& record);
   // Moves *next (an install record) to the program and folder the saved settings choose, after checking
   // them on disk. Empty on success, otherwise why not (for the player). Call only while the game is stopped.
+  // recipe_switch: recipe is a recipe the game switches to, whose program may differ from the record's.
   std::string FollowChosenLaunch(const runtime::GameRecipe& recipe, const runtime::SettingsPreset* preset,
                                  const runtime::KitCapabilities& kit, const runtime::GameSettingsRecord& saved,
-                                 runtime::RuntimeInstall* next);
+                                 runtime::RuntimeInstall* next, bool recipe_switch = false);
   // Puts the saved settings into a Ready title when they are newer than its publication:
   // Steam files, then a journaled settings update (profile, dxvk.conf, registry). Call only
   // while the title is stopped. Empty on success or when nothing changed; *published says
@@ -659,7 +725,9 @@ class RuntimeHost {
   void KitMonoStep(Composition& composition, const runtime::RuntimeInstall& record, const char* when);  // never stops the start
   void VcRuntimeStep(const GameFiles& files);  // never stops the start
   std::string BottleEnvironmentStep(const GameFiles& files);
-  std::string RecipeRegistryStep(const GameFiles& files);
+  // The recipe's registry values, tracked per install (runtime::RecipeRegistryState) so a switch
+  // removes what the earlier recipe wrote and left; idempotent.
+  std::string RecipeRegistryStep(Composition& composition, const GameFiles& files);
   std::string RecipeIniStep(const GameFiles& files);
   std::string RecipeFilesStep(const GameFiles& files);
   std::string DotnetHeapStep(const GameFiles& files);

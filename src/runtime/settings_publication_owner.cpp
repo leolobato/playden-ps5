@@ -9,15 +9,18 @@
 #include <unistd.h>
 namespace playden::runtime {
 namespace {
-// The program a publication starts: Game settings may have chosen another one
-// (RuntimeHost::RepublishSettings). The captured operation carries it, and the record names it
-// from the commit on, also when a commit is resumed after a crash.
+// The program a publication starts, and the recipe it was built from: Game settings may have
+// chosen another program or another recipe (RuntimeHost::RepublishSettings). The captured operation
+// carries them, and the record names them from the commit on, also when a commit is resumed after a
+// crash. Until then the record keeps the recipe the game plays under.
 void CommitLaunch(RuntimeInstall* record, const RuntimeInstall& published) {
   record->launch_entry_id = published.launch_entry_id;
   record->launch_path = published.launch_path;
   record->launch_working_directory = published.launch_working_directory;
   record->launch_in_install_root = published.launch_in_install_root;
   record->launch_arguments = published.launch_arguments;
+  record->recipe_id = published.recipe_id;
+  record->recipe_version = published.recipe_version;
 }
 PackageActionResult Failure(const char* code, const char* message) {
   return {PackageActionState::kFailed, code, message};
@@ -49,12 +52,15 @@ PublicationPaths OperationPaths(const SettingsPublicationOperation& operation, c
 // kit that admits unowned folders, a committed owned publication (schema 2) is also published
 // again as unowned; one already unowned, or unreadable, is not. The same revision is also
 // published again when the title moved to another runtime and the same settings now make
-// another profile (RuntimeHost::RepublishSettings, force). Never an older revision.
+// another profile (RuntimeHost::RepublishSettings, force), and when the plan is built from another
+// recipe (a recipe switch whose choice fell back at its own revision and applies now): its descriptor
+// and receipt name the new recipe even when the profile reads the same. Never an older revision.
 bool UpdateRevisionAllowed(const RuntimeInstall& current, const SettingsLaunchPlan& plan, bool unowned_game_roots,
                            const std::filesystem::path& prefix) {
   if (plan.settings_revision > current.settings_revision) return true;
   if (plan.settings_revision != current.settings_revision) return false;
   if (!current.moved_from.empty()) return true;
+  if (plan.recipe_id != current.recipe_id || plan.recipe_version != current.recipe_version) return true;
   if (unowned_game_roots && PublishedGameRootUnowned(current, prefix) == std::optional<bool>(false)) return true;
   const auto published = PublishedProfileDigest(current, prefix);
   return published && HashArtifactBytes(plan.profile_bytes) != published;
