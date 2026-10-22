@@ -35,6 +35,9 @@ struct Release {
 std::optional<Release> ParseRelease(std::string_view json, std::string* error);
 // The JSON of GET /repos/<owner>/<repo>/releases: newest first, releases whose tag isn't a version left out.
 std::optional<std::vector<Release>> ParseReleases(std::string_view json, std::string* error);
+// The same for a repository whose tags are not versions ("r20261022.1", community recipes): the
+// tag only has to be a SafeFolderName of at most 64 characters; version stays empty.
+std::optional<Release> ParseReleaseAnyTag(std::string_view json, std::string* error);
 
 struct KitPart {
   std::string kit_id;           // stays the same across revisions ("playden-kit")

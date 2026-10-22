@@ -94,6 +94,11 @@ def main():
         check(run(*common).returncode != 0, "unpinned kit refused")
         check(run(*common, "--allow-other-kit").returncode == 0, "unpinned kit allowed for tests")
         check(run(*[a if a != "0.13" else "../0.13" for a in common], "--allow-other-kit").returncode != 0, "bad revision")
+        # A package built with PLAYDEN_DEV_ENDPOINTS=ON is never released, whatever else allows.
+        with zipfile.ZipFile(app, "a") as archive:
+            archive.writestr("FAKE77031/dev-endpoints-build", "")
+        result = run(*common, "--allow-other-kit")
+        check(result.returncode != 0 and "PLAYDEN_DEV_ENDPOINTS" in result.stderr, "dev endpoints build refused")
     print("ok")
 
 

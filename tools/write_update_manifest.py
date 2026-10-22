@@ -10,7 +10,7 @@ release next to them:
 
 It reads the app's version and title id from the zip's sce_sys/param.json and the kit's id and
 manifest from its manifest.json, and refuses a kit that is not the one dependencies.lock.json pins
-(the kit this Playden was tested with). --notes is a short plain-text summary for the console's
+(the kit this Playden was tested with) and an app built with PLAYDEN_DEV_ENDPOINTS=ON. --notes is a short plain-text summary for the console's
 update dialog, which links to the release page (as a QR code) for the full notes. A release whose kit did not change may leave the kit zip
 out of the release; pass the zip anyway so the manifest names the kit.
 
@@ -25,6 +25,7 @@ import re
 import sys
 import zipfile
 
+DEV_ENDPOINTS_MARKER = "dev-endpoints-build"
 VERSION = re.compile(r"[vV]?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})(?:-beta\.([1-9][0-9]{0,5}))?")
 
 
@@ -98,6 +99,11 @@ def main(argv=None):
     with zipfile.ZipFile(args.app_zip) as app:
         prefix = app_prefix(app)
         param = json.loads(app.read(prefix + "sce_sys/param.json"))
+        # A package built with PLAYDEN_DEV_ENDPOINTS=ON can read other community recipe servers
+        # from a file: never a release.
+        if prefix + DEV_ENDPOINTS_MARKER in app.namelist():
+            raise SystemExit(f"{args.app_zip.name} was built with PLAYDEN_DEV_ENDPOINTS=ON "
+                             f"({DEV_ENDPOINTS_MARKER}); build the release with it OFF")
         numeric_version = version(param["contentVersion"])
         try:
             full_text = app.read(prefix + "playden-version").decode("ascii")

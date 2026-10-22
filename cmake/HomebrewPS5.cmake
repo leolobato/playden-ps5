@@ -162,7 +162,7 @@ function(playden_add_homebrew_ps5_title)
 			$<TARGET_FILE:playden_homebrew_qr> $<TARGET_FILE:playden_homebrew_controller>
 			$<TARGET_FILE:playden_homebrew_artwork_cache> $<TARGET_FILE:playden_homebrew_artwork> $<TARGET_FILE:playden_persistence_controller> $<TARGET_FILE:playden_persistence_service> $<TARGET_FILE:playden_preferences> $<TARGET_FILE:playden_library_controller> $<TARGET_FILE:playden_library_service> $<TARGET_FILE:playden_steam_library> $<TARGET_FILE:playden_steam_cm> $<TARGET_FILE:playden_steam_cm_codec> $<TARGET_FILE:playden_depot_codec>
 			$<TARGET_FILE:playden_local_session_repository> $<TARGET_FILE:playden_auth_diagnostics> $<TARGET_FILE:playden_local_store> $<TARGET_FILE:playden_local_copy> $<TARGET_FILE:playden_game_move>
-			$<TARGET_FILE:playden_self_update> $<TARGET_FILE:playden_miniz> $<TARGET_FILE:playden_steam_http> $<TARGET_FILE:playden_steam_protocol>
+			$<TARGET_FILE:playden_community> $<TARGET_FILE:playden_self_update> $<TARGET_FILE:playden_miniz> $<TARGET_FILE:playden_steam_http> $<TARGET_FILE:playden_steam_protocol>
 			$<TARGET_FILE:playden_steam_auth>
 			$<TARGET_FILE:playden_steam_core> $<TARGET_FILE:playden_web> $<TARGET_FILE:playden_web_logs> $<TARGET_FILE:playden_web_http> $<TARGET_FILE:playden_diagnostic_log> $<TARGET_FILE:playden_storage>
 			$<TARGET_FILE:playden_library> $<TARGET_FILE:playden_native_access> $<TARGET_FILE:playden_managed_directory> $<TARGET_FILE:playden_runtime_steamworks> $<TARGET_FILE:playden_runtime_artifact_hash> $<TARGET_FILE:playden_runtime_settings_storage> $<TARGET_FILE:playden_runtime_private_directories> $<TARGET_FILE:playden_runtime_session_reconciler> $<TARGET_FILE:playden_runtime_launch_service> $<TARGET_FILE:playden_runtime_install_service> $<TARGET_FILE:playden_runtime_installs> $<TARGET_FILE:playden_runtime_layout_migration> $<TARGET_FILE:playden_game_paths>
@@ -173,10 +173,10 @@ function(playden_add_homebrew_ps5_title)
 			playden_steam_content_language
 			playden_homebrew_qr playden_homebrew_controller playden_local_session_repository playden_auth_diagnostics playden_local_store playden_local_copy playden_game_move
 			playden_homebrew_artwork_cache playden_homebrew_artwork playden_persistence_controller playden_persistence_service playden_preferences playden_library_controller playden_library_service playden_steam_library playden_steam_cm playden_steam_cm_codec playden_depot_codec
-			playden_library playden_self_update playden_miniz playden_steam_auth playden_steam_http playden_steam_protocol playden_steam_core playden_web playden_web_logs playden_web_http playden_diagnostic_log playden_storage playden_native_access playden_managed_directory playden_runtime_steamworks playden_runtime_artifact_hash playden_runtime_settings_storage playden_runtime_private_directories playden_runtime_session_reconciler playden_runtime_launch_service playden_runtime_install_service playden_runtime_installs playden_runtime_layout_migration playden_game_paths
+			playden_library playden_community playden_self_update playden_miniz playden_steam_auth playden_steam_http playden_steam_protocol playden_steam_core playden_web playden_web_logs playden_web_http playden_diagnostic_log playden_storage playden_native_access playden_managed_directory playden_runtime_steamworks playden_runtime_artifact_hash playden_runtime_settings_storage playden_runtime_private_directories playden_runtime_session_reconciler playden_runtime_launch_service playden_runtime_install_service playden_runtime_installs playden_runtime_layout_migration playden_game_paths
 			$<TARGET_OBJECTS:playden_ps5_runtime> $<TARGET_OBJECTS:playden_ps5_shims>
 			$<TARGET_OBJECTS:playden_ps5_app>
-			$<TARGET_FILE:playden_self_update> $<TARGET_FILE:playden_miniz> $<TARGET_FILE:playden_steam_http> $<TARGET_FILE:playden_steam_protocol>
+			$<TARGET_FILE:playden_community> $<TARGET_FILE:playden_self_update> $<TARGET_FILE:playden_miniz> $<TARGET_FILE:playden_steam_http> $<TARGET_FILE:playden_steam_protocol>
 			$<TARGET_FILE:playden_steam_auth>
 			$<TARGET_FILE:playden_steam_core> $<TARGET_FILE:playden_diagnostic_log> $<TARGET_FILE:playden_storage>
 			$<TARGET_FILE:playden_library> $<TARGET_FILE:playden_native_access> $<TARGET_FILE:playden_managed_directory> $<TARGET_FILE:playden_runtime_steamworks> $<TARGET_FILE:playden_runtime_artifact_hash> $<TARGET_FILE:playden_runtime_settings_storage> $<TARGET_FILE:playden_runtime_private_directories> $<TARGET_FILE:playden_runtime_session_reconciler> $<TARGET_FILE:playden_runtime_launch_service> $<TARGET_FILE:playden_runtime_install_service> $<TARGET_FILE:playden_runtime_installs> $<TARGET_FILE:playden_runtime_layout_migration> $<TARGET_FILE:playden_game_paths>
@@ -265,6 +265,14 @@ function(playden_add_homebrew_ps5_title)
 			COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PLAYDEN_RELAUNCH_ELF}" "${app}/self-update-relaunch.elf")
 	endif()
 	set(playden_title_name "Playden")
+	# A dev-endpoints build says so: in its name on the console, and with a marker file that
+	# tools/write_update_manifest.py refuses, so it can't become a release.
+	if(PLAYDEN_DEV_ENDPOINTS)
+		set(playden_title_name "Playden Dev Endpoints")
+		set(dev_endpoints_package_commands COMMAND "${CMAKE_COMMAND}" -E touch "${app}/dev-endpoints-build")
+	else()
+		set(dev_endpoints_package_commands COMMAND "${CMAKE_COMMAND}" -E rm -f "${app}/dev-endpoints-build")
+	endif()
 	if(PLAYDEN_UI_SIMULATION)
 		set(playden_title_name "Playden UI Simulation")
 		file(GLOB_RECURSE simulation_inputs CONFIGURE_DEPENDS
@@ -286,6 +294,7 @@ function(playden_add_homebrew_ps5_title)
 			-DTITLE_ID=${PLAYDEN_PS5_TITLE_ID} "-DTITLE_NAME=${playden_title_name}" -DAPP_VERSION=${PROJECT_VERSION} -DFULL_VERSION=${PLAYDEN_FULL_VERSION}
 			-P "${CMAKE_SOURCE_DIR}/cmake/PackagePS5.cmake"
 		${simulation_package_commands}
+		${dev_endpoints_package_commands}
 		COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/runtime" "${app}/runtime"
 		${native_helper_package_commands}
 		COMMAND "${CMAKE_COMMAND}" -E make_directory "${app}/trust"

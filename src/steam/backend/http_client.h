@@ -47,6 +47,7 @@ struct HttpRequest {
   std::uint32_t timeout_ms = 10'000;
   std::size_t max_response_bytes = 1024 * 1024;
   // Also accept an http:// URL. Only for content checked by other means, such as Steam CDN chunks.
+  // Community recipes set it only in a PLAYDEN_DEV_ENDPOINTS=ON build (community/endpoints.h).
   bool allow_plain_http = false;
   // A Steam depot manifest: max_response_bytes may be up to kMaxHttpManifestResponseBytes, not kMaxHttpResponseBytes.
   bool depot_manifest = false;

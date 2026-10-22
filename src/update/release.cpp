@@ -105,20 +105,25 @@ const ReleaseAsset* Release::Find(std::string_view name) const {
 
 namespace {
 
-std::optional<Release> ReleaseFrom(const Json* doc, std::string* error) {
+std::optional<Release> ReleaseFrom(const Json* doc, bool version_tag, std::string* error) {
   Release release;
   const auto* tag = Text(*doc, "tag_name");
-  const auto version = tag ? ParseVersion(*tag) : std::nullopt;
-  // Nightly builds are published elsewhere and are never offered as updates.
-  if (!version || version->nightly()) {
-    if (error) *error = "release tag is not a release version";
+  if (version_tag) {
+    const auto version = tag ? ParseVersion(*tag) : std::nullopt;
+    // Nightly builds are published elsewhere and are never offered as updates.
+    if (!version || version->nightly()) {
+      if (error) *error = "release tag is not a release version";
+      return std::nullopt;
+    }
+    release.version = *version;
+  } else if (!tag || tag->size() > 64 || !SafeFolderName(*tag)) {
+    if (error) *error = "release tag is not a safe name";
     return std::nullopt;
   }
   release.tag = *tag;
   if (const auto* page = Text(*doc, "html_url"); page && page->rfind("https://github.com/", 0) == 0 &&
                                                  page->size() < 512 && page->find_first_of(" \"<>") == std::string::npos)
     release.page = *page;
-  release.version = *version;
   if (const auto* draft = doc->Find("draft"); draft && draft->is_bool()) release.draft = draft->boolean();
   if (const auto* pre = doc->Find("prerelease"); pre && pre->is_bool()) release.prerelease = pre->boolean();
   const auto* assets = doc->Find("assets");
@@ -145,7 +150,13 @@ std::optional<Release> ReleaseFrom(const Json* doc, std::string* error) {
 std::optional<Release> ParseRelease(std::string_view json, std::string* error) {
   const auto doc = ParseObject(json, error);
   if (!doc) return std::nullopt;
-  return ReleaseFrom(&*doc, error);
+  return ReleaseFrom(&*doc, true, error);
+}
+
+std::optional<Release> ParseReleaseAnyTag(std::string_view json, std::string* error) {
+  const auto doc = ParseObject(json, error);
+  if (!doc) return std::nullopt;
+  return ReleaseFrom(&*doc, false, error);
 }
 
 std::optional<std::vector<Release>> ParseReleases(std::string_view json, std::string* error) {
@@ -160,7 +171,7 @@ std::optional<std::vector<Release>> ParseReleases(std::string_view json, std::st
   std::vector<Release> releases;
   for (const auto& item : doc->array())
     if (item.is_object())
-      if (auto release = ReleaseFrom(&item, nullptr)) releases.push_back(std::move(*release));  // a tag that isn't a version is skipped
+      if (auto release = ReleaseFrom(&item, true, nullptr)) releases.push_back(std::move(*release));  // a tag that isn't a version is skipped
   return releases;
 }
 
