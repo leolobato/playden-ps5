@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -2502,6 +2503,38 @@ int main(int argc, char** argv) {
     auto broken = text;
     broken.replace(broken.find("\"works\""), 7, "\"great\"");
     CHECK(!ParseCommunityRecipe(broken, &parsed, &reason) && reason.find("status") != std::string::npos);
+
+    // The export leaves the slug, title and contributors for the author: community-<app id>, which reads back
+    // here but the community rules refuse.
+    const auto exported_text = SerializeCommunityRecipe(BuildCommunityRecipe(hl2, settings));
+    CHECK(exported_text.find("\"recipe_id\": \"community-220\"") != std::string::npos &&
+          exported_text.find("\"title\": \"\"") != std::string::npos &&
+          exported_text.find("\"tested_kit\": \"\"") != std::string::npos &&
+          exported_text.find("\"contributors\": []") != std::string::npos &&
+          exported_text.find("min_kit") == std::string::npos);
+    CHECK(ParseCommunityRecipe(exported_text, &parsed, &reason) && parsed.title.empty() && parsed.contributors.empty());
+    // Named by the author: the id with its slug, the title, the kit it was tested on and who helped.
+    auto named = community;
+    named.recipe.id = CommunityRecipeIdFor(220, "opengl-1280");
+    named.title = "OpenGL at 1280×720";
+    named.tested_kit = "0.12-dev.20261022.1";
+    named.min_kit = "0.12";
+    named.author = "Ana";
+    named.contributors = {"Bo", "Cy \"the tester\""};
+    const auto named_text = SerializeCommunityRecipe(named);
+    CHECK(ParseCommunityRecipe(named_text, &parsed, &reason));
+    CHECK(parsed.recipe.id == "community-220-opengl-1280" && parsed.title == "OpenGL at 1280×720" &&
+          parsed.tested_kit == "0.12-dev.20261022.1" && parsed.min_kit == "0.12" && parsed.author == "Ana" &&
+          parsed.contributors == named.contributors && SerializeCommunityRecipe(parsed) == named_text);
+    // A recipe_id for another app, or with a slug the rules refuse, does not read.
+    for (const char* id : {"community-221-opengl-1280", "community-220-OpenGL", "community-220-", "steam-220-auto"}) {
+      auto other = named_text;
+      other.replace(other.find("community-220-opengl-1280"), std::strlen("community-220-opengl-1280"), id);
+      CHECK(!ParseCommunityRecipe(other, &parsed, &reason) && reason.find("recipe_id") != std::string::npos);
+    }
+    auto listed = named_text;
+    listed.replace(listed.find("[\"Bo\""), 5, "[7");
+    CHECK(!ParseCommunityRecipe(listed, &parsed, &reason) && reason.find("contributors") != std::string::npos);
   }
 
   std::puts("game settings tests passed");

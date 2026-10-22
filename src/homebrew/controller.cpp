@@ -1,5 +1,6 @@
 #include "homebrew/controller.hpp"
 #include "homebrew/program_icon.hpp"
+#include "runtime/kit_version.h"
 #include "diagnostics/redaction.h"
 #include "platform/usb_mount.h"
 #include "steam/install_volumes.h"

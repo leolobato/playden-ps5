@@ -367,9 +367,21 @@ bool IsGeneratedRecipeId(std::string_view id);
 // changed is kept apart from the recipe, so it still wins. False when nothing changed, also when the program can't be
 // read now (a drive not plugged in): the next Play tries again.
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
-// A community recipe (community-<app id>, docs/community-recipes.md). Like a generated one, it
-// is not a shipped recipe, so it does not force the game's own Steam library.
+// A community recipe (docs/community-recipes.md): community-<app id>-<slug>, or community-<app id>
+// as Export as recipe writes it before the author picks a slug (CommunityRecipeRefusals refuses that
+// form). Like a generated one, it is not a shipped recipe, so it does not force the game's own Steam
+// library.
 bool IsCommunityRecipeId(std::string_view id);
+// A slug: lowercase ASCII letters, digits and single hyphens, 1-32 characters, no hyphen first or last.
+inline constexpr std::size_t kCommunitySlugMaxBytes = 32;
+// The installed-game record holds a recipe id in 64 bytes (settings_publication_journal.cpp).
+inline constexpr std::size_t kCommunityRecipeIdMaxBytes = 64;
+bool IsValidCommunitySlug(std::string_view slug);
+// "community-<app id>-<slug>"; "community-<app id>" for an empty slug (the export's form).
+std::string CommunityRecipeIdFor(std::uint32_t app_id, std::string_view slug);
+// Splits community-<app id>-<slug> with a canonical app ID and a valid slug; false for anything
+// else, the export's slugless form included.
+bool SplitCommunityRecipeId(std::string_view id, std::uint32_t* app_id, std::string* slug);
 // What the player chose in Game settings that changes how the recipe is generated.
 struct RecipeChoices {
   std::string program;      // game-relative .exe to start (entry kProgramEntryId, first); empty: Steam's
@@ -534,14 +546,20 @@ bool ParseProfileSidecar(std::string_view json, CommunityPreset* community, std:
 // A game's effective settings in the community recipe format (docs/community-recipes.md):
 // a Playden recipe that ParseGameRecipe reads, plus who tested it where.
 struct CommunityRecipe {
-  GameRecipe recipe;  // id community-<app id>; the effective program, arguments, overrides and settings
+  GameRecipe recipe;  // id community-<app id>-<slug>; the effective program, arguments, overrides and settings
   std::string executable;       // identity: the program, relative to the install root
-  std::string min_kit;          // the runtime kit it was tested with
+  std::string title;            // what the chooser shows, 1-60 printable characters; empty in an export
+  // The kit version it was tested with ("0.12", "0.12-dev.20261022.1"): information, not a requirement.
+  std::string tested_kit;
+  // The oldest kit version it needs, set by hand only when it does (a capability, a fix); the export never fills it.
+  // Older files used it for what tested_kit is now and may hold a kit id there.
+  std::string min_kit;
   std::string tested_firmware;  // PS5 system software, when known
   std::string tested_date;      // YYYY-MM-DD
   std::string status;           // works, playable, broken or untested
   std::string notes;
-  std::string author;
+  std::string author;                     // who first shared it
+  std::vector<std::string> contributors;  // people whose changes were merged into it since
   // Optional prospero-win-profiles profile used as the base; Playden's values apply on top.
   std::string base_repository;
   std::string base_path;
@@ -552,6 +570,9 @@ struct CommunityRecipe {
 // player changed them anyway.
 CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings);
 std::string SerializeCommunityRecipe(const CommunityRecipe& community);
+// Reads a community recipe leniently: an export (no slug, no title, locks) and older files (a kit
+// id in min_kit) read too. CommunityRecipeRefusals (runtime/community_rules.h) holds the strict
+// rules the recipes repository and the console apply.
 bool ParseCommunityRecipe(std::string_view json, CommunityRecipe* community, std::string* reason);
 
 // Whether the kit's runtime has every newer profile feature the sidecar declares in

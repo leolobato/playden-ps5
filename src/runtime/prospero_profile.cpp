@@ -212,6 +212,18 @@ bool IsProsperoDebugEnvEntry(std::string_view name, std::string_view value) {
   return true;
 }
 
+bool IsPlaydenEnvironmentVariable(std::string_view name) {
+  static constexpr std::string_view kNames[] = {"WINE_CPU_TOPOLOGY", "DXVK_FRAME_RATE", "MESA_EXTENSION_MAX_YEAR",
+                                                "PW_MEDIA_DISABLE"};
+  for (const auto known : kNames)
+    if (name == known) return true;
+  // VKD3D_LOG_FILE and VKD3D_SHADER_CACHE_PATH take a path: the player's own Environment row may set them, a shared recipe may not.
+  if (name == "VKD3D_LOG_FILE" || name == "VKD3D_SHADER_CACHE_PATH") return false;
+  for (const char* known : kBottleEnvironmentNames)
+    if (name == known) return true;
+  return false;
+}
+
 bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoProfileFeatures features) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);

@@ -1074,14 +1074,46 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     const auto directory = std::filesystem::temp_directory_path() / ("playden-t52-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
     simulation.SetRecipeExportTarget(directory, "13.60");
+    playden::homebrew::LiveKitInfo kit_info;
+    kit_info.kit_id = "hl2-fw1360-dev1";
+    kit_info.version = "0.12-dev.20261022.1";
+    simulation.SetKitInfo(kit_info);
     activate(simulation, "export-recipe");
     check(simulation.state().navigation.modals.back().title == "Recipe exported", "T52 export says where it went");
+    check(simulation.state().navigation.modals.back().body.find("playden-ps5-recipes") != std::string::npos,
+          "T52 export points at the recipes repository");
     rt::CommunityRecipe community;
     std::string reason;
-    check(rt::ParseCommunityRecipe(read_text(directory / "recipe-900001.json"), &community, &reason) &&
+    const auto exported_text = read_text(directory / "recipe-900001.json");
+    check(rt::ParseCommunityRecipe(exported_text, &community, &reason) &&
               community.tested_firmware == "13.60" && community.executable == "hl2.exe" &&
-              community.recipe.dll_overrides == "d3d9=n" && community.recipe.locked.count("graphics"),
+              community.recipe.dll_overrides == "d3d9=n" && community.recipe.locked.empty(),
           "T52 the exported recipe reads back");
+    // The kit version it was tested on, not the kit id, and no requirement; the author names it.
+    check(community.tested_kit == "0.12-dev.20261022.1" && community.min_kit.empty() &&
+              exported_text.find("hl2-fw1360-dev1") == std::string::npos,
+          "T52 the export says which kit version it was tested on");
+    check(community.recipe.id == "community-900001" && community.title.empty() && community.contributors.empty() &&
+              exported_text.find("\"contributors\": []") != std::string::npos,
+          "T52 the export leaves the slug, title and contributors to the author");
+    // Named by the author, it reads back with its slug and title.
+    auto named = community;
+    named.recipe.id = rt::CommunityRecipeIdFor(900001, "dxvk-mouse");
+    named.title = "DXVK with the mouse preset";
+    named.contributors = {"Bo"};
+    rt::CommunityRecipe reread;
+    check(rt::ParseCommunityRecipe(rt::SerializeCommunityRecipe(named), &reread, &reason) &&
+              reread.recipe.id == "community-900001-dxvk-mouse" && reread.title == named.title &&
+              reread.contributors == named.contributors,
+          "T52 a named export round-trips");
+    // A kit before 0.10 has no version: tested_kit stays empty.
+    kit_info.version.clear();
+    simulation.SetKitInfo(kit_info);
+    activate(simulation, "alert-ok");
+    activate(simulation, "export-recipe");
+    check(rt::ParseCommunityRecipe(read_text(directory / "recipe-900001.json"), &community, &reason) &&
+              community.tested_kit.empty(),
+          "T52 an older kit leaves tested_kit empty");
     std::filesystem::remove_all(directory);
 
     // A game Playden refused starts its sheet from the draft recipe.

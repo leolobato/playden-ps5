@@ -2655,7 +2655,7 @@ void Simulation::SetRuntimeLeftovers(std::size_t count) {
 }
 
 void Simulation::SetKitInfo(LiveKitInfo kit) {
-    if (!live()) return;
+    // Simulated rows show a fixed kit (about-kit); Export as recipe reads the version from here in both modes.
     state_.kit = std::move(kit);
     rebuild_view();
 }
@@ -11792,7 +11792,10 @@ void Simulation::export_recipe(GameId id) {
     auto community = rt::BuildCommunityRecipe(RecipeFor(id), values);
     const auto* game = find_game(state_, id);
     if (game) community.recipe.name = game->title;
-    community.min_kit = state_.kit.kit_id;
+    // Locks are for recipes Playden ships: a community recipe never stops the player from changing a row.
+    community.recipe.locked.clear();
+    // The kit version it was tested on, as information; min_kit stays for the author to set when it is needed.
+    community.tested_kit = state_.kit.version;
     community.tested_firmware = console_firmware_;
     community.tested_date = playden::app::FormatLogTimestamp(static_cast<std::int64_t>(std::time(nullptr))).substr(0, 10);
     // The player's rating and note for the game are what they found.
@@ -11832,8 +11835,8 @@ void Simulation::export_recipe(GameId id) {
         return;
     }
     ModalEntry done{"confirmation", "Recipe exported", "export-recipe", {"alert-ok"}, 0, false};
-    done.body = "Saved to " + path.string() + ". Add your name as author, then send it as a pull request to Playden's "
-                "repository (docs/community-recipes.md).";
+    done.body = "Saved to " + path.string() + ". Give it a title, a slug and your name as author, then send it as a "
+                "pull request to github.com/leolobato/playden-ps5-recipes.";
     open_modal(std::move(done));
 }
 

@@ -1,0 +1,45 @@
+{
+  "recipe_id": "community-220-120hz-left-stick-pointer",
+  "recipe_version": 1,
+  "app_id": 274520,
+  "name": "Darkwood",
+  "launch_entries": [
+    {
+      "id": "game",
+      "label": "Darkwood.exe",
+      "executable": "Darkwood.exe",
+      "working_directory": "",
+      "arguments": ""
+    }
+  ],
+  "arguments": "-force-d3d11 {resolution}",
+  "resolution_arguments": "-screen-width {w} -screen-height {h}",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "detected": "unity,d3d11,d3d12,d3d9,dxgi,opengl,vulkan",
+  "defaults": {
+    "button.touchpad": "m",
+    "pointer_speed": "2400",
+    "pointer_stick": "left_stick",
+    "refresh": "120",
+    "resolution": "3840x2160",
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 274520,
+  "executable": "Darkwood.exe",
+  "community": {
+    "format_version": 1,
+    "title": "120 Hz, pointer on left stick",
+    "tested_kit": "0.12",
+    "tested_firmware": "13.60",
+    "tested_date": "2026-10-22",
+    "status": "works",
+    "notes": "PS5 Pro and a 120 Hz TV: plays at 120 fps. On the PS5, turn off Screen and Video > Video Output > VRR > Apply to Unsupported Games, or the game stays at 60 Hz. Touchpad sends M (map), so the Create button is left for the journal. Left stick moves the pointer at full speed for the map. Report: https://github.com/leolobato/playden-ps5/issues/93",
+    "author": "TodorPenchev",
+    "contributors": []
+  }
+}

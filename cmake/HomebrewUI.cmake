@@ -70,6 +70,8 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/runtime/game_settings.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_ini.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_files.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/kit_version.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/community_rules.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/install_script.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/msi_package.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/lzx_decoder.cpp"
@@ -80,9 +82,16 @@ target_include_directories(playden_steam_cm_codec PUBLIC "${CMAKE_SOURCE_DIR}/sr
 target_include_directories(playden_steam_cm_codec PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
 target_compile_features(playden_steam_cm_codec PUBLIC cxx_std_17)
 target_link_libraries(playden_steam_cm_codec PUBLIC playden_game_paths playden_steam_protocol playden_managed_directory
-    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library playden_steam_content_language)
+    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library playden_steam_content_language
+    playden_runtime_package_installer)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_steam_cm_codec PRIVATE -fno-exceptions -fno-rtti)
+else()
+    # The recipes repository's CI checks community recipes with Playden's own parser and rules
+    # (docs/community-recipes.md). Core libraries only, no UI.
+    add_executable(community_recipe_check "${CMAKE_SOURCE_DIR}/src/tools/community_recipe_check.cpp")
+    target_link_libraries(community_recipe_check PRIVATE playden_steam_cm_codec)
+    target_compile_features(community_recipe_check PRIVATE cxx_std_17)
 endif()
 
 add_library(playden_runtime_settings_publication STATIC "${CMAKE_SOURCE_DIR}/src/runtime/settings_publication.cpp"
@@ -565,6 +574,15 @@ if(BUILD_TESTING)
     add_test(NAME steam_app_info COMMAND steam_app_info_test "${CMAKE_SOURCE_DIR}/fixtures/steam/appinfo")
     add_test(NAME prospero_profile COMMAND prospero_profile_test "${CMAKE_SOURCE_DIR}/fixtures/prospero-win-profiles")
     add_test(NAME game_settings COMMAND game_settings_test "${CMAKE_SOURCE_DIR}")
+    add_executable(community_rules_test "${CMAKE_SOURCE_DIR}/tests/community_rules_test.cpp")
+    target_link_libraries(community_rules_test PRIVATE playden_steam_cm_codec)
+    target_compile_features(community_rules_test PRIVATE cxx_std_20)
+    add_test(NAME community_rules COMMAND community_rules_test "${CMAKE_SOURCE_DIR}/tests/fixtures/community-recipes")
+    # The checker on the good and hostile fixtures, as the recipes repository's CI runs it.
+    add_test(NAME community_recipe_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_community_recipe_check.py"
+            "$<TARGET_FILE:community_recipe_check>" "${CMAKE_SOURCE_DIR}/tests/fixtures/community-recipes")
+    set_tests_properties(community_recipe_check PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME game_probe COMMAND game_probe_test)
     add_executable(runtime_redist_test tests/runtime_redist_test.cpp)
     target_link_libraries(runtime_redist_test PRIVATE playden_steam_cm_codec)

@@ -19,7 +19,8 @@ To build Playden, run its tests or put it on a console, see [docs/building.md](d
 
 - **Test games.** Play a game from your Steam library and [send a test report](../../issues/new?template=test-report.yml),
   whether it worked or not. See [Report a game test](#report-a-game-test).
-- **Add a recipe for a game.** A recipe tells Playden how to start one game. See
+- **Add a recipe for a game.** A recipe tells Playden how to start one game. Community recipes go to
+  [playden-ps5-recipes](https://github.com/leolobato/playden-ps5-recipes). See
   [Community recipes](docs/community-recipes.md) for the format, the shipped recipes and the registry values a
   recipe may set.
 - **Fix a bug or add a feature.** Look for an open issue. For a large change, open an issue first (see below).

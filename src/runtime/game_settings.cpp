@@ -1970,8 +1970,71 @@ RecipeChoices RecipeChoicesFrom(const GameSettingsRecord& record) {
   return choices;
 }
 
+namespace {
+
+constexpr std::string_view kCommunityPrefix = "community-";
+
+// A Steam app ID as a recipe id spells it: canonical decimal 1..UINT32_MAX.
+bool CanonicalAppId(std::string_view text, std::uint32_t* app_id) {
+  if (text.empty() || text.size() > 10 || text.front() == '0') return false;
+  std::uint64_t value = 0;
+  for (const char c : text) {
+    if (c < '0' || c > '9') return false;
+    value = value * 10 + static_cast<std::uint64_t>(c - '0');
+  }
+  if (value > std::numeric_limits<std::uint32_t>::max()) return false;
+  if (app_id) *app_id = static_cast<std::uint32_t>(value);
+  return true;
+}
+
+// community-<app id>[-<slug>]: the app ID, and the slug (empty when there is none).
+bool ParseCommunityId(std::string_view id, std::uint32_t* app_id, std::string_view* slug) {
+  if (id.size() > kCommunityRecipeIdMaxBytes || id.substr(0, kCommunityPrefix.size()) != kCommunityPrefix) return false;
+  const auto rest = id.substr(kCommunityPrefix.size());
+  const auto hyphen = rest.find('-');
+  if (!CanonicalAppId(rest.substr(0, hyphen), app_id)) return false;
+  if (hyphen == std::string_view::npos) {
+    *slug = {};
+    return true;
+  }
+  *slug = rest.substr(hyphen + 1);
+  return IsValidCommunitySlug(*slug);
+}
+
+}  // namespace
+
 bool IsCommunityRecipeId(std::string_view id) {
-  return id.size() > 10 && id.substr(0, 10) == "community-";
+  std::uint32_t app_id = 0;
+  std::string_view slug;
+  return ParseCommunityId(id, &app_id, &slug);
+}
+
+bool IsValidCommunitySlug(std::string_view slug) {
+  if (slug.empty() || slug.size() > kCommunitySlugMaxBytes || slug.front() == '-' || slug.back() == '-') return false;
+  for (std::size_t index = 0; index < slug.size(); ++index) {
+    const char c = slug[index];
+    if (c == '-') {
+      if (slug[index - 1] == '-') return false;
+    } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string CommunityRecipeIdFor(std::uint32_t app_id, std::string_view slug) {
+  std::string id = std::string(kCommunityPrefix) + std::to_string(app_id);
+  if (!slug.empty()) id += "-" + std::string(slug);
+  return id;
+}
+
+bool SplitCommunityRecipeId(std::string_view id, std::uint32_t* app_id, std::string* slug) {
+  std::uint32_t parsed_app = 0;
+  std::string_view parsed_slug;
+  if (!ParseCommunityId(id, &parsed_app, &parsed_slug) || parsed_slug.empty()) return false;
+  if (app_id) *app_id = parsed_app;
+  if (slug) *slug = std::string(parsed_slug);
+  return true;
 }
 
 namespace {
@@ -2751,14 +2814,6 @@ bool ClearShaderCache(const LaunchEntry& launch, const std::string& install_root
   return true;
 }
 
-namespace {
-constexpr const char* kBottleEnvironmentNames[] = {
-    "VKD3D_CONFIG",          "VKD3D_DEBUG",          "VKD3D_DISABLE_EXTENSIONS",   "VKD3D_FEATURE_LEVEL",
-    "VKD3D_FRAME_RATE",      "VKD3D_LOG_FILE",       "VKD3D_SHADER_CACHE_PATH",    "VKD3D_SHADER_DEBUG",
-    "VKD3D_SHADER_MODEL",    "VKD3D_SWAPCHAIN_IMAGES", "VKD3D_SWAPCHAIN_LATENCY_FRAMES",
-    "VKD3D_SWAPCHAIN_PRESENT_MODE"};
-}  // namespace
-
 bool IsBottleEnvironmentEntry(std::string_view name, std::string_view value) {
   if (std::find(std::begin(kBottleEnvironmentNames), std::end(kBottleEnvironmentNames), name) ==
           std::end(kBottleEnvironmentNames) ||
@@ -3512,7 +3567,8 @@ namespace playden::runtime {
 CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings) {
   CommunityRecipe out;
   auto& shared = out.recipe;
-  shared.id = "community-" + std::to_string(recipe.app_id);
+  // The author picks the slug (and the title): the export leaves both empty.
+  shared.id = CommunityRecipeIdFor(recipe.app_id, {});
   shared.version = 1;
   shared.app_id = recipe.app_id;
   shared.name = recipe.name;
@@ -3610,11 +3666,17 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
   }
   if (!recipe.ini.empty()) text += ",\n  \"ini\": " + SerializeIniValues(recipe.ini, "\n    ", "\n  ");
   text += ",\n  \"steam_appid\": " + std::to_string(recipe.app_id) + ",\n  \"executable\": " +
-          quoted(community.executable) + ",\n  \"community\": {\n    \"format_version\": 1,\n    \"min_kit\": " +
-          quoted(community.min_kit) + ",\n    \"tested_firmware\": " + quoted(community.tested_firmware) +
+          quoted(community.executable) + ",\n  \"community\": {\n    \"format_version\": 1,\n    \"title\": " +
+          quoted(community.title) + ",\n    \"tested_kit\": " + quoted(community.tested_kit) +
+          // min_kit is a requirement someone sets by hand; an empty one is left out.
+          (community.min_kit.empty() ? std::string() : ",\n    \"min_kit\": " + quoted(community.min_kit)) +
+          ",\n    \"tested_firmware\": " + quoted(community.tested_firmware) +
           ",\n    \"tested_date\": " + quoted(community.tested_date) + ",\n    \"status\": " +
           quoted(community.status) + ",\n    \"notes\": " + quoted(community.notes) + ",\n    \"author\": " +
-          quoted(community.author);
+          quoted(community.author) + ",\n    \"contributors\": [";
+  for (std::size_t index = 0; index < community.contributors.size(); ++index)
+    text += std::string(index ? ", " : "") + quoted(community.contributors[index]);
+  text += "]";
   if (!community.base_repository.empty())
     text += ",\n    \"base\": {\"repository\": " + quoted(community.base_repository) + ", \"path\": " +
             quoted(community.base_path) + ", \"revision\": " + quoted(community.base_revision) + "}";
@@ -3640,11 +3702,24 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
   std::uint64_t format = 0;
   if (!meta || !meta->object() || !ExactUnsigned(meta->get("format_version"), 1000, &format) || format != 1)
     return fail("community recipe needs community.format_version 1");
-  if (!StringField(*meta, "min_kit", &out.min_kit, false) ||
+  std::uint32_t id_app = 0;
+  std::string_view slug;
+  if (!ParseCommunityId(out.recipe.id, &id_app, &slug) || id_app != out.recipe.app_id)
+    return fail("recipe_id must be community-<app id>-<slug> for this app_id, at most 64 bytes, with a slug of 1-32 "
+                "lowercase letters, digits and single hyphens");
+  if (!StringField(*meta, "title", &out.title, false) || !StringField(*meta, "tested_kit", &out.tested_kit, false) ||
+      !StringField(*meta, "min_kit", &out.min_kit, false) ||
       !StringField(*meta, "tested_firmware", &out.tested_firmware, false) ||
       !StringField(*meta, "tested_date", &out.tested_date, false) || !StringField(*meta, "status", &out.status) ||
       !StringField(*meta, "notes", &out.notes, false) || !StringField(*meta, "author", &out.author, false))
     return fail("community metadata has a field of the wrong type");
+  if (const auto* contributors = meta->get("contributors")) {
+    if (!contributors->array()) return fail("contributors must be a list of names");
+    for (const auto& name : *contributors->array()) {
+      if (!name.string()) return fail("contributors must be a list of names");
+      out.contributors.push_back(*name.string());
+    }
+  }
   if (out.status != "works" && out.status != "playable" && out.status != "broken" && out.status != "untested")
     return fail("status must be works, playable, broken or untested");
   if (const auto* base = meta->get("base")) {

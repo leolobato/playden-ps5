@@ -4,7 +4,14 @@ A community recipe tells Playden how to start one Steam game on the PS5. It is a
 Playden recipe (the same JSON as `runtime/recipes/*.json`) with a few more fields
 that say who tested it, where and how well. Playden reads the recipe part with
 `ParseGameRecipe` and the whole file with `ParseCommunityRecipe`
-(`src/runtime/game_settings.h`).
+(`src/runtime/game_settings.h`). The stricter rules every shared recipe must pass are
+in `CommunityRecipeRefusals` (`src/runtime/community_rules.h`).
+
+Community recipes live in their own repository,
+[playden-ps5-recipes](https://github.com/leolobato/playden-ps5-recipes), not in this one. Recipes
+contributed there are released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/): by
+sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) are CC0 1.0 too
+([LICENSE](../runtime/recipes/LICENSE)).
 
 ## Make one
 
@@ -13,44 +20,54 @@ that say who tested it, where and how well. Playden reads the recipe part with
 2. Set the game's rating and note under **Compatibility and note**.
 3. In **Game settings > Advanced**, choose **Export as recipe**. Playden writes
    `recipe-<app id>.json` next to its logs (`/data/playden/logs` on the console, `logs/`
-   in the data folder on a Mac).
-4. Fill in `community.author`, check the file, and send it as a pull request to
-   Playden's repository.
+   in the data folder on a Mac). `tools/collect_logs.py` puts it in the zip for a test report.
+4. Fill in what the export leaves for you:
+   - a slug, added to `recipe_id`: `community-<app id>` becomes `community-<app id>-<slug>`;
+   - `community.title`, the name players see when they choose a recipe;
+   - `community.author`, your name;
+   - `locked`: empty it if the export listed rows there (see [Rules](#rules-for-community-recipes)).
+5. Check it with `community_recipe_check` (built with Playden, see below), then send it as a pull
+   request to playden-ps5-recipes as `recipes/<app id>/<slug>.json`.
+
+A game can have several recipes, for example "120 Hz, pointer on left stick" and "Mouse preset": each is
+its own file with its own slug.
 
 ## Format (format_version 1)
 
 ```json
 {
-  "recipe_id": "community-1592280",
+  "recipe_id": "community-274520-120hz-left-stick-pointer",
   "recipe_version": 1,
-  "app_id": 1592280,
-  "name": "Selaco",
+  "app_id": 274520,
+  "name": "Darkwood",
   "launch_entries": [
-    {"id": "program", "label": "SELACO.exe", "executable": "SELACO.exe", "working_directory": "", "arguments": ""}
+    {"id": "game", "label": "Darkwood.exe", "executable": "Darkwood.exe", "working_directory": "", "arguments": ""}
   ],
-  "arguments": "",
-  "resolution_arguments": "",
-  "dll_overrides": "",
+  "arguments": "-force-d3d11 {resolution}",
+  "resolution_arguments": "-screen-width {w} -screen-height {h}",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
   "architecture": "pe64",
   "runtime": "wine-wow64",
   "prefix": "game",
-  "graphics": "opengl",
-  "detected": "opengl graphics=opengl",
+  "graphics": "dxvk",
   "defaults": {
-    "resolution": "1280x720"
+    "pointer_stick": "left_stick",
+    "refresh": "120",
+    "resolution": "3840x2160"
   },
   "locked": [],
-  "steam_appid": 1592280,
-  "executable": "SELACO.exe",
+  "steam_appid": 274520,
+  "executable": "Darkwood.exe",
   "community": {
     "format_version": 1,
-    "min_kit": "kit-h",
+    "title": "120 Hz, pointer on left stick",
+    "tested_kit": "0.12",
     "tested_firmware": "13.60",
-    "tested_date": "2026-10-10",
-    "status": "playable",
-    "notes": "Menus need the mouse preset.",
-    "author": "",
-    "base": {"repository": "https://github.com/…/prospero-win-profiles", "path": "profiles/selaco.profile", "revision": "abc123"}
+    "tested_date": "2026-10-22",
+    "status": "works",
+    "notes": "Turn off the PS5's VRR for unsupported games, or the game stays at 60 Hz.",
+    "author": "TodorPenchev",
+    "contributors": []
   }
 }
 ```
@@ -59,13 +76,15 @@ Recipe fields:
 
 | Field | Meaning |
 |---|---|
+| `recipe_id` | `community-<app id>-<slug>`. See [Ids and file names](#ids-and-file-names). |
+| `recipe_version` | Always `1` in a community recipe. A recipe's revision is the SHA-256 of its file. |
 | `launch_entries` | The program that starts, relative to the game folder; its `working_directory` (empty: the program's folder) and its own `arguments`. |
 | `arguments` | Arguments the game needs. `{resolution}` is replaced by `resolution_arguments`, with `{w}` and `{h}` from the Resolution setting. |
 | `dll_overrides` | The full Wine library override list, like `d3d9,dxgi=n;dinput8=n,b`. Nothing is added to it. |
 | `architecture` | `pe32` or `pe64`, from the program's PE header. |
 | `graphics` | `auto`, `gdi`, `dxvk` or `opengl`. |
 | `defaults` | Game settings by setting id (`SettingsCatalogue()`), only values that differ from Playden's default. |
-| `locked` | Setting ids the player must choose "Change anyway" to change. |
+| `locked` | Setting ids the player must choose "Change anyway" to change. Only for recipes Playden ships: empty in a community recipe. |
 | `requirements` | What the runtime kit's template bottle must provide: `{"audio": "ps5"}` (Wine's PS5 audio driver) is the only one so far. On a kit without it, Playden refuses to prepare or start the game and names what is missing. |
 | `registry` | Values the bottle gets under `HKEY_CURRENT_USER` when the game's files are prepared, as a Steam install script's would be: `{"Software\\Wine\\AppDefaults\\game.exe\\Direct3D": {"VideoMemorySize": "4096"}}`. Only some keys are allowed; see [Registry values](#registry-values). |
 | `ini` | Values the game's own INI files get when the game's files are prepared, written only when the key is missing or empty: `{"BmGame/Config/UserEngine.ini": {"Engine.Engine": {"Language": "int"}}}`. See [INI values](#ini-values). |
@@ -77,17 +96,95 @@ Community fields:
 | Field | Meaning |
 |---|---|
 | `steam_appid`, `executable` | Identity: must match `app_id` and a launch entry's `executable`. |
-| `community.min_kit` | The runtime kit it was tested with. Older kits may lack what it needs. |
-| `community.tested_firmware`, `tested_date` | PS5 system software and day of the test. |
+| `community.title` | The name players see in the list of recipes: 1–60 printable characters. Older Playden versions ignore it. |
+| `community.tested_kit` | The kit version it was tested with, like `0.12` or a development kit such as `0.12-dev.20261022.1`. Export as recipe fills it in. It is information, not a requirement: testing on 0.12 doesn't prove 0.11 fails. |
+| `community.min_kit` | Optional. The oldest kit version the recipe needs, set by hand only when it really needs a newer kit (a capability, a fix). Playden doesn't offer the recipe on an older kit. The export never fills it. |
+| `community.tested_firmware`, `tested_date` | PS5 system software and day of the test (`YYYY-MM-DD`). |
 | `community.status` | `works`, `playable`, `broken` or `untested`. |
-| `community.notes`, `author` | Free text. |
+| `community.notes` | Free text, including steps outside Playden (such as a PS5 setting). |
+| `community.author` | Who first shared the recipe. It stays the same when others change it. |
+| `community.contributors` | People whose changes to the recipe were merged since, each named once. |
 | `community.base` | Optional. A prospero-win-profiles profile (repository, path, revision) that Playden uses as the base; this file's values apply on top. |
 
-Rules: `format_version` is 1; unknown fields are ignored; a file with another
-`status` or a `steam_appid` that does not match `app_id` is refused.
+Kit versions are `<generation>.<revision>` and compare as numbers: `0.9` is older than `0.12`. A
+development kit counts as the release it leads to, so `0.12-dev.20261022.1` is `0.12`.
 
-Recipes are released under [CC0 1.0](../runtime/recipes/LICENSE) (public domain dedication). By sending a
-recipe, you agree to release it under CC0 1.0.
+Unknown fields are ignored. A file whose `format_version` isn't 1, whose `status` is another word, or whose
+`steam_appid` doesn't match `app_id` doesn't load.
+
+## Ids and file names
+
+- `recipe_id` is `community-<app id>-<slug>`.
+- The slug uses lowercase ASCII letters, digits and single hyphens, 1–32 characters, without a hyphen
+  first or last: `120hz-left-stick-pointer`, `mouse-preset`.
+- The whole id fits in 64 bytes (a 10-digit app ID and a 32-character slug make 53).
+- A slug is unique for its app ID and is never used again, even after its recipe is removed.
+- The file is `recipes/<app id>/<slug>.json` in playden-ps5-recipes.
+
+Export as recipe writes `community-<app id>`, without a slug, because the slug is the author's choice.
+Playden reads such a file, but the checker refuses it until it has a slug.
+
+## Rules for community recipes
+
+Passing the parser is not the same as being safe to offer to everyone, so a community recipe has
+stricter rules than a recipe on your own console. Pull requests are checked against them, and
+Playden checks them again on the console:
+
+- **Title and author:** `community.title` is set, and so is `community.author` in the repository.
+- **Text:** every text field (`title`, `author`, `contributors`, `notes`, `tested_firmware`, `tested_date`, `status`
+  and the recipe's `name`) is valid UTF-8 without control characters, lone surrogates or bidirectional controls
+  (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). Only `notes` may hold new lines and tabs. Title, author and
+  contributors have no space at either end, including a no-break space or another Unicode space.
+- **Kit versions:** `tested_kit` and `min_kit`, when set, are real kit versions like `0.12`.
+- **No locks:** `locked` is empty. Locks are for the recipes Playden ships; a community recipe can't stop
+  the player from changing a row.
+- **Program:** every launch entry is a `.exe` inside the game's folder, and starts in a folder inside it:
+  no `..`, no absolute path, no drive letter. A folder or file name made only of dots and spaces (`...`, `.. `),
+  or ending in a dot or a space, is refused, because Windows reads it as another name. The program may not be a
+  Windows or Wine system program (`msiexec`, `explorer`, `rundll32`, `cmd`, `wineboot`, `steam` and the like, with
+  or without `.exe`). The program, its folder, arguments and library overrides go in the recipe's own fields
+  (`launch_entries`, `arguments`, `dll_overrides`), not in `defaults`, and neither does the player's own arguments
+  row (`extra_arguments`). A `launch_option` that names a later program is allowed and flagged.
+- **Library overrides:** named libraries only, no wildcards (`*`).
+- **Environment:** the `environment` row may set only the variables Playden itself sets or documents:
+  `WINE_CPU_TOPOLOGY`, `DXVK_FRAME_RATE`, `MESA_EXTENSION_MAX_YEAR`, `PW_MEDIA_DISABLE` and vkd3d-proton's
+  `VKD3D_*` variables (`IsPlaydenEnvironmentVariable`, `src/runtime/prospero_profile.h`), except the two that take
+  a path, `VKD3D_LOG_FILE` and `VKD3D_SHADER_CACHE_PATH`. Other variables still work in your own Game settings.
+- **Registry:** `Software\Wine\AppDefaults\<program>\…` only for one of the recipe's own programs.
+  A publisher key (`Software\<publisher>\…`) is allowed, but I review it before it is merged. Every
+  `AppDefaults` key is listed in the review items too.
+
+The program, arguments, library overrides, environment and registry values change how the game starts.
+Pull requests that add or change them are labelled for a closer review, and Playden lists them
+under "Changes how the game starts" when you choose a recipe.
+
+### Checking a recipe
+
+`community_recipe_check` is built with Playden's host build
+(`cmake --build --preset homebrew-host --target community_recipe_check`). It reads each file with
+Playden's own parser, applies the rules above, works out the game's settings on a kit with every
+capability, and writes the full prospero-win profile, because some refusals only happen there:
+
+```sh
+build/homebrew-host/community_recipe_check recipes/274520/120hz-left-stick-pointer.json
+```
+
+For each file it prints `ok <path> <revision> <recipe_id>` or a `refused <path>: <reason>` line for
+each problem, then `command <path>: <program and arguments>` and a `flag <path>: <item>` line for each
+thing that changes how the game starts. It exits with 1 when any file is refused. `--json` prints
+one object for the whole run instead, for CI:
+
+```json
+{
+  "ok": true,
+  "files": [
+    {"path": "…", "revision": "<sha256 of the file>", "recipe_id": "…", "app_id": 274520, "slug": "…",
+     "title": "…", "status": "works", "author": "…", "contributors": [], "tested_kit": "0.12",
+     "min_kit": "", "tested_firmware": "13.60", "tested_date": "2026-10-22", "ok": true,
+     "refusals": [], "flags": ["program: Darkwood.exe", "…"], "command": "Darkwood.exe -force-d3d11 …"}
+  ]
+}
+```
 
 Applying community recipes from the preset chooser is planned.
 
@@ -110,7 +207,9 @@ console that exported it. Community recipes still target Steam games.
 
 Use `registry` only for a value the game reads from the registry and that no
 other field or Game settings row sets. Playden writes the values into the
-game's bottle whenever it prepares the game or applies its settings.
+game's bottle whenever it prepares the game or applies its settings. A value the
+recipe sets is written again each time, even if the game changed it in the
+meantime; values the game writes under other names are left alone.
 
 A recipe may write two kinds of key, both under `HKEY_CURRENT_USER` (write the
 key without the `HKEY_CURRENT_USER\` part):

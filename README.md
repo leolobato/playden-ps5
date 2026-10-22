@@ -37,7 +37,8 @@ private Windows environment and its own tile on the PS5 Home screen.
   sync by hand from the Saves tab.
 - **Per-game settings.** Graphics, frame rate, resolution, controller mapping, and how the game starts: pick any
   program from the game folder, edit its arguments and library overrides, or try a game Playden flagged anyway. A
-  game's settings can be exported as a recipe ([format](docs/community-recipes.md)).
+  game's settings can be exported as a community recipe for
+  [playden-ps5-recipes](https://github.com/leolobato/playden-ps5-recipes) ([format](docs/community-recipes.md)).
 - **Graphics.** Direct3D 8–11 through [DXVK](https://github.com/doitsujin/dxvk), Direct3D 12 through
   [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton) (kit 0.11 and later), OpenGL through Mesa's Zink, and
   Vulkan, all on the PS5 GPU's Vulkan driver.
