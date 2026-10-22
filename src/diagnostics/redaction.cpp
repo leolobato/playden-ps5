@@ -37,4 +37,56 @@ std::string AuthRecord(const steam::SteamEvent& event) {
   return std::string("{\"kind\":\"") + kind + "\",\"request\":" + std::to_string(event.request_id) +
       ",\"generation\":" + std::to_string(event.generation) + ",\"error\":\"" + AuthMessage(event.error) + "\"}";
 }
+std::string RedactSecrets(std::string_view text, std::string_view known_secret) {
+  std::string out;
+  if (known_secret.size() >= 8) {
+    std::size_t start = 0;
+    for (;;) {
+      const auto found = text.find(known_secret, start);
+      if (found == std::string_view::npos) break;
+      out.append(text.substr(start, found - start));
+      out += "<redacted>";
+      start = found + known_secret.size();
+    }
+    out.append(text.substr(start));
+  } else {
+    out.assign(text);
+  }
+  static constexpr char kBearer[] = "bearer";
+  std::string result;
+  result.reserve(out.size());
+  std::size_t i = 0;
+  while (i < out.size()) {
+    bool match = i + 6 < out.size();
+    for (std::size_t k = 0; match && k < 6; ++k) {
+      char c = out[i + k];
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      if (c != kBearer[k]) match = false;
+    }
+    // A word on its own, followed by blanks and a token.
+    if (match) {
+      const char before = i ? out[i - 1] : ' ';
+      if ((before >= 'A' && before <= 'Z') || (before >= 'a' && before <= 'z') || (before >= '0' && before <= '9'))
+        match = false;
+    }
+    std::size_t j = i + 6;
+    if (match && out[j] != ' ' && out[j] != '\t') match = false;
+    if (match) {
+      while (j < out.size() && (out[j] == ' ' || out[j] == '\t')) ++j;
+      std::size_t end = j;
+      while (end < out.size() && out[end] != ' ' && out[end] != '\t' && out[end] != '\n' && out[end] != '\r' &&
+             out[end] != '"' && out[end] != '\'' && out[end] != ',' && out[end] != ';')
+        ++end;
+      if (end > j) {
+        result.append(out, i, j - i);
+        result += "<redacted>";
+        i = end;
+        continue;
+      }
+    }
+    result.push_back(out[i]);
+    ++i;
+  }
+  return result;
+}
 }
