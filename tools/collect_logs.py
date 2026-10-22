@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Collect Playden's logs from a PS5 over FTP into a zip for a test report.
 
-Reads only /data/playden/logs (or the app's logs folder on 0.4.x and older) and the active kit's manifest. It never reads
+Reads only /data/playden/logs (or the app's logs folder on 0.4.x and older) and the active kit's manifest. Recipes
+exported from Game settings (recipe-<app id>.json, next to the logs) go in the zip's recipes folder. It never reads
 playden-data, which holds the Steam sign-in. The Steam account name, SteamIDs, family group ID,
 PS5 user ID and home network addresses are replaced in every file unless --no-redact is given.
 
@@ -52,6 +53,7 @@ PAD_FOREGROUND = re.compile(r"(\bpad users initial=[^\n]*?\bforeground=)[1-9][0-
 QUAD = re.compile(r"(?<![\w.])([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(?!\w|\.[0-9])")
 REDACTED = "Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses"
 FIRMWARE = re.compile(r"console_firmware=(\S+)")
+RECIPE = re.compile(r"^recipe-\d+\.json$")  # Game settings > Advanced > Export as recipe
 SKIP_SUFFIXES = (".ppm",)
 
 
@@ -298,6 +300,21 @@ def collect_over_http(args):
     print("Logs can still name your games and file paths. Look through them before you share.")
 
 
+def is_recipe(name):
+    """Whether a file in the logs folder is a recipe Game settings exported."""
+    return bool(RECIPE.match(name))
+
+
+def write_bundle(out, report, logs, recipes):
+    """The zip for a test report: summary.md, logs/<name> and recipes/<name>."""
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("summary.md", report)
+        for name, text in sorted(logs.items()):
+            archive.writestr(f"logs/{name}", text)
+        for name, text in sorted(recipes.items()):
+            archive.writestr(f"recipes/{name}", text)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default=os.environ.get("PLAYDEN_PS5_HOST"),
@@ -331,7 +348,7 @@ def main():
                  "Is an FTP server (zftpd) running on the PS5?")
 
     logs_dir, entries = pick_logs(ftp)
-    title_logs, playden_logs = {}, {}
+    title_logs, playden_logs, recipes = {}, {}, {}
     for name in entries:
         if name.endswith(SKIP_SUFFIXES):
             continue
@@ -340,6 +357,8 @@ def main():
             title_logs[match.group(1)] = fetch(ftp, f"{logs_dir}/{name}").decode("utf-8", "replace")
         elif name.startswith("title-"):
             continue  # per-title extras such as registry dumps; taken with their title below
+        elif is_recipe(name):
+            recipes[name] = fetch(ftp, f"{logs_dir}/{name}").decode("utf-8", "replace")
         else:
             playden_logs[name] = fetch(ftp, f"{logs_dir}/{name}").decode("utf-8", "replace")
 
@@ -385,22 +404,21 @@ def main():
     info.update(active_kit(ftp))
     info["game titles"] = ", ".join(
         f"{title} (app {title_app(title_logs[title]) or '?'})" for title in chosen) or "none"
+    info["recipes"] = ", ".join(sorted(recipes)) or "none"
     ftp.quit()
 
     # Names come from every log, so a game that stopped before Wine named the user is still covered.
     names = set() if args.no_redact else account_names([*title_logs.values(), *playden_logs.values()])
     if not args.no_redact:
         files = {name: redact(text, names) for name, text in files.items()}
+        recipes = {name: redact(text, names) for name, text in recipes.items()}
     info["redacted"] = "no" if args.no_redact else REDACTED
     report = summary(info)
 
     out = args.out or Path(f"playden-logs-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip")
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("summary.md", report)
-        for name, text in sorted(files.items()):
-            archive.writestr(f"logs/{name}", text)
+    write_bundle(out, report, files, recipes)
     print(report)
-    print(f"Wrote {out} ({len(files)} logs). Attach it to your test report.")
+    print(f"Wrote {out} ({len(files)} logs, {len(recipes)} recipes). Attach it to your test report.")
     if not args.no_redact:
         print("Logs can still name your games and file paths. Look through them before you share.")
 

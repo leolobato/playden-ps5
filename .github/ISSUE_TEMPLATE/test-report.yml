@@ -17,6 +17,8 @@ body:
         ```
 
         Paste the table it prints into **Versions** and attach the zip below.
+        If you changed any Game settings, choose **Export as recipe** (Game settings > Advanced) for the game first:
+        the script then adds the recipe file to the zip.
         See the [sample report](https://github.com/leolobato/playden-ps5/blob/main/docs/sample-test-report.md).
   - type: input
     id: game
@@ -78,7 +80,9 @@ body:
     id: settings
     attributes:
       label: Game settings you changed
-      description: Program, required or extra arguments, library overrides, Try anyway, graphics, controller preset or anything else. Export as recipe and attach the file if you can. Leave empty if none.
+      description: |
+        Program, required or extra arguments, library overrides, Try anyway, graphics, controller preset or anything else. Leave empty if none.
+        Please also choose **Export as recipe** (Game settings > Advanced): Playden writes `recipe-<app id>.json` next to its logs (`/data/playden/logs`). `collect_logs.py` puts it in the zip; without the script, attach the file under **Logs and screenshots**.
   - type: textarea
     id: what-happened
     attributes:
@@ -93,7 +97,8 @@ body:
     attributes:
       label: Logs and screenshots
       description: |
-        Drag the zip from `collect_logs.py` here. Logs are required when the game did not work.
+        Drag the zip from `collect_logs.py` here, or the exported `recipe-<app id>.json` if you send it on its own.
+        Logs are required when the game did not work.
         The script hides your Steam account name, but look through the logs before you post them.
   - type: checkboxes
     id: checks

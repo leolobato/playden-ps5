@@ -137,6 +137,20 @@ class CollectLogsTests(unittest.TestCase):
         finally:
             collect_logs.folders, collect_logs.fetch = folders, fetch
 
+    def test_exported_recipes_go_in_the_bundle(self):
+        self.assertTrue(collect_logs.is_recipe('recipe-274520.json'))
+        for other in ('recipe-274520.json.tmp', 'recipe-.json', 'recipe-abc.json', 'runtime.log', 'title-FAKE78001.log',
+                      'xrecipe-1.json'):
+            self.assertFalse(collect_logs.is_recipe(other), other)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'bundle.zip'
+            collect_logs.write_bundle(out, '| Field | Value |\n', {'runtime.log': 'started\n'},
+                                      {'recipe-274520.json': '{"recipe_id": "community-274520"}\n'})
+            with zipfile.ZipFile(out) as archive:
+                self.assertEqual(sorted(archive.namelist()),
+                                 ['logs/runtime.log', 'recipes/recipe-274520.json', 'summary.md'])
+                self.assertIn('community-274520', archive.read('recipes/recipe-274520.json').decode())
+
 
 class StubPlayden(http.server.BaseHTTPRequestHandler):
     """Playden's web access as the --http path sees it: the log index and a report zip."""
