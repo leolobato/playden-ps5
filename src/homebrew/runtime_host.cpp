@@ -2870,8 +2870,9 @@ rt::LaunchEvidence RuntimeHost::Evidence(Composition& c, const rt::RuntimeInstal
   return evidence;
 }
 
-void RuntimeHost::PublishLaunch(Composition& c, const rt::LaunchSnapshot& launch) {
+void RuntimeHost::PublishLaunch(Composition& c, const rt::LaunchSnapshot& launch, std::optional<std::int64_t> played_seconds) {
   RuntimeLaunchView view;
+  view.played_seconds = played_seconds;
   view.install_id = launch.install_id;
   view.state = launch.state;
   view.code = launch.code;
@@ -2883,6 +2884,9 @@ void RuntimeHost::PublishLaunch(Composition& c, const rt::LaunchSnapshot& launch
     view.title_id = record->title_id;
   }
   Publish([&](RuntimeSnapshot& s) {
+    // The ended session's play time stays with it until another session starts.
+    if (!view.played_seconds && s.launch && s.launch->install_id == view.install_id && s.launch->state == view.state)
+      view.played_seconds = s.launch->played_seconds;
     s.handoff_ready = launch.state == rt::LaunchState::kReadyToHandoff;
     if (launch.state == rt::LaunchState::kIdle && launch.install_id.empty()) s.launch.reset();
     else s.launch = view;
@@ -2994,8 +2998,10 @@ bool RuntimeHost::PollLaunch(Composition& c) {
     PublishLaunch(c, snapshot);
     return true;
   }
+  std::int64_t handoff_ms = 0;
   const bool pending = c.launch_journal && [&] {
     const auto loaded = c.launch_journal->LoadPending();
+    if (loaded.ok && loaded.session) handoff_ms = loaded.session->handoff_ms;
     return loaded.ok && loaded.session.has_value();
   }();
   if (pending && snapshot.state == rt::LaunchState::kFailed) {
@@ -3008,6 +3014,10 @@ bool RuntimeHost::PollLaunch(Composition& c) {
     }
   }
   if (pending && (snapshot.state == rt::LaunchState::kExited || snapshot.state == rt::LaunchState::kFailed)) {
+    // How long it played, for the vote prompt: from the handoff to now (the end was seen now).
+    std::optional<std::int64_t> played_seconds;
+    if (snapshot.state == rt::LaunchState::kExited && handoff_ms > 0)
+      if (const auto now = config_.now_ms(); now >= handoff_ms) played_seconds = (now - handoff_ms) / 1000;
     const auto finished = c.launch->Finish();
     // The saves the game just wrote are Wine's (0600): opened to FTP again.
     if (finished.accepted && c.kit && rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared)
@@ -3017,7 +3027,8 @@ bool RuntimeHost::PollLaunch(Composition& c) {
     Log("play finished install=" + snapshot.install_id + " session=" + snapshot.session_id + " state=" +
         std::to_string(static_cast<int>(snapshot.state)) + " code=" + snapshot.code + " exit=" +
         (snapshot.exit_code ? std::to_string(*snapshot.exit_code) : std::string("unknown")) +
-        " cleared=" + std::to_string(finished.accepted) + " " + finished.code);
+        " cleared=" + std::to_string(finished.accepted) + " " + finished.code +
+        (played_seconds ? " played_s=" + std::to_string(*played_seconds) : std::string()));
     // A program's run ended (one closed from the PS5 menu is seen only now, after a restart): the game's own
     // settings go back at once, so its Home tile starts the game again.
     if (finished.accepted)
@@ -3026,7 +3037,7 @@ bool RuntimeHost::PollLaunch(Composition& c) {
         const auto refused = RepublishSettings(c, *record, nullptr, false);
         if (!refused.empty()) Log("setup program app=" + std::to_string(record->runtime_number) + " kept: " + refused);
       }
-    PublishLaunch(c, snapshot);
+    PublishLaunch(c, snapshot, played_seconds);
     return !finished.accepted;
   }
   PublishLaunch(c, snapshot);

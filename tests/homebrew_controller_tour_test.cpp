@@ -82,10 +82,10 @@ int main(int argc, char** argv) {
     press(simulation, "circle");
     require(!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == "context" &&
             simulation.state().navigation.focus_key == "game-settings", "Circle on Game settings returns to Game actions");
-    choose(simulation, "note");
+    choose(simulation, "compatibility");
     choose(simulation, "rating-playable");
     require(simulation.state().library.ratings.at(game) == Compatibility::Playable, "rating reachable through controller");
-    require(simulation.state().navigation.focus_key == "note", "rating picker restores its context opener");
+    require(simulation.state().navigation.focus_key == "compatibility", "rating picker restores its context opener");
     choose(simulation, "collection");
     choose(simulation, "collection-toggle-collection-1");
     choose(simulation, "collection-manage");

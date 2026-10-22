@@ -19,6 +19,9 @@
 #include "steam/download_server_service.h"
 #include "update/update_service.h"
 #include "web/service.h"
+#include "community/recipe_service.h"
+#include "community/recipe_store.h"
+#include "homebrew/sharing_service.hpp"
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -27,6 +30,27 @@
 #include <set>
 
 namespace playden::homebrew {
+// The community recipe objects the cache must keep, as the main thread last knew them: the
+// recipes installed games use (RuntimeSnapshot::community_references), every saved choice and the
+// ones an open Install sheet or switch confirmation holds. Nothing until the runtime is ready with its
+// installs known, or when the game settings could not be read. The recipe service's `referenced`
+// callback reads it on its worker (CommunityKeepCallback).
+struct CommunityKeepSet {
+  std::mutex mutex;
+  std::optional<std::set<std::string>> revisions;
+};
+// RecipeServiceConfig::referenced over keep: its revisions once known; until then nothing, so nothing is
+// collected.
+std::function<std::optional<std::set<std::string>>()> CommunityKeepCallback(std::shared_ptr<CommunityKeepSet> keep);
+// What the cache must keep now (CommunityKeepSet::revisions): the model's choices plus the runtime's
+// community_references once it is ready and knows its installs. runtime null: no runtime host; then
+// the choices alone when no_runtime_installs (the Mac host), else nothing (the console without one).
+// Nothing too when the model doesn't know its choices (unreadable game settings).
+std::optional<std::set<std::string>> CommunityKeepRevisions(const Simulation& model, const RuntimeSnapshot* runtime,
+                                                           bool has_runtime, bool no_runtime_installs);
+// RuntimeHostConfig::community_recipe_bytes over that store: a full revision's object, or the object a
+// 32-hex prefix names (RecipeStore::FindObjectByPrefix). Runs on the runtime worker.
+std::function<std::optional<std::string>(std::string_view)> CommunityRecipeBytes(std::shared_ptr<community::RecipeStore> objects);
 // What the "Store name in PS5 titles" setting adds to a game's title name: " (Steam)"; imported games
 // have no store to name.
 std::string TitleStoreSuffix(Store store);
@@ -59,6 +83,16 @@ class Controller {
   // Settings › Web access turns it on and off (once the saved preferences are read); the signed-in account's
   // name and SteamID go to it for redaction. Shutdown stops it.
   void SetWebAccess(web::Service* web) { web_ = web; }
+  // Community recipes: the catalog reaches the chooser, the Install sheet and a periodic tick ask for
+  // a refresh (the service limits itself to one a day), and keep receives what the cache must keep.
+  // The service must outlive the controller. no_runtime_installs: this build never has a runtime (the
+  // Mac host), so the saved choices are everything in use; otherwise (the console) a missing runtime
+  // means its installs are unknown and nothing is collected.
+  void SetCommunityRecipes(community::CommunityRecipeService* service, std::shared_ptr<CommunityKeepSet> keep,
+                           bool no_runtime_installs = false);
+  // Sharing recipes and votes: the model's requests go to the service's worker, its answers and vote
+  // memory come back. The service must outlive the controller.
+  void SetSharing(SharingService* sharing) { sharing_ = sharing; sharing_memory_revision_ = ~0ull; }
   // Receives one line per shutdown step with how long it took, so a quit that hangs names the step.
   void SetShutdownLog(std::function<void(const std::string&)> log) { shutdown_log_ = std::move(log); }
   // Preferences and organization load/save failures (app::PersistenceController::SetLog). The first loads
@@ -144,6 +178,17 @@ class Controller {
   bool kit_reload_asked_ = false;  // the kit-only install finished: the runtime asked to admit it
   void TickCloud();
   void TickRuntime();
+  void TickCommunity();
+  void TickSharing();
+  SharingService* sharing_ = nullptr;
+  std::uint64_t sharing_memory_revision_ = ~0ull;
+  community::CommunityRecipeService* community_ = nullptr;
+  std::shared_ptr<CommunityKeepSet> community_keep_;
+  bool community_no_runtime_installs_ = false;
+  std::uint64_t community_revision_ = ~0ull;
+  std::chrono::steady_clock::time_point community_refresh_at_{};
+  std::string kit_view_manifest_;  // the kit whose view the model has
+  bool kit_view_sent_ = false;
   Simulation& model_;
   std::unique_ptr<stores::Registry> owned_stores_;
   stores::Registry& stores_;

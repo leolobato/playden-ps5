@@ -651,6 +651,127 @@ class Render::Impl
         return true;
     }
 
+    // Marks the UI fonts lack (★ ⚠ 👍 👎 → ›) are drawn as shapes in their place; the rest is text.
+    static bool drawn_mark(std::uint32_t codepoint)
+    {
+        return codepoint == 0x2605 || codepoint == 0x26A0 || codepoint == 0x1F44D || codepoint == 0x1F44E ||
+               codepoint == 0x2192 || codepoint == 0x203A;
+    }
+
+    struct MarkRun
+    {
+        std::string text;
+        std::uint32_t mark = 0;
+    };
+
+    static std::vector<MarkRun> mark_runs(const ui::FontRef &face, std::string_view value)
+    {
+        std::vector<MarkRun> runs;
+        std::size_t index = 0;
+        while (index < value.size())
+        {
+            const std::size_t start = index;
+            const std::uint32_t codepoint = gfx::next_codepoint(value, &index);
+            if (drawn_mark(codepoint) && !face.font->has_glyph(codepoint))
+            {
+                runs.push_back({{}, codepoint});
+                continue;
+            }
+            if (runs.empty() || runs.back().mark != 0)
+                runs.push_back({});
+            runs.back().text.append(value.substr(start, index - start));
+        }
+        return runs;
+    }
+
+    static float mark_width(float size) { return size * 0.9F; }
+
+    float measure_marked(const ui::FontRef &face, std::string_view value, float size) const
+    {
+        float width = 0.0F;
+        for (const MarkRun &run : mark_runs(face, value))
+            width += run.mark != 0 ? mark_width(size) : face.measure(run.text, size);
+        return width;
+    }
+
+    static void draw_mark(gfx::DrawList &list, std::uint32_t mark, float x, float baseline, float size, gfx::Color color)
+    {
+        const float cx = x + mark_width(size) * 0.5F;
+        const float cy = baseline - size * 0.36F;
+        const float r = size * 0.36F;
+        switch (mark)
+        {
+        case 0x2605:
+            list.star(cx, cy, r * 1.15F, color);
+            break;
+        case 0x26A0:
+            list.triangle({cx - r, cy - r, r * 2.0F, r * 1.85F}, kAmber, 2.0F);
+            list.line(cx, cy - r * 0.40F, cx, cy + r * 0.30F, 2.0F, kAmber);
+            list.circle(cx, cy + r * 0.58F, 1.5F, kAmber);
+            break;
+        case 0x1F44D:
+            list.triangle({cx - r * 0.8F, cy - r * 0.7F, r * 1.6F, r * 1.4F}, kGreen);
+            break;
+        case 0x1F44E:
+            list.triangle({cx - r * 0.8F, cy - r * 0.7F, r * 1.6F, r * 1.4F}, kRed, 0.0F, 3.14159265F);
+            break;
+        case 0x2192:
+            list.line(cx - r, cy, cx + r, cy, 2.0F, color);
+            list.line(cx + r * 0.35F, cy - r * 0.55F, cx + r, cy, 2.0F, color);
+            list.line(cx + r * 0.35F, cy + r * 0.55F, cx + r, cy, 2.0F, color);
+            break;
+        case 0x203A:
+            list.line(cx - r * 0.3F, cy - r * 0.6F, cx + r * 0.3F, cy, 2.0F, color);
+            list.line(cx - r * 0.3F, cy + r * 0.6F, cx + r * 0.3F, cy, 2.0F, color);
+            break;
+        default:
+            break;
+        }
+    }
+
+    // One line with its marks drawn, cut to max_width (0: no limit) with an ellipsis. Returns the width.
+    float marked_text(gfx::DrawList &list, const ui::FontRef &face, std::string_view value, float x, float baseline,
+                      float size, gfx::Color color, gfx::Align align = gfx::Align::left, float max_width = 0.0F) const
+    {
+        std::vector<MarkRun> runs = mark_runs(face, value);
+        if (runs.size() <= 1 && (runs.empty() || runs.front().mark == 0))
+        {
+            const std::string text = max_width > 0.0F ? face.font->fit(value, size, max_width) : std::string(value);
+            return ui::text(list, face, text, x, baseline, size, color, align);
+        }
+        float width = 0.0F;
+        std::vector<MarkRun> kept;
+        for (MarkRun &run : runs)
+        {
+            const float run_width = run.mark != 0 ? mark_width(size) : face.measure(run.text, size);
+            if (max_width <= 0.0F || width + run_width <= max_width)
+            {
+                width += run_width;
+                kept.push_back(std::move(run));
+                continue;
+            }
+            if (run.mark == 0)
+            {
+                run.text = face.font->fit(run.text, size, max_width - width);
+                width += face.measure(run.text, size);
+                kept.push_back(std::move(run));
+            }
+            break;
+        }
+        float cursor = align == gfx::Align::right ? x - width : align == gfx::Align::center ? x - width * 0.5F : x;
+        for (const MarkRun &run : kept)
+        {
+            if (run.mark != 0)
+            {
+                draw_mark(list, run.mark, cursor, baseline, size, color);
+                cursor += mark_width(size);
+            }
+            else
+                cursor += ui::text(list, face, run.text, cursor, baseline, size, color);
+        }
+        return width;
+    }
+
     const ui::FontRef &font_for(std::string_view value, const ui::FontRef &preferred) const
     {
         std::size_t index = 0;
@@ -3277,7 +3398,7 @@ class Render::Impl
             for (const ViewRow &row : view.rows)
             {
                 if (row.key.rfind("details-", 0) != 0 || row.key == "details-kept" ||
-                    row.key == "details-hint" || row.key == "details-setup")
+                    row.key == "details-hint" || row.key == "details-setup" || row.key == "details-recipe")
                     continue;
                 if (row.kind == RowKind::Status)
                 {
@@ -3451,6 +3572,16 @@ class Render::Impl
         detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
         detail_cell("Location", location, right, facts_top + 76.0F, 240.0F);
         detail_cell("Compatibility", compat, left, facts_top + 152.0F, 240.0F);
+        // A game with community recipes: a "★ Recipe" mark beside its compatibility.
+        if (std::any_of(view.rows.begin(), view.rows.end(), [](const ViewRow &row) { return row.key == "details-recipe"; }))
+        {
+            const float tag_x = left + std::min(240.0F, font_for(compat, fonts_.semibold).measure(compat, 26.0F)) + 14.0F;
+            const float tag_w = mark_width(15.0F) + fonts_.semibold.measure("RECIPE", 13.0F) + 22.0F;
+            scene_.rounded_rect({tag_x, facts_top + 152.0F + 29.0F, tag_w, 26.0F}, 5.0F, kAccent.with_alpha(0.16F));
+            draw_mark(scene_, 0x2605, tag_x + 6.0F, facts_top + 152.0F + 48.0F, 15.0F, kAccent);
+            ui::text(scene_, fonts_.semibold, "RECIPE", tag_x + 8.0F + mark_width(15.0F), facts_top + 152.0F + 47.0F, 13.0F,
+                     kAccent, gfx::Align::left, 1.2F);
+        }
         if (game->last_played && setup == view.rows.end())
             detail_cell("Last played", relative_time(game->last_played, state.clock_ticks), right,
                         facts_top + 152.0F, 240.0F);
@@ -3507,7 +3638,11 @@ class Render::Impl
                 notice.detail.empty() ? 0 : fonts_.regular.font->wrap(notice.detail, 20.0F, width - 64.0F).size();
             const float detail_height = static_cast<float>(std::min<std::size_t>(wrapped, kDetailLines)) * kDetailLine;
             const float height = 54.0F + (detail_height > 0.0F ? detail_height + 4.0F : 0.0F);
-            scene_.rounded_rect({left, y, width, height}, 8.0F, kAmber.with_alpha(0.16F));
+            // Opaque, so it stays readable over bright artwork and under the PS5 keyboard's dimming.
+            const gfx::Rect box{left, y, width, height};
+            scene_.shadow(box, 8.0F, 24.0F, gfx::Color::rgb(0x000000, 0.6F));
+            scene_.rounded_rect(box, 8.0F, kPanel);
+            scene_.rounded_rect({box.x, box.y, 6.0F, box.h}, 3.0F, kAmber);
             scene_.circle(left + 25.0F, y + 27.0F, 6.0F, kAmber);
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, notice.message, 21.0F, width - 64.0F),
                      left + 44.0F, y + 35.0F, 21.0F, kText);
@@ -3820,7 +3955,9 @@ class Render::Impl
         const float text_x = panel.x + pad + qr_side + strip_gap;
         const float block_h = 30.0F + 14.0F + address_lines * address_line;
         const float block_y = y + (qr_side - block_h) * 0.5F;
-        ui::text(overlay_, fonts_.semibold, "Scan for the full release notes", text_x, block_y + 24.0F, 26.0F, kText);
+        // What the code leads to: the release notes, or a shared recipe's pull request.
+        ui::text(overlay_, fonts_.semibold, modal.link_caption.empty() ? std::string("Scan for the full release notes") : modal.link_caption,
+                 text_x, block_y + 24.0F, 26.0F, kText);
         ui::paragraph(overlay_, fonts_.regular, address, text_x, block_y + 30.0F + 14.0F + 21.0F, address_size,
                       address_w, address_line, kSecondary, 3);
         y += qr_side + 40.0F;
@@ -3844,7 +3981,7 @@ class Render::Impl
             {"game-settings", "Playden"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
             {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
-            {"import-storage", "Import games"}, {"move-storage", "Move game"},
+            {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"},
             {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
             {"filters", "Library"}, {"logs-controls", "Logs"}, {"setting-value", "Settings"}, {"diagnostics", "Settings"},
             {"notices", "Notifications"}, {"qr-controls", "Sign in"}, {"session-controls", "Simulation"},
@@ -3894,7 +4031,7 @@ class Render::Impl
                           view.surface == "download-server" ||
                           view.surface == "import-games" ||
                           view.surface == "import-programs" || view.surface == "steam-programs" ||
-                          view.surface == "setup-programs";
+                          view.surface == "setup-programs" || view.surface == "share-recipe" || view.surface == "vote-recipe";
         const float width = overlay_transition_.panel_width(wide ? 960.0F : 640.0F);
         const gfx::Rect panel{kWidth - width + (1.0F - ease) * width, 0.0F, width, kHeight};
         overlay_.shadow({panel.x - 18.0F, 0.0F, panel.w + 18.0F, panel.h}, 0.0F, 36.0F,
@@ -4001,7 +4138,7 @@ class Render::Impl
         const float preset_x = arrow_x + 20.0F;
         ui::text(overlay_, fonts_.semibold, "SETTING", card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
-        ui::text(overlay_, fonts_.semibold, "THIS PRESET", preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         y += 16.0F;
         for (const auto &row : comparison.rows)
         {
@@ -4025,8 +4162,17 @@ class Render::Impl
                      changes ? kAccent : kSecondary);
             y += 56.0F;
         }
-        ui::paragraph(overlay_, fonts_.regular, comparison.note, card.x + 48.0F, card.y + card.h - 56.0F, 19.0F,
-                      card.w - 96.0F, 26.0F, kSecondary, 2);
+        // A note that starts with ⚠ (a recipe that can't apply) draws the mark, then the words.
+        const std::string warning = "\u26a0 ";
+        if (comparison.note.rfind(warning, 0) == 0)
+        {
+            draw_mark(overlay_, 0x26A0, card.x + 48.0F, card.y + card.h - 56.0F, 19.0F, kAmber);
+            ui::paragraph(overlay_, fonts_.regular, comparison.note.substr(warning.size()), card.x + 48.0F + mark_width(19.0F) + 6.0F,
+                          card.y + card.h - 56.0F, 19.0F, card.w - 102.0F - mark_width(19.0F), 26.0F, kAmber, 2);
+        }
+        else
+            ui::paragraph(overlay_, fonts_.regular, comparison.note, card.x + 48.0F, card.y + card.h - 56.0F, 19.0F,
+                          card.w - 96.0F, 26.0F, kSecondary, 2);
     }
 
     void draw_storage_overlay_rows(const ViewData &view, const gfx::Rect &bounds)
@@ -4288,7 +4434,7 @@ class Render::Impl
     {
         // A sheet that only shows things says Close or Back on its cancel row.
         if (row.action == "cancel")
-            return row.title == "Close" || row.title == "Back" ? row.title : "Cancel";
+            return row.title == "Close" || row.title == "Back" || row.title == "Not now" ? row.title : "Cancel";
         // Titles come labeled from the model; only a bare action key needs its dashes softened.
         std::string label = row.title.empty() ? row.action : row.title;
         if (row.title.empty())
@@ -4332,11 +4478,13 @@ class Render::Impl
     // `scrolls` false: rows pinned in place (a sheet's fixed header), leaving the list's scroll alone.
     void draw_overlay_rows(const ViewData &view, const gfx::Rect &bounds, bool scrolls = true)
     {
+        // The Share and vote sheets lay out like Game settings: a line under each name, the value on the right.
         const bool settings_sheet = view.surface == "game-settings" || view.surface == "choice-picker" ||
                                     view.surface == "download-server" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
                                     view.surface == "controller-tuning" ||
-                                    view.surface == "game-maintenance";
+                                    view.surface == "game-maintenance" || view.surface == "share-recipe" ||
+                                    view.surface == "vote-recipe";
         // The Import sheets: each folder's path (or why it can't be added) under its name.
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||
                                   view.surface == "import-choice" || view.surface == "steam-programs" ||
@@ -4366,6 +4514,8 @@ class Render::Impl
                        ? 26.0F
                        : 0.0F;
         };
+        // The recipe chooser's rows carry more lines under the subtitle.
+        const auto lines_extra = [](const ViewRow &row) { return 28.0F * static_cast<float>(row.lines.size()); };
         // Every row's place in the list; the list scrolls only when it is taller than the sheet,
         // just enough to keep the focused row and a little of its neighbours in view, and eases there.
         const auto pitch = [&](const ViewRow &row) {
@@ -4380,8 +4530,9 @@ class Render::Impl
                 return 54.0F;
             const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc") &&
                                   row.kind == RowKind::Toggle;
-            const bool described = (settings_sheet || checkbox || import_sheet) && !row.subtitle.empty();
-            return (described ? 96.0F + hint_extra(row) : 72.0F) + 12.0F;
+            const bool described = (settings_sheet || checkbox || import_sheet ||
+                                    row.key == "install-settings") && !row.subtitle.empty();
+            return (described ? 96.0F + hint_extra(row) + lines_extra(row) : 72.0F) + 12.0F;
         };
         std::vector<float> tops;
         float total = 0.0F;
@@ -4483,8 +4634,9 @@ class Render::Impl
             // Kept game data: each game is a checkbox row with its kept date under the name.
             const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc") &&
                                   row.kind == RowKind::Toggle;
-            const bool described = (settings_sheet || checkbox || import_sheet) && !row.subtitle.empty() && row.kind != RowKind::Heading;
-            const gfx::Rect rect{bounds.x, y, bounds.w, described ? 96.0F + hint_extra(row) : 72.0F};
+            const bool described = (settings_sheet || checkbox || import_sheet ||
+                                    row.key == "install-settings") && !row.subtitle.empty() && row.kind != RowKind::Heading;
+            const gfx::Rect rect{bounds.x, y, bounds.w, described ? 96.0F + hint_extra(row) + lines_extra(row) : 72.0F};
             const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
             focus_glow(overlay_, rect, amount);
             overlay_.rounded_rect(rect, 8.0F, kPanel);
@@ -4493,7 +4645,7 @@ class Render::Impl
             // A row with its subtitle under the name never repeats it on the right.
             const std::string value = settings_sheet && row.kind != RowKind::Heading ? row.value
                 : described && row.value.empty() && row.badge.empty() ? std::string() : overlay_value(row);
-            const float value_width = value.empty() ? 0.0F : std::min(rect.w * 0.45F, fonts_.regular.measure(value, 22.0F));
+            const float value_width = value.empty() ? 0.0F : std::min(rect.w * 0.45F, measure_marked(fonts_.regular, value, 22.0F));
             const float name_y = described ? rect.y + 40.0F : rect.cy() + 10.0F;
             float name_x = rect.x + 24.0F;
             if (checkbox)
@@ -4518,10 +4670,23 @@ class Render::Impl
             // Game names may need a fallback face (Greek, CJK, Arabic).
             const ui::FontRef &face = font_for(overlay_label(row), fonts_.display);
             const std::string label = fit(face, overlay_label(row), 28.0F, rect.w - (name_x - rect.x) - 40.0F - value_width);
-            ui::text(overlay_, face, label, name_x, name_y, 28.0F, ink);
+            // Names may carry a mark the fonts lack (👍 Good): drawn as shapes.
+            marked_text(overlay_, face, label, name_x, name_y, 28.0F, ink);
+            float tag_x = name_x + face.measure(label, 28.0F) + 14.0F;
+            // A player's recipe in the chooser: a filled Community tag in the accent colour, ahead of its status.
+            if (settings_sheet && row.tone == "community")
+            {
+                const std::string community = "COMMUNITY";
+                const float community_w = fonts_.semibold.measure(community, 13.0F) + 16.0F;
+                if (tag_x + community_w < rect.x + rect.w - 40.0F - value_width)
+                {
+                    overlay_.rounded_rect({tag_x, name_y - 21.0F, community_w, 24.0F}, 4.0F, kAccent);
+                    ui::text(overlay_, fonts_.semibold, community, tag_x + 8.0F, name_y - 4.0F, 13.0F, kBackground);
+                    tag_x += community_w + 8.0F;
+                }
+            }
             if (settings_sheet && !row.badge.empty() && row.kind != RowKind::Heading)
             {
-                const float tag_x = name_x + face.measure(label, 28.0F) + 14.0F;
                 const float tag_w = fonts_.semibold.measure(ui::upper(row.badge), 13.0F) + 16.0F;
                 if (tag_x + tag_w < rect.x + rect.w - 40.0F - value_width)
                 {
@@ -4537,13 +4702,23 @@ class Render::Impl
                 ui::paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 74.0F, 19.0F, hint_width,
                               26.0F, row.enabled ? kSecondary : kMuted);
             else if (described)
-                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row.subtitle, 19.0F, rect.w - 72.0F - value_width),
-                         checkbox ? name_x : rect.x + 24.0F, rect.y + 74.0F, 19.0F,
-                         row.tone == "problem" ? kRed : row.tone == "good" ? kGreen : row.enabled ? kSecondary : kMuted);
+                marked_text(overlay_, fonts_.regular, row.subtitle, checkbox ? name_x : rect.x + 24.0F, rect.y + 74.0F, 19.0F,
+                            row.tone == "problem" ? kRed : row.tone == "good" ? kGreen : row.tone == "attention" ? kAmber
+                            : row.enabled ? kSecondary : kMuted,
+                            gfx::Align::left, rect.w - 72.0F - value_width);
+            // The recipe chooser: what changes, what changes how the game starts, the notes, why it can't apply.
+            for (std::size_t line = 0; described && line < row.lines.size(); ++line)
+            {
+                const std::string &text = row.lines[line];
+                const bool warning = text.rfind("\u26a0", 0) == 0;
+                marked_text(overlay_, fonts_.regular, text, rect.x + 24.0F, rect.y + 74.0F + 28.0F * static_cast<float>(line + 1),
+                            19.0F, warning ? kAmber : line == 0 ? kText.with_alpha(row.enabled ? 0.85F : 0.45F) : row.enabled ? kSecondary : kMuted,
+                            gfx::Align::left, rect.w - 48.0F);
+            }
             if (!value.empty())
-                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, value, 22.0F, value_width), rect.x + rect.w - 24.0F,
-                         described ? rect.y + 52.0F : rect.cy() + 8.0F, 22.0F,
-                         row.modified || row.selected ? kAccent : row.enabled ? kSecondary : kMuted, gfx::Align::right);
+                marked_text(overlay_, fonts_.regular, value, rect.x + rect.w - 24.0F, described ? rect.y + 52.0F : rect.cy() + 8.0F,
+                            22.0F, row.modified || row.selected ? kAccent : row.enabled ? kSecondary : kMuted, gfx::Align::right,
+                            value_width);
             if (row.checked && value.empty())
             {
                 // The current choice of a pick-one group: a tick drawn as two strokes, where a value would go.

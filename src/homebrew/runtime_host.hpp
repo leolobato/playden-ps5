@@ -257,6 +257,10 @@ struct RuntimeLaunchView {
   std::string code;
   std::string message;
   std::optional<int> exit_code;
+  // A session that ended: seconds from the handoff to when Playden first saw it end (an upper bound
+  // of the play time: on the console Playden may only see the end when the player comes back to it).
+  // Nothing while it runs, or when the handoff time isn't known.
+  std::optional<std::int64_t> played_seconds;
 };
 
 enum class RuntimeHostStatus { kStarting, kUnavailable, kReady, kStopped };
@@ -827,7 +831,8 @@ class RuntimeHost {
   // Polls a pending launch session and ends it once its outcome is final.
   // Returns true while a session is still undecided.
   bool PollLaunch(Composition& composition);
-  void PublishLaunch(Composition& composition, const runtime::LaunchSnapshot& launch);
+  void PublishLaunch(Composition& composition, const runtime::LaunchSnapshot& launch,
+                     std::optional<std::int64_t> played_seconds = std::nullopt);
   // Settings request files that no record's journal names; with remove, deletes them.
   std::size_t LeftoverRequests(Composition& composition, bool remove);
   void RemoveFinishedRequests(Composition& composition);

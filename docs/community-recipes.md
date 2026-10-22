@@ -23,8 +23,8 @@ sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) a
    in the data folder on a Mac). `tools/collect_logs.py` puts it in the zip for a test report.
 4. Fill in what the export leaves for you:
    - a slug, added to `recipe_id`: `community-<app id>` becomes `community-<app id>-<slug>`;
-   - `community.title`, the name players see when they choose a recipe;
-   - `community.author`, your name;
+   - `community.title`, the name players see when they choose a recipe (optional);
+   - `community.author`, your name (optional);
    - `locked`: empty it if the export listed rows there (see [Rules](#rules-for-community-recipes)).
 5. Check it with `community_recipe_check` (built with Playden, see below), then send it as a pull
    request to playden-ps5-recipes as `recipes/<app id>/<slug>.json`.
@@ -96,13 +96,13 @@ Community fields:
 | Field | Meaning |
 |---|---|
 | `steam_appid`, `executable` | Identity: must match `app_id` and a launch entry's `executable`. |
-| `community.title` | The name players see in the list of recipes: 1–60 printable characters. Older Playden versions ignore it. |
+| `community.title` | Optional. The name players see in the list of recipes: 1–60 printable characters. Without one, Playden shows "Recipe from <author>". Older Playden versions ignore it. |
 | `community.tested_kit` | The kit version it was tested with, like `0.12` or a development kit such as `0.12-dev.20261022.1`. Export as recipe fills it in. It is information, not a requirement: testing on 0.12 doesn't prove 0.11 fails. |
 | `community.min_kit` | Optional. The oldest kit version the recipe needs, set by hand only when it really needs a newer kit (a capability, a fix). Playden doesn't offer the recipe on an older kit. The export never fills it. |
 | `community.tested_firmware`, `tested_date` | PS5 system software and day of the test (`YYYY-MM-DD`). |
 | `community.status` | `works`, `playable`, `broken` or `untested`. |
 | `community.notes` | Free text, including steps outside Playden (such as a PS5 setting). |
-| `community.author` | Who first shared the recipe. It stays the same when others change it. |
+| `community.author` | Optional. Who first shared the recipe. It stays the same when others change it. Without one, the recipe shows as "from the community". |
 | `community.contributors` | People whose changes to the recipe were merged since, each named once. |
 | `community.base` | Optional. A prospero-win-profiles profile (repository, path, revision) that Playden uses as the base; this file's values apply on top. |
 
@@ -130,7 +130,7 @@ Passing the parser is not the same as being safe to offer to everyone, so a comm
 stricter rules than a recipe on your own console. Pull requests are checked against them, and
 Playden checks them again on the console:
 
-- **Title and author:** `community.title` is set, and so is `community.author` in the repository.
+- **Title and author:** both are optional. When set, they follow the text rules below.
 - **Text:** every text field (`title`, `author`, `contributors`, `notes`, `tested_firmware`, `tested_date`, `status`
   and the recipe's `name`) is valid UTF-8 without control characters, lone surrogates or bidirectional controls
   (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). Only `notes` may hold new lines and tabs. Title, author and

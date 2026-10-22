@@ -11,7 +11,10 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <condition_variable>
+#include <future>
+#include <thread>
 #include <cstdio>
 #include <filesystem>
 #include <map>
@@ -584,6 +587,59 @@ int main(int argc, char** argv) {
     const auto snapshot = service->Snapshot();
     CHECK(snapshot->release_tag == "r20261025.1" && snapshot->last_error.empty());
     CHECK(h.Logged("vote totals unavailable"));
+  }
+
+  // A refresh writing objects (parked on a latch under the store's write lock) doesn't hold up
+  // LoadRecipe, which the UI thread calls. Then Playden closes mid-write: the writes stop between
+  // files and the pointer stays on the previous release.
+  {
+    const std::string third = Replace(second, "community-274520-second", "community-274520-third");
+    const std::string fourth = Replace(second, "community-274520-second", "community-274520-fourth");
+    Publish(h.network, h.site, "r20261026.1",
+            {{"recipes/274520/third.json", "community-274520-third", third, ""},
+             {"recipes/274520/fourth.json", "community-274520-fourth", fourth, ""}});
+    std::mutex latch_mutex;
+    std::condition_variable latch;
+    bool parked = false, go = false;
+    int objects = 0;
+    h.before_write = [&](const std::string& step) {
+      if (step != "object") return true;
+      std::unique_lock<std::mutex> lock(latch_mutex);
+      if (++objects == 1) {
+        parked = true;
+        latch.notify_all();
+        latch.wait(lock, [&] { return go; });
+      }
+      return true;
+    };
+    auto service = h.Make(root);
+    h.before_write = nullptr;
+    service->Start();
+    {
+      std::unique_lock<std::mutex> lock(latch_mutex);
+      CHECK(latch.wait_for(lock, std::chrono::seconds(10), [&] { return parked; }));
+    }
+    auto loading = std::async(std::launch::async, [&] { return service->LoadRecipe(Sha256Hex(second)).has_value(); });
+    auto by_prefix =
+        std::async(std::launch::async, [&] { return service->LoadRecipe(Sha256Hex(second).substr(0, 32)).has_value(); });
+    CHECK(loading.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(by_prefix.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    // Playden closes while the first object is being written.
+    std::thread closing([&] { service->Shutdown(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));  // Shutdown sets the cancel flag, then joins
+    {
+      std::lock_guard<std::mutex> lock(latch_mutex);
+      go = true;
+      latch.notify_all();
+    }
+    closing.join();
+    CHECK(loading.get() && by_prefix.get());
+    CHECK(objects == 1);  // the second object was never started
+    CHECK(service->Snapshot()->release_tag == "r20261025.1");
+    RecipeStore store{fs::path(root)};
+    std::string ignored;
+    CHECK(store.Prepare(&ignored) && store.ReadCurrent() && store.ReadCurrent()->tag == "r20261025.1");
+    CHECK(!store.ReadObject(Sha256Hex(fourth)));
   }
 
   fs::remove_all(fs::path(root).parent_path().parent_path());

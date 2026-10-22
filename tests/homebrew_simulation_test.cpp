@@ -521,15 +521,24 @@ void settings_sheet_details(const std::filesystem::path& fixtures, const std::fi
     activate(simulation, "game-settings");
     activate(simulation, "preset-picker");
     check(simulation.view().comparison.has_value(), "preset chooser compares the focused preset");
-    check(simulation.action("down"), "focus the next preset");
+    check(simulation.action("focus:preset-mouse-driven"), "focus another preset");
     const auto& comparison = *simulation.view().comparison;
     check(!comparison.rows.empty() && !comparison.note.empty() && !comparison.title.empty(),
           "the comparison lists settings and closes with what applies");
-    const auto* community = find_row(simulation, "preset-community");
-    check(community && !community->enabled && community->value == "Not available yet", "community presets wait for the index");
-    simulation.action("focus:preset-community");
+    // A game without community recipes says so in a row that can't be chosen.
+    const auto* community = find_row(simulation, "recipes-none");
+    check(community && !community->enabled && community->title == "None yet", "the chooser says the game has no recipes");
+    // Headings set the players' recipes apart from the built-in presets, and focus never stops on them.
+    const auto* heading = find_row(simulation, "chooser-heading-community");
+    check(heading && heading->title.find("Community recipes") == 0 && find_row(simulation, "chooser-heading-presets"),
+          "the chooser has Community recipes and Built-in presets headings");
+    for (int step = 0; step < 12; ++step) {
+        simulation.action("down");
+        check(!playden::homebrew::IsChooserHeading(simulation.state().navigation.focus_key), "focus skips the headings");
+    }
+    simulation.action("focus:recipes-none");
     simulation.action("cross");
-    check(simulation.state().navigation.modals.back().id == "preset-picker", "the community entry does nothing yet");
+    check(simulation.state().navigation.modals.back().id == "preset-picker", "the community row does nothing");
     simulation.action("circle");
     simulation.action("focus:preset-picker");
     simulation.action("r1");
@@ -1626,6 +1635,478 @@ void leftover_titles_simulation_uses_controller_navigation(const std::filesystem
               simulation.state().leftover_deletions.empty(), "only the confirmed title is removed");
 }
 
+// Community recipes (docs/community-recipes.md): the chooser's order, one base per game, the switch on
+// an installed game, the Install sheet's Settings row, an updated recipe and the fallback reason.
+std::string rev(char digit) { return std::string(64, digit); }
+
+bool has_row(const playden::homebrew::Simulation& simulation, const std::string& key) { return find_row(simulation, key) != nullptr; }
+
+void community_recipes_chooser(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    using playden::homebrew::CommunityRecipeOffer;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    check(simulation.scenario("recipes-three"), "recipes-three scenario loads");
+    // Works before playable, then by votes (up − down): 14-1 before 3-0.
+    const auto offers = simulation.CommunityOffersFor(SteamId(900002));
+    check(offers.size() == 3 && offers[0].title == "120 Hz, pointer on left stick" && offers[1].title == "Gamepad layout" &&
+              offers[2].title == "Windowed 1080p", "the chooser sorts by status, then votes");
+    const auto& keys = simulation.state().navigation.modals.back().action_keys;
+    check(keys.size() >= 7 && keys[0] == "preset-playden-default" && keys[1] == "chooser-heading-community" &&
+              keys[2] == "recipe-" + rev('1') && keys[3] == "recipe-" + rev('2') && keys[4] == "recipe-" + rev('3') &&
+              keys[5] == "chooser-heading-presets" && keys[6] == "preset-mouse-driven",
+          "Playden default, the recipes in order, then the built-in presets");
+    // Broken after playable, untested last; equal status and votes by title.
+    playden::homebrew::CommunityCatalog catalog = simulation.state().community;
+    auto make = [](std::string title, std::string status, std::uint32_t up, std::uint32_t down, char digit) {
+        CommunityRecipeOffer offer;
+        offer.id = "community-900002-" + std::string(1, digit);
+        offer.title = std::move(title);
+        offer.status = std::move(status);
+        offer.revision = rev(digit);
+        offer.has_votes = up + down > 0;
+        offer.votes_up = up;
+        offer.votes_down = down;
+        return offer;
+    };
+    catalog.games[SteamId(900002)] = {make("Untested", "untested", 50, 0, 'a'), make("Broken", "broken", 9, 0, 'b'),
+                                       make("Zeta", "works", 2, 1, 'c'), make("Alpha", "works", 2, 1, 'd'),
+                                       make("Playable", "playable", 0, 0, 'e'), make("Liked", "works", 10, 0, 'f')};
+    simulation.UpdateCommunityCatalog(catalog);
+    const auto sorted = simulation.CommunityOffersFor(SteamId(900002));
+    std::vector<std::string> titles;
+    for (const auto& offer : sorted) titles.push_back(offer.title);
+    check((titles == std::vector<std::string>{"Liked", "Alpha", "Zeta", "Playable", "Broken", "Untested"}),
+          "works, playable, broken, untested; then votes; then title");
+
+    // A recipe row: status, votes, who tested it where, what it changes, what changes how the game starts.
+    check(simulation.scenario("recipes-three"), "recipes-three scenario loads again");
+    const auto* row = find_row(simulation, "recipe-" + rev('1'));
+    check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works" && row->value == "👍 14  👎 1" &&
+              row->subtitle == "leolobato · tested on kit 0.12 · fw 10.01 · 2026-10-20", "a recipe row shows status, votes and its tests");
+    check(!row->lines.empty() && row->lines[0].rfind("Changes: ", 0) == 0 &&
+              row->lines[0].find("Resolution 3840×2160") != std::string::npos &&
+              row->lines[0].find("120 Hz on") != std::string::npos && row->lines[0].find("Touchpad → M") != std::string::npos,
+          "Changes lists what differs from the current base");
+    const auto* windowed = find_row(simulation, "recipe-" + rev('3'));
+    check(windowed && std::any_of(windowed->lines.begin(), windowed->lines.end(), [](const std::string& line) {
+              return line.rfind("Changes how the game starts: ", 0) == 0 && line.find("d3d9=n,b") != std::string::npos; }),
+          "library overrides are listed apart, under Changes how the game starts");
+    simulation.action("focus:recipe-" + rev('1'));
+    check(simulation.view().comparison && simulation.view().comparison->column == "This recipe",
+          "the side panel compares the focused recipe");
+
+    // A recipe the kit can't run stays listed, disabled, with the reason.
+    check(simulation.scenario("recipes-refused"), "recipes-refused scenario loads");
+    const auto* refused = find_row(simulation, "recipe-" + rev('5'));
+    check(refused && !refused->enabled && !refused->lines.empty() && refused->lines.back() == "⚠ The recipe needs kit 0.13.",
+          "a recipe that needs a newer kit is greyed out with the reason");
+    // What it changes is its own settings, not those of the recipe Playden would fall back to.
+    check(refused && refused->lines[0].rfind("Changes: ", 0) == 0 && refused->lines[0].find("Resolution 3840×2160") != std::string::npos,
+          "a refused recipe's Changes line describes the recipe itself");
+    simulation.action("focus:recipe-" + rev('5'));
+    {
+        const auto& comparison = simulation.view().comparison;
+        check(comparison && comparison->note == "⚠ The recipe needs kit 0.13." &&
+                  std::any_of(comparison->rows.begin(), comparison->rows.end(),
+                              [](const std::array<std::string, 3>& line) { return line[2].find("3840×2160") != std::string::npos; }),
+              "a refused recipe's comparison shows its own values, the refusal apart");
+    }
+    simulation.action("cross");
+    check(simulation.state().navigation.modals.back().id == "preset-picker" &&
+              !simulation.state().game_settings.count(SteamId(900005)),
+          "a refused recipe can't be chosen");
+
+    // A game without recipes, and the offline copy.
+    check(simulation.scenario("recipes-none") && has_row(simulation, "recipes-none"), "a game with no recipes says so");
+    check(simulation.scenario("recipes-offline"), "recipes-offline scenario loads");
+    check(simulation.view().subtitle.find("Offline: community recipes as of 2026-10-18.") != std::string::npos &&
+              has_row(simulation, "recipe-" + rev('1')),
+          "an offline copy is still offered, with its date");
+}
+
+void community_recipes_one_base(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    // Velvet Engines is not installed: choosing needs no confirmation.
+    check(simulation.scenario("recipes-one"), "recipes-one scenario loads");
+    simulation.action("circle");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    activate(simulation, "preset-picker");
+    activate(simulation, "preset-mouse-driven");
+    check(simulation.state().game_settings.at(SteamId(900012)).preset_id == "mouse-driven", "a preset is the base");
+    activate(simulation, "preset-picker");
+    activate(simulation, "recipe-" + rev('4'));
+    auto record = simulation.state().game_settings.at(SteamId(900012));
+    check(record.preset_id.empty() && record.community_recipe.id == "community-900012-mouse-on-right-stick" &&
+              record.community_recipe.revision == rev('4'), "choosing a recipe clears the preset");
+    check(simulation.RecipeFor(SteamId(900012)).id == "community-900012-mouse-on-right-stick", "the recipe is the game's base");
+    check(find_row(simulation, "preset-picker")->value == "Community: Mouse on the right stick", "the Preset row names the recipe");
+    check(simulation.RecipeBaseFor(SteamId(900012)) &&
+              simulation.RecipeBaseFor(SteamId(900012))->revision == rev('4'), "Share sees the recipe the game is based on");
+    activate(simulation, "preset-picker");
+    activate(simulation, "preset-keyboard-on-controller");
+    record = simulation.state().game_settings.at(SteamId(900012));
+    check(record.preset_id == "keyboard-on-controller" && record.community_recipe.id.empty(), "choosing a preset clears the recipe");
+    activate(simulation, "preset-picker");
+    activate(simulation, "preset-playden-default");
+    record = simulation.state().game_settings.at(SteamId(900012));
+    check(record.preset_id.empty() && record.community_recipe.id.empty(), "Playden default clears both");
+}
+
+void community_recipes_switch(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    // An installed game: the changes that stay and the dropped ones are listed before the switch.
+    check(simulation.scenario("recipes-switch"), "recipes-switch scenario loads");
+    const auto& modal = simulation.state().navigation.modals.back();
+    check(modal.id == "confirmation" && modal.title == "Switch to “120 Hz, pointer on left stick”?",
+          "a switch on an installed game asks first");
+    check(modal.body.find("Your changes that stay: Volume.") != std::string::npos &&
+              modal.body.find("No longer apply: Program (The recipe has no launch option") != std::string::npos &&
+              modal.body.find("If the switch doesn't finish, the game keeps its current recipe.") != std::string::npos,
+          "the confirmation lists what stays and what is dropped");
+    check(find_row(simulation, "recipe-switch-confirm")->title == "Switch and prepare again",
+          "a new program prepares the game again");
+    check(simulation.state().game_settings.at(SteamId(900002)).community_recipe.id.empty(), "nothing changes before the answer");
+    check(simulation.CommunityChoicesInUse() && simulation.CommunityChoicesInUse()->count(rev('1')),
+          "the cache keeps the recipe a switch waits to confirm");
+    activate(simulation, "recipe-switch-confirm");
+    const auto& record = simulation.state().game_settings.at(SteamId(900002));
+    check(record.community_recipe.revision == rev('1') && record.overrides.count("volume") && !record.overrides.count("launch_option"),
+          "the switch keeps the changes that still apply and drops the rest");
+    check(simulation.state().navigation.modals.back().id == "game-settings", "back on Game settings after the switch");
+    // Reset all goes back to the base's values: the recipe's resolution.
+    activate(simulation, "reset-settings");
+    playden::runtime::EffectiveSettings settings;
+    check(simulation.EffectiveSettingsFor(SteamId(900002), &settings) && settings.values.at("resolution").value == "3840x2160" &&
+              simulation.state().game_settings.at(SteamId(900002)).overrides.empty(),
+          "Reset all returns to the recipe's values");
+    // Without changes of the player's, the confirmation says so rather than "none carry over".
+    activate(simulation, "preset-picker");
+    activate(simulation, "preset-playden-default");
+    check(simulation.state().navigation.modals.back().id == "confirmation" &&
+              simulation.state().navigation.modals.back().body.find("You haven't changed any settings for this game.") != std::string::npos &&
+              simulation.state().navigation.modals.back().body.find("None of your changes") == std::string::npos,
+          "a switch without the player's changes says there are none");
+    simulation.action("circle");
+    simulation.action("circle");
+    check(simulation.state().navigation.modals.back().id == "game-settings", "cancelled, back on Game settings");
+    // The settings toast names the new base.
+    simulation.action("circle");
+    const auto toast = std::find_if(simulation.state().notices.begin(), simulation.state().notices.end(),
+                                    [](const playden::homebrew::Notice& notice) { return notice.id == "settings-saved"; });
+    check(toast != simulation.state().notices.end() && toast->message == "Settings saved · Community: 120 Hz, pointer on left stick",
+          "closing Game settings announces the recipe");
+    // Changes of the player's that all stop applying: none carry over.
+    check(simulation.scenario("recipes-switch"), "recipes-switch scenario loads again");
+    simulation.action("circle");
+    simulation.action("circle");
+    check(simulation.state().navigation.modals.back().id == "game-settings", "back on Game settings");
+    activate(simulation, "reset-settings");
+    activate(simulation, "setting-launch_option");
+    activate(simulation, "choice-1");
+    check(simulation.state().game_settings.at(SteamId(900002)).overrides.size() == 1 &&
+              simulation.state().game_settings.at(SteamId(900002)).overrides.at("launch_option") == "editor",
+          "only the level editor is chosen");
+    activate(simulation, "preset-picker");
+    activate(simulation, "recipe-" + rev('1'));
+    check(simulation.state().navigation.modals.back().id == "confirmation" &&
+              simulation.state().navigation.modals.back().body.find("None of your changes carry over.") != std::string::npos &&
+              simulation.state().navigation.modals.back().body.find("No longer apply: Program") != std::string::npos,
+          "when every change is dropped, none carry over");
+}
+
+void community_recipes_install(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using namespace playden::homebrew;
+    {
+        // Fixtures: untouched, Install creates the job and saves no settings.
+        Simulation simulation(fixtures, profile);
+        load_settings_data(simulation, fixtures);
+        check(simulation.scenario("recipes-one"), "recipes-one scenario loads");
+        const auto* settings = find_row(simulation, "install-settings");
+        check(settings && settings->value == "Playden default ›" && settings->subtitle == "★ 1 community recipe available",
+              "the Install sheet offers the community recipes");
+        check(simulation.state().navigation.focus_key == "install-confirm", "Install stays focused");
+        activate(simulation, "install-confirm");
+        check(simulation.state().navigation.route == Route::Downloads && !simulation.state().game_settings.count(SteamId(900012)),
+              "Install without touching Settings installs as before");
+    }
+    {
+        // Fixtures: a recipe chosen on the sheet is saved before the download.
+        std::error_code ignored;
+        std::filesystem::remove(profile, ignored);  // the job the block above queued
+        Simulation simulation(fixtures, profile);
+        load_settings_data(simulation, fixtures);
+        check(simulation.scenario("recipes-one"), "recipes-one scenario loads");
+        activate(simulation, "install-settings");
+        check(simulation.state().navigation.modals.back().id == "preset-picker" &&
+                  find_row(simulation, "preset-playden-default")->selected, "Playden's choice is selected in the chooser");
+        activate(simulation, "recipe-" + rev('4'));
+        check(simulation.state().navigation.modals.back().id == "install" &&
+                  find_row(simulation, "install-settings")->value == "Community: Mouse on the right stick ›" &&
+                  !simulation.state().game_settings.count(SteamId(900012)),
+              "the choice waits on the sheet");
+        activate(simulation, "install-confirm");
+        check(simulation.state().game_settings.at(SteamId(900012)).community_recipe.revision == rev('4'),
+              "Install saves the chosen recipe");
+    }
+    {
+        // Live: every install opens the sheet; only a game with recipes gets its Settings row, whose choice is saved
+        // before the request goes out.
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+        playden::GameSummary game{SteamId(42), "Recipe game", {}, {}, {}};
+        check(live.UpdateLibrary({{game}, false, {}, false, false, {}}), "library loads");
+        live.UpdateAppDetails(SteamId(42), 300'000'000, 600'000'000, true);
+        live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+        check(live.action("details:42"), "details open");
+        activate(live, "details-install");
+        auto requests = live.TakeInstallRequests();
+        check(requests.empty() && !live.state().navigation.modals.empty() && live.state().navigation.modals.back().id == "install" &&
+                  find_row(live, "install-settings") == nullptr && live.TakeCommunityRefreshRequest(),
+              "without recipes the Install sheet has no Settings row, and asks for a refresh");
+        activate(live, "cancel");
+        playden::runtime::CommunityRecipe object;
+        object.recipe.id = "community-42-pad";
+        object.recipe.version = 1;
+        object.recipe.app_id = 42;
+        object.recipe.name = "Recipe game";
+        object.recipe.launch_entries = {{"game", "Recipe game", "Game.exe", ""}};
+        object.title = "Pad";
+        object.status = "works";
+        live.SetCommunityRecipeLoader([object](const std::string& revision) -> std::optional<playden::runtime::CommunityRecipe> {
+            if (revision != rev('7')) return std::nullopt;
+            return object;
+        });
+        playden::runtime::VerifiedKitView kit;
+        kit.runtime.artifact_revision = "f729534-kit-0.12";
+        live.SetKitView(kit);
+        CommunityCatalog catalog;
+        catalog.release_tag = "r1";
+        CommunityRecipeOffer offer;
+        offer.id = "community-42-pad";
+        offer.title = "Pad";
+        offer.status = "works";
+        offer.revision = rev('7');
+        catalog.games[SteamId(42)] = {offer};
+        live.UpdateCommunityCatalog(catalog);
+        activate(live, "details-install");
+        check(live.TakeInstallRequests().empty() && live.state().navigation.modals.back().id == "install",
+              "a game with recipes shows the Install sheet");
+        activate(live, "install-confirm");
+        requests = live.TakeInstallRequests();
+        check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install && !live.state().game_settings.count(SteamId(42)),
+              "untouched, Install sends the same request and saves nothing");
+        activate(live, "details-install");
+        activate(live, "install-settings");
+        activate(live, "recipe-" + rev('7'));
+        check(live.CommunityChoicesInUse() == std::set<std::string>{rev('7')} && !live.state().game_settings.count(SteamId(42)),
+              "the cache keeps the recipe the open Install sheet chose, before anything is saved");
+        live.action("circle");
+        check(live.state().navigation.modals.empty() && live.CommunityChoicesInUse() == std::set<std::string>{},
+              "a cancelled Install sheet keeps nothing");
+        activate(live, "details-install");
+        activate(live, "install-settings");
+        activate(live, "recipe-" + rev('7'));
+        activate(live, "install-confirm");
+        requests = live.TakeInstallRequests();
+        check(requests.size() == 1 && live.state().game_settings.at(SteamId(42)).community_recipe.id == "community-42-pad",
+              "the recipe chosen at Install is saved with the request");
+        check(live.CommunityChoicesInUse() == std::set<std::string>{rev('7')}, "the cache keeps the saved choice");
+    }
+    {
+        // Game settings that can't be read: what is in use is unknown, so the cache keeps everything.
+        const auto unreadable = profile.parent_path() / "unreadable-game-settings.json";
+        std::ofstream(unreadable) << "{ not json";
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetGameSettingsFile(unreadable);
+        check(!live.CommunityChoicesInUse(), "unreadable game settings keep every recipe");
+        std::error_code ignored;
+        std::filesystem::remove(unreadable, ignored);
+    }
+}
+
+void community_recipes_updates_and_fallback(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    // A newer revision of the chosen recipe is offered, never applied silently.
+    check(simulation.scenario("recipes-settings"), "recipes-settings scenario loads");
+    const auto* update = find_row(simulation, "recipe-update");
+    check(update && update->title == "Updated recipe available" && update->value == "Use it", "an updated recipe is offered");
+    // The chooser lists the recipe once, at its newer revision: what that changes, marked Updated, not Current.
+    activate(simulation, "preset-picker");
+    check(!has_row(simulation, "recipe-" + rev('0')), "the older revision in use isn't listed beside the newer one");
+    const auto* newer = find_row(simulation, "recipe-" + rev('1'));
+    check(newer && !newer->selected && newer->badge.find("Updated") != std::string::npos &&
+              newer->badge.find("Current") == std::string::npos && simulation.state().navigation.focus_key == "recipe-" + rev('1'),
+          "the newer revision is marked Updated and focused");
+    check(newer && !newer->lines.empty() && newer->lines[0] != "Changes: none" && newer->lines[0].find("Touchpad") != std::string::npos,
+          "its Changes line compares the newer revision with the one in use");
+    simulation.action("circle");
+    check(simulation.RecipeFor(SteamId(900002)).revision == rev('0'), "the game keeps the revision it chose");
+    activate(simulation, "recipe-update");
+    check(simulation.state().navigation.modals.back().id == "confirmation", "using it on an installed game asks first");
+    activate(simulation, "recipe-switch-confirm");
+    check(simulation.state().game_settings.at(SteamId(900002)).community_recipe.revision == rev('1') &&
+              simulation.state().game_settings.at(SteamId(900002)).overrides.count("volume") && !has_row(simulation, "recipe-update"),
+          "Use it chooses the new revision and keeps the player's changes");
+    // Export remembers the recipe it is based on, and the kit the title runs.
+    const auto directory = std::filesystem::temp_directory_path() / ("playden-recipe-export-" + std::to_string(getpid()));
+    std::filesystem::remove_all(directory);
+    simulation.SetRecipeExportTarget(directory, "10.01");
+    simulation.export_recipe(SteamId(900002));
+    const auto exported = read_text(directory / "recipe-900002.json");
+    check(exported.find("\"tested_kit\": \"0.12\"") != std::string::npos || exported.find("\"tested_kit\":\"0.12\"") != std::string::npos,
+          "the export names the kit the title runs");
+    check(simulation.ExportedRecipeBase(SteamId(900002)) && simulation.ExportedRecipeBase(SteamId(900002))->revision == rev('1'),
+          "the export remembers the community recipe it is based on");
+    std::filesystem::remove_all(directory);
+    // A chosen recipe the kit can't run: Playden's own recipe is used and the sheet says why.
+    check(simulation.scenario("recipes-fallback"), "recipes-fallback scenario loads");
+    const auto* status = find_row(simulation, "recipe-status");
+    check(status && status->title == "Playden's own recipe is used" && status->subtitle == "The recipe needs kit 0.13.",
+          "the fallback reason is shown");
+    check(simulation.RecipeFor(SteamId(900005)).id.rfind("community-", 0) != 0, "the game falls back to Playden's recipe");
+    check(find_row(simulation, "preset-picker")->value == "Community: OpenGL through Zink", "the Preset row keeps the choice");
+}
+
+// Sharing and votes in fixtures: the decision table on the Share sheet, a second share with a saved
+// submission, the first share's notice, and the vote prompt once per revision (Not now counts).
+void community_sharing(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace cm = playden::community;
+    const auto game = SteamId(900002);
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    const auto top = [&simulation]() -> const playden::homebrew::ModalEntry& { return simulation.state().navigation.modals.back(); };
+
+    // No community recipe in use, nothing shared before: a new recipe, no question.
+    check(simulation.scenario("share-new"), "share-new scenario loads");
+    check(simulation.ShareDecisionFor(game).kind == cm::ShareKind::kNewRecipe && top().id == "share-recipe" && top().title == "Share recipe",
+          "Share: a new recipe");
+    check(!has_row(simulation, "share-choice-update") && !has_row(simulation, "share-update") &&
+              find_row(simulation, "share-title")->value == "Optional",
+          "a new recipe asks nothing, and its title is optional");
+    check(find_row(simulation, "share-name")->value == "TodorPenchev" && find_row(simulation, "share-rating")->value == "Works",
+          "the name and the Compatibility rating are shown");
+    check(find_row(simulation, "share-what")->subtitle.find("Resolution 3840×2160") != std::string::npos,
+          "what is sent lists the changes from Playden's default");
+    check(top().focused_action >= 0 && top().action_keys[static_cast<std::size_t>(top().focused_action)] == "share-send",
+          "with nothing to fill in, the sheet opens on Send");
+    simulation.action("focus:share-title");
+    simulation.action("cross");
+    check(simulation.state().editor.active && simulation.state().editor.purpose == "Recipe title", "the title opens the keyboard");
+    simulation.SubmitEditorText(std::string(61, 'x'));
+    check(simulation.state().editor.active, "a title over 60 characters is refused");
+    simulation.SubmitEditorText("4K at 120 Hz");
+    check(!simulation.state().editor.active && find_row(simulation, "share-title")->value == "4K at 120 Hz", "the title is set");
+    activate(simulation, "share-send");
+    check(top().title == "Recipe sent for review" && top().link.find("/pull/") != std::string::npos &&
+              top().link_caption == "Scan to follow the pull request",
+          "sent: the pull request as a QR code");
+    const auto first = simulation.state().game_settings.at(game).shared_recipe;
+    check(!first.submission_id.empty() && !first.recipe_id.empty(), "the share is saved in the game's settings");
+    // A second share of the game updates the saved submission (its pull request is in review).
+    activate(simulation, "alert-ok");
+    check(top().id == "game-settings", "OK goes back to Game settings");
+    check(simulation.ShareDecisionFor(game).kind == cm::ShareKind::kUpdateOwn &&
+              simulation.ShareDecisionFor(game).send_submission_id,
+          "a saved submission: the next share updates it");
+    activate(simulation, "section-advanced");
+    activate(simulation, "share-recipe");
+    check(find_row(simulation, "share-update") && find_row(simulation, "share-update")->title == "Update the pull request",
+          "an update to a share in review says it updates the pull request");
+    activate(simulation, "share-send");
+    check(simulation.state().game_settings.at(game).shared_recipe == first, "the same submission is revised");
+
+    // The first share explains what is sent before sending.
+    check(simulation.scenario("share-privacy"), "share-privacy scenario loads");
+    check(top().title == "Before you share" && top().body.find("No Steam ID or account name") != std::string::npos,
+          "the first share says what is sent and what isn't");
+    check(simulation.state().game_settings.at(game).shared_recipe.submission_id.empty(), "nothing is sent before Send");
+
+    // Someone else's recipe with changes that keep program and graphics: ask, Suggest changes first.
+    check(simulation.scenario("share-ask"), "share-ask scenario loads");
+    auto decision = simulation.ShareDecisionFor(game);
+    check(decision.kind == cm::ShareKind::kAskPlayer && decision.preselect == cm::ShareChoice::kUpdate,
+          "based on someone else's recipe, changed: ask, Suggest changes pre-selected");
+    check(find_row(simulation, "share-choice-update")->selected && !find_row(simulation, "share-choice-new")->selected &&
+              find_row(simulation, "share-title")->value == "120 Hz, pointer on left stick",
+          "Suggest changes is chosen and keeps the recipe's title");
+    check(find_row(simulation, "share-what")->lines.front() == "Your changes: Resolution 1920×1080",
+          "the sheet lists the player's changes against the recipe");
+    activate(simulation, "share-choice-new");
+    check(find_row(simulation, "share-choice-new")->selected && find_row(simulation, "share-title")->value == "Optional",
+          "a new recipe's title is optional");
+    // A different graphics choice pre-selects a new recipe.
+    simulation.action("circle");
+    check(top().id == "game-settings", "back to Game settings");
+    for (const char* section : {"section-compatibility", "section-advanced"})
+        if (!has_row(simulation, "setting-graphics")) activate(simulation, section);
+    activate(simulation, "setting-graphics");
+    for (const auto& row : simulation.view().rows)
+        if (row.key.rfind("choice-", 0) == 0 && !row.selected && row.enabled) { activate(simulation, row.key); break; }
+    decision = simulation.ShareDecisionFor(game);
+    check(decision.kind == cm::ShareKind::kAskPlayer && decision.preselect == cm::ShareChoice::kNew,
+          "another graphics choice pre-selects Share as a new recipe");
+
+    // This console's own recipe, its pull request in review: an update, no question.
+    check(simulation.scenario("share-own"), "share-own scenario loads");
+    decision = simulation.ShareDecisionFor(game);
+    check(decision.kind == cm::ShareKind::kUpdateOwn && decision.send_based_on && decision.send_submission_id,
+          "based on this console's recipe: an update");
+    check(find_row(simulation, "share-update")->title == "Update the pull request" &&
+              simulation.view().subtitle.find("still in review") != std::string::npos,
+          "it says the update replaces what is in review");
+
+    // Someone else's recipe without changes: nothing to share, a thumbs up instead.
+    check(simulation.scenario("share-nothing"), "share-nothing scenario loads");
+    check(simulation.ShareDecisionFor(game).kind == cm::ShareKind::kNoChangesOfferVote && top().title == "Nothing new to share" &&
+              has_row(simulation, "share-vote") && find_row(simulation, "cancel")->title == "Not now",
+          "nothing new: Vote for it instead or Not now");
+    activate(simulation, "share-vote");
+    check(top().id == "vote-recipe" && find_row(simulation, "vote-up")->selected, "votes not asked yet: the vote sheet explains first");
+
+    // Votes off: the offer explains how to turn them on, and nothing asks after play.
+    check(simulation.scenario("votes-off"), "votes-off scenario loads");
+    check(find_row(simulation, "share-vote")->subtitle.find("Recipe votes are off") != std::string::npos, "the offer says votes are off");
+    activate(simulation, "share-vote");
+    check(top().title == "Recipe votes are off", "voting off: no vote, how to turn it on");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    simulation.NotifySessionEnded(game, 3600);
+    check(simulation.state().navigation.modals.empty(), "with votes off nothing asks after play");
+
+    // The vote prompt: once per revision, at least five minutes, Not now counts as asked.
+    check(simulation.scenario("vote-prompt"), "vote-prompt scenario loads");
+    check(top().id == "vote-recipe" && top().title.find("How did") == 0 &&
+              simulation.view().subtitle.find("120 Hz, pointer on left stick") != std::string::npos &&
+              simulation.view().subtitle.find("no Steam ID or account name") != std::string::npos,
+          "after play: how did it run, with the recipe, and what a vote sends");
+    check(simulation.state().vote_memory.WasAsked(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1')),
+          "the prompt marks the revision as asked");
+    simulation.action("circle");
+    check(simulation.state().navigation.modals.empty(), "Not now closes it");
+    simulation.NotifySessionEnded(game, 900);
+    check(simulation.state().navigation.modals.empty(), "a dismissed revision doesn't ask again");
+    check(simulation.scenario("vote-prompt"), "vote-prompt scenario loads again");
+    simulation.action("circle");
+    simulation.NotifySessionEnded(game, 120);
+    check(simulation.state().navigation.modals.empty(), "under five minutes nothing asks");
+
+    // A thumbs down with a reason; votes are on.
+    check(simulation.scenario("vote-reason"), "vote-reason scenario loads");
+    check(has_row(simulation, "vote-reason-no-start") && find_row(simulation, "vote-reason-slow")->selected &&
+              !has_row(simulation, "vote-never"),
+          "thumbs down: the reasons, Slow chosen; votes on asks nothing more");
+    activate(simulation, "vote-send");
+    const auto* cast = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1'));
+    check(cast && cast->vote == "down" && cast->reason == "slow", "the vote and its reason are remembered");
+    check(simulation.snapshot().find("sharing-id") == std::string::npos, "the snapshot holds no sharing ID");
+}
+
 int main(int argc, char** argv) {
     check(argc == 2, "fixture directory argument is required");
     const std::filesystem::path fixtures(argv[1]);
@@ -1657,6 +2138,18 @@ int main(int argc, char** argv) {
     settings_revision_exhaustion_preserves_record(fixtures, profile);
     settings_sheet_details(fixtures, profile);
     settings_save_failure_does_not_claim_success(fixtures, profile);
+    clean();
+    community_recipes_chooser(fixtures, profile);
+    clean();
+    community_recipes_one_base(fixtures, profile);
+    clean();
+    community_recipes_switch(fixtures, profile);
+    clean();
+    community_recipes_install(fixtures, profile);
+    clean();
+    community_recipes_updates_and_fallback(fixtures, profile);
+    clean();
+    community_sharing(fixtures, profile);
     clean();
     t52_recipe_values_in_game_settings(fixtures, profile);
     clean();

@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "community/install_secret.h"
+#include "community/printable_text.h"
 #include "community/recipe_release.h"
 #include "community/vote_state.h"
 #include "diagnostics/redaction.h"
@@ -35,40 +36,8 @@ bool ShortAscii(std::string_view text, std::size_t max) {
   return true;
 }
 
-// Text as Python's str.isprintable roughly counts it (the API's check): valid UTF-8 with no control,
-// format, separator other than the plain space, surrogate or private-use characters; between min and
-// max characters.
-bool PrintableText(std::string_view text, std::size_t min, std::size_t max) {
-  std::size_t characters = 0;
-  for (std::size_t i = 0; i < text.size();) {
-    const auto lead = static_cast<unsigned char>(text[i]);
-    std::uint32_t code = 0;
-    std::size_t length = 0;
-    if (lead < 0x80) code = lead, length = 1;
-    else if ((lead & 0xe0) == 0xc0) code = lead & 0x1f, length = 2;
-    else if ((lead & 0xf0) == 0xe0) code = lead & 0x0f, length = 3;
-    else if ((lead & 0xf8) == 0xf0) code = lead & 0x07, length = 4;
-    else return false;
-    if (i + length > text.size()) return false;
-    for (std::size_t k = 1; k < length; ++k) {
-      const auto next = static_cast<unsigned char>(text[i + k]);
-      if ((next & 0xc0) != 0x80) return false;
-      code = (code << 6) | (next & 0x3f);
-    }
-    // Overlong forms and values past Unicode.
-    if ((length == 2 && code < 0x80) || (length == 3 && code < 0x800) || (length == 4 && code < 0x10000) ||
-        code > 0x10ffff)
-      return false;
-    if (code < 0x20 || (code >= 0x7f && code <= 0xa0) || code == 0xad || (code >= 0x2000 && code <= 0x200f) ||
-        (code >= 0x2028 && code <= 0x202f) || (code >= 0x205f && code <= 0x206f) || code == 0x3000 ||
-        (code >= 0xd800 && code <= 0xdfff) || (code >= 0xe000 && code <= 0xf8ff) || code == 0xfeff ||
-        (code >= 0xfff0 && code <= 0xfffb) || code >= 0xf0000 || code == 0x061c || code == 0x180e)
-      return false;
-    i += length;
-    ++characters;
-  }
-  return characters >= min && characters <= max;
-}
+// The shared rule (community/printable_text.h), between min and max characters.
+bool PrintableText(std::string_view text, std::size_t min, std::size_t max) { return IsSubmissionText(text, min, max); }
 
 std::string Escape(std::string_view text) {
   std::string out;
@@ -246,6 +215,29 @@ ApiError BadResponse(long status) {
   return error;
 }
 
+bool HoldsSecret(const steam::json::Value& value, std::string_view secret) {
+  if (value.is_string()) return value.text().find(secret) != std::string::npos;
+  if (value.is_array())
+    for (const auto& item : value.array())
+      if (HoldsSecret(item, secret)) return true;
+  if (value.is_object())
+    for (const auto& [key, item] : value.object())
+      if (key.find(secret) != std::string::npos || HoldsSecret(item, secret)) return true;
+  return false;
+}
+
+// Whether an answer echoes the sharing ID anywhere (raw, or in any JSON string once unescaped). Such
+// an answer is refused whole as bad_response: none of its fields is kept, logged or shown.
+bool EchoesSecret(const steam::HttpResponse& response, std::string_view secret) {
+  if (secret.empty()) return false;
+  const std::string body(response.body.begin(), response.body.end());
+  if (body.find(secret) != std::string::npos) return true;
+  for (const auto& [key, value] : response.headers)
+    if (key.find(secret) != std::string::npos || value.find(secret) != std::string::npos) return true;
+  const auto doc = steam::json::Parse(body);
+  return doc && HoldsSecret(*doc, secret);
+}
+
 const char* ChoiceName(ShareChoice choice) {
   switch (choice) {
     case ShareChoice::kUpdate: return "update";
@@ -309,7 +301,8 @@ bool IsIdempotencyKey(std::string_view key) { return KeyCharacters(key, 8, 128);
 std::string SubmissionRequestProblem(const SubmissionRequest& request) {
   if (request.app_id == 0) return "no app ID";
   if (auto problem = RecipeProblem(request); !problem.empty()) return problem;
-  if (!PrintableText(request.title, 1, kSubmissionTitleMaxCharacters)) return "the title must be 1-60 printable characters";
+  if (!request.title.empty() && !PrintableText(request.title, 1, kSubmissionTitleMaxCharacters))
+    return "the title must be at most 60 printable characters";
   if (!request.name.empty() && !PrintableText(request.name, 1, kSubmissionNameMaxCharacters))
     return "the name must be at most 40 printable characters";
   if (request.based_on) {
@@ -343,8 +336,8 @@ std::string SubmissionBody(const SubmissionRequest& request) {
   if (!SubmissionRequestProblem(request).empty()) return {};
   std::string recipe = request.recipe_json;
   while (!recipe.empty() && (recipe.back() == '\n' || recipe.back() == ' ' || recipe.back() == '\r')) recipe.pop_back();
-  std::string body = "{\"app_id\":" + std::to_string(request.app_id) + ",\"recipe\":" + recipe +
-                     ",\"title\":" + Quoted(request.title);
+  std::string body = "{\"app_id\":" + std::to_string(request.app_id) + ",\"recipe\":" + recipe;
+  if (!request.title.empty()) body += ",\"title\":" + Quoted(request.title);
   if (!request.name.empty()) body += ",\"name\":" + Quoted(request.name);
   if (request.based_on)
     body += ",\"based_on\":{\"recipe_id\":" + Quoted(request.based_on->recipe_id) +
@@ -390,6 +383,10 @@ SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secr
   }
   const auto& response = exchange.response;
   const long status = response.status_code;
+  if (EchoesSecret(response, secret)) {
+    result.error = BadResponse(status);
+    return result;
+  }
   if (status != 200 && status != 201) {
     result.error = ErrorFrom(response, secret);
     return result;
@@ -449,7 +446,8 @@ SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secr
   return result;
 }
 
-SubmissionStatus GetSubmission(const ApiContext& context, const std::string& id, const std::atomic<bool>& cancel) {
+SubmissionStatus GetSubmission(const ApiContext& context, const std::string& id, const std::atomic<bool>& cancel,
+                               std::string_view known_secret) {
   SubmissionStatus status;
   if (!IsSubmissionId(id)) {
     status.error = LocalError("invalid_request", "bad submission id");
@@ -461,8 +459,12 @@ SubmissionStatus GetSubmission(const ApiContext& context, const std::string& id,
     return status;
   }
   const auto& response = exchange.response;
+  if (EchoesSecret(response, known_secret)) {
+    status.error = BadResponse(response.status_code);
+    return status;
+  }
   if (response.status_code != 200) {
-    status.error = ErrorFrom(response, {});
+    status.error = ErrorFrom(response, std::string(known_secret));
     return status;
   }
   const auto doc = JsonBody(response);
@@ -500,6 +502,10 @@ VoteResult SendVote(const ApiContext& context, const std::string& secret, const 
   auto exchange = Perform(context, steam::HttpMethod::kPost, "/v1/votes", VoteBody(request), &secret, {}, cancel);
   if (!exchange.sent) {
     result.error = exchange.error;
+    return result;
+  }
+  if (EchoesSecret(exchange.response, secret)) {
+    result.error = BadResponse(exchange.response.status_code);
     return result;
   }
   if (exchange.response.status_code != 204 && exchange.response.status_code != 200) {

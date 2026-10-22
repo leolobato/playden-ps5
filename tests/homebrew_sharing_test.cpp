@@ -1,0 +1,616 @@
+// homebrew_sharing_test.cpp - Sharing recipes and votes, live: the Share sheet hands the whole request
+// to the sharing worker (no sharing ID in the model), the worker sends it with the same
+// Idempotency-Key on every retry and the sharing ID only in Authorization, the answer is saved per
+// game, a second share updates it, duplicates and errors read plainly, Game settings refreshes the
+// shared recipe's state, and the vote prompt asks once per recipe revision after five minutes of play.
+// Copyright (c) 2026 Playden contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "community/install_secret.h"
+#include "homebrew/controller.hpp"
+#include "homebrew/sharing_service.hpp"
+#include "homebrew/simulation.hpp"
+#include "runtime/game_settings.h"
+
+#include <strings.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <mutex>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace {
+
+using playden::GameId;
+using playden::homebrew::AuthState;
+using playden::homebrew::ModelMode;
+using playden::homebrew::RuntimeState;
+using playden::homebrew::SharingRequest;
+using playden::homebrew::SharingRequestKind;
+using playden::homebrew::SharingResult;
+using playden::homebrew::Simulation;
+namespace cm = playden::community;
+namespace rt = playden::runtime;
+
+void check(bool condition, const char* message) {
+    if (!condition) {
+        std::fprintf(stderr, "FAIL: %s\n", message);
+        std::exit(1);
+    }
+}
+
+const GameId kGame = GameId::Steam(274520);
+const std::string kRecipeId = "community-274520-darkwood-120";
+const std::string kRevision(64, 'c');
+const std::string kNewerRevision(64, 'd');
+
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+const playden::homebrew::ViewRow* find_row(const Simulation& model, const std::string& key) {
+    for (const auto& row : model.view().rows)
+        if (row.key == key) return &row;
+    return nullptr;
+}
+
+void activate(Simulation& model, const std::string& key) {
+    if (!model.action("focus:" + key)) {
+        std::fprintf(stderr, "missing row %s on %s\n", key.c_str(), model.view().surface.c_str());
+        check(false, "requested row exists");
+    }
+    check(model.action("cross"), "requested row activates");
+}
+
+std::string header_of(const playden::steam::HttpRequest& request, const char* name) {
+    for (const auto& [key, value] : request.headers)
+        if (strcasecmp(key.c_str(), name) == 0) return value;
+    return {};
+}
+
+playden::steam::HttpResponse answer(long status, const std::string& body,
+                                    std::vector<std::pair<std::string, std::string>> headers = {}) {
+    playden::steam::HttpResponse response;
+    response.status_code = status;
+    response.body.assign(body.begin(), body.end());
+    response.headers = std::move(headers);
+    return response;
+}
+
+playden::steam::HttpResponse lost() {
+    playden::steam::HttpResponse response;
+    response.error = playden::steam::HttpError::kConnectionFailed;
+    return response;
+}
+
+// The API as the worker sees it: every request kept, answers given in order (the last repeats).
+struct FakeApi {
+    std::mutex mutex;
+    std::vector<playden::steam::HttpRequest> requests;
+    std::vector<playden::steam::HttpResponse> answers;
+    void answer_with(std::vector<playden::steam::HttpResponse> next) {
+        std::lock_guard<std::mutex> lock(mutex);
+        answers = std::move(next);
+        requests.clear();
+    }
+    playden::update::Fetch fetch() {
+        return [this](const playden::steam::HttpRequest& request, const std::atomic<bool>&) {
+            std::lock_guard<std::mutex> lock(mutex);
+            requests.push_back(request);
+            if (answers.empty()) return playden::steam::HttpResponse{};
+            const auto next = answers.front();
+            if (answers.size() > 1) answers.erase(answers.begin());
+            return next;
+        };
+    }
+};
+
+rt::CommunityRecipe community_recipe(const std::string& revision) {
+    rt::CommunityRecipe community;
+    auto& recipe = community.recipe;
+    recipe.id = kRecipeId;
+    recipe.version = 1;
+    recipe.app_id = 274520;
+    recipe.name = "Darkwood";
+    recipe.launch_entries = {{"game", "Darkwood", "Darkwood.exe", ""}};
+    recipe.arguments = "{resolution}";
+    recipe.resolution_arguments = "-width {w} -height {h}";
+    recipe.architecture = "pe64";
+    recipe.graphics = "dxvk";
+    recipe.defaults = {{"resolution", "3840x2160"}};
+    recipe.revision = revision;
+    community.executable = "Darkwood.exe";
+    community.title = "Darkwood at 4K";
+    community.status = "works";
+    community.author = "rina";
+    community.tested_kit = "0.12";
+    community.tested_firmware = "10.01";
+    community.tested_date = "2026-10-20";
+    return community;
+}
+
+playden::homebrew::CommunityRecipeOffer offer(const std::string& revision) {
+    playden::homebrew::CommunityRecipeOffer value;
+    value.id = kRecipeId;
+    value.title = "Darkwood at 4K";
+    value.status = "works";
+    value.author = "rina";
+    value.tested_kit = "0.12";
+    value.revision = revision;
+    return value;
+}
+
+// A live model with Darkwood installed and prepared, its title stopped, a kit and one community recipe.
+void set_up(Simulation& model, const std::filesystem::path& base) {
+    model.SetGameSettingsFile(base / "game-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"dxvk", "display-120hz"}, true));
+    rt::VerifiedKitView kit;
+    kit.kit_id = "kit-test";
+    kit.runtime.artifact_revision = "f729534-kit-0.12";
+    kit.template_audio_ps5 = true;
+    model.SetKitView(kit);
+    playden::homebrew::LiveKitInfo info;
+    info.version = "0.12";
+    model.SetKitInfo(info);
+    model.SetSharingContext("10.01", "0.6.0");
+    model.SetWallClock(1'000'000);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = kGame;
+    game.title = "Darkwood";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "library delivered");
+    model.UpdateInstalls({}, {{kGame, 1024, "internal", true}});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = kGame;
+    runtime.status = "Ready";
+    runtime.prepared = runtime.has_title = runtime.ready = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    playden::homebrew::CommunityCatalog catalog;
+    catalog.release_tag = "r20261022.1";
+    catalog.games[kGame] = {offer(kRevision)};
+    model.UpdateCommunityCatalog(catalog);
+    model.SetCommunityRecipeLoader([](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
+        if (revision == kRevision || revision == kNewerRevision) return community_recipe(revision);
+        return std::nullopt;
+    });
+}
+
+void open_game_settings(Simulation& model) {
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(model.action("details:274520"), "Darkwood's page opens");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+}
+
+void open_share(Simulation& model) {
+    open_game_settings(model);
+    activate(model, "section-advanced");
+    activate(model, "share-recipe");
+    check(model.view().surface == "share-recipe", "the Share sheet opens");
+}
+
+// Runs the model's requests through the worker and hands the answers back, like Controller::TickSharing.
+void pump(Simulation& model, playden::homebrew::SharingService& service, std::vector<SharingRequest>* sent = nullptr) {
+    auto requests = model.TakeSharingRequests();
+    if (sent) *sent = requests;
+    for (auto& request : requests) service.Submit(std::move(request));
+    service.Wait();
+    for (const auto& result : service.TakeResults()) model.ApplySharingResult(result);
+    if (auto memory = service.Memory()) model.UpdateVoteMemory(*memory);
+}
+
+bool contains(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
+
+void share_and_vote(const std::filesystem::path& base) {
+    // Private, as Playden's user data is; the worker makes its own folder in it (0700).
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    FakeApi api;
+    std::vector<std::string> log;
+    std::mutex log_mutex;
+    playden::homebrew::SharingServiceConfig config;
+    config.store_root = (base / "community-recipes").string();
+    config.fetch = api.fetch();
+    config.log = [&](const std::string& line) {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        log.push_back(line);
+    };
+    std::vector<std::uint32_t> waits;
+    config.sleep = [&waits](std::uint32_t milliseconds, const std::atomic<bool>&) { waits.push_back(milliseconds); };
+    playden::homebrew::SharingService service(config);
+    service.Start();
+    service.Wait();
+    check(service.Memory().has_value(), "the worker loads the vote memory first");
+
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up(model, base);
+    pump(model, service);
+
+    // A new recipe: Playden's own settings with the player's changes.
+    open_game_settings(model);
+    activate(model, "setting-resolution");
+    std::string resolution_choice;
+    for (const auto& row : model.view().rows)
+        if (row.title == "3840×2160" || row.title.find("3840") != std::string::npos) resolution_choice = row.key;
+    check(!resolution_choice.empty(), "a 4K resolution can be chosen");
+    activate(model, resolution_choice);
+    check(model.ShareDecisionFor(kGame).kind == cm::ShareKind::kNewRecipe, "no community recipe, no share: a new recipe");
+    open_share(model);
+    check(!find_row(model, "share-choice-update") && find_row(model, "share-title") && find_row(model, "share-what"),
+          "a new recipe asks nothing: title, name, rating, what is sent");
+    check(contains(find_row(model, "share-what")->subtitle, "Darkwood.exe") ||
+              contains(find_row(model, "share-what")->subtitle, "game.exe"),
+          "what is sent names the program");
+    activate(model, "share-title");
+    check(model.state().editor.active && model.state().editor.purpose == "Recipe title", "the title opens the keyboard");
+    // Text the API would refuse stays in the editor: a zero-width space inside.
+    model.SubmitEditorText("A\u200Bb");
+    check(model.state().editor.active, "a title with a zero-width space is refused");
+    model.SubmitEditorText("Darkwood 4K");
+    check(!model.state().editor.active && find_row(model, "share-title")->value == "Darkwood 4K", "the system keyboard sets the title");
+    activate(model, "share-name");
+    model.SubmitEditorText("\u3000Todor\u3000");  // ideographic spaces survive the trim, the API refuses them
+    check(model.state().editor.active && model.state().share_name.empty(), "a name padded with U+3000 is refused");
+    model.SubmitEditorText("Todor");
+    check(model.state().share_name == "Todor" && model.ExportPreferences().share_name == "Todor", "the name is remembered");
+    // The first share says what is sent before anything is.
+    activate(model, "share-send");
+    check(model.state().navigation.modals.back().title == "Before you share" && model.TakeSharingRequests().empty(),
+          "the first share explains what is sent and sends nothing yet");
+    check(contains(model.state().navigation.modals.back().body, "No Steam ID or account name"), "the notice says what isn't sent");
+    activate(model, "share-send-confirm");
+    check(model.state().sharing_explained && model.ExportPreferences().sharing_explained, "the explanation shows once");
+
+    // The worker gets the whole request; the model has no sharing ID, the worker makes the key.
+    api.answer_with({lost(), answer(503, R"({"error":"try_again","message":"again"})"),
+                     answer(201, R"({"id":"sub-1","recipe_id":"community-274520-darkwood-4k","state":"in-review",)"
+                                 R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/12"})")});
+    std::vector<SharingRequest> sent;
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].kind == SharingRequestKind::Submit, "Send hands one share to the worker");
+    const auto& request = sent[0].submission;
+    check(request.app_id == 274520 && request.title == "Darkwood 4K" && request.name == "Todor" && request.kit == "0.12" &&
+              request.firmware == "10.01" && request.playden_version == "0.6.0" && !request.based_on &&
+              request.choice == cm::ShareChoice::kNone && request.submission_id.empty() && request.idempotency_key.empty(),
+          "the request carries the recipe, title, name and versions; no base, no choice, no key yet");
+    auto keyed = request;
+    keyed.idempotency_key = "checked-in-test";
+    check(cm::SubmissionRequestProblem(keyed).empty(), "the request keeps the API's contract");
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        check(api.requests.size() == 3, "a lost answer and a 503 are retried");
+        const auto key = header_of(api.requests[0], "Idempotency-Key");
+        check(cm::IsIdempotencyKey(key) && header_of(api.requests[1], "Idempotency-Key") == key &&
+                  header_of(api.requests[2], "Idempotency-Key") == key,
+              "every retry of one share sends the same Idempotency-Key");
+    }
+    check(waits.size() == 2, "the worker waits between retries");
+    const auto secret = read_text(base / "community-recipes" / cm::kInstallSecretFileName).substr(0, 32);
+    check(cm::IsInstallSecret(secret), "the sharing ID was made on the worker");
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        for (const auto& sent_request : api.requests) {
+            check(header_of(sent_request, "Authorization") == "Bearer " + secret, "the sharing ID goes in Authorization");
+            const std::string body(sent_request.body.begin(), sent_request.body.end());
+            check(!contains(body, secret) && !contains(sent_request.url, secret), "never in a body or a URL");
+        }
+    }
+    check(model.state().navigation.modals.back().title == "Recipe sent for review" &&
+              model.state().navigation.modals.back().link == "https://github.com/leolobato/playden-ps5-recipes/pull/12" &&
+              model.state().navigation.modals.back().link_caption == "Scan to follow the pull request",
+          "the sent dialog shows the pull request as a QR code");
+    const auto& shared = model.state().game_settings.at(kGame).shared_recipe;
+    check(shared.submission_id == "sub-1" && shared.recipe_id == "community-274520-darkwood-4k", "the share is saved per game");
+    std::map<GameId, rt::GameSettingsRecord> saved;
+    std::string reason;
+    check(rt::LoadGameSettingsFile((base / "game-settings.json").string(), &saved, &reason) &&
+              saved.at(kGame).shared_recipe.submission_id == "sub-1",
+          "the saved share reaches the settings file");
+
+    // Game settings shows the shared recipe's state, asked again at most every few minutes.
+    open_game_settings(model);
+    auto status_requests = model.TakeSharingRequests();
+    check(status_requests.empty(), "a share answered just now isn't asked again at once");
+    model.SetWallClock(1'000'000 + 400);
+    open_game_settings(model);
+    status_requests = model.TakeSharingRequests();
+    check(status_requests.size() == 1 && status_requests[0].kind == SharingRequestKind::Status &&
+              status_requests[0].submission_id == "sub-1",
+          "opening Game settings later asks for the shared recipe's state");
+    api.answer_with({answer(200, R"({"id":"sub-1","state":"published","recipe_id":"community-274520-darkwood-4k",)"
+                                 R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/12"})")});
+    for (auto& status : status_requests) service.Submit(std::move(status));
+    service.Wait();
+    for (const auto& result : service.TakeResults()) model.ApplySharingResult(result);
+    check(find_row(model, "shared-recipe") && find_row(model, "shared-recipe")->value == "Published",
+          "the Shared recipe row says it's published");
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        check(api.requests.size() == 1 && header_of(api.requests[0], "Authorization").empty(), "the state needs no sharing ID");
+    }
+    open_game_settings(model);
+    check(model.TakeSharingRequests().empty(), "asked just now: not again");
+
+    // A second share of the same game updates the saved submission.
+    activate(model, "section-advanced");
+    activate(model, "share-recipe");
+    check(model.ShareDecisionFor(kGame).kind == cm::ShareKind::kUpdateOwn, "a saved share: the next one updates it");
+    check(find_row(model, "share-title") != nullptr, "the title row is there");
+    if (find_row(model, "share-title")->value == "Optional") {
+        activate(model, "share-title");
+        model.SubmitEditorText("Darkwood 4K");
+    }
+    activate(model, "share-send");
+    // A lost answer three times: the share fails; Try again sends the same key back.
+    api.answer_with({lost()});
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].submission.submission_id == "sub-1" && !sent[0].submission.based_on,
+          "the second share names the saved submission");
+    check(find_row(model, "share-send")->title == "Try again" && find_row(model, "share-send")->tone == "problem" &&
+              contains(find_row(model, "share-send")->subtitle, "couldn't reach"),
+          "a lost answer says so and offers Try again");
+    std::string first_key;
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        first_key = header_of(api.requests.front(), "Idempotency-Key");
+    }
+    api.answer_with({answer(429, R"({"error":"rate_limited","message":"slow down"})", {{"Retry-After", "600"}})});
+    activate(model, "share-send");
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].submission.idempotency_key == first_key, "Try again is the same share: the same key");
+    check(contains(find_row(model, "share-send")->subtitle, "Try again in 10 minutes"), "a rate limit says when to try again");
+    // A refused attempt starts over with a new key; this answer matches a published revision.
+    api.answer_with({answer(200, R"({"state":"duplicate","recipe_id":")" + kRecipeId + R"(","revision":")" + kRevision + R"("})")});
+    activate(model, "share-send");
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].submission.idempotency_key.empty(), "after a refusal the next attempt gets a new key");
+    check(model.state().navigation.modals.back().title == "Nothing new to share" && find_row(model, "share-vote"),
+          "a duplicate of a published recipe offers a thumbs up");
+    // Votes not asked yet: the thumbs up opens the vote sheet, which says what a vote sends.
+    activate(model, "share-vote");
+    check(model.view().surface == "vote-recipe" && contains(model.view().subtitle, "random sharing ID") &&
+              find_row(model, "vote-up")->selected,
+          "the first vote explains what is sent, thumbs up chosen");
+    activate(model, "vote-send");
+    check(model.state().recipe_votes == playden::RecipeVotesPreference::kOn, "sending the first vote turns votes on");
+    api.answer_with({answer(204, "")});
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].kind == SharingRequestKind::Vote && sent[0].vote.vote == "up" &&
+              sent[0].vote.recipe_id == kRecipeId && sent[0].vote.revision == kRevision && sent[0].vote.reason.empty(),
+          "the thumbs up goes to the worker");
+    check(model.state().vote_memory.Find(kRecipeId, kRevision) && model.state().vote_memory.Find(kRecipeId, kRevision)->vote == "up",
+          "the vote is remembered");
+    check(contains(read_text(base / "community-recipes" / cm::kVoteStateFileName), kRevision), "and saved by the worker");
+
+    // Duplicate of another console's pull request: no vote, its QR code.
+    open_share(model);
+    if (find_row(model, "share-title")->value == "Optional") {
+        activate(model, "share-title");
+        model.SubmitEditorText("Darkwood 4K");
+    }
+    api.answer_with({answer(200, R"({"state":"duplicate","recipe_id":"community-274520-x","pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/9"})")});
+    activate(model, "share-send");
+    pump(model, service);
+    check(model.state().navigation.modals.back().title == "Already in review" &&
+              model.state().navigation.modals.back().link == "https://github.com/leolobato/playden-ps5-recipes/pull/9" &&
+              contains(model.state().navigation.modals.back().body, "already sent the same settings"),
+          "a duplicate in review says so and shows its pull request");
+
+    // Votes after play: a game prepared with the community recipe, once per revision, five minutes or more.
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    open_game_settings(model);
+    activate(model, "preset-picker");
+    activate(model, "recipe-" + kRevision);
+    if (model.state().navigation.modals.back().id == "confirmation") activate(model, "recipe-switch-confirm");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = kGame;
+    runtime.status = "Ready";
+    runtime.prepared = runtime.has_title = runtime.ready = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    runtime.recipe_id = kRecipeId;
+    runtime.recipe_version = kNewerRevision.substr(0, 32);
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    check(!model.AppliedCommunityRecipe(kGame), "a revision the catalog and the choice don't name isn't guessed");
+    runtime.recipe_version = kRevision.substr(0, 32);
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    check(model.AppliedCommunityRecipe(kGame) && model.AppliedCommunityRecipe(kGame)->revision == kRevision,
+          "the title's 32-hex tag gives the full revision");
+    model.NotifySessionEnded(kGame, 120);
+    check(model.state().navigation.modals.empty(), "two minutes of play don't ask");
+    // Already voted for this revision (the thumbs up above): no prompt either.
+    model.NotifySessionEnded(kGame, 900);
+    check(model.state().navigation.modals.empty(), "a revision already voted for doesn't ask");
+    // A newer revision: asked once; Not now counts as asked.
+    auto catalog = model.state().community;
+    catalog.games[kGame] = {offer(kNewerRevision)};
+    model.UpdateCommunityCatalog(catalog);
+    open_game_settings(model);
+    activate(model, "recipe-update");
+    if (!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "confirmation")
+        activate(model, "recipe-switch-confirm");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    (void)model.TakeSharingRequests();
+    runtime.recipe_version = kNewerRevision.substr(0, 32);
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    model.NotifySessionEnded(kGame, 900);
+    check(model.view().surface == "vote-recipe" && model.view().title == "How did Darkwood run?" &&
+              contains(model.view().subtitle, "Darkwood at 4K"),
+          "after ten minutes with a new revision Playden asks how it ran");
+    auto asked = model.TakeSharingRequests();
+    check(asked.size() == 1 && asked[0].kind == SharingRequestKind::MarkAsked && asked[0].vote.revision == kNewerRevision,
+          "showing the prompt marks the revision as asked");
+    model.action("circle");
+    check(model.state().navigation.modals.empty(), "Not now closes the prompt");
+    for (auto& request : asked) service.Submit(std::move(request));
+    service.Wait();
+    if (auto memory = service.Memory()) model.UpdateVoteMemory(*memory);
+    model.NotifySessionEnded(kGame, 900);
+    check(model.state().navigation.modals.empty(), "a dismissed prompt doesn't ask about the revision again");
+    // Game settings keeps the vote: a thumbs down with a reason.
+    open_game_settings(model);
+    check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "Not yet", "Your vote: not yet");
+    activate(model, "recipe-vote");
+    activate(model, "vote-down");
+    check(find_row(model, "vote-reason-slow") && find_row(model, "vote-reason-crash"), "a thumbs down offers reasons");
+    activate(model, "vote-reason-slow");
+    activate(model, "vote-send");
+    api.answer_with({answer(204, "")});
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].vote.vote == "down" && sent[0].vote.reason == "slow" && sent[0].vote.revision == kNewerRevision,
+          "the thumbs down and its reason go to the worker");
+    check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "👎 Slow", "Your vote shows it");
+
+    // A newer revision chosen but the game not prepared with it yet: Your vote stays on the revision
+    // the title plays with. A failed send can be tried again from there.
+    const std::string third(64, 'f');  // not 'e': the votes-off part below uses it
+    model.SetCommunityRecipeLoader([third](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
+        if (revision == kRevision || revision == kNewerRevision || revision == third) return community_recipe(revision);
+        return std::nullopt;
+    });
+    auto later = model.state().community;
+    later.games[kGame] = {offer(third)};
+    model.UpdateCommunityCatalog(later);
+    open_game_settings(model);
+    activate(model, "recipe-update");
+    if (!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "confirmation")
+        activate(model, "recipe-switch-confirm");
+    (void)model.TakeSharingRequests();
+    check(model.state().game_settings.at(kGame).community_recipe.revision == third, "the newest revision is chosen");
+    check(model.VoteTargetFor(kGame) && model.VoteTargetFor(kGame)->revision == kNewerRevision,
+          "the vote is for the revision the game was prepared with");
+    open_game_settings(model);
+    check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "👎 Slow",
+          "Your vote shows the vote for the prepared revision, not the chosen one");
+    activate(model, "recipe-vote");
+    activate(model, "vote-up");
+    activate(model, "vote-send");
+    api.answer_with({answer(400, R"({"error":"rule","message":"no"})")});
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].vote.revision == kNewerRevision, "the vote goes to the prepared revision");
+    check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "👎 Slow", "a failed send changes nothing");
+    // The failure waits in a dialog until Game settings closes.
+    while (!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title != "The vote wasn't sent")
+        model.action("circle");
+    check(!model.state().navigation.modals.empty(), "a failed send says so");
+    open_game_settings(model);
+    activate(model, "recipe-vote");
+    check(model.view().surface == "vote-recipe", "Your vote opens again after a failed send");
+    activate(model, "vote-up");
+    activate(model, "vote-send");
+    api.answer_with({answer(204, "")});
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].vote.revision == kNewerRevision && find_row(model, "recipe-vote")->value == "👍 Good",
+          "sent again, the vote counts");
+    // Not prepared (yet): the vote is for the chosen revision.
+    runtime.prepared = false;
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    check(model.VoteTargetFor(kGame) && model.VoteTargetFor(kGame)->revision == third, "before preparing, the chosen revision");
+    runtime.prepared = true;
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+
+    // A status answer that echoes the sharing ID is refused whole; nothing of it reaches the model or a log.
+    {
+        const auto echoed = read_text(base / "community-recipes" / cm::kInstallSecretFileName).substr(0, 32);
+        SharingRequest status;
+        status.kind = SharingRequestKind::Status;
+        status.ticket = 9001;
+        status.game_id = kGame;
+        status.submission_id = "sub-1";
+        api.answer_with({answer(200, R"({"id":"sub-1","state":"published","recipe_id":"community-274520-darkwood-4k",)"
+                                     R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/)" + echoed + R"("})")});
+        service.Submit(std::move(status));
+        service.Wait();
+        const auto results = service.TakeResults();
+        check(results.size() == 1 && !results[0].status.ok && results[0].status.error.code == "bad_response" &&
+                  results[0].status.pr_url.empty(),
+              "a status answer holding the sharing ID is refused");
+        for (const auto& result : results) model.ApplySharingResult(result);
+        check(!contains(model.snapshot(), echoed), "the echoed sharing ID never reaches the model");
+    }
+
+    // Votes off: no prompt, and a thumbs up offer explains how to turn them on.
+    model.SetWallClock(1'000'000 + 2000);
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    model.action("circle");
+    model.action("l1");
+    check(model.state().navigation.route == playden::homebrew::Route::Settings, "Settings opens");
+    check(model.action("focus:settings-recipe-votes") && model.action("cross"), "Settings › Recipe votes toggles");
+    check(model.state().recipe_votes == playden::RecipeVotesPreference::kOff, "votes are off");
+    check(model.ExportPreferences().recipe_votes == playden::RecipeVotesPreference::kOff, "the preference is saved");
+    auto newest = model.state().community;
+    newest.games[kGame] = {offer(std::string(64, 'e'))};
+    runtime.recipe_version = std::string(32, 'e');
+    model.UpdateCommunityCatalog(newest);
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    model.NotifySessionEnded(kGame, 3600);
+    check(model.state().navigation.modals.empty() && model.TakeSharingRequests().empty(), "with votes off nothing asks or is sent");
+
+    // Reset sharing ID: confirmed, then done on the worker.
+    check(model.action("focus:settings-sharing-reset") && model.action("cross"), "Reset sharing ID asks first");
+    check(contains(model.state().navigation.modals.back().body, "can no longer be changed"), "it says what a reset means");
+    activate(model, "sharing-reset-confirm");
+    pump(model, service);
+    const auto fresh = read_text(base / "community-recipes" / cm::kInstallSecretFileName).substr(0, 32);
+    check(cm::IsInstallSecret(fresh) && fresh != secret, "the worker made a new sharing ID");
+
+    // The sharing ID never reached the model, its snapshot, the settings file or a log line.
+    for (const auto& id : {secret, fresh}) {
+        check(!contains(model.snapshot(), id), "the snapshot has no sharing ID");
+        check(!contains(read_text(base / "game-settings.json"), id), "the settings file has no sharing ID");
+        std::lock_guard<std::mutex> lock(log_mutex);
+        for (const auto& line : log) check(!contains(line, id), "no log line holds the sharing ID");
+    }
+    service.Shutdown();
+}
+
+// What the recipe cache keeps: nothing is collected while what is in use is unknown.
+void community_keep(const std::filesystem::path& base) {
+    using playden::homebrew::CommunityKeepRevisions;
+    using playden::homebrew::RuntimeHostStatus;
+    std::filesystem::create_directories(base);
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    check(CommunityKeepRevisions(model, nullptr, false, true) == std::set<std::string>{},
+          "the Mac host (never a runtime) keeps the choices alone");
+    check(!CommunityKeepRevisions(model, nullptr, false, false), "the console without a runtime host keeps everything");
+    playden::homebrew::RuntimeSnapshot runtime;
+    runtime.status = RuntimeHostStatus::kStarting;
+    runtime.community_references = {std::string(32, 'a')};
+    check(!CommunityKeepRevisions(model, &runtime, true, false), "a starting runtime keeps everything");
+    runtime.status = RuntimeHostStatus::kReady;
+    runtime.installs_known = false;
+    check(!CommunityKeepRevisions(model, &runtime, true, false), "installs not known yet keeps everything");
+    runtime.installs_known = true;
+    check(CommunityKeepRevisions(model, &runtime, true, false) == std::set<std::string>{std::string(32, 'a')},
+          "a ready runtime adds the installed games' recipes");
+    const auto unreadable = base / "unreadable-game-settings.json";
+    std::ofstream(unreadable) << "{ not json";
+    model.SetGameSettingsFile(unreadable);
+    check(!CommunityKeepRevisions(model, &runtime, true, false) && !CommunityKeepRevisions(model, nullptr, false, true),
+          "unreadable game settings keep everything");
+}
+
+}  // namespace
+
+int main() {
+    const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
+                      ("playden-sharing-test-" + std::to_string(getpid()));
+    std::error_code ignored;
+    std::filesystem::remove_all(base, ignored);
+    share_and_vote(base);
+    community_keep(base / "keep");
+    std::filesystem::remove_all(base, ignored);
+    std::puts("homebrew_sharing_test passed");
+    return 0;
+}

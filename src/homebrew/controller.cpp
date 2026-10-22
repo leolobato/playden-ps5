@@ -132,6 +132,11 @@ Controller::~Controller() { Shutdown(); }
 void Controller::Shutdown() {
   if (shut_down_) return;
   shut_down_ = true;
+  // The model reads recipe objects through the service, which its owner shuts down after this.
+  if (community_) {
+    model_.SetCommunityRecipeLoader({});
+    community_ = nullptr;
+  }
   // Preserve a confirmed sign-out queued by the last input frame before exit.
   if (service_)
     for (const auto action : model_.TakeServiceActions()) {
@@ -400,10 +405,130 @@ void Controller::Tick() {
   TickCloud();
   lap(6);
   TickRuntime();
+  TickCommunity();
+  TickSharing();
   lap(7);
   TickUninstalls();
   lap(8);
 }
+namespace {
+bool PreparedStore(community::RecipeStore& store) {
+  if (store.prepared()) return true;
+  std::string ignored;
+  return store.Prepare(&ignored);
+}
+}  // namespace
+
+std::function<std::optional<std::set<std::string>>()> CommunityKeepCallback(std::shared_ptr<CommunityKeepSet> keep) {
+  return [keep = std::move(keep)]() -> std::optional<std::set<std::string>> {
+    // Not known yet (the runtime is starting, or its install records can't be read): nothing is collected.
+    std::lock_guard<std::mutex> lock(keep->mutex);
+    return keep->revisions;
+  };
+}
+
+std::function<std::optional<std::string>(std::string_view)> CommunityRecipeBytes(std::shared_ptr<community::RecipeStore> objects) {
+  return [objects = std::move(objects)](std::string_view revision_or_prefix) -> std::optional<std::string> {
+    if (!objects || !PreparedStore(*objects)) return std::nullopt;
+    if (runtime::IsCommunityRevision(revision_or_prefix)) return objects->ReadObject(revision_or_prefix);
+    if (!runtime::IsCommunityRevisionPrefix(revision_or_prefix)) return std::nullopt;
+    const auto revision = objects->FindObjectByPrefix(revision_or_prefix);
+    return revision ? objects->ReadObject(*revision) : std::nullopt;
+  };
+}
+
+std::optional<std::set<std::string>> CommunityKeepRevisions(const Simulation& model, const RuntimeSnapshot* runtime,
+                                                           bool has_runtime, bool no_runtime_installs) {
+  if (!has_runtime) return no_runtime_installs ? model.CommunityChoicesInUse() : std::nullopt;
+  if (!runtime || runtime->status != RuntimeHostStatus::kReady || !runtime->installs_known) return std::nullopt;
+  auto keep = model.CommunityChoicesInUse();
+  if (keep) keep->insert(runtime->community_references.begin(), runtime->community_references.end());
+  return keep;
+}
+
+void Controller::SetCommunityRecipes(community::CommunityRecipeService* service, std::shared_ptr<CommunityKeepSet> keep,
+                                     bool no_runtime_installs) {
+  community_ = service;
+  community_keep_ = std::move(keep);
+  community_no_runtime_installs_ = no_runtime_installs;
+  community_revision_ = ~0ull;
+  // An object is read once per revision (≤ 16 KB, checked against its hash) and kept by the model.
+  if (service)
+    model_.SetCommunityRecipeLoader([service](const std::string& revision) { return service->LoadRecipe(revision); });
+  else
+    model_.SetCommunityRecipeLoader({});
+}
+
+void Controller::TickCommunity() {
+  if (!community_) return;
+  const auto now = std::chrono::steady_clock::now();
+  // The Install sheet opened, or every half hour: the service refreshes when its copy is a day old.
+  bool refresh = model_.TakeCommunityRefreshRequest();
+  if (community_refresh_at_ == std::chrono::steady_clock::time_point{}) community_refresh_at_ = now + std::chrono::minutes(30);
+  else if (now >= community_refresh_at_) {
+    community_refresh_at_ = now + std::chrono::minutes(30);
+    refresh = true;
+  }
+  if (refresh) community_->RequestRefresh(false);
+  const auto snapshot = community_->Snapshot();
+  if (snapshot->revision != community_revision_) {
+    community_revision_ = snapshot->revision;
+    CommunityCatalog catalog;
+    catalog.release_tag = snapshot->release_tag;
+    catalog.fetched_at = snapshot->fetched_at;
+    catalog.refreshing = snapshot->refreshing;
+    catalog.last_error = snapshot->last_error;
+    for (const auto& [app, summaries] : snapshot->apps) {
+      auto& offers = catalog.games[GameId::Steam(app)];
+      for (const auto& summary : summaries) {
+        CommunityRecipeOffer offer;
+        offer.id = summary.id;
+        offer.title = summary.title;
+        offer.status = summary.status;
+        offer.author = summary.author;
+        offer.contributors = summary.contributors;
+        offer.tested_kit = summary.tested_kit;
+        offer.min_kit = summary.min_kit;
+        offer.tested_firmware = summary.tested_firmware;
+        offer.tested_date = summary.tested_date;
+        offer.notes = summary.notes;
+        offer.revision = summary.revision;
+        offer.flags = summary.flags;
+        if (summary.votes) {
+          offer.has_votes = true;
+          offer.votes_up = summary.votes->up;
+          offer.votes_down = summary.votes->down;
+        }
+        offers.push_back(std::move(offer));
+      }
+    }
+    model_.UpdateCommunityCatalog(std::move(catalog));
+  }
+  // What the cache must keep: the installed games' recipes and every choice (saved or pending). The Mac
+  // host never has a runtime, so there are no installed games' records; on the console a missing
+  // runtime (no root access, no data folder) means they are unknown: nothing is collected then, nor
+  // before the runtime knows its installs, nor when the game settings could not be read.
+  if (!community_keep_) return;
+  const auto shared = runtime_ ? runtime_->Shared() : nullptr;
+  auto keep = CommunityKeepRevisions(model_, shared.get(), runtime_ != nullptr, community_no_runtime_installs_);
+  std::lock_guard<std::mutex> lock(community_keep_->mutex);
+  community_keep_->revisions = std::move(keep);
+}
+
+void Controller::TickSharing() {
+  if (!sharing_) {
+    // Without a service (tests, a build without one) requests have nowhere to go.
+    (void)model_.TakeSharingRequests();
+    return;
+  }
+  for (auto& request : model_.TakeSharingRequests()) sharing_->Submit(std::move(request));
+  for (const auto& result : sharing_->TakeResults()) model_.ApplySharingResult(result);
+  if (const auto revision = sharing_->MemoryRevision(); revision != sharing_memory_revision_) {
+    sharing_memory_revision_ = revision;
+    if (auto memory = sharing_->Memory()) model_.UpdateVoteMemory(std::move(*memory));
+  }
+}
+
 std::string Controller::LastTickProfile() const {
   static const char* const kNames[] = {"auth", "library", "persistence", "details", "store", "installs", "cloud", "runtime",
                                        "uninstalls"};
@@ -1260,11 +1385,16 @@ void Controller::TickRuntime() {
   if (snapshot.plays_handled >= plays_requested_) play_queued_.clear();
   if (snapshot.launch) {
     const std::pair<GameId, runtime::LaunchState> current{snapshot.launch->game, snapshot.launch->state};
-    if (current.second == runtime::LaunchState::kExited && last_launch_ != current && CloudCapable(current.first))
-      sync_after_session_.insert(current.first);
-    // An update waiting for the game to close tries again now rather than after its wait.
-    if (current.second == runtime::LaunchState::kExited && last_launch_ != current && installs_)
-      installs_->RetryWaiting(current.first.store);
+    if (current.second == runtime::LaunchState::kExited && last_launch_ != current) {
+      if (CloudCapable(current.first)) sync_after_session_.insert(current.first);
+      // A game played with a community recipe may ask for a vote (the runtime measured the session).
+      // played_seconds runs from the handoff to when the runtime noticed the exit, so it includes time
+      // Playden was suspended or closed while the game ran: an upper bound. Neither RuntimeLaunchView
+      // nor the launch journal records when the game itself ended, so nothing here can narrow it.
+      if (snapshot.launch->played_seconds) model_.NotifySessionEnded(current.first, *snapshot.launch->played_seconds);
+      // An update waiting for the game to close tries again now rather than after its wait.
+      if (installs_) installs_->RetryWaiting(current.first.store);
+    }
     last_launch_ = current;
   }
   const auto announce_ready = [this] {
@@ -1329,7 +1459,16 @@ void Controller::TickRuntime() {
     for (const auto& view : snapshot.installs) if (view.game == id) record = &view;
     const auto refusal = snapshot.refusals.find(NumberIn(snapshot, id));
     game.has_title = record != nullptr;
-    if (record) game.failure_code = record->failure_code;
+    if (record) {
+      game.failure_code = record->failure_code;
+      game.recipe_id = record->recipe_id;
+      game.recipe_version = record->recipe_version;
+    }
+    if (const auto fallback = snapshot.recipe_fallbacks.find(NumberIn(snapshot, id)); fallback != snapshot.recipe_fallbacks.end())
+      game.recipe_fallback = fallback->second;
+    if (const auto failure = snapshot.recipe_switch_failures.find(NumberIn(snapshot, id));
+        failure != snapshot.recipe_switch_failures.end())
+      game.recipe_switch_failure = failure->second;
     if (snapshot.status == RuntimeHostStatus::kStarting) {
       game.status = "Checking";
     } else if (snapshot.status != RuntimeHostStatus::kReady) {
@@ -1536,6 +1675,13 @@ void Controller::TickRuntime() {
     if (kit_capabilities_ != capabilities) {
       model_.SetKitCapabilities(runtime::KitCapabilitiesFromManifest(capabilities, true));
       kit_capabilities_ = std::move(capabilities);
+    }
+    // The kit's view, for what community recipes require of it (CommunityRecipeFits).
+    const std::string manifest = snapshot.kit ? snapshot.kit->manifest_sha256 : std::string();
+    if (!kit_view_sent_ || manifest != kit_view_manifest_) {
+      model_.SetKitView(snapshot.kit ? std::optional<runtime::VerifiedKitView>(snapshot.kit->view) : std::nullopt);
+      kit_view_sent_ = true;
+      kit_view_manifest_ = manifest;
     }
   }
   model_.UpdateRuntime(state, games);

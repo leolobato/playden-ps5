@@ -128,7 +128,7 @@ std::vector<std::string> RecipeStore::ListedObjects() const {
   return ReadList();
 }
 
-std::optional<std::string> RecipeStore::ReadObjectLocked(std::string_view revision) const {
+std::optional<std::string> RecipeStore::ReadObjectUnlocked(std::string_view revision) const {
   if (!IsRevision(revision)) return std::nullopt;
   auto bytes = ReadFile(ObjectPath(revision), kMaxRecipeBytes);
   if (!bytes || Sha256Hex(*bytes) != revision) return std::nullopt;
@@ -136,19 +136,20 @@ std::optional<std::string> RecipeStore::ReadObjectLocked(std::string_view revisi
 }
 
 std::optional<std::string> RecipeStore::ReadObject(std::string_view revision) const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return ReadObjectLocked(revision);
+  // No lock: a refresh writing objects must not hold up the UI thread (see recipe_store.h).
+  return ReadObjectUnlocked(revision);
 }
 
 std::optional<std::string> RecipeStore::FindObjectByPrefix(std::string_view prefix32) const {
   if (!IsRevisionPrefix(prefix32)) return std::nullopt;
-  std::lock_guard<std::mutex> lock(mutex_);
+  // No lock: objects.lst is replaced by rename, and each object's hash is checked.
   for (const auto& revision : ReadList())
-    if (std::string_view(revision).substr(0, 32) == prefix32 && ReadObjectLocked(revision)) return revision;
+    if (std::string_view(revision).substr(0, 32) == prefix32 && ReadObjectUnlocked(revision)) return revision;
   return std::nullopt;
 }
 
-bool RecipeStore::WriteObjects(const std::vector<std::string>& contents, std::string* error) {
+bool RecipeStore::WriteObjects(const std::vector<std::string>& contents, std::string* error,
+                               const std::atomic<bool>* cancel) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto listed = ReadList();
   std::set<std::string> known(listed.begin(), listed.end());
@@ -170,7 +171,11 @@ bool RecipeStore::WriteObjects(const std::vector<std::string>& contents, std::st
     if (!WriteFile(kObjectList, text, "objects.lst", error)) return false;
   }
   for (const auto& [revision, bytes] : objects) {
-    if (ReadObjectLocked(revision)) continue;  // content-addressed: already there
+    if (cancel && *cancel) {
+      if (error) *error = "cancelled";
+      return false;
+    }
+    if (ReadObjectUnlocked(revision)) continue;  // content-addressed: already there
     if (!WriteFile(ObjectPath(revision), *bytes, "object", error)) return false;
   }
   return true;
@@ -239,7 +244,7 @@ bool RecipeStore::WriteCurrent(const CurrentRelease& current, std::string* error
   return WriteFile(kCurrent, current.tag + " " + std::to_string(current.fetched_at) + "\n", "current", error);
 }
 
-std::size_t RecipeStore::CollectGarbage(const std::set<std::string>& keep) {
+std::size_t RecipeStore::CollectGarbage(const std::set<std::string>& keep, const std::atomic<bool>* cancel) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!prepared_) return 0;
   // The current release's objects stay whatever keep says. Without a readable current index
@@ -261,7 +266,8 @@ std::size_t RecipeStore::CollectGarbage(const std::set<std::string>& keep) {
   std::size_t removed = 0;
   const Storage storage(root_.string());
   for (const auto& revision : listed) {
-    if (current.count(revision) || keep.count(revision) || keep.count(revision.substr(0, 32))) {
+    // Stopping (Playden closes): what is left stays listed, for the next collection.
+    if ((cancel && *cancel) || current.count(revision) || keep.count(revision) || keep.count(revision.substr(0, 32))) {
       remaining.push_back(revision);
       continue;
     }

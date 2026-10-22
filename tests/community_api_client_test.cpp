@@ -225,8 +225,9 @@ void LocalRefusals() {
   request.choice = ShareChoice::kUpdate;  // no based_on
   CHECK(refused(request));
   request = MinimalRequest();
-  request.title.clear();
-  CHECK(refused(request));
+  request.title.clear();  // optional: left out of the body
+  CHECK(SubmissionBody(MinimalRequest()).find("},\"title\":") != std::string::npos);  // a title is sent when set
+  CHECK(!refused(request) && SubmissionBody(request).find("},\"title\":") == std::string::npos);
   request.title = std::string(61, 'x');
   CHECK(refused(request));
   request.title = std::string(60, 'x');
@@ -237,11 +238,20 @@ void LocalRefusals() {
   CHECK(!refused(request));
   request.title = "bad \xff utf8";
   CHECK(refused(request));
+  // Zero-width, bidi, ideographic spaces and private use: the API's checker refuses them.
+  for (const char* bad : {"A\u200Bb", "\u3000Title\u3000", "Title\u202E", "\u2066x\u2069", "\uE000", "\u00ADx"}) {
+    request.title = bad;
+    CHECK(refused(request));
+    CHECK(!IsSubmissionText(bad, 1, kSubmissionTitleMaxCharacters));
+  }
+  request.title = "Darkwood 4K";
   request = MinimalRequest();
   request.name = std::string(41, 'n');
   CHECK(refused(request));
   request.name = std::string(40, 'n');
   CHECK(!refused(request));
+  request.name = "\u3000Leo\u3000";
+  CHECK(refused(request));
   request = MinimalRequest();
   request.firmware.clear();
   CHECK(refused(request));
@@ -358,12 +368,18 @@ void SubmitAnswers() {
   api.answers = {Answer(500, "<html>oops</html>")};
   result = SubmitRecipe(context, kSecret, request, cancel);
   CHECK(result.error.http_status == 500 && result.error.code == "http_500" && result.error.message == "status 500");
-  // A message that echoes the secret, with control characters, too long: cleaned.
+  // A message that echoes the secret: the whole answer is refused, nothing of it kept.
   api.answers = {Answer(401, "{\"error\":\"unauthorized\",\"message\":\"bad Bearer " + kSecret + " or " + kSecret +
                                  "\\n" + std::string(400, 'x') + "\"}")};
   result = SubmitRecipe(context, kSecret, request, cancel);
-  CHECK(result.error.code == "unauthorized");
+  CHECK(result.error.code == "bad_response" && result.error.http_status == 401);
   CHECK(result.error.message.find(kSecret) == std::string::npos);
+  // Another credential in a message, with control characters, too long: cleaned.
+  api.answers = {Answer(401, "{\"error\":\"unauthorized\",\"message\":\"bad Bearer abcdefgh12345678 or" +
+                                 std::string("\\n") + std::string(400, 'x') + "\"}")};
+  result = SubmitRecipe(context, kSecret, request, cancel);
+  CHECK(result.error.code == "unauthorized");
+  CHECK(result.error.message.find("abcdefgh12345678") == std::string::npos);
   CHECK(result.error.message.find("<redacted>") != std::string::npos);
   CHECK(result.error.message.find('\n') == std::string::npos);
   CHECK(result.error.message.size() <= 220);
@@ -447,6 +463,55 @@ void Submissions() {
   api.requests.clear();
   for (const char* bad : {"", "../v1/votes", "s1?x=1", "a b"}) CHECK(GetSubmission(context, bad, cancel).error.code == "invalid_request");
   CHECK(api.requests.empty());
+}
+
+// An answer holding the sharing ID anywhere is refused whole: no field of it reaches a result.
+void SecretEchoes() {
+  FakeApi api;
+  const auto context = Context(&api);
+  std::atomic<bool> cancel{false};
+  const auto request = MinimalRequest();
+  const auto clean = [](const SubmissionResult& result) {
+    return result.outcome == SubmissionOutcome::kError && result.error.code == "bad_response" && result.id.empty() &&
+           result.recipe_id.empty() && result.state.empty() && result.pr_url.empty() && result.revision.empty() &&
+           result.error.message.find(kSecret) == std::string::npos;
+  };
+  const std::string pr = "https://github.com/p/r/pull/1";
+  for (const std::string& body : {
+           R"({"id":")" + kSecret + R"(","recipe_id":"community-274520-a","state":"in-review","pr_url":null})",
+           R"({"id":"s1","recipe_id":"community-274520-)" + kSecret + R"(","state":"in-review","pr_url":null})",
+           R"({"id":"s1","recipe_id":"community-274520-a","state":"in-review","pr_url":")" + pr + "?x=" + kSecret + R"("})",
+           // Escaped: found once unescaped.
+           std::string(R"({"id":"s1","recipe_id":"community-274520-a","state":"in-review","pr_url":null,"x":"\u0030123456789abcdef0123456789abcdef"})"),
+       }) {
+    api.answers = {Answer(201, body)};
+    CHECK(clean(SubmitRecipe(context, kSecret, request, cancel)));
+  }
+  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-274520-a","revision":")" + kSecret + kSecret + R"("})")};
+  CHECK(clean(SubmitRecipe(context, kSecret, request, cancel)));
+  // An error code that is the secret (it passes the code's character check).
+  api.answers = {Answer(400, R"({"error":")" + kSecret + R"(","message":"x"})")};
+  auto result = SubmitRecipe(context, kSecret, request, cancel);
+  CHECK(clean(result) && result.error.http_status == 400);
+  // The status call (no Authorization) refuses it too when it knows the secret.
+  api.answers = {Answer(200, R"({"id":"s1","state":"published","recipe_id":"community-274520-a","pr_url":")" + pr + "/" + kSecret + R"("})")};
+  auto status = GetSubmission(context, "s1", cancel, kSecret);
+  CHECK(!status.ok && status.error.code == "bad_response" && status.pr_url.empty() && status.recipe_id.empty());
+  api.answers = {Answer(404, R"({"error":")" + kSecret + R"(","message":"x"})")};
+  status = GetSubmission(context, "s1", cancel, kSecret);
+  CHECK(!status.ok && status.error.code == "bad_response");
+  // Votes.
+  VoteRequest vote;
+  vote.app_id = 274520;
+  vote.recipe_id = "community-274520-120hz-left-stick-pointer";
+  vote.revision = kRevision;
+  vote.vote = "up";
+  vote.kit = "0.12";
+  vote.firmware = "13.60";
+  vote.playden_version = "0.6.0";
+  api.answers = {Answer(429, R"({"error":"rate_limited","message":"slow down )" + kSecret + R"("})")};
+  const auto voted = SendVote(context, kSecret, vote, cancel);
+  CHECK(!voted.ok && voted.error.code == "bad_response" && voted.error.message.find(kSecret) == std::string::npos);
 }
 
 VoteRequest Vote() {
@@ -583,6 +648,7 @@ int main(int argc, char** argv) {
   SubmitAnswers();
   IdempotencyKeys();
   Submissions();
+  SecretEchoes();
   Votes();
   PlainHttp();
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);

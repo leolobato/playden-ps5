@@ -189,10 +189,9 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
 
   // Who and what.
   const auto title = PrintableCharacters(community.title, {false, true});
-  if (community.title.empty()) refuse("community.title is empty: give the name the chooser shows.");
-  else if (!title || *title > kCommunityTitleMaxCharacters)
+  // The title is optional: without one, Playden calls the recipe "Recipe from <author>".
+  if (!community.title.empty() && (!title || *title > kCommunityTitleMaxCharacters))
     refuse("community.title must be 1-60 printable characters.");
-  if (options.require_author && community.author.empty()) refuse("community.author is empty.");
   const auto name_ok = [](const std::string& name) {
     const auto characters = PrintableCharacters(name, {false, true});
     return characters && *characters >= 1 && *characters <= kCommunityNameMaxCharacters;

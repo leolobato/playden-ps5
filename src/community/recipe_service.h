@@ -36,8 +36,9 @@ struct RecipeServiceConfig {
   std::function<std::int64_t()> now;  // seconds since the epoch; default time()
   // Every revision something still uses (saved choices, installed games' records, unfinished
   // settings transactions): full revisions or 32-hex prefixes. Called on the worker after a
-  // successful refresh, before garbage collection; without it nothing is collected.
-  std::function<std::set<std::string>()> referenced;
+  // successful refresh, before garbage collection; without it, or when it returns nothing (what is in use is not
+  // known yet), nothing is collected.
+  std::function<std::optional<std::set<std::string>>()> referenced;
   std::string user_agent = "Playden";
   std::size_t worker_stack_bytes = 1 << 20;
   // Test hook: stops a refresh's write of that step (RecipeStore::before_write).

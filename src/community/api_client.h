@@ -6,7 +6,8 @@
 //   GET  /v1/submissions/<id>  a submission's state (no Authorization)
 //   POST /v1/votes        a thumbs up or down on a published recipe revision (Authorization)
 // The install secret goes only in the Authorization header, only to the API's own origin, and never
-// into a body, a URL, a result or an error message. Redirects are never followed.
+// into a body, a URL, a result or an error message. An answer that holds the secret anywhere (a
+// hostile or broken API echoing it) is refused whole as bad_response. Redirects are never followed.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <string_view>
 
 #include "community/endpoints.h"
+#include "community/printable_text.h"
 #include "community/share_decision.h"
 #include "runtime/game_settings.h"
 #include "update/asset_download.h"
@@ -56,8 +58,8 @@ struct SubmissionRequest {
   // The recipe as SerializeCommunityRecipe writes it (see RecipeJsonForSubmission): it must parse
   // with ParseCommunityRecipe for app_id, use only the accepted keys, lock nothing and fit 16 KB.
   std::string recipe_json;
-  std::string title;  // 1-60 printable characters
-  std::string name;   // 0-40 printable characters; empty: left out (the API credits "Anonymous")
+  std::string title;  // optional: 0-60 characters IsSubmissionText accepts; empty is left out
+  std::string name;   // 0-40 such characters; empty: left out (the recipe has no author: "from the community")
   std::optional<RecipeRef> based_on;           // left out when not set
   ShareChoice choice = ShareChoice::kNone;     // sent only when the player was asked
   std::string submission_id;                   // the game's saved submission; left out when empty
@@ -126,7 +128,9 @@ bool IsIdempotencyKey(std::string_view key);
 
 SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secret, const SubmissionRequest& request,
                               const std::atomic<bool>& cancel);
-SubmissionStatus GetSubmission(const ApiContext& context, const std::string& id, const std::atomic<bool>& cancel);
+// known_secret is never sent: an answer holding it is refused (bad_response).
+SubmissionStatus GetSubmission(const ApiContext& context, const std::string& id, const std::atomic<bool>& cancel,
+                               std::string_view known_secret = {});
 VoteResult SendVote(const ApiContext& context, const std::string& secret, const VoteRequest& request,
                     const std::atomic<bool>& cancel);
 

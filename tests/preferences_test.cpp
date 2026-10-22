@@ -186,10 +186,11 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   Check(store.Save(preferences).ok(), "sign-in method preference saves");
   const auto saved = storage.Read("preferences.conf");
   Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()) ==
-                          "version=12\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
+                          "version=13\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
                           "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
-                          "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\nruntime_prompt_kit=\n",
-        "version 12 format includes Automatic download server, web access and English");
+                          "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\nruntime_prompt_kit=\n"
+                          "recipe_votes=0\nsharing_explained=0\nshare_name=\n",
+        "version 13 format includes Automatic download server, web access, English and the community fields");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
             loaded.preferences.cloud_saves_auto,
@@ -249,6 +250,98 @@ void StaySignedInDefaultsOnAndPersistsOff() {
   const auto corrupt = store.Load();
   Check(corrupt.status == playden::PreferencesLoadStatus::kDefaultCorrupt && corrupt.preferences.steam_stay_signed_in,
         "a bad stay signed in value is corrupt and restores the default");
+}
+
+void CommunityPreferencesPersistAndVersionSixStillLoads() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::PreferencesStore store(storage);
+  const auto fresh = store.Load();
+  Check(fresh.preferences.recipe_votes == playden::RecipeVotesPreference::kUnset && !fresh.preferences.sharing_explained &&
+            fresh.preferences.share_name.empty(),
+        "a fresh install has not been asked about votes and has no name");
+  const std::string version_six = "version=6\nreduce_motion=1\ntitle_store_suffix=0\ncloud_saves_auto=0\nsteam_sign_in_password=0\n"
+                                  "downloads_slow_network=0\nsteam_stay_signed_in=0\n";
+  Check(storage.WriteAtomic("preferences.conf", playden::Bytes(version_six.begin(), version_six.end())).ok(),
+        "version 6 fixture is written");
+  const auto six = store.Load();
+  Check(six.status == playden::PreferencesLoadStatus::kLoaded && six.preferences.reduce_motion &&
+            !six.preferences.steam_stay_signed_in && six.preferences.recipe_votes == playden::RecipeVotesPreference::kUnset,
+        "version 6 preferences load with votes not asked yet");
+  playden::Preferences preferences;
+  preferences.recipe_votes = playden::RecipeVotesPreference::kOff;
+  preferences.sharing_explained = true;
+  preferences.share_name = "Crème Brûlée = fan";
+  Check(store.Save(preferences).ok(), "community preferences save");
+  const auto loaded = store.Load();
+  Check(loaded.status == playden::PreferencesLoadStatus::kLoaded &&
+            loaded.preferences.recipe_votes == playden::RecipeVotesPreference::kOff && loaded.preferences.sharing_explained &&
+            loaded.preferences.share_name == "Crème Brûlée = fan",
+        "votes off, the explained share and the name survive restart");
+  preferences.recipe_votes = playden::RecipeVotesPreference::kOn;
+  Check(store.Save(preferences).ok() && store.Load().preferences.recipe_votes == playden::RecipeVotesPreference::kOn,
+        "votes on survives restart");
+  // A name that can't be read back is not written.
+  preferences.share_name = "two\nlines";
+  Check(store.Save(preferences).ok() && store.Load().status == playden::PreferencesLoadStatus::kLoaded &&
+            store.Load().preferences.share_name.empty(),
+        "a name with a line break is dropped, not saved");
+  Check(playden::IsShareName("") && playden::IsShareName(std::string(40, 'a')) && !playden::IsShareName(std::string(41, 'a')) &&
+            !playden::IsShareName("tab\there") && !playden::IsShareName("\xC3") && playden::IsShareName("\xC3\xA9t\xC3\xA9"),
+        "a share name is 0-40 characters of UTF-8 on one line");
+  // The API's rule: no zero-width, bidi or unusual space characters, no private use.
+  Check(!playden::IsShareName("A\u200Bb") && !playden::IsShareName("\u3000Leo\u3000") && !playden::IsShareName("Leo\u202E") &&
+            !playden::IsShareName("\uE000") && !playden::IsShareName("\u00A0Leo") && playden::IsShareName("Leo Lobato"),
+        "a share name refuses what the API refuses");
+  {
+    // A file whose name a looser rule let in still loads; only the name is dropped.
+    const std::string padded = "version=13\nreduce_motion=1\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                               "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                               "beta_updates=0\ndownload_server=\nweb_access=1\ncontent_language=english\nhide_run_once_help=0\n"
+                               "hide_launcher_help=0\nruntime_prompt_kit=\nrecipe_votes=1\nsharing_explained=1\nshare_name=\u3000Leo\u3000\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(padded.begin(), padded.end())).ok(), "padded fixture is written");
+    const auto kept = store.Load();
+    Check(kept.status == playden::PreferencesLoadStatus::kLoaded && kept.preferences.reduce_motion &&
+              kept.preferences.recipe_votes == playden::RecipeVotesPreference::kOn && kept.preferences.sharing_explained &&
+              kept.preferences.share_name.empty(),
+          "a name the API refuses is dropped, the other preferences load");
+  }
+  {
+    // Version 8 (download server) still loads, with votes not asked yet.
+    const std::string version_eight = "version=8\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                                      "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                                      "beta_updates=0\ndownload_server=cache.example\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(version_eight.begin(), version_eight.end())).ok(),
+          "version 8 fixture is written");
+    const auto eight = store.Load();
+    Check(eight.status == playden::PreferencesLoadStatus::kLoaded && eight.preferences.download_server == "cache.example" &&
+              eight.preferences.recipe_votes == playden::RecipeVotesPreference::kUnset && eight.preferences.share_name.empty(),
+          "version 8 preferences keep the download server and load with votes not asked yet");
+  }
+  {
+    // Version 7 (beta updates) still loads, with votes not asked yet.
+    const std::string version_seven = "version=7\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                                      "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                                      "beta_updates=1\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(version_seven.begin(), version_seven.end())).ok(),
+          "version 7 fixture is written");
+    const auto seven = store.Load();
+    Check(seven.status == playden::PreferencesLoadStatus::kLoaded && seven.preferences.beta_updates &&
+              seven.preferences.recipe_votes == playden::RecipeVotesPreference::kUnset && seven.preferences.share_name.empty(),
+          "version 7 preferences keep beta updates and load with votes not asked yet");
+  }
+  for (const std::string bad : {std::string("version=13\nreduce_motion=0\n"),
+                                std::string("version=13\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                                            "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                                            "beta_updates=0\ndownload_server=\nweb_access=1\ncontent_language=english\nhide_run_once_help=0\n"
+                                            "hide_launcher_help=0\nruntime_prompt_kit=\nrecipe_votes=3\nsharing_explained=0\nshare_name=\n"),
+                                std::string("version=13\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                                            "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                                            "beta_updates=0\ndownload_server=\nweb_access=1\ncontent_language=english\nhide_run_once_help=0\n"
+                                            "hide_launcher_help=0\nruntime_prompt_kit=\nrecipe_votes=1\nsharing_explained=0\nshare_name=x\nextra=1\n")}) {
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(bad.begin(), bad.end())).ok(), "bad fixture is written");
+    Check(store.Load().status == playden::PreferencesLoadStatus::kDefaultCorrupt, "a bad version 13 file is corrupt");
+  }
 }
 
 void CorruptPreferencesRestoreDefaultsWithVisibleDiagnostic() {
@@ -385,8 +478,8 @@ void OlderPreferencesUseAutomaticDownloadServer() {
           "migration retains old fields and defaults later fields");
     Check(store.Save(loaded.preferences).ok(), "migrated preferences save");
     const auto saved = storage.Read("preferences.conf");
-    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=12\n", 0) == 0,
-          "saving a migrated file writes version 12");
+    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=13\n", 0) == 0,
+          "saving a migrated file writes version 13");
     Check(loaded.preferences.web_access, "every older preference version has web access on");
     Check(loaded.preferences.content_language == "english", "every older preference version downloads English");
   }
@@ -567,6 +660,7 @@ int main() {
   DownloadServerRoundTripsAndInvalidHostsUseAutomatic();
   VersionEightRejectsTruncatedOrMalformedFiles();
   ContentLanguagePersistsAndOlderVersionsStayEnglish();
+  CommunityPreferencesPersistAndVersionSixStillLoads();
 
   if (failures != 0) {
     std::fprintf(stderr, "%d preference test assertion(s) failed\n", failures);

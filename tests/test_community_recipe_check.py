@@ -55,7 +55,6 @@ expected = {
     "locked.json": "locked must be empty",
     "export-no-slug-no-title.json": "has no slug",
     "kit-not-a-version.json": "tested_kit is not a kit version",
-    "no-author.json": "community.author is empty",
     "env-vkd3d-log-file.json": "VKD3D_LOG_FILE is not one Playden sets",
     "env-vkd3d-shader-cache-path.json": "VKD3D_SHADER_CACHE_PATH is not one Playden sets",
     "program-system-msiexec.json": "a Windows or Wine system program",
@@ -78,6 +77,10 @@ for path in hostile:
     check(f"refused {path}: " in result.stdout and expected.get(path.name, "?") in result.stdout,
           f"{path.name} refused for its reason: {result.stdout}")
     check(f"ok {path}" not in result.stdout, f"{path.name} is not ok")
+
+# A recipe shared without a name has no author and is accepted.
+nameless = run(FIXTURES / "accepted" / "no-author.json")
+check(nameless.returncode == 0 and "ok " in nameless.stdout, "a recipe without an author passes: " + nameless.stdout)
 
 # The AppDefaults key of a fake system-program entry is still listed for review.
 check("registry: Software\\Wine\\AppDefaults\\msiexec.exe" in run(FIXTURES / "hostile" / "program-system-msiexec.json").stdout,

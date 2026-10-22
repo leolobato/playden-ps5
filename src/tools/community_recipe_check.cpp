@@ -108,7 +108,6 @@ void Check(Result* result) {
   auto& community = result->community;
   rt::SplitCommunityRecipeId(community.recipe.id, nullptr, &result->slug);
   rt::CommunityCheckOptions options;
-  options.require_author = true;
   result->refusals = rt::CommunityRecipeRefusals(community, options);
   CheckLayout(result);
   result->flags = rt::CommunityRecipeFlags(community);

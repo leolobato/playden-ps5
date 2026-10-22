@@ -417,8 +417,13 @@ bool CommunityRecipeService::Refresh(std::string* error) {
     std::lock_guard<std::mutex> lock(shared_->write_mutex);
     // Objects, then the release's index (and votes), and the pointer last: a refresh cut short
     // leaves the previous release in use.
-    if (!good.empty() && !store_->WriteObjects(good, &reason)) {
+    // Playden closing stops the writes between files; the pointer then stays on the previous release.
+    if (!good.empty() && !store_->WriteObjects(good, &reason, &shared_->cancel)) {
       *error = "Can't store the community recipes (" + reason + ").";
+      return false;
+    }
+    if (shared_->cancel) {
+      *error = "cancelled";
       return false;
     }
     if (!stored_index && !store_->WriteRelease(release->tag, index_json, &reason)) {
@@ -426,6 +431,10 @@ bool CommunityRecipeService::Refresh(std::string* error) {
       return false;
     }
     if (votes_json && !store_->WriteVotes(*votes_json, &reason)) Log("community recipes: " + reason);
+    if (shared_->cancel) {
+      *error = "cancelled";
+      return false;
+    }
     if (!store_->WriteCurrent(CurrentRelease{release->tag, fetched_at}, &reason)) {
       *error = "Can't store the community recipes (" + reason + ").";
       return false;
@@ -445,7 +454,8 @@ bool CommunityRecipeService::Refresh(std::string* error) {
   if (config_.referenced) {
     const auto keep = config_.referenced();
     std::lock_guard<std::mutex> lock(shared_->write_mutex);
-    const auto removed = store_->CollectGarbage(keep);
+    const auto removed = keep && !shared_->cancel ? store_->CollectGarbage(*keep, &shared_->cancel) : 0;
+    if (!keep) Log("community recipes: kept every recipe file (what is in use is not known yet)");
     if (removed) Log("community recipes: removed " + std::to_string(removed) + " unused recipe files");
   }
   return true;
@@ -471,7 +481,7 @@ std::optional<runtime::CommunityRecipe> CommunityRecipeService::LoadRecipe(std::
 std::size_t CommunityRecipeService::CollectGarbage(const std::set<std::string>& keep) {
   std::lock_guard<std::mutex> lock(shared_->write_mutex);
   if (!store_->prepared()) return 0;
-  return store_->CollectGarbage(keep);
+  return store_->CollectGarbage(keep, &shared_->cancel);
 }
 
 }  // namespace playden::community

@@ -10,7 +10,10 @@
 // 0600) and every write goes through platform::ManagedDirectory (platform::Storage's durable
 // writes: a temporary file, then rename). A refresh writes objects.lst first, then the objects,
 // the release index and votes, and replaces current last, so a refresh cut short leaves the
-// previous release in use. Thread-safe: one mutex around every file operation.
+// previous release in use. Thread-safe: one mutex serializes the writes (and garbage collection).
+// Reading an object needs no lock: objects are named by their content and replaced by rename, so a
+// read sees a whole file or none, and its hash is checked; objects.lst is replaced the same way.
+// So the UI thread's LoadRecipe never waits behind a refresh's writes.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <atomic>
@@ -47,8 +50,9 @@ class RecipeStore {
   // still match it; nothing when there is none.
   std::optional<std::string> FindObjectByPrefix(std::string_view prefix32) const;
   // Writes the objects not already present (their name is their sha256), after adding them to
-  // objects.lst.
-  bool WriteObjects(const std::vector<std::string>& contents, std::string* error);
+  // objects.lst. Stops between files once *cancel is set (error "cancelled").
+  bool WriteObjects(const std::vector<std::string>& contents, std::string* error,
+                    const std::atomic<bool>* cancel = nullptr);
 
   std::optional<std::string> ReadRelease(std::string_view tag) const;
   bool WriteRelease(std::string_view tag, std::string_view index_json, std::string* error);
@@ -63,8 +67,9 @@ class RecipeStore {
   // Deletes every object listed in objects.lst that is neither in keep (full revisions or 32-hex
   // prefixes) nor listed by the current release's index, then rewrites objects.lst. Returns the
   // number of objects removed. Must not run while a refresh is writing (its new objects are not
-  // listed by current yet): CommunityRecipeService serializes the two.
-  std::size_t CollectGarbage(const std::set<std::string>& keep);
+  // listed by current yet): CommunityRecipeService serializes the two. Stops between files once
+  // *cancel is set; what it did not reach stays listed.
+  std::size_t CollectGarbage(const std::set<std::string>& keep, const std::atomic<bool>* cancel = nullptr);
 
   // The revisions objects.lst lists.
   std::vector<std::string> ListedObjects() const;
@@ -80,7 +85,8 @@ class RecipeStore {
   bool WriteFile(const std::string& relative, std::string_view bytes, const char* step, std::string* error);
   std::vector<std::string> ReadList() const;
   std::set<std::string> CurrentRevisions() const;
-  std::optional<std::string> ReadObjectLocked(std::string_view revision) const;
+  // Without the mutex: see the top of this file.
+  std::optional<std::string> ReadObjectUnlocked(std::string_view revision) const;
   std::optional<CurrentRelease> ReadCurrentLocked() const;
 
   std::filesystem::path root_;

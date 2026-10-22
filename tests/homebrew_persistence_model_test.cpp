@@ -505,8 +505,7 @@ void PendingGameEditorPinsItsTargetAcrossDelayedSelection() {
     Check(model.action("focus:note"), "note context row exists");
     Check(model.state().navigation.selected_game_id == SteamId(43), "focusing note keeps game target");
     Check(model.action("cross"), "note context row activates");
-    Check(model.state().navigation.selected_game_id == SteamId(43), "note modal keeps game target");
-    Activate(model, "edit-note");
+    Check(model.state().editor.active, "the Note item opens the note editor directly");
     Check(model.state().navigation.selected_game_id == SteamId(43), "note editor starts on game target");
     model.text("local note");
     OrganizationSnapshot saved;

@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdio>
 #include <filesystem>
 #include <set>
@@ -167,6 +168,30 @@ int main() {
   CHECK(!store.ReadVotes());
   CHECK(store.WriteVotes(R"({"recipes":{}})", &error));
   CHECK(store.ReadVotes() == std::string(R"({"recipes":{}})"));
+
+  // Playden closing: a write stops between objects, garbage collection between files, and what
+  // collection did not reach stays listed.
+  {
+    RecipeStore closing(user / "closing");
+    CHECK(closing.Prepare(&error));
+    std::atomic<bool> stop{false};
+    int objects = 0;
+    closing.before_write = [&](const std::string& step) {
+      if (step == "object" && ++objects == 1) stop = true;  // set while the first object is written
+      return true;
+    };
+    error.clear();
+    CHECK(!closing.WriteObjects({a, b, c}, &error, &stop) && error == "cancelled");
+    CHECK(objects == 1 && closing.ReadObject(ra) && !closing.ReadObject(rb) && !closing.ReadObject(rc));
+    closing.before_write = nullptr;
+    stop = false;
+    CHECK(closing.WriteObjects({b, c}, &error, &stop));
+    stop = true;
+    CHECK(closing.CollectGarbage({}, &stop) == 0);  // no current release: all could go, none did
+    CHECK(closing.ReadObject(ra) && closing.ReadObject(rb) && closing.ListedObjects().size() == 3);
+    stop = false;
+    CHECK(closing.CollectGarbage({}, &stop) == 3 && closing.ListedObjects().empty());
+  }
 
   // A public (not private) folder is refused rather than used.
   RecipeStore other(user / "other");

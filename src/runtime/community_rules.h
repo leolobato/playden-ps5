@@ -17,16 +17,14 @@ inline constexpr std::size_t kCommunityTitleMaxCharacters = 60;
 inline constexpr std::size_t kCommunityNameMaxCharacters = 64;
 inline constexpr std::size_t kCommunityMaxContributors = 32;
 
-struct CommunityCheckOptions {
-  // The recipes repository credits every file: author must be set. The console reads recipes
-  // without one.
-  bool require_author = false;
-};
+// Rules only the recipes repository's CI applies would go here; none so far. A recipe without an
+// author is fine everywhere: it was shared without a name and shows as "from the community".
+struct CommunityCheckOptions {};
 
 // Every strict rule a parsed community recipe breaks, one sentence each; empty when it may be
 // published and offered. On top of ParseCommunityRecipe:
 // - identity: recipe_id community-<app id>-<slug> for app_id (not the export's slugless form), at most 64 bytes;
-// - title 1-60 printable characters, author set when options ask, contributors named once each; no text field holds
+// - title optional (1-60 printable characters when set), author optional, contributors named once each; no text field holds
 //   invalid UTF-8, control, bidirectional or surrogate characters (notes may hold new lines and tabs), and names and
 //   titles have no space or invisible character at either end;
 // - tested_kit and min_kit, when set, real kit versions (ParseKitVersion); tested_date YYYY-MM-DD when set;

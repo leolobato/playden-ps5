@@ -14,6 +14,11 @@
 #include "stores/local/library_source.h"
 #include "app/diagnostic_log.h"
 #include "runtime/game_probe.h"
+#include "community/endpoints.h"
+#include "community/recipe_service.h"
+#include "homebrew/sharing_service.hpp"
+#include "update/version.h"
+#include "diagnostics/redaction.h"
 #include "runtime/settings_storage.h"
 #include "homebrew/input_adapter.hpp"
 #include "homebrew/json.hpp"
@@ -475,6 +480,12 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::steam::CloudService> cloud;
     std::unique_ptr<playden::steam::StoreDetailsService> store_details;  // declared first: the controller uses it
     std::unique_ptr<playden::stores::Registry> stores;  // declared first: the controller uses it
+    // Community recipes; declared first: the controller uses the service, the service its HTTP client.
+    std::unique_ptr<playden::steam::HttpClient> community_http;
+    std::unique_ptr<playden::community::CommunityRecipeService> community;
+    // Sharing recipes and votes, with its own HTTP client; declared first for the same reason.
+    std::unique_ptr<playden::steam::HttpClient> sharing_http;
+    std::unique_ptr<playden::homebrew::SharingService> sharing;
     std::unique_ptr<playden::homebrew::Controller> services;
     std::unique_ptr<playden::homebrew::HttpArtworkBackend> artwork_backend;
     std::unique_ptr<playden::homebrew::ProgramIconArtworkBackend> program_icons;
@@ -764,6 +775,44 @@ int main(int argc, char** argv) {
         });
         store_details = std::make_unique<playden::steam::StoreDetailsService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
         services->SetStoreDetails(store_details.get());
+        // Community recipes: the latest release of the recipes repository, kept under the data folder.
+        // The Mac host has no runtime: the cache keeps the saved choices (and the current release).
+        {
+            const auto root = options->data_directory / "community-recipes";
+            playden::community::RecipeServiceConfig config;
+            config.store_root = root.string();
+            std::string endpoints_line;
+            config.endpoints = playden::community::LoadEndpoints((options->data_directory / playden::community::kDevEndpointsFileName).string(),
+                                                                 &endpoints_line);
+            const auto community_log = [log_directory](const std::string& line) {
+                playden::app::AppendLogLine(log_directory, "community.log", playden::diagnostics::RedactSecrets(line));
+            };
+            if (!endpoints_line.empty()) community_log(endpoints_line);
+            community_http = std::make_unique<playden::steam::HttpClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
+            config.fetch = [client = community_http.get()](const playden::steam::HttpRequest& request, const std::atomic<bool>& cancel) {
+                return client->Perform(request, cancel);
+            };
+            config.log = community_log;
+            auto keep = std::make_shared<playden::homebrew::CommunityKeepSet>();
+            config.referenced = playden::homebrew::CommunityKeepCallback(keep);
+            const auto endpoints = config.endpoints;
+            community = std::make_unique<playden::community::CommunityRecipeService>(std::move(config));
+            community->Start();
+            services->SetCommunityRecipes(community.get(), keep, /*no_runtime_installs=*/true);
+            // Sharing and votes: the sharing ID and the vote memory live beside the recipe store.
+            playden::homebrew::SharingServiceConfig sharing_config;
+            sharing_config.store_root = root.string();
+            sharing_config.endpoints = endpoints;
+            sharing_http = std::make_unique<playden::steam::HttpClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
+            sharing_config.fetch = [client = sharing_http.get()](const playden::steam::HttpRequest& request, const std::atomic<bool>& cancel) {
+                return client->Perform(request, cancel);
+            };
+            sharing_config.log = community_log;
+            sharing = std::make_unique<playden::homebrew::SharingService>(std::move(sharing_config));
+            sharing->Start();
+            services->SetSharing(sharing.get());
+            simulation.SetSharingContext("", playden::update::CurrentVersion().ToString());
+        }
     }
 
     if (!options->simulation) {
@@ -918,6 +967,8 @@ int main(int argc, char** argv) {
     SDL_StopTextInput();
     if (services) services->Shutdown();
     if (web) web->Shutdown();
+    if (community) community->Shutdown();  // before its HTTP client goes
+    if (sharing) sharing->Shutdown();
     // The install service stops before the Local store goes (`stores` is destroyed before
     // `installs`): its copy runner's change callback calls into the Local store. Explicit here, so
     // it doesn't rest on the controller's shutdown or on declaration order.

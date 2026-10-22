@@ -98,7 +98,6 @@ CommunityRecipe Load(const std::string& path) {
 
 void Rules(const std::string& fixtures) {
   CommunityCheckOptions ci;
-  ci.require_author = true;
   const auto good = Load(fixtures + "/recipes/274520/120hz-left-stick-pointer.json");
   CHECK(good.recipe.id == "community-274520-120hz-left-stick-pointer" && good.title == "120 Hz, pointer on left stick");
   CHECK(good.tested_kit == "0.12" && good.min_kit.empty() && good.contributors.empty());
@@ -126,10 +125,10 @@ void Rules(const std::string& fixtures) {
   refused("registry-other-program.json", "explorer.exe, which is not one of the recipe's programs");
   refused("locked.json", "locked must be empty");
   refused("export-no-slug-no-title.json", "has no slug");
-  refused("export-no-slug-no-title.json", "community.title is empty");
+  // The title is optional; the export is still refused for its missing slug.
+  CHECK(!Mentions(CommunityRecipeRefusals(Load(fixtures + "/hostile/export-no-slug-no-title.json"), ci), "community.title"));
   refused("kit-not-a-version.json", "tested_kit is not a kit version");
   refused("kit-not-a-version.json", "min_kit is not a kit version");
-  refused("no-author.json", "community.author is empty");
   refused("env-vkd3d-log-file.json", "VKD3D_LOG_FILE is not one Playden sets");
   refused("env-vkd3d-shader-cache-path.json", "VKD3D_SHADER_CACHE_PATH is not one Playden sets");
   refused("program-system-msiexec.json", "msiexec.exe, a Windows or Wine system program");
@@ -146,8 +145,8 @@ void Rules(const std::string& fixtures) {
   // The fake entry's AppDefaults key is still listed for review.
   CHECK(Mentions(CommunityRecipeFlags(Load(fixtures + "/hostile/program-system-msiexec.json")),
                  "registry: Software\\Wine\\AppDefaults\\msiexec.exe"));
-  // The console reads recipes without an author.
-  CHECK(CommunityRecipeRefusals(Load(fixtures + "/hostile/no-author.json")).empty());
+  // A recipe shared without a name has no author: it shows as "from the community", in CI and on the console.
+  CHECK(CommunityRecipeRefusals(Load(fixtures + "/accepted/no-author.json"), ci).empty());
   // Ids the parser can't take at all: too long, or for another app.
   CommunityRecipe ignored;
   std::string reason;
