@@ -183,6 +183,55 @@ int main(int argc, char** argv) {
     CHECK(!ProvideLegacySteam(legacy.string(), fake.string(), programs).ok && !fs::exists(legacy / "steam.dll"));
   }
 
+  {  // Online: the bridge is the 64-bit DLL, the emulator sits beside it, and the token file is private.
+    const auto game = root / "online";
+    const auto own64 = GameDll(true, "online64");
+    const auto own32 = GameDll(false, "online32");
+    Write(game / "Win64/steam_api64.dll", own64);
+    Write(game / "Win32/steam_api.dll", own32);
+    const auto bridge = Read(fs::path(emulator) / "steam_api64_online.dll");
+    CHECK(!bridge.empty() && *HashArtifactBytes(bridge) == kSteamOnlineBridgeSha256);
+    SteamworksIdentity online = identity;
+    online.account_name = "player";
+    online.online = true;
+    online.refresh_token = "eyJ.refresh.token";
+    auto swapped = EmulateSteamworks(game.string(), emulator, online);
+    CHECK(swapped.ok && swapped.changed.size() == 2);
+    CHECK(Read(game / "Win64/steam_api64.dll") == bridge && Read(game / "Win64/steam_api64_gbe.dll") == emulator64);
+    CHECK(Read(game / "Win64/steam_api64.dll.orig") == own64);
+    const auto token_file = game / "Win64/steam_settings/playden_online.txt";
+    CHECK(Read(token_file) == "app_id=2062430\nsteam_id=76561198000000000\naccount_name=player\n"
+                              "refresh_token=eyJ.refresh.token\n");
+    CHECK((fs::status(token_file).permissions() & fs::perms::all) == (fs::perms::owner_read | fs::perms::owner_write));
+    CHECK(Read(game / "Win64/steam_settings/configs.main.ini").find("offline=0\n") != std::string::npos);
+    // 32-bit DLLs keep the plain emulator.
+    CHECK(Read(game / "Win32/steam_api.dll") == emulator32 && !fs::exists(game / "Win32/steam_settings/playden_online.txt"));
+    // Again: nothing changes hands.
+    CHECK(EmulateSteamworks(game.string(), emulator, online).changed.empty());
+    // A token that would break a line is refused.
+    SteamworksIdentity broken_token = online;
+    broken_token.refresh_token = "a\nb";
+    CHECK(!EmulateSteamworks(game.string(), emulator, broken_token).ok);
+    // Back to offline emulation: the bridge, its emulator copy and the token go.
+    swapped = EmulateSteamworks(game.string(), emulator, identity);
+    CHECK(swapped.ok && (swapped.changed == std::vector<std::string>{"Win64/steam_api64.dll"}));
+    CHECK(Read(game / "Win64/steam_api64.dll") == emulator64 && !fs::exists(game / "Win64/steam_api64_gbe.dll"));
+    CHECK(!fs::exists(token_file) && Read(game / "Win64/steam_api64.dll.orig") == own64);
+    // Online again, then the game's own files: everything of Playden's goes.
+    CHECK(EmulateSteamworks(game.string(), emulator, online).ok);
+    auto restored = RestoreSteamworks(game.string());
+    CHECK(restored.ok && restored.changed.size() == 2);
+    CHECK(Read(game / "Win64/steam_api64.dll") == own64 && !fs::exists(game / "Win64/steam_api64_gbe.dll"));
+    CHECK(!fs::exists(token_file));
+    // A damaged bridge is never installed.
+    const auto damaged = root / "online-emulator";
+    Write(damaged / "steam_api64.dll", emulator64);
+    Write(damaged / "steam_api.dll", emulator32);
+    Write(damaged / "steam_api64_online.dll", bridge.substr(1));
+    swapped = EmulateSteamworks(game.string(), damaged.string(), online);
+    CHECK(!swapped.ok && swapped.message.find("online files") != std::string::npos);
+  }
+
   {  // A Playden update brings a new emulator build; games set up by the earlier one keep their original.
     const auto game = root / "updated-playden";
     const auto own = GameDll(false, "own-after-update");

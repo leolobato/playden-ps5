@@ -21,6 +21,7 @@
 #include "platform/managed_file_lock.h"
 #include "steam/backend/cloud_mapping.h"
 #include "steam/backend/json.h"
+#include "steam/secret.h"
 #include "stores/local/scanner.h"
 
 #include <algorithm>
@@ -774,7 +775,9 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     if (changed) Publish([&](RuntimeSnapshot& s) { s.steamworks_apps[record.runtime_number] = steam_app; });
   }
   // Without a Steam app ID there is nothing to emulate: the game keeps its own Steam files.
-  const bool emulate = files.settings.values.at("steam_features").value == "emulate" && steam_app.app_id != 0;
+  const auto& features = files.settings.values.at("steam_features").value;
+  const bool emulate = (features == "emulate" || features == "online") && steam_app.app_id != 0;
+  const bool online = emulate && features == "online";
   rt::SteamworksResult result;
   // The emulator's files name the signed-in account; before it is known they keep what Play wrote.
   const bool emulator_waits = emulate && !steam_account_known;
@@ -794,14 +797,21 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     // A game from another store keeps its folder as it shipped: no steam_appid.txt of Playden's would hide
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.
     identity.write_game_appid_file = !other_store;
+    if (online) {
+      identity.online = true;
+      if (config_.steam_refresh_token) identity.refresh_token = config_.steam_refresh_token();
+      if (identity.refresh_token.empty())
+        Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=online without a Steam session: emulator only");
+    }
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
+    steam::ZeroizeSecret(identity.refresh_token);
   } else {
     result = rt::RestoreSteamworks(root.string());
   }
   if (!emulator_waits) {
     std::string changed;
     for (const auto& path : result.changed) changed += (changed.empty() ? "" : ",") + path;
-    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (emulate ? "emulate" : "game") +
+    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (online ? "online" : emulate ? "emulate" : "game") +
         " found=" + std::to_string(result.found.size()) + " changed=" + (changed.empty() ? "-" : changed) +
         (result.ok ? std::string() : " failed=" + result.message));
     if (!result.ok) return result.message;

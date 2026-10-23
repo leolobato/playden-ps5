@@ -28,3 +28,17 @@ back to the game's own removes it.
 | File | SHA-256 |
 | --- | --- |
 | `steam.dll` | `f813075716892ab19ee9b0c06000c328bd5f15e713692384a30ddbcfc9065e57` |
+
+## steam_api64_online.dll (Playden's own)
+
+`steam_api64_online.dll` is Playden's online bridge, built from `tools/steam-online/online.c` (no C runtime; imports
+only kernel32 and winhttp; reproducible with `tools/steam-online/build.sh`). For a 64-bit game whose Game settings ›
+Steam features is **Online**, it becomes the game's `steam_api64.dll` and gbe_fork's moves beside it as
+`steam_api64_gbe.dll`. It forwards every call to gbe_fork and loads it by path, so gbe_fork stays unmodified. It logs on
+to Steam with the account's refresh token from `steam_settings/playden_online.txt` (mode 0600, removed when the game
+leaves Online) and answers ISteamUser's session, Web API and encrypted app tickets with real ones. Its log is
+`steam_settings/playden_online.log`, without tokens or ticket bytes. See `docs/online-play.md`.
+
+| File | SHA-256 |
+| --- | --- |
+| `steam_api64_online.dll` | `21e31376bd221ce9512b6698806f9dc921d79346dfa61e524e8b2560bdb433fd` |

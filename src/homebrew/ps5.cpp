@@ -476,6 +476,12 @@ int main() {
                 return true;
             };
             config.runtime_dir = paths.title_root + "/runtime";
+            // Games set to "Steam features" = Online sign in with the account's refresh token (runtime/steamworks.h).
+            config.steam_refresh_token = [&sessions]() -> std::string {
+                auto loaded = sessions.Load();
+                if (!loaded.ok() || !loaded.value()) return {};
+                return loaded.value()->refresh_token;
+            };
             config.settings_record = [file = settings_file](const playden::GameId& game) -> std::optional<rt::GameSettingsRecord> {
                 std::map<playden::GameId, rt::GameSettingsRecord> records; std::string reason;
                 if (!file || !rt::LoadGameSettingsFile(file->string(), &records, &reason)) return std::nullopt;

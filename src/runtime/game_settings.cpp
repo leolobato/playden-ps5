@@ -231,6 +231,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
   list.push_back(Choice("steam_features", "Steam features", "How the game reaches Steam without the Steam client.",
                         "steam_api.dll · steam_api64.dll", G::kWindows,
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
+                         {"online", "Online (experimental)",
+                          "The emulator, plus a Steam sign-in for the game's servers. 64-bit games."},
                          {"game", "Game's own files", "The game's Steam library, unchanged."}},
                         "game", 1, ApplyMode::kGameClosed));
   list.push_back(Choice("windows_version", "Windows version", "Which Windows the game is told it runs on.",

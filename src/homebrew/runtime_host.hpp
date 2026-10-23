@@ -83,6 +83,9 @@ struct RuntimeHostConfig {
   std::string runtime_dir;
   // gbe_fork's steam_api DLLs; empty: <runtime_dir>/steamworks.
   std::string steamworks_dir;
+  // The signed-in account's Steam refresh token, for games whose "Steam features" is Online (worker only; the
+  // online bridge in the game's folder signs in with it). Empty function or token: those games get the emulator.
+  std::function<std::string()> steam_refresh_token;
   // The player's saved settings for a game; nothing means Playden defaults.
   std::function<std::optional<runtime::GameSettingsRecord>(const GameId& game)> settings_record;
   // Canonical lower-case UUID for a publication transaction, or nothing when no

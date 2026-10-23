@@ -15,6 +15,14 @@ namespace playden::runtime {
 inline constexpr const char* kSteamApi32Sha256 = "cae4372bceda997d6c73cebc1c14eb27d39b74a7999d8f28384bdfd8d746a79c";
 inline constexpr const char* kSteamApi64Sha256 = "70d9826a402d3a78b0c07e9f7ea7c6832468a1113013f31ea570fccaa5445ea9";
 
+// Playden's online bridge (tools/steam-online, 64-bit only): with SteamworksIdentity::online it becomes the game's
+// steam_api64.dll, the emulator moves beside it as steam_api64_gbe.dll, and steam_settings/playden_online.txt gives
+// it the account's refresh token. It forwards every call to the emulator and logs on to Steam for real session
+// tickets, Web API tickets and encrypted app tickets (docs/online-play.md).
+inline constexpr const char* kSteamOnlineBridgeSha256 = "21e31376bd221ce9512b6698806f9dc921d79346dfa61e524e8b2560bdb433fd";
+inline constexpr const char* kSteamOnlineEmulatorName = "steam_api64_gbe.dll";
+inline constexpr const char* kSteamOnlineSettingsName = "playden_online.txt";
+
 // The emulator builds earlier Playden versions shipped (32-bit, 64-bit). A game they set up
 // still has one as its DLL: it is Playden's, replaced like the current one and never kept as
 // the game's original. Add the outgoing pins here whenever the two above change.
@@ -43,6 +51,10 @@ struct SteamworksIdentity {
   // own steam_appid.txt or Game settings: the emulator reads steam_settings/steam_appid.txt, and a file
   // Playden left in the game's folder would later pass for the game's own.
   bool write_game_appid_file = true;
+  // "Steam features" = Online: 64-bit games get the online bridge, which signs in with this refresh token.
+  // Without a token, or for 32-bit DLLs, the game gets the plain emulator.
+  bool online = false;
+  std::string refresh_token;
 };
 
 struct SteamworksResult {
@@ -64,8 +76,8 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
                                    const SteamworksIdentity& identity,
                                    const std::vector<std::string>& retired = RetiredSteamApiSha256());
 
-// Puts each .orig back over a swapped DLL (the emulator or a retired build); .orig and
-// steam_settings/ stay.
+// Puts each .orig back over a swapped DLL (the emulator, the online bridge or a retired build); .orig and
+// steam_settings/ stay, except the bridge's emulator copy and its token file, which are removed.
 SteamworksResult RestoreSteamworks(const std::string& install_root,
                                    const std::vector<std::string>& retired = RetiredSteamApiSha256());
 
