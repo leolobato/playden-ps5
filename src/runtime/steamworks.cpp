@@ -152,8 +152,9 @@ bool WriteOnlineSettings(const fs::path& settings, const SteamworksIdentity& ide
 }
 
 // The online bridge's files beside a DLL that no longer has it.
-bool RemoveOnlineFiles(const fs::path& folder) {
-  for (const auto& path : {folder / kSteamOnlineEmulatorName, folder / "steam_settings" / kSteamOnlineSettingsName})
+bool RemoveOnlineFiles(const fs::path& folder, bool pe64) {
+  for (const auto& path : {folder / (pe64 ? kSteamOnlineEmulator64Name : kSteamOnlineEmulator32Name),
+                           folder / "steam_settings" / kSteamOnlineSettingsName})
     if (::unlink(path.c_str()) != 0 && errno != ENOENT) return false;
   return true;
 }
@@ -202,7 +203,8 @@ struct Emulator {
 
 // Playden's emulator, the online bridge, the current build or a retired one.
 bool IsPlaydenEmulator(const std::string& digest, const std::vector<std::string>& retired) {
-  return digest == kSteamApi32Sha256 || digest == kSteamApi64Sha256 || digest == kSteamOnlineBridgeSha256 ||
+  return digest == kSteamApi32Sha256 || digest == kSteamApi64Sha256 || digest == kSteamOnlineBridge64Sha256 ||
+         digest == kSteamOnlineBridge32Sha256 ||
          std::find(retired.begin(), retired.end(), digest) != retired.end();
 }
 
@@ -214,11 +216,11 @@ std::optional<Emulator> LoadEmulator(const std::string& emulator_dir, bool pe64)
   return Emulator{*bytes, *digest};
 }
 
-std::optional<Emulator> LoadOnlineBridge(const std::string& emulator_dir) {
-  const auto bytes = ReadFile(fs::path(emulator_dir) / "steam_api64_online.dll", kMaxDllBytes);
+std::optional<Emulator> LoadOnlineBridge(const std::string& emulator_dir, bool pe64) {
+  const auto bytes = ReadFile(fs::path(emulator_dir) / (pe64 ? "steam_api64_online.dll" : "steam_api_online.dll"), kMaxDllBytes);
   if (!bytes) return std::nullopt;
   const auto digest = HashArtifactBytes(*bytes);
-  if (!digest || *digest != kSteamOnlineBridgeSha256) return std::nullopt;
+  if (!digest || *digest != (pe64 ? kSteamOnlineBridge64Sha256 : kSteamOnlineBridge32Sha256)) return std::nullopt;
   return Emulator{*bytes, *digest};
 }
 
@@ -293,9 +295,9 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
     const bool pe64 = Lower(path.filename().string()) == "steam_api64.dll";
     const auto emulator = LoadEmulator(emulator_dir, pe64);
     if (!emulator) return fail("Playden's Steam emulator files are missing or damaged; reinstall Playden.");
-    // Online (64-bit, with a token): the bridge is the game's DLL and the emulator sits beside it.
-    const bool online = pe64 && identity.online && !identity.refresh_token.empty();
-    const auto bridge = online ? LoadOnlineBridge(emulator_dir) : std::nullopt;
+    // Online (with a token): the bridge is the game's DLL and the emulator sits beside it.
+    const bool online = identity.online && !identity.refresh_token.empty();
+    const auto bridge = online ? LoadOnlineBridge(emulator_dir, pe64) : std::nullopt;
     if (online && !bridge) return fail("Playden's Steam online files are missing or damaged; reinstall Playden.");
     const Emulator& installed = online ? *bridge : *emulator;
     const auto current = ReadFile(path, kMaxDllBytes);
@@ -332,13 +334,13 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
     if (!WriteSettings(path.parent_path(), settings, original))
       return fail("Playden could not write the game's Steam settings.");
     if (online) {
-      const auto beside = path.parent_path() / kSteamOnlineEmulatorName;
+      const auto beside = path.parent_path() / (pe64 ? kSteamOnlineEmulator64Name : kSteamOnlineEmulator32Name);
       const auto present = IsRegular(beside) ? ReadFile(beside, kMaxDllBytes) : std::nullopt;
       if ((!present || *present != emulator->bytes) && !WriteAtomic(beside, emulator->bytes))
         return fail("Playden could not set up Steam online features for this game.");
       if (!WriteOnlineSettings(path.parent_path() / "steam_settings", identity))
         return fail("Playden could not write the game's Steam online settings.");
-    } else if (!RemoveOnlineFiles(path.parent_path())) {
+    } else if (!RemoveOnlineFiles(path.parent_path(), pe64)) {
       return fail("Playden could not remove the game's Steam online settings.");
     }
   }
@@ -431,7 +433,7 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
   result.found = FindSteamApi(install_root);
   for (const auto& relative : result.found) {
     const auto path = root / relative;
-    if (!RemoveOnlineFiles(path.parent_path())) {
+    if (!RemoveOnlineFiles(path.parent_path(), Lower(path.filename().string()) == "steam_api64.dll")) {
       result.message = "Playden could not remove the game's Steam online settings.";
       return result;
     }

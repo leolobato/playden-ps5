@@ -1,0 +1,20 @@
+LIBRARY kernel32.dll
+EXPORTS
+  CloseHandle@4
+  CreateFileW@28
+  CreateThread@24
+  EnterCriticalSection@4
+  GetModuleFileNameW@12
+  GetProcAddress@8
+  GetProcessHeap@0
+  GetSystemTimeAsFileTime@4
+  GetTickCount64@0
+  HeapAlloc@12
+  HeapFree@12
+  InitializeCriticalSection@4
+  LeaveCriticalSection@4
+  LoadLibraryW@4
+  MultiByteToWideChar@24
+  ReadFile@20
+  Sleep@4
+  WriteFile@20

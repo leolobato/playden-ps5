@@ -15,12 +15,14 @@ namespace playden::runtime {
 inline constexpr const char* kSteamApi32Sha256 = "cae4372bceda997d6c73cebc1c14eb27d39b74a7999d8f28384bdfd8d746a79c";
 inline constexpr const char* kSteamApi64Sha256 = "70d9826a402d3a78b0c07e9f7ea7c6832468a1113013f31ea570fccaa5445ea9";
 
-// Playden's online bridge (tools/steam-online, 64-bit only): with SteamworksIdentity::online it becomes the game's
-// steam_api64.dll, the emulator moves beside it as steam_api64_gbe.dll, and steam_settings/playden_online.txt gives
-// it the account's refresh token. It forwards every call to the emulator and logs on to Steam for real session
-// tickets, Web API tickets and encrypted app tickets (docs/online-play.md).
-inline constexpr const char* kSteamOnlineBridgeSha256 = "21e31376bd221ce9512b6698806f9dc921d79346dfa61e524e8b2560bdb433fd";
-inline constexpr const char* kSteamOnlineEmulatorName = "steam_api64_gbe.dll";
+// Playden's online bridge (tools/steam-online, 64-bit and 32-bit): with SteamworksIdentity::online it becomes the
+// game's steam_api64.dll / steam_api.dll, the emulator moves beside it as steam_api64_gbe.dll / steam_api_gbe.dll, and
+// steam_settings/playden_online.txt gives it the account's refresh token. It forwards every call to the emulator and
+// signs in to Steam for real tickets, lobbies, friends and presence (docs/online-play.md).
+inline constexpr const char* kSteamOnlineBridge64Sha256 = "b711bfd96f8cb4a2a94d52bda424642242a946bd8ad04e7d9269e68486ef84a4";
+inline constexpr const char* kSteamOnlineBridge32Sha256 = "ad7e70f7620d2f8f9409c61706afacd09d59d82c51014f27d0e71ef5ce9c4730";
+inline constexpr const char* kSteamOnlineEmulator64Name = "steam_api64_gbe.dll";
+inline constexpr const char* kSteamOnlineEmulator32Name = "steam_api_gbe.dll";
 inline constexpr const char* kSteamOnlineSettingsName = "playden_online.txt";
 
 // The emulator builds earlier Playden versions shipped (32-bit, 64-bit). A game they set up
@@ -51,8 +53,8 @@ struct SteamworksIdentity {
   // own steam_appid.txt or Game settings: the emulator reads steam_settings/steam_appid.txt, and a file
   // Playden left in the game's folder would later pass for the game's own.
   bool write_game_appid_file = true;
-  // "Steam features" = Online: 64-bit games get the online bridge, which signs in with this refresh token.
-  // Without a token, or for 32-bit DLLs, the game gets the plain emulator.
+  // "Steam features" = Online: the game gets the online bridge, which signs in with this refresh token.
+  // Without a token the game gets the plain emulator.
   bool online = false;
   std::string refresh_token;
 };

@@ -36,7 +36,7 @@ The font licenses are shipped next to the fonts, in `assets/fonts/` of the packa
 
 | Component | License | Source |
 | --- | --- | --- |
-| gbe_fork (`runtime/steamworks/steam_api.dll`, `steam_api64.dll`) | LGPL-3.0 ([text](runtime/steamworks/LICENSE)) | [Detanup01/gbe_fork](https://github.com/Detanup01/gbe_fork). Shipped unmodified. Playden does not link against it: it replaces a game's own Steam API when the game is prepared (with Steam features = Online it is loaded by Playden's bridge, `steam_api64_online.dll`, as `steam_api64_gbe.dll`). See [`runtime/steamworks/README.md`](runtime/steamworks/README.md). |
+| gbe_fork (`runtime/steamworks/steam_api.dll`, `steam_api64.dll`) | LGPL-3.0 ([text](runtime/steamworks/LICENSE)) | [Detanup01/gbe_fork](https://github.com/Detanup01/gbe_fork). Shipped unmodified. Playden does not link against it: it replaces a game's own Steam API when the game is prepared (with Steam features = Online it is loaded by Playden's bridge, `steam_api64_online.dll` / `steam_api_online.dll`, as `steam_api64_gbe.dll` / `steam_api_gbe.dll`). See [`runtime/steamworks/README.md`](runtime/steamworks/README.md). |
 
 ## In the runtime kit
 
