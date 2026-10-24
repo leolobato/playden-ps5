@@ -12,7 +12,7 @@ went over FTP with the tools in `tools/`.
 | Game | Engine | Steam sign-in through the bridge | Game's online services | Blocking cause (best evidence) |
 | --- | --- | --- | --- | --- |
 | RuneScape: Dragonwilds (1374490) | Unreal 5, Redpoint EOS | Works | Stuck on "Attempting to log in" | The game's Redpoint EOS login stops at its Steam credentials step without ever asking Steam for a ticket |
-| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | The game cannot reach Konami's servers (fails the same way offline, so not Steam); the failing step (DNS, connect or TLS) is not yet known |
+| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | Konami's server answers but the game treats the answer as a failure (traced; same error offline, so not Steam; not a Wine network, DNS or TLS fault) |
 
 In both games the bridge connects to a Steam CM, logs on (`eresult=1`), shows the account online and playing,
 reads the friends list and gets an app ownership ticket. Neither game ever requested a session, Web API or
@@ -96,8 +96,16 @@ through Steam relays will likely still fail (see `online-play.md` › Not done).
 
 The error appears before the game calls any Steam ticket function (the bridge logged none, even with every
 interface bridged). **Confirmed not Steam:** with Steam features = Offline emulation (no bridge at all) the game
-shows the same "There was no response from the game server". The game cannot reach Konami's servers, and which
-step fails is **not known yet**.
+shows the same "There was no response from the game server".
+
+**The network itself works (traced).** With Game settings › Logging = Network (added in this branch), the last
+17 seconds of a session with several RETRY presses show one game thread (Unity's own HTTP client: it calls
+`WinHttpGetIEProxyConfigForCurrentUser` before each request and does its own TLS, not Wine's schannel) keeping one
+socket open, sending a request about every 0.5 s (14 sends) and reading the replies (28 successful reads). No
+connection error, no failed name lookup; the `0xc00000a3` reads are the normal would-block of a non-blocking
+socket. So the server answers and the game treats the answer as a failure: an **application-level** refusal, not
+a Wine networking, DNS or TLS fault. The payload is encrypted by the game itself, so the traces cannot show what
+the server says. Kept here for the record, the hypotheses below are now ruled out as the main cause.
 
 What the logs do and do not show:
 
@@ -111,9 +119,20 @@ What the logs do and do not show:
 - Master Duel is reported to work under Proton on Linux and the Steam Deck, so the cause is likely specific to Wine
   on the PS5 (name lookup, sockets, TLS or certificates), not Wine in general.
 
-Next: trace the request (Wine channels `winhttp`, `wininet`, `ws2_32`/`winsock`, `secur32`, `dnsapi`) to see
-whether it fails at name lookup, connect or TLS. Any fix is a new patch in prospero-win's `wine/patches/`
-(Playden's fork, `third_party/prospero-win`); the kit builds only on Linux x86-64.
+No kit patch is indicated. Next ideas, none tried:
+
+- The first requests of a session are lost: the kit's session log keeps only about the last 1 MB (it rotates into
+  `session-N.previous.log`), and Network logging fills that in ~17 s. To see the first request, trace fewer
+  channels (`+winsock` only) or read the logs sooner.
+- What the server dislikes is unknown. Candidates: the game identifying the platform or hardware (Konami's
+  anti-tamper or a device check), or a Steam identity check done server-side with data the emulator supplies
+  (the game never asked the bridge for a ticket). Comparing with a Proton run on a PC (where the game works) with the
+  same Steam features mode would show whether the emulator alone breaks it.
+
+How the full session logs were read: they are in `/data/playden/games/steam-<app>/library/logs/session-N.log` and
+`session-N.previous.log`, inside 0700 folders. Over FTP, `SITE CHMOD 711` on `steam-<app>`, `library` and `logs`
+(711 lets FTP pass through but not list), `SITE CHMOD 644` on the file, `RETR` it, then put every mode back (600 on
+the file, 700 on the folders) before the next launch: Playden checks those modes.
 
 ## Practical notes for the next attempt
 
@@ -144,6 +163,6 @@ whether it fails at name lookup, connect or TLS. Any fix is a new patch in prosp
 
 1. Try a Steam game that authenticates with Steam tickets directly (no EOS, no own TLS-dependent backend) to
    confirm the ticket path end to end, including the connect-token issue above.
-2. For Master Duel: Steam is ruled out (same error offline); trace the request to find whether DNS, connect or TLS fails, then patch the kit.
+2. For Master Duel: Steam and Wine networking are ruled out; the server refuses at the application level. Compare with a Proton run on a PC using the same Steam features mode.
 3. For Dragonwilds: reverse-engineer Redpoint's Steam credentials node only if it is worth it, given that Steam
    networking is also unbridged.
