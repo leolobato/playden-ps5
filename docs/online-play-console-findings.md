@@ -12,7 +12,7 @@ went over FTP with the tools in `tools/`.
 | Game | Engine | Steam sign-in through the bridge | Game's online services | Blocking cause (best evidence) |
 | --- | --- | --- | --- | --- |
 | RuneScape: Dragonwilds (1374490) | Unreal 5, Redpoint EOS | Works | Stuck on "Attempting to log in" | The game's Redpoint EOS login stops at its Steam credentials step without ever asking Steam for a ticket |
-| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | Konami's server answers but the game treats the answer as a failure (traced; same error offline, so not Steam; not a Wine network, DNS or TLS fault) |
+| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | Not Playden: the same error on a Linux PC with real Steam and Proton, same account (traced on the PS5: the server answers, the game treats it as a failure) |
 
 In both games the bridge connects to a Steam CM, logs on (`eresult=1`), shows the account online and playing,
 reads the friends list and gets an app ownership ticket. Neither game ever requested a session, Web API or
@@ -119,6 +119,13 @@ What the logs do and do not show:
 - Master Duel is reported to work under Proton on Linux and the Steam Deck, so the cause is likely specific to Wine
   on the PS5 (name lookup, sockets, TLS or certificates), not Wine in general.
 
+**Same error on a Linux PC with real Steam (decisive).** On an Ubuntu desktop (RTX GPU, Steam snap, Proton
+Experimental, the same Steam account, no emulator, no bridge, no PS5) Master Duel shows the same "There was no
+response from the game server" on the same day. So the PS5 failure is not caused by Playden, the bridge, gbe_fork
+or the kit. The cause is between this account/network and Konami's servers (an outage, an account or region
+restriction, or Konami refusing Proton at the time). **Do not spend more time on Master Duel in Playden** until it
+connects on a PC with the same account. Its `Player.log` on the PC stops at the same start-up lines as on the PS5.
+
 No kit patch is indicated. Next ideas, none tried:
 
 - The first requests of a session are lost: the kit's session log keeps only about the last 1 MB (it rotates into
@@ -163,6 +170,6 @@ the file, 700 on the folders) before the next launch: Playden checks those modes
 
 1. Try a Steam game that authenticates with Steam tickets directly (no EOS, no own TLS-dependent backend) to
    confirm the ticket path end to end, including the connect-token issue above.
-2. For Master Duel: Steam and Wine networking are ruled out; the server refuses at the application level. Compare with a Proton run on a PC using the same Steam features mode.
+2. For Master Duel: nothing to do in Playden; it fails the same way on a PC with real Steam. Retest only once it connects on a PC with the same account.
 3. For Dragonwilds: reverse-engineer Redpoint's Steam credentials node only if it is worth it, given that Steam
    networking is also unbridged.
