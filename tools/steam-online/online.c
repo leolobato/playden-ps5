@@ -2989,6 +2989,23 @@ void* SteamInternal_FindOrCreateUserInterface(int32_t user, const char* version)
 void* SteamInternal_CreateInterface(const char* version) {
   return WrapInterface(((CreateInterfaceFn)g_slots[SLOT_SteamInternal_CreateInterface])(version), version);
 }
+/* Steamworks.NET (Unity games) gets every interface from ISteamClient through the flat API. */
+typedef void* (*ClientGetUserInterfaceFn)(void*, int32_t, int32_t, const char*);
+#define CLIENT_GETTER(name)                                                                                       \
+  void* SteamAPI_ISteamClient_##name(void* self, int32_t user, int32_t pipe, const char* version) {               \
+    return WrapInterface(((ClientGetUserInterfaceFn)g_slots[SLOT_SteamAPI_ISteamClient_##name])(self, user, pipe,  \
+                                                                                                 version),        \
+                         version);                                                                                \
+  }
+CLIENT_GETTER(GetISteamUser)
+CLIENT_GETTER(GetISteamFriends)
+CLIENT_GETTER(GetISteamMatchmaking)
+CLIENT_GETTER(GetISteamGenericInterface)
+void* SteamAPI_ISteamClient_GetISteamUtils(void* self, int32_t pipe, const char* version) {
+  return WrapInterface(
+      ((void* (*)(void*, int32_t, const char*))g_slots[SLOT_SteamAPI_ISteamClient_GetISteamUtils])(self, pipe, version),
+      version);
+}
 #define ACCESSOR(name, version) \
   void* name(void) { return WrapInterface(((AccessorFn)g_slots[SLOT_##name])(), version); }
 ACCESSOR(SteamAPI_SteamUser_v020, "SteamUser020")
