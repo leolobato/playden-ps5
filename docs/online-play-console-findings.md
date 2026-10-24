@@ -1,0 +1,144 @@
+# Online play on a PS5: console findings (October 2026)
+
+What was tried on a real console to get Steam online features working through the online bridge
+(`tools/steam-online`, Game settings › Steam features › Online), what was fixed, and why online services still fail
+in the two games tested. Read this before continuing so you do not repeat the same investigation.
+
+Console: PS5 firmware 13.60, kit `hl2-fw1360-dev1` (prospero-win `f729534`), zftpd on port 2120. All console work
+went over FTP with the tools in `tools/`.
+
+## Summary
+
+| Game | Engine | Steam sign-in through the bridge | Game's online services | Blocking cause (best evidence) |
+| --- | --- | --- | --- | --- |
+| RuneScape: Dragonwilds (1374490) | Unreal 5, Redpoint EOS | Works | Stuck on "Attempting to log in" | The game's Redpoint EOS login stops at its Steam credentials step without ever asking Steam for a ticket |
+| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | The game cannot reach Konami's servers; Wine's schannel (secur32) TLS fails. Not Steam |
+
+In both games the bridge connects to a Steam CM, logs on (`eresult=1`), shows the account online and playing,
+reads the friends list and gets an app ownership ticket. Neither game ever requested a session, Web API or
+encrypted app ticket in any run.
+
+## What changed in this branch
+
+1. **Moved dependencies** (commit "Fetch ps5-opengl and the boilerplate from their new homes").
+   `blackbearreloaded/ps5-opengl` and `blackbearreloaded/ps5-native-app-boilerplate` are gone (404). The SDK
+   archive now downloads from `MyLuxy/overdrive-deps` and the submodule clones from
+   `efkann/ps5-native-app-boilerplate`. The archive SHA-256 and the submodule commit are unchanged and were
+   verified. CLAUDE.md records this exception.
+2. **Null method crash** (commit "Stop online games crashing at Steam sign-in"). `WrapInterface` copied only the
+   methods the bridge answers (9 of SteamFriends' ~70, 13 of SteamUtils') into its replacement vtable and left
+   the rest null. Dragonwilds called a later slot and crashed with `EXCEPTION_ACCESS_VIOLATION 0x0`. The bridge
+   now copies `kVtableEntries` (128) slots of every table.
+3. **Flat-API ticket calls**, same commit. `SteamAPI_ISteamUser_GetAuthSessionTicket`, `GetAuthTicketForWebApi`,
+   `BeginAuthSession`, `EndAuthSession`, `CancelAuthTicket`, `RequestEncryptedAppTicket` and
+   `GetEncryptedAppTicket` are now overridden (listed in `gen.py` `OVERRIDDEN`), because gbe_fork's flat exports
+   do not dispatch through the replaced vtable. Each logs its first use.
+4. **Crash trail**, same commit. A vectored exception handler writes `CRASH` lines (exception, module+offset,
+   access address, modules on the stack) to `playden_online.log`. This is what found the null method crash.
+5. **ISteamClient getters for Unity games** (commit "Bridge Steam interfaces that Unity games get from
+   ISteamClient"). Steamworks.NET gets every interface through `SteamAPI_ISteamClient_GetISteamUser`,
+   `GetISteamFriends`, `GetISteamUtils`, `GetISteamMatchmaking` and `GetISteamGenericInterface`. These went
+   straight to gbe_fork, so the bridge saw no interface in Master Duel. They now go through `WrapInterface`; the
+   log shows `bridged SteamUser021`, `SteamFriends017`, `SteamUtils010`, `SteamMatchMaking009`.
+
+Every bridge change rebuilds both DLLs (`tools/steam-online/build.sh`, needs `PATH=$(brew --prefix
+llvm@18)/bin:$PATH`), and updates `kSteamOnlineBridge64Sha256`/`kSteamOnlineBridge32Sha256` in
+`src/runtime/steamworks.h` and the table in `runtime/steamworks/README.md`. The build is reproducible (checked).
+Host tests: 148/148 pass (`http_client` once timed out under full parallel load and passes alone).
+
+## Tested on the console
+
+- Package built with `scripts/build-lapy-helper.sh` and `scripts/build-homebrew-ps5.sh`, deployed with
+  `tools/console_title_deploy.py` (hash-checked read-back) after each change.
+- Dragonwilds in Offline emulation: the game's login fails at once with "No auth service is available on this
+  platform" (Redpoint gives the STEAM service score 0).
+- Dragonwilds in Online, before the fixes: crash at start-up (null slot). After the fixes: no crash, Redpoint
+  picks STEAM (score 1000), then waits forever at "Attempting to log in"; the game's own watchdog eventually shows
+  "Application Hang Detected".
+- Master Duel in Online, before and after the ISteamClient fix: "There was no response from the game server".
+
+## Dragonwilds: why it still fails
+
+The game's log (`RSDragonwilds.log`, included in `title-FAKE78001.log`) ends the login at:
+
+```
+Authentication graph entering node: FGetExternalCredentialsFromLocalPlatformNode
+```
+
+and nothing follows for minutes. Temporary diagnostics (since removed, see below) established:
+
+- **Not a deadlock or spin in the bridge.** Thread samples at 40 s and 70 s showed render threads running, task
+  threads waiting on events, the bridge's own threads idle in WinHTTP. The ~1 core of CPU use is rendering the
+  spinner.
+- **Steam callbacks are pumped.** `SteamAPI_RunCallbacks` is called every frame (~3400 times in 70 s). 22 callbacks
+  are registered, including 168 (`GetTicketForWebApiResponse_t`).
+- **No ticket is ever requested.** Per-export and per-vtable-slot call counts over every interface the game opened
+  (User023, Friends017, Utils010, MatchMaking009, Apps008, UserStats012, RemoteStorage016, MatchMakingServers002,
+  Networking006, NetworkingSockets012, NetworkingUtils004) showed, during the hang, only `ISteamUser::GetSteamID`
+  (slot 2) and `ISteamFriends::GetPersonaName` (slot 0) being polled. `BLoggedOn` (slot 1) was called twice early.
+  Slots 13 (GetAuthSessionTicket), 14 (GetAuthTicketForWebApi) and 21 (RequestEncryptedAppTicket) were never
+  called, nor their flat-API forms.
+- Only one `steam_api64.dll` exists in the game (`Engine/Binaries/ThirdParty/Steamworks/Steamv157/Win64/`), and it
+  is the bridge, so no call bypasses it through another copy.
+
+Conclusion: some check inside the game's `OnlineSubsystemRedpointSteam` fails silently before the ticket request,
+and the authentication graph (`Until_Forever`) never times out. Finding it needs disassembly of
+`RSDragonwilds-Win64-Shipping.exe` around Redpoint's Steam external-credentials code. Not done.
+
+Launching through `RSDragonwilds.exe` is not an option: it only starts the Shipping exe, and process creation is
+not supported on the PS5 (`wrapper-start-failed`). The Shipping exe initialises Steam itself ("Steam User is
+subscribed 1"), so starting it directly is not the cause.
+
+Even if the login is fixed, the game opens `SteamNetworkingSockets012`, which the bridge does not bridge, so co-op
+through Steam relays will likely still fail (see `online-play.md` › Not done).
+
+## Master Duel: why it still fails
+
+The error appears before the game calls any Steam ticket function (the bridge logged none, even with every
+interface bridged). The game's HTTPS requests to Konami fail. The Wine log for the run shows the TLS layer failing:
+
+```
+err:secur32:start_samss Failed to open service manager
+err:secur32:load_auth_packages Failed to get security packages list: 80090304
+fixme:secur32:compat_cipher_get_block_size Unknown cipher 0xb, returning 1
+```
+
+Unity on Windows makes HTTPS requests through the system's schannel (Wine `secur32`). Dragonwilds' EOS requests
+to Epic succeeded in the same kit, but EOS bundles its own OpenSSL, which points to schannel as the difference.
+
+Not yet confirmed: run Master Duel with Steam features = Offline emulation. The same error there proves Steam is
+not involved. The fix would belong in the kit (prospero-win's Wine: secur32/gnutls support), which builds only on
+Linux x86-64, outside this repository.
+
+## Practical notes for the next attempt
+
+- **Bridge log**: `steam_settings/playden_online.log` beside the game's `steam_api(64).dll` (Dragonwilds:
+  `/data/playden-games/1374490/Engine/Binaries/ThirdParty/Steamworks/Steamv157/Win64/`, Master Duel on the
+  external drive: `/mnt/ext1/playden/games/1449850/masterduel_Data/Plugins/x86_64/`). It is 0600 and owned by the
+  title; FTP can read it after `SITE CHMOD 644 <path>` (it holds no tokens; `playden_online.txt` does, leave it).
+- **Game logs** arrive in `/data/playden/logs/title-<title id>.log` only after Playden starts again. Close the game,
+  open Playden, then collect. The file keeps the head and tail of each session and leaves out the middle, so the
+  Wine-level end of a crashed session is often missing; the game's own log is appended at the end.
+- **The game's private folders** (`/data/playden/games/steam-*`, `Saved/`, game settings) are 0700 and not
+  readable over FTP. Game settings can only be changed on the console.
+- **Deploy permissions**: after Playden has run, the package's subfolders reject FTP writes. Deploys that change
+  `runtime/steamworks/` need `SITE CHMOD 777` on that folder first and `755` after. A timed-out deploy leaves
+  `.<file>.stage`; the tool refuses to continue until it is removed (check it is the tool's own partial upload).
+- **zftpd** can stop while a game is hung; restart it on the console (delete a stale `/data/zftpd/instance.pid`).
+- **`game connect tokens=0`**: in every run Steam sent no game connect tokens, so `MakeTicket` would wait 15 s and
+  log "ticket: Steam not ready" if a game did ask for a session ticket. Untested because neither game asked. This
+  will need attention for the first game that does (check what makes Steam issue tokens after
+  `ClientGamesPlayed`).
+- **Diagnostics that were built and removed** (rebuild them from this description if needed, not from scratch
+  guesses): a sampler thread logging each thread's RIP/stack modules (Toolhelp32 snapshot, Suspend/
+  GetThreadContext, ReadProcessMemory), per-export call counters (`lock incl` in the `gen.py` stubs), per-slot
+  vtable thunks counting every interface method (64-bit, generated in `gen.py`), and a list of registered
+  callback IDs. They answered the Dragonwilds questions above.
+
+## Suggested next steps
+
+1. Try a Steam game that authenticates with Steam tickets directly (no EOS, no own TLS-dependent backend) to
+   confirm the ticket path end to end, including the connect-token issue above.
+2. For Master Duel: the Offline-emulation check above, then the kit's schannel support.
+3. For Dragonwilds: reverse-engineer Redpoint's Steam credentials node only if it is worth it, given that Steam
+   networking is also unbridged.
