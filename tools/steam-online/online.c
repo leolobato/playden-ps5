@@ -49,11 +49,13 @@ typedef struct {
   uintptr_t SpinCount;
 } CRITICAL_SECTION;
 
+DECLSPEC_IMPORT void* WINAPI AddVectoredExceptionHandler(DWORD, long(WINAPI*)(void*));
 DECLSPEC_IMPORT BOOL WINAPI CloseHandle(HANDLE);
 DECLSPEC_IMPORT HANDLE WINAPI CreateFileW(const WCHAR*, DWORD, DWORD, void*, DWORD, DWORD, HANDLE);
 DECLSPEC_IMPORT HANDLE WINAPI CreateThread(void*, size_t, DWORD(WINAPI*)(void*), void*, DWORD, DWORD*);
 DECLSPEC_IMPORT void WINAPI EnterCriticalSection(CRITICAL_SECTION*);
 DECLSPEC_IMPORT DWORD WINAPI GetModuleFileNameW(HANDLE, WCHAR*, DWORD);
+DECLSPEC_IMPORT BOOL WINAPI GetModuleHandleExW(DWORD, const void*, HANDLE*);
 DECLSPEC_IMPORT void* WINAPI GetProcAddress(HANDLE, const char*);
 DECLSPEC_IMPORT HANDLE WINAPI GetProcessHeap(void);
 DECLSPEC_IMPORT void WINAPI GetSystemTimeAsFileTime(uint64_t*);
@@ -232,6 +234,87 @@ static void LogValue(const char* text, uint64_t value) {
   LogNumber(&line, value);
   LogLine(&line);
 }
+
+/* ---- Crash trail -------------------------------------------------------------------------------- */
+
+/* A fatal exception in the game process is written to the log with the module and offset it happened in and the
+ * modules whose code the stack points into, so a crash during online play can be placed without a debugger. */
+static void LogHex(Buf* line, uint64_t value) {
+  BufPut(line, "0x", 2);
+  int started = 0;
+  for (int shift = 60; shift >= 0; shift -= 4) {
+    const unsigned digit = (unsigned)(value >> shift) & 15u;
+    if (!digit && !started && shift) continue;
+    started = 1;
+    BufByte(line, (uint8_t)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+  }
+}
+/* Appends "name+0xoffset" for the module containing address, or the bare address when none does. */
+static int LogModuleOffset(Buf* line, const void* address) {
+  HANDLE module = 0;
+  WCHAR path[260];
+  if (!GetModuleHandleExW(6 /* FROM_ADDRESS | UNCHANGED_REFCOUNT */, address, &module) || !module) {
+    LogHex(line, (uintptr_t)address);
+    return 0;
+  }
+  const DWORD n = GetModuleFileNameW(module, path, 260);
+  DWORD start = 0;
+  for (DWORD i = 0; i < n; ++i)
+    if (path[i] == '\\' || path[i] == '/') start = i + 1;
+  for (DWORD i = start; i < n; ++i) BufByte(line, (uint8_t)(path[i] < 128 ? path[i] : '?'));
+  BufByte(line, '+');
+  LogHex(line, (uintptr_t)address - (uintptr_t)module);
+  return 1;
+}
+static volatile long g_crash_logged;
+static long WINAPI CrashTrail(void* pointers) {
+  void** info = (void**)pointers;
+  const DWORD* record = (const DWORD*)info[0];
+  const uint8_t* context = (const uint8_t*)info[1];
+  const DWORD code = record[0];
+  /* Access violations, illegal and privileged instructions, stack overflow, fast-fail and heap corruption. */
+  if (code != 0xC0000005 && code != 0xC000001D && code != 0xC0000096 && code != 0xC00000FD && code != 0xC0000409 &&
+      code != 0xC0000374 && code != 0xC0000094)
+    return 0;
+  if (g_crash_logged >= 6) return 0;
+  ++g_crash_logged;
+#if defined(_WIN64)
+  const uintptr_t sp = *(const uintptr_t*)(context + 0x98);
+  const uintptr_t ip = *(const uintptr_t*)(context + 0xF8);
+#else
+  const uintptr_t sp = *(const uintptr_t*)(context + 0xC4);
+  const uintptr_t ip = *(const uintptr_t*)(context + 0xB8);
+#endif
+  Buf line = {0};
+  LogText(&line, "CRASH exception=");
+  LogHex(&line, code);
+  LogText(&line, " at ");
+  LogModuleOffset(&line, (const void*)ip);
+  if (code == 0xC0000005 && record[4] >= 2) {
+    const uintptr_t* parameters = (const uintptr_t*)((const uint8_t*)record + (sizeof(void*) == 8 ? 32 : 20));
+    LogText(&line, parameters[0] == 0 ? " reading " : parameters[0] == 1 ? " writing " : " executing ");
+    LogHex(&line, parameters[1]);
+  }
+  LogLine(&line);
+  /* Stack words that point into a module's code are likely return addresses, nearest first. */
+  Buf trail = {0};
+  LogText(&trail, "CRASH stack:");
+  int found = 0;
+  for (int i = 0; i < 512 && found < 14; ++i) {
+    const uintptr_t word = ((const uintptr_t*)sp)[i];
+    if (word < 0x10000) continue;
+    Buf one = {0};
+    if (LogModuleOffset(&one, (const void*)word)) {
+      BufByte(&trail, ' ');
+      BufPut(&trail, one.p, one.n);
+      ++found;
+    }
+    BufFree(&one);
+  }
+  LogLine(&trail);
+  return 0;
+}
+
 
 /* ---- Protobuf --------------------------------------------------------------------------------- */
 
@@ -2111,7 +2194,10 @@ typedef uint64_t(METHOD* RequestEncryptedAppTicketFn)(void*, void*, int);
 typedef int8_t(METHOD* GetEncryptedAppTicketFn)(void*, void*, int, uint32_t*);
 
 enum { kUser, kUtils, kMatchmaking, kFriends };
-#define kVtableEntries 64
+/* Methods past the ones the bridge answers still reach the emulator, so the copy covers the whole table: a copied
+ * table is only as long as this, and a slot left empty is a call through null. Reading past the end of a real table
+ * stays inside the emulator's read-only data. */
+#define kVtableEntries 128
 typedef struct {
   void** original;
   void* table[kVtableEntries];
@@ -2803,7 +2889,7 @@ static void* WrapInterface(void* object, const char* version) {
     table->original = original;
     table->kind = kind;
     table->version = v;
-    for (int i = 0; i < count; ++i) table->table[i] = original[i];
+    for (int i = 0; i < kVtableEntries; ++i) table->table[i] = original[i];
     if (kind == kUser) {
       table->table[SlotSessionTicket(v)] = v >= 22 ? (void*)UserGetAuthSessionTicket : (void*)UserGetAuthSessionTicketOld;
       if (SlotWebApi(v) >= 0) table->table[SlotWebApi(v)] = (void*)UserGetAuthTicketForWebApi;
@@ -3048,6 +3134,74 @@ int8_t SteamAPI_ManualDispatch_GetAPICallResult(int32_t pipe, uint64_t call, voi
   return CopyResult(call, out, size, expected, failed);
 }
 
+/* ---- The flat C API ----------------------------------------------------------------------------- */
+
+/* Games and libraries built on Steam's flat API (SteamAPI_ISteamUser_*) call these exports, and the emulator's do not
+ * go through the interface table the bridge replaced, so the ticket calls come here too. An interface the bridge did
+ * not wrap goes straight to the emulator. Each one logs its first call. */
+static void LogFlat(const char* name, int* seen) {
+  if (*seen) return;
+  *seen = 1;
+  Buf line = {0};
+  LogText(&line, "game calls the flat API: ");
+  LogText(&line, name);
+  LogLine(&line);
+}
+static Vtable* FlatUser(void* self) { return g_config.online && self ? VtableOf(self) : 0; }
+uint32_t SteamAPI_ISteamUser_GetAuthSessionTicket(void* self, void* buffer, int max, uint32_t* size, const void* identity) {
+  static int seen;
+  LogFlat("GetAuthSessionTicket", &seen);
+  Vtable* v = FlatUser(self);
+  if (!v)
+    return ((uint32_t(*)(void*, void*, int, uint32_t*, const void*))g_slots[SLOT_SteamAPI_ISteamUser_GetAuthSessionTicket])(
+        self, buffer, max, size, identity);
+  return v->version >= 22 ? UserGetAuthSessionTicket(self, buffer, max, size, identity)
+                          : UserGetAuthSessionTicketOld(self, buffer, max, size);
+}
+uint32_t SteamAPI_ISteamUser_GetAuthTicketForWebApi(void* self, const char* identity) {
+  static int seen;
+  LogFlat("GetAuthTicketForWebApi", &seen);
+  Vtable* v = FlatUser(self);
+  if (!v || SlotWebApi(v->version) < 0)
+    return ((uint32_t(*)(void*, const char*))g_slots[SLOT_SteamAPI_ISteamUser_GetAuthTicketForWebApi])(self, identity);
+  return UserGetAuthTicketForWebApi(self, identity);
+}
+int SteamAPI_ISteamUser_BeginAuthSession(void* self, const void* data, int size, uint64_t steam_id) {
+  static int seen;
+  LogFlat("BeginAuthSession", &seen);
+  if (!FlatUser(self))
+    return ((int (*)(void*, const void*, int, uint64_t))g_slots[SLOT_SteamAPI_ISteamUser_BeginAuthSession])(self, data, size,
+                                                                                                         steam_id);
+  return UserBeginAuthSession(self, data, size, steam_id);
+}
+void SteamAPI_ISteamUser_EndAuthSession(void* self, uint64_t steam_id) {
+  if (!FlatUser(self)) {
+    ((void (*)(void*, uint64_t))g_slots[SLOT_SteamAPI_ISteamUser_EndAuthSession])(self, steam_id);
+    return;
+  }
+  UserEndAuthSession(self, steam_id);
+}
+void SteamAPI_ISteamUser_CancelAuthTicket(void* self, uint32_t handle) {
+  if (!FlatUser(self)) {
+    ((void (*)(void*, uint32_t))g_slots[SLOT_SteamAPI_ISteamUser_CancelAuthTicket])(self, handle);
+    return;
+  }
+  UserCancelAuthTicket(self, handle);
+}
+uint64_t SteamAPI_ISteamUser_RequestEncryptedAppTicket(void* self, void* data, int size) {
+  static int seen;
+  LogFlat("RequestEncryptedAppTicket", &seen);
+  if (!FlatUser(self))
+    return ((uint64_t(*)(void*, void*, int))g_slots[SLOT_SteamAPI_ISteamUser_RequestEncryptedAppTicket])(self, data, size);
+  return UserRequestEncryptedAppTicket(self, data, size);
+}
+int8_t SteamAPI_ISteamUser_GetEncryptedAppTicket(void* self, void* buffer, int max, uint32_t* size) {
+  if (!FlatUser(self))
+    return ((int8_t(*)(void*, void*, int, uint32_t*))g_slots[SLOT_SteamAPI_ISteamUser_GetEncryptedAppTicket])(self, buffer, max,
+                                                                                                           size);
+  return UserGetEncryptedAppTicket(self, buffer, max, size);
+}
+
 BOOL WINAPI DllMain(HANDLE instance, DWORD reason, void* reserved) {
   (void)reserved;
   if (reason != 1) return 1;
@@ -3082,6 +3236,7 @@ BOOL WINAPI DllMain(HANDLE instance, DWORD reason, void* reserved) {
     return 1;
   }
   LogValue("start: online app=", g_config.app_id);
+  AddVectoredExceptionHandler(0, CrashTrail);
   CreateThread(0, 0, SessionThread, 0, 0, 0);
   return 1;
 }

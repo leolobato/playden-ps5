@@ -33,6 +33,8 @@ When Steam can't be reached in time, tickets fall back to gbe_fork's and lobby c
 `steam_settings/playden_online.log`, beside the bridge: logon result, presence, ownership ticket, tickets handed out
 and Steam's acks, other players' tickets checked, lobbies created, listed, joined and left, invites, friends count, the
 interfaces bridged, and a line for every Steam networking interface the game asks for. Never a token or ticket bytes.
+The first call to each flat-API ticket function (`SteamAPI_ISteamUser_*`) is noted, and a fatal crash in the game
+leaves `CRASH` lines: the exception, the module and offset it happened in, and the modules on its stack.
 `tools/collect_logs.py` does not pick it up yet: copy it from the game's folder.
 
 ## Not done

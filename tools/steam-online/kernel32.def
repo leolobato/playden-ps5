@@ -1,10 +1,12 @@
 LIBRARY kernel32.dll
 EXPORTS
+  AddVectoredExceptionHandler
   CloseHandle
   CreateFileW
   CreateThread
   EnterCriticalSection
   GetModuleFileNameW
+  GetModuleHandleExW
   GetProcAddress
   GetProcessHeap
   GetSystemTimeAsFileTime

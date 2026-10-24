@@ -19,8 +19,8 @@ inline constexpr const char* kSteamApi64Sha256 = "70d9826a402d3a78b0c07e9f7ea7c6
 // game's steam_api64.dll / steam_api.dll, the emulator moves beside it as steam_api64_gbe.dll / steam_api_gbe.dll, and
 // steam_settings/playden_online.txt gives it the account's refresh token. It forwards every call to the emulator and
 // signs in to Steam for real tickets, lobbies, friends and presence (docs/online-play.md).
-inline constexpr const char* kSteamOnlineBridge64Sha256 = "b711bfd96f8cb4a2a94d52bda424642242a946bd8ad04e7d9269e68486ef84a4";
-inline constexpr const char* kSteamOnlineBridge32Sha256 = "ad7e70f7620d2f8f9409c61706afacd09d59d82c51014f27d0e71ef5ce9c4730";
+inline constexpr const char* kSteamOnlineBridge64Sha256 = "ba996382664d397cc2d11cae5ce95609041ffa7d423def81f77cfa7e5a1e47b9";
+inline constexpr const char* kSteamOnlineBridge32Sha256 = "81066b3d29ea1c163e49b0e8b89239b6f2b72ecd077905d6586ce22abecdb1c3";
 inline constexpr const char* kSteamOnlineEmulator64Name = "steam_api64_gbe.dll";
 inline constexpr const char* kSteamOnlineEmulator32Name = "steam_api_gbe.dll";
 inline constexpr const char* kSteamOnlineSettingsName = "playden_online.txt";
