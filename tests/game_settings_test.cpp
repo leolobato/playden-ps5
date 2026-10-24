@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "steam_input", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu",
+        "steam_features", "steam_network", "steam_input", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu",
         "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
@@ -1701,6 +1701,15 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(ffxiii, nullptr, {{"steam_features", "game"}, {"unlock.steam_features", "on"}},
                                  KitCapabilities{}, &settings, &error));
     CHECK(settings.values.at("steam_features").value == "game" && settings.values.at("steam_features").unlocked);
+    // Steam network acts only on the emulator: with the game's own files it is unavailable and keeps its default.
+    CHECK(BuildEffectiveSettings(ffxiii, nullptr,
+                                 {{"steam_features", "game"}, {"unlock.steam_features", "on"}, {"steam_network", "offline"}},
+                                 KitCapabilities{}, &settings, &error));
+    CHECK(!settings.values.at("steam_network").available && settings.values.at("steam_network").value == "online");
+    CHECK(BuildEffectiveSettings(ffxiii, nullptr, {}, KitCapabilities{}, &settings, &error));
+    CHECK(settings.values.at("steam_network").available && settings.values.at("steam_network").value == "online");
+    CHECK(BuildEffectiveSettings(ffxiii, nullptr, {{"steam_network", "offline"}}, KitCapabilities{}, &settings, &error));
+    CHECK(settings.values.at("steam_network").value == "offline");
     CHECK(BuildEffectiveSettings(ffxiii, nullptr, {}, KitCapabilities{}, &settings, &error));
     // Its own full-screen, size and quality arguments; the size follows the Resolution row.
     CHECK(settings.arguments == "-FullScreenMode=Force -Width=1920 -Height=1080 -Shadow=4096 -MSAA=4");

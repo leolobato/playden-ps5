@@ -947,6 +947,7 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
       Log("steamworks app=" + std::to_string(record.runtime_number) + " steam input map left out: lost=" +
           std::to_string(lost_actions.size()) + " " + lost + (lost_actions.size() > 4 ? ",..." : ""));
     }
+    identity.online = files.settings.values.at("steam_network").value != "offline";
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
   } else {
     result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);
@@ -957,6 +958,7 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     std::string skipped;
     for (const auto& path : result.skipped) skipped += (skipped.empty() ? "" : ",") + path;
     Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (emulate ? "emulate" : "game") +
+        (emulate && files.settings.values.at("steam_network").value == "offline" ? " network=offline" : "") +
         " found=" + std::to_string(result.found.size()) + " changed=" + (changed.empty() ? "-" : changed) +
         (skipped.empty() ? std::string() : " copies_skipped=" + skipped) + (result.ok ? std::string() : " failed=" + result.message));
     if (!result.ok) return result.message;

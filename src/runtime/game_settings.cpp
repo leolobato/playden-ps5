@@ -256,6 +256,15 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
                          {"game", "Game's own files", "The game's Steam library, unchanged."}},
                         "game", 1, ApplyMode::kGameClosed));
+  // Online by default, as GameNative ships gbe_fork: games that check BLoggedOn() ("Steam is offline") get to their
+  // online menus. Offline is for a game that waits on the network when it is told Steam is online.
+  list.push_back(Choice("steam_network", "Steam network", "Whether the game is told Steam is online.",
+                        "configs.main.ini · offline · disable_networking", G::kWindows,
+                        {{"online", "Online",
+                          "Steam is online. Lobbies and servers reach only other consoles or PCs running a Steam "
+                          "emulator on the same network, not Steam players."},
+                         {"offline", "Offline", "Steam is offline and the emulator stays off the network."}},
+                        "online", 1, ApplyMode::kGameClosed));
   // A game with a Steam Input map gets it from the emulator, as Steam would give it. Some of those games read the
   // controller themselves too and stop once Steam Input reports one (Euro Truck Simulator 2), and the emulator can't
   // drive a stick that moves the mouse in the map, so Automatic leaves out a map that would lose a stick or trigger.
@@ -650,6 +659,10 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if (id == "pointer_speed") {
     const auto stick = values.find("pointer_stick");
     if (stick == values.end() || stick->second.value == "none") return "Choose a pointer stick first.";
+  }
+  if (id == "steam_network") {
+    const auto steam = values.find("steam_features");
+    if (steam == values.end() || steam->second.value != "emulate") return "Only with Steam features = Offline emulation.";
   }
   return {};
 }

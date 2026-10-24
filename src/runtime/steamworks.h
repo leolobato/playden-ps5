@@ -61,6 +61,9 @@ struct SteamworksIdentity {
   // The game's Steam Input action sets (SteamInputActionSets), as steam_settings/controller/<name>.txt. With them the
   // emulator answers Steam Input with the controller it reads through XInput; with none it reports no controller.
   std::vector<std::pair<std::string, std::string>> steam_input_sets;  // action set name, file text
+  // Game settings › Steam network = Online: Steam is online and the emulator's own networking (lobbies, P2P, server
+  // announcements between emulators on the same network) is on. Off: Steam is offline, no networking.
+  bool online = true;
 };
 
 struct SteamworksResult {

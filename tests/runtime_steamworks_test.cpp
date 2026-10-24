@@ -91,7 +91,16 @@ int main(int argc, char** argv) {
   CHECK(user.find("account_steamid=76561198000000000\n") != std::string::npos);
   CHECK(user.find("local_save_path=C:\\Program Files (x86)\\Steam\\userdata\\0\n") != std::string::npos);
   CHECK(Read(plugin / "steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n3000=dlc3000\n3001=dlc3001\n");
-  CHECK(Read(plugin / "steam_settings/configs.main.ini").find("offline=1\n") != std::string::npos);
+  CHECK(Read(plugin / "steam_settings/configs.main.ini") ==
+        "[main::connectivity]\ndisable_lan_only=0\noffline=0\ndisable_networking=0\n");
+  // Steam network = Offline: Steam offline, the emulator's networking off; back online again.
+  identity.online = false;
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(Read(plugin / "steam_settings/configs.main.ini") ==
+        "[main::connectivity]\ndisable_lan_only=0\noffline=1\ndisable_networking=1\n");
+  identity.online = true;
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(Read(plugin / "steam_settings/configs.main.ini").find("offline=0\ndisable_networking=0\n") != std::string::npos);
   CHECK(Read(plugin / "steam_settings/depots.txt") == "2062431\n");
   // No other owned apps: no owned_app_ids.txt.
   CHECK(!fs::exists(plugin / "steam_settings/owned_app_ids.txt"));

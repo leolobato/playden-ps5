@@ -187,7 +187,9 @@ bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, c
                            "\n\n[user::saves]\nlocal_save_path=" + kSteamworksSavePath + "\n";
   std::string apps = "[app::dlcs]\nunlock_all=0\n";
   for (const auto dlc : Sorted(identity.owned_dlc)) apps += std::to_string(dlc) + "=dlc" + std::to_string(dlc) + "\n";
-  const std::string main = "[main::connectivity]\ndisable_lan_only=0\noffline=1\ndisable_networking=1\n";
+  const char* const online = identity.online ? "0" : "1";
+  const std::string main = std::string("[main::connectivity]\ndisable_lan_only=0\noffline=") + online +
+                           "\ndisable_networking=" + online + "\n";
   static const char* const kLanguages =
       "arabic\nbulgarian\nschinese\ntchinese\nczech\ndanish\ndutch\nenglish\nfinnish\nfrench\ngerman\ngreek\n"
       "hungarian\nitalian\njapanese\nkoreana\nnorwegian\npolish\nportuguese\nbrazilian\nromanian\nrussian\n"
