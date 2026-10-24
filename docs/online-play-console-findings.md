@@ -106,8 +106,9 @@ fixme:secur32:compat_cipher_get_block_size Unknown cipher 0xb, returning 1
 Unity on Windows makes HTTPS requests through the system's schannel (Wine `secur32`). Dragonwilds' EOS requests
 to Epic succeeded in the same kit, but EOS bundles its own OpenSSL, which points to schannel as the difference.
 
-Not yet confirmed: run Master Duel with Steam features = Offline emulation. The same error there proves Steam is
-not involved. The fix would belong in the kit (prospero-win's Wine: secur32/gnutls support), which builds only on
+Confirmed not Steam: with Steam features = Offline emulation (no bridge at all) the game shows the same "There was
+no response from the game server". The schannel cause is the best evidence so far, not yet proven; a Wine trace of
+`secur32`/`winhttp` during the request would settle it. The fix would belong in the kit (prospero-win's Wine: secur32/gnutls support), which builds only on
 Linux x86-64, outside this repository.
 
 ## Practical notes for the next attempt
@@ -139,6 +140,6 @@ Linux x86-64, outside this repository.
 
 1. Try a Steam game that authenticates with Steam tickets directly (no EOS, no own TLS-dependent backend) to
    confirm the ticket path end to end, including the connect-token issue above.
-2. For Master Duel: the Offline-emulation check above, then the kit's schannel support.
+2. For Master Duel: Steam is ruled out (same error offline); look at the kit's schannel support.
 3. For Dragonwilds: reverse-engineer Redpoint's Steam credentials node only if it is worth it, given that Steam
    networking is also unbridged.
