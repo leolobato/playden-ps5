@@ -1827,7 +1827,7 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
                 push_notice({"maintenance-" + ToKey(id), game.maintenance_ok ? title + ": done" : title + ": not done", "",
                              false, kLiveNoticeSeconds * (game.maintenance_ok ? 1 : 2), !game.maintenance_ok, game.maintenance_message});
         }
-        // A Playden session ended: verbose or input logging lasts one session and goes back to Normal,
+        // A Playden session ended: verbose, input or network logging lasts one session and goes back to Normal,
         // and settings saved while the game ran are applied now, so a start from Home uses them.
         if (before->second.play_status == "Playing" && game.play_status != "Playing") {
             const auto record = state_.game_settings.find(id);

@@ -258,7 +258,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         G::kWindows,
                         {{"normal", "Normal", "Errors and loaded modules."},
                          {"verbose", "Verbose", "Also warnings and exceptions, for one session; then Normal again."},
-                         {"input", "Input", "Also keyboard, mouse and controller calls, for one session; then Normal again."}},
+                         {"input", "Input", "Also keyboard, mouse and controller calls, for one session; then Normal again."},
+                         {"network", "Network", "Also name lookups, connections and secure connections, for one session; then Normal again."}},
                         "normal"));
   // Advanced.
   {
@@ -390,6 +391,10 @@ constexpr const char* kVerboseWinedebug = "err+all,warn+all,fixme-all,+loaddll,+
 // what it finds.
 constexpr const char* kInputWinedebug =
     "err+all,warn+all,+loaddll,+process,+rawinput,+dinput,+winmm,+ntoskrnl,+plugplay,+hid,+hidclass";
+
+// Name lookups, sockets, WinHTTP/WinINet and the TLS layer behind them: where a game's request to its servers stops.
+constexpr const char* kNetworkWinedebug =
+    "err+all,warn+all,+loaddll,+process,+winhttp,+wininet,+winsock,+dnsapi,+secur32,+crypt,+nsi,+iphlpapi";
 
 std::string Backslashes(std::string text) {
   std::replace(text.begin(), text.end(), '/', '\\');
@@ -1078,6 +1083,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   if (settings.profile_version == 2) text += "\n[runtime]\nversion = 2\n";
   if (value("logging") == "verbose") text += std::string("\n[debug]\nwinedebug = ") + kVerboseWinedebug + "\n";
   if (value("logging") == "input") text += std::string("\n[debug]\nwinedebug = ") + kInputWinedebug + "\n";
+  if (value("logging") == "network") text += std::string("\n[debug]\nwinedebug = ") + kNetworkWinedebug + "\n";
 
   const auto& environment = settings.values.at("environment");
   // The player's variables, with the one Pixel shaders sets (none for the driver's default).
