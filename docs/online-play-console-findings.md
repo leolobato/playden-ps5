@@ -173,3 +173,39 @@ the file, 700 on the folders) before the next launch: Playden checks those modes
 2. For Master Duel: nothing to do in Playden; it fails the same way on a PC with real Steam. Retest only once it connects on a PC with the same account.
 3. For Dragonwilds: reverse-engineer Redpoint's Steam credentials node only if it is worth it, given that Steam
    networking is also unbridged.
+
+## Session of 2026-10-25: Dragonwilds reproduced on a Linux PC
+
+Setup: Ubuntu desktop, RTX GPU, Steam snap, Proton Experimental. The game's
+`Engine/Binaries/ThirdParty/Steamworks/Steamv157/Win64/` holds the bridge as `steam_api64.dll`, gbe_fork as
+`steam_api64_gbe.dll`, Playden's `steam_settings` copied from the PS5, and `playden_online.txt` (the user's
+refresh token, 0600, copied by the user; delete it when testing ends). Steam's own DLL is saved beside it as
+`steam_api64.dll.steam-orig`; put it back when done. Game log:
+`compatdata/1374490/pfx/drive_c/users/steamuser/AppData/Local/RSDragonwilds/Saved/Logs/RSDragonwilds.log`.
+
+| Run | Credentials step (`FGetExternalCredentialsFromLocalPlatformNode`) |
+| --- | --- |
+| Real Steam | Web API ticket in 2 s, EOS login succeeds |
+| gbe_fork only (Playden's Offline emulation) | Fake ticket in 0.3 s, EOS rejects it (`EOS_Auth_ExternalAuthInvalid`), no hang |
+| Bridge online, all four interfaces wrapped | **Hangs, as on the PS5**; no ticket call reaches the bridge |
+| Bridge online, callback-168 vtable swap off | Still hangs |
+| Bridge online, no interface wrapped | No hang; emulator's fake ticket, EOS rejects |
+| Bridge online, MSVC RTTI slot copied into the tables | Still hangs (not the cause; the fix is kept in the working tree) |
+| Bridge online, **only SteamUser wrapped** | **No hang**: `GetAuthTicketForWebApi` reaches the bridge, callback 168 runs |
+
+Conclusions:
+
+1. **The hang comes from wrapping SteamUtils, SteamFriends or SteamMatchMaking** (not yet narrowed to one).
+   Next run: wrap User + one other at a time. Suspects: the Utils hooks for `IsAPICallCompleted`/
+   `GetAPICallResult`/`GetAPICallFailureReason` (slots 10-12) and the Friends/MatchMaking method tables.
+2. **The bridge cannot make a real ticket**: Steam sends `game connect tokens=0` in every run, so `MakeTicket`
+   waits 15 s and gives up (`made=0`) while the emulator's ticket has already reached the game via callback 168.
+   Needed: find what makes Steam issue game connect tokens (probably what the real client sends after logon), and
+   deliver the patched callback only once the real ticket exists.
+3. On the PC the bridge is repeatedly `logged off eresult=6` (LoggedInElsewhere) because the real Steam client on
+   that PC uses the same account. Not a PS5 issue.
+
+Uncommitted debug state in `tools/steam-online/online.c` (and the DLLs in `runtime/steamworks/` built from it):
+`DEBUG` log lines in the ticket hooks and the callback-168 hooks, the RTTI locator fix (keep), and a
+`if (kind != kUser) return object;  /* DEBUG: User only */` line in `WrapInterface` (remove). Do not commit as is;
+rebuild the DLLs and hashes from clean code before committing.
