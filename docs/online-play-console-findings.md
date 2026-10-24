@@ -12,7 +12,7 @@ went over FTP with the tools in `tools/`.
 | Game | Engine | Steam sign-in through the bridge | Game's online services | Blocking cause (best evidence) |
 | --- | --- | --- | --- | --- |
 | RuneScape: Dragonwilds (1374490) | Unreal 5, Redpoint EOS | Works | Stuck on "Attempting to log in" | The game's Redpoint EOS login stops at its Steam credentials step without ever asking Steam for a ticket |
-| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | The game cannot reach Konami's servers; Wine's schannel (secur32) TLS fails. Not Steam |
+| Yu-Gi-Oh! Master Duel (1449850) | Unity 6 | Works | "There was no response from the game server" | The game cannot reach Konami's servers (fails the same way offline, so not Steam); the failing step (DNS, connect or TLS) is not yet known |
 
 In both games the bridge connects to a Steam CM, logs on (`eresult=1`), shows the account online and playing,
 reads the friends list and gets an app ownership ticket. Neither game ever requested a session, Web API or
@@ -95,21 +95,25 @@ through Steam relays will likely still fail (see `online-play.md` › Not done).
 ## Master Duel: why it still fails
 
 The error appears before the game calls any Steam ticket function (the bridge logged none, even with every
-interface bridged). The game's HTTPS requests to Konami fail. The Wine log for the run shows the TLS layer failing:
+interface bridged). **Confirmed not Steam:** with Steam features = Offline emulation (no bridge at all) the game
+shows the same "There was no response from the game server". The game cannot reach Konami's servers, and which
+step fails is **not known yet**.
 
-```
-err:secur32:start_samss Failed to open service manager
-err:secur32:load_auth_packages Failed to get security packages list: 80090304
-fixme:secur32:compat_cipher_get_block_size Unknown cipher 0xb, returning 1
-```
+What the logs do and do not show:
 
-Unity on Windows makes HTTPS requests through the system's schannel (Wine `secur32`). Dragonwilds' EOS requests
-to Epic succeeded in the same kit, but EOS bundles its own OpenSSL, which points to schannel as the difference.
+- `err:secur32:start_samss` and `err:secur32:load_auth_packages ... 80090304` appear, but they are start-up noise:
+  the same lines appear in Dragonwilds, whose HTTPS requests to Epic succeed. Do not treat them as the cause.
+- The kit's schannel is backed by GnuTLS, and prospero-win patch `0877-secur32-log-gnutls-errors-and-the-clock-on-
+  handshake-failure` logs every failed handshake with the GnuTLS error and the clock. **No such line appears** in
+  Master Duel's log, so a TLS handshake failure is not shown (the log does leave out the middle of each session, so
+  it is not fully ruled out either). Patch `0878` supplies root certificates beside the runtime.
+- `err:dnsapi:DllMain No libresolv support, expect problems` appears: name lookup is a candidate.
+- Master Duel is reported to work under Proton on Linux and the Steam Deck, so the cause is likely specific to Wine
+  on the PS5 (name lookup, sockets, TLS or certificates), not Wine in general.
 
-Confirmed not Steam: with Steam features = Offline emulation (no bridge at all) the game shows the same "There was
-no response from the game server". The schannel cause is the best evidence so far, not yet proven; a Wine trace of
-`secur32`/`winhttp` during the request would settle it. The fix would belong in the kit (prospero-win's Wine: secur32/gnutls support), which builds only on
-Linux x86-64, outside this repository.
+Next: trace the request (Wine channels `winhttp`, `wininet`, `ws2_32`/`winsock`, `secur32`, `dnsapi`) to see
+whether it fails at name lookup, connect or TLS. Any fix is a new patch in prospero-win's `wine/patches/`
+(Playden's fork, `third_party/prospero-win`); the kit builds only on Linux x86-64.
 
 ## Practical notes for the next attempt
 
@@ -140,6 +144,6 @@ Linux x86-64, outside this repository.
 
 1. Try a Steam game that authenticates with Steam tickets directly (no EOS, no own TLS-dependent backend) to
    confirm the ticket path end to end, including the connect-token issue above.
-2. For Master Duel: Steam is ruled out (same error offline); look at the kit's schannel support.
+2. For Master Duel: Steam is ruled out (same error offline); trace the request to find whether DNS, connect or TLS fails, then patch the kit.
 3. For Dragonwilds: reverse-engineer Redpoint's Steam credentials node only if it is worth it, given that Steam
    networking is also unbridged.
