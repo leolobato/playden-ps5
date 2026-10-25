@@ -209,3 +209,24 @@ Uncommitted debug state in `tools/steam-online/online.c` (and the DLLs in `runti
 `DEBUG` log lines in the ticket hooks and the callback-168 hooks, the RTTI locator fix (keep), and a
 `if (kind != kUser) return object;  /* DEBUG: User only */` line in `WrapInterface` (remove). Do not commit as is;
 rebuild the DLLs and hashes from clean code before committing.
+
+## Resolved: the "Attempting to log in" hang (2026-10-25)
+
+Cause: the bridge hooked ISteamUtils' API call methods at slots 10-12, but games built with the Steamworks SDK keep
+`GetCSERIPPort` at slot 7, so `IsAPICallCompleted`/`GetAPICallFailureReason`/`GetAPICallResult` are at 11-13.
+Dragonwilds' calls proved it (slot 9 `GetAppID` once, slot 16 `SetWarningMessageHook` once, slot 11 with
+SteamAPICall_t handles). The game's `IsAPICallCompleted(call, &failed)` landed in the bridge's
+`GetAPICallFailureReason`, which passed only the call to the emulator's slot 11, and the emulator wrote its result
+through a garbage `failed` pointer: depending on that register, a crash (`steam_api64_gbe.dll+0x14c826 writing
+0x7ffffff8`) or an endless wait. That is why single-run bisections earlier gave contradictory answers.
+Caution: gbe_fork's own `sdk/steam/isteamutils010.h` lists 010 without `GetCSERIPPort`; trust the game's observed
+calls over that header. Fixed in "Stop online games hanging at their Steam sign-in".
+
+On the PS5 Dragonwilds now asks the bridge for its Web API ticket and Redpoint sends a credential to EOS, which
+rejects it (`EOS_Auth_ExternalAuthInvalid`) because the bridge falls back to the emulator's ticket:
+`ticket: Steam not ready (... connect token missing)`. **The remaining blocker is game connect tokens**: Steam sends
+`ClientGameConnectTokens` with no tokens in every run. Next: find what makes Steam issue them to the bridge's
+logon (compare with what the real client sends at logon and after `ClientGamesPlayed`).
+
+Earlier experiments in this file that blamed "wrapping SteamUtils/Friends/MatchMaking" or the Steam launch
+environment variables were reading this bug; the environment variables are not needed.
