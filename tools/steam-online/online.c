@@ -736,6 +736,7 @@ static uint64_t g_logon_tick;
 static uint32_t g_connections;
 static uint8_t g_tokens[kMaxTokens][kTokenBytes];
 static uint32_t g_public_ip;  /* as Steam saw it at logon; the session header carries it */
+static uint32_t g_cell_id;    /* Steam's cell for this session (logon response); lobbies are created in it */
 static int g_token_count;
 static uint8_t g_ownership[kMaxTicketBytes];
 static uint32_t g_ownership_size;
@@ -753,6 +754,8 @@ static int SendMessage(uint32_t emsg, const Buf* body) {
   EnterCriticalSection(&g_lock);
   PbFixed64(&header, 1, g_session_steam_id);
   PbUint(&header, 2, (uint64_t)(int64_t)g_session_id);
+  /* Matchmaking (ClientMMS*) is routed to the game's app, as the Steam client and SteamKit send it. */
+  if (emsg >= kEMsgClientMMSCreateLobby && emsg < kEMsgClientMMSCreateLobby + 100) PbUint(&header, 3, g_config.app_id);
   LeaveCriticalSection(&g_lock);
   BufLE32(&frame, emsg | kProtoMask);
   BufLE32(&frame, (uint32_t)header.n);
@@ -1733,12 +1736,13 @@ static void HandleFrame(const uint8_t* data, size_t size, int depth) {
       break;
     case kEMsgClientLogOnResponse: {
       int32_t eresult = 2;
-      uint32_t heartbeat = 0, legacy = 0, public_ip = 0;
+      uint32_t heartbeat = 0, legacy = 0, public_ip = 0, cell_id = 0;
       while (PbNext(&r, &f)) {
         if (f.number == 1 && f.wire == 0) eresult = (int32_t)f.value;
         if (f.number == 2 && f.wire == 0) legacy = (uint32_t)f.value;
         if (f.number == 3 && f.wire == 0) heartbeat = (uint32_t)f.value;
         if (f.number == 4 && f.wire == 0 && !public_ip) public_ip = (uint32_t)f.value;
+        if (f.number == 7 && f.wire == 0) cell_id = (uint32_t)f.value;
         if (f.number == 15 && f.wire == 2) {
           PbReader address = {f.data, f.size, 0, 0};
           PbField a;
@@ -1752,6 +1756,7 @@ static void HandleFrame(const uint8_t* data, size_t size, int depth) {
       if (steam_id) g_session_steam_id = steam_id;
       g_session_id = session_id;
       g_public_ip = public_ip;
+      g_cell_id = cell_id;
       g_heartbeat_seconds = heartbeat ? heartbeat : legacy ? legacy : 9;
       g_logged_on = 1;
       g_logon_tick = GetTickCount64();
@@ -2536,8 +2541,14 @@ static METHOD uint64_t MmCreateLobby(void* self, int type, int max_members) {
   PbUint(&body, 2, (uint64_t)(int64_t)max_members);
   PbUint(&body, 3, (uint64_t)(int64_t)type);
   PbUint(&body, 4, 0);
-  PbUint(&body, 5, 0);
+  PbUint(&body, 5, g_cell_id);
   PbString(&body, 8, PersonaName());
+  if (g_public_ip) {
+    Buf address = {0};
+    PbFixed32(&address, 1, g_public_ip);
+    PbBytes(&body, 9, address.p, address.n);
+    BufFree(&address);
+  }
   LeaveCriticalSection(&g_lock);
   SendAndFree(kEMsgClientMMSCreateLobby, &body);
   LogLobby("create lobby requested", 0, type);

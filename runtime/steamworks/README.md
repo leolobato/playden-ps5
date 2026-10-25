@@ -41,5 +41,5 @@ removed when the game leaves Online) and answers tickets, lobbies and friends th
 
 | File | SHA-256 |
 | --- | --- |
-| `steam_api64_online.dll` | `deda76fcb84ce171a0ee819ca12e3e91513abc222600ecc3d5251175b6c2f7b0` |
-| `steam_api_online.dll` | `eb9583b39422326c1e37301ed202dfd51d48b5659948bc96ff7ee579fa172c0f` |
+| `steam_api64_online.dll` | `5638d7b708d2e4627a39a3890f45ac8a0220a097e2ec341bc3cf267e10425603` |
+| `steam_api_online.dll` | `44382606a5e5f492b296a83826938e0ef00fc91b7fa586da98d5dd551323639c` |

@@ -273,3 +273,26 @@ networking is not bridged), Master Duel's own server problem (not Steam).
 Still to do: Playden's C++ reference (`src/steam/backend/game_tickets.cpp`) has the 8-byte token, missing ownership
 length and type-2-only assumptions; bring it in line with the bridge. The log line for Steam's validation of the
 game's own ticket says "(another player's)"; cosmetic.
+
+## Joining a friend's world (2026-10-25)
+
+Symptoms: joining a friend's Friends world hangs at "Joining game"; a friend joining ours saw "You are not able to
+join this world with this character type".
+
+1. **Steam lobbies failed** (`FOnlineAsyncTaskSteamCreateLobby ... k_EResultFail`, Redpoint "Unable to advertise
+   synthetic session"). The bridge sent ClientMMS* messages without `routing_appid` (CMsgProtoBufHeader field 3) and
+   created lobbies with cell 0 and no public IP. Fixed in "Route Steam lobby messages to the game": lobbies are
+   created (`lobby created lobby=1097752422247... value=1`) and a friend's game joins the lobby. The "character
+   type" message has not been retested since.
+2. **The join itself uses EOS P2P** (`RedpointEOSNetDriver`, ports 7777-7876, TURN relay), not Steam networking.
+   Signaling through Epic works (offer, answer, candidates), then `Failed to establish connection with peer after 45
+   seconds`. Network trace: the `EOSP2PNetwork` thread calls `GetAdaptersAddresses` 22 times and each time
+   `CreateFileW "\\.\Nsi"` fails with `c0000034`: Wine's nsiproxy device does not exist on the console, so the game
+   sees **no network adapters**, opens no UDP socket and sends no P2P traffic.
+   Fix needed in the kit (prospero-win Wine patch): host `nsiproxy.sys` in the game as patch 0952 does for the HID
+   drivers, or have `iphlpapi`/`nsi` report the console's adapter (address from libSceNet) when `\\.\Nsi` is missing.
+   Builds only on Linux x86-64.
+
+How to trace: Game settings › Logging › Network (now `err+all,+winsock,+dnsapi,+nsi,+iphlpapi,+winhttp`; the TLS and
+certificate channels filled the kept part of the session log within seconds). Exit the game soon after the failure:
+the kit keeps only about the last 2 MB of a session log. Full logs: see "How the full session logs were read" above.

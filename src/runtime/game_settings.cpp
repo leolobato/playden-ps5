@@ -259,7 +259,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"normal", "Normal", "Errors and loaded modules."},
                          {"verbose", "Verbose", "Also warnings and exceptions, for one session; then Normal again."},
                          {"input", "Input", "Also keyboard, mouse and controller calls, for one session; then Normal again."},
-                         {"network", "Network", "Also name lookups, connections and secure connections, for one session; then Normal again."}},
+                         {"network", "Network", "Also connections, name lookups and network adapters, for one session; then Normal again."}},
                         "normal"));
   // Advanced.
   {
@@ -392,9 +392,9 @@ constexpr const char* kVerboseWinedebug = "err+all,warn+all,fixme-all,+loaddll,+
 constexpr const char* kInputWinedebug =
     "err+all,warn+all,+loaddll,+process,+rawinput,+dinput,+winmm,+ntoskrnl,+plugplay,+hid,+hidclass";
 
-// Name lookups, sockets, WinHTTP/WinINet and the TLS layer behind them: where a game's request to its servers stops.
-constexpr const char* kNetworkWinedebug =
-    "err+all,warn+all,+loaddll,+process,+winhttp,+wininet,+winsock,+dnsapi,+secur32,+crypt,+nsi,+iphlpapi";
+// Sockets, name lookups and the network adapters a game sees: where a request or a P2P connection stops. The TLS and
+// certificate channels are left out; they filled the session log's kept part within seconds.
+constexpr const char* kNetworkWinedebug = "err+all,+winsock,+dnsapi,+nsi,+iphlpapi,+winhttp";
 
 std::string Backslashes(std::string text) {
   std::replace(text.begin(), text.end(), '/', '\\');
