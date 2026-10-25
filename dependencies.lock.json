@@ -177,7 +177,7 @@
     }
   },
   "prospero_win": {
-    "revision": "e709a0b72361c6c8e16c80ff93a3705a5e5421b7",
+    "revision": "75297296ffaa18e39d0382c496d7a55a11a09b03",
     "url": "https://github.com/leolobato/prospero-win.git",
     "default_source": "third_party/prospero-win",
     "published": false,
@@ -228,8 +228,8 @@
     "kit_id": "playden-kit",
     "published": false,
     "status": "Kit 0.13, installed as playden-kit (kit 0.12 and earlier: hl2-fw1360-dev1; Playden retires that folder and points bottles' Wine Mono at playden-kit). Kit 0.12 with ntdll.prx and win32u.prx from prospero-win 031302d (Wine patch 0984: the game keeps its controller under the system overlay and gets WM_DEVICECHANGE when it connects or disconnects), the any-title shell from ce28942 (reads [runtime] version; capability profile-version-2) and libvulkan.prx from PS5_Mesa 15f78ec (pixel shaders in wave32 by default). Mono, Mesa WGL/Zink and template contents unchanged apart from the template's Wine Mono RuntimePath, so bottles need no Recreate. Released unchanged from dev kit 0.13-dev.20261024.4 (renamed). Earlier kits (0.12, 0.11, 0.10, H r1-r9): see this file's git history.",
-    "manifest_sha256": "d1dbc8e1b5b98691950369a89ef87c1dff5b7064a31844ccf20a4bed99b0e55b",
-    "files_sha256": "1e51857d8e19813b33cfaace0260f139b8835770a6ef5fe0d291270c77b446ca",
+    "manifest_sha256": "bc85f19786bb1fb2c556896d67f123aec672047420bf2641bf136dd0218ba9fe",
+    "files_sha256": "f3632f2f411828a3d110be297dd2bf8f87da3d918977c51ab4a6afeb00f3f537",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"

@@ -296,3 +296,27 @@ join this world with this character type".
 How to trace: Game settings › Logging › Network (now `err+all,+winsock,+dnsapi,+nsi,+iphlpapi,+winhttp`; the TLS and
 certificate channels filled the kept part of the session log within seconds). Exit the game soon after the failure:
 the kit keeps only about the last 2 MB of a session log. Full logs: see "How the full session logs were read" above.
+
+## Working: joining a friend's world (2026-10-25)
+
+Fixed in the kit, not in Playden: prospero-win patch `0990-iphlpapi-ps5-report-the-routed-address-without-nsi`.
+When the NSI interface table cannot be read (no `\\.\Nsi` on the console), `GetAdaptersAddresses` reports one up
+Ethernet adapter with the routed IPv4 address (a UDP socket connected to 8.8.8.8, which sends nothing, then
+`getsockname`). With it, EOS P2P gathers an address and joining a friend's Friends world works on the PS5.
+
+How the kit was made (no full kit rebuild; only a PE module changed):
+
+1. Host Wine at the pinned revision (`490f6d5`) with the series, built by `tools/build_host_wine.sh` inside an
+   Ubuntu 24.04 Docker container on the Linux server (its apt was broken; the container needs build-essential, git,
+   bison, flex, pkg-config, gcc/g++-mingw-w64 and the X11/FreeType/fontconfig/GnuTLS dev packages).
+2. Patch 0990 applied to the built tree, `make install`, then `strip -s` in place (as the script does). The DLLs
+   come out with 4 KiB file alignment where kit 0.13's had 512 bytes; same sections, both valid PE.
+3. Kit 0.13 with the two `lib/wine/{x86_64,i386}-windows/iphlpapi.dll` replaced (the template's copies are Wine's
+   placeholders and stay), their hashes updated in `runtime-inventory.json`, the manifest entries and
+   `files_sha256` recomputed (canonical `path\tsize\tsha256\tmode\n` lines), JSON written with indent 2, sorted keys.
+4. Pinned: `src/runtime/kit_trust.h` and `dependencies.lock.json` (manifest `bc85f197...`, files `f3632f2f...`),
+   and `prospero_win.revision` moved to the submodule commit with the patch.
+
+The kit, the DLLs and the container scripts are kept locally in `build/dev-kits/playden-kit-0.13-iphlpapi-nsi/`
+(ignored by git). This is a development kit: it is not published, and the prospero-win commit exists only in the
+local submodule until it is pushed and released.
