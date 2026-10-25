@@ -1797,12 +1797,19 @@ void Controller::TickInstalls() {
       case InstallRequestKind::SetDefaultVolume: installs_->SetDefaultVolume(request.volume_id); break;
       case InstallRequestKind::DismissCompleted: installs_->DismissCompleted(request.game_id); break;
       case InstallRequestKind::ClearCompleted: installs_->ClearCompleted(); break;
+      case InstallRequestKind::Update: installs_->Update(request.game_id); break;
     }
   }
   // An uninstall whose files could not be deleted lists the game again and says why.
   for (const auto& failure : installs_->TakeRemovalFailures()) {
     uninstalls_.Abandon(failure.id);
     StopUninstall(failure.id, failure.reason + " Uninstall the game again to try again.");
+  }
+  // Steam is asked for updates to installed games after each sign-in and every few hours.
+  if (model_.state().account().authentication == AuthState::SignedIn &&
+      (!updates_checked_at_ || std::chrono::steady_clock::now() - *updates_checked_at_ >= std::chrono::hours(6))) {
+    updates_checked_at_ = std::chrono::steady_clock::now();
+    installs_->CheckUpdates();
   }
   const auto snapshot = installs_->Snapshot();
   files_deleting_ = snapshot.uninstalling;
@@ -1861,10 +1868,12 @@ void Controller::TickInstalls() {
       case steam::InstallJobState::kFailed: state = JobState::Failed; break;
     }
     jobs.push_back({job.id, state, job.done_bytes, job.total_bytes, job.failure, job.volume_id,
-                    job.bytes_per_second, job.eta_seconds, job.held_bytes, checking_licenses});
+                    job.bytes_per_second, job.eta_seconds, job.held_bytes, checking_licenses, job.update,
+                    job.state == steam::InstallJobState::kRunning && job.step == steam::InstallStep::kCheckingFiles});
   }
   std::vector<LiveInstalledGame> installed;
-  for (const auto& game : snapshot.installed) installed.push_back({game.id, game.install_bytes, game.volume_id, game.available});
+  for (const auto& game : snapshot.installed)
+    installed.push_back({game.id, game.install_bytes, game.volume_id, game.available, game.update_available});
   std::vector<LiveCompletedDownload> completed;
   for (const auto& finished : snapshot.completed)
     completed.push_back({finished.id, finished.install_bytes, finished.volume_id, finished.finished_at});
@@ -2028,6 +2037,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       if(library_) library_->Activate(event.steam_id,offline);
       // Steam downloads that waited for a sign-in start now, not after their wait (up to a minute).
       if(installs_ && !offline) installs_->RetryWaiting(Store::kSteam);
+      updates_checked_at_.reset();  // asks Steam for updates again
       break;
     }
     case steam::SteamEventKind::kSignedOut: {

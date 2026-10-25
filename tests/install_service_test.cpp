@@ -84,6 +84,19 @@ class Runner final : public SessionInstallRunner {
     progress(100, 100, held);
     return {true, false, {}, 4096};
   }
+  std::vector<std::uint32_t> updates;  // what FindAppUpdates answers
+  std::vector<std::string> discarded;
+  std::optional<std::vector<std::uint32_t>> FindAppUpdates(const StoredSession&, const std::map<std::uint32_t, std::string>& apps,
+                                                           const std::atomic<bool>&) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<std::uint32_t> found;
+    for (const auto app : updates) if (apps.count(app)) found.push_back(app);
+    return found;
+  }
+  void DiscardUpdate(const std::string& root) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    discarded.push_back(root);
+  }
   std::string remove_failure;  // the next removals fail with this, leaving the folder
   std::string Remove(const std::string& root) override {
     std::lock_guard<std::mutex> lock(mutex);
@@ -673,6 +686,105 @@ void UninstallDeletesFilesWhileDownloading(const std::filesystem::path& base) {
   std::filesystem::remove_all(base);
 }
 
+const InstalledGame* InstalledOf(const InstallSnapshot& snapshot, GameId id) {
+  for (const auto& game : snapshot.installed) if (game.id == id) return &game;
+  return nullptr;
+}
+
+void UpdatesInstalledGames(const std::filesystem::path& root) {
+  std::filesystem::create_directories(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  {
+    InstallService service(runner, root.string());
+    service.Install(SteamId(301));
+    service.Install(SteamId(302));
+    AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return Installed(s, SteamId(301)) && Installed(s, SteamId(302)); });
+    // Nothing to update until a check finds it.
+    service.Update(SteamId(301));
+    CHECK(!JobOf(service.Snapshot(), SteamId(301)));
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      runner.updates = {301};
+    }
+    service.CheckUpdates();
+    AwaitAt(__LINE__, service, [](const InstallSnapshot& s) {
+      const auto* game = InstalledOf(s, SteamId(301));
+      return game && game->update_available;
+    });
+    CHECK(!InstalledOf(service.Snapshot(), SteamId(302))->update_available);
+    service.Update(SteamId(302));
+    CHECK(!JobOf(service.Snapshot(), SteamId(302)));
+
+    // The update runs as a job; the game stays installed meanwhile, and Cancel keeps it.
+    runner.block = true;
+    const int before = runner.installs;
+    service.Update(SteamId(301));
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.installs == before + 1; });
+    auto snapshot = service.Snapshot();
+    CHECK(JobOf(snapshot, SteamId(301)) && JobOf(snapshot, SteamId(301))->update);
+    CHECK(Installed(snapshot, SteamId(301)));
+    service.Cancel(SteamId(301));
+    AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return !JobOf(s, SteamId(301)); });
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      return runner.discarded.size() == 1;
+    });
+    CHECK(Installed(service.Snapshot(), SteamId(301)));
+    CHECK(std::filesystem::exists(root / "301" / ".playden-install.json"));
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      CHECK(runner.removed.empty());
+    }
+
+    // A queued update is kept across a restart.
+    service.Update(SteamId(301));
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.installs == before + 2; });
+  }
+  runner.block = false;
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    runner.updates.clear();
+  }
+  InstallService service(runner, root.string());
+  // It carries on by itself and replaces the game's entry.
+  AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return !JobOf(s, SteamId(301)) && Installed(s, SteamId(301)); });
+  const auto snapshot = service.Snapshot();
+  CHECK(std::count_if(snapshot.installed.begin(), snapshot.installed.end(),
+                      [](const InstalledGame& game) { return game.id == SteamId(301); }) == 1);
+  CHECK(!InstalledOf(snapshot, SteamId(301))->update_available);
+  CHECK(runner.installs == 5);
+  std::filesystem::remove_all(root);
+}
+
+// Uninstalling a game stops its update and deletes the folder.
+void UninstallStopsItsUpdate(const std::filesystem::path& root) {
+  std::filesystem::create_directories(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  InstallService service(runner, root.string());
+  service.Install(SteamId(311));
+  AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return Installed(s, SteamId(311)); });
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    runner.updates = {311};
+  }
+  service.CheckUpdates();
+  AwaitAt(__LINE__, service, [](const InstallSnapshot& s) {
+    const auto* game = InstalledOf(s, SteamId(311));
+    return game && game->update_available;
+  });
+  runner.block = true;
+  service.Update(SteamId(311));
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.installs == 2; });
+  service.Uninstall(SteamId(311));
+  AwaitAt(__LINE__, service, [](const InstallSnapshot& s) {
+    return !JobOf(s, SteamId(311)) && !Installed(s, SteamId(311)) && s.uninstalling.empty();
+  });
+  CHECK(!std::filesystem::exists(root / "311"));
+  std::filesystem::remove_all(root);
+}
+
 int main() {
   FolderCheckGuardsDownloadStart(std::filesystem::temp_directory_path() / ("playden-foldercheck-service-" + std::to_string(::getpid())));
   UninstallDeletesFilesWhileDownloading(std::filesystem::temp_directory_path() /
@@ -685,6 +797,8 @@ int main() {
   LateCancelKeepsTheInstall(std::filesystem::temp_directory_path() / ("playden-late-cancel-service-" + std::to_string(::getpid())));
   SignInEndsSteamWait(std::filesystem::temp_directory_path() / ("playden-signin-wait-service-" + std::to_string(::getpid())));
   CompletedDownloadsList(std::filesystem::temp_directory_path() / ("playden-completed-service-" + std::to_string(::getpid())));
+  UpdatesInstalledGames(std::filesystem::temp_directory_path() / ("playden-update-service-" + std::to_string(::getpid())));
+  UninstallStopsItsUpdate(std::filesystem::temp_directory_path() / ("playden-update-uninstall-" + std::to_string(::getpid())));
   const auto requests = ParseInstallRequests("uninstall 439490\n439490\ncancel 108600\n108600\n");
   CHECK(requests.size() == 4);
   CHECK(requests[0].action == InstallRequest::Action::kUninstall && requests[0].app == 439490);

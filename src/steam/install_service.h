@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <optional>
 #include <string>
 
 namespace playden::steam {
@@ -53,12 +55,34 @@ class SessionInstallRunner : public InstallRunner {
     if (result.retry_later && result.waiting.empty()) result.waiting = kWaitingForSteam;
     return result;
   }
+  std::optional<std::vector<GameId>> FindUpdates(const std::vector<InstalledGame>& games,
+                                                 const std::atomic<bool>& cancel) final {
+    std::map<std::uint32_t, std::string> apps;
+    for (const auto& game : games)
+      if (const auto app = game.id.steam_app(); app && game.available) apps[*app] = game.root;
+    if (apps.empty()) return std::vector<GameId>{};
+    const auto session = sessions_.Load();
+    if (!session.ok() || !session.value()) return std::nullopt;
+    const auto found = FindAppUpdates(*session.value(), apps, cancel);
+    if (!found) return std::nullopt;
+    std::vector<GameId> ids;
+    for (const auto app : *found) ids.push_back(GameId::Steam(app));
+    return ids;
+  }
 
  protected:
   virtual Result InstallApp(const StoredSession& session, std::uint32_t app, const std::string& root,
                             const std::atomic<bool>& cancel,
                             const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
                             const std::function<void(InstallStep)>& step) = 0;
+  // The apps (app ID -> install folder) whose public branch has other manifests than their install
+  // record names.
+  virtual std::optional<std::vector<std::uint32_t>> FindAppUpdates(const StoredSession& session,
+                                                                   const std::map<std::uint32_t, std::string>& apps,
+                                                                   const std::atomic<bool>& cancel) {
+    (void)session; (void)apps; (void)cancel;
+    return std::vector<std::uint32_t>{};
+  }
 
  private:
   SessionRepository& sessions_;

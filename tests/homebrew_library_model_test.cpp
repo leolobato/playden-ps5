@@ -2184,6 +2184,49 @@ void live_saves_tab() {
           "More > Manage saves opens the game's saves");
 }
 
+// An installed game with an update offers Update; while it runs Downloads follows it and Play waits.
+void live_details_offer_game_updates() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Synthetic")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateAppDetails(SteamId(42), 300, 600, true);
+    LiveRuntimeGame ready; ready.game_id = SteamId(42); ready.status = "Ready"; ready.ready = true; ready.can_play = true; ready.has_title = true;
+    model.UpdateRuntime(RuntimeState::Ready, {ready});
+    model.UpdateInstalls({}, {{SteamId(42), 600, "internal", true, false}});
+    check(model.action("details:42"), "details open");
+    check(!has_row(model, "details-update"), "no Update row without an update");
+
+    model.UpdateInstalls({}, {{SteamId(42), 600, "internal", true, true}});
+    const auto* update = find_row(model, "details-update");
+    check(update && update->enabled && update->value == "Available", "an update is offered");
+    activate(model, "details-update");
+    const auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Update && requests[0].game_id == SteamId(42),
+          "Update asks the install service");
+
+    LiveInstallJob checking{SteamId(42), JobState::Downloading, 10, 600, {}, "internal"};
+    checking.update = true;
+    checking.checking_files = true;
+    model.UpdateInstalls({checking}, {{SteamId(42), 600, "internal", true, true}});
+    update = find_row(model, "details-update");
+    check(update && update->value == "Checking files" && update->action == "open-downloads", "the update reads the installed files first");
+    const auto* play = find_row(model, "details-play");
+    check(play && !play->enabled && play->value == "Updating", "Play waits while the update runs");
+    check(model.state().jobs.size() == 1 && model.state().jobs[0].kind == "update", "Downloads lists the update");
+
+    LiveInstallJob paused{SteamId(42), JobState::Paused, 10, 600, {}, "internal"};
+    paused.update = true;
+    model.UpdateInstalls({paused}, {{SteamId(42), 600, "internal", true, true}});
+    play = find_row(model, "details-play");
+    check(play && play->enabled, "a paused update leaves the installed version playable");
+    model.UpdateInstalls({}, {{SteamId(42), 700, "internal", true, false}});
+    check(!has_row(model, "details-update"), "the finished update leaves no row");
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const auto& notice) { return notice.message == "Update complete"; }),
+          "the player is told the update finished");
+}
+
 void live_completed_downloads_follow_the_queue() {
     using namespace playden::homebrew;
     auto model = make_live();
@@ -3127,6 +3170,7 @@ int main() {
     live_install_confirmation_checks_space_and_unknowns();
     live_install_notifications();
     live_completed_downloads_follow_the_queue();
+    live_details_offer_game_updates();
     live_download_card_keeps_queue_order();
     game_collections_sheet_adds_and_removes_the_game();
     live_log_viewer();

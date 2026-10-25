@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -48,7 +49,8 @@ std::vector<InstallRequest> ParseInstallRequests(const std::string& text);
 
 enum class InstallJobState { kQueued, kRunning, kPaused, kFailed };
 // What a running install is doing before its first progress report.
-enum class InstallStep { kStarting, kCheckingLicenses, kDownloading };
+// An update reads the installed files (kCheckingFiles, with its own progress) before it downloads.
+enum class InstallStep { kStarting, kCheckingLicenses, kCheckingFiles, kDownloading };
 
 // A place games can be installed: a folder on one drive. `available` means the folder exists and
 // Playden can write to it now; installs recorded on a volume that is absent stay listed.
@@ -71,6 +73,8 @@ struct InstallJobView {
   std::optional<int> eta_seconds;
   InstallStep step = InstallStep::kStarting;  // while running
   std::chrono::steady_clock::time_point step_since{};
+  // An update of an installed game, which stays installed (and playable) until the update is swapped in.
+  bool update = false;
 };
 
 struct InstalledGame {
@@ -80,6 +84,7 @@ struct InstalledGame {
   std::string volume_id;
   bool available = true;  // false while the game's volume, or its folder on that volume, is missing
   std::int64_t finished_at = 0;  // Unix seconds the install finished (its record's time); 0 unknown
+  bool update_available = false;  // the last check found a newer version in its store
 };
 
 // A recent finished download that Downloads lists after the queue until the player dismisses it.
@@ -136,6 +141,15 @@ class InstallRunner {
                          const std::function<void(std::uint64_t done, std::uint64_t total, std::uint64_t held)>& progress,
                          const std::function<void(InstallStep)>& step) = 0;
   virtual std::string Remove(const std::string& root) = 0;
+  // The games (of this runner's store) whose store has a newer version than their folder holds; none
+  // when the store has no updates. std::nullopt: not known now (no sign-in, the store out of reach).
+  virtual std::optional<std::vector<GameId>> FindUpdates(const std::vector<InstalledGame>& games,
+                                                         const std::atomic<bool>& cancel) {
+    (void)games; (void)cancel;
+    return std::vector<GameId>{};
+  }
+  // A canceled update: its staged files go, the installed version stays.
+  virtual void DiscardUpdate(const std::string& root) { (void)root; }
   // An uninstalled game whose folder is missing: forgotten with nothing to delete (on the worker).
   virtual void Forget(const GameId& id) { (void)id; }
 };
@@ -177,6 +191,12 @@ class InstallService {
   void MoveQueued(GameId id, bool up);
   void Cancel(GameId id);
   void Uninstall(GameId id);
+  // Updates an installed game the last check found an update for. The job runs in the queue like a
+  // download; the game stays installed meanwhile, and Cancel keeps the installed version.
+  void Update(GameId id);
+  // Asks each store whether its installed games have updates (on the worker, between jobs);
+  // InstalledGame::update_available then says.
+  void CheckUpdates();
   // Uninstalls whose files could not be deleted since the last call.
   std::vector<RemovalFailure> TakeRemovalFailures();
   // Lists a complete managed install that was made outside the queue (an imported game moved
@@ -221,6 +241,7 @@ class InstallService {
     std::string root;
     std::optional<GameId> forget;  // set: InstallRunner::Forget instead of deleting `root`
     std::optional<InstalledGame> game;  // an uninstall's folder; none for a canceled download
+    bool discard_update = false;  // a canceled update: InstallRunner::DiscardUpdate instead of deleting `root`
   };
   void Run();
   void Scan();
@@ -253,6 +274,8 @@ class InstallService {
   std::deque<Removal> removals_;  // folders to delete, by the runner of their store
   std::vector<InstalledGame> uninstalling_;  // uninstalls whose folder is not deleted yet
   std::vector<RemovalFailure> removal_failures_;
+  std::set<GameId> updates_;  // installed games with an update, as the last check found
+  bool check_updates_ = false;
   std::optional<GameId> active_;
   std::atomic<bool> active_cancel_{false};
   std::uint64_t revision_ = 0;

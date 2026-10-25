@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace playden::steam {
@@ -36,6 +37,10 @@ struct InstallTarget {
   GameId game;
   std::string install_root;          // absolute directory owned by this install
   std::vector<DepotInfo> depots;     // selected depots, in Steam's listing (mounting) order
+  // The folder holds a complete install (or an update that stopped part way): files that changed are
+  // built in kUpdateDir, from chunks already on disk where they match and downloads for the rest, and
+  // swapped in at the end. Until then the installed version stays as it was.
+  bool update = false;
 };
 
 struct InstallProgress {
@@ -46,6 +51,11 @@ struct InstallProgress {
   // Bytes of install_total this install already occupies on disk: preallocated files
   // (exFAT allocates on ftruncate) or written chunks (sparse filesystems).
   std::uint64_t held_bytes = 0;
+  // An update reading the installed files first: bytes checked of check_total (the other counts are
+  // not known yet).
+  bool checking = false;
+  std::uint64_t check_done = 0;
+  std::uint64_t check_total = 0;
 };
 
 struct DownloadTuning {
@@ -119,6 +129,7 @@ class DepotInstaller {
   static constexpr const char* kJournalDir = ".playden-download";
   static constexpr const char* kInstallRecord = ".playden-install.json";
   static constexpr const char* kFileList = ".playden-files";
+  static constexpr const char* kUpdateDir = ".playden-update";
   static constexpr int kChunkAttempts = 3;
 
  private:
@@ -136,5 +147,12 @@ class DepotInstaller {
 // The record is deleted last, so a folder that could not be emptied is still recognized next time.
 // `failure`, when given, says why it failed.
 bool RemoveManagedInstall(const std::string& install_root, std::string* failure = nullptr);
+
+// The depots and manifests an install record names; empty when it is missing or unreadable.
+std::vector<std::pair<std::uint32_t, std::uint64_t>> RecordedDepots(const std::string& install_root);
+
+// Deletes an update's staged files. False (and nothing deleted) once its files are being swapped in:
+// the next install run finishes that.
+bool DiscardUpdate(const std::string& install_root);
 
 }  // namespace playden::steam

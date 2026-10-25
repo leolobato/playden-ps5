@@ -41,7 +41,7 @@ enum class SessionState { Idle, Preparing, Launching, Running, Stopping, Failed,
 enum class RuntimeState { Unavailable, Checking, Ready, Failed };
 enum class LogState { Loading, Ready, Failed };
 enum class InstallRequestKind { Install, Pause, Resume, DownloadNow, MoveUp, MoveDown, Cancel, Uninstall, SetDefaultVolume,
-                                DismissCompleted, ClearCompleted };
+                                DismissCompleted, ClearCompleted, Update };
 struct InstallRequest {
     InstallRequestKind kind = InstallRequestKind::Install;
     GameId game_id;
@@ -65,12 +65,15 @@ struct LiveInstallJob {
     std::optional<int> eta_seconds;
     std::uint64_t held_bytes = 0;  // installed bytes already on the drive
     bool checking_licenses = false;  // a slow Steam license check before the download starts
+    bool update = false;          // updates an installed game, which stays installed meanwhile
+    bool checking_files = false;  // an update reading the installed files; the bytes count those
 };
 struct LiveInstalledGame {
     GameId game_id;
     std::uint64_t install_bytes = 0;
     std::string volume_id;
     bool available = true;  // false while the game's drive is absent
+    bool update_available = false;  // its store has a newer version
 };
 // A recent finished download, listed in Downloads after the queue.
 struct LiveCompletedDownload {
@@ -446,6 +449,7 @@ struct Installation {
     bool available = true;
     bool runtime_ready = true;
     bool saves_present = true;
+    bool update_available = false;  // live: its store has a newer version
 };
 
 struct Job {
@@ -953,6 +957,7 @@ private:
     // Live install events become notifications; the first snapshot is restored history, not an event.
     bool live_installs_seen_ = false;
     std::map<GameId, JobState> live_job_states_;
+    std::set<GameId> live_update_jobs_;  // live: jobs that update an installed game
     std::set<GameId> live_installed_ids_;
     std::set<GameId> pending_uninstalls_;
     std::vector<GameId> pending_kept_delete_requests_;
