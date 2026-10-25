@@ -2198,10 +2198,13 @@ enum { kUser, kUtils, kMatchmaking, kFriends };
  * table is only as long as this, and a slot left empty is a call through null. Reading past the end of a real table
  * stays inside the emulator's read-only data. */
 #define kVtableEntries 128
+/* MSVC keeps a pointer to the class's RTTI (its complete object locator) in the slot before the methods, and a
+ * typeid or dynamic_cast on the object reads it there, so a copied table carries it too. */
 typedef struct {
   void** original;
-  void* table[kVtableEntries];
   int kind, version;
+  void* locator;
+  void* table[kVtableEntries];
 } Vtable;
 static Vtable g_vtables[16];
 static int g_vtable_count;
@@ -2362,9 +2365,11 @@ static METHOD int8_t UserGetEncryptedAppTicket(void* self, void* buffer, int max
 typedef int8_t(METHOD* IsAPICallCompletedFn)(void*, uint64_t, int8_t*);
 typedef int(METHOD* GetAPICallFailureReasonFn)(void*, uint64_t);
 typedef int8_t(METHOD* GetAPICallResultFn)(void*, uint64_t, void*, int, int, int8_t*);
-#define kSlotIsAPICallCompleted 10
-#define kSlotGetAPICallFailureReason 11
-#define kSlotGetAPICallResult 12
+/* Games built with the Steamworks SDK keep GetCSERIPPort at slot 7 of ISteamUtils009/010, so the API call methods
+ * are 11-13: a game calls IsAPICallCompleted(call, &failed) at 11 (seen in RuneScape: Dragonwilds, SDK 1.57). */
+#define kSlotIsAPICallCompleted 11
+#define kSlotGetAPICallFailureReason 12
+#define kSlotGetAPICallResult 13
 
 static METHOD int8_t UtilsIsAPICallCompleted(void* self, uint64_t call, int8_t* failed) {
   if (!IsOurCall(call)) return ORIGINAL(IsAPICallCompletedFn, self, kSlotIsAPICallCompleted)(self, call, failed);
@@ -2887,6 +2892,7 @@ static void* WrapInterface(void* object, const char* version) {
     Vtable* table = &g_vtables[g_vtable_count];
     void** original = *(void***)object;
     table->original = original;
+    table->locator = original[-1];
     table->kind = kind;
     table->version = v;
     for (int i = 0; i < kVtableEntries; ++i) table->table[i] = original[i];
@@ -2942,6 +2948,7 @@ static void PatchWebApiResponse(void* param) {
 typedef void(METHOD* RunOneFn)(void*, void*);
 typedef struct {
   void** original;
+  void* locator;  /* the RTTI slot before the methods, as in Vtable */
   void* table[3];
 } CallbackVtable;
 static CallbackVtable g_callback_vtables[16];
@@ -3039,6 +3046,7 @@ void SteamAPI_RegisterCallback(void* callback, int id) {
     if (!table && g_callback_vtable_count < 16) {
       table = &g_callback_vtables[g_callback_vtable_count++];
       table->original = original;
+      table->locator = original[-1];
       table->table[0] = (void*)CallbackRunResult;
       table->table[1] = (void*)CallbackRunOne;
       table->table[2] = original[2];
