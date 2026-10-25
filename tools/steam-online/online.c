@@ -711,10 +711,17 @@ enum {
 #define kMaxRemoteTickets 32
 #define kMaxTicketBytes 4096
 
+/* Session header ticket types (SteamKit's SteamAuthTicket): GetAuthSessionTicket's and GetAuthTicketForWebApi's. */
+#define kTicketTypeSession 2
+#define kTicketTypeWebApi 5
+#define kMaxSecretBytes 136
+
 typedef struct {
   uint32_t handle;
   uint32_t size;
   uint64_t steam_id;  /* another player's ticket (BeginAuthSession); 0 for the game's own */
+  uint32_t secret_size;  /* a Web API ticket's identity as Steam lists it: "str:<identity>" and a NUL */
+  uint8_t secret[kMaxSecretBytes];
   uint8_t bytes[kMaxTicketBytes];
 } Ticket;
 
@@ -728,6 +735,7 @@ static uint32_t g_heartbeat_seconds = 9;
 static uint64_t g_logon_tick;
 static uint32_t g_connections;
 static uint8_t g_tokens[kMaxTokens][kTokenBytes];
+static uint32_t g_public_ip;  /* as Steam saw it at logon; the session header carries it */
 static int g_token_count;
 static uint8_t g_ownership[kMaxTicketBytes];
 static uint32_t g_ownership_size;
@@ -1725,17 +1733,25 @@ static void HandleFrame(const uint8_t* data, size_t size, int depth) {
       break;
     case kEMsgClientLogOnResponse: {
       int32_t eresult = 2;
-      uint32_t heartbeat = 0, legacy = 0;
+      uint32_t heartbeat = 0, legacy = 0, public_ip = 0;
       while (PbNext(&r, &f)) {
         if (f.number == 1 && f.wire == 0) eresult = (int32_t)f.value;
         if (f.number == 2 && f.wire == 0) legacy = (uint32_t)f.value;
         if (f.number == 3 && f.wire == 0) heartbeat = (uint32_t)f.value;
+        if (f.number == 4 && f.wire == 0 && !public_ip) public_ip = (uint32_t)f.value;
+        if (f.number == 15 && f.wire == 2) {
+          PbReader address = {f.data, f.size, 0, 0};
+          PbField a;
+          while (PbNext(&address, &a))
+            if (a.number == 1 && a.wire == 5) public_ip = (uint32_t)a.value;
+        }
       }
       LogValue("logon eresult=", (uint64_t)(uint32_t)eresult);
       if (eresult != 1) break;
       EnterCriticalSection(&g_lock);
       if (steam_id) g_session_steam_id = steam_id;
       g_session_id = session_id;
+      g_public_ip = public_ip;
       g_heartbeat_seconds = heartbeat ? heartbeat : legacy ? legacy : 9;
       g_logged_on = 1;
       g_logon_tick = GetTickCount64();
@@ -2084,7 +2100,7 @@ static uint32_t TicketCrc(const uint8_t* p, size_t n) {
 
 /* Builds a session ticket for handle; 0 when Steam is not reachable in time. The ticket layout is
  * Playden's steam/backend/game_tickets.h BuildSessionTicket. */
-static Ticket* MakeTicket(uint32_t handle) {
+static Ticket* MakeTicket(uint32_t handle, uint32_t type) {
   if (!g_config.online) return 0;
   if (!WaitUntil(TicketInputsReady, 15000)) {
     Log("ticket: Steam not ready (logon, ownership ticket or connect token missing)");
@@ -2101,11 +2117,12 @@ static Ticket* MakeTicket(uint32_t handle) {
   BufPut(&b, token, kTokenBytes);
   BufLE32(&b, 24);
   BufLE32(&b, 1);
-  BufLE32(&b, 2);
-  BufLE32(&b, 0);
+  BufLE32(&b, type);
+  BufLE32(&b, g_public_ip);
   BufLE32(&b, 0);
   BufLE32(&b, (uint32_t)(GetTickCount64() - g_logon_tick));
   BufLE32(&b, g_connections);
+  BufLE32(&b, g_ownership_size);  /* length-prefixed, like the two sections before it */
   BufPut(&b, g_ownership, g_ownership_size);
   LeaveCriticalSection(&g_lock);
   if (b.failed || b.n > kMaxTicketBytes) {
@@ -2120,15 +2137,21 @@ static Ticket* MakeTicket(uint32_t handle) {
   return ticket;
 }
 
+#define kListedTicketBytes (4 + kTokenBytes + 4 + 24)
 static void EncodeAuthTicket(Buf* body, const Ticket* ticket) {
   Buf entry = {0};
+  /* The game's own ticket is listed by its token section and session header only (4 + 20 + 4 + 24 bytes), as the
+   * Steam client does: Steam finds it by that part's CRC when a server checks the whole ticket. Another player's
+   * ticket is listed whole. */
+  const uint32_t listed = ticket->steam_id || ticket->size < kListedTicketBytes ? ticket->size : kListedTicketBytes;
   PbUint(&entry, 1, ticket->steam_id ? 1 : 0);  /* estate */
-  PbUint(&entry, 2, 1);
+  if (ticket->steam_id) PbUint(&entry, 2, 1);
   if (ticket->steam_id) PbFixed64(&entry, 3, ticket->steam_id);
   PbFixed64(&entry, 4, g_config.app_id);
   PbUint(&entry, 5, 1);
-  PbUint(&entry, 6, TicketCrc(ticket->bytes, ticket->size));
-  PbBytes(&entry, 7, ticket->bytes, ticket->size);
+  PbUint(&entry, 6, TicketCrc(ticket->bytes, listed));
+  PbBytes(&entry, 7, ticket->bytes, listed);
+  if (ticket->secret_size) PbBytes(&entry, 8, ticket->secret, ticket->secret_size);
   PbBytes(body, 4, entry.p, entry.n);
   BufFree(&entry);
 }
@@ -2229,7 +2252,7 @@ static int SlotGetEncrypted(int v) { return v >= 23 ? 22 : 21; }
 
 static uint32_t TicketFinish(void* buffer, int max, uint32_t* size, uint32_t handle) {
   if (!handle) return handle;
-  Ticket* ticket = MakeTicket(handle);
+  Ticket* ticket = MakeTicket(handle, kTicketTypeSession);
   if (!ticket) return handle;  /* the emulator's ticket stays */
   if (ticket->size > (uint32_t)max) {
     Log("ticket: the game's buffer is too small");
@@ -2258,10 +2281,20 @@ static METHOD uint32_t UserGetAuthTicketForWebApi(void* self, const char* identi
   Vtable* v = VtableOf(self);
   const uint32_t handle = ((GetAuthTicketForWebApiFn)v->original[SlotWebApi(v->version)])(self, identity);
   if (!handle) return handle;
-  Ticket* ticket = MakeTicket(handle);
+  Ticket* ticket = MakeTicket(handle, kTicketTypeWebApi);
   if (ticket) {
+    /* Steam lists the identity the service will name when it checks the ticket (SteamKit's SteamAuthTicket). */
+    static const char kPrefix[] = "str:";
+    const size_t n = identity ? Strlen(identity) : 0;
+    if (n && sizeof kPrefix - 1 + n + 1 <= kMaxSecretBytes) {
+      memcpy(ticket->secret, kPrefix, sizeof kPrefix - 1);
+      memcpy(ticket->secret + sizeof kPrefix - 1, identity, n);
+      ticket->secret[sizeof kPrefix - 1 + n] = 0;
+      ticket->secret_size = (uint32_t)(sizeof kPrefix - 1 + n + 1);
+    }
     AddTicket(ticket);
     LogValue("web api ticket handle=", handle);
+    LogValue("web api ticket identity bytes=", ticket->secret_size);
   }
   return handle;
 }

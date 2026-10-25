@@ -28,6 +28,23 @@ What it answers through Steam:
 
 When Steam can't be reached in time, tickets fall back to gbe_fork's and lobby calls fail with "no connection".
 
+**On a PS5:** RuneScape: Dragonwilds (Redpoint EOS, Web API ticket for `epiconlineservices`) signs in to its online
+services: Steam validates the ticket (`ticket auth complete ... response=0`) and the game lists and creates lobbies.
+Co-op through Steam's relays is still untested (see Not done). How it got there, and the dead ends, are in
+`online-play-console-findings.md`.
+
+## Tickets
+
+What Steam and a game's servers expect, as SteamKit (`SteamAuthTicket`) and node-steam-user build it:
+
+- The ticket is three length-prefixed sections: the game connect token (20 bytes, sent by Steam ready-made: token,
+  SteamID, issue time), the session header (24 bytes: 1, the ticket type, public IP, 0, time, sequence) and the app
+  ownership ticket.
+- The ticket type is 2 for `GetAuthSessionTicket` and 5 for `GetAuthTicketForWebApi`.
+- `ClientAuthList` lists the game's own ticket by its first two sections only (52 bytes) and their CRC. A Web API
+  ticket also carries its identity there as `server_secret`: `str:<identity>` and a NUL.
+- Games keep `GetCSERIPPort` at slot 7 of ISteamUtils, so the API call methods the bridge answers are at slots 11-13.
+
 ## The log
 
 `steam_settings/playden_online.log`, beside the bridge: logon result, presence, ownership ticket, tickets handed out

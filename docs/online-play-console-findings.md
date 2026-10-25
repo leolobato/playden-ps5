@@ -252,3 +252,24 @@ environment variables were reading this bug; the environment variables are not n
 - Token hygiene: never use the PS5's `playden_online.txt` on another machine. On 2026-10-25 the token was used from
   the Linux PC with logon fields Steam rejected (`eresult=15`) and afterwards Steam refused it everywhere
   (`eresult=5`) until Playden had a new one.
+
+## Working: Dragonwilds signs in on the PS5 (2026-10-25)
+
+After the connect-token fix, three more differences from the real ticket format (found in SteamKit's
+`SteamAuthTicket.cs` and node-steam-user's `appauth.js`) stood between the bridge and a valid ticket:
+
+1. `ClientAuthList` must list the game's own ticket by its token section and session header only (52 bytes) and their
+   CRC, not the whole ticket.
+2. A Web API ticket has type 5 (not 2) in its session header, and its auth-list entry carries the identity as
+   `server_secret` = `str:epiconlineservices` plus a NUL. After this fix Epic's error became specific:
+   `Steam Session Ticket rejected. Expected Steam App ID(s) [1374490, 1714720], got [-826450924, 4]`.
+3. The ownership ticket needs its own 4-byte length prefix; without it everything after was read 4 bytes off (the
+   `4` was the ownership ticket's version).
+
+With all three, the game asks for one Web API ticket, Steam validates it (`ticket auth complete estate=2
+response=0`), and the game lists and creates lobbies. Untested: joining another player, co-op traffic (Steam
+networking is not bridged), Master Duel's own server problem (not Steam).
+
+Still to do: Playden's C++ reference (`src/steam/backend/game_tickets.cpp`) has the 8-byte token, missing ownership
+length and type-2-only assumptions; bring it in line with the bridge. The log line for Steam's validation of the
+game's own ticket says "(another player's)"; cosmetic.
