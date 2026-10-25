@@ -2,9 +2,11 @@
 
 #include "steam/backend/depot_chunk.h"
 #include "steam/backend/gzip.h"
+#include "steam/backend/json.h"
 #include "steam/install_volumes.h"
 
 #include <dirent.h>
+#include <mbedtls/sha1.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -195,6 +197,121 @@ std::string JournalKey(std::uint32_t depot, const std::string& path, std::uint64
   return std::to_string(depot) + "\t" + std::to_string(offset) + "\t" + path;
 }
 
+// An update's journal line for a file the installed version already has as the manifest lists it.
+std::string UnchangedKey(const std::string& path) { return "=" + path; }
+
+// In an update, the file the placement at `index` (in merged order) is built in.
+std::string StagedPath(const std::string& install_root, std::size_t index) {
+  return install_root + "/" + DepotInstaller::kUpdateDir + "/f" + std::to_string(index);
+}
+
+std::int64_t FileSize(const std::string& path) {
+  struct stat info {};
+  if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return -1;
+  return static_cast<std::int64_t>(info.st_size);
+}
+
+// Reads one chunk's bytes from an open file into `data` and checks them against the manifest's SHA-1.
+bool ChunkMatches(int fd, std::int64_t file_size, const ManifestChunk& chunk, std::vector<std::uint8_t>& data) {
+  if (fd < 0 || chunk.original_size > kMaxDepotChunkBytes ||
+      chunk.offset + chunk.original_size > static_cast<std::uint64_t>(std::max<std::int64_t>(file_size, 0)))
+    return false;
+  data.resize(chunk.original_size);
+  std::size_t read = 0;
+  while (read < data.size()) {
+    const auto result = pread(fd, data.data() + read, data.size() - read, static_cast<off_t>(chunk.offset + read));
+    if (result <= 0) return false;
+    read += static_cast<std::size_t>(result);
+  }
+  std::array<std::uint8_t, 20> digest{};
+  return mbedtls_sha1(data.data(), data.size(), digest.data()) == 0 && digest == chunk.sha;
+}
+
+bool SafeRelative(const std::string& path) {
+  return !path.empty() && path[0] != '/' && path.find("..") == std::string::npos;
+}
+
+bool WriteTextFile(const std::string& path, const std::string& text) {
+  const auto temporary = path + ".tmp";
+  FILE* file = std::fopen(temporary.c_str(), "w");
+  if (!file) return false;
+  const bool written = std::fwrite(text.data(), 1, text.size(), file) == text.size();
+  if (std::fclose(file) != 0 || !written || std::rename(temporary.c_str(), path.c_str()) != 0) {
+    std::remove(temporary.c_str());
+    return false;
+  }
+  return true;
+}
+
+constexpr const char* kCommitFile = "commit";
+constexpr const char* kStagedRecord = "record";
+constexpr const char* kStagedFileList = "files";
+
+// Swaps an update's staged files in, as its commit file lists them:
+//   "#commit <install bytes> <files>" first, then
+//   "d\t<path>" folders of the new version, "m\t<staged name>\t<path>" files to move into place,
+//   "r\t<path>" files of the old version the new one dropped, "x\t<path>" its dropped folders.
+// The install record is deleted first and the new one moved in last, so a run that stops part way
+// leaves no record and the next run starts here again; every step can be repeated.
+bool ApplyUpdateCommit(const std::string& install_root, InstallProgress* progress) {
+  const std::string staging = install_root + "/" + DepotInstaller::kUpdateDir;
+  FILE* commit = std::fopen((staging + "/" + kCommitFile).c_str(), "r");
+  if (!commit) return false;
+  std::vector<std::string> lines;
+  char buffer[8192];
+  while (std::fgets(buffer, sizeof(buffer), commit)) {
+    std::string line(buffer);
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    lines.push_back(std::move(line));
+  }
+  const bool read_ok = std::ferror(commit) == 0;
+  std::fclose(commit);
+  unsigned long long install_bytes = 0;
+  unsigned files = 0;
+  if (!read_ok || lines.empty() || std::sscanf(lines[0].c_str(), "#commit %llu %u", &install_bytes, &files) != 2)
+    return false;
+  const std::string record = install_root + "/" + DepotInstaller::kInstallRecord;
+  const std::string staged_record = staging + "/" + kStagedRecord;
+  if (!Exists(staged_record) && !Exists(record)) return false;
+  if (Exists(staged_record) && std::remove(record.c_str()) != 0 && errno != ENOENT) return false;
+  std::vector<std::string> dropped_folders;
+  for (std::size_t index = 1; index < lines.size(); ++index) {
+    const auto& line = lines[index];
+    if (line.size() < 3 || line[1] != '\t') continue;
+    const auto rest = line.substr(2);
+    if (line[0] == 'd') {
+      if (SafeRelative(rest) && !MakeDirs(install_root + "/" + rest)) return false;
+    } else if (line[0] == 'm') {
+      const auto tab = rest.find('\t');
+      if (tab == std::string::npos) continue;
+      const auto name = rest.substr(0, tab), path = rest.substr(tab + 1);
+      if (!SafeRelative(path) || name.find('/') != std::string::npos) continue;
+      const auto source = staging + "/" + name, destination = install_root + "/" + path;
+      if (!Exists(source)) continue;  // moved before the run stopped
+      if (!MakeDirs(Parent(destination))) return false;
+      if (std::remove(destination.c_str()) != 0 && errno != ENOENT) return false;
+      if (std::rename(source.c_str(), destination.c_str()) != 0) return false;
+    } else if (line[0] == 'r') {
+      if (SafeRelative(rest)) std::remove((install_root + "/" + rest).c_str());
+    } else if (line[0] == 'x') {
+      if (SafeRelative(rest)) dropped_folders.push_back(install_root + "/" + rest);
+    }
+  }
+  std::sort(dropped_folders.begin(), dropped_folders.end(),
+            [](const std::string& left, const std::string& right) { return left.size() > right.size(); });
+  for (const auto& folder : dropped_folders) rmdir(folder.c_str());
+  const auto staged_list = staging + "/" + kStagedFileList;
+  if (Exists(staged_list) && std::rename(staged_list.c_str(), (install_root + "/" + DepotInstaller::kFileList).c_str()) != 0)
+    return false;
+  if (Exists(staged_record) && std::rename(staged_record.c_str(), record.c_str()) != 0) return false;
+  RemoveTree(staging);
+  if (progress) {
+    progress->install_total = install_bytes;
+    progress->files_total = files;
+  }
+  return true;
+}
+
 }  // namespace
 
 DownloadTuning ReadDownloadTuning(const std::string& path) {
@@ -348,6 +465,14 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     return fail(InstallError::kProtocol, "invalid install target");
   if (cancel.load()) return fail(InstallError::kCanceled, "canceled");
   auto trace = [this](const char* step) { if (hooks_.trace) hooks_.trace(step); };
+  const std::string staging = target.install_root + "/" + kUpdateDir;
+  // An update whose files were being swapped in when it stopped only finishes that.
+  if (target.update && Exists(staging + "/" + kCommitFile)) {
+    trace("update-commit");
+    if (!ApplyUpdateCommit(target.install_root, &outcome.progress)) return fail(InstallError::kStorage, "cannot finish update");
+    outcome.error = InstallError::kNone;
+    return outcome;
+  }
   trace("access");
 
   std::vector<DepotRequest> requests;
@@ -433,13 +558,14 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
 
   trace("journal");
   // Journal of chunks already written in a previous run.
-  const std::string journal_dir = target.install_root + "/" + kJournalDir;
+  const std::string journal_dir = target.update ? staging : target.install_root + "/" + kJournalDir;
   const std::string journal_path = journal_dir + "/journal";
   if (!MakeDirs(journal_dir)) return fail(InstallError::kStorage, "cannot create install folder");
   // Every path this install may create, so removal never has to list directories (the console's
   // readdir is unreliable).
   {
-    const std::string list_path = target.install_root + "/" + kFileList;
+    // An update's list replaces the installed one only when its files are swapped in.
+    const std::string list_path = target.update ? staging + "/" + kStagedFileList : target.install_root + "/" + kFileList;
     FILE* list = std::fopen((list_path + ".tmp").c_str(), "w");
     if (!list) return fail(InstallError::kStorage, "cannot write file list");
     for (const auto& [key, placement] : placements)
@@ -512,14 +638,113 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     if (reset_journal) trace("journal-reset");
   } else if (!has_header) trace("journal-legacy");
 
+  // An update reads the installed files: one that matches the manifest stays; another is built in
+  // the staging folder, from the chunks it already holds and downloads of the rest.
+  std::map<std::string, std::size_t> order;  // placement key -> its index in merged order
+  for (const auto& [key, placement] : placements) order.emplace(key, order.size());
+  std::set<std::string> unchanged;
+  if (target.update) {
+    trace("check");
+    InstallProgress checking;
+    checking.checking = true;
+    for (const auto& [key, placement] : placements) {
+      if (placement.file->is_symlink() || done.count(UnchangedKey(placement.file->path))) continue;
+      const auto depot_id = manifests[placement.depot].depot_id;
+      for (const auto& chunk : placement.file->chunks)
+        if (!done.count(JournalKey(depot_id, placement.file->path, chunk.offset))) checking.check_total += chunk.original_size;
+    }
+    if (on_progress) on_progress(checking);
+    FILE* marks = std::fopen(journal_path.c_str(), "a");
+    if (!marks) return fail(InstallError::kStorage, "cannot write journal");
+    ScopeExit close_marks{[&] { if (marks) std::fclose(marks); }};
+    if (unterminated_journal) {
+      if (std::fprintf(marks, "\n") < 0) return fail(InstallError::kStorage, "cannot write journal");
+      unterminated_journal = false;
+    }
+    const auto mark = [&](const std::string& entry) {
+      return std::fprintf(marks, "%s\n", entry.c_str()) >= 0 && std::fflush(marks) == 0;
+    };
+    std::vector<std::uint8_t> data;
+    auto reported = Clock::now();
+    for (const auto& [key, placement] : placements) {
+      const auto& file = *placement.file;
+      if (file.is_directory() || file.is_symlink()) continue;
+      if (cancel.load()) return fail(InstallError::kCanceled, "canceled");
+      if (done.count(UnchangedKey(file.path))) { unchanged.insert(key); continue; }
+      const auto depot_id = manifests[placement.depot].depot_id;
+      const auto live = target.install_root + "/" + file.path;
+      const auto staged = StagedPath(target.install_root, order[key]);
+      const auto live_size = FileSize(live);
+      bool started = false;  // an earlier run staged part of it
+      for (const auto& chunk : file.chunks) started = started || done.count(JournalKey(depot_id, file.path, chunk.offset));
+      std::vector<bool> held(file.chunks.size(), false);
+      bool same = !started && live_size == static_cast<std::int64_t>(file.size);
+      const int fd = live_size >= 0 ? open(live.c_str(), O_RDONLY) : -1;
+      ScopeExit close_live{[fd] { if (fd >= 0) close(fd); }};
+      for (std::size_t index = 0; index < file.chunks.size(); ++index) {
+        const auto& chunk = file.chunks[index];
+        if (done.count(JournalKey(depot_id, file.path, chunk.offset))) continue;
+        held[index] = ChunkMatches(fd, live_size, chunk, data);
+        same = same && held[index];
+        checking.check_done += chunk.original_size;
+        if (on_progress && Clock::now() - reported >= std::chrono::milliseconds(500)) {
+          on_progress(checking);
+          reported = Clock::now();
+        }
+        if (cancel.load()) return fail(InstallError::kCanceled, "canceled");
+      }
+      if (same) {
+        unchanged.insert(key);
+        if (!mark(UnchangedKey(file.path))) return fail(InstallError::kStorage, "cannot write journal");
+        continue;
+      }
+      // Changed: staged at full size (when this run starts it), then what the installed file holds is copied in.
+      if (!started) {
+        const auto needed = file.size - std::min(file.size, AllocatedBytes(staged, file.size));
+        const auto free_now = hooks_.free_bytes(target.install_root);
+        if (free_now < kInstallSpaceMargin || needed > free_now - kInstallSpaceMargin)
+          return fail(InstallError::kNoSpace, "not enough free space");
+        // A file left by an update to another version holds bytes no chunk overwrites.
+        if (!EnsureFileSize(staged, 0) || !EnsureFileSize(staged, file.size)) return fail(InstallError::kStorage, "cannot create file");
+      }
+      for (std::size_t index = 0; index < file.chunks.size(); ++index) {
+        if (!held[index]) continue;
+        const auto& chunk = file.chunks[index];
+        if (!ChunkMatches(fd, live_size, chunk, data) || !WriteAt(staged, file.size, chunk.offset, data)) {
+          if (!Exists(staged)) return fail(InstallError::kStorage, "cannot write file");
+          continue;  // downloaded instead
+        }
+        auto entry = JournalKey(depot_id, file.path, chunk.offset);
+        if (!mark(entry)) return fail(InstallError::kStorage, "cannot write journal");
+        done.insert(std::move(entry));
+      }
+    }
+    if (std::fclose(marks) != 0) { marks = nullptr; return fail(InstallError::kStorage, "cannot write journal"); }
+    marks = nullptr;
+    // From here on the counts are the update's: only what still has to be downloaded.
+    progress.download_total = 0;
+    progress.files_total = 0;
+    for (const auto& [key, placement] : placements) {
+      if (placement.file->is_directory() || placement.file->is_symlink()) continue;
+      ++progress.files_total;
+      if (unchanged.count(key)) continue;
+      const auto depot_id = manifests[placement.depot].depot_id;
+      for (const auto& chunk : placement.file->chunks)
+        if (!done.count(JournalKey(depot_id, placement.file->path, chunk.offset))) progress.download_total += chunk.compressed_size;
+    }
+  }
+  const auto write_path = [&](const std::string& key, const ManifestFile& file) {
+    return target.update ? StagedPath(target.install_root, order[key]) : target.install_root + "/" + file.path;
+  };
+
   // Space still needed: per file, the smaller of its unwritten chunks and its unallocated bytes.
   // A resumed install on a preallocating filesystem already holds its files at full size.
   std::uint64_t remaining_bytes = 0;
   std::map<std::string, std::uint64_t> allocated;
   for (const auto& [key, placement] : placements) {
-    if (placement.file->is_directory() || placement.file->is_symlink()) continue;
+    if (placement.file->is_directory() || placement.file->is_symlink() || unchanged.count(key)) continue;
     const auto depot_id = manifests[placement.depot].depot_id;
-    const auto path = target.install_root + "/" + placement.file->path;
+    const auto path = write_path(key, *placement.file);
     const auto held = AllocatedBytes(path, placement.file->size);
     allocated[key] = held;
     progress.held_bytes += held;
@@ -527,7 +752,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     std::uint64_t unwritten = pending ? placement.file->size : 0;
     for (const auto& chunk : placement.file->chunks) {
       if (done.count(JournalKey(depot_id, placement.file->path, chunk.offset))) {
-        progress.download_done += chunk.compressed_size;
+        if (!target.update) progress.download_done += chunk.compressed_size;
         ++stats.chunks_skipped;
       } else {
         unwritten += chunk.original_size;
@@ -568,6 +793,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   };
   struct FileWork {
     Placement placement;
+    std::string path;  // where it is written
     bool prepared = false;
     std::size_t pending = 0;
     std::uint64_t allocated = 0;  // counted in progress.held_bytes
@@ -576,10 +802,12 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   std::vector<FileWork> files;
   std::vector<ChunkWork> chunks;
   for (const auto& [key, placement] : placements) {
-    if (placement.file->is_symlink()) continue;
+    if (placement.file->is_symlink() || unchanged.count(key)) continue;
+    // An update makes the folders when its files are swapped in.
+    if (target.update && placement.file->is_directory()) continue;
     const auto index = files.size();
     const auto held = allocated.find(key);
-    files.push_back({placement, false, 0, held == allocated.end() ? 0 : held->second});
+    files.push_back({placement, write_path(key, *placement.file), false, 0, held == allocated.end() ? 0 : held->second});
     for (const auto& chunk : placement.file->chunks) {
       auto entry = JournalKey(access.grants[placement.depot].depot_id, placement.file->path, chunk.offset);
       if (done.count(entry)) continue;
@@ -754,7 +982,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     auto& work = files[index];
     if (work.prepared) return true;
     const auto& file = *work.placement.file;
-    const auto path = target.install_root + "/" + file.path;
+    const auto& path = work.path;
     if (file.is_directory()) {
       if (!Timed(create, [&] { return MakeDirs(path, &stats.folders_created); })) return false;
     } else {
@@ -788,7 +1016,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
       const auto& file = *files[work.file].placement.file;
       if (!prepare_file(work.file)) { publish_failure(InstallError::kStorage, "cannot create file"); break; }
       if (stats.chunks_done == 0) trace("first-write");
-      const auto path = target.install_root + "/" + file.path;
+      const auto& path = files[work.file].path;
       if (!Timed(write, [&] { return WriteAt(path, file.size, work.chunk->offset, ready->plain); })) {
         publish_failure(InstallError::kStorage, "cannot write file"); break;
       }
@@ -835,22 +1063,48 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   loop_finished = true;
 
   // Install record, then drop the journal: the record marks a complete, verified install.
-  const std::string record_path = target.install_root + "/" + kInstallRecord;
-  const std::string temporary = record_path + ".tmp";
-  FILE* record = std::fopen(temporary.c_str(), "w");
-  if (!record) return fail(InstallError::kStorage, "cannot write install record");
   // Steam records are written as before; another store's game adds "store" and "game".
   std::string identity;
   if (target.game.valid() && target.game.store != Store::kSteam)
     identity = ",\"store\":\"" + std::string(Traits(target.game.store).key) + "\",\"game\":\"" + target.game.value + "\"";
-  std::fprintf(record, "{\"version\":1,\"app_id\":%u%s,\"install_bytes\":%llu,\"files\":%u,\"depots\":[",
-               target.app_id, identity.c_str(), static_cast<unsigned long long>(progress.install_total), progress.files_total);
+  std::string record = "{\"version\":1,\"app_id\":" + std::to_string(target.app_id) + identity +
+                       ",\"install_bytes\":" + std::to_string(progress.install_total) +
+                       ",\"files\":" + std::to_string(progress.files_total) + ",\"depots\":[";
   for (std::size_t index = 0; index < access.grants.size(); ++index)
-    std::fprintf(record, "%s{\"id\":%u,\"manifest\":\"%llu\"}", index ? "," : "", access.grants[index].depot_id,
-                 static_cast<unsigned long long>(access.grants[index].manifest_gid));
-  std::fprintf(record, "]}\n");
-  const bool closed = std::fclose(record) == 0;
-  if (!closed || std::rename(temporary.c_str(), record_path.c_str()) != 0)
+    record += std::string(index ? "," : "") + "{\"id\":" + std::to_string(access.grants[index].depot_id) +
+              ",\"manifest\":\"" + std::to_string(access.grants[index].manifest_gid) + "\"}";
+  record += "]}\n";
+  if (target.update) {
+    // Everything is staged: the commit lists the swap, which then runs (and runs again after a stop).
+    trace("update-commit");
+    if (!WriteTextFile(staging + "/" + kStagedRecord, record)) return fail(InstallError::kStorage, "cannot write install record");
+    std::string commit = "#commit " + std::to_string(progress.install_total) + " " + std::to_string(progress.files_total) + "\n";
+    for (const auto& [key, placement] : placements) {
+      const auto& file = *placement.file;
+      if (file.is_symlink()) continue;
+      if (file.is_directory()) commit += "d\t" + file.path + "\n";
+      else if (!unchanged.count(key)) commit += "m\tf" + std::to_string(order[key]) + "\t" + file.path + "\n";
+    }
+    // What the installed version listed and this one doesn't is deleted.
+    if (FILE* list = std::fopen((target.install_root + "/" + kFileList).c_str(), "r")) {
+      char line[8192];
+      while (std::fgets(line, sizeof(line), list)) {
+        std::string entry(line);
+        while (!entry.empty() && (entry.back() == '\n' || entry.back() == '\r')) entry.pop_back();
+        if (entry.size() < 3 || entry[1] != '\t' || (entry[0] != 'f' && entry[0] != 'd')) continue;
+        const auto path = entry.substr(2);
+        if (!SafeRelative(path) || placements.count(Lower(path))) continue;
+        commit += std::string(entry[0] == 'f' ? "r" : "x") + "\t" + path + "\n";
+      }
+      std::fclose(list);
+    }
+    if (!WriteTextFile(staging + "/" + kCommitFile, commit)) return fail(InstallError::kStorage, "cannot write update");
+    if (!ApplyUpdateCommit(target.install_root, nullptr)) return fail(InstallError::kStorage, "cannot finish update");
+    outcome.error = InstallError::kNone;
+    outcome.progress = progress;
+    return outcome;
+  }
+  if (!WriteTextFile(target.install_root + "/" + kInstallRecord, record))
     return fail(InstallError::kStorage, "cannot write install record");
   std::remove(journal_path.c_str());
   rmdir(journal_dir.c_str());
@@ -870,7 +1124,8 @@ bool RemoveManagedInstall(const std::string& install_root, std::string* failure)
   // The copy of an imported game keeps its plan in .playden-copy (stores/local/copy_plan.h).
   const std::string copy_dir = install_root + "/" + kCopyJournalDir;
   if (!Exists(install_root + "/" + DepotInstaller::kInstallRecord) &&
-      !Exists(install_root + "/" + DepotInstaller::kJournalDir) && !Exists(copy_dir))
+      !Exists(install_root + "/" + DepotInstaller::kJournalDir) && !Exists(copy_dir) &&
+      !Exists(install_root + "/" + DepotInstaller::kUpdateDir))
     return fail("The game's folder holds no Playden install record, so it was left as it is.");
   // Remove exactly the paths the install recorded, deepest first, then Playden's own files.
   std::vector<std::string> files;
@@ -922,6 +1177,38 @@ bool RemoveManagedInstall(const std::string& install_root, std::string* failure)
   }
   if (emptied) return true;
   return fail("Some of the game's files could not be deleted (" + std::string(std::strerror(error)) + ").");
+}
+
+std::vector<std::pair<std::uint32_t, std::uint64_t>> RecordedDepots(const std::string& install_root) {
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> depots;
+  FILE* file = std::fopen((install_root + "/" + DepotInstaller::kInstallRecord).c_str(), "r");
+  if (!file) return depots;
+  std::string text;
+  char buffer[4096];
+  std::size_t read = 0;
+  while ((read = std::fread(buffer, 1, sizeof(buffer), file)) > 0 && text.size() < 64 * 1024) text.append(buffer, read);
+  std::fclose(file);
+  const auto record = json::Parse(text);
+  const auto* listed = record ? record->Find("depots") : nullptr;
+  if (!listed || !listed->is_array()) return depots;
+  for (const auto& depot : listed->array()) {
+    const auto* id = depot.Find("id");
+    const auto* manifest = depot.Find("manifest");
+    const auto id_value = id ? id->AsUint64() : std::nullopt;
+    std::uint64_t gid = 0;
+    if (!manifest || !manifest->is_string() || !id_value || *id_value == 0 || *id_value > 0xffffffffULL) continue;
+    const auto& digits = manifest->text();
+    const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), gid);
+    if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size() || gid == 0) continue;
+    depots.emplace_back(static_cast<std::uint32_t>(*id_value), gid);
+  }
+  return depots;
+}
+
+bool DiscardUpdate(const std::string& install_root) {
+  const std::string staging = install_root + "/" + DepotInstaller::kUpdateDir;
+  if (Exists(staging + "/" + kCommitFile)) return false;
+  return RemoveTree(staging);
 }
 
 }  // namespace playden::steam

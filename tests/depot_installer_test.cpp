@@ -1052,6 +1052,143 @@ void RemovesOnlyManagedFolders(const std::filesystem::path& base) {
 
 }  // namespace
 
+// The world after a release: game.exe's second chunk changed, new.txt was added, empty.txt dropped.
+void Release(World& world) {
+  auto& base = world.manifests[441];
+  base.gid = 21;
+  base.files.clear();
+  base.files.push_back(world.AddFile("game.exe", {"MZ-executable-", "second-CHANGE"}));
+  ManifestFile folder;
+  folder.path = "data";
+  folder.flags = kDepotFileFlagDirectory;
+  base.files.push_back(folder);
+  base.files.push_back(world.AddFile("data/level.dat", {"level-one"}));
+  base.files.push_back(world.AddFile("data/new.txt", {"brand-new"}));
+  world.manifests[442].gid = 22;
+}
+
+InstallTarget UpdateTarget(const std::filesystem::path& root) {
+  auto target = Target(root);
+  target.depots[0].manifest_gid = 21;
+  target.depots[1].manifest_gid = 22;
+  target.update = true;
+  return target;
+}
+
+void UpdateDownloadsOnlyWhatChanged(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  DepotInstaller installer(world.Hooks());
+  installer.SetTuning({1, 256});
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kNone);
+  CHECK((RecordedDepots(root.string()) == std::vector<std::pair<std::uint32_t, std::uint64_t>>{{441, 11}, {442, 12}}));
+  Release(world);
+  world.chunk_calls = 0;
+  InstallProgress last;
+  bool checked = false;
+  const auto outcome = installer.Run({}, UpdateTarget(root), cancel, [&](const InstallProgress& progress) {
+    checked = checked || progress.checking;
+    last = progress;
+  });
+  CHECK(outcome.error == InstallError::kNone);
+  CHECK(checked);
+  CHECK(world.chunk_calls == 2);  // game.exe's changed chunk and new.txt; the rest was on disk
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-CHANGE");
+  CHECK(Read(root / "data/level.dat") == "level-patched");
+  CHECK(Read(root / "data/new.txt") == "brand-new");
+  CHECK(!std::filesystem::exists(root / "empty.txt"));
+  CHECK(!std::filesystem::exists(root / DepotInstaller::kUpdateDir));
+  CHECK((RecordedDepots(root.string()) == std::vector<std::pair<std::uint32_t, std::uint64_t>>{{441, 21}, {442, 22}}));
+  const auto list = Read(root / DepotInstaller::kFileList);
+  CHECK(list.find("f\tdata/new.txt") != std::string::npos);
+  CHECK(list.find("empty.txt") == std::string::npos);
+  CHECK(outcome.progress.install_total == std::filesystem::file_size(root / "game.exe") + 13 + 9);
+  CHECK(last.download_done == last.download_total);
+
+  // Nothing changed: the files are only read.
+  world.chunk_calls = 0;
+  CHECK(installer.Run({}, UpdateTarget(root), cancel).error == InstallError::kNone);
+  CHECK(world.chunk_calls == 0);
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-CHANGE");
+}
+
+// A canceled update leaves the installed version as it was; Resume carries on, Discard drops it.
+void CanceledUpdateKeepsTheInstall(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  DepotInstaller installer(world.Hooks());
+  installer.SetTuning({1, 256});
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kNone);
+  Release(world);
+  world.chunk_calls = 0;
+  world.cancel = &cancel;
+  world.cancel_after = 1;
+  CHECK(installer.Run({}, UpdateTarget(root), cancel).error == InstallError::kCanceled);
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-chunk");
+  CHECK(std::filesystem::exists(root / "empty.txt"));
+  CHECK((RecordedDepots(root.string()) == std::vector<std::pair<std::uint32_t, std::uint64_t>>{{441, 11}, {442, 12}}));
+  CHECK(std::filesystem::exists(root / DepotInstaller::kUpdateDir));
+
+  // Resumed: the chunk downloaded before the cancel is not fetched again.
+  cancel = false;
+  world.cancel_after = -1;
+  world.chunk_calls = 0;
+  CHECK(installer.Run({}, UpdateTarget(root), cancel).error == InstallError::kNone);
+  CHECK(world.chunk_calls == 1);
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-CHANGE");
+
+  // Discarded: the staging folder goes, the game stays.
+  std::filesystem::create_directories(root / DepotInstaller::kUpdateDir);
+  std::ofstream(root / DepotInstaller::kUpdateDir / "f0") << "partial";
+  CHECK(DiscardUpdate(root.string()));
+  CHECK(!std::filesystem::exists(root / DepotInstaller::kUpdateDir));
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-CHANGE");
+}
+
+// An update that stopped while its files were swapped in finishes without reaching Steam.
+void InterruptedCommitFinishes(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  DepotInstaller installer(world.Hooks());
+  installer.SetTuning({1, 256});
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kNone);
+  const auto staging = root / DepotInstaller::kUpdateDir;
+  std::filesystem::create_directories(staging);
+  std::ofstream(staging / "f3") << "new-exe";
+  std::ofstream(staging / "record") << "{\"version\":1,\"app_id\":440,\"install_bytes\":7,\"files\":1,\"depots\":[{\"id\":441,\"manifest\":\"31\"}]}\n";
+  std::ofstream(staging / "files") << "f\tgame.exe\n";
+  std::ofstream(staging / "commit") << "#commit 7 1\nd\tdata\nm\tf3\tgame.exe\nm\tf9\tgone.bin\nr\tempty.txt\nr\tdata/level.dat\nx\tdata\nr\t../outside\n";
+  // As it stopped after the record was deleted.
+  std::filesystem::remove(root / DepotInstaller::kInstallRecord);
+  bool reached = false;
+  auto hooks = world.Hooks();
+  hooks.access = [&](const StoredSession&, std::uint32_t, const std::vector<DepotRequest>&, const std::atomic<bool>&) {
+    reached = true;
+    return DepotAccessResult{};
+  };
+  DepotInstaller finishing(hooks);
+  const auto outcome = finishing.Run({}, UpdateTarget(root), cancel);
+  CHECK(outcome.error == InstallError::kNone);
+  CHECK(!reached);
+  CHECK(outcome.progress.install_total == 7);
+  CHECK(Read(root / "game.exe") == "new-exe");
+  CHECK(!std::filesystem::exists(root / "empty.txt"));
+  CHECK(!std::filesystem::exists(root / "data"));
+  CHECK(!std::filesystem::exists(staging));
+  CHECK((RecordedDepots(root.string()) == std::vector<std::pair<std::uint32_t, std::uint64_t>>{{441, 31}}));
+  CHECK(Read(root / DepotInstaller::kFileList) == "f\tgame.exe\n");
+  // While it swaps files in it can't be discarded.
+  std::filesystem::create_directories(staging);
+  std::ofstream(staging / "commit") << "#commit 7 1\n";
+  CHECK(!DiscardUpdate(root.string()));
+  CHECK(std::filesystem::exists(staging / "commit"));
+  // A folder with only an update's staging is still Playden's to remove.
+  std::filesystem::remove(root / DepotInstaller::kInstallRecord);
+  std::filesystem::remove(root / DepotInstaller::kFileList);
+  CHECK(RemoveManagedInstall(root.string()));
+  CHECK(!std::filesystem::exists(root));
+}
+
 int main() {
   const auto base = std::filesystem::temp_directory_path() / ("playden-installer-test-" + std::to_string(::getpid()));
   std::filesystem::remove_all(base);
@@ -1076,6 +1213,9 @@ int main() {
   LocalRecordNamesItsGame(base / "install-local");
   ResumesWithoutRefetchingFinishedChunks(base / "resume");
   ChangedManifestRefetchesSameOffset(base / "manifest-update");
+  UpdateDownloadsOnlyWhatChanged(base / "update");
+  CanceledUpdateKeepsTheInstall(base / "update-cancel");
+  InterruptedCommitFinishes(base / "update-commit");
   JournalHeaderModes(base / "header-modes");
   HeaderWriteFailureCannotAppend(base / "header-write-failure");
   LongMatchingJournalHeader(base / "long-header");

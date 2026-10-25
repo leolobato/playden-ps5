@@ -4,6 +4,7 @@
 #include "steam/backend/app_info.h"
 
 #include <set>
+#include <sys/stat.h>
 #include <charconv>
 
 namespace playden::steam {
@@ -55,6 +56,44 @@ std::string SteamInstallRunner::Remove(const std::string& root) {
   return ok ? std::string() : failure;
 }
 
+void SteamInstallRunner::DiscardUpdate(const std::string& root) {
+  const bool ok = steam::DiscardUpdate(root);
+  if (log_) log_(0, "update-discard", ok ? "done" : "kept", "");
+}
+
+std::optional<std::vector<std::uint32_t>> SteamInstallRunner::FindAppUpdates(
+    const StoredSession& session, const std::map<std::uint32_t, std::string>& apps, const std::atomic<bool>& cancel) {
+  // PICS answers for many apps at once; batches keep each answer small.
+  constexpr std::size_t kBatch = 50;
+  std::vector<std::uint32_t> ids;
+  for (const auto& [app, root] : apps) ids.push_back(app);
+  std::vector<std::uint32_t> updates;
+  for (std::size_t start = 0; start < ids.size(); start += kBatch) {
+    const std::vector<std::uint32_t> batch(ids.begin() + static_cast<std::ptrdiff_t>(start),
+                                           ids.begin() + static_cast<std::ptrdiff_t>(std::min(ids.size(), start + kBatch)));
+    const auto info = cm_.FetchAppInfo(session, batch, cancel);
+    if (cancel.load() || !info.ok()) {
+      if (log_ && !cancel.load()) log_(0, "update-check", CmErrorName(info.error), "");
+      return std::nullopt;
+    }
+    for (const auto app_id : batch) {
+      const auto buffer = info.buffers.find(app_id);
+      const auto app = buffer == info.buffers.end() ? std::nullopt : ParseAppInfo(app_id, buffer->second);
+      if (!app) continue;
+      // A recorded depot whose public manifest moved on is an update; depots Steam no longer lists
+      // for the public branch don't count.
+      bool newer = false;
+      for (const auto& [depot_id, manifest] : RecordedDepots(apps.at(app_id)))
+        for (const auto& depot : app->depots)
+          if (depot.id == depot_id && depot.manifest_gid && *depot.manifest_gid != 0 && *depot.manifest_gid != manifest)
+            newer = true;
+      if (newer) updates.push_back(app_id);
+    }
+  }
+  if (log_) log_(0, "update-check", "done", ("apps=" + std::to_string(ids.size()) + " updates=" + std::to_string(updates.size())).c_str());
+  return updates;
+}
+
 const char* InstallFailureText(InstallError error) {
   switch (error) {
     case InstallError::kNone: return "";
@@ -101,6 +140,11 @@ InstallRunner::Result SteamInstallRunner::InstallApp(const StoredSession& sessio
   InstallTarget target;
   target.app_id = id;
   target.install_root = root;
+  // A complete install, or an update that stopped part way, is updated in place of a new install.
+  struct stat folder {};
+  target.update = stat((root + "/" + DepotInstaller::kInstallRecord).c_str(), &folder) == 0 ||
+                  stat((root + "/" + DepotInstaller::kUpdateDir).c_str(), &folder) == 0;
+  if (target.update) log("update", "start", "");
   std::string reason;
   // Like the reference, only depots this account's licenses grant are installed. Accounts with
   // thousands of licenses take a minute here (issue #47), so the player sees this step.
@@ -159,8 +203,15 @@ InstallRunner::Result SteamInstallRunner::InstallApp(const StoredSession& sessio
   for (const auto& depot : target.depots) selected_ids += (selected_ids.empty() ? "" : " ") + std::to_string(depot.id);
   log("depots", "selected", selected_ids.c_str());
   if (step) step(InstallStep::kDownloading);
+  bool checking = false;
   const auto outcome = installer_.Run(session, target, cancel, [&](const InstallProgress& state) {
-    if (progress) progress(state.download_done, state.download_total, state.held_bytes);
+    if (state.checking != checking) {
+      checking = state.checking;
+      if (step) step(checking ? InstallStep::kCheckingFiles : InstallStep::kDownloading);
+    }
+    if (!progress) return;
+    if (state.checking) progress(state.check_done, state.check_total, 0);
+    else progress(state.download_done, state.download_total, state.held_bytes);
   });
   if (!outcome.skipped_depots.empty()) {
     std::string skipped;

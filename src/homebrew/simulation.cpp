@@ -1967,7 +1967,11 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
                                 const std::vector<LiveCompletedDownload>& completed) {
     if (!live()) return;
     std::map<GameId, JobState> job_states;
-    for (const auto& job : jobs) job_states[job.game_id] = job.state;
+    std::set<GameId> update_jobs;
+    for (const auto& job : jobs) {
+        job_states[job.game_id] = job.state;
+        if (job.update) update_jobs.insert(job.game_id);
+    }
     std::set<GameId> installed_ids;
     for (const auto& game : installed) installed_ids.insert(game.game_id);
     // A copy's job, or a move's finished install, ends its starting state.
@@ -1981,14 +1985,16 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         };
         for (const auto& [id, previous] : live_job_states_) {
             if (job_states.contains(id) || !installed_ids.contains(id)) continue;
-            push_notice({"install-" + ToKey(id), "Download complete", "", false, kLiveNoticeSeconds, false, title(id)});
+            push_notice({"install-" + ToKey(id), live_update_jobs_.contains(id) ? "Update complete" : "Download complete", "",
+                         false, kLiveNoticeSeconds, false, title(id)});
         }
         for (const auto& job : jobs) {
             const auto previous = live_job_states_.find(job.game_id);
             if (job.state != JobState::Failed || (previous != live_job_states_.end() && previous->second == JobState::Failed)) continue;
             // The queue carries on with the next game and Downloads keeps the failure with Resume, so the
             // player is told in a corner instead of a dialog that stops what they are doing.
-            push_notice({"install-" + ToKey(job.game_id), "Download failed", "", false, kLiveNoticeSeconds * 2, true,
+            push_notice({"install-" + ToKey(job.game_id), job.update ? "Update failed" : "Download failed", "", false,
+                         kLiveNoticeSeconds * 2, true,
                          title(job.game_id) + (job.failure.empty() ? std::string() : " · " + job.failure), false});
         }
         for (const auto id : live_installed_ids_) {
@@ -2002,6 +2008,7 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         it = installed_ids.contains(*it) ? std::next(it) : pending_uninstalls_.erase(it);
     live_installs_seen_ = true;
     live_job_states_ = std::move(job_states);
+    live_update_jobs_ = std::move(update_jobs);
     live_installed_ids_ = std::move(installed_ids);
     std::vector<Job> projected;
     int order = 0;
@@ -2015,6 +2022,10 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         job.total_bytes = live_job.total_bytes;
         job.held_bytes = live_job.held_bytes;
         job.checking_licenses = live_job.state == JobState::Downloading && live_job.checking_licenses;
+        if (live_job.update) {
+            job.kind = "update";
+            job.stage_text = live_job.state == JobState::Downloading && live_job.checking_files ? "Checking files" : "Update";
+        }
         job.failure = live_job.failure;
         job.volume_id = live_job.volume_id;
         if (live_job.state == JobState::Downloading) {
@@ -2040,7 +2051,8 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
     std::vector<Installation> installations;
     for (const auto& game : installed)
         installations.push_back({game.game_id, game.volume_id, game.install_bytes, game.available,
-                                 state_.runtime_games.count(game.game_id) && state_.runtime_games.at(game.game_id).ready, false});
+                                 state_.runtime_games.count(game.game_id) && state_.runtime_games.at(game.game_id).ready, false,
+                                 game.update_available});
     state_.jobs = std::move(projected);
     sync_self_update_job();
     state_.installations = std::move(installations);
@@ -4736,6 +4748,24 @@ void Simulation::rebuild_view() {
                                              std::to_string(static_cast<int>(*value.progress * 100.0F)) + "%";
                         }
                     }
+                    // An update: Downloads follows it; Play waits while it runs, as its files are swapped in at the end.
+                    if (job && job->kind == "update") {
+                        auto& update = row("details-update", RowKind::Action, "Update", "open-downloads");
+                        update.value = job->stage_text == "Checking files" ? "Checking files" : job_state_value(*job);
+                        update.progress = job->total_bytes == 0 ? 0.0F
+                            : static_cast<float>(job->completed_bytes) / static_cast<float>(job->total_bytes);
+                        if (job->state == JobState::Downloading || job->state == JobState::Queued)
+                            for (auto& entry : view_.rows)
+                                if (entry.key == "details-play") {
+                                    entry.value = "Updating";
+                                    entry.enabled = false;
+                                    entry.action.clear();
+                                }
+                    } else if (installation->update_available) {
+                        auto& update = row("details-update", RowKind::Action, "Update", "live-update");
+                        update.value = "Available";
+                        update.subtitle = "Downloads only what changed. The game stays playable until it finishes.";
+                    }
                     // Steam Cloud saves: sync on demand; a pending choice opens its dialog. Only stores
                     // with Cloud saves have the row.
                     if (Traits(game->id.store).cloud_saves) {
@@ -6692,6 +6722,9 @@ void Simulation::activate() {
         const auto id = steam_programs_game_;
         close_modal();
         choose_steam_launch(id, steam_programs_shown_[index].path);
+    } else if (live() && action_name == "live-update") {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        if (id.valid()) pending_install_requests_.push_back({InstallRequestKind::Update, id});
     } else if (live() && action_name == "open-downloads") {
         state_.navigation.route = Route::Downloads;
         state_.navigation.focus_key = "job-" + ToKey(state_.navigation.detail_id.value_or(GameId{}));
