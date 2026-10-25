@@ -230,3 +230,25 @@ logon (compare with what the real client sends at logon and after `ClientGamesPl
 
 Earlier experiments in this file that blamed "wrapping SteamUtils/Friends/MatchMaking" or the Steam launch
 environment variables were reading this bug; the environment variables are not needed.
+
+## Game connect tokens fixed; Epic refuses the Web API ticket (2026-10-25)
+
+- Steam does send game connect tokens: 10 right after logon and more later. Each is **20 bytes**, the session
+  ticket's whole first section (token, SteamID, issue time; bytes 8-15 are the account's SteamID, checked). The
+  bridge only accepted 8-byte tokens and dropped them all, hence `game connect tokens=0`. Fixed in "Keep Steam's game
+  connect tokens for online tickets": tokens are kept and copied into tickets unchanged.
+  Playden's C++ reference (`src/steam/backend/game_tickets.cpp`, `kGameConnectTokenBytes = 8`) has the same
+  assumption and the same bug; its tests encode 8-byte tokens. Fix it the same way when that code is next used.
+- `client_os_type` (0, "unknown", in the bridge's logon) does not stop Steam sending tokens.
+- On the PS5, Dragonwilds now gets real tickets: `encrypted app ticket eresult=1`, `auth list ack sequence=N`,
+  `web api ticket handle=N`. Epic still refuses the credential: OAuth `TokenGrantv2` 400
+  `errors.com.epicgames.account.ext_auth.invalid_external_auth_token` and EOSAuth `TokenGrant` 401
+  `errors.com.epicgames.eos.auth.external.invalid_token`.
+- Leading hypothesis: Epic validates a **Web API** ticket with Steam's `ISteamUserAuth/AuthenticateUserTicket`
+  quoting the identity the game asked for (`epiconlineservices`). The bridge registers the ticket in
+  `ClientAuthList` as a plain session ticket: it never sets `CMsgAuthTicket.ticket_type` (field 9) and passes no
+  identity. How the real client registers a Web API ticket and its identity is not in the repo's protos; it needs
+  research (SteamKit/SteamDB protobuf dumps of newer `steammessages_*.proto`, or the real client's behaviour).
+- Token hygiene: never use the PS5's `playden_online.txt` on another machine. On 2026-10-25 the token was used from
+  the Linux PC with logon fields Steam rejected (`eresult=15`) and afterwards Steam refused it everywhere
+  (`eresult=5`) until Playden had a new one.
