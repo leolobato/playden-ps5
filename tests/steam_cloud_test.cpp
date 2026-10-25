@@ -143,6 +143,7 @@ struct FakeCloud {
   bool declares_ufs = true;
   bool corrupt_downloads = false;
   long download_status = 200;  // another status refuses every download
+  int download_transport_code = 0;  // nonzero fails every download in transport with this curl code
   std::uint64_t next_batch = 700;
   std::map<std::string, std::vector<std::uint8_t>> pending;  // uploads in the open batch
   std::vector<std::string> pending_deletes;
@@ -256,6 +257,12 @@ struct FakeCloud {
       if (corrupt_downloads && !response.body.empty()) response.body.back() ^= 0xff;
       if (download_status != 200) {
         response.status_code = download_status;
+        response.body.clear();
+      }
+      if (download_transport_code != 0) {
+        response.error = HttpError::kProtocolError;
+        response.transport_code = download_transport_code;
+        response.status_code = 0;
         response.body.clear();
       }
     } else if (path.rfind("/up/", 0) == 0) {
@@ -532,6 +539,14 @@ void SyncEndToEnd() {
   CHECK(outcome.detail.find("file=%WinMyDocuments%My Games/Cloud Game/slot3.sav http error=") != std::string::npos &&
         outcome.detail.find(" status=403 ") != std::string::npos && outcome.detail.find("x-test-signature") == std::string::npos);
   cloud.download_status = 200;
+
+  // A download that fails in transport: the log names curl's code, which several failures share one error for.
+  plan = sync.Check(session, location, cancel);
+  cloud.download_transport_code = 35;
+  outcome = sync.Apply(session, location, plan, Resolution::kUseCloud, true, cancel);
+  CHECK(!outcome.ok && outcome.message == "A Cloud save could not be downloaded. Try again.");
+  CHECK(outcome.detail.find(" http error=protocol_error curl=35 status=0 ") != std::string::npos);
+  cloud.download_transport_code = 0;
 
   // A game without Steam Cloud says so.
   cloud.declares_ufs = false;

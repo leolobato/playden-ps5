@@ -67,9 +67,15 @@ struct HttpResponse {
   std::vector<std::uint8_t> body;
 
   HttpTiming timing;  // Retained when a failed response discards its payload.
+  // The transport library's numeric result code when the transfer failed (0 otherwise), for logs:
+  // several codes share one HttpError, such as a TLS handshake failure and kProtocolError.
+  int transport_code = 0;
 
   bool ok() const { return error == HttpError::kNone; }
 };
+
+// HttpErrorName plus the transport code when there is one, such as "protocol_error curl=35".
+std::string HttpFailureName(const HttpResponse& response);
 
 // One worker thread owns each instance and calls Perform synchronously. The cancel flag may be
 // changed by another thread. Responses contain stable categories and never expose URLs, headers,

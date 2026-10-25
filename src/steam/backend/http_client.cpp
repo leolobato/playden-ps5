@@ -207,6 +207,12 @@ const char* HttpErrorName(HttpError error) {
   return "protocol_error";
 }
 
+std::string HttpFailureName(const HttpResponse& response) {
+  std::string name = HttpErrorName(response.error);
+  if (response.transport_code != 0) name += " curl=" + std::to_string(response.transport_code);
+  return name;
+}
+
 class HttpClient::Impl {
  public:
   explicit Impl(std::string ca_bundle) : ca_bundle_(std::move(ca_bundle)) {
@@ -386,6 +392,7 @@ class HttpClient::Impl {
     curl_slist_free_all(request_headers);
     transfer.response.error = MapError(result, transfer, canceled);
     if (!transfer.response.ok()) {
+      transfer.response.transport_code = result == CURLE_OK ? 0 : static_cast<int>(result);
       // Clearing both caches covers transport failure and abandonment before curl consumes
       // staged DNS removals. Successful GETs retain their multi connection and DNS caches.
       resolution_cache_.ResetTransport(multi_);

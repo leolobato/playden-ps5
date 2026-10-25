@@ -143,6 +143,8 @@ int main(int argc, char** argv) {
   post.body = {'p', 'a', 'y', 'l', 'o', 'a', 'd'};
   response = client.Perform(post, cancel);
   Check(response.ok() && response.status_code == 201, "verified POST should succeed");
+  Check(response.transport_code == 0 && playden::steam::HttpFailureName(response) == "none",
+        "a successful transfer has no transport code");
   Check(Text(response.body) == "present:payload", "POST should send headers and bytes");
 
   HttpRequest timeout;
@@ -223,6 +225,10 @@ int main(int argc, char** argv) {
   HttpClient untrusted(wrong_ca_bundle);
   response = untrusted.Perform(get, cancel);
   Check(response.error == HttpError::kTlsVerificationFailed, "wrong CA should fail verification");
+  // 60 is CURLE_PEER_FAILED_VERIFICATION.
+  Check(response.transport_code == 60 &&
+            playden::steam::HttpFailureName(response) == "tls_verification_failed curl=60",
+        "a transport failure should keep curl's code for diagnostics");
 
   HttpRequest invalid_header = get;
   invalid_header.headers.emplace_back("Bad\r\nInjected", "value");

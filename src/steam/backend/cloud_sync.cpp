@@ -803,7 +803,7 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
       const auto response = hooks_.http(request, cancel);
       if (!response.ok() || response.status_code != 200) {
         failure = "A Cloud save could not be downloaded. Try again.";
-        detail = named + " http error=" + HttpErrorName(response.error) + " status=" + std::to_string(response.status_code) +
+        detail = named + " http error=" + HttpFailureName(response) + " status=" + std::to_string(response.status_code) +
                  " host=" + ticket->host + " file_size=" + std::to_string(ticket->file_size) +
                  " raw_size=" + std::to_string(ticket->raw_file_size) + " body=" + std::to_string(response.body.size());
         return std::nullopt;
@@ -938,7 +938,7 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
                                                                          data.begin() + static_cast<std::ptrdiff_t>(block.offset + block.length));
           const auto response = hooks_.http(request, cancel);
           if (!response.ok() || response.status_code < 200 || response.status_code >= 300) {
-            detail = "file=" + decision.remote_name + " upload http error=" + HttpErrorName(response.error) +
+            detail = "file=" + decision.remote_name + " upload http error=" + HttpFailureName(response) +
                      " status=" + std::to_string(response.status_code) + " host=" + block.host +
                      " bytes=" + std::to_string(request.body.size());
             transferred = false;
