@@ -704,6 +704,9 @@ enum {
 #define kClientPackageVersion 1771u
 #define kAnonymousSteamId 0x0110000100000000ull
 #define kMaxTokens 32
+/* Steam sends each game connect token as the session ticket's whole first section: the token, the SteamID and the
+ * time it was issued (8 + 8 + 4 bytes), which a ticket carries unchanged. */
+#define kTokenBytes 20
 #define kMaxTickets 64
 #define kMaxRemoteTickets 32
 #define kMaxTicketBytes 4096
@@ -724,7 +727,7 @@ static int32_t g_session_id;
 static uint32_t g_heartbeat_seconds = 9;
 static uint64_t g_logon_tick;
 static uint32_t g_connections;
-static uint64_t g_tokens[kMaxTokens];
+static uint8_t g_tokens[kMaxTokens][kTokenBytes];
 static int g_token_count;
 static uint8_t g_ownership[kMaxTicketBytes];
 static uint32_t g_ownership_size;
@@ -1760,19 +1763,19 @@ static void HandleFrame(const uint8_t* data, size_t size, int depth) {
       EnterCriticalSection(&g_lock);
       while (PbNext(&r, &f)) {
         if (f.number == 1 && f.wire == 0) keep = (uint32_t)f.value;
-        if (f.number == 2 && f.wire == 2 && f.size == 8) {
+        if (f.number == 2 && f.wire == 2 && f.size == kTokenBytes) {
           if (g_token_count == kMaxTokens) {
-            memmove(g_tokens, g_tokens + 1, sizeof(uint64_t) * (kMaxTokens - 1));
+            memmove(g_tokens, g_tokens + 1, sizeof g_tokens[0] * (kMaxTokens - 1));
             --g_token_count;
           }
-          g_tokens[g_token_count++] = LE32(f.data) | (uint64_t)LE32(f.data + 4) << 32;
+          memcpy(g_tokens[g_token_count++], f.data, kTokenBytes);
         }
       }
       if (!keep) keep = 1;
       if (keep > kMaxTokens) keep = kMaxTokens;
       if ((uint32_t)g_token_count > keep) {
         const int drop = g_token_count - (int)keep;
-        memmove(g_tokens, g_tokens + drop, sizeof(uint64_t) * keep);
+        memmove(g_tokens, g_tokens + drop, sizeof g_tokens[0] * keep);
         g_token_count = (int)keep;
       }
       const int count = g_token_count;
@@ -2089,16 +2092,13 @@ static Ticket* MakeTicket(uint32_t handle) {
   }
   Ticket* ticket = Alloc(sizeof(Ticket));
   if (!ticket) return 0;
-  uint64_t now = 0;
-  GetSystemTimeAsFileTime(&now);
   Buf b = {0};
   EnterCriticalSection(&g_lock);
-  const uint64_t token = g_tokens[0];
-  memmove(g_tokens, g_tokens + 1, sizeof(uint64_t) * (size_t)(--g_token_count));
-  BufLE32(&b, 20);
-  BufLE64(&b, token);
-  BufLE64(&b, g_session_steam_id);
-  BufLE32(&b, (uint32_t)(UDiv64(now, 10000000u, 0) - 11644473600ull));
+  uint8_t token[kTokenBytes];
+  memcpy(token, g_tokens[0], kTokenBytes);
+  memmove(g_tokens, g_tokens + 1, sizeof g_tokens[0] * (size_t)(--g_token_count));
+  BufLE32(&b, kTokenBytes);
+  BufPut(&b, token, kTokenBytes);
   BufLE32(&b, 24);
   BufLE32(&b, 1);
   BufLE32(&b, 2);
