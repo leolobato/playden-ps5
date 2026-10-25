@@ -10,6 +10,7 @@
 #include "stores/local/copy_runner.h"
 #include "stores/local/library_source.h"
 #include "app/diagnostic_log.h"
+#include "platform/ps5/title_registry.h"
 #include "platform/ps5/title_remover.h"
 #include "platform/ps5/title_runtime.h"
 #include "platform/ps5/native_startup.h"
@@ -379,10 +380,16 @@ int main() {
         update_config.installed_root = std::string("/data/homebrew/") + PLAYDEN_PS5_TITLE_ID;
         update_config.work_root = "/data/playden/self-update";
         update_config.kits_root = "/data/playden/kits";
+        // The kit this build was made for: downloaded at the first start (or over a kit it can't use).
+        update_config.kit_id = playden::runtime::kDevelopmentKitId;
+        update_config.kit_manifest_sha256 = playden::runtime::kExpectedKitManifestSha256;
+        for (const auto& renamed : playden::runtime::kKitIdRenames)
+            if (std::string(renamed.to) == playden::runtime::kDevelopmentKitId) update_config.renamed_kit_ids.push_back(renamed.from);
         update_config.appmeta_root = std::string("/user/appmeta/") + PLAYDEN_PS5_TITLE_ID;
         update_config.registered_app_root = std::string("/user/app/") + PLAYDEN_PS5_TITLE_ID;
         update_config.layout_journal = "/data/playden/runtime-state/layout-0.6.json";
         update_config.current = playden::update::CurrentVersion();
+        update_config.include_betas = preferences.Load().preferences.beta_updates;
         update_config.fetch = [&update_http](const playden::steam::HttpRequest& request, const std::atomic<bool>& cancel) {
             return update_http.Perform(request, cancel);
         };
@@ -434,7 +441,8 @@ int main() {
             config.admit_kit = [](std::string* reason) -> std::optional<playden::homebrew::RuntimeKit> {
                 const auto firmware = playden::ps5::ConsoleFirmwareVersion();
                 playden::app::AppendLogLine(log_root, "runtime.log", "console_firmware=" + firmware.value_or("unknown") + " " +
-                    playden::ps5::ConsoleFirmwareDiagnostics());
+                    playden::ps5::ConsoleFirmwareDiagnostics() + " " +
+                    playden::ps5::TitleRegistry(playden::ps5::ShadowMountPost).DescribeVersion());
                 const auto admission = rt::DevelopmentKitAdmission();
                 auto admitted = rt::VerifyInstalledKit(rt::kDevelopmentKitRoot, admission);
                 std::string ignored;
@@ -448,7 +456,7 @@ int main() {
                     " prospero_win=" + revision + (admitted.source_dirty ? "-dirty" : "") +
                     " ignored_capabilities=" + (ignored.empty() ? "-" : ignored));
                 if (admitted.status != rt::KitManifestStatus::kVerified || !admitted.view) {
-                    *reason = "The compatibility kit is missing or incomplete.";
+                    *reason = "The runtime kit is missing or incomplete.";
                     return std::nullopt;
                 }
                 return playden::homebrew::RuntimeKit{*admitted.view, admitted.capabilities, admitted.manifest_sha256,
@@ -468,6 +476,12 @@ int main() {
                 return true;
             };
             config.runtime_dir = paths.title_root + "/runtime";
+            // Games set to "Steam features" = Online sign in with the account's refresh token (runtime/steamworks.h).
+            config.steam_refresh_token = [&sessions]() -> std::string {
+                auto loaded = sessions.Load();
+                if (!loaded.ok() || !loaded.value()) return {};
+                return loaded.value()->refresh_token;
+            };
             config.settings_record = [file = settings_file](const playden::GameId& game) -> std::optional<rt::GameSettingsRecord> {
                 std::map<playden::GameId, rt::GameSettingsRecord> records; std::string reason;
                 if (!file || !rt::LoadGameSettingsFile(file->string(), &records, &reason)) return std::nullopt;

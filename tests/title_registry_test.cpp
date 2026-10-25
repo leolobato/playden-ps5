@@ -92,8 +92,42 @@ int main() {
   answer_add = true; answer_scan = false;
   const auto deferred = flaky.Register("FAKE78000");
   CHECK(deferred.ok && deferred.stage == "scan-deferred");
+  // Another source's malformed ID says nothing about this title; one in this title's folder does.
+  response = R"({"status":0,"games":[{"title_id":"homebrew","path":"/data/homebrew/other"},{"title_id":"ABCD1234"}]})";
+  auto odd = registry.Query("FAKE78000");
+  CHECK(odd.state == RegistrationState::kUnavailable && odd.reason == "bad-title-id");
+  response = R"({"status":0,"games":[{"title_id":"homebrew","path":"/data/homebrew/other"},{"path":"/mnt/usb0/x"}]})";
+  CHECK(registry.Query("FAKE78000").state == RegistrationState::kAbsent);
+  response = R"({"status":0,"games":[{"title_id":"fake78000","path":"/data/homebrew/FAKE78000"}]})";
+  CHECK(registry.Query("FAKE78000").reason == "bad-title-id");
+  // An odd entry elsewhere never hides a real collision, in either order.
+  const std::string foreign_valid = R"({"title_id":"FAKE78000","installed":true,"managed":true,"source_available":true,"source_type":"folder","path":"/mnt/usb0/x"})";
+  const std::string unrelated = R"({"title_id":"odd","path":"/data/homebrew/other"})";
+  response = "{\"status\":0,\"games\":[" + unrelated + "," + foreign_valid + "]}";
+  CHECK(registry.Query("FAKE78000").state == RegistrationState::kCollision);
+  response = "{\"status\":0,\"games\":[" + foreign_valid + "," + unrelated + "]}";
+  CHECK(registry.Query("FAKE78000").state == RegistrationState::kCollision);
+  response = R"({"status":0,"games":[{"title_id":"x","path":"/data/homebrew/other"},{"title_id":"FAKE78000","installed":true,"managed":true,"source_available":true,"source_type":"folder","path":"/data/homebrew/FAKE78000"}]})";
+  CHECK(registry.Query("FAKE78000").state == RegistrationState::kReady);
+  response = "{}";
+  CHECK(registry.Query("FAKE78000").reason == "status");
+  response = "not json";
+  CHECK(registry.Query("FAKE78000").reason == "bad-json");
   TitleRegistry offline([](const auto&, const auto&) -> std::optional<std::string> { return {}; });
   CHECK(offline.Query("FAKE78000").state == RegistrationState::kUnavailable);
+  CHECK(offline.Query("FAKE78000").reason == "no-response");
+  CHECK(offline.DescribeVersion() == "shadowmount=unreachable");
+  TitleRegistry versioned([&](const std::string& route, const std::string&) -> std::optional<std::string> {
+    return route == "/api/v1/version" ? response : std::string("{}");
+  });
+  response = R"({"status":0,"api_version":1,"shadowmount_version":"1.7beta2","capabilities":["list_games"]})";
+  CHECK(versioned.DescribeVersion() == "shadowmount=1.7beta2 api=1");
+  response = R"({"status":0,"shadowmount_version":"1.7 beta\n5"})";
+  CHECK(versioned.DescribeVersion() == "shadowmount=1.7?beta?5 api=unknown");
+  response = R"({"status":2})";
+  CHECK(versioned.DescribeVersion() == "shadowmount=bad-answer");
+  response = "{\"status\":0,\"shadowmount_version\":\"" + std::string(100, 'v') + "\"}";
+  CHECK(versioned.DescribeVersion() == "shadowmount=" + std::string(64, 'v') + " api=unknown");
   CHECK(!offline.Register("FAKE78000").ok);
   std::puts("title registry tests passed");
 }

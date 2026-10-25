@@ -15,19 +15,26 @@ function(playden_add_homebrew_ps5_title)
 		message(FATAL_ERROR "Missing boilerplate submodule; run: git submodule update --init third_party/ps5-native-app-boilerplate")
 	endif()
 	set(gl_source "${CMAKE_SOURCE_DIR}/third_party/ps5-opengl")
-	set(gl_sdk "${sdk_deps}/ps5-opengl/ps5-opengl-sdk-1.0.0/sdk")
+	file(READ "${CMAKE_SOURCE_DIR}/dependencies.lock.json" dependency_lock)
+	string(JSON gl_version GET "${dependency_lock}" ps5_opengl version)
+	set(gl_sdk "${sdk_deps}/ps5-opengl/ps5-opengl-sdk-${gl_version}/sdk")
 	set(out "${CMAKE_BINARY_DIR}")
 	set(app "${out}/dist/${PLAYDEN_PS5_TITLE_ID}")
 	set(host "${out}/host-tools")
 	set(native "${host}/native-src")
-	file(READ "${CMAKE_SOURCE_DIR}/dependencies.lock.json" dependency_lock)
 	string(JSON expected_gl_sha GET "${dependency_lock}" ps5_opengl libPS5OpenGL_sha256)
+	string(JSON expected_gl_manifest_sha GET "${dependency_lock}" ps5_opengl sdk_manifest_sha256)
 	string(JSON expected_builtins_sha GET "${dependency_lock}" compiler_rt_builtins sha256)
 	string(JSON expected_libc_sha GET "${dependency_lock}" ps5_native_app_boilerplate libc_prx_sha256)
 	file(SHA256 "${gl_sdk}/lib/libPS5OpenGL.a" actual_gl_sha)
+	# libPS5OpenGL.a only names the real libraries; scripts/fetch-deps.sh checks every file against this manifest.
+	file(SHA256 "${gl_sdk}/manifest.sha256" actual_gl_manifest_sha)
 	file(SHA256 "${sdk_deps}/compiler-rt/libclang_rt.builtins-x86_64.a" actual_builtins_sha)
 	if(NOT actual_gl_sha STREQUAL expected_gl_sha)
 		message(FATAL_ERROR "libPS5OpenGL.a hash mismatch: expected ${expected_gl_sha}, found ${actual_gl_sha}")
+	endif()
+	if(NOT actual_gl_manifest_sha STREQUAL expected_gl_manifest_sha)
+		message(FATAL_ERROR "ps5-opengl SDK manifest hash mismatch: expected ${expected_gl_manifest_sha}, found ${actual_gl_manifest_sha}")
 	endif()
 	if(NOT actual_builtins_sha STREQUAL expected_builtins_sha)
 		message(FATAL_ERROR "compiler-rt builtins hash mismatch: expected ${expected_builtins_sha}, found ${actual_builtins_sha}")
@@ -273,7 +280,7 @@ function(playden_add_homebrew_ps5_title)
 		COMMAND "${CMAKE_COMMAND}" -DAPP_DIR=${app} -DBOILERPLATE=${boilerplate}
 			-DASSETS_DIR=${CMAKE_SOURCE_DIR}/fixtures/ui-comparison/assets -DFONTS_DIR=${CMAKE_SOURCE_DIR}/build/homebrew-fonts
 			-DPARAM_SOURCE=${gl_source}/native-app/param.json -DPARAM_DEST=${app}/sce_sys/param.json
-			-DTITLE_ID=${PLAYDEN_PS5_TITLE_ID} "-DTITLE_NAME=${playden_title_name}" -DAPP_VERSION=${PROJECT_VERSION}
+			-DTITLE_ID=${PLAYDEN_PS5_TITLE_ID} "-DTITLE_NAME=${playden_title_name}" -DAPP_VERSION=${PROJECT_VERSION} -DFULL_VERSION=${PLAYDEN_FULL_VERSION}
 			-P "${CMAKE_SOURCE_DIR}/cmake/PackagePS5.cmake"
 		${simulation_package_commands}
 		COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/runtime" "${app}/runtime"

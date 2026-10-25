@@ -82,7 +82,7 @@ struct Fixture {
              R"("source_available":true,"source_type":"folder","path":"/data/homebrew/FAKE78001"}]})";
     };
     config.admit_kit = [](std::string* reason) -> std::optional<RuntimeKit> {
-      *reason = "No verified compatibility kit is installed.";
+      *reason = "No verified runtime kit is installed.";
       return std::nullopt;
     };
     config.runtime_dir = g_runtime_dir;

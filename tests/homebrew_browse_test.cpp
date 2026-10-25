@@ -75,6 +75,21 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
     check(filtered_games(state).size() == 2, "compatibility filter accepts Works and Playable only");
 
     state.library.filters.clear();
+    const auto every_game = filtered_games(state).size();
+    auto& demo = *std::find_if(state.games.begin(), state.games.end(), [](const Game& game) { return game.id == SteamId(900010); });
+    demo.demo = true;
+    check(filtered_games(state).size() == every_game, "demos show with no filter");
+    state.library.filters = {"hide-demos"};
+    const auto without_demos = filtered_games(state);
+    check(without_demos.size() == every_game - 1 &&
+              std::none_of(without_demos.begin(), without_demos.end(), [](const Game* game) { return game->demo; }),
+          "hiding demos leaves the full games");
+    state.library.ratings[SteamId(900010)] = Compatibility::Works;
+    state.library.filters = {"compat-playable", "hide-demos"};
+    check(filtered_games(state).size() == 2, "hiding demos composes with Playable");
+    state.library.ratings.erase(SteamId(900010));
+    state.library.filters.clear();
+    demo.demo = false;
     state.account().authentication = AuthState::SignedOut;
     state.account().cache_available = false;
     check(filtered_games(state).empty(), "signed out without cache has no browsable catalog");

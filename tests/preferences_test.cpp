@@ -186,9 +186,9 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   Check(store.Save(preferences).ok(), "sign-in method preference saves");
   const auto saved = storage.Read("preferences.conf");
   Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()) ==
-                          "version=6\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
-                          "downloads_slow_network=0\nsteam_stay_signed_in=1\n",
-        "version 6 format");
+                          "version=7\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
+                          "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\n",
+        "version 7 format");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
             loaded.preferences.cloud_saves_auto,
@@ -201,6 +201,11 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
             three.preferences.title_store_suffix && three.preferences.cloud_saves_auto &&
             !three.preferences.steam_sign_in_password,
         "version 3 preferences load and sign in with the QR code");
+  Check(!store.Load().preferences.beta_updates, "old preferences default to stable updates");
+  preferences.beta_updates = true;
+  Check(store.Save(preferences).ok() && store.Load().preferences.beta_updates, "beta opt-in survives restart");
+  preferences.beta_updates = false;
+  Check(store.Save(preferences).ok() && !store.Load().preferences.beta_updates, "beta opt-out survives restart");
   preferences.downloads_slow_network = true;
   Check(store.Save(preferences).ok() && store.Load().preferences.downloads_slow_network,
         "downloads for slow networks survive restart");

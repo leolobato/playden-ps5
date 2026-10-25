@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -69,6 +70,26 @@ class CollectLogsTests(unittest.TestCase):
     def test_reports_the_latest_firmware(self):
         self.assertEqual(collect_logs.firmware(['console_firmware=13.40 x', 'a\nconsole_firmware=13.60 y']), '13.60')
         self.assertIsNone(collect_logs.firmware(['nothing']))
+
+    def test_reports_the_kit_runtime_not_its_folder_id(self):
+        manifests = {'old-kit': {'kit_id': 'old-kit', 'runtime': {'artifact_revision': 'f729534-kit-0.12'},
+                                 'capabilities': ['dxvk', 'wine-mono']},
+                     'playden-kit': {'kit_id': 'playden-kit', 'runtime': {'artifact_revision': 'ce28942-kit-0.13'},
+                                     'capabilities': ['dxvk']}}
+        folders, fetch = collect_logs.folders, collect_logs.fetch
+        collect_logs.folders = lambda ftp, path: ['old-kit']
+        collect_logs.fetch = lambda ftp, path: json.dumps(manifests[path.split('/')[-2]]).encode()
+        try:
+            self.assertEqual(collect_logs.active_kit(None),
+                             {'kit runtime': 'f729534-kit-0.12', 'kit capabilities': 'dxvk, wine-mono'})
+            # A kit left under the id it had before is not the one Playden uses.
+            collect_logs.folders = lambda ftp, path: ['.previous-x', 'old-kit', 'playden-kit']
+            self.assertEqual(collect_logs.active_kit(None), {'kit runtime': 'ce28942-kit-0.13', 'kit capabilities': 'dxvk',
+                                                             'other kit folders': 'old-kit'})
+            collect_logs.folders = lambda ftp, path: []
+            self.assertEqual(collect_logs.active_kit(None), {'kit runtime': None})
+        finally:
+            collect_logs.folders, collect_logs.fetch = folders, fetch
 
 
 

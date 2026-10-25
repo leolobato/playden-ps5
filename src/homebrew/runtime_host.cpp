@@ -21,6 +21,7 @@
 #include "platform/managed_file_lock.h"
 #include "steam/backend/cloud_mapping.h"
 #include "steam/backend/json.h"
+#include "steam/secret.h"
 #include "stores/local/scanner.h"
 
 #include <algorithm>
@@ -102,7 +103,7 @@ std::string KitLacksForRecipe(const rt::GameRecipe& recipe, const rt::VerifiedKi
   if (recipe.id == kit.recipe.id) return {};
   const auto unmet = rt::UnmetRecipeRequirements(recipe.requirements, kit);
   return unmet.empty() ? std::string()
-                       : "The installed compatibility kit lacks what this game needs (" + unmet + "); install a newer kit.";
+                       : "The installed runtime kit lacks what this game needs (" + unmet + "); install a newer kit.";
 }
 
 // Staged, its registration submitted, and only waiting for ShadowMountPlus, which
@@ -620,6 +621,15 @@ void RuntimeHost::MeasureSaves() {
   wake_.notify_all();
 }
 
+void RuntimeHost::ReloadKit() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    kit_reload_requested_ = true;
+  }
+  wake_.notify_all();
+}
+
 void RuntimeHost::Maintain(std::uint32_t app_id, RuntimeMaintenance action) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -643,7 +653,7 @@ std::string RuntimeHost::KitReplaced(const Composition& c) const {
   if (!c.kit || c.kit->manifest_sha256.empty() || !config_.package_operations.hash_file) return {};
   const auto current = config_.package_operations.hash_file(c.kit->view.root / "manifest.json");
   if (current && *current == c.kit->manifest_sha256) return {};
-  return "The compatibility kit changed while Playden was running. Quit Playden and start it again.";
+  return "The runtime kit changed while Playden was running. Quit Playden and start it again.";
 }
 
 // What a game's preparation steps work from: its recipe and effective settings, its folder, the bottle
@@ -765,7 +775,9 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     if (changed) Publish([&](RuntimeSnapshot& s) { s.steamworks_apps[record.runtime_number] = steam_app; });
   }
   // Without a Steam app ID there is nothing to emulate: the game keeps its own Steam files.
-  const bool emulate = files.settings.values.at("steam_features").value == "emulate" && steam_app.app_id != 0;
+  const auto& features = files.settings.values.at("steam_features").value;
+  const bool emulate = (features == "emulate" || features == "online") && steam_app.app_id != 0;
+  const bool online = emulate && features == "online";
   rt::SteamworksResult result;
   // The emulator's files name the signed-in account; before it is known they keep what Play wrote.
   const bool emulator_waits = emulate && !steam_account_known;
@@ -785,14 +797,21 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     // A game from another store keeps its folder as it shipped: no steam_appid.txt of Playden's would hide
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.
     identity.write_game_appid_file = !other_store;
+    if (online) {
+      identity.online = true;
+      if (config_.steam_refresh_token) identity.refresh_token = config_.steam_refresh_token();
+      if (identity.refresh_token.empty())
+        Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=online without a Steam session: emulator only");
+    }
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
+    steam::ZeroizeSecret(identity.refresh_token);
   } else {
     result = rt::RestoreSteamworks(root.string());
   }
   if (!emulator_waits) {
     std::string changed;
     for (const auto& path : result.changed) changed += (changed.empty() ? "" : ",") + path;
-    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (emulate ? "emulate" : "game") +
+    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (online ? "online" : emulate ? "emulate" : "game") +
         " found=" + std::to_string(result.found.size()) + " changed=" + (changed.empty() ? "-" : changed) +
         (result.ok ? std::string() : " failed=" + result.message));
     if (!result.ok) return result.message;
@@ -843,6 +862,20 @@ std::string RuntimeHost::Direct3D12Step(Composition& c, const GameFiles& files) 
     Log("d3d12 app=" + std::to_string(record.runtime_number) + " vkd3d-proton=1");
   }
   return {};
+}
+
+// Generic step: the bottle's Wine Mono path follows the kit's (a bottle copied from a kit under another id names
+// that folder). Logged, never a refusal: only .NET programs need it, and the next Play tries again.
+void RuntimeHost::KitMonoStep(Composition& c, const rt::RuntimeInstall& record, const char* when) {
+  if (!c.kit || record.data_root.empty()) return;
+  bool changed = false;
+  std::string reason;
+  const auto ok = rt::PointBottleAtKitMono((c.kit->view.root / c.kit->view.template_path).string(),
+                                           (HostPath(record.data_root) / "library/prefixes/game").string(),
+                                           config_.unix_time(), &changed, &reason);
+  if (changed || !ok)
+    Log(std::string("mono path app=") + std::to_string(record.runtime_number) + " when=" + when +
+        (ok ? " pointed at kit " + c.kit->view.kit_id : " failed=" + reason));
 }
 
 // Generic step: vkd3d-proton's variables reach the game through the bottle's Environment key. Some change how
@@ -1070,6 +1103,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   if (auto refused = SteamworksStep(files, steam_account_known); !refused.empty()) return refused;
   if (auto refused = Ue3EulaStep(files); !refused.empty()) return refused;
   if (auto refused = Direct3D12Step(c, files); !refused.empty()) return refused;
+  KitMonoStep(c, record, "prepare");
   if (auto refused = BottleEnvironmentStep(files); !refused.empty()) return refused;
   if (auto refused = InstallScriptsStep(files); !refused.empty()) return refused;
   MfcStep(files);
@@ -1394,7 +1428,8 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   if (!c.kit) return {};
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
-  return kit.display_120hz ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record)) : kit;
+  return kit.display_120hz || kit.profile_version_2 ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
+                                                    : kit;
 }
 
 // The complete OWNER protocol for the publish-profile step: persist the exact
@@ -1416,7 +1451,7 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
         std::to_string(static_cast<int>(resumed.state)) + " code=" + resumed.code + " message=" + resumed.message);
     return resumed;
   }
-  if (!c.kit) return failed("kit-unavailable", "No verified compatibility kit is installed.");
+  if (!c.kit) return failed("kit-unavailable", "No verified runtime kit is installed.");
 
   const rt::GameRecipe* recipe = nullptr;
   for (const auto& candidate : c.recipes)
@@ -1722,7 +1757,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // "Steam features" only swaps the game's own files, so it follows the saved value at once.
   if (!force && saved.revision <= record.settings_revision && !moved && !unowned_upgrade)
     return ApplyPreparationSteps(c, record, steam_account_known);
-  if (!c.kit) return "No verified compatibility kit is installed.";
+  if (!c.kit) return "No verified runtime kit is installed.";
   if (saved.revision < record.settings_revision)
     return again("The game's saved settings are older than its PS5 title's; prepare it again.");
   const rt::GameRecipe* recipe = nullptr;
@@ -2394,7 +2429,7 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   const auto failed = [](std::string message) {
     return rt::PackageActionResult{rt::PackageActionState::kFailed, "title-metadata", std::move(message)};
   };
-  if (!c.kit) return failed("No verified compatibility kit is installed.");
+  if (!c.kit) return failed("No verified runtime kit is installed.");
   const rt::KitTitleVariant* variant = rt::KitVariantFor(c.kit->view, record.title_id);
   if (!variant) return failed("The kit has no title for this game.");
   // The kit's param.json with the game's name in place of the kit's.
@@ -2858,7 +2893,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     // would fail the same way: Recreate bottle removes the title and prepares the game again.
     if (fresh_start && c.installer->SetupFromOtherKit(*existing)) {
       Log("prepare refused app=" + std::to_string(request.runtime_number) + ": title or bottle from another kit");
-      return std::string("This game's setup was started with another compatibility kit.") + kRecreateHint;
+      return std::string("This game's setup was started with another runtime kit.") + kRecreateHint;
     }
     if (fresh_start)
       if (const auto initialized = initialize_reserved(*existing); !initialized.empty()) return initialized;
@@ -2890,7 +2925,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     // Playden ships its recipes (runtime/recipes) and the kit carries a copy of one of them;
     // only that one must agree with the kit, as the kit's shell was packaged for it.
     if (recipe->id == c.kit->view.recipe.id && std::to_string(recipe->version) != c.kit->view.recipe.version)
-      return "The installed compatibility kit was built for another version of this game's setup.";
+      return "The installed runtime kit was built for another version of this game's setup.";
     if (const auto lacks = KitLacksForRecipe(*recipe, c.kit->view); !lacks.empty()) return lacks;
     if (recipe->launch_entries.empty()) return "Steam lists no Windows program this console can start for this game.";
     const auto settings = config_.settings_record ? config_.settings_record(GameOf(request)) : std::nullopt;
@@ -2945,7 +2980,39 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       (c.retired_titles.count(title) ? retired : reserve.kit_title_variants).push_back(std::move(title));
     reserve.kit_title_variants.insert(reserve.kit_title_variants.end(), retired.begin(), retired.end());
     auto reserved = c.repository.Reserve(reserve);
-    if (!reserved.ok()) return "A PS5 title could not be reserved: " + reserved.message();
+    if (!reserved.ok()) {
+      if (reserved.error() != rt::RepositoryError::kTitleVariantsExhausted)
+        return "A PS5 title could not be reserved: " + reserved.message();
+      // Every ID refused at once usually means one source cannot answer, not that every ID is taken:
+      // ask the IDs no other game holds what each source says, until one is not clearly in use.
+      std::set<std::string> held;
+      for (const auto& install : c.repository.Snapshot()) held.insert(install.title_id);
+      const auto log_prefix = "title reservation refused app=" + std::to_string(request.runtime_number) +
+                              " candidates=" + std::to_string(reserve.kit_title_variants.size()) +
+                              " held=" + std::to_string(held.size());
+      std::size_t occupied = 0;
+      std::string first_occupied;
+      for (const auto& title : reserve.kit_title_variants) {
+        if (held.count(title)) continue;
+        const auto report = c.coordinator->ReportAvailability(title);
+        const bool unknown = report.database == rt::TitleAvailability::kUnknown ||
+                             report.folder == rt::TitleAvailability::kUnknown ||
+                             report.shadowmount.state == ps5::RegistrationState::kUnavailable ||
+                             report.activity == rt::NativeActivity::kUnknown;
+        if (!unknown) {
+          if (!occupied++) first_occupied = title + " " + report.Text();
+          continue;
+        }
+        Log(log_prefix + " occupied=" + std::to_string(occupied) + " " + title + " " + report.Text());
+        // Only a ShadowMountPlus that does not answer at all is fixed by loading it again.
+        if (report.shadowmount.reason == "no-response")
+          return "ShadowMountPlus isn't answering. Load it again (or restart the PS5 and jailbreak it again), then try again.";
+        return "Playden could not check that a PS5 title is free for this game. Try again; if it still fails, "
+               "open Logs in Settings for details.";
+      }
+      Log(log_prefix + " occupied=" + std::to_string(occupied) + (first_occupied.empty() ? "" : " first=" + first_occupied));
+      return "Every PS5 title this runtime kit offers is in use. Uninstall a game, then try again.";
+    }
     auto record = reserved.value();
     // Before the title exists: it may only start once its helper lists it.
     Log("prepare reserved app=" + std::to_string(request.runtime_number) + " title=" + record.title_id + " ms=" + elapsed_ms());
@@ -3681,6 +3748,10 @@ std::string RuntimeHost::DeleteKept(Composition& c, std::uint32_t app) {
 }
 
 void RuntimeHost::Run() {
+  while (RunServices()) Log("kit reload: starting the runtime services again");
+}
+
+bool RuntimeHost::RunServices() {
   const auto hold = [this] { return config_.hold_effective_uid ? config_.hold_effective_uid() : nullptr; };
   auto startup_hold = hold();
   auto unavailable = [this](std::string reason) {
@@ -3723,7 +3794,7 @@ void RuntimeHost::Run() {
       installer->ShareBottleProfiles(rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared);
       c.installer = std::move(installer);
     } else {
-      if (kit_reason.empty()) kit_reason = "No verified compatibility kit is installed.";
+      if (kit_reason.empty()) kit_reason = "No verified runtime kit is installed.";
       c.installer = std::make_unique<UnavailablePackageInstaller>(kit_reason);
     }
     auto native = config_.native;
@@ -3839,6 +3910,12 @@ void RuntimeHost::Run() {
         Log("startup bottle profiles settled=" + std::to_string(settled) + " ms=" +
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count()));
       }
+      // Bottles from a kit with another folder name point Wine Mono at it: games started from Home find Mono only
+      // once they name this kit's. Busy titles wait for Play.
+      if (c.kit)
+        for (const auto& record : c.repository.Snapshot())
+          if (record.state == rt::PreparationState::kReady && MaintenanceRefusal(c, record).empty())
+            KitMonoStep(c, record, "startup");
       // An unowned upgrade's request cut off before its publication began (a crash, a capture
       // refused on an earlier start) is dropped first: the game plays under its owned publication,
       // and the pass below tries the upgrade again. Moved games and newer settings keep theirs.
@@ -3903,6 +3980,7 @@ void RuntimeHost::Run() {
     PublishPrepared(composition.get());
   }
   startup_hold.reset();
+  bool reload = false;
   for (;;) {
     std::vector<std::uint32_t> plays;
     std::vector<std::pair<std::uint32_t, bool>> removals;
@@ -3929,11 +4007,19 @@ void RuntimeHost::Run() {
                (!kept_delete_requests_.empty() && !snapshot_.handoff_ready) ||
                !scan_requests_.empty() || !prepared_dismissals_.empty() || prepared_clear_requested_ ||
                (!maintenance_requests_.empty() && !snapshot_.handoff_ready) ||
-               (!relocation_requests_.empty() && !snapshot_.handoff_ready);
+               (!relocation_requests_.empty() && !snapshot_.handoff_ready) ||
+               (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_);
       };
       if (launch_poll_) wake_.wait_for(lock, kLaunchPollInterval, ready);
       else wake_.wait(lock, [&] { return ready() || launch_poll_; });
       if (stopping_) break;
+      // Between batches, with no launch to hand off or follow: the services hold no work, and PS5
+      // titles run their own copy of the runtime, so the kit's folder can change under them.
+      if (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) {
+        kit_reload_requested_ = false;
+        reload = true;
+        break;
+      }
       plays.swap(play_requests_);
       // Removal changes install records that Handoff reads, like preparation.
       if (!snapshot_.handoff_ready) removals.swap(remove_requests_);
@@ -4175,7 +4261,15 @@ void RuntimeHost::Run() {
   }
   ShareNumbers(nullptr);
   composition.reset();
-  Publish([](RuntimeSnapshot& s) { s.status = RuntimeHostStatus::kStopped; });
+  Publish([&](RuntimeSnapshot& s) {
+    s.status = reload ? RuntimeHostStatus::kStarting : RuntimeHostStatus::kStopped;
+    // Refused for want of a kit: the services starting again with one answer anew.
+    if (reload) {
+      s.refusals.clear();
+      s.play_refusals.clear();
+    }
+  });
+  return reload;
 }
 
 }  // namespace playden::homebrew

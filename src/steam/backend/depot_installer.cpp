@@ -246,11 +246,13 @@ DepotInstaller::DepotInstaller(CmClient& cm, CdnClient& cdn) {
                         const std::vector<DepotRequest>& depots, const std::atomic<bool>& cancel) {
     return cm.FetchDepotAccess(session, app_id, depots, cancel);
   };
-  hooks_.servers = [&cdn](std::uint32_t cell, const std::atomic<bool>& cancel, std::vector<ContentServer>* out) {
-    return cdn.Servers(cell, cancel, out);
-  };
   // Which check a manifest that arrived failed, for the install log; empty after a network failure.
   auto manifest_problem = std::make_shared<std::string>();
+  hooks_.servers = [&cdn, manifest_problem](std::uint32_t cell, const std::atomic<bool>& cancel,
+                                            std::vector<ContentServer>* out) {
+    manifest_problem->clear();  // a manifest problem from an earlier run must not hide why this list failed
+    return cdn.Servers(cell, cancel, out);
+  };
   hooks_.manifest = [&cdn, manifest_problem](const ContentServer& server, const DepotGrant& grant,
                                              const std::atomic<bool>& cancel, DepotManifest* out) {
     manifest_problem->clear();
@@ -368,7 +370,12 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   std::vector<ContentServer> servers;
   const auto listed = hooks_.servers(session.cell_id.value_or(0), cancel, &servers);
   if (listed == CdnError::kCanceled) return fail(InstallError::kCanceled, "canceled");
-  if (listed != CdnError::kNone || servers.empty()) return fail(InstallError::kNetwork, "no content servers");
+  if (listed != CdnError::kNone || servers.empty()) {
+    outcome.error = InstallError::kNetwork;
+    outcome.detail = "no content servers";
+    if (hooks_.last_failure) outcome.detail += " " + hooks_.last_failure();
+    return outcome;
+  }
 
   stats.servers_ms = Milliseconds(Clock::now() - phase_start);
   phase_start = Clock::now();

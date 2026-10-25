@@ -143,10 +143,33 @@ void LicensedFreeGamesAreAdded() {
   assert(result.games.size() == 4 && acquisitions.app_info_requests.size() == 2);
 }
 
+// A demo comes in a free package of its own, which GetOwnedGames leaves out. It is added and marked,
+// so the Library can hide it; games stay unmarked. A cached lookup keeps the mark.
+void LicensedDemosAreAddedAndMarked() {
+  Owned owned;
+  Acquisitions acquisitions;
+  acquisitions.result.package_apps = {{600, {60}}, {700, {70}}};
+  acquisitions.app_info = {{60, AppInfoText(60, "Synthetic Demo", "Demo")},
+                           {70, AppInfoText(70, "Synthetic Free", "game")}};
+  EntitledLibraryBackend backend(owned, acquisitions);
+  std::atomic<bool> cancel{false};
+  for (int pass = 0; pass < 2; ++pass) {
+    const auto result = backend.Fetch(Session(), cancel);
+    assert(result.error == LibraryError::kNone && result.games.size() == 4);
+    const auto demo = std::find_if(result.games.begin(), result.games.end(),
+                                   [](const auto& game) { return game.id == SteamId(60); });
+    assert(demo != result.games.end() && demo->title == "Synthetic Demo" && demo->demo);
+    assert(std::none_of(result.games.begin(), result.games.end(),
+                        [](const auto& game) { return game.demo && game.id != SteamId(60); }));
+  }
+  assert(acquisitions.app_info_requests.size() == 1);
+}
+
 }  // namespace
 
 int main() {
   LicensedFreeGamesAreAdded();
+  LicensedDemosAreAddedAndMarked();
   DatesMergeIntoOwnedGames();
   CmFailureIsNeverFatal();
   OwnedFailureStopsTheCmSession();

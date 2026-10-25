@@ -47,10 +47,43 @@ void ServersFilterAndSortByLoad() {
   std::atomic<bool> cancel{false};
   std::vector<ContentServer> servers;
   assert(client.Servers(42, cancel, &servers) == CdnError::kNone);
+  // The plain-HTTP server is left out while HTTPS servers are listed, even with the lowest load.
   assert(servers.size() == 2);
-  assert(servers[0].host == "a.example.invalid" && servers[0].vhost == "a.example.invalid");
-  assert(servers[1].vhost == "vb.example.invalid");
+  assert(servers[0].host == "a.example.invalid" && servers[0].vhost == "a.example.invalid" && servers[0].https);
+  assert(servers[1].vhost == "vb.example.invalid" && servers[1].https);
   assert(urls[0].find("GetServersForSteamPipe/v1/?cell_id=42") != std::string::npos);
+  assert(urls[0].rfind("https://", 0) == 0);
+}
+
+void PlainHttpServersWhenNoHttpsIsListed() {
+  bool plain_allowed = true;
+  CdnClient client([&](const HttpRequest& request, const std::atomic<bool>&) {
+    plain_allowed = request.allow_plain_http;
+    return Body(200, R"({"response":{"servers":[
+      {"type":"CDN","host":"b.example.invalid","load":20,"https_support":"unavailable"},
+      {"type":"CDN","host":"a.example.invalid","vhost":"va.example.invalid","load":5,"https_support":"unavailable"},
+      {"type":"OpenCache","host":"c.example.invalid","load":0,"https_support":"mandatory"}]}})");
+  });
+  std::atomic<bool> cancel{false};
+  std::vector<ContentServer> servers;
+  assert(client.Servers(7, cancel, &servers) == CdnError::kNone);
+  assert(!plain_allowed);  // the directory itself stays HTTPS-only
+  assert(servers.size() == 2);
+  assert(servers[0].vhost == "va.example.invalid" && !servers[0].https);
+  assert(servers[1].host == "b.example.invalid" && !servers[1].https);
+}
+
+void EmptyServerListSaysWhy() {
+  std::string body = R"({"response":{"servers":[
+    {"type":"OpenCache","host":"a.example.invalid"},{"type":"CDN","host":"bad host/x"}]}})";
+  CdnClient client([&](const HttpRequest&, const std::atomic<bool>&) { return Body(200, body); });
+  std::atomic<bool> cancel{false};
+  std::vector<ContentServer> servers;
+  assert(client.Servers(7, cancel, &servers) == CdnError::kProtocol && servers.empty());
+  assert(client.last_failure() == "servers=2 usable=0");
+  body = R"({"response":{}})";
+  assert(client.Servers(7, cancel, &servers) == CdnError::kProtocol);
+  assert(client.last_failure() == "servers=malformed");
 }
 
 void ManifestAndChunkUrlsAndErrors() {
@@ -76,10 +109,35 @@ void ManifestAndChunkUrlsAndErrors() {
   assert(client.Manifest({"h", "bad host", 1}, 1, 1, 1, cancel, &out) == CdnError::kProtocol);
 }
 
+void PlainHttpServerUrls() {
+  std::vector<HttpRequest> requests;
+  CdnClient client([&](const HttpRequest& request, const std::atomic<bool>&) {
+    requests.push_back(request);
+    return Body(200, "payload");
+  });
+  std::atomic<bool> cancel{false};
+  const ContentServer plain{"h.example.invalid", "v.example.invalid", 1, false};
+  const ContentServer secure{"h.example.invalid", "v.example.invalid", 1};
+  std::vector<std::uint8_t> out;
+  const std::string sha(40, 'b');
+  assert(client.Manifest(plain, 441, 11, 99, cancel, &out) == CdnError::kNone);
+  assert(requests.back().url == "http://v.example.invalid/depot/441/manifest/11/5/99");
+  assert(requests.back().allow_plain_http);
+  assert(client.Chunk(plain, 441, sha, 1024, cancel, &out) == CdnError::kNone);
+  assert(requests.back().url == "http://v.example.invalid/depot/441/chunk/" + sha);
+  assert(requests.back().allow_plain_http);
+  assert(client.Chunk(secure, 441, sha, 1024, cancel, &out) == CdnError::kNone);
+  assert(requests.back().url == "https://v.example.invalid/depot/441/chunk/" + sha);
+  assert(!requests.back().allow_plain_http);
+}
+
 }  // namespace
 
 int main() {
   TotalsIncludeFailedRequests();
   ServersFilterAndSortByLoad();
+  PlainHttpServersWhenNoHttpsIsListed();
+  EmptyServerListSaysWhy();
   ManifestAndChunkUrlsAndErrors();
+  PlainHttpServerUrls();
 }

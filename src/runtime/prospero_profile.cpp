@@ -238,7 +238,7 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       const auto name = Lower(line.substr(1, line.size() - 2));
       if ((name != "application" && name != "display" && name != "input" && name != "debug" &&
            !(features.environment_section && name == "environment") &&
-           !(features.audio_section && name == "audio")) ||
+           !(features.audio_section && name == "audio") && !(features.runtime_version && name == "runtime")) ||
           std::find(sections.begin(), sections.end(), name) != sections.end())
         return fail("section [" + name + "] unknown or repeated");
       if (sections.empty() != (name == "application")) return fail("[application] must come first");
@@ -336,6 +336,10 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       } else {
         return fail("unknown [input] key " + key);
       }
+    } else if (section == "runtime") {
+      // Only the profile's version: the defaults the title applies (prospero-win's [runtime] has more keys).
+      if (key != "version") return fail("unknown [runtime] key " + key);
+      if (value != "1" && value != "2") return bad("not 1 or 2");
     } else if (section == "audio") {
       if (key != "volume") return fail("unknown [audio] key " + key);
       if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > 100) return bad("not 0-100");

@@ -274,8 +274,10 @@ target_link_libraries(playden_homebrew_ui PUBLIC
     playden_homebrew_model playden_homebrew_qr playden_hui playden_homebrew_artwork_cache)
 
 if(PLAYDEN_PLATFORM_PS5)
+    file(READ "${CMAKE_SOURCE_DIR}/dependencies.lock.json" playden_dependency_lock)
+    string(JSON playden_gl_version GET "${playden_dependency_lock}" ps5_opengl version)
     target_include_directories(playden_hui PUBLIC
-        "${PLAYDEN_PS5_DEPS_DIR}/ps5-opengl/ps5-opengl-sdk-1.0.0/sdk/include")
+        "${PLAYDEN_PS5_DEPS_DIR}/ps5-opengl/ps5-opengl-sdk-${playden_gl_version}/sdk/include")
     target_compile_definitions(playden_hui PUBLIC GL_GLEXT_PROTOTYPES=1)
     target_compile_options(playden_hui PUBLIC -fno-exceptions -fno-rtti)
     target_compile_options(playden_homebrew_model PUBLIC -fno-exceptions -fno-rtti)
@@ -670,6 +672,7 @@ if(BUILD_TESTING)
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME native_startup_order COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_native_startup_order.py")
+    add_test(NAME console_kit_upload COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_console_kit_upload.py")
     add_test(NAME ui_comparison_fixture
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/verify_ui_comparison.py"
             "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison")

@@ -104,15 +104,19 @@ def main():
     server.socket = context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    plain = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    plain_thread = threading.Thread(target=plain.serve_forever, daemon=True)
+    plain_thread.start()
     try:
         base_url = f"https://localhost:{server.server_port}"
+        plain_url = f"http://localhost:{plain.server_port}"
         environment = os.environ.copy()
         environment["HTTPS_PROXY"] = "http://127.0.0.1:1"
         environment["ALL_PROXY"] = "http://127.0.0.1:1"
         environment["NO_PROXY"] = ""
         result = subprocess.run(
             [sys.argv[1], base_url, str(fixture_dir / "ca.pem"),
-             str(fixture_dir / "wrong-ca.pem")],
+             str(fixture_dir / "wrong-ca.pem"), plain_url],
             env=environment,
             check=False,
         )
@@ -121,6 +125,9 @@ def main():
         server.shutdown()
         server.server_close()
         thread.join()
+        plain.shutdown()
+        plain.server_close()
+        plain_thread.join()
 
 
 if __name__ == "__main__":

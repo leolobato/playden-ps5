@@ -25,14 +25,14 @@ import re
 import sys
 import zipfile
 
-VERSION = re.compile(r"^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})$")
+VERSION = re.compile(r"[vV]?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})(?:-beta\.([1-9][0-9]{0,5}))?")
 
 
 def version(text):
-    match = VERSION.match(text)
+    match = VERSION.fullmatch(text)
     if not match:
         raise SystemExit(f"not a version: {text!r}")
-    return ".".join(str(int(part)) for part in match.groups())
+    return ".".join(str(int(part)) for part in match.groups()[:3]) + (f"-beta.{match[4]}" if match[4] else "")
 
 
 def inner_prefix(archive, marker):
@@ -74,6 +74,7 @@ def main(argv=None):
     parser.add_argument("--app-zip", required=True, type=pathlib.Path)
     parser.add_argument("--kit-zip", required=True, type=pathlib.Path)
     parser.add_argument("--kit-revision", required=True, help='the kit version, e.g. "0.10"')
+    parser.add_argument("--tag", help="release tag; must match the packaged full version")
     parser.add_argument("--min-from", required=True, help="oldest Playden version that can update to this one")
     parser.add_argument("--notes", default="", help=f"a plain-text summary for the update dialog, at most {MAX_NOTES} characters")
     parser.add_argument("--lock", type=pathlib.Path,
@@ -87,7 +88,16 @@ def main(argv=None):
     with zipfile.ZipFile(args.app_zip) as app:
         app_prefix = inner_prefix(app, "sce_sys/param.json")
         param = json.loads(app.read(app_prefix + "sce_sys/param.json"))
-    app_version = version(param["contentVersion"])
+        numeric_version = version(param["contentVersion"])
+        try:
+            full_text = app.read(app_prefix + "playden-version").decode("ascii")
+            app_version = version(full_text.removesuffix("\n"))
+        except KeyError:
+            app_version = numeric_version  # Packages predating full version metadata.
+    if app_version.split("-", 1)[0] != numeric_version:
+        raise SystemExit("packaged version does not match param.json contentVersion")
+    if args.tag and version(args.tag) != app_version:
+        raise SystemExit("release tag does not match the packaged version")
     title_id = param["titleId"]
     if not re.fullmatch(r"[A-Z]{4}\d{5}", title_id):
         raise SystemExit(f"unexpected title id {title_id!r}")
@@ -126,7 +136,7 @@ def main(argv=None):
             assets.append({"name": path.name, "size": path.stat().st_size,
                            "browser_download_url": f"https://github.com/local/release/{path.name}",
                            "digest": "sha256:" + sha256_file(path)})
-        release = {"tag_name": "v" + app_version, "draft": False, "prerelease": False, "assets": assets}
+        release = {"tag_name": "v" + app_version, "draft": False, "prerelease": "-beta." in app_version, "assets": assets}
         args.release_json.write_text(json.dumps(release, indent=2) + "\n")
         print(f"{args.release_json}: local release v{app_version}")
     return 0

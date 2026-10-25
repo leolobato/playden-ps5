@@ -64,6 +64,16 @@ int main(){
  Check(dated_restored.value().games[0].added_at_unix_seconds==1500000000u&&!dated_restored.value().games[1].added_at_unix_seconds,"acquisition date roundtrip; unknown stays unknown");
  auto lossy_dated=dated;lossy_dated.schema_version=3;
  Check(!cache.Save("76561198000000005",lossy_dated).ok(),"schema three cannot silently discard acquisition dates");
+ LibrarySnapshot demos{6,123461,{{SteamId(60),"Synthetic Demo","","",""},{SteamId(61),"Full Game","","",""}}};
+ demos.games[0].demo=true;demos.games[0].added_at_unix_seconds=1600000000;
+ Check(cache.Save("76561198000000006",demos).ok(),"save schema six demos");
+ auto demos_restored=cache.Load("76561198000000006");
+ Check(demos_restored.ok()&&demos_restored.value().schema_version==6,"load schema six");
+ Check(demos_restored.value().games[0].demo&&demos_restored.value().games[0].added_at_unix_seconds==1600000000u&&
+     !demos_restored.value().games[1].demo,"demo mark roundtrip; games stay unmarked");
+ auto lossy_demos=demos;lossy_demos.schema_version=5;
+ Check(!cache.Save("76561198000000006",lossy_demos).ok(),"schema five cannot silently discard demos");
+ Check(!dated_restored.value().games[0].demo,"older schemas hold no demos");
  auto zero_dated=dated;zero_dated.games[0].added_at_unix_seconds=0;
  Check(!cache.Save("76561198000000005",zero_dated).ok(),"zero acquisition date rejected");
  auto future=partial;future.retrieved_at_unix_seconds=std::uint64_t{1}<<63;

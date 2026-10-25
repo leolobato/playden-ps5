@@ -163,7 +163,7 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     target_link_libraries(runtime_kit_trust_test PRIVATE playden_runtime_kit_trust)
     # The packaged kit is a local build artifact; admission is checked when it exists.
     add_test(NAME runtime_kit_trust COMMAND runtime_kit_trust_test
-        "${CMAKE_SOURCE_DIR}/dependencies.lock.json" "${CMAKE_SOURCE_DIR}/build/kits/hl2-fw1360-dev1")
+        "${CMAKE_SOURCE_DIR}/dependencies.lock.json" "${CMAKE_SOURCE_DIR}/build/kits/playden-kit")
     add_executable(prospero_kit_consumer_test
         "${CMAKE_SOURCE_DIR}/tests/kit_producer_consumer_test.cpp")
     target_link_libraries(prospero_kit_consumer_test PRIVATE playden_runtime_kit_admission)

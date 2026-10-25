@@ -22,6 +22,7 @@ using zip_fixture::Entry;
 
 namespace {
 const std::string kLatest = "https://api.github.com/repos/o/r/releases/latest";
+const std::string kReleases = "https://api.github.com/repos/o/r/releases?per_page=100";
 const std::string kDownload = "https://github.com/o/r/releases/download/v0.3.0/";
 const std::string kKitSha = std::string(64, 'c');
 
@@ -46,16 +47,20 @@ void Put(const std::string& path, const std::string& text) {
 struct Server {
   std::map<std::string, std::string> files;
   std::string latest;
+  std::string releases;  // the list, newest first
   int kit_downloads = 0;
+  int requests = 0;
 
   HttpResponse operator()(const HttpRequest& request) {
     HttpResponse response;
     std::string range;
     for (const auto& [key, value] : request.headers)
       if (key == "Range") range = value;
-    if (request.url == kLatest) {
+    ++requests;
+    if (request.url == kLatest || request.url == kReleases) {
+      const std::string& body = request.url == kLatest ? latest : releases;
       response.status_code = 200;
-      response.body.assign(latest.begin(), latest.end());
+      response.body.assign(body.begin(), body.end());
       return response;
     }
     const auto found = files.find(request.url);
@@ -81,10 +86,11 @@ struct Server {
   }
 };
 
-std::string AppZip(const std::string& version_text, const std::string& content_version) {
+std::string AppZip(const std::string& version_text, const std::string& content_version, const std::string& full_version = "") {
   const std::string top = "playden-ps5-" + version_text + "/";
   return zip_fixture::Build({{top + "tools/console_title_deploy.py", "py"},
                              {top + "FAKE77031/eboot.bin", "eboot " + version_text},
+                             {top + "FAKE77031/playden-version", full_version.empty() ? version_text + "\n" : full_version},
                              {top + "FAKE77031/sce_sys/param.json",
                               R"({"titleId":"FAKE77031","contentVersion":")" + content_version + R"("})"},
                              {top + "FAKE77031/assets/a.txt", "asset " + version_text},
@@ -98,14 +104,15 @@ std::string KitZip() {
 }
 
 void Publish(Server& server, const std::string& tag, const std::string& min_from = "0.2.0",
-             const std::string& content_version = "00.003.000", bool with_kit = true, bool with_digests = true) {
+             const std::string& content_version = "00.003.000", bool with_kit = true, bool with_digests = true,
+             const std::string& kit_revision = "r9", const std::string& full_version = "") {
   const std::string version_text = tag.substr(1);
-  const std::string app = AppZip(version_text, content_version);
+  const std::string app = AppZip(version_text, content_version, full_version);
   const std::string kit = KitZip();
   const std::string manifest =
       R"({"format":1,"app":{"version":")" + version_text + R"(","title_id":"FAKE77031","min_from":")" + min_from +
       R"(","asset":"playden-ps5-)" + version_text + R"(.zip","prefix":"playden-ps5-)" + version_text +
-      R"(/FAKE77031/"},"kit":{"kit_id":"kitid","revision":"r9","manifest_sha256":")" + kKitSha +
+      R"(/FAKE77031/"},"kit":{"kit_id":"kitid","revision":")" + kit_revision + R"(","manifest_sha256":")" + kKitSha +
       R"(","asset":"playden-kit-h-r9.zip","prefix":"playden-kit-h-r9/kitid/"},"notes":"New things."})";
   server.files[kDownload + "playden-update.json"] = manifest;
   server.files[kDownload + "playden-ps5-" + version_text + ".zip"] = app;
@@ -157,6 +164,26 @@ void Wait(const UpdateService& service) {
   CHECK(!service.Busy());
 }
 
+// The kit-only install for version 0.3.0, on a console with `installed` as its kit (empty: none).
+struct KitOnly {
+  Fixture fixture;
+  std::string kits;
+  explicit KitOnly(const std::string& name, const std::string& installed) {
+    fixture.root = zip_fixture::TempFolder(name.c_str());
+    kits = fixture.root + "/playden/kits";
+    if (!installed.empty()) {
+      Put(kits + "/kitid/manifest.json", installed);
+      Put(kits + "/kitid/runtime/wine.bin", "old");
+    }
+  }
+  UpdateConfig Config() {
+    auto config = fixture.Config({0, 3, 0});
+    config.kit_id = "kitid";
+    config.kit_manifest_sha256 = kKitSha;
+    return config;
+  }
+};
+
 void Installed(const std::string& root) {
   Put(root + "/homebrew/FAKE77031/eboot.bin", "eboot 0.2.0");
   Put(root + "/homebrew/FAKE77031/sce_sys/param.json", "old param");
@@ -171,6 +198,244 @@ void Installed(const std::string& root) {
 }  // namespace
 
 int main() {
+  // Opt-in selects by version, never GitHub list order; disabling never downgrades.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("beta-track");
+    Installed(fixture.root);
+    Publish(fixture.server, "v0.7.1-beta.2", "0.7.0", "00.007.001");
+    auto beta = fixture.server.latest;
+    beta.replace(beta.find("\"prerelease\":false"), 18, "\"prerelease\":true");
+    fixture.server.releases = "[{\"tag_name\":\"v99.0.0\",\"draft\":true,\"assets\":[]}," + beta +
+        ",{\"tag_name\":\"nightly\",\"prerelease\":true,\"assets\":[]},"
+        "{\"tag_name\":\"v0.7.0\",\"assets\":[]}]";
+    fixture.server.latest = R"({"tag_name":"v0.7.0","assets":[]})";
+    auto config = fixture.Config({0, 7, 0});
+    config.include_betas = true;
+    UpdateService service(config);
+    service.Check(true); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kAvailable);
+    CHECK(service.Snapshot().available.ToString() == "0.7.1-beta.2");
+    // A stable release wins over every beta of its version, even if listed last.
+    Publish(fixture.server, "v0.7.1", "0.7.0", "00.007.001");
+    fixture.server.releases = "[" + beta + "," + fixture.server.latest + "]";
+    service.Check(true); Wait(service);
+    CHECK(service.Snapshot().available.ToString() == "0.7.1");
+    config.current = *ParseVersion("0.7.1-beta.2");
+    config.include_betas = false;
+    Publish(fixture.server, "v0.7.0", "0.7.0", "00.007.000");
+    UpdateService stable(config);
+    stable.Check(true); Wait(stable);
+    CHECK(stable.Snapshot().phase == UpdatePhase::kUpToDate);
+    fixture.server.latest = beta;
+    stable.Check(true); Wait(stable);
+    CHECK(stable.Snapshot().phase == UpdatePhase::kUpToDate);
+    Publish(fixture.server, "v0.7.1-beta.3", "0.7.1-beta.2", "00.007.001");
+    fixture.server.releases = "[" + fixture.server.latest + "]";
+    stable.SetIncludeBetas(true);
+    stable.Check(true); Wait(stable);
+    CHECK(stable.Snapshot().available.ToString() == "0.7.1-beta.3");
+    stable.Install(); Wait(stable);
+    CHECK(stable.Snapshot().phase == UpdatePhase::kStaged);
+    // The local override uses the same opt-in rule and needs no GitHub request.
+    config.include_betas = true;
+    config.local_release_dir = fixture.root + "/local";
+    auto local_release = fixture.server.latest;
+    local_release.replace(local_release.find("\"prerelease\":false"), 18, "\"prerelease\":true");
+    Put(config.local_release_dir + "/release.json", local_release);
+    Put(config.local_release_dir + "/playden-update.json", fixture.server.files[kDownload + "playden-update.json"]);
+    const int before = fixture.server.requests;
+    UpdateService local(config);
+    local.Check(true); Wait(local);
+    CHECK(local.Snapshot().phase == UpdatePhase::kAvailable);
+    CHECK(fixture.server.requests == before);
+    // The tag must match the full manifest version, including beta number.
+    auto mismatch = fixture.server.files[kDownload + "playden-update.json"];
+    mismatch.replace(mismatch.find("0.7.1-beta.3"), 12, "0.7.1-beta.4");
+    Put(config.local_release_dir + "/playden-update.json", mismatch);
+    local.Check(true); Wait(local);
+    CHECK(local.Snapshot().phase == UpdatePhase::kFailed);
+  }
+  // Opting out during a download and cancelling must not leave a beta installable.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("beta-cancel-opt-out");
+    Installed(fixture.root);
+    Publish(fixture.server, "v0.7.1-beta.1", "0.7.0", "00.007.001");
+    fixture.server.releases = "[" + fixture.server.latest + "]";
+    fixture.server.latest = R"({"tag_name":"v0.7.0","assets":[]})";
+    auto config = fixture.Config({0, 7, 0});
+    config.include_betas = true;
+    UpdateService* running = nullptr;
+    bool cancelled = false;
+    config.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+      if (!cancelled && request.url.find(".zip") != std::string::npos) {
+        cancelled = true;
+        running->SetIncludeBetas(false);
+        running->Check(true);
+        running->Cancel();
+      }
+      return fixture.server(request);
+    };
+    UpdateService service(config);
+    running = &service;
+    service.Check(true); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kAvailable);
+    service.Install(); Wait(service);
+    CHECK(cancelled && service.Snapshot().phase == UpdatePhase::kAvailable);
+    service.Install(); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kUpToDate);
+    RemoveTree(fixture.root);
+  }
+  // Present full-version metadata must be readable and match, even for stable packages.
+  for (const auto& metadata : {std::string(65, 'x'), std::string("0.7.1-beta.9\n")}) {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("bad-full-version");
+    Installed(fixture.root);
+    Publish(fixture.server, "v0.7.1", "0.7.0", "00.007.001", true, true, "r9", metadata);
+    UpdateService service(fixture.Config({0, 7, 0}));
+    service.Install(); Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kFailed);
+    RemoveTree(fixture.root);
+  }
+  // First run on a console without a kit: the running version's kit is found and put in place at once.
+  {
+    KitOnly test("kit-fresh", "");
+    Publish(test.fixture.server, "v0.3.0");
+    test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+    UpdateService service(test.Config());
+    service.Start();
+    service.CheckKit();
+    Wait(service);
+    auto kit = service.Snapshot().kit;
+    CHECK(kit.phase == KitInstallPhase::kAvailable && !kit.replaces && kit.version == "0.3.0");
+    CHECK(kit.download_bytes == test.fixture.server.files[kDownload + "playden-kit-h-r9.zip"].size());
+    CHECK(service.Snapshot().phase == UpdatePhase::kIdle);  // the update's own state is untouched
+    service.InstallKit();
+    Wait(service);
+    kit = service.Snapshot().kit;
+    CHECK(kit.phase == KitInstallPhase::kInstalled);
+    CHECK(Read(test.kits + "/kitid/manifest.json") == kKitSha && Read(test.kits + "/kitid/runtime/wine.bin").size() == 100);
+    CHECK(!Exists(test.kits + "/.next-kitid-r9") && !Exists(test.kits + "/.staging-kitid-r9"));
+    CHECK(ListFolder(test.fixture.root + "/playden/self-update/downloads").empty());
+    // Installed: the next check needs nothing, and asks GitHub for nothing.
+    const int requests = test.fixture.server.requests;
+    service.CheckKit();
+    Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kNotNeeded && test.fixture.server.requests == requests);
+    service.Shutdown();
+  }
+  // Another kit is installed: the right one replaces it, and the old one is left as a ".replaced-" leftover.
+  {
+    KitOnly test("kit-replace", std::string(64, 'b'));
+    Publish(test.fixture.server, "v0.3.0");
+    test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+    UpdateService service(test.Config());
+    service.InstallKit();  // checks first
+    Wait(service);
+    const auto kit = service.Snapshot().kit;
+    CHECK(kit.phase == KitInstallPhase::kInstalled && kit.replaces);
+    CHECK(Read(test.kits + "/kitid/manifest.json") == kKitSha);
+    CHECK(Read(test.kits + "/.replaced-kitid-1000/manifest.json") == std::string(64, 'b'));
+    service.Shutdown();
+  }
+  // Only a missing or older kit is replaced: a newer one (a development kit) or the same version built elsewhere
+  // stays, and nothing is downloaded. An older one is offered as before.
+  {
+    const auto kit_manifest = [](const std::string& version) {
+      return R"({"schema":"playden-prospero-kit/1","runtime":{"artifact_revision":"f729534-kit-)" + version + R"("}})";
+    };
+    for (const char* kept : {"0.13-dev.20261023.1", "0.12"}) {
+      KitOnly test(std::string("kit-kept-") + kept, kit_manifest(kept));
+      Publish(test.fixture.server, "v0.3.0", "0.2.0", "00.003.000", true, true, "0.12");
+      test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+      UpdateService service(test.Config());
+      service.InstallKit();  // checks first
+      Wait(service);
+      CHECK(service.Snapshot().kit.phase == KitInstallPhase::kNotNeeded);
+      CHECK(Read(test.kits + "/kitid/manifest.json") == kit_manifest(kept) && test.fixture.server.kit_downloads == 0);
+      service.Shutdown();
+    }
+    KitOnly test("kit-older-version", kit_manifest("0.11"));
+    Publish(test.fixture.server, "v0.3.0", "0.2.0", "00.003.000", true, true, "0.12");
+    test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+    UpdateService service(test.Config());
+    service.CheckKit();
+    Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kAvailable && service.Snapshot().kit.replaces);
+    service.Shutdown();
+  }
+  // The running version's release left the kit zip out (its kit did not change): an older release has it.
+  {
+    KitOnly test("kit-older", "");
+    Publish(test.fixture.server, "v0.2.0");
+    const std::string older = test.fixture.server.latest;
+    Publish(test.fixture.server, "v0.3.0", "0.2.0", "00.003.000", false);
+    Publish(test.fixture.server, "v0.4.0");  // newer than this version: never its kit's source
+    const std::string newer = test.fixture.server.latest;
+    Publish(test.fixture.server, "v0.3.0", "0.2.0", "00.003.000", false);
+    test.fixture.server.releases = "[" + newer + "," + test.fixture.server.latest + "," + older + "]";
+    UpdateService service(test.Config());
+    service.CheckKit();
+    Wait(service);
+    const auto kit = service.Snapshot().kit;
+    CHECK(kit.phase == KitInstallPhase::kAvailable && kit.version == "0.2.0");
+    service.Shutdown();
+  }
+  // A staged update brings its kit at the restart: the kit-only install leaves it alone, even when asked.
+  {
+    KitOnly test("kit-staged", "");
+    Installed(test.fixture.root);
+    unlink((test.kits + "/kitid/manifest.json").c_str());  // no complete kit
+    Publish(test.fixture.server, "v0.3.0");
+    test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+    auto config = test.Config();
+    config.current = {0, 2, 0};
+    UpdateService service(std::move(config));
+    service.Check(true);
+    Wait(service);
+    service.Install();
+    Wait(service);
+    CHECK(service.Snapshot().phase == UpdatePhase::kStaged && Exists(test.kits + "/.next-kitid-r9"));
+    service.CheckKit();
+    Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kIdle);
+    service.InstallKit();
+    Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kIdle && Exists(test.kits + "/.next-kitid-r9"));
+    service.Shutdown();
+  }
+  // A replaced kit (here one uploaded over FTP) is removed at the next start.
+  {
+    KitOnly test("kit-leftover", "");
+    Put(test.kits + "/.replaced-kitid-5/manifest.json", std::string(64, 'b'));
+    Put(test.kits + "/.replaced-kitid-5/runtime/wine.bin", "old");
+    UpdateService service(test.Config());
+    service.Start();
+    CHECK(!Exists(test.kits + "/.replaced-kitid-5"));
+    service.Shutdown();
+  }
+  // A development build has no release, and a release made with another kit doesn't offer it.
+  {
+    KitOnly test("kit-none", "");
+    Publish(test.fixture.server, "v0.2.0");
+    test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+    UpdateService service(test.Config());
+    service.CheckKit();
+    Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kUnavailable);
+    auto other = test.Config();
+    other.kit_manifest_sha256 = std::string(64, 'd');
+    Publish(test.fixture.server, "v0.3.0");
+    test.fixture.server.releases = "[" + test.fixture.server.latest + "]";
+    UpdateService another(std::move(other));
+    another.CheckKit();
+    Wait(another);
+    CHECK(another.Snapshot().kit.phase == KitInstallPhase::kUnavailable);
+    CHECK(!Exists(test.kits + "/kitid"));
+    service.Shutdown();
+    another.Shutdown();
+  }
   // Full run: check, install (kit and app), restart, swap, then confirm on the next start.
   {
     Fixture fixture;
@@ -298,6 +563,133 @@ int main() {
     root_only_on_this_thread();
     CHECK(!Exists(work + "/stage") && !Exists(work + "/downloads") && !Exists(kits + "/.replaced-kitid-5"));
     CHECK(Exists(kits + "/kitid/manifest.json"));
+    RemoveTree(fixture.root);
+  }
+  // A kit renamed between versions (0.6.0 keeps it at hl2-fw1360-dev1, 0.7.0 at playden-kit; here oldkit and kitid).
+  // The old Playden's update (ReadyKit, StageKit and ApplyAtQuit are 0.6.0's) puts the new kit in next to its own
+  // and leaves that one alone. The new Playden retires it as the previous kit: going back puts it back in its own
+  // folder (the new kit stays), and the next update removes it.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("service-renamed-kit");
+    Installed(fixture.root);
+    const std::string kits = fixture.root + "/playden/kits";
+    const std::string app = fixture.root + "/homebrew/FAKE77031";
+    CHECK(rename((kits + "/kitid").c_str(), (kits + "/oldkit").c_str()) == 0);
+    RemoveTree(kits + "/.previous-kitid-1");
+    const auto previous_kits = [&] {
+      std::vector<std::string> names;
+      for (const auto& name : ListFolder(kits))
+        if (name.rfind(".previous-", 0) == 0) names.push_back(name);
+      return names;
+    };
+    const auto renamed = [&](Version current) {
+      auto config = fixture.Config(current);
+      config.kit_id = "kitid";
+      config.kit_manifest_sha256 = kKitSha;
+      config.renamed_kit_ids = {"oldkit"};
+      return config;
+    };
+    Publish(fixture.server, "v0.3.0");
+    {
+      UpdateService old(fixture.Config({0, 2, 0}));
+      old.Start();
+      old.Check(true);
+      Wait(old);
+      CHECK(old.Snapshot().phase == UpdatePhase::kAvailable && old.Snapshot().kit_needed);
+      old.Install();
+      Wait(old);
+      CHECK(old.Snapshot().phase == UpdatePhase::kStaged && Read(kits + "/.next-kitid-r9/manifest.json") == kKitSha);
+      old.RequestRestart();
+      old.Shutdown();
+      CHECK(old.ApplyAtQuit());
+    }
+    CHECK(Read(app + "/eboot.bin") == "eboot 0.3.0" && Read(kits + "/kitid/manifest.json") == kKitSha);
+    CHECK(Read(kits + "/oldkit/manifest.json") == std::string(64, 'b') && previous_kits().empty());
+    // A version that has no kit under its own id yet keeps the old folder.
+    {
+      CHECK(rename((kits + "/kitid").c_str(), (kits + "/.aside").c_str()) == 0);
+      UpdateService waiting(renamed({0, 3, 0}));
+      waiting.Start();
+      Wait(waiting);
+      CHECK(Exists(kits + "/oldkit") && previous_kits().empty());
+      CHECK(rename((kits + "/.aside").c_str(), (kits + "/kitid").c_str()) == 0);
+      // The update is confirmed again below: the state was removed by this start.
+      CHECK(!Exists(fixture.root + "/playden/self-update/state.json"));
+    }
+    UpdateService next(renamed({0, 3, 0}));
+    next.Start();
+    CHECK(!Exists(kits + "/oldkit") && Read(kits + "/.previous-oldkit-1000/manifest.json") == std::string(64, 'b'));
+    CHECK(Read(kits + "/kitid/manifest.json") == kKitSha);
+    Wait(next);
+    CHECK(next.Snapshot().previous == "0.2.0");
+    next.RequestRollback();
+    next.Shutdown();
+    CHECK(next.ApplyAtQuit());
+    CHECK(Read(app + "/eboot.bin") == "eboot 0.2.0" && Read(kits + "/oldkit/manifest.json") == std::string(64, 'b'));
+    CHECK(Read(kits + "/kitid/manifest.json") == kKitSha && previous_kits().empty());
+    {
+      UpdateService back(fixture.Config({0, 2, 0}));
+      back.Start();
+      CHECK(back.Snapshot().finished_message == "Playden went back to version 0.2.0.");
+      Wait(back);
+      CHECK(Exists(kits + "/oldkit/runtime/wine.bin") && Exists(kits + "/kitid/runtime/wine.bin"));
+      // Updating again finds the new kit in place: only the app is downloaded.
+      back.Check(true);
+      Wait(back);
+      CHECK(back.Snapshot().phase == UpdatePhase::kAvailable && !back.Snapshot().kit_needed);
+      back.Install();
+      Wait(back);
+      back.RequestRestart();
+      back.Shutdown();
+      CHECK(back.ApplyAtQuit());
+    }
+    {
+      UpdateService again(renamed({0, 3, 0}));
+      again.Start();
+      Wait(again);
+      CHECK(!Exists(kits + "/oldkit") && previous_kits() == std::vector<std::string>{".previous-oldkit-1000"});
+      // The next update removes the retired kit with the other previous ones.
+      Publish(fixture.server, "v0.4.0", "0.2.0", "00.004.000");
+      again.Check(true);
+      Wait(again);
+      CHECK(again.Snapshot().phase == UpdatePhase::kAvailable && !again.Snapshot().kit_needed);
+      again.Install();
+      Wait(again);
+      again.RequestRestart();
+      again.Shutdown();
+      CHECK(again.ApplyAtQuit());
+      CHECK(Read(app + "/eboot.bin") == "eboot 0.4.0" && previous_kits().empty() && !Exists(kits + "/oldkit"));
+      CHECK(Read(kits + "/kitid/manifest.json") == kKitSha);
+    }
+    RemoveTree(fixture.root);
+  }
+  // Going back to a version whose kit was retired under its earlier id, when that version's update also replaced a kit
+  // under the new id (the same backup time): the retired kit is the one the older app reads, so it is restored.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("service-renamed-same-time");
+    Installed(fixture.root);
+    const std::string kits = fixture.root + "/playden/kits";
+    RemoveTree(kits + "/.previous-kitid-1");
+    Put(fixture.root + "/playden/self-update/backup/0.2.0-1000/eboot.bin", "eboot 0.2.0 backup");
+    Put(fixture.root + "/playden/self-update/backup/0.2.0-1000/sce_sys/param.json", "old param");
+    // The earlier id is listed first, as it is on the console.
+    Put(kits + "/.previous-kitid-1000/manifest.json", std::string(64, 'e'));
+    Put(kits + "/.previous-hl2kit-1000/manifest.json", std::string(64, 'f'));
+    auto config = fixture.Config({0, 3, 0});
+    config.kit_id = "kitid";
+    config.renamed_kit_ids = {"hl2kit"};
+    UpdateService service(config);
+    service.Start();
+    Wait(service);
+    CHECK(service.Snapshot().previous == "0.2.0");
+    service.RequestRollback();
+    service.Shutdown();
+    CHECK(service.ApplyAtQuit());
+    CHECK(Read(fixture.root + "/homebrew/FAKE77031/eboot.bin") == "eboot 0.2.0 backup");
+    CHECK(Read(kits + "/hl2kit/manifest.json") == std::string(64, 'f'));
+    CHECK(Read(kits + "/kitid/manifest.json") == std::string(64, 'b') && Exists(kits + "/.previous-kitid-1000"));
     RemoveTree(fixture.root);
   }
   // A staged update survives a restart without a swap, and a swap that did not take is reported.

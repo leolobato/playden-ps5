@@ -1030,6 +1030,42 @@ void FixedTitleRefreshesToAnyTitleShell() {
         (folder.st_mode & 07777) == 0755);
 }
 
+// A kit renamed since a game was prepared (hl2-fw1360-dev1 became playden-kit with kit 0.13): Update refreshes
+// the title and bottle as the same kit's, and the publication made under the earlier id still starts the game.
+// A kit with any other id stays another kit.
+void RenamedKitRefreshesItsTitles() {
+  for (const bool renamed : {true, false}) {
+    Fixture fixture;
+    fixture.view.kit_id = renamed ? "hl2-fw1360-dev1" : "other-kit";
+    auto record = Record();
+    record.artifacts = {{"runtime", "rev", fixture.view.artifacts[0].sha256},
+                        {"recipe", "steam-220-hl2-v1-1", fixture.view.artifacts[1].sha256}};
+    {
+      auto installer = fixture.Installer();
+      CHECK(installer.StageTitle(record).state == PackageActionState::kComplete);
+      CHECK(installer.CopyTemplate(record).state == PackageActionState::kComplete);
+      CHECK(installer.PublishProfile(record).state == PackageActionState::kComplete && installer.Inspect(record).profile_published);
+    }
+    fixture.view.kit_id = "playden-kit";
+    fixture.view.files_sha256 = std::string(64, 'b');
+    auto installer = fixture.Installer();
+    CHECK(!installer.TitleCurrent(record) && installer.SetupFromOtherKit(record));
+    const auto refreshed = installer.RefreshTitle(record);
+    if (!renamed) {
+      CHECK(refreshed.state == PackageActionState::kFailed && refreshed.code == "refresh-ownership");
+      continue;
+    }
+    if (refreshed.state != PackageActionState::kComplete) std::fprintf(stderr, "refresh: %s %s\n", refreshed.code.c_str(), refreshed.message.c_str());
+    CHECK(refreshed.state == PackageActionState::kComplete);
+    CHECK(installer.TitleCurrent(record) && !installer.SetupFromOtherKit(record));
+    const auto title_marker = Read(fixture.host_data / "homebrew/FAKE78001/.playden-title-owner");
+    CHECK(title_marker.find("\nkit_id=playden-kit\n") != std::string::npos);
+    CHECK(Read(fixture.host_data / "playden/games/install-hl2/library/prefixes/game/.playden-template-owner")
+              .find("\nkit_id=playden-kit\n") != std::string::npos);
+    CHECK(installer.Inspect(record).profile_published);
+  }
+}
+
 void PrivateTitleFoldersAreRepublished() {
   Fixture fixture;
   auto installer = fixture.Installer();
@@ -1497,6 +1533,7 @@ int main() {
   PrivateTitleFoldersAreRepublished();
   AnyTitleVariantServesEveryTitle();
   FixedTitleRefreshesToAnyTitleShell();
+  RenamedKitRefreshesItsTitles();
   CreatedFoldersIgnoreUmask();
   RenameFailureReportsErrno();
   UnwritableParentIsNotACollision();

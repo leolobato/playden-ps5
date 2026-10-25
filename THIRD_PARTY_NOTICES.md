@@ -10,10 +10,10 @@ These are compiled into Playden's PS5 package (`FAKE77031`) or copied into it.
 
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
-| ps5-homebrew-ui | fork `0a6fb4b` | GPL-3.0 | [blackbearreloaded/ps5-homebrew-ui](https://github.com/blackbearreloaded/ps5-homebrew-ui), my fork in `third_party/ps5-homebrew-ui` |
-| ps5-opengl (`libPS5OpenGL`) | 1.0.0, fork `7234923` | GPL-3.0 | [blackbearreloaded/ps5-opengl](https://github.com/blackbearreloaded/ps5-opengl), my fork in `third_party/ps5-opengl` |
-| ps5-native-app-boilerplate (build tools and `libc.prx`) | `f98de73` | GPL-3.0 | [blackbearreloaded/ps5-native-app-boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate) |
-| ProsperoStore's system keyboard (adapted in `src/platform/ps5/system_keyboard.cpp` and `common_dialog_stub.cpp`) | `f73ec17` | GPL-3.0 | [blackbearreloaded/ProsperoStore](https://github.com/blackbearreloaded/ProsperoStore) |
+| ps5-homebrew-ui | fork `0a6fb4b` | GPL-3.0 | by blackbearreloaded (the original repository is gone); my fork [leolobato/ps5-homebrew-ui](https://github.com/leolobato/ps5-homebrew-ui) in `third_party/ps5-homebrew-ui` |
+| ps5-opengl (`libPS5OpenGL`) | 1.0.2, fork `384d1bd` | GPL-3.0 | by blackbearreloaded (the original repository is gone); my fork [leolobato/ps5-opengl](https://github.com/leolobato/ps5-opengl) in `third_party/ps5-opengl` |
+| ps5-native-app-boilerplate (build tools and `libc.prx`) | `f98de73` | GPL-3.0 | [drakmor/ps5-native-app-boilerplate](https://github.com/drakmor/ps5-native-app-boilerplate); its `main` no longer has the pinned commit, so the submodule uses my copy [leolobato/ps5-native-app-boilerplate](https://github.com/leolobato/ps5-native-app-boilerplate) |
+| ProsperoStore's system keyboard (adapted in `src/platform/ps5/system_keyboard.cpp` and `common_dialog_stub.cpp`) | `f73ec17` | GPL-3.0 | [darkxex/ProsperoStore](https://github.com/darkxex/ProsperoStore) |
 | ps5-payload-sdk | v0.43 (v0.42 for the root helper) | GPL-3.0 | [ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk) |
 | PS5-Lapy-JB-Daemon (root helper, `lapy.elf`) | fork `66ab4f1` | MIT, Copyright (c) 2026 Arksama (Team PHU) | [mpereiraesaa/PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon), my fork in `third_party/PS5-Lapy-JB-Daemon` |
 | curl | 8.22.0, with a PS5 non-blocking patch | curl license (MIT-style) | [curl.se](https://curl.se/) |
@@ -36,7 +36,7 @@ The font licenses are shipped next to the fonts, in `assets/fonts/` of the packa
 
 | Component | License | Source |
 | --- | --- | --- |
-| gbe_fork (`runtime/steamworks/steam_api.dll`, `steam_api64.dll`) | LGPL-3.0 ([text](runtime/steamworks/LICENSE)) | [Detanup01/gbe_fork](https://github.com/Detanup01/gbe_fork). Shipped unmodified. Playden does not link against it: it replaces a game's own Steam API when the game is prepared. See [`runtime/steamworks/README.md`](runtime/steamworks/README.md). |
+| gbe_fork (`runtime/steamworks/steam_api.dll`, `steam_api64.dll`) | LGPL-3.0 ([text](runtime/steamworks/LICENSE)) | [Detanup01/gbe_fork](https://github.com/Detanup01/gbe_fork). Shipped unmodified. Playden does not link against it: it replaces a game's own Steam API when the game is prepared (with Steam features = Online it is loaded by Playden's bridge, `steam_api64_online.dll` / `steam_api_online.dll`, as `steam_api64_gbe.dll` / `steam_api_gbe.dll`). See [`runtime/steamworks/README.md`](runtime/steamworks/README.md). |
 
 ## In the runtime kit
 

@@ -16,5 +16,7 @@ struct GameSummary {
     std::optional<std::uint64_t> last_played_unix_seconds;
     // Earliest license acquisition, from the Steam CM; absent when CM was unavailable.
     std::optional<std::uint64_t> added_at_unix_seconds;
+    // A Steam demo (PICS type "demo"), which the Library can hide.
+    bool demo = false;
 };
 } // namespace playden

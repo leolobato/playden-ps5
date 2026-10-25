@@ -4,6 +4,7 @@ add_library(playden_steam_protocol STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/proto_wire.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/auth_messages.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_messages.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/game_tickets.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/json.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/token_claims.cpp")
 target_include_directories(playden_steam_protocol PUBLIC "${CMAKE_SOURCE_DIR}/src")
@@ -250,6 +251,9 @@ function(playden_register_steam_backend_tests)
             target_link_libraries(${test_name}_test PRIVATE playden_steam_cm)
             add_test(NAME ${test_name} COMMAND ${test_name}_test "${CMAKE_SOURCE_DIR}/fixtures/steam/cm")
         endforeach()
+        add_executable(steam_game_tickets_test "${CMAKE_SOURCE_DIR}/tests/steam_game_tickets_test.cpp")
+        target_link_libraries(steam_game_tickets_test PRIVATE playden_steam_protocol)
+        add_test(NAME steam_game_tickets COMMAND steam_game_tickets_test)
         add_executable(download_rate_test "${CMAKE_SOURCE_DIR}/tests/download_rate_test.cpp")
         target_link_libraries(download_rate_test PRIVATE playden_steam_core)
         add_test(NAME download_rate COMMAND download_rate_test)

@@ -22,6 +22,7 @@ struct Preferences {
   // "Stay signed in" on the sign-in screen. Off, Steam's sign-in token stays in memory only and is never
   // saved on the PS5, so every Playden start asks for a sign-in. On (the default) keeps it in session.v1.
   bool steam_stay_signed_in = true;
+  bool beta_updates = false;
 };
 
 enum class PreferencesLoadStatus {

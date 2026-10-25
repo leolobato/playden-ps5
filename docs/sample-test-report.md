@@ -25,7 +25,6 @@ Pasted from `python3 tools/collect_logs.py --host 192.168.1.50` (game 2 in its l
 | collected | 2026-10-09 18:20 UTC |
 | Playden package | 792850da44ec |
 | firmware | 13.60 |
-| kit | hl2-fw1360-dev1 |
 | kit runtime | f29127a-kit-g-r2 |
 | kit capabilities | dxvk, game-root-unowned, offline_bottle, per_game_title, title-any-id, wine-shared-sections, wow64_i386 |
 | game titles | FAKE78011 (app 1055540) |

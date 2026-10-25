@@ -26,6 +26,7 @@ LOGS = "/data/playden/logs"
 OLD_LOGS = "/data/homebrew/FAKE77031/logs"  # before 0.6.0
 IDENTITY = "/data/homebrew/FAKE77031/playden-package.identity"
 KITS = "/data/playden/kits"
+KIT_ID = "playden-kit"
 TITLE_LOG = re.compile(r"^title-(FAKE\d{5})\.log$")
 PROFILE = re.compile(r"profile=playden-steam-(\d+)")
 REPORT_TIME = re.compile(r"^PW_REPORT/1 .*?\btime=(\d+)", re.MULTILINE)
@@ -179,19 +180,22 @@ def summary(info):
 
 
 def active_kit(ftp):
-    for name in folders(ftp, KITS):
-        if name.startswith("."):
-            continue
+    # The current kit folder first: a console updated from an earlier Playden may still hold the kit under the id it
+    # had before, until Playden retires it, and one gone back to that Playden uses it again. Other folders are listed.
+    names = sorted((name for name in folders(ftp, KITS) if not name.startswith(".")), key=lambda name: name != KIT_ID)
+    others = {"other kit folders": ", ".join(names[1:])} if len(names) > 1 else {}
+    for name in names:
         try:
             manifest = json.loads(fetch(ftp, f"{KITS}/{name}/manifest.json"))
         except (ftplib.Error, ValueError):
             continue
+        # No kit_id: kit releases share it (the install folder), so it says nothing.
         return {
-            "kit": manifest.get("kit_id", name),
             "kit runtime": (manifest.get("runtime") or {}).get("artifact_revision"),
             "kit capabilities": ", ".join(manifest.get("capabilities") or []),
+            **others,
         }
-    return {"kit": None}
+    return {"kit runtime": None, **others}
 
 
 def main():
@@ -265,6 +269,10 @@ def main():
         info["Playden package"] = fetch(ftp, IDENTITY).decode("utf-8", "replace").split()[-1][:12]
     except ftplib.Error:
         info["Playden package"] = None
+    try:
+        info["Playden version"] = fetch(ftp, "/data/homebrew/FAKE77031/playden-version").decode("ascii").strip()
+    except (ftplib.Error, UnicodeError):
+        info["Playden version"] = None
     info["firmware"] = firmware([playden_logs.get("runtime.log.1", ""), playden_logs.get("runtime.log", "")])
     info.update(active_kit(ftp))
     info["game titles"] = ", ".join(

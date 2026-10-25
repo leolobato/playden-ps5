@@ -163,18 +163,54 @@ void NoKitRefusesPreparationWithoutDurableEffects() {
   CHECK(host.Start());
   const auto started = WaitFor(host, Started);
   CHECK(started.status == RuntimeHostStatus::kReady);
-  CHECK(!started.kit_available && started.kit_reason == "No verified compatibility kit is installed.");
+  CHECK(!started.kit_available && started.kit_reason == "No verified runtime kit is installed.");
   CHECK(started.installs.empty());
   struct stat info{};
   CHECK(stat((fixture.root / "data/runtime-state").c_str(), &info) == 0 && (info.st_mode & 0777) == 0700);
   host.Prepare(Hl2());
   const auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.refusals.count(220) != 0; });
-  CHECK(refused.refusals.at(220) == "No verified compatibility kit is installed.");
+  CHECK(refused.refusals.at(220) == "No verified runtime kit is installed.");
   host.Shutdown();
   CHECK(host.Snapshot().status == RuntimeHostStatus::kStopped);
   CHECK(!fs::exists(fixture.root / "data/runtime-state/installs.json"));
   CHECK(fixture.registry_mutations == 0);
   CHECK(fs::is_empty(fixture.root / "data/homebrew"));
+}
+
+// A kit put in place while Playden runs (the first-run kit download) is admitted by ReloadKit: the
+// services start again with it, also over a kit already in use (one this version wasn't made for).
+void ReloadKitAdmitsAKitInstalledWhileRunning() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  const auto kit = AnyTitleKit(fixture.root / "kit");
+  std::atomic<bool> installed{false};
+  std::atomic<int> admissions{0};
+  config.admit_kit = [&](std::string* reason) -> std::optional<RuntimeKit> {
+    ++admissions;
+    if (installed) return kit;
+    *reason = "No verified runtime kit is installed.";
+    return std::nullopt;
+  };
+  RuntimeHost host(std::move(config));
+  CHECK(host.Start());
+  CHECK(!WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.refusals.count(220) != 0; });
+  installed = true;
+  host.ReloadKit();
+  const auto reloaded = WaitFor(host, [](const RuntimeSnapshot& s) { return Started(s) && s.kit_available; });
+  CHECK(reloaded.status == RuntimeHostStatus::kReady && reloaded.kit_reason.empty());
+  CHECK(reloaded.refusals.empty());  // the refusal for want of a kit is gone
+  CHECK(admissions == 2);
+  // Preparation goes past the kit check now (this fixture has no game folder to prepare).
+  host.Prepare(Hl2());
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled == 2; }, 60);
+  CHECK(!done.refusals.count(220) || done.refusals.at(220) != "No verified runtime kit is installed.");
+  host.ReloadKit();
+  WaitFor(host, [&](const RuntimeSnapshot& s) { return Started(s) && admissions == 3; });
+  CHECK(host.Snapshot().kit_available);
+  host.Shutdown();
+  CHECK(host.Snapshot().status == RuntimeHostStatus::kStopped);
 }
 
 // Root is process-wide on the console: while the worker starts up or works through a batch it holds
@@ -191,7 +227,7 @@ void HoldsEffectiveUidWhileWorking() {
   };
   config.admit_kit = [&](std::string* reason) -> std::optional<RuntimeKit> {
     admitted_while_held = holds > 0;
-    *reason = "No verified compatibility kit is installed.";
+    *reason = "No verified runtime kit is installed.";
     return std::nullopt;
   };
   RuntimeHost host(std::move(config));
@@ -262,7 +298,7 @@ void PrepareNextReordersWaitingPreparations() {
     return nullptr;
   };
   config.admit_kit = [](std::string* reason) -> std::optional<RuntimeKit> {
-    *reason = "No verified compatibility kit is installed.";
+    *reason = "No verified runtime kit is installed.";
     return std::nullopt;
   };
   RuntimeHost host(std::move(config));
@@ -552,6 +588,7 @@ void PreparesExistingDownloadToReady() {
         (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
   }, 60);
   if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
+  if (done.refusals.count(220)) std::fprintf(stderr, "refusal: %s\n", done.refusals.at(220).c_str());
   CHECK(!done.refusals.count(220));
   CHECK(done.installs.size() == 1);
   const auto& ready = done.installs[0];
@@ -674,6 +711,7 @@ void PrepareFixesRootOwnedHomebrewFolder() {
         (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
   }, 60);
   if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
+  if (done.refusals.count(220)) std::fprintf(stderr, "refusal: %s\n", done.refusals.at(220).c_str());
   CHECK(!done.refusals.count(220));
   CHECK(done.installs.size() == 1 && done.installs[0].state == PreparationState::kReady);
   CHECK(raises == 1);  // only the folder that failed its probe
@@ -711,6 +749,43 @@ void PrepareNamesUnfixableFolder() {
   CHECK(fixture.registry_mutations == 0);
   host.Shutdown();
   CHECK(chmod(homebrew.c_str(), 0755) == 0);  // so the fixture can clean up
+}
+
+// No free title is rarely the truth: the refusal names the source that could not answer.
+void TitleRefusalNamesTheSourceThatCannotAnswer() {
+  // ShadowMountPlus silent, answering with bad data, app.db unreadable, and the only title truly in use.
+  for (const int scenario : {0, 1, 2, 3}) {
+    Fixture fixture;
+    const auto kit = SyntheticKit(fixture.root / "kit");
+    auto config = WritableFoldersConfig(fixture, kit);
+    if (scenario == 0)
+      config.registry_transport = [](const std::string&, const std::string&) -> std::optional<std::string> { return {}; };
+    else if (scenario == 1)
+      config.registry_transport = [](const std::string&, const std::string&) -> std::optional<std::string> {
+        return std::string(R"({"status":0,"games":[{"title_id":"odd"}]})");
+      };
+    else
+      config.native.database = [scenario](const std::string&) {
+        return TitleDatabaseObservation{scenario == 2 ? TitleAvailability::kUnknown : TitleAvailability::kOccupied, {}};
+      };
+    Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+    config.writable_folders.clear();
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.preparing_app && s.refusals.count(220); }, 60);
+    const auto& refusal = done.refusals.at(220);
+    if (scenario == 0)
+      CHECK(refusal == "ShadowMountPlus isn't answering. Load it again (or restart the PS5 and jailbreak it again), then try again.");
+    else if (scenario == 3)
+      CHECK(refusal == "Every PS5 title this runtime kit offers is in use. Uninstall a game, then try again.");
+    else
+      CHECK(refusal == "Playden could not check that a PS5 title is free for this game. Try again; if it still fails, "
+                       "open Logs in Settings for details.");
+    CHECK(done.installs.empty() && fixture.registry_mutations == 0);
+    host.Shutdown();
+  }
 }
 
 // A capture refused after control setup (the console's world-writable game
@@ -1010,7 +1085,7 @@ void SetupFromAnEarlierKitAsksForRecreate() {
     CHECK(!failed.installs[0].setup_other_kit);
     const auto again = prepare(host);
     CHECK(!again.installs[0].setup_other_kit && again.installs[0].state == PreparationState::kFailed);
-    CHECK(!again.refusals.count(220) || again.refusals.at(220).find("another compatibility kit") == std::string::npos);
+    CHECK(!again.refusals.count(220) || again.refusals.at(220).find("another runtime kit") == std::string::npos);
     host.Shutdown();
   }
   *bottle_valid = true;
@@ -1025,7 +1100,7 @@ void SetupFromAnEarlierKitAsksForRecreate() {
   CHECK(started.installs.size() == 1 && started.installs[0].setup_other_kit);
   const auto records_before = Read(fixture.root / "data/runtime-state/installs.json");
   const auto refused = prepare(host);
-  CHECK(refused.refusals.count(220) && refused.refusals.at(220).find("another compatibility kit") != std::string::npos &&
+  CHECK(refused.refusals.count(220) && refused.refusals.at(220).find("another runtime kit") != std::string::npos &&
         refused.refusals.at(220).find("Recreate bottle") != std::string::npos);
   CHECK(refused.installs[0].setup_other_kit && refused.installs[0].state == PreparationState::kFailed);
   // Nothing was rebound or retried.
@@ -1930,7 +2005,8 @@ void OwnedPublicationOpenedUpRecovers(int route) {
     host.Prepare(Hl2());
     const auto done = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.prepares_handled > before; }, 60);
     if (done.refusals.count(220)) std::fprintf(stderr, "Update refused: %s\n", done.refusals.at(220).c_str());
-    CHECK(!done.refusals.count(220));
+    if (done.refusals.count(220)) std::fprintf(stderr, "refusal: %s\n", done.refusals.at(220).c_str());
+  CHECK(!done.refusals.count(220));
   } else if (route == 4) {
     host.Play(220);
     const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(220); }, 30);
@@ -2991,7 +3067,8 @@ void PreparesGameOnUnownedDrive() {
       CHECK(done.installs.empty());
     } else {
       if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
-      CHECK(!done.refusals.count(220));
+      if (done.refusals.count(220)) std::fprintf(stderr, "refusal: %s\n", done.refusals.at(220).c_str());
+  CHECK(!done.refusals.count(220));
       CHECK(done.installs.size() == 1 && done.installs[0].state == PreparationState::kReady);
       const auto metadata = Read(fixture.root / "data/playden/games/steam-220/library/profiles/.playden-publication");
       CHECK(metadata.find("schema=3\n") != std::string::npos);
@@ -5171,6 +5248,7 @@ int main(int argc, char** argv) {
   g_runtime_dir = argv[1];
   WorkerMovesGamesUnderPublicationLease();
   NoKitRefusesPreparationWithoutDurableEffects();
+  ReloadKitAdmitsAKitInstalledWhileRunning();
   QueuedPreparationIsPublishedUntilTaken();
   PrepareNextReordersWaitingPreparations();
   HeldPreparationsWait();
@@ -5185,6 +5263,7 @@ int main(int argc, char** argv) {
   PreparesGameOnUnownedDrive();
   PrepareFixesRootOwnedHomebrewFolder();
   PrepareNamesUnfixableFolder();
+  TitleRefusalNamesTheSourceThatCannotAnswer();
   AnyTitleKitMakesTheGameItsOwnTitle();
   PreparationEndsAwaitingRegistration();
   PreparesGameWithoutShippedRecipe();

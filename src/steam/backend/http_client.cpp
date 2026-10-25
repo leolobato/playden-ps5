@@ -120,7 +120,7 @@ bool ValidRequestHeader(const std::pair<std::string, std::string>& header) {
   return true;
 }
 
-bool ValidUrl(const std::string& url) {
+bool ValidUrl(const std::string& url, bool allow_plain_http) {
   if (url.empty() || url.size() > 8192 || url.find('\0') != std::string::npos) return false;
   CURLU* parsed = curl_url();
   if (!parsed) return false;
@@ -130,7 +130,8 @@ bool ValidUrl(const std::string& url) {
   bool valid = set == CURLUE_OK &&
                curl_url_get(parsed, CURLUPART_SCHEME, &scheme, 0) == CURLUE_OK &&
                curl_url_get(parsed, CURLUPART_HOST, &host, 0) == CURLUE_OK &&
-               scheme && std::strcmp(scheme, "https") == 0 && host && *host;
+               scheme && (std::strcmp(scheme, "https") == 0 || (allow_plain_http && std::strcmp(scheme, "http") == 0)) &&
+               host && *host;
   curl_free(scheme);
   curl_free(host);
   curl_url_cleanup(parsed);
@@ -138,7 +139,7 @@ bool ValidUrl(const std::string& url) {
 }
 
 bool ValidRequest(const HttpRequest& request) {
-  if (!ValidUrl(request.url) || request.timeout_ms == 0 ||
+  if (!ValidUrl(request.url, request.allow_plain_http) || request.timeout_ms == 0 ||
       request.timeout_ms > kMaxHttpTimeoutMs || request.max_response_bytes == 0 ||
       request.max_response_bytes > kMaxHttpResponseBytes ||
       request.body.size() > kMaxHttpResponseBytes ||
@@ -269,7 +270,7 @@ class HttpClient::Impl {
     PLAYDEN_SETOPT(CURLOPT_PROXY, "");
     PLAYDEN_SETOPT(CURLOPT_FOLLOWLOCATION, 0L);
     PLAYDEN_SETOPT(CURLOPT_MAXREDIRS, 0L);
-    PLAYDEN_SETOPT(CURLOPT_PROTOCOLS_STR, "https");
+    PLAYDEN_SETOPT(CURLOPT_PROTOCOLS_STR, request.allow_plain_http ? "http,https" : "https");
     PLAYDEN_SETOPT(CURLOPT_REDIR_PROTOCOLS_STR, "https");
     PLAYDEN_SETOPT(CURLOPT_NOSIGNAL, 1L);
     PLAYDEN_SETOPT(CURLOPT_TCP_KEEPALIVE, 1L);

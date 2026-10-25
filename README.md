@@ -92,7 +92,8 @@ you sign in:
     (port 2120), and optionally [ps5-web-file-manager](https://github.com/owendswang/ps5-web-file-manager)
     (port 8888).
 - **Windows games:** a Steam account with games, or game folders you already have (see [Import Windows games](#import-windows-games)).
-- **A computer with Python 3** on the same network as the PS5, to copy Playden and the kit to it.
+- **A computer on the same network as the PS5**, to copy Playden to it. Python 3 is needed only for the optional
+  install tools.
 - **To build it yourself (optional):** a Mac with Apple Silicon. Linux should also work, but we have not tested it
   yet. See [Build from source](#build-from-source).
 
@@ -111,26 +112,26 @@ Other versions can work, but these are the ones we know.
 
 ## Install
 
-Download both files from the latest [release](../../releases):
+Download `playden-ps5-<version>.zip` from the latest [release](../../releases): the Playden app (`FAKE77031`) and
+the console tools used below. Unzip it. Installing takes one copy over the network, the app folder. Playden
+downloads its runtime kit on its first start, and after that it updates itself (see [Update Playden](#update-playden)).
 
-- `playden-ps5-0.6.0.zip`: the Playden app (`FAKE77031`) and the console tools used below.
-- `playden-kit-0.12.zip`: the runtime kit 0.12 (`hl2-fw1360-dev1`), with its source list and license texts.
-
-You need Python 3 on your computer for the tools. Unzip both files next to each other, then run the commands from
-the `playden-ps5-<version>` folder, which holds `tools/`.
+Like other PS5 homebrew, Playden is a folder in `/data/homebrew/`, and
+ShadowMountPlus adds its tile to the Home screen.
 
 ### Install Playden
 
-1. Copy the app to the console over FTP. `--install` creates `/data/homebrew/FAKE77031` and its folders, so it also
-   works on a console that has never had Playden (or was just reinstalled):
+1. Copy the `FAKE77031` folder from `playden-ps5-<version>` into `/data/homebrew/` on the console. Use any FTP client
+   (FileZilla, Cyberduck, etc.) or the web file manager in a browser. Create `/data/homebrew` first if it isn't there.
+   You do not need to `chmod` anything: Playden checks the folders it writes to and fixes their permissions before
+   it writes. If it can't fix one, it names that folder.
+
+   Or, from a computer with Python 3, run this in the `playden-ps5-<version>` folder. It creates the folders, copies
+   only what changed, and keeps a backup of the files it replaces:
 
    ```sh
    python3 tools/console_title_deploy.py --host <PS5 IP> deploy --install FAKE77031 --backup backups/<name>
    ```
-
-   Copying the `FAKE77031` folder by hand with an FTP client or the web file manager also works. You do not need to
-   `chmod` any folder: Playden checks the folders it writes to and fixes their permissions itself before it writes.
-   If it can't fix one, it names that folder.
 
    From 0.6.0, Playden keeps its data outside the app folder and moves it there once, at startup:
 
@@ -143,46 +144,55 @@ the `playden-ps5-<version>` folder, which holds `tools/`.
    The app folder keeps empty `playden-data` and `logs` folders, and a `MOVED.txt` in each old place says where
    the data went.
 2. Wait about 10 seconds. ShadowMountPlus adds the Playden tile to the Home screen.
-3. Install the runtime kit (next section).
-4. Start Playden and sign in to Steam.
+3. Start Playden. It offers to download the runtime kit (next section); choose Download.
+4. Sign in to Steam while the kit downloads.
 
 ### Update Playden
 
 Since 0.3.0, Playden updates itself from this repository's GitHub releases:
 
-- **Check:** at startup, and with Settings › About › Playden updates › Check now. When a newer release is out,
+- **Check:** at startup, and with Settings › Updates › Playden updates › Check now. When a newer release is out,
   Playden offers it once, with its notes, its download size, and a QR code for its release page on GitHub.
 - **Download:** Download and install fetches the new app and, when the release has a new one, the runtime kit. You
   can follow the download on the Queue screen and keep using Playden meanwhile.
 - **Restart:** when the update is ready, Restart Playden closes Playden, puts the new version and kit in place, and
   opens Playden again. If it doesn't open by itself (the payload loader on port 9021 isn't running), open it from
-  the Home screen. On that first start Playden shows what's new in the version; Settings › About › Release notes
+  the Home screen. On that first start Playden shows what's new in the version; Settings › Updates › Release notes
   shows it again later.
 
+Settings › Updates › **Beta updates** opts into test versions before their stable release. It is off by default;
+betas can have new bugs and use the same app and data. Turning it off keeps an installed beta until a newer stable
+version is available. Updates never downgrade Playden.
+
 The previous app and kit are kept until the next update, in `/data/playden/self-update/backup/` and
-`/data/playden/kits/.previous-*`. Settings › About › **Go back to Playden <version>** puts them back: Playden
+`/data/playden/kits/.previous-*`. Settings › Updates › **Go back to Playden <version>** puts them back: Playden
 closes, swaps the previous version and its kit in, and opens again. If the swap does not take and the previous
 version opens again, it says so and puts its kit back. If the new version itself fails to start, nothing can report it: reinstall Playden over FTP as
-described above (your games, sign-in and settings are kept), and put the previous kit folder back in place of
-`hl2-fw1360-dev1` if the new kit is at fault.
+described above (your games, sign-in and settings are kept), and, if the new kit is at fault, rename the previous
+kit folder (`.previous-<id>-<time>`) back to `<id>`, moving the installed folder of that name aside.
 
 After the version that added import, going back to an older version keeps your old favorites, but loses the favorites
 and collections you changed since. The console's organization data now lives in one file that older versions don't read.
 
-You can also update by hand: run the install command without `--install`. It copies only the changed files, keeps a
-backup of what it replaced, and puts those three folders' modes right if they changed.
+You can also update by hand: copy the new `FAKE77031` folder over the old one, or run the install command without
+`--install`. The command copies only the changed files, keeps a backup of what it replaced, and puts those three
+folders' modes right if they changed.
 
-### Install the runtime kit
+### The runtime kit
 
-This release uses **kit 0.12**. Upload the kit folder from `playden-kit-0.12.zip`:
+The runtime kit is what runs Windows games: Wine, Mesa and DXVK. Playden
+downloads the kit its version was made for from this repository's releases, on its first start and whenever the
+installed kit isn't that one. It installs in the background, shows on the Queue screen, and games can be prepared
+as soon as it is in place. If you choose Later, or the download fails, Settings › About › Runtime kit starts
+it again. Games pick up a new kit when you press Play.
+
+You can also install the kit by hand, with Python 3: download `playden-kit-<version>.zip` from the release, unzip it
+next to `playden-ps5-<version>`, and run this from the `playden-ps5-<version>` folder. A plain FTP copy does not
+work for the kit, because Playden checks each kit file's permissions against the kit's manifest.
 
 ```sh
-python3 tools/console_kit_upload.py ../playden-kit-0.12/hl2-fw1360-dev1 --host <PS5 IP> --replace
+python3 tools/console_kit_upload.py ../playden-kit-<version> --host <PS5 IP> --replace
 ```
-
-The upload checks every file before it switches to the new kit, and creates `/data/playden/kits` on a console that
-doesn't have it yet. Playden accepts only the kit version it was tested with. Games pick up a new kit when you press
-Play.
 
 The kit is built on a **Linux x86-64 machine or VM** from prospero-win, Wine, Mesa and DXVK. To build it yourself,
 see [Build the kit](CONTRIBUTING.md#build-the-kit). The scripts are a record of how we built it, not a turnkey build
@@ -316,7 +326,7 @@ build/homebrew-host/playden-homebrew --simulation --scenario signed-out
   happening, use Settings › Account › **Sign in again**: it keeps your library, favorites and settings.
 - Godot games (Slay the Spire 2) need `--rendering-driver opengl3` in Game settings › Extra arguments. Playden picks
   Godot's Vulkan renderer, which did not work on this kit.
-- The "120 Hz output" game setting needs a newer runtime kit; it is not available with this kit.
+- The 120 Hz choice of the "Refresh rate" game setting needs a newer runtime kit; it is not available with this kit.
 - When you close a game from the PS5 menu, it can stay suspended. Pressing Play again resumes it instead of starting
   it again.
 - Downloads can be slow (about 1 MB/s) on some networks, far from a fast Steam server. Turn on Settings › Storage ›
@@ -359,8 +369,8 @@ I keep a fork of each, with Playden's changes on the fork's `main` branch, and s
 | Project | What it does for Playden |
 | --- | --- |
 | [prospero-win](https://github.com/mpereiraesaa/prospero-win) | Wine for the PS5. Runs the Windows games: memory management, a 32-bit x86 translator, display, input and audio for the console. Also builds the per-game app shell. |
-| [ps5-homebrew-ui](https://github.com/blackbearreloaded/ps5-homebrew-ui) | The UI toolkit Playden's screens are drawn with: layout, fonts, controller focus and navigation, on OpenGL. |
-| [ps5-opengl](https://github.com/blackbearreloaded/ps5-opengl) | OpenGL for PS5 homebrew. Draws Playden's own interface. |
+| [ps5-homebrew-ui](https://github.com/leolobato/ps5-homebrew-ui) | The UI toolkit Playden's screens are drawn with: layout, fonts, controller focus and navigation, on OpenGL. |
+| [ps5-opengl](https://github.com/leolobato/ps5-opengl) | OpenGL for PS5 homebrew. Draws Playden's own interface. |
 | [ps5-native-app-boilerplate](https://github.com/mpereiraesaa/ps5-native-app-boilerplate) (mpereiraesaa) | Tools to build native PS5 apps and modules, used for the per-game app shell in the kit. Our fork is named `prospero-foundation`. |
 | [PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon) | The root helper. Gives a game's app just enough rights to reach its own files in `/data`. |
 
@@ -368,7 +378,7 @@ I keep a fork of each, with Playden's changes on the fork's `main` branch, and s
 
 | Project | What it does for Playden |
 | --- | --- |
-| [ps5-native-app-boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate) (blackbearreloaded) | Tools to build Playden as a native PS5 app, and its `libc.prx`. |
+| [ps5-native-app-boilerplate](https://github.com/drakmor/ps5-native-app-boilerplate) (drakmor) | Tools to build Playden as a native PS5 app, and its `libc.prx`. |
 | [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) | The SDK for PS5 homebrew. |
 | [gbe_fork](https://github.com/Detanup01/gbe_fork) | Steamworks emulator (LGPL-3.0), shipped with Playden in `runtime/steamworks/`, so games run without the Steam client. |
 

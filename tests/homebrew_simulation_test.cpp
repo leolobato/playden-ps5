@@ -372,10 +372,36 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     simulation.action("details:900001");
     activate(simulation, "details-more");
     activate(simulation, "game-settings");
-    // More settings expands inline; graphics is locked by the recipe and scaling is
+    // Rows by topic: the frame-rate rows sit together in Display, and focus steps over the headings.
+    const auto& keys = simulation.state().navigation.modals.back().action_keys;
+    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 22));
+    check(top == std::vector<std::string>{"preset-picker", "heading-game", "setting-launch_option", "setting-extra_arguments",
+                                          "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
+                                          "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
+                                          "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
+                                          "setting-controller_preset", "button-mapping", "controller-tuning", "heading-sound",
+                                          "setting-volume", "section-compatibility", "section-advanced"},
+          "T08b the sheet groups rows by topic");
+    check(find_row(simulation, "heading-display") && find_row(simulation, "heading-display")->title == "Display" &&
+              !find_row(simulation, "heading-display")->enabled,
+          "T08b topic headings only label rows");
+    check(find_row(simulation, "setting-refresh") && find_row(simulation, "setting-refresh")->title == "Refresh rate",
+          "T08b Refresh rate is listed without a 120 Hz kit");
+    simulation.action("focus:setting-resolution");
+    simulation.action("down");
+    check(simulation.state().navigation.focus_key == "setting-refresh", "T08b Refresh rate follows Resolution");
+    simulation.action("down");
+    check(simulation.state().navigation.focus_key == "setting-frame_limit", "T08b Frame limit follows Refresh rate");
+    simulation.action("focus:setting-window_view");
+    simulation.action("down");
+    check(simulation.state().navigation.focus_key == "setting-controller", "T08b Down steps over a heading");
+    simulation.action("focus:setting-launch_option");
+    simulation.action("up");
+    check(simulation.state().navigation.focus_key == "preset-picker", "T08b Up steps over a heading");
+    // Compatibility expands inline; graphics is locked by the recipe and scaling is
     // disabled on DXVK with its reason.
-    check(!find_row(simulation, "setting-graphics"), "T08b More settings starts collapsed");
-    activate(simulation, "section-more");
+    check(!find_row(simulation, "setting-graphics"), "T08b Compatibility starts collapsed");
+    activate(simulation, "section-compatibility");
     const auto* graphics = find_row(simulation, "setting-graphics");
     check(graphics && graphics->enabled && graphics->badge == "Required by this game", "T08b graphics is locked by the recipe");
     const auto* scaling = find_row(simulation, "setting-scaling");
@@ -403,9 +429,19 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(rt::RenderProsperoProfile(simulation.RecipeFor(SteamId(900001)), settings, {"playden-steam-900001", "/data/playden/games/900001"},
                                     &generated, &reason), "T08b sheet settings render a valid prospero profile");
     // Reset all returns to the preset.
+    // Controller tuning is a submenu of Controls; its row counts the changed rows in it.
+    check(find_row(simulation, "controller-tuning") && find_row(simulation, "controller-tuning")->value == "Default" &&
+              !find_row(simulation, "setting-pointer_speed"),
+          "T08b controller tuning rows live in their submenu");
+    activate(simulation, "controller-tuning");
+    check(simulation.state().navigation.modals.back().id == "controller-tuning", "T08b controller tuning opens");
     activate(simulation, "setting-pointer_speed");
     activate(simulation, "choice-4");
     check(!simulation.state().game_settings.at(SteamId(900001)).overrides.empty(), "T08b override recorded");
+    check(simulation.state().navigation.modals.back().id == "controller-tuning", "T08b a choice returns to controller tuning");
+    simulation.action("circle");
+    check(find_row(simulation, "controller-tuning") && find_row(simulation, "controller-tuning")->value == "1 changed",
+          "T08b controller tuning counts its changes");
     activate(simulation, "reset-settings");
     check(simulation.state().game_settings.at(SteamId(900001)).overrides.empty(), "T08b reset all clears overrides");
     simulation.action("circle");
@@ -423,7 +459,6 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(find_row(simulation, "setting-frame_limit") && find_row(simulation, "setting-frame_limit")->enabled,
           "T08b frame limit appears once the kit supports it");
     // Button mapping: inherit shows the recipe binding; a common key and a typed key save.
-    activate(simulation, "section-more");
     activate(simulation, "button-mapping");
     check(find_row(simulation, "setting-button.options")->value == "Escape", "T08b recipe binding shows");
     activate(simulation, "setting-button.touchpad");
@@ -663,9 +698,9 @@ void t11_preferences_failure_and_controller_modal_recovery(const std::filesystem
     {
         const auto& rows = restored.view().rows;
         const auto kit = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "about-kit"; });
-        check(kit != rows.end() && kit->value.rfind("hl2-fw1360-dev1 · ", 0) == 0 &&
+        check(kit != rows.end() && kit->value.rfind("playden-kit · ", 0) == 0 &&
                   kit->subtitle == "The kit this version of Playden was tested with",
-              "T11 About names the compatibility kit and whether it is the tested one");
+              "T11 About names the runtime kit and whether it is the tested one");
     }
 }
 
@@ -864,7 +899,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     activate(simulation, "setting-launch_option");
     activate(simulation, "program-1");
     check(overrides().at("start_check") == "try", "T52 a soft-refused program tries anyway");
-    activate(simulation, "section-more");
+    activate(simulation, "section-compatibility");
     const auto* problems = find_row(simulation, "setting-start_check");
     check(problems && problems->value == "Try anyway" && problems->subtitle.find(".NET") != std::string::npos,
           "T52 Known problems shows the refusal");

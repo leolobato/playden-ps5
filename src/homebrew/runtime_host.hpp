@@ -83,6 +83,9 @@ struct RuntimeHostConfig {
   std::string runtime_dir;
   // gbe_fork's steam_api DLLs; empty: <runtime_dir>/steamworks.
   std::string steamworks_dir;
+  // The signed-in account's Steam refresh token, for games whose "Steam features" is Online (worker only; the
+  // online bridge in the game's folder signs in with it). Empty function or token: those games get the emulator.
+  std::function<std::string()> steam_refresh_token;
   // The player's saved settings for a game; nothing means Playden defaults.
   std::function<std::optional<runtime::GameSettingsRecord>(const GameId& game)> settings_record;
   // Canonical lower-case UUID for a publication transaction, or nothing when no
@@ -466,6 +469,10 @@ class RuntimeHost {
   void ScanPrograms(std::uint32_t runtime_number, std::string install_path);
   // Measures each game's Windows user folders (where saves of games without Steam Cloud live).
   void MeasureSaves();
+  // A kit was put in place while Playden runs (the first-run kit download): the worker stops its
+  // services and starts them again to admit it, publishing kStarting in between, once no launch is
+  // being handed off or followed. Queued requests wait for it.
+  void ReloadKit();
   // Queues maintenance of a prepared game. Each action is refused while the game's
   // title runs or its state is unknown.
   void Maintain(std::uint32_t runtime_number, RuntimeMaintenance action);
@@ -500,6 +507,8 @@ class RuntimeHost {
   struct Composition;
   static void* Entry(void* self);
   void Run();
+  // Starts the services and runs requests until Shutdown (false) or ReloadKit (true).
+  bool RunServices();
   void Publish(const std::function<void(RuntimeSnapshot&)>& change);
   // With `only`, that install's title is checked again and the others keep their last
   // check (about two seconds per title on the console).
@@ -573,6 +582,7 @@ class RuntimeHost {
   void MediaStep(Composition& composition, const runtime::RuntimeInstall& record);
   std::string Ue3EulaStep(const GameFiles& files);
   std::string Direct3D12Step(Composition& composition, const GameFiles& files);
+  void KitMonoStep(Composition& composition, const runtime::RuntimeInstall& record, const char* when);  // never stops the start
   std::string BottleEnvironmentStep(const GameFiles& files);
   std::string RecipeRegistryStep(const GameFiles& files);
   std::string DotnetHeapStep(const GameFiles& files);
@@ -689,6 +699,7 @@ class RuntimeHost {
   bool launch_poll_ = false;
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;
+  bool kit_reload_requested_ = false;  // guarded by mutex_
   bool prepares_held_ = false;
   std::vector<PreparedGame> prepared_dismissals_;  // guarded by mutex_
   bool prepared_clear_requested_ = false;          // guarded by mutex_

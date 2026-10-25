@@ -17,5 +17,16 @@ int main() {
   CHECK((Version{0, 3, 10}).ToString() == "0.3.10");
   // The build's own version comes from CMake.
   CHECK(ParseVersion(PLAYDEN_VERSION) && CurrentVersion() == *ParseVersion(PLAYDEN_VERSION));
+  const auto beta = ParseVersion("v0.7.1-beta.1");
+  CHECK(beta);
+  CHECK(beta->ToString() == "0.7.1-beta.1");
+  CHECK(ParseVersion(beta->ToString()) == beta);
+  CHECK(*ParseVersion("0.7.0") < *beta);
+  CHECK(*beta < *ParseVersion("0.7.1-beta.2"));
+  CHECK(*ParseVersion("0.7.1-beta.999999") < *ParseVersion("0.7.1"));
+  CHECK(*beta != *ParseVersion("0.7.1"));
+  for (const char* bad : {"0.7.1-rc.1", "0.7.1-beta.0", "0.7.1-beta.01", "0.7.1-beta.1000000",
+                          "0.7.1-beta.-1", "0.7.1-beta.1+meta", "0.7.1+meta", "0.7.1-beta.1.2"})
+    CHECK(!ParseVersion(bad));
   return 0;
 }

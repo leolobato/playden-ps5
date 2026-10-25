@@ -69,6 +69,31 @@ int main(int argc, char** argv) {
     if (preset.id == "mouse-driven") mouse = &preset;
   CHECK(mouse);
 
+  // The sheet lists rows in catalogue order, grouped by topic: each group in one run, in SettingGroup order.
+  {
+    std::vector<std::string> ids;
+    for (const auto& definition : SettingsCatalogue())
+      if (definition.group != SettingGroup::kButtonMapping) ids.push_back(definition.id);
+    const std::vector<std::string> expected = {
+        "launch_option", "program", "extra_arguments",
+        "resolution", "refresh", "frame_limit", "vsync", "performance_overlay", "overlay_detail", "scaling",
+        "window_view",
+        "controller", "controller_preset",
+        "pointer_stick", "pointer_speed", "stick_deadzone", "rumble", "invert_stick", "trigger_deadzone", "wheel_stick",
+        "volume",
+        "start_check",
+        "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
+        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "logging",
+        "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
+        "library_overrides", "registry_dll_overrides"};
+    CHECK(ids == expected);
+    for (std::size_t index = 1; index < SettingsCatalogue().size(); ++index)
+      CHECK(SettingsCatalogue()[index - 1].group <= SettingsCatalogue()[index].group);
+    CHECK(FindSetting("refresh")->group == SettingGroup::kDisplay &&
+          FindSetting("button.cross")->group == SettingGroup::kButtonMapping &&
+          FindSetting("rumble")->group == SettingGroup::kControllerTuning);
+  }
+
   // Every catalogue choice default is one of its own choices.
   for (const auto& definition : SettingsCatalogue()) {
     if (definition.kind != SettingKind::kChoice || definition.choices.empty()) continue;
@@ -156,6 +181,11 @@ int main(int argc, char** argv) {
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("[debug]\nwinedebug = err+all,warn+all,+loaddll,+process,+rawinput,+dinput,+winmm,+ntoskrnl,+plugplay,+hid,+hidclass\n") !=
         std::string::npos);
+  CHECK(CheckProsperoProfile(profile.text, &reason));
+  // Network logging traces sockets, name lookups and the network adapters.
+  CHECK(BuildEffectiveSettings(hl2, nullptr, {{"logging", "network"}}, KitCapabilities{}, &settings, &error));
+  CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+  CHECK(profile.text.find("[debug]\nwinedebug = err+all,+winsock,+dnsapi,+nsi,+iphlpapi,+winhttp\n") != std::string::npos);
   CHECK(CheckProsperoProfile(profile.text, &reason));
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"extra_arguments", "-name \"John  Doe\""}}, KitCapabilities{},
                                &settings, &error));
@@ -299,8 +329,9 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"refresh", "120"}, {"frame_limit", "60"}}, display, &shown, &error));
     CHECK(RenderProsperoProfile(hl2, shown, target, &profile, &reason));
     CHECK(profile.text.find("\nrefresh = 120\nframe_rate = 60\n") != std::string::npos);
-    CHECK(!CheckProsperoProfile(profile.text, &reason));  // a runtime without the capability refuses frame_rate
-    CHECK(CheckProsperoProfile(profile.text, &reason, {.display_frame_rate = true}));
+    // A runtime without the capability refuses frame_rate (the [debug] env line is the default wave32).
+    CHECK(!CheckProsperoProfile(profile.text, &reason, {.debug_env = true}));
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.debug_env = true, .display_frame_rate = true}));
     CHECK(RenderDxvkConfig(shown).find("maxFrameRate") == std::string::npos);
     // 120 and 40 are paced at 120 Hz output.
     for (const char* rate : {"120", "40"}) {
@@ -310,8 +341,8 @@ int main(int argc, char** argv) {
       CHECK(profile.text.find(std::string("\nframe_rate = ") + rate + "\n") != std::string::npos);
       // At 60 Hz they fall back to Off, and the row says why.
       CHECK(BuildEffectiveSettings(hl2, nullptr, {{"frame_limit", rate}}, display, &shown, &error));
-      CHECK(Value(shown, "frame_limit") == "off" && shown.values.at("frame_limit").reason == "Only with 120 Hz output.");
-      CHECK(SettingChoiceUnavailable(shown, "frame_limit", rate) == "Only with 120 Hz output.");
+      CHECK(Value(shown, "frame_limit") == "off" && shown.values.at("frame_limit").reason == "Only with Refresh rate 120 Hz.");
+      CHECK(SettingChoiceUnavailable(shown, "frame_limit", rate) == "Only with Refresh rate 120 Hz.");
       CHECK(RenderProsperoProfile(hl2, shown, target, &profile, &reason));
       CHECK(profile.text.find("\nrefresh = 60\n") != std::string::npos && profile.text.find("frame_rate") == std::string::npos);
     }
@@ -335,7 +366,7 @@ int main(int argc, char** argv) {
     CHECK(!frame_rate_env);  // not a vkd3d-proton game
     // OpenGL has no software limiter: 30 at 120 Hz falls back to Off.
     CHECK(BuildEffectiveSettings(opengl, nullptr, {{"refresh", "120"}, {"frame_limit", "30"}}, display, &shown, &error));
-    CHECK(Value(shown, "frame_limit") == "off" && shown.values.at("frame_limit").reason == "At 120 Hz output, only with DXVK.");
+    CHECK(Value(shown, "frame_limit") == "off" && shown.values.at("frame_limit").reason == "At 120 Hz, only with DXVK.");
     CHECK(BuildEffectiveSettings(opengl, nullptr, {{"refresh", "120"}, {"frame_limit", "40"}}, display, &shown, &error));
     CHECK(RenderProsperoProfile(opengl, shown, target, &profile, &reason));
     CHECK(profile.text.find("\nrefresh = 120\nframe_rate = 40\n") != std::string::npos);
@@ -405,13 +436,13 @@ int main(int argc, char** argv) {
     CHECK(shown.values.at("frame_limit").after_update.empty() && !shown.values.at("frame_limit").waits_for_update);
     CHECK(RenderProsperoProfile(hl2, shown, target, &profile, &reason));
     CHECK(profile.text.find("frame_rate") == std::string::npos && profile.text.find("refresh") == std::string::npos);
-    CHECK(CheckProsperoProfile(profile.text, &reason));  // the old key set
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.debug_env = true}));  // the old key set, and wave32's env line
     CHECK(RenderDxvkConfig(shown).find("\ndxgi.maxFrameRate = 60\nd3d9.maxFrameRate = 60\n") != std::string::npos);
     // 120 and 40 need 120 Hz output, chosen or not; with it they wait for Update and nothing caps the game until then.
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"frame_limit", "40"}}, stale, &shown, &error));
-    CHECK(Value(shown, "frame_limit") == "off" && shown.values.at("frame_limit").reason == "Only with 120 Hz output.");
+    CHECK(Value(shown, "frame_limit") == "off" && shown.values.at("frame_limit").reason == "Only with Refresh rate 120 Hz.");
     CHECK(shown.values.at("frame_limit").after_update.empty());
-    CHECK(SettingChoiceUnavailable(shown, "frame_limit", "120") == "Only with 120 Hz output.");
+    CHECK(SettingChoiceUnavailable(shown, "frame_limit", "120") == "Only with Refresh rate 120 Hz.");
     CHECK(RenderDxvkConfig(shown).find("maxFrameRate") == std::string::npos);
     for (const char* limit : {"120", "40"}) {
       CHECK(BuildEffectiveSettings(hl2, nullptr, {{"refresh", "120"}, {"frame_limit", limit}}, stale, &shown, &error));
@@ -424,7 +455,7 @@ int main(int argc, char** argv) {
       CHECK(RenderDxvkConfig(shown).find("maxFrameRate") == std::string::npos);
       CHECK(RenderProsperoProfile(hl2, shown, target, &profile, &reason));
       CHECK(profile.text.find("frame_rate") == std::string::npos && profile.text.find("refresh") == std::string::npos);
-      CHECK(CheckProsperoProfile(profile.text, &reason));
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.debug_env = true}));
       // Once the title runs the kit's runtime, the same saved values apply.
       CHECK(BuildEffectiveSettings(hl2, nullptr, {{"refresh", "120"}, {"frame_limit", limit}}, display, &shown, &error));
       CHECK(Value(shown, "frame_limit") == limit && shown.values.at("frame_limit").after_update.empty());
@@ -442,14 +473,14 @@ int main(int argc, char** argv) {
       const auto& row = shown.values.at("frame_limit");
       CHECK(!row.available && row.waits_for_update && row.reason == kAppliesAfterKitUpdate && row.after_update == "60");
       CHECK(SettingChoiceWaitsForUpdate(shown, "frame_limit", "60"));
-      CHECK(SettingChoiceUnavailable(shown, "frame_limit", "30") == "At 120 Hz output, only with DXVK.");
+      CHECK(SettingChoiceUnavailable(shown, "frame_limit", "30") == "At 120 Hz, only with DXVK.");
     }
     CHECK(RenderProsperoProfile(opengl, shown, target, &profile, &reason));
     CHECK(profile.text.find("frame_rate") == std::string::npos && profile.text.find("\nrefresh = 60\n") != std::string::npos);
     // A saved choice the kit's runtime would not take either is dropped with its reason.
     CHECK(BuildEffectiveSettings(opengl, nullptr, {{"refresh", "120"}, {"frame_limit", "30"}}, stale, &shown, &error));
     CHECK(shown.values.at("frame_limit").after_update.empty() &&
-          shown.values.at("frame_limit").reason == "At 120 Hz output, only with DXVK.");
+          shown.values.at("frame_limit").reason == "At 120 Hz, only with DXVK.");
     CHECK(BuildEffectiveSettings(d3d12, nullptr, {{"refresh", "120"}, {"frame_limit", "30"}}, stale, &shown, &error));
     for (const auto& value : RenderBottleEnvironment(shown))
       CHECK(value.name != "VKD3D_FRAME_RATE" || value.data.empty());
@@ -538,7 +569,9 @@ int main(int argc, char** argv) {
   environment_kit.environment = true;
   CHECK(BuildEffectiveSettings(hl2, nullptr, environment, environment_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
-  CHECK(profile.text.find("\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nDXVK_FRAME_RATE = 45\n") != std::string::npos);
+  // Pixel shaders' wave32 (the default) comes first among the player's variables.
+  CHECK(profile.text.find("\n[environment]\nRADV_PERFTEST = pswave32\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nDXVK_FRAME_RATE = 45\n") !=
+        std::string::npos);
   CHECK(!CheckProsperoProfile(profile.text, &reason));                // a released runtime refuses it
   CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true}));
   // A Zink kit that also reads [environment] (kit H r5): CPU cores and the names [environment] takes go there, the
@@ -554,10 +587,209 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(opengl, settings, target, &profile, &reason));
     CHECK(profile.text.find("\n[debug]\nenv = PW_NATIVE_PROFILE=1\n") != std::string::npos);
     CHECK(profile.text.find(
-              "\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nDXVK_FRAME_RATE = 60\nMESA_GL_VERSION_OVERRIDE = 3.3\n") !=
+              "\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nRADV_PERFTEST = pswave32\nDXVK_FRAME_RATE = 60\n"
+              "MESA_GL_VERSION_OVERRIDE = 3.3\n") !=
           std::string::npos);
     CHECK(profile.text.find("env = DXVK_") == std::string::npos && profile.text.find("env = MESA_") == std::string::npos);
     CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true, .debug_env = true}));
+  }
+  // Pixel shaders: Automatic runs a game known to hang the GPU in wave64 (Stray) in wave32, through the same
+  // environment the Environment variables row writes; every other game's profile stays as it was.
+  {
+    auto stray = hl2;
+    stray.app_id = 1332010;
+    KitCapabilities debug_kit = zink;  // a Zink kit without [environment]: [debug] env lines
+    const auto render = [&](const GameRecipe& recipe, const std::map<std::string, std::string>& overrides,
+                            const KitCapabilities& kit) {
+      CHECK(BuildEffectiveSettings(recipe, nullptr, overrides, kit, &settings, &error));
+      reason.clear();
+      if (!RenderProsperoProfile(recipe, settings, target, &profile, &reason)) profile.text.clear();
+      return profile.text;
+    };
+    const auto count = [](const std::string& text, const std::string& what) {
+      std::size_t found = 0;
+      for (auto at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) ++found;
+      return found;
+    };
+    CHECK(FindSetting("pixel_shader_waves") && FindSetting("pixel_shader_waves")->playden_default == "wave32" &&
+          FindSetting("pixel_shader_waves")->group == SettingGroup::kGraphics);
+    CHECK(!ValidateSettingValue(hl2, "pixel_shader_waves", "wave16", &reason));
+    CHECK(!ValidateSettingValue(hl2, "pixel_shader_waves", "auto", &reason));
+    // Every game runs wave32 by default; the profile ends in its [environment] section.
+    const std::string hl2_default = render(hl2, {}, environment_kit);
+    const auto environment_at = hl2_default.find("\n[environment]\n");
+    CHECK(environment_at != std::string::npos && settings.pixel_shader_waves == "wave32" &&
+          hl2_default.substr(environment_at) == "\n[environment]\nRADV_PERFTEST = pswave32\n");
+    const std::string base = hl2_default.substr(0, environment_at);
+    CHECK(base.find("[environment]") == std::string::npos);
+    CHECK(render(stray, {}, environment_kit) == base + "\n[environment]\nRADV_PERFTEST = pswave32\n");
+    CHECK(settings.values.at("pixel_shader_waves").available && settings.pixel_shader_waves == "wave32");
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true}));
+    if (std::getenv("PLAYDEN_PRINT_PROFILES")) std::printf("--- stray default ---\n%s", profile.text.c_str());
+    // Another game on the default, with conflicting variables of the player's: pswave32 goes into the player's
+    // RADV_PERFTEST, and the player's RADV_PS5_PS_WAVE64 is left out.
+    const std::map<std::string, std::string> conflicting = {
+        {"environment", " ; RADV_PERFTEST = pswave32 , sam ;; RADV_PS5_PS_WAVE64=0;DXVK_FRAME_RATE = 45"},
+        {"cpu_topology", "4"}};
+    const std::string hl2_expected =
+        "; Generated by Playden from recipe steam-220-hl2-v1 v1. Edit settings in Playden.\n"
+        "[application]\n"
+        "id = playden-steam-220\n"
+        "name = Half-Life 2\n"
+        "executable = Z:\\data\\homebrew\\FAKE77031\\games\\220\\hl2.exe\n"
+        "working_directory = Z:\\data\\homebrew\\FAKE77031\\games\\220\n"
+        "arguments = -game hl2 -steam -w 1920 -h 1080 -novid +exec 360controller.cfg +joystick 1\n"
+        "dll_overrides = d3d9=n\n"
+        "prefix = game\n"
+        "runtime = wine-wow64\n"
+        "architecture = pe32\n"
+        "graphics = dxvk\n"
+        "\n[display]\n"
+        "desktop = 1920x1080\n"
+        "view = window\n"
+        "show_fps = false\n"
+        "\n[input]\n"
+        "mode = xinput\n"
+        "mouse = none\n"
+        "options = escape\n"
+        "\n[environment]\n"
+        "WINE_CPU_TOPOLOGY = 4:0,1,2,3\n"
+        "RADV_PERFTEST = pswave32,sam\n"
+        "DXVK_FRAME_RATE = 45\n";
+    CHECK(render(hl2, conflicting, environment_kit) == hl2_expected);
+    CHECK(settings.pixel_shader_waves == "wave32");
+    if (std::getenv("PLAYDEN_PRINT_PROFILES")) std::printf("--- hl2 default ---\n%s", profile.text.c_str());
+    // Wave32 wins: pswave32 once (spaces and empty options dropped), the player's RADV_PS5_PS_WAVE64 left out.
+    auto wave32 = conflicting;
+    wave32["pixel_shader_waves"] = "wave32";
+    CHECK(render(hl2, wave32, environment_kit).find("\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\n"
+                                                     "RADV_PERFTEST = pswave32,sam\nDXVK_FRAME_RATE = 45\n") !=
+          std::string::npos);
+    CHECK(count(profile.text, "RADV_PERFTEST") == 1 && profile.text.find("RADV_PS5_PS_WAVE64") == std::string::npos);
+    CHECK(render(stray, {{"environment", "DXVK_FRAME_RATE=45;RADV_PERFTEST= sam,,nggc "}}, environment_kit)
+              .find("\n[environment]\nRADV_PERFTEST = sam,nggc,pswave32\nDXVK_FRAME_RATE = 45\n") != std::string::npos);
+    // Wave64 wins, for Stray too: RADV_PS5_PS_WAVE64=1, pswave32 taken out of the player's RADV_PERFTEST.
+    auto wave64 = conflicting;
+    wave64["pixel_shader_waves"] = "wave64";
+    CHECK(render(stray, wave64, environment_kit).find("\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\n"
+                                                      "RADV_PS5_PS_WAVE64 = 1\nRADV_PERFTEST = sam\n"
+                                                      "DXVK_FRAME_RATE = 45\n") != std::string::npos);
+    CHECK(count(profile.text, "RADV_PS5_PS_WAVE64") == 1 && profile.text.find("pswave32") == std::string::npos);
+    CHECK(render(stray, {{"pixel_shader_waves", "wave64"}, {"environment", "RADV_PERFTEST=pswave32"}}, environment_kit) ==
+          base + "\n[environment]\nRADV_PS5_PS_WAVE64 = 1\n");
+    // Options are split as RADV splits them, at spaces as well as commas, and written back with commas; on either
+    // destination. "all" (or "a", "al": RADV takes any start of it) turns pswave32 on, so Wave64 refuses it.
+    for (const auto* kit : {&environment_kit, &debug_kit}) {
+      const std::string line = kit == &environment_kit ? "\nRADV_PERFTEST = " : "\nenv = RADV_PERFTEST=";
+      CHECK(render(stray, {{"environment", "RADV_PERFTEST=sam  nggc"}}, *kit).find(line + "sam,nggc,pswave32\n") !=
+            std::string::npos);
+      CHECK(render(hl2, {{"environment", "RADV_PERFTEST=sam pswave32,nggc"}, {"pixel_shader_waves", "wave64"}}, *kit)
+                .find(line + "sam,nggc\n") != std::string::npos);
+      CHECK(profile.text.find("pswave32") == std::string::npos);
+      CHECK(render(stray, {{"environment", "RADV_PERFTEST=all"}}, *kit).find(line + "all,pswave32\n") != std::string::npos);
+      for (const auto* all : {"all", "sam all", "sam,al", "a"}) {
+        CHECK(render(stray, {{"environment", std::string("RADV_PERFTEST=") + all}, {"pixel_shader_waves", "wave64"}}, *kit)
+                  .empty());
+        CHECK(reason.find("turns on wave32 pixel shaders") != std::string::npos);
+      }
+      // A word that only starts with "all" is not "all".
+      CHECK(render(stray, {{"environment", "RADV_PERFTEST=allx"}, {"pixel_shader_waves", "wave64"}}, *kit)
+                .find(line + "allx\n") != std::string::npos);
+    }
+    // The entry limits never drop it: eight variables of the player's after CPU cores in [environment]...
+    const std::string eight = "DXVK_A=1;DXVK_B=2;DXVK_C=3;DXVK_D=4;DXVK_E=5;DXVK_F=6;DXVK_G=7;DXVK_H=8";
+    CHECK(render(stray, {{"environment", eight}, {"cpu_topology", "4"}}, environment_kit)
+              .find("\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nRADV_PERFTEST = pswave32\nDXVK_A = 1\n") !=
+          std::string::npos);
+    CHECK(count(profile.text, "DXVK_") == 6 && profile.text.find("DXVK_G") == std::string::npos);
+    // ...and five [debug] env lines on a Zink kit.
+    CHECK(render(stray, {{"environment", "DXVK_A=1;DXVK_B=2;DXVK_C=3;DXVK_D=4;DXVK_E=5"}}, debug_kit)
+              .find("\n[debug]\nenv = RADV_PERFTEST=pswave32\nenv = DXVK_A=1\n") != std::string::npos);
+    CHECK(count(profile.text, "env = ") == 5 && profile.text.find("DXVK_E") == std::string::npos);
+    CHECK(profile.text.find("[environment]") == std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.debug_env = true}));
+    // A player's RADV_PERFTEST too long to take pswave32 stops the launch with a reason, never starts without it:
+    // [environment] values are under 128 bytes, [debug] env values under 96.
+    const auto perftest = [](std::size_t bytes) { return "RADV_PERFTEST=" + std::string(bytes, 'x'); };
+    CHECK(render(stray, {{"environment", perftest(118)}}, environment_kit)
+              .find("\nRADV_PERFTEST = " + std::string(118, 'x') + ",pswave32\n") != std::string::npos);
+    CHECK(render(stray, {{"environment", perftest(119)}}, environment_kit).empty());
+    CHECK(reason.find("RADV_PERFTEST") != std::string::npos && reason.find("pswave32") != std::string::npos);
+    CHECK(render(stray, {{"environment", perftest(86)}}, debug_kit)
+              .find("\nenv = RADV_PERFTEST=" + std::string(86, 'x') + ",pswave32\n") != std::string::npos);
+    CHECK(render(stray, {{"environment", perftest(87)}}, debug_kit).empty() && reason.find("pswave32") != std::string::npos);
+    SettingsLaunchInput too_long;
+    too_long.recipe = &stray;
+    too_long.kit = environment_kit;
+    too_long.target = target;
+    too_long.record.overrides = {{"environment", perftest(119)}};
+    SettingsLaunchPlan refused;
+    CHECK(!BuildSettingsLaunchPlan(too_long, &refused, &reason) && reason.find("pswave32") != std::string::npos);
+    // On Wave64 the same long value is the player's to keep.
+    CHECK(render(hl2, {{"environment", perftest(119)}, {"pixel_shader_waves", "wave64"}}, environment_kit)
+              .find(std::string(119, 'x') + "\n") != std::string::npos);
+    CHECK(!render(stray, {{"environment", perftest(119)}, {"pixel_shader_waves", "wave64"}}, environment_kit).empty());
+    // A kit without either: the row is unavailable for the same reason, and nothing is written.
+    CHECK(render(stray, {{"pixel_shader_waves", "wave32"}}, KitCapabilities{}).find("RADV_") == std::string::npos);
+    CHECK(!settings.values.at("pixel_shader_waves").available &&
+          settings.values.at("pixel_shader_waves").reason == settings.values.at("environment").reason &&
+          settings.pixel_shader_waves.empty());
+    CHECK(render(stray, {}, KitCapabilities{}).find("RADV_") == std::string::npos);
+    // Presets and recipes may set it; a recipe keeps it through a save.
+    std::vector<SettingsPreset> wave_presets;
+    CHECK(ParseSettingsPresets(R"({"presets":[{"id":"wave32","name":"Wave32","settings":{"pixel_shader_waves":"wave32"}}]})",
+                               &wave_presets, &reason));
+    CHECK(BuildEffectiveSettings(hl2, &wave_presets.front(), {}, environment_kit, &settings, &error));
+    CHECK(settings.values.at("pixel_shader_waves").source == ValueSource::kPreset && settings.pixel_shader_waves == "wave32");
+    auto recipe_wave64 = stray;
+    recipe_wave64.defaults["pixel_shader_waves"] = "wave64";
+    GameRecipe reread_wave;
+    CHECK(ParseGameRecipe(SerializeGameRecipe(recipe_wave64), &reread_wave, &reason));
+    CHECK(reread_wave.defaults.at("pixel_shader_waves") == "wave64");
+    CHECK(render(reread_wave, {}, environment_kit) == base + "\n[environment]\nRADV_PS5_PS_WAVE64 = 1\n");
+    CHECK(settings.values.at("pixel_shader_waves").source == ValueSource::kRecipe);
+    reread_wave.defaults["pixel_shader_waves"] = "wave16";
+    CHECK(!BuildEffectiveSettings(reread_wave, nullptr, {}, environment_kit, &settings, &error));
+
+    // A kit whose title applies the profile's version (profile-version-2): Playden writes version 2, and the driver's
+    // own default is wave32, so Wave32 needs no variable at all.
+    CHECK(KitCapabilitiesFromManifest({kKitProfileVersion2}, false).profile_version_2);
+    CHECK(!KitCapabilitiesFromManifest({kKitEnvironment}, false).profile_version_2);
+    auto version_kit = environment_kit;
+    version_kit.profile_version_2 = true;
+    const std::string version_2 = "\n[runtime]\nversion = 2\n";
+    CHECK(render(hl2, {}, version_kit) == base + version_2);
+    CHECK(settings.profile_version == 2 && settings.pixel_shader_waves == "wave32");
+    CHECK(render(stray, {}, version_kit) == base + version_2);
+    CHECK(!CheckProsperoProfile(profile.text, &reason));  // a runtime without it refuses [runtime]
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.runtime_version = true}));
+    CHECK(!CheckProsperoProfile(base + "\n[runtime]\nversion = 3\n", &reason, {.runtime_version = true}));
+    CHECK(!CheckProsperoProfile(base + "\n[runtime]\ncpu = native\n", &reason, {.runtime_version = true}));
+    // Wave64 is the opt-out: RADV_PS5_PS_WAVE64=1, as before.
+    CHECK(render(stray, {{"pixel_shader_waves", "wave64"}}, version_kit) ==
+          base + version_2 + "\n[environment]\nRADV_PS5_PS_WAVE64 = 1\n");
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true, .runtime_version = true}));
+    // The player's variables: RADV_PERFTEST stays as typed, a RADV_PS5_PS_WAVE64 of the player's is left out, and a
+    // RADV_PERFTEST too long to take pswave32 is fine, since nothing is added to it.
+    CHECK(render(hl2, conflicting, version_kit) ==
+          hl2_expected.substr(0, hl2_expected.find("\n[environment]\n")) + version_2 +
+              "\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nRADV_PERFTEST = pswave32,sam\nDXVK_FRAME_RATE = 45\n");
+    CHECK(render(stray, {{"environment", "RADV_PERFTEST=sam"}}, version_kit) ==
+          base + version_2 + "\n[environment]\nRADV_PERFTEST = sam\n");
+    CHECK(render(stray, {{"environment", perftest(119)}}, version_kit).find(std::string(119, 'x') + "\n") !=
+          std::string::npos);
+    // A Zink kit with it: no [debug] env line for the default.
+    auto version_debug_kit = debug_kit;
+    version_debug_kit.profile_version_2 = true;
+    CHECK(render(stray, {}, version_debug_kit).find("RADV_") == std::string::npos);
+    CHECK(profile.text.find(version_2) != std::string::npos);
+    // A title still on an older runtime (Update pending) refuses [runtime] version: version 1, pswave32 written.
+    const auto stale_version = KitForTitleRuntime(version_kit, false);
+    CHECK(!stale_version.profile_version_2 && stale_version.profile_version_2_needs_update);
+    CHECK(KitForTitleRuntime(version_kit, true).profile_version_2);
+    CHECK(!KitForTitleRuntime(environment_kit, false).profile_version_2_needs_update);
+    CHECK(render(stray, {}, stale_version) == base + "\n[environment]\nRADV_PERFTEST = pswave32\n");
+    CHECK(settings.profile_version == 1);
   }
   // Stick dead zone and rumble need a runtime with controller tuning and the Xbox controller;
   // only values that differ from the runtime's defaults are written.
@@ -625,7 +857,8 @@ int main(int argc, char** argv) {
   CHECK(profile.text.find("\n[audio]\nvolume = 50\n") != std::string::npos);
   CHECK(!CheckProsperoProfile(profile.text, &reason));                // a released runtime refuses both
   CHECK(CheckProsperoProfile(profile.text, &reason,
-                             {.input_tuning = true, .input_wheel = true, .audio_section = true}));
+                             {.environment_section = true, .input_tuning = true, .input_wheel = true, .audio_section = true,
+                              .debug_env = true}));
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"volume", "100"}, {"wheel_stick", "none"}}, all_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("[audio]") == std::string::npos && profile.text.find("wheel") == std::string::npos);
@@ -1004,6 +1237,13 @@ int main(int argc, char** argv) {
       R"({"preset":"","revision":18446744073709551616,"overrides":{}})", &loaded, &reason));
   CHECK(ParseGameSettingsRecord(R"({"preset":"","overrides":{"future_setting":"x","vsync":"on"}})", &loaded, &reason));
   CHECK(loaded.overrides.size() == 1 && loaded.overrides.count("vsync"));
+  // Pixel shaders "auto" (the removed Automatic choice) gives way to the default, wave32; a real choice stays.
+  loaded = {};
+  CHECK(ParseGameSettingsRecord(R"({"preset":"","overrides":{"pixel_shader_waves":"auto","vsync":"on"}})", &loaded, &reason));
+  CHECK(loaded.overrides.size() == 1 && loaded.overrides.count("vsync"));
+  loaded = {};
+  CHECK(ParseGameSettingsRecord(R"({"preset":"","overrides":{"pixel_shader_waves":"wave64"}})", &loaded, &reason));
+  CHECK(loaded.overrides.at("pixel_shader_waves") == "wave64");
   CHECK(!ParseGameSettingsRecord("[]", &loaded, &reason));
 
   // The bundled data loads through the recipe list, as the console title reads it.
@@ -1132,6 +1372,47 @@ int main(int argc, char** argv) {
   CHECK(ApplyMediaRegistry(media_runtime.string(), (root / "old").string(), 123, &reason));
   std::filesystem::create_symlink(root / "old/system.reg", media_manifest);
   CHECK(!ApplyMediaRegistry(media_runtime.string(), (root / "old").string(), 123, &reason));
+
+  // A bottle copied from a kit under another folder name (hl2-fw1360-dev1 before kit 0.13) points Wine Mono at that
+  // folder: it is pointed where the kit template points, keeping its other values. A value Playden didn't write, a
+  // bottle without the value and a bottle not made yet are left as they are.
+  {
+    const auto mono_template = root / "mono-template", mono_bottle = root / "mono-bottle";
+    std::filesystem::create_directories(mono_template);
+    std::filesystem::create_directories(mono_bottle);
+    std::filesystem::permissions(mono_bottle, std::filesystem::perms::owner_all);
+    const std::string head = "WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\User\\\\S-1-5-21-0-0-0-1000\n\n#arch=win64\n\n";
+    const std::string drivers = "[Software\\\\Wine\\\\Drivers]\n\"Audio\"=\"ps5\"\n\n";
+    const auto mono = [](const std::string& kit, const std::string& stamp) {
+      return "[Software\\\\Wine\\\\Mono]" + stamp + "\n" + (stamp.empty() ? "" : "#time=1dc2b\n") +
+             "\"RuntimePath\"=\"Z:\\\\data\\\\playden\\\\kits\\\\" + kit + "\\\\mono\\\\wine-mono-11.3.0\"\n\n";
+    };
+    std::ofstream(mono_template / "user.reg") << head << drivers << mono("playden-kit", "");
+    const auto write_bottle = [&](const std::string& text) {
+      std::ofstream(mono_bottle / "user.reg", std::ios::trunc) << text;
+      ::chmod((mono_bottle / "user.reg").c_str(), 0600);
+    };
+    // Wine saved the bottle: its keys carry their time.
+    write_bottle(head + "[Software\\\\Wine\\\\Drivers] 1791500000\n\"Audio\"=\"ps5\"\n\n" + mono("hl2-fw1360-dev1", " 1791500000"));
+    bool changed = false;
+    CHECK(PointBottleAtKitMono(mono_template.string(), mono_bottle.string(), 1791600000, &changed, &reason) && changed);
+    CHECK(ReadText(mono_bottle / "user.reg") ==
+          head + "[Software\\\\Wine\\\\Drivers] 1791500000\n\"Audio\"=\"ps5\"\n\n" + mono("playden-kit", " 1791500000"));
+    CHECK(ReadText(mono_bottle / "user.reg.playden-backup").find("kits\\\\hl2-fw1360-dev1\\\\mono") != std::string::npos);
+    CHECK(PointBottleAtKitMono(mono_template.string(), mono_bottle.string(), 1791600000, &changed, &reason) && !changed);
+    for (const auto& kept : {head + drivers,
+                             head + "[Software\\\\Wine\\\\Mono]\n\"RuntimePath\"=\"Z:\\\\opt\\\\mono\"\n"}) {
+      write_bottle(kept);
+      CHECK(PointBottleAtKitMono(mono_template.string(), mono_bottle.string(), 1791600000, &changed, &reason) && !changed);
+      CHECK(ReadText(mono_bottle / "user.reg") == kept);
+    }
+    CHECK(PointBottleAtKitMono(mono_template.string(), (root / "mono-no-bottle").string(), 1791600000, &changed, &reason) &&
+          !changed);
+    // A kit without Mono leaves the value alone.
+    std::ofstream(mono_template / "user.reg", std::ios::trunc) << head << drivers;
+    write_bottle(head + mono("hl2-fw1360-dev1", ""));
+    CHECK(PointBottleAtKitMono(mono_template.string(), mono_bottle.string(), 1791600000, &changed, &reason) && !changed);
+  }
 
   // vkd3d-proton's DLLs go into both windows folders of the bottle and come out again, replaced by the template's,
   // without touching a bottle whose files were never vkd3d-proton's.

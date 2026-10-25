@@ -79,6 +79,7 @@ struct ProsperoProfileFeatures {
   bool audio_section = false;        // [audio] volume
   bool debug_env = false;            // [debug] env = NAME=value (upstream prospero-win)
   bool display_frame_rate = false;   // [display] frame_rate = 0|120|60|40|30 (kit capability display-120hz)
+  bool runtime_version = false;      // [runtime] version = 1|2 (kit capability profile-version-2)
 };
 // A [debug] env variable the runtime takes: PW_, DXVK_, MESA_, GALLIUM_, ZINK_, RADV_ or VK_ names, without the ones
 // the title sets itself or the performance overlay owns.

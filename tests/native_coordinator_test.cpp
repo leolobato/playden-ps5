@@ -48,6 +48,11 @@ int main() {
   auto available = native.Availability(record.title_id);
   CHECK(available.inventory == TitleAvailability::kFree && available.source_path == TitleAvailability::kFree);
   CHECK(native.Activity(record.title_id) == NativeActivity::kStopped);
+  CHECK(native.ReportAvailability(record.title_id).Text() == "app.db=free folder=free shadowmount=absent activity=stopped");
+  response = "{}";
+  const auto report = native.ReportAvailability(record.title_id);
+  CHECK(report.shadowmount.state == RegistrationState::kUnavailable && report.database == TitleAvailability::kFree);
+  CHECK(report.Text() == "app.db=free folder=free shadowmount=unavailable(status) activity=stopped");
   response = R"({"status":0,"games":[{"title_id":"FAKE78001","installed":false,"managed":false,"mounted":false,"source_available":false,"source_type":"folder","runtime_path":"/data/homebrew/FAKE78001","path":"/data/homebrew/FAKE78001"}]})";
   available = native.Availability(record.title_id);
   CHECK(available.inventory == TitleAvailability::kFree && available.source_path == TitleAvailability::kFree);

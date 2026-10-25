@@ -1233,7 +1233,7 @@ void Controller::TickRuntime() {
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
                !record->title_current) {
       game.status = "Kit update available"; game.can_prepare = usable;
-      game.detail = "Play updates the compatibility kit first; the game and its saves stay as they are";
+      game.detail = "Play updates the runtime kit first; the game and its saves stay as they are";
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
                record->admission != "ok") {
       game.status = "Needs repair"; game.can_prepare = usable;
@@ -2124,24 +2124,57 @@ void Controller::TickLicenseChanges() {
 }
 void Controller::TickSelfUpdate() {
   if (!self_update_) return;
+  // The track starts from the saved preference (ps5.cpp); only the Settings toggle changes it, so a
+  // preference that hasn't loaded yet can't switch tracks at startup.
   for (const auto& request : model_.TakeSelfUpdateRequests()) {
-    if (request == "check") self_update_->Check(true);
+    if (request == "check") self_update_check_pending_ = true;
+    else if (request == "betas-on" || request == "betas-off") {
+      self_update_->SetIncludeBetas(request == "betas-on");
+      self_update_check_pending_ = true;
+    }
     else if (request == "install") self_update_->Install();
     else if (request == "cancel") self_update_->Cancel();
     else if (request == "restart") self_update_->RequestRestart();
     else if (request == "rollback") self_update_->RequestRollback();
     else if (request == "acknowledge") self_update_->AcknowledgeFinished();
+    else if (request == "kit-check") self_update_->CheckKit();
+    else if (request == "kit-install") self_update_->InstallKit();
+    else if (request == "kit-cancel") self_update_->Cancel();
+  }
+  // Retain checks across busy downloads and occupied worker queues, including opt-out then cancel.
+  if (self_update_check_pending_ && !self_update_->Busy()) {
+    self_update_check_pending_ = false;
+    self_update_->Check(true);
+  }
+  // The runtime started without a usable kit (a first run), or with another kit than the one this
+  // version was made for: the running version's kit is looked for once, after the startup update
+  // check, before sign-in.
+  if (!kit_check_asked_ && runtime_ && !self_update_->Busy()) {
+    const auto runtime = runtime_->Shared();
+    const bool other_kit = runtime->kit && runtime->kit->manifest_sha256 != runtime->kit->expected_manifest_sha256;
+    if (runtime->status == RuntimeHostStatus::kReady && (!runtime->kit_available || other_kit)) {
+      kit_check_asked_ = true;
+      self_update_->CheckKit();
+    }
   }
   const auto snapshot = self_update_->Snapshot();
+  if (snapshot.kit.phase == update::KitInstallPhase::kInstalled && !kit_reload_asked_ && runtime_) {
+    kit_reload_asked_ = true;
+    runtime_->ReloadKit();
+  }
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-  const bool downloading = snapshot.phase == update::UpdatePhase::kDownloading;
+  const bool kit_downloading = snapshot.kit.phase == update::KitInstallPhase::kDownloading;
+  const bool downloading = snapshot.phase == update::UpdatePhase::kDownloading || kit_downloading;
+  const std::string rate_part = kit_downloading ? std::string("kit-only") : snapshot.part;
+  const std::uint64_t rate_done = kit_downloading ? snapshot.kit.done : snapshot.done;
+  const std::uint64_t rate_total = kit_downloading ? snapshot.kit.total : snapshot.total;
   if (downloading) {
-    if (self_update_rate_part_ != snapshot.part) {
+    if (self_update_rate_part_ != rate_part) {
       self_update_rate_.Reset();
-      self_update_rate_part_ = snapshot.part;
+      self_update_rate_part_ = rate_part;
     }
-    self_update_rate_.Record(snapshot.done, now);
+    self_update_rate_.Record(rate_done, now);
   } else if (!self_update_rate_part_.empty()) {
     self_update_rate_.Reset();
     self_update_rate_part_.clear();
@@ -2160,7 +2193,7 @@ void Controller::TickSelfUpdate() {
   live.done = snapshot.done;
   live.total = snapshot.total;
   if (downloading) {
-    const auto estimate = self_update_rate_.Estimate(now, snapshot.done, snapshot.total);
+    const auto estimate = self_update_rate_.Estimate(now, rate_done, rate_total);
     live.bytes_per_second = estimate.bytes_per_second;
     live.eta_seconds = estimate.eta_seconds;
   }
@@ -2176,6 +2209,12 @@ void Controller::TickSelfUpdate() {
   live.quiet = snapshot.quiet;
   live.finished_message = snapshot.finished_message;
   live.finished_failed = snapshot.finished_failed;
+  live.kit_phase = update::KitInstallPhaseName(snapshot.kit.phase);
+  live.kit_replaces = snapshot.kit.replaces;
+  live.kit_download_bytes = snapshot.kit.download_bytes;
+  live.kit_done = snapshot.kit.done;
+  live.kit_total = snapshot.kit.total;
+  live.kit_error = snapshot.kit.error;
   model_.UpdateSelfUpdate(live);
 }
 

@@ -16,6 +16,8 @@ CdnError FromHttp(const HttpResponse& response) {
   return CdnError::kNone;
 }
 
+std::string Scheme(const ContentServer& server) { return server.https ? "https://" : "http://"; }
+
 }  // namespace
 
 bool ValidCdnHost(const std::string& host) {
@@ -30,9 +32,10 @@ CdnClient::CdnClient(Perform perform) : perform_(std::move(perform)) {}
 CdnClient::~CdnClient() = default;
 
 CdnError CdnClient::Get(const std::string& url, std::size_t max_bytes, std::uint32_t timeout_ms,
-                        const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out) {
+                        const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out, bool plain_http) {
   HttpRequest request;
   request.url = url;
+  request.allow_plain_http = plain_http;
   request.headers = {{"User-Agent", "Valve/Steam HTTP Client 1.0"}};
   request.timeout_ms = timeout_ms;
   request.max_response_bytes = max_bytes;
@@ -75,26 +78,36 @@ CdnError CdnClient::Servers(std::uint32_t cell_id, const std::atomic<bool>& canc
   const auto root = json::Parse(text, json::Limits{512 * 1024, 8, 8192, 4096});
   const auto* response = root ? root->Find("response") : nullptr;
   const auto* servers = response ? response->Find("servers") : nullptr;
-  if (!servers || !servers->is_array()) return CdnError::kProtocol;
-  std::vector<ContentServer> usable;
+  if (!servers || !servers->is_array()) {
+    last_failure_ = "servers=malformed";
+    return CdnError::kProtocol;
+  }
+  std::vector<ContentServer> usable, plain;
+  std::size_t listed = 0;
   for (const auto& server : servers->array()) {
+    ++listed;
     const auto* type = server.Find("type");
     const auto* host = server.Find("host");
     const auto* vhost = server.Find("vhost");
     const auto* https = server.Find("https_support");
     const auto* load = server.Find("load");
     if (!type || !type->is_string() || (type->text() != "SteamCache" && type->text() != "CDN")) continue;
-    if (https && https->is_string() && https->text() == "unavailable") continue;
     if (!host || !host->is_string() || !ValidCdnHost(host->text())) continue;
     ContentServer entry;
     entry.host = host->text();
     entry.vhost = vhost && vhost->is_string() && ValidCdnHost(vhost->text()) ? vhost->text() : entry.host;
+    entry.https = !(https && https->is_string() && https->text() == "unavailable");
     if (load) {
       if (const auto value = load->AsUint64(); value && *value < 100000) entry.load = static_cast<int>(*value);
     }
-    usable.push_back(std::move(entry));
+    (entry.https ? usable : plain).push_back(std::move(entry));
   }
-  if (usable.empty()) return CdnError::kProtocol;
+  // Plain HTTP only when the directory offers nothing better.
+  if (usable.empty()) usable = std::move(plain);
+  if (usable.empty()) {
+    last_failure_ = "servers=" + std::to_string(listed) + " usable=0";
+    return CdnError::kProtocol;
+  }
   std::stable_sort(usable.begin(), usable.end(),
                    [](const ContentServer& left, const ContentServer& right) { return left.load < right.load; });
   *out = std::move(usable);
@@ -105,9 +118,9 @@ CdnError CdnClient::Manifest(const ContentServer& server, std::uint32_t depot_id
                              std::uint64_t request_code, const std::atomic<bool>& cancel,
                              std::vector<std::uint8_t>* out) {
   if (!ValidCdnHost(server.vhost)) return CdnError::kProtocol;
-  return Get("https://" + server.vhost + "/depot/" + std::to_string(depot_id) + "/manifest/" +
+  return Get(Scheme(server) + server.vhost + "/depot/" + std::to_string(depot_id) + "/manifest/" +
                  std::to_string(gid) + "/5/" + std::to_string(request_code),
-             kMaxManifestDownloadBytes, 60'000, cancel, out);
+             kMaxManifestDownloadBytes, 60'000, cancel, out, !server.https);
 }
 
 CdnError CdnClient::Chunk(const ContentServer& server, std::uint32_t depot_id, const std::string& sha_hex,
@@ -116,8 +129,8 @@ CdnError CdnClient::Chunk(const ContentServer& server, std::uint32_t depot_id, c
   if (!ValidCdnHost(server.vhost) || sha_hex.size() != 40 ||
       !std::all_of(sha_hex.begin(), sha_hex.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
     return CdnError::kProtocol;
-  return Get("https://" + server.vhost + "/depot/" + std::to_string(depot_id) + "/chunk/" + sha_hex,
-             max_bytes, 30'000, cancel, out);
+  return Get(Scheme(server) + server.vhost + "/depot/" + std::to_string(depot_id) + "/chunk/" + sha_hex,
+             max_bytes, 30'000, cancel, out, !server.https);
 }
 
 }  // namespace playden::steam

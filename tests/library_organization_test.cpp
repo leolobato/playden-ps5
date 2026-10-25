@@ -352,11 +352,19 @@ void V2RoundTripsEveryStore() {
   expected.ratings[kLocalGame] = playden::CompatibilityRating::kPlayable;
   expected.notes[kLocalGame] = "Imported";
   expected.selected_game_id = kLocalGame;
+  expected.filters.insert("hide-demos");
   Check(playden::OrganizationSnapshotIsValid(expected), "a Local game is valid organization");
   Check(store.Save(kDevice, expected).ok(), "device organization saves");
   const auto restored = store.Load(kDevice);
   Check(restored.ok() && restored.value() && *restored.value() == expected,
-        "a Local game round trips in favorites, hidden, collections, ratings, notes and selection");
+        "a Local game round trips in favorites, hidden, collections, ratings, notes, selection and filters");
+  auto v1_demos = Example();
+  v1_demos.schema_version = 1;
+  v1_demos.filters = {"hide-demos"};
+  Check(!store.SaveV1(kFirstAccount, v1_demos).ok(), "version 1 cannot hold hidden demos");
+  auto three_filters = expected;
+  three_filters.filters.insert("controller-full");
+  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds at most Playable and hidden demos");
   playden::OrganizationSnapshot unselected;
   Check(store.Save(kDevice, unselected).ok(), "no selection saves");
   const auto empty = store.Load(kDevice);

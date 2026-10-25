@@ -72,7 +72,8 @@ void EntitledLibraryBackend::AddLicensedGames(const StoredSession& session,
         const auto info = ParseAppInfo(app, found->second);
         std::string type = info ? info->type : std::string();
         std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return std::tolower(c); });
-        if (info && type == "game" && info->name != "app_" + std::to_string(app)) name = info->name;
+        if (info && (type == "game" || type == "demo") && info->name != "app_" + std::to_string(app)) name = info->name;
+        if (!name.empty() && type == "demo") demos_.insert(app);
         if (!name.empty() && info && !info->icon.empty())
           icons_[app] = "https://media.steampowered.com/steamcommunity/public/images/apps/" + std::to_string(app) +
                         "/" + info->icon + ".jpg";
@@ -84,6 +85,7 @@ void EntitledLibraryBackend::AddLicensedGames(const StoredSession& session,
     const auto found = looked_up_.find(app);
     if (found == looked_up_.end() || found->second.empty()) continue;
     GameSummary game{GameId::Steam(app), found->second, {}, {}, {}};
+    game.demo = demos_.count(app) != 0;
     if (const auto icon = icons_.find(app); icon != icons_.end()) game.artwork_source = icon->second;
     if (const auto added = acquisitions.acquired_at.find(app); added != acquisitions.acquired_at.end())
       game.added_at_unix_seconds = added->second;

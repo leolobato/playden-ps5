@@ -37,10 +37,11 @@ std::string Header(const HttpResponse& response, const std::string& name) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  Check(argc == 4, "expected BASE_URL CA_BUNDLE WRONG_CA_BUNDLE");
+  Check(argc == 5, "expected BASE_URL CA_BUNDLE WRONG_CA_BUNDLE PLAIN_URL");
   const std::string base_url = argv[1];
   const std::string ca_bundle = argv[2];
   const std::string wrong_ca_bundle = argv[3];
+  const std::string plain_url = argv[4];
   std::atomic<bool> cancel{false};
   HttpClient client(ca_bundle);
 
@@ -187,6 +188,18 @@ int main(int argc, char** argv) {
   malformed.url = "http://localhost/not-https";
   response = client.Perform(malformed, cancel);
   Check(response.error == HttpError::kInvalidRequest, "non-HTTPS URL should be rejected");
+  malformed.url = plain_url + "/ok";
+  response = client.Perform(malformed, cancel);
+  Check(response.error == HttpError::kInvalidRequest, "plain HTTP needs the request's opt-in");
+  HttpRequest plain;
+  plain.url = plain_url + "/ok";
+  plain.allow_plain_http = true;
+  response = client.Perform(plain, cancel);
+  Check(response.ok() && response.status_code == 200 && Text(response.body) == "fixture-ok",
+        "an opted-in request reaches a plain HTTP server");
+  plain.url = "ftp://localhost/ok";
+  response = client.Perform(plain, cancel);
+  Check(response.error == HttpError::kInvalidRequest, "the opt-in allows http only, not other schemes");
   malformed.url = base_url + std::string("/ok\0ignored", 11);
   response = client.Perform(malformed, cancel);
   Check(response.error == HttpError::kInvalidRequest, "embedded NUL in URL should be rejected");

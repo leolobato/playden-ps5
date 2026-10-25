@@ -14,7 +14,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitTitleAnyId, kKitGameRootUnowned, kKitBottleProfileShared, kKitOpenGLZink,
                                 kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
                                 kKitInputWheel, kKitEnvironment, kKitWineMono, kKitVkd3dProton,
-                                kKitDisplay120Hz};
+                                kKitDisplay120Hz, kKitProfileVersion2};
   std::sort(config.known_capabilities.begin(), config.known_capabilities.end());
   return config;
 }

@@ -44,6 +44,8 @@ struct HttpRequest {
   std::vector<std::uint8_t> body;
   std::uint32_t timeout_ms = 10'000;
   std::size_t max_response_bytes = 1024 * 1024;
+  // Also accept an http:// URL. Only for content checked by other means, such as Steam CDN chunks.
+  bool allow_plain_http = false;
 };
 
 struct HttpTiming {

@@ -53,3 +53,6 @@ if(PROBE_CA_BUNDLE)
  file(MAKE_DIRECTORY "${APP_DIR}/probe")
  file(COPY "${PROBE_CA_BUNDLE}" DESTINATION "${APP_DIR}/probe")
 endif()
+
+# The PS5 field stays numeric; the updater and log bundle use the full release version.
+file(WRITE "${APP_DIR}/playden-version" "${FULL_VERSION}\n")

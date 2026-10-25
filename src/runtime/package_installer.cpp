@@ -1,4 +1,5 @@
 #include "runtime/package_installer.h"
+#include "runtime/kit_trust.h"
 #include "runtime/private_directories.h"
 #include "platform/managed_directory.h"
 #include "pw_title_publication_native.h"
@@ -983,7 +984,8 @@ bool FilesystemPackageInstaller::PublicationMatches(
   const bool closed = ::close(fd) == 0;
   PwTitlePublication receipt{};
   if (!valid || !closed || pw_title_publication_parse(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), &receipt) != PW_OK ||
-      receipt.phase != PW_TITLE_PUBLICATION_COMMITTED || receipt.kit_id != kit_.kit_id ||
+      receipt.phase != PW_TITLE_PUBLICATION_COMMITTED ||
+      (receipt.kit_id != kit_.kit_id && !KitIdRenamedTo(receipt.kit_id, kit_.kit_id)) ||
       receipt.install_id != record.install_id || receipt.title_id != record.title_id ||
       receipt.runtime_bundle_id != record.runtime_bundle_id || receipt.recipe_id != record.recipe_id ||
       receipt.recipe_version != record.recipe_version || receipt.settings_revision != record.settings_revision)
@@ -1521,16 +1523,18 @@ namespace {
 // Marker text without the lines a respin of the same kit may change (its file
 // inventory, a rebuilt runtime's revision and path, and the kit title the game's
 // title is made from: a fixed one, or the one shell for every game), for
-// comparing identity.
-std::string RespinIdentity(const std::string& marker) {
+// comparing identity. A kit id the kit `kit_id` was renamed from counts as it.
+std::string RespinIdentity(const std::string& marker, const std::string& kit_id) {
   std::string kept;
   std::size_t start = 0;
   while (start < marker.size()) {
     auto end = marker.find('\n', start);
     if (end == std::string::npos) end = marker.size();
     const auto line = marker.substr(start, end - start);
-    if (line.rfind("files_sha256=", 0) != 0 && line.rfind("runtime_revision=", 0) != 0 &&
-        line.rfind("runtime_path=", 0) != 0 && line.rfind("variant_id=", 0) != 0)
+    if (line.rfind("kit_id=", 0) == 0 && KitIdRenamedTo(line.substr(7), kit_id))
+      kept += "kit_id=" + kit_id + "\n";
+    else if (line.rfind("files_sha256=", 0) != 0 && line.rfind("runtime_revision=", 0) != 0 &&
+             line.rfind("runtime_path=", 0) != 0 && line.rfind("variant_id=", 0) != 0)
       kept += line + "\n";
     start = end + 1;
   }
@@ -1592,8 +1596,8 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
   if (!IsDirectoryNoSymlink(paths->title) || !IsPrivateDirectoryTree(paths->game, paths->bottle, BottleTraversal(*paths)) ||
       !title_marker || !bottle_marker || !IsHexDigest(title_digest) || old_digest(bottle_marker) != title_digest ||
       !WithFilesDigest(new_title, title_digest) || !WithFilesDigest(new_bottle, title_digest) ||
-      RespinIdentity(new_title) != RespinIdentity(*title_marker) ||
-      RespinIdentity(new_bottle) != RespinIdentity(*bottle_marker))
+      RespinIdentity(new_title, kit_.kit_id) != RespinIdentity(*title_marker, kit_.kit_id) ||
+      RespinIdentity(new_bottle, kit_.kit_id) != RespinIdentity(*bottle_marker, kit_.kit_id))
     return Failed("refresh-ownership", "installed title and bottle are not this install's from a compatible kit");
   if (title_digest == kit_.files_sha256 && TitleMatches(record, *paths)) return Complete();
   std::vector<char> buffer(kCopyBufferBytes);  // heap: console worker stacks are small

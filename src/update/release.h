@@ -33,14 +33,39 @@ struct Release {
 
 // The JSON of GET /repos/<owner>/<repo>/releases/latest. The tag must be a version ("v0.3.0").
 std::optional<Release> ParseRelease(std::string_view json, std::string* error);
+// The JSON of GET /repos/<owner>/<repo>/releases: newest first, releases whose tag isn't a version left out.
+std::optional<std::vector<Release>> ParseReleases(std::string_view json, std::string* error);
 
 struct KitPart {
-  std::string kit_id;           // stays the same across revisions ("hl2-fw1360-dev1")
-  std::string revision;         // "r9"
+  std::string kit_id;           // stays the same across revisions ("playden-kit")
+  std::string revision;         // "0.13"
   std::string manifest_sha256;  // the kit's manifest.json SHA-256
   std::string asset;            // release asset name
-  std::string prefix;           // folder inside the zip ("playden-kit-0.12/hl2-fw1360-dev1/")
+  std::string prefix;           // folder inside the zip ("playden-kit-0.13/playden-kit/")
 };
+
+// A kit's version: "<generation>.<revision>" ("0.12"), or a development build of one with "-dev.<YYYYMMDD>.<N>"
+// ("0.13-dev.20261023.1"), which comes before that release and after the one before it.
+struct KitVersion {
+  unsigned generation = 0;
+  unsigned revision = 0;
+  bool development = false;
+  unsigned date = 0;
+  unsigned build = 0;
+
+  friend bool operator<(const KitVersion& a, const KitVersion& b) {
+    if (a.generation != b.generation) return a.generation < b.generation;
+    if (a.revision != b.revision) return a.revision < b.revision;
+    if (a.development != b.development) return a.development;
+    if (a.date != b.date) return a.date < b.date;
+    return a.build < b.build;
+  }
+};
+
+// Anything else, such as the letters of kits before 0.10 ("h-r9"), is refused.
+std::optional<KitVersion> ParseKitVersion(std::string_view text);
+// The version in a kit's runtime artifact name, "<wine revision>-kit-<version>" ("f729534-kit-0.12").
+std::optional<KitVersion> KitVersionFromArtifact(std::string_view artifact);
 
 struct UpdateManifest {
   Version app_version;

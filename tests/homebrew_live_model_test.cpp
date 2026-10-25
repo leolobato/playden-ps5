@@ -246,7 +246,6 @@ void live_120hz_waits_for_the_title_update(const std::filesystem::path& base) {
     check(model.action("details:220"), "open the display game's details");
     activate(model, "details-more");
     activate(model, "game-settings");
-    activate(model, "section-more");
     const std::string after_update = playden::runtime::kAppliesAfterKitUpdate;
     const auto says_after_update = [&](const char* key) {
         const auto* row = find_row(model, key);
@@ -256,7 +255,7 @@ void live_120hz_waits_for_the_title_update(const std::filesystem::path& base) {
           "120 Hz output can be chosen before the title's update and says when it applies");
     activate(model, "setting-frame_limit");
     const auto* limit_120 = find_row(model, "choice-1");
-    check(limit_120 && limit_120->title == "120" && !limit_120->enabled && limit_120->subtitle == "Only with 120 Hz output.",
+    check(limit_120 && limit_120->title == "120" && !limit_120->enabled && limit_120->subtitle == "Only with Refresh rate 120 Hz.",
           "Frame limit 120 needs 120 Hz output first");
     check(find_row(model, "choice-2") && find_row(model, "choice-2")->enabled, "Frame limit 60 stays available");
     check(model.action("circle"), "close the Frame limit picker");
@@ -299,6 +298,37 @@ void live_120hz_waits_for_the_title_update(const std::filesystem::path& base) {
     check(find_row(model, "choice-1")->enabled && find_row(model, "choice-1")->subtitle.empty(), "Frame limit 120 applies now");
     check(model.action("circle"), "close the Frame limit picker on the updated title");
 
+    // Frame limit follows Refresh rate: back at 60 Hz, a cap of 120 goes to Off and the toast says so; 60 stays.
+    activate(model, "setting-refresh");
+    activate(model, "choice-0");
+    const auto& after_60 = model.state().game_settings.at(SteamId(220)).overrides;
+    check(!after_60.count("refresh") && !after_60.count("frame_limit") &&
+              find_row(model, "setting-frame_limit")->value == "Off",
+          "Refresh rate 60 Hz sets a cap of 120 back to Off");
+    const auto toast = std::find_if(model.state().notices.begin(), model.state().notices.end(),
+                                    [](const playden::homebrew::Notice& notice) { return notice.id == "frame-limit-off"; });
+    check(toast != model.state().notices.end() && toast->message == "Frame limit set to Off" &&
+              toast->detail == "A cap of 120 needs Refresh rate 120 Hz.",
+          "the toast says why the cap went to Off");
+    activate(model, "setting-refresh");
+    activate(model, "choice-1");
+    activate(model, "setting-frame_limit");
+    activate(model, "choice-2");
+    activate(model, "setting-refresh");
+    activate(model, "choice-0");
+    check(model.state().game_settings.at(SteamId(220)).overrides.count("frame_limit") &&
+              model.state().game_settings.at(SteamId(220)).overrides.at("frame_limit") == "60",
+          "a cap of 60 stays at 60 Hz");
+    // Triangle on Refresh rate takes 120 Hz back, and a cap of 40 with it.
+    activate(model, "setting-refresh");
+    activate(model, "choice-1");
+    activate(model, "setting-frame_limit");
+    activate(model, "choice-3");
+    check(model.action("focus:setting-refresh") && model.action("triangle"), "reset Refresh rate with Triangle");
+    check(!model.state().game_settings.at(SteamId(220)).overrides.count("refresh") &&
+              !model.state().game_settings.at(SteamId(220)).overrides.count("frame_limit"),
+          "resetting Refresh rate sets a cap of 40 back to Off");
+
     // Reset takes the waiting choices back.
     runtime.status = "Kit update available";
     runtime.ready = false;
@@ -308,6 +338,43 @@ void live_120hz_waits_for_the_title_update(const std::filesystem::path& base) {
     check(model.state().game_settings.at(SteamId(220)).overrides.empty(), "Reset removes the waiting choices");
     check(find_row(model, "setting-refresh")->value == "60 Hz" && find_row(model, "setting-frame_limit")->value == "Off",
           "after Reset the rows show the preset's values");
+}
+
+// A preset's cap of 120 falls back to Off at 60 Hz without being Off: a player's 40 set back by Refresh rate 60 Hz is
+// saved as Off, so 120 Hz later does not bring the preset's cap back.
+void live_refresh_rate_keeps_off_over_a_preset_cap(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    model.SetGameSettingsFile(base / "capped-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {{"refresh", "120"}, {"frame_limit", "120"}}}}, {});
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"dxvk", "display-120hz"}, true));
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(220);
+    game.title = "Half-Life 2";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "capped game library delivered");
+    model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(220);
+    runtime.status = "Ready";
+    runtime.prepared = runtime.has_title = runtime.ready = runtime.runtime_current = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(model.action("details:220"), "open the capped game's details");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    check(find_row(model, "setting-frame_limit")->value == "120", "the preset caps the game at 120");
+    activate(model, "setting-frame_limit");
+    activate(model, "choice-3");
+    activate(model, "setting-refresh");
+    activate(model, "choice-0");
+    const auto& overrides = model.state().game_settings.at(SteamId(220)).overrides;
+    check(overrides.count("frame_limit") && overrides.at("frame_limit") == "off",
+          "a cap set back over the preset's 120 is saved as Off");
+    activate(model, "setting-refresh");
+    activate(model, "choice-1");
+    check(find_row(model, "setting-frame_limit")->value == "Off", "120 Hz again keeps Off, not the preset's 120");
 }
 
 // Maintenance › Update runtime runs the update Play does first for a title on an older kit's runtime, without
@@ -460,7 +527,7 @@ void live_settings_follow_the_prepared_title(const std::filesystem::path& base) 
 
     activate(model, "game-settings");
     check(model.TakeActivityRequests() == std::vector<playden::homebrew::GameId>{SteamId(220)}, "the sheet asks whether the game runs");
-    activate(model, "section-more");
+    activate(model, "section-compatibility");
     const auto* version = find_row(model, "setting-windows_version");
     check(version && !version->enabled && version->subtitle == "Checking whether Half-Life 2 is running…",
           "game-closed rows wait for the console's answer");
@@ -646,6 +713,96 @@ void live_download_telemetry() {
 }
 
 
+// The kit-only install: offered before sign-in, downloaded while the player signs in, and listed on
+// the Queue and in Settings until it is in place.
+void live_kit_install(const std::filesystem::path& base) {
+    using namespace playden::homebrew;
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    check(model.state().navigation.route == Route::Startup, "kit: a first start shows Connect Steam");
+    LiveSelfUpdate update;
+    update.current = "0.6.0";
+    update.kit_phase = "checking";
+    model.UpdateSelfUpdate(update);
+    check(model.state().navigation.modals.empty(), "kit: nothing is offered while it is looked for");
+    update.kit_phase = "available";
+    update.kit_download_bytes = 300000000;
+    model.UpdateSelfUpdate(update);
+    check(!model.state().navigation.modals.empty() &&
+              model.state().navigation.modals.back().title == "Download the runtime kit?" &&
+              model.state().navigation.modals.back().body.find("sign in") != std::string::npos,
+          "kit: offered before sign-in, with the download size");
+    check(model.action("cross") && model.state().navigation.modals.empty() &&
+              model.TakeSelfUpdateRequests() == std::vector<std::string>{"kit-install"},
+          "kit: Download asks for the kit");
+
+    update.kit_phase = "downloading";
+    update.kit_done = 100;
+    update.kit_total = 400;
+    model.UpdateSelfUpdate(update);
+    // Cancelled: the kit is available again, but not offered again until the next check.
+    update.kit_phase = "available";
+    model.UpdateSelfUpdate(update);
+    check(model.state().navigation.modals.empty(), "kit: a cancelled download isn't offered again");
+    update.kit_phase = "downloading";
+    model.UpdateSelfUpdate(update);
+    const auto job = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
+                                  [](const Job& item) { return item.id == "kit-install"; });
+    check(job != model.state().jobs.end() && job->title == "Runtime kit" && job->completed_bytes == 100 &&
+              job->stage_text == "Downloading the runtime kit",
+          "kit: the download shows on the Queue");
+
+    // Signed in while it downloads: Settings shows the progress.
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{}, false, {}, false, true, 100}), "kit: library delivered");
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+    check(find_row(model, "settings-kit") && find_row(model, "settings-kit")->value == "25%",
+          "kit: Settings shows the progress");
+
+    update.kit_phase = "installed";
+    model.UpdateSelfUpdate(update);
+    check(std::none_of(model.state().jobs.begin(), model.state().jobs.end(),
+                       [](const Job& item) { return item.id == "kit-install"; }) &&
+              !find_row(model, "settings-kit") &&
+              std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                          [](const Notice& notice) { return notice.id == "kit-installed"; }),
+          "kit: once in place, the job and row go and a notice says so");
+
+    // Another kit is installed: the offer says it replaces it; a failed download says why.
+    auto other = make_live(base / "other");
+    LiveSelfUpdate replace;
+    replace.current = "0.6.0";
+    replace.kit_phase = "available";
+    replace.kit_replaces = true;
+    other.UpdateSelfUpdate(replace);
+    check(!other.state().navigation.modals.empty() &&
+              other.state().navigation.modals.back().title == "Replace the runtime kit?",
+          "kit: replacing another kit is said");
+    other.action("circle");
+    replace.kit_phase = "downloading";
+    other.UpdateSelfUpdate(replace);
+    replace.kit_phase = "failed";
+    replace.kit_error = "The kit download failed.";
+    other.UpdateSelfUpdate(replace);
+    // Like every alert, it waits for sign-in.
+    other.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(other.UpdateLibrary({{}, false, {}, false, true, 100}), "kit: library delivered");
+    other.action("r1");  // a queued alert shows after the next press
+    check(!other.state().navigation.modals.empty() &&
+              other.state().navigation.modals.back().title == "Runtime kit download stopped",
+          "kit: a failed download says why");
+
+    // An update on offer brings the kit itself: the kit isn't offered on top of it.
+    auto both = make_live(base / "both");
+    LiveSelfUpdate newer;
+    newer.current = "0.6.0";
+    newer.phase = "available";
+    newer.available = "0.7.0";
+    newer.kit_phase = "available";
+    both.UpdateSelfUpdate(newer);
+    check(both.state().navigation.modals.empty(), "kit: no kit offer while a newer Playden is on offer");
+}
+
 // Playden's own update: the prompts, the Downloads job, the Settings row and the requests.
 void live_self_update(const std::filesystem::path& base) {
     using namespace playden::homebrew;
@@ -655,7 +812,21 @@ void live_self_update(const std::filesystem::path& base) {
     check(model.UpdateLibrary({{}, false, {}, false, true, 100}), "update: library delivered");
     for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
     check(model.state().navigation.route == Route::Settings, "update: settings open");
+    check(find_row(model, "settings-beta-updates") && !find_row(model, "settings-beta-updates")->selected,
+          "beta updates default off");
+    activate(model, "settings-beta-updates");
+    check(find_row(model, "settings-beta-updates")->selected, "beta updates turn on");
+    check(model.ExportPreferences().beta_updates, "beta opt-in exported for persistence");
+    check(model.TakeSelfUpdateRequests() == std::vector<std::string>{"betas-on"}, "enabling betas switches the track");
+    activate(model, "settings-beta-updates");
+    check(model.TakeSelfUpdateRequests() == std::vector<std::string>{"betas-off"}, "disabling betas switches back");
     LiveSelfUpdate update;
+    update.current = "0.7.1-beta.1";
+    model.UpdateSelfUpdate(update);
+    check(find_row(model, "settings-beta-wait") &&
+          find_row(model, "settings-beta-wait")->subtitle ==
+              "Playden moves to the next stable version when it is out.",
+          "opting out on a beta explains waiting for stable");
     update.current = "0.2.0";
     model.UpdateSelfUpdate(update);
     check(find_row(model, "settings-update") && find_row(model, "settings-update")->value == "Check now",
@@ -682,7 +853,7 @@ void live_self_update(const std::filesystem::path& base) {
     model.UpdateSelfUpdate(update);
     check(!model.state().navigation.modals.empty() &&
               model.state().navigation.modals.back().title == "Playden 0.3.0 is available" &&
-              model.state().navigation.modals.back().body.find("compatibility kit") != std::string::npos,
+              model.state().navigation.modals.back().body.find("runtime kit") != std::string::npos,
           "update: a newer release is offered");
     check(model.action("cross") && model.state().navigation.modals.empty() &&
               model.TakeSelfUpdateRequests() == std::vector<std::string>{"install"},
@@ -699,7 +870,7 @@ void live_self_update(const std::filesystem::path& base) {
     const auto job = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
                                   [](const Job& item) { return item.id == "playden-update"; });
     check(job != model.state().jobs.end() && job->title == "Playden 0.3.0" &&
-              job->stage_text == "Downloading the compatibility kit" && job->completed_bytes == 100,
+              job->stage_text == "Downloading the runtime kit" && job->completed_bytes == 100,
           "update: the download shows on Downloads");
     check(find_row(model, "settings-update")->value == "25%", "update: Settings shows the progress");
     model.UpdateInstalls({}, {});
@@ -1057,6 +1228,7 @@ int main() {
     settings_survive_account_restore_and_cache_action_is_honest(base);
     live_settings_follow_the_prepared_title(base);
     live_120hz_waits_for_the_title_update(base / "display");
+    live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");
     live_update_runtime_from_maintenance(base / "update-runtime");
     live_program_change_applies_like_other_settings(base);
     live_imported_game_steam_app_id(base);
@@ -1067,6 +1239,7 @@ int main() {
     failed_signout_preserves_account_until_external_clear(base);
     account_commands_dispatch_refresh_and_switch_barriers(base);
     live_self_update(base);
+    live_kit_install(base / "kit");
 
     std::filesystem::remove_all(base, error);
     std::cout << "homebrew_live_model_test passed\n";

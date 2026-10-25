@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <utility>
@@ -44,6 +45,22 @@ std::string Quote(const std::string& text) {
   return out + "\"";
 }
 
+// The version of the kit in kit_root, from its runtime's artifact name; none for a kit that names none
+// (kits before 0.10) or a manifest that can't be read.
+std::optional<KitVersion> InstalledKitVersion(const std::string& kit_root) {
+  std::string text;
+  if (!ReadSmallFile(kit_root + "/manifest.json", &text, 8 << 20)) return std::nullopt;
+  steam::json::Limits limits;
+  limits.max_bytes = 8 << 20;
+  limits.max_values = 1 << 18;
+  limits.max_string_bytes = 1 << 20;
+  const auto manifest = steam::json::Parse(text, limits);
+  const auto* runtime = manifest && manifest->is_object() ? manifest->Find("runtime") : nullptr;
+  const auto* artifact = runtime && runtime->is_object() ? runtime->Find("artifact_revision") : nullptr;
+  if (!artifact || !artifact->is_string()) return std::nullopt;
+  return KitVersionFromArtifact(artifact->text());
+}
+
 std::string Gigabytes(std::uint64_t bytes) {
   char text[32];
   std::snprintf(text, sizeof text, "%.1f GB", static_cast<double>(bytes) / 1e9);
@@ -79,7 +96,22 @@ const char* UpdatePhaseName(UpdatePhase phase) {
   return "?";
 }
 
-UpdateService::UpdateService(UpdateConfig config) : config_(std::move(config)), shared_(std::make_shared<Shared>()) {
+const char* KitInstallPhaseName(KitInstallPhase phase) {
+  switch (phase) {
+    case KitInstallPhase::kIdle: return "idle";
+    case KitInstallPhase::kChecking: return "checking";
+    case KitInstallPhase::kNotNeeded: return "not-needed";
+    case KitInstallPhase::kUnavailable: return "unavailable";
+    case KitInstallPhase::kAvailable: return "available";
+    case KitInstallPhase::kDownloading: return "downloading";
+    case KitInstallPhase::kUnpacking: return "unpacking";
+    case KitInstallPhase::kInstalled: return "installed";
+    case KitInstallPhase::kFailed: return "failed";
+  }
+  return "?";
+}
+
+UpdateService::UpdateService(UpdateConfig config) : config_(std::move(config)), include_betas_(config_.include_betas), shared_(std::make_shared<Shared>()) {
   if (!config_.as_root) config_.as_root = [](const std::function<bool()>& work) { return work(); };
   if (!config_.now) config_.now = [] { return static_cast<std::int64_t>(time(nullptr)); };
   shared_->snapshot.current = config_.current;
@@ -169,16 +201,39 @@ bool UpdateService::PrepareWorkRoot() {
   return ok;
 }
 
-// A kit left by going back: its files are the app user's, removed by CleanUpLeftovers, but its folder
-// sits in the root-owned kits folder. The empty folder goes as root here, at startup, before the
-// runtime and the UI run (root is process-wide).
-void UpdateService::RemoveEmptyReplacedKits() {
+// A kit left by going back, or replaced by the kit-only install (perhaps uploaded over FTP, so
+// root's files): it goes as root here, at startup, before the runtime and the UI run (root is
+// process-wide). Once, after a kit was replaced; a large kit takes a few seconds.
+void UpdateService::RemoveReplacedKits() {
   for (const auto& name : ListFolder(config_.kits_root)) {
     if (name.compare(0, 10, ".replaced-") != 0) continue;
     const std::string path = config_.kits_root + "/" + name;
-    if (!IsFolder(path) || !ListFolder(path).empty()) continue;
-    if (rmdir(path.c_str()) != 0) config_.as_root([&] { return rmdir(path.c_str()) == 0; });
+    if (!IsFolder(path)) continue;
+    if (ListFolder(path).empty() && rmdir(path.c_str()) == 0) continue;
+    config_.as_root([&] {
+      RemoveTree(path);
+      return !Exists(path);
+    });
     if (Exists(path)) Log("could not remove " + path);
+  }
+}
+
+// The kit under an id it had before, which the Playden that used that id left when it updated to this
+// one (the new kit went in next to it). Once the kit is installed under its own id, the old folder
+// becomes the kit this version's update replaced, ".previous-<old id>-<time>" with the newest
+// backup's time: going back puts it back, and the next update removes it. As root, at startup,
+// before the runtime and the UI run (root is process-wide).
+void UpdateService::RetireRenamedKits() {
+  if (config_.kit_id.empty() || !Exists(config_.kits_root + "/" + config_.kit_id + "/manifest.json")) return;
+  for (const auto& id : config_.renamed_kit_ids) {
+    const std::string old_kit = config_.kits_root + "/" + id;
+    if (id.empty() || id == config_.kit_id || !IsFolder(old_kit)) continue;
+    const auto backup = LatestBackup();
+    const std::string stamp = backup ? backup->path.substr(backup->path.rfind('-') + 1) : std::to_string(config_.now());
+    std::string previous = config_.kits_root + "/.previous-" + id + "-" + stamp;
+    if (Exists(previous)) previous = config_.kits_root + "/.previous-" + id + "-" + std::to_string(config_.now());
+    const bool moved = config_.as_root([&] { return !Exists(previous) && rename(old_kit.c_str(), previous.c_str()) == 0; });
+    Log(moved ? "kit folder " + id + " retired as " + previous : "kit folder " + id + " could not be retired");
   }
 }
 
@@ -333,7 +388,11 @@ DownloadOptions UpdateService::Downloads(const std::string& part) {
   options.cancel = &shared_->cancel;
   options.wait_before_retry = config_.wait_before_retry;
   options.log = [this](const std::string& line) { Log(line); };
-  if (!part.empty())
+  if (part == "kit-only")
+    options.progress = [this](std::uint64_t done, std::uint64_t total) {
+      Set([&](UpdateSnapshot& s) { s.kit.done = done; s.kit.total = total; });
+    };
+  else if (!part.empty())
     options.progress = [this, part](std::uint64_t done, std::uint64_t total) {
       Set([&](UpdateSnapshot& s) { s.part = part; s.done = done; s.total = total; });
     };
@@ -354,7 +413,8 @@ std::string UpdateService::ReadyKit(const KitPart& kit) const {
 void UpdateService::Start() {
   FindPrevious();
   LoadCurrentNotes();
-  RemoveEmptyReplacedKits();
+  RemoveReplacedKits();
+  RetireRenamedKits();
   std::string text;
   if (!ReadSmallFile(StatePath(), &text)) {
     CleanUpLeftovers();  // what a start closed before its cleanup finished left behind
@@ -479,6 +539,8 @@ void UpdateService::ConfirmApplied(const std::string& text) {
   FindPrevious();
 }
 
+bool UpdateService::SetIncludeBetas(bool enabled) { return include_betas_.exchange(enabled) != enabled; }
+
 void UpdateService::Check(bool user_asked) {
   {
     std::lock_guard<std::mutex> lock(shared_->mutex);
@@ -491,6 +553,11 @@ void UpdateService::Check(bool user_asked) {
 
 void UpdateService::Install() {
   Run([this] {
+    // A track change can arrive while a download is being cancelled or a check is queued.
+    if (release_ && (release_->prerelease || release_->version.beta) && !include_betas_.load()) {
+      DoCheck(false);
+      return;
+    }
     if (!release_ || !manifest_) DoCheck(false);
     if (Snapshot().phase != UpdatePhase::kAvailable) return;
     DoInstall();
@@ -514,16 +581,28 @@ void UpdateService::DoCheck(bool user_asked) {
     return std::nullopt;
   };
   if (local) Log("reading the release from " + config_.local_release_dir);
-  const auto body = local ? read_local("release.json")
-                          : FetchSmall(config_.latest_release_url, 2 << 20, options, "application/vnd.github+json", &error);
-  if (!body) return Fail("Playden could not reach GitHub to look for updates.", error);
-  const auto release = ParseRelease(*body, &error);
-  if (!release) return Fail("The latest release on GitHub could not be read.", error);
-  if (release->draft || release->prerelease || !(config_.current < release->version)) {
-    Log("up to date: running " + config_.current.ToString() + ", latest " + release->tag);
+  const bool include_betas = include_betas_.load();
+  std::optional<Release> release;
+  if (include_betas) {
+    const auto releases = FetchReleases(&error);
+    if (!releases) return Fail("Playden could not read the releases on GitHub.", error);
+    for (const auto& candidate : *releases)
+      if (!candidate.draft && (!release || release->version < candidate.version)) release = candidate;
+  } else {
+    const auto body = local ? read_local("release.json")
+                            : FetchSmall(config_.latest_release_url, 2 << 20, options, "application/vnd.github+json", &error);
+    if (!body) return Fail("Playden could not reach GitHub to look for updates.", error);
+    release = ParseRelease(*body, &error);
+    if (!release) return Fail("The latest release on GitHub could not be read.", error);
+    if (release->draft || release->prerelease || release->version.beta) release.reset();
+  }
+  if (!release || !(config_.current < release->version)) {
+    Log("up to date: running " + config_.current.ToString());
+    release_.reset();
+    manifest_.reset();
     Set([&](UpdateSnapshot& s) {
       s.phase = UpdatePhase::kUpToDate;
-      s.available = release->version;
+      s.available = release ? release->version : config_.current;
     });
     return;
   }
@@ -584,7 +663,7 @@ void UpdateService::DoInstall() {
                   "free space");
   }
   if (kit_needed) {
-    if (!StageKit(release, manifest)) return;
+    if (!StageKit(*kit, manifest.kit, false)) return;
     kit_folder = ReadyKit(manifest.kit);
   }
   if (!StageApp(release, manifest)) return;
@@ -600,70 +679,92 @@ void UpdateService::DoInstall() {
   });
 }
 
-bool UpdateService::StageKit(const Release& release, const UpdateManifest& manifest) {
-  const auto* asset = release.Find(manifest.kit.asset);
-  const std::string local_zip = config_.local_release_dir + "/" + asset->name;
+bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool kit_only) {
+  const std::string local_zip = config_.local_release_dir + "/" + asset.name;
   const bool local = !config_.local_release_dir.empty() && Exists(local_zip);
-  const std::string zip = local ? local_zip : config_.work_root + "/downloads/" + asset->name;
-  Set([&](UpdateSnapshot& s) {
-    s.phase = UpdatePhase::kDownloading;
-    s.part = "kit";
-    s.done = 0;
-    s.total = asset->size;
-  });
+  const std::string zip = local ? local_zip : config_.work_root + "/downloads/" + asset.name;
+  // The update reports in the snapshot's own fields, the kit-only install in snapshot.kit.
+  const auto step = [&](bool unpacking, std::uint64_t total) {
+    Set([&](UpdateSnapshot& s) {
+      if (kit_only) {
+        s.kit.phase = unpacking ? KitInstallPhase::kUnpacking : KitInstallPhase::kDownloading;
+        s.kit.done = 0;
+        s.kit.total = total;
+        return;
+      }
+      s.phase = unpacking ? UpdatePhase::kUnpacking : UpdatePhase::kDownloading;
+      s.part = "kit";
+      s.done = 0;
+      s.total = total;
+    });
+  };
+  const auto cancelled = [&] {
+    Set([&](UpdateSnapshot& s) {
+      if (kit_only) s.kit.phase = KitInstallPhase::kAvailable;
+      else { s.phase = UpdatePhase::kAvailable; s.part.clear(); }
+    });
+  };
+  const auto fail = [&](const std::string& message, const std::string& detail) {
+    if (kit_only) FailKit(message, detail);
+    else Fail(message, detail);
+  };
+  step(false, asset.size);
   const auto download = local ? DownloadResult{true, false, {}}
-                              : DownloadAsset(asset->url, asset->size, asset->sha256, zip, Downloads("kit"));
+                              : DownloadAsset(asset.url, asset.size, asset.sha256, zip, Downloads(kit_only ? "kit-only" : "kit"));
   if (!download.ok) {
     if (download.cancelled) {
-      Set([](UpdateSnapshot& s) { s.phase = UpdatePhase::kAvailable; s.part.clear(); });
+      cancelled();
       return false;
     }
-    Fail("The kit download failed.", download.error);
+    fail("The kit download failed.", download.error);
     return false;
   }
-  Set([&](UpdateSnapshot& s) {
-    s.phase = UpdatePhase::kUnpacking;
-    s.part = "kit";
-    s.done = 0;
-    s.total = 0;
-  });
-  const std::string staging = config_.kits_root + "/.staging-" + manifest.kit.kit_id + "-" + manifest.kit.revision;
+  step(true, 0);
+  const std::string staging = config_.kits_root + "/.staging-" + kit.kit_id + "-" + kit.revision;
   RemoveOwnedTree(staging);
-  config_.as_root([&] { return MakeFolders(staging) && chmod(staging.c_str(), 0777) == 0; });
+  config_.as_root([&] {
+    // A first start has no kits folder: made like the kit upload tool makes it.
+    if (!IsFolder(config_.kits_root) && (!MakeFolders(config_.kits_root) || chmod(config_.kits_root.c_str(), 0755) != 0))
+      return false;
+    return MakeFolders(staging) && chmod(staging.c_str(), 0777) == 0;
+  });
   if (!IsFolder(staging) || access(staging.c_str(), W_OK) != 0) {
-    Fail("Playden could not create the kit folder.", staging);
+    fail("Playden could not create the kit folder.", staging);
     return false;
   }
   ZipExtractOptions unzip;
-  unzip.inner_prefix = manifest.kit.prefix;
+  unzip.inner_prefix = kit.prefix;
   unzip.cancel = &shared_->cancel;
   unzip.fix_mode = [this](const std::string& path, unsigned mode) {
     return config_.as_root([&] { return chmod(path.c_str(), mode) == 0; });
   };
   unzip.log = [this](const std::string& line) { Log(line); };
-  unzip.progress = [this](std::uint64_t done, std::uint64_t total) {
-    Set([&](UpdateSnapshot& s) { s.done = done; s.total = total; });
+  unzip.progress = [this, kit_only](std::uint64_t done, std::uint64_t total) {
+    Set([&](UpdateSnapshot& s) {
+      if (kit_only) { s.kit.done = done; s.kit.total = total; }
+      else { s.done = done; s.total = total; }
+    });
   };
   const auto unpacked = ExtractZip(zip, staging, unzip);
   if (!unpacked.ok) {
     RemoveOwnedTree(staging);
     if (unpacked.cancelled) {
-      Set([](UpdateSnapshot& s) { s.phase = UpdatePhase::kAvailable; s.part.clear(); });
+      cancelled();
       return false;
     }
-    Fail("The kit could not be unpacked.", unpacked.error);
+    fail("The kit could not be unpacked.", unpacked.error);
     return false;
   }
   Log("kit unpacked: " + std::to_string(unpacked.files) + " files, " + std::to_string(unpacked.rewritten) +
       " written again, " + std::to_string(unpacked.mode_fixed) + " root-owned given their mode");
   const auto sha = config_.verify_kit ? config_.verify_kit(staging) : std::nullopt;
-  if (!sha || *sha != manifest.kit.manifest_sha256) {
+  if (!sha || *sha != kit.manifest_sha256) {
     RemoveOwnedTree(staging);
-    Fail("The new kit did not pass its check.", sha ? "manifest " + *sha : "not a complete kit");
+    fail("The new kit did not pass its check.", sha ? "manifest " + *sha : "not a complete kit");
     return false;
   }
   // Ready next to the installed kit; it replaces it when Playden quits for the update.
-  const std::string final_folder = config_.kits_root + "/.next-" + manifest.kit.kit_id + "-" + manifest.kit.revision;
+  const std::string final_folder = config_.kits_root + "/.next-" + kit.kit_id + "-" + kit.revision;
   const std::string replaced = final_folder + ".old";
   const bool moved = config_.as_root([&] {
     if (Exists(final_folder) && rename(final_folder.c_str(), replaced.c_str()) != 0) return false;
@@ -672,11 +773,176 @@ bool UpdateService::StageKit(const Release& release, const UpdateManifest& manif
   RemoveOwnedTree(replaced);
   if (!moved) {
     RemoveOwnedTree(staging);
-    Fail("Playden could not put the new kit in place.", final_folder);
+    fail("Playden could not put the new kit in place.", final_folder);
     return false;
   }
   if (!local) unlink(zip.c_str());
   return true;
+}
+
+void UpdateService::FailKit(const std::string& message, const std::string& detail) {
+  Log("kit install failed: " + message + (detail.empty() ? "" : " (" + detail + ")"));
+  Set([&](UpdateSnapshot& s) {
+    s.kit.phase = KitInstallPhase::kFailed;
+    s.kit.error = message;
+  });
+}
+
+// Every release, newest first: GET .../releases next to the configured .../releases/latest. Console
+// testing reads release.json from local_release_dir as the only one.
+std::optional<std::vector<Release>> UpdateService::FetchReleases(std::string* error) {
+  if (!config_.local_release_dir.empty() && Exists(config_.local_release_dir + "/release.json")) {
+    std::string text;
+    if (!ReadSmallFile(config_.local_release_dir + "/release.json", &text, 2 << 20)) {
+      *error = "cannot read release.json";
+      return std::nullopt;
+    }
+    auto release = ParseRelease(text, error);
+    if (!release) return std::nullopt;
+    return std::vector<Release>{std::move(*release)};
+  }
+  std::string url = config_.latest_release_url;
+  if (url.size() > 7 && url.compare(url.size() - 7, 7, "/latest") == 0) url.erase(url.size() - 7);
+  auto options = Downloads("");
+  options.max_attempts = 2;
+  const auto body = FetchSmall(url + "?per_page=100", 4 << 20, options, "application/vnd.github+json", error);
+  if (!body) return std::nullopt;
+  return ParseReleases(*body, error);
+}
+
+void UpdateService::CheckKit() {
+  if (config_.kit_id.empty() || config_.kit_manifest_sha256.empty()) return;
+  Run([this] { DoCheckKit(); });
+}
+
+void UpdateService::InstallKit() {
+  Run([this] {
+    if (!kit_asset_ || !kit_part_) DoCheckKit();
+    if (Snapshot().kit.phase != KitInstallPhase::kAvailable) return;
+    DoInstallKit();
+  });
+}
+
+void UpdateService::DoCheckKit() {
+  const auto phase = Snapshot().phase;
+  // A staged update brings its own kit when Playden restarts; one downloading may too.
+  if (phase == UpdatePhase::kStaged || phase == UpdatePhase::kDownloading || phase == UpdatePhase::kUnpacking) return;
+  const std::string installed = config_.kits_root + "/" + config_.kit_id;
+  const auto installed_sha = config_.verify_kit ? config_.verify_kit(installed) : std::nullopt;
+  if (installed_sha && *installed_sha == config_.kit_manifest_sha256) {
+    Set([](UpdateSnapshot& s) { s.kit = {}; s.kit.phase = KitInstallPhase::kNotNeeded; });
+    return;
+  }
+  Log("kit check: " + (installed_sha ? "the installed kit is another one (" + *installed_sha + ")"
+                                     : std::string("no complete kit is installed")));
+  Set([](UpdateSnapshot& s) {
+    s.kit = {};
+    s.kit.phase = KitInstallPhase::kChecking;
+  });
+  const auto unavailable = [&](const std::string& why) {
+    Log("kit check: " + why);
+    Set([](UpdateSnapshot& s) { s.kit.phase = KitInstallPhase::kUnavailable; });
+  };
+  std::string error;
+  const auto releases = FetchReleases(&error);
+  if (!releases) return FailKit("Playden could not reach GitHub to download its runtime kit.", error);
+  const Release* own = nullptr;
+  for (const auto& release : *releases)
+    if (!release.draft && release.version == config_.current) own = &release;
+  if (!own) return unavailable("no release has version " + config_.current.ToString());
+  const auto* manifest_asset = own->Find(kUpdateManifestAsset);
+  if (!manifest_asset) return unavailable("release " + own->tag + " has no update information");
+  auto options = Downloads("");
+  options.max_attempts = 2;
+  const bool local = !config_.local_release_dir.empty() && Exists(config_.local_release_dir + "/" + kUpdateManifestAsset);
+  std::optional<std::string> manifest_text;
+  if (!local) {
+    manifest_text = FetchSmall(manifest_asset->url, 256 << 10, options, "application/octet-stream", &error);
+  } else if (std::string text; ReadSmallFile(config_.local_release_dir + "/" + kUpdateManifestAsset, &text, 256 << 10)) {
+    manifest_text = std::move(text);
+  } else {
+    error = std::string("cannot read ") + kUpdateManifestAsset;
+  }
+  if (!manifest_text) return FailKit("Playden could not read the kit information.", error);
+  const auto manifest = ParseUpdateManifest(*manifest_text, &error);
+  if (!manifest) return FailKit("The kit information of " + own->tag + " is not valid.", error);
+  if (manifest->kit.kit_id != config_.kit_id || manifest->kit.manifest_sha256 != config_.kit_manifest_sha256)
+    return unavailable("release " + own->tag + " names kit " + manifest->kit.kit_id + " " + manifest->kit.manifest_sha256);
+  // Only a missing or older kit is replaced: one as new or newer (a development kit, or the same version
+  // built here) stays. A kit whose version can't be read is older than 0.10, or unreadable.
+  if (installed_sha) {
+    const auto installed_version = InstalledKitVersion(installed);
+    const auto offered_version = ParseKitVersion(manifest->kit.revision);
+    if (installed_version && offered_version && !(*installed_version < *offered_version)) {
+      Log("kit check: the installed kit is not older than " + manifest->kit.revision + ", kept");
+      Set([](UpdateSnapshot& s) { s.kit = {}; s.kit.phase = KitInstallPhase::kNotNeeded; });
+      return;
+    }
+  }
+  // A release whose kit did not change may leave the kit zip out: an older release has the same zip.
+  const Release* source = own;
+  const ReleaseAsset* zip = own->Find(manifest->kit.asset);
+  for (const auto& release : *releases) {
+    if (zip) break;
+    if (release.draft || config_.current < release.version) continue;
+    if ((zip = release.Find(manifest->kit.asset))) source = &release;
+  }
+  if (!zip) return unavailable("no release has " + manifest->kit.asset);
+  if (zip->sha256.empty()) return FailKit("The kit on GitHub has no checksum. Install it by hand.", source->tag);
+  const bool staged = !ReadyKit(manifest->kit).empty();
+  kit_asset_ = *zip;
+  kit_part_ = manifest->kit;
+  Log("kit " + manifest->kit.asset + " available from " + source->tag + ": " +
+      (staged ? std::string("already on the console") : std::to_string(zip->size) + " bytes"));
+  Set([&](UpdateSnapshot& s) {
+    s.kit.phase = KitInstallPhase::kAvailable;
+    s.kit.replaces = installed_sha.has_value();
+    s.kit.version = source->version.ToString();
+    s.kit.download_bytes = staged ? 0 : zip->size;
+  });
+}
+
+void UpdateService::DoInstallKit() {
+  const auto phase = Snapshot().phase;
+  // A staged update's kit may be the same one: taking it would leave the update without its kit.
+  if (phase == UpdatePhase::kStaged || phase == UpdatePhase::kDownloading || phase == UpdatePhase::kUnpacking) {
+    Log("kit install skipped: an update brings the kit");
+    return;
+  }
+  const auto& kit = *kit_part_;
+  const std::string installed = config_.kits_root + "/" + kit.kit_id;
+  std::string folder = ReadyKit(kit);
+  if (folder.empty()) {
+    if (!PrepareWorkRoot() || !MakeFolders(config_.work_root + "/downloads"))
+      return FailKit("Playden could not create its download folder.", config_.work_root);
+    const std::uint64_t needed = kit_asset_->size * 4;  // zip, unpacked files and some room to spare
+    if (config_.free_bytes) {
+      const auto free = config_.free_bytes(config_.work_root);
+      if (free && *free < needed)
+        return FailKit("The kit needs " + Gigabytes(needed) + " of free space; " + Gigabytes(*free) + " is free.",
+                       "free space");
+    }
+    if (!StageKit(*kit_asset_, kit, true)) return;
+    folder = ReadyKit(kit);
+    if (folder.empty()) return FailKit("The new kit did not pass its check.", "not ready after unpacking");
+  }
+  if (folder != installed) {
+    // No game can use the kit in place (none was admitted), so it is swapped now; the one it
+    // replaces is a ".replaced-" leftover, removed at a later start.
+    const std::string aside = config_.kits_root + "/.replaced-" + kit.kit_id + "-" + std::to_string(config_.now());
+    const bool moved = config_.as_root([&] {
+      if (Exists(installed) && rename(installed.c_str(), aside.c_str()) != 0) return false;
+      if (rename(folder.c_str(), installed.c_str()) == 0) return true;
+      if (Exists(aside)) rename(aside.c_str(), installed.c_str());
+      return false;
+    });
+    if (!moved) return FailKit("Playden could not put the kit in place.", installed);
+  }
+  Log("kit " + kit.kit_id + " " + kit.revision + " installed");
+  Set([](UpdateSnapshot& s) {
+    s.kit.phase = KitInstallPhase::kInstalled;
+    s.kit.done = s.kit.total;
+  });
 }
 
 bool UpdateService::StageApp(const Release& release, const UpdateManifest& manifest) {
@@ -740,8 +1006,15 @@ bool UpdateService::StageApp(const Release& release, const UpdateManifest& manif
   const auto* title = param && param->is_object() ? param->Find("titleId") : nullptr;
   const auto* content = param && param->is_object() ? param->Find("contentVersion") : nullptr;
   const auto content_version = content && content->is_string() ? ParseVersion(content->text()) : std::nullopt;
+  std::string full_text;
+  const bool has_full = ReadSmallFile(stage + "/playden-version", &full_text, 64);
+  if (!full_text.empty() && full_text.back() == '\n') full_text.pop_back();
+  const auto full_version = has_full ? ParseVersion(full_text)
+                                    : (Exists(stage + "/playden-version") ? std::nullopt : content_version);
+  const Version numeric{release.version.major, release.version.minor, release.version.patch};
   if (!title || !title->is_string() || title->text() != config_.title_id || !content_version ||
-      *content_version != release.version || !Exists(stage + "/eboot.bin")) {
+      *content_version != numeric || !full_version || *full_version != release.version ||
+      !Exists(stage + "/eboot.bin")) {
     RemoveOwnedTree(stage);
     Fail("The downloaded Playden is not version " + release.version.ToString() + ".", "param.json");
     return false;
@@ -770,8 +1043,15 @@ bool UpdateService::RollBackAtQuit() {
     if (name.compare(0, 10, ".previous-") != 0 || name.size() <= 10 + suffix.size() ||
         name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
       continue;
-    kit_id = name.substr(10, name.size() - 10 - suffix.size());
+    // A kit retired under an earlier id is the one the backed-up app used: an update from that app may also have
+    // replaced a kit under this version's id at the same time, which the older app never reads.
+    const std::string id = name.substr(10, name.size() - 10 - suffix.size());
+    const bool renamed = std::find(config_.renamed_kit_ids.begin(), config_.renamed_kit_ids.end(), id) !=
+                         config_.renamed_kit_ids.end();
+    if (!previous_kit.empty() && !renamed) continue;
+    kit_id = id;
     previous_kit = config_.kits_root + "/" + name;
+    if (renamed) break;
   }
   const std::string installed_kit = kit_id.empty() ? std::string() : config_.kits_root + "/" + kit_id;
   const std::string replaced_kit = config_.kits_root + "/.replaced-" + kit_id + "-" + stamp;
@@ -789,13 +1069,19 @@ bool UpdateService::RollBackAtQuit() {
   SwapResult swap;
   bool kit_swapped = false;
   config_.as_root([&] {
-    if (!previous_kit.empty() && Exists(installed_kit)) {
-      if (rename(installed_kit.c_str(), replaced_kit.c_str()) != 0) {
-        swap.error = "cannot move the current kit aside";
-        return false;
+    // A previous kit under an id this version's kit no longer has (RetireRenamedKits) goes back to
+    // its own folder; this version's kit stays where it is, unused by the older Playden.
+    bool moved_aside = false;
+    if (!previous_kit.empty()) {
+      if (Exists(installed_kit)) {
+        if (rename(installed_kit.c_str(), replaced_kit.c_str()) != 0) {
+          swap.error = "cannot move the current kit aside";
+          return false;
+        }
+        moved_aside = true;
       }
       if (rename(previous_kit.c_str(), installed_kit.c_str()) != 0) {
-        rename(replaced_kit.c_str(), installed_kit.c_str());
+        if (moved_aside) rename(replaced_kit.c_str(), installed_kit.c_str());
         swap.error = "cannot put the previous kit back";
         return false;
       }
@@ -806,7 +1092,7 @@ bool UpdateService::RollBackAtQuit() {
     if (!swap.ok) {
       if (kit_swapped) {
         rename(installed_kit.c_str(), previous_kit.c_str());
-        rename(replaced_kit.c_str(), installed_kit.c_str());
+        if (moved_aside) rename(replaced_kit.c_str(), installed_kit.c_str());
         kit_swapped = false;
       }
       return false;

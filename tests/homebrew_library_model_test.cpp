@@ -872,6 +872,7 @@ void live_filters_only_use_available_facts() {
     for(const auto& unavailable:{"sort-recent-added","sort-install-size","filter-installed","filter-genre-adventure","filter-controller-full"})
         check(std::find(actions.begin(),actions.end(),unavailable)==actions.end(),"unknown facts are not filter choices");
     check(std::find(actions.begin(),actions.end(),"filter-compat-playable")!=actions.end(),"personal compatibility remains filterable");
+    check(std::find(actions.begin(),actions.end(),"filter-hide-demos")==actions.end(),"a library without demos has no Demos row");
 
     // A CM acquisition date makes "Recently added" a real fact, sorted newest first.
     auto dated=make_live();
@@ -888,6 +889,38 @@ void live_filters_only_use_available_facts() {
     const auto ordered=dated.visible_games();
     check(ordered.size()==3 && ordered[0]->id==SteamId(43) && ordered[1]->id==SteamId(42) && ordered[2]->id==SteamId(44),
           "newest acquisition first, undated last");
+}
+
+// Demos show by default. Sort and filters › Demos hides them, the organization keeps that, and the
+// row stays while demos are hidden so they can be shown again.
+void live_demos_filter_defaults_on() {
+    auto model=make_live();
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    auto demo=game(SteamId(43),"Synthetic Demo");demo.demo=true;
+    check(model.UpdateLibrary({{game(SteamId(42),"Synthetic"),demo},false,{},false,false,{}}),"library with a demo loaded");
+    check(model.state().games.back().demo && !model.state().games.front().demo,"demo mark projected");
+    check(model.action("r1") && model.visible_games().size()==2,"demos show by default");
+    check(model.action("triangle"),"live filter modal opens");
+    const auto* row=find_row(model,"filter-hide-demos");
+    check(row!=nullptr && row->title=="Demos" && row->kind==RowKind::Toggle && row->selected && row->value=="On","Demos is a toggle, on");
+    activate(model,"filter-hide-demos");
+    check(model.visible_games().size()==1 && model.visible_games().front()->id==SteamId(42),"turning Demos off hides the demo");
+    check(model.ExportOrganization().filters==std::set<std::string>{"hide-demos"},"hidden demos are saved");
+    check(model.action("triangle"),"filter modal opens again");
+    row=find_row(model,"filter-hide-demos");
+    check(row!=nullptr && !row->selected && row->value=="Off","Demos shows off");
+    activate(model,"filter-hide-demos");
+    check(model.visible_games().size()==2 && model.ExportOrganization().filters.empty(),"turning Demos on shows it again");
+
+    // Hidden demos the library no longer has can still be shown again.
+    auto restored=make_live();
+    restored.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    check(restored.UpdateLibrary({{game(SteamId(42),"Synthetic")},false,{},false,false,{}}),"library without demos loaded");
+    auto organization=restored.ExportOrganization();organization.filters={"hide-demos"};
+    check(restored.ApplyOrganization(1,restored.BeginOrganizationLoad(1),organization),"saved organization applies");
+    check(restored.action("r1") && restored.action("triangle"),"filter modal opens");
+    row=find_row(restored,"filter-hide-demos");
+    check(row!=nullptr && !row->selected,"Demos stays listed while demos are hidden");
 }
 
 // Sort and filters offers Refresh library: it asks the controller for Steam's current list and the
@@ -1171,8 +1204,8 @@ void live_storage_section_and_installed_games() {
     std::vector<std::string> sections;
     for (const auto& row : model.view().rows)
         if (sections.empty() || sections.back() != row.section) sections.push_back(row.section);
-    check(sections == std::vector<std::string>{"Account", "Library", "Storage", "Display", "About", "Quit Playden"},
-          "the rail order is Account, Library, Storage, Display, About, Quit");
+    check(sections == std::vector<std::string>{"Account", "Library", "Storage", "Display", "Updates", "About", "Quit Playden"},
+          "the rail order is Account, Library, Storage, Display, Updates, About, Quit");
     const auto* empty = find_row(model, "settings-installed");
     check(empty && !empty->enabled && empty->value == "None", "nothing installed says None");
     check(find_row(model, "settings-kept")->value == "None" && !has_row(model, "settings-runtime-cleanup"),
@@ -1803,7 +1836,7 @@ void live_play_does_the_next_useful_thing() {
         {"Failed", "Finish setup", "", "Setup failed.", "Failed", "problem", "runtime-prepare"},
         {"Registration pending", "Check again", "", "The PS5 hasn't confirmed Synthetic yet.", "Not confirmed", "attention", "runtime-prepare"},
         {"Removal incomplete", "Finish removing", "", "Removing Synthetic from the PS5 Home screen stopped partway.", "Removing", "attention", "runtime-remove-retry"},
-        {"No kit", "Open Settings", "", "Playden needs its compatibility kit to set up games.", "No kit", "problem", ""},
+        {"No kit", "Open Settings", "", "Playden needs its runtime kit to set up games.", "No kit", "problem", ""},
     };
     for (const auto& expected : cases) {
         LiveRuntimeGame state; state.game_id = SteamId(42); state.status = expected.status;
@@ -1832,7 +1865,7 @@ void live_play_does_the_next_useful_thing() {
             check(model.state().navigation.route == Route::Settings, "missing kit opens Settings");
             check(model.TakeRuntimePlayRequests().empty() && model.TakeRuntimePrepareRequests().empty(),
                   "missing kit does not queue an impossible preparation");
-            check(model.state().navigation.focus_key == "about-kit", "missing kit opens Compatibility kit in About");
+            check(model.state().navigation.focus_key == "about-kit", "missing kit opens Runtime kit in About");
             while (!model.state().navigation.modals.empty()) check(model.action("circle"), "close kit information");
         } else {
             check(play->action == expected.action, "redesigned action preserves existing behavior");
@@ -1849,7 +1882,7 @@ void live_play_does_the_next_useful_thing() {
         for (const auto& [detail, expected] : std::vector<std::pair<std::string, std::string>>{
                  {"insufficient verified free space for package copy", status == "Failed"
                      ? "Setup failed: console storage was full." : "Setup stopped early: console storage was full."},
-                 {"kit source is missing, linked, or has wrong mode", "The compatibility kit is damaged. Reinstall it."},
+                 {"kit source is missing, linked, or has wrong mode", "The runtime kit is damaged. Reinstall it."},
                  {"unknown failure /private/technical/path", status == "Failed" ? "Setup failed." : "Setup stopped early."},
                  {"", status == "Failed" ? "Setup failed." : "Setup stopped early."}}) {
             LiveRuntimeGame state; state.game_id = SteamId(42); state.status = status; state.detail = detail; state.can_prepare = true;
@@ -1867,7 +1900,7 @@ void live_play_does_the_next_useful_thing() {
             model.UpdateRuntime(RuntimeState::Ready, {state});
             const std::string expected = code == "space-unavailable"
                 ? (status == "Failed" ? "Setup failed: console storage was full." : "Setup stopped early: console storage was full.")
-                : code.starts_with("kit-") ? "The compatibility kit is damaged. Reinstall it."
+                : code.starts_with("kit-") ? "The runtime kit is damaged. Reinstall it."
                 : status == "Failed" ? "Setup failed." : "Setup stopped early.";
             check(find_row(model, "details-hint") && find_row(model, "details-hint")->title == expected,
                   "recorded failure code determines the plain hint");
@@ -1890,6 +1923,36 @@ void live_play_does_the_next_useful_thing() {
     }
     model.UpdateInstalls({}, {});
     check(!has_row(model, "details-setup") && !has_row(model, "details-hint"), "uninstalled games have no setup facts or hints");
+}
+
+// A start from Home that failed is reported as Playden starts, before the library: the dialog still names the game.
+void live_launch_failure_before_the_library_names_the_game() {
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::RuntimeState;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    LiveRuntimeGame stopped; stopped.game_id = SteamId(42); stopped.status = "Ready"; stopped.ready = true; stopped.can_play = true;
+    stopped.play_detail = "The game could not start.";
+    model.UpdateRuntime(RuntimeState::Ready, {stopped});
+    check(model.state().navigation.modals.empty() && model.state().notices.empty(),
+          "a launch failure for a game not listed yet waits for the library");
+    check(model.UpdateLibrary({{game(SteamId(42), "BeamNG.drive")}, false, {}, false, false, {}}), "library loaded");
+    const auto& modals = model.state().navigation.modals;
+    check(modals.size() == 1 && modals.back().title == "Can't play" &&
+              modals.back().body.rfind("BeamNG.drive · The game could not start.", 0) == 0,
+          "the waiting launch failure names the game once the library arrives");
+    activate(model, "alert-ok");
+    model.UpdateLibrary({{game(SteamId(42), "BeamNG.drive")}, false, {}, false, false, {}});
+    check(model.state().navigation.modals.empty(), "the launch failure is told once");
+
+    // A library that cannot load still tells a waiting failure, without the name.
+    auto offline = make_live();
+    offline.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    offline.UpdateRuntime(RuntimeState::Ready, {stopped});
+    offline.UpdateLibrary({{}, false, "Library sync is unavailable. Try again later.", false, false, {}});
+    const auto& offline_modals = offline.state().navigation.modals;
+    check(!offline_modals.empty() && offline_modals.back().body.rfind("A game · The game could not start.", 0) == 0,
+          "a library that could not load still tells the waiting failure");
 }
 
 void live_launch_failure_remains_visible_without_a_details_status_line() {
@@ -2551,7 +2614,7 @@ void live_queue_lists_preparations_needing_attention() {
     LiveRuntimeGame refused; refused.game_id = SteamId(32); refused.status = "Not prepared"; refused.can_prepare = true;
     LiveRuntimeGame fine; fine.game_id = SteamId(33); fine.status = "Ready"; fine.ready = true;
     model.UpdateRuntime(RuntimeState::Ready, {waits, broke, refused, fine});
-    model.UpdatePreparationQueue({std::nullopt, {}, {}, {{SteamId(32), "No verified compatibility kit is installed."}}});
+    model.UpdatePreparationQueue({std::nullopt, {}, {}, {{SteamId(32), "No verified runtime kit is installed."}}});
     model.action("r1");
     model.action("r1");
     check((queue_keys(model) == std::vector<std::string>{"queue-preparation", "prep-attn-30", "prep-attn-31", "prep-attn-32"}),
@@ -2560,7 +2623,7 @@ void live_queue_lists_preparations_needing_attention() {
           "they are not counted as waiting work");
     check(queue_row(model, "prep-attn-30")->value == "Waiting for the PS5" &&
               queue_row(model, "prep-attn-31")->subtitle == "Disk full" &&
-              queue_row(model, "prep-attn-32")->subtitle == "No verified compatibility kit is installed.",
+              queue_row(model, "prep-attn-32")->subtitle == "No verified runtime kit is installed.",
           "each says why");
     activate(model, "prep-attn-31");
     check(has_row(model, "prep-retry-31"), "a failed preparation can be tried again");
@@ -2570,7 +2633,7 @@ void live_queue_lists_preparations_needing_attention() {
     check(!has_row(model, "prep-retry-30"), "a game waiting for the PS5 is not prepared again from here");
     model.action("circle");
     // Closed with one being prepared: what needs the player is never counted as queued.
-    model.UpdatePreparationQueue({SteamId(33), {}, {}, {{SteamId(32), "No verified compatibility kit is installed."}}});
+    model.UpdatePreparationQueue({SteamId(33), {}, {}, {{SteamId(32), "No verified runtime kit is installed."}}});
     check(model.action("focus:queue-preparation"), "the heading takes focus");
     activate(model, "queue-preparation");
     check(!has_row(model, "prep-attn-30") &&
@@ -3046,6 +3109,7 @@ int main() {
     non_canonical_game_keys_select_nothing();
     live_stay_signed_in_preference_loads();
     live_launch_failure_remains_visible_without_a_details_status_line();
+    live_launch_failure_before_the_library_names_the_game();
     live_download_reorder_reaches_service();
     live_play_does_the_next_useful_thing();
     live_queued_setup_names_the_game_ahead();
@@ -3071,6 +3135,7 @@ int main() {
     live_saves_upload_all();
     live_store_without_cloud_never_asks_the_cloud();
     live_filters_only_use_available_facts();
+    live_demos_filter_defaults_on();
     live_sort_sheet_refreshes_the_library();
     continue_playing_more_keeps_the_chosen_sort();
     live_empty_filter_keeps_the_signed_in_account();

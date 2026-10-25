@@ -19,7 +19,8 @@ body:
     attributes:
       label: Where it fails
       options:
-        - Copying Playden with console_title_deploy.py
+        - Copying Playden to the console (FTP or console_title_deploy.py)
+        - Downloading the runtime kit in Playden
         - Copying the kit with console_kit_upload.py
         - Playden doesn't start, or stays on the splash screen
         - Playden starts and shows an error (runtime, kit or storage)
@@ -48,7 +49,7 @@ body:
     attributes:
       label: Playden and kit versions
       description: The zips you downloaded, or Settings > About if Playden starts.
-      placeholder: playden-ps5-0.6.0.zip, playden-kit-0.12.zip
+      placeholder: playden-ps5-0.7.0.zip, playden-kit-0.13.zip
     validations:
       required: true
   - type: input

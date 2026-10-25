@@ -1682,14 +1682,27 @@ class Render::Impl
         return game.download_bytes ? "Not installed · " + short_size(*game.download_bytes) : "Not installed";
     }
 
-    void tile_badge(const gfx::Rect &rect, std::string_view text, gfx::Color dot)
+    // reserve: room kept free at the right for the demo badge.
+    void tile_badge(const gfx::Rect &rect, std::string_view text, gfx::Color dot, float reserve = 0.0F)
     {
         constexpr float size = 16.0F;
-        const float width = std::min(rect.w - 20.0F, fonts_.semibold.measure(text, size) + 44.0F);
+        const float width = std::min(rect.w - 20.0F - reserve, fonts_.semibold.measure(text, size) + 44.0F);
         scene_.rounded_rect({rect.x + 10.0F, rect.y + 10.0F, width, 32.0F}, 6.0F, kBackground.with_alpha(0.85F));
         scene_.circle(rect.x + 26.0F, rect.y + 26.0F, 4.0F, dot);
         ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, text, size, width - 44.0F), rect.x + 38.0F,
                  rect.y + 32.0F, size, kText);
+    }
+
+    // A Steam demo says so in the tile's top-right corner; returns the width it takes, gap included.
+    float demo_badge(const gfx::Rect &rect)
+    {
+        constexpr float size = 16.0F;
+        const float width = fonts_.semibold.measure("Demo", size) + 20.0F;
+        scene_.rounded_rect({rect.x + rect.w - 10.0F - width, rect.y + 10.0F, width, 32.0F}, 6.0F,
+                            kBackground.with_alpha(0.85F));
+        ui::text(scene_, fonts_.semibold, "Demo", rect.x + rect.w - 20.0F, rect.y + 32.0F, size, kAccent,
+                 gfx::Align::right);
+        return width + 8.0F;
     }
 
     void download_mark(float cx, float cy, float opacity)
@@ -1771,11 +1784,12 @@ class Render::Impl
             scene_.pop_transform();
             return;
         }
+        const float demo = game.demo ? demo_badge(rect) : 0.0F;
         if (status.job != nullptr && !downloading)
             tile_badge(rect, JobStateText(*status.job),
-                       status.job->state == JobState::Failed ? kAmber : kSecondary);
+                       status.job->state == JobState::Failed ? kAmber : kSecondary, demo);
         else if (status.disconnected)
-            tile_badge(rect, "Drive disconnected", kAmber);
+            tile_badge(rect, "Drive disconnected", kAmber, demo);
         if (show_download_mark)
             download_mark(rect.x + rect.w - 25.0F, rect.y + rect.h - 25.0F, 1.0F);
         else if (status.installed && status.installation != nullptr && status.installation->installed_bytes > 0 && amount < 1.0F && title_overlay)
@@ -3432,7 +3446,7 @@ class Render::Impl
     static std::string sheet_eyebrow(const std::string &surface)
     {
         static const std::map<std::string, std::string> names = {
-            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"},
+            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-tuning", "Game settings"},
             {"game-settings", "Playden"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"installed-games", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
             {"import-storage", "Import games"},
@@ -3478,7 +3492,8 @@ class Render::Impl
         const bool wide = view.surface.find("settings") != std::string::npos ||
                           view.surface.find("profile") != std::string::npos ||
                           view.surface == "choice-picker" || view.surface == "preset-picker" ||
-                          view.surface == "button-mapping" || view.surface == "game-maintenance" ||
+                          view.surface == "button-mapping" || view.surface == "controller-tuning" ||
+                          view.surface == "game-maintenance" ||
                           view.surface == "controller" || view.surface == "logs" ||
                           view.surface == "storage" || view.surface == "install" || view.surface == "kept-data" ||
                           view.surface == "installed-games" || view.surface == "import-games" ||
@@ -3951,6 +3966,7 @@ class Render::Impl
     {
         const bool settings_sheet = view.surface == "game-settings" || view.surface == "choice-picker" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
+                                    view.surface == "controller-tuning" ||
                                     view.surface == "game-maintenance";
         // The Import sheets: each folder's path (or why it can't be added) under its name.
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||

@@ -7,7 +7,8 @@
 namespace playden::update {
 
 std::string Version::ToString() const {
-  return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+  return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch) +
+         (beta ? "-beta." + std::to_string(beta) : "");
 }
 
 std::optional<Version> ParseVersion(std::string_view text) {
@@ -28,8 +29,17 @@ std::optional<Version> ParseVersion(std::string_view text) {
       text.remove_prefix(1);
     }
   }
-  if (!text.empty()) return std::nullopt;
-  return Version{parts[0], parts[1], parts[2]};
+  unsigned beta = 0;
+  if (!text.empty()) {
+    if (text.substr(0, 6) != "-beta.") return std::nullopt;
+    text.remove_prefix(6);
+    if (text.empty() || text.size() > 6 || text.front() == '0') return std::nullopt;
+    for (const char c : text) {
+      if (c < '0' || c > '9') return std::nullopt;
+      beta = beta * 10 + static_cast<unsigned>(c - '0');
+    }
+  }
+  return Version{parts[0], parts[1], parts[2], beta};
 }
 
 Version CurrentVersion() {

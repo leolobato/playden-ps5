@@ -100,6 +100,31 @@ runtime::NativeTitleAvailability Ps5NativeCoordinator::Availability(const std::s
   if (activity == runtime::NativeActivity::kUnknown) database.inventory = TitleAvailability::kUnknown;
   return {database.inventory, source.availability};
 }
+Ps5NativeCoordinator::AvailabilityReport Ps5NativeCoordinator::ReportAvailability(const std::string& title) {
+  AvailabilityReport report;
+  if (!IsPlaydenGameTitle(title)) return report;
+  report.database = operations_.database(title).inventory;
+  report.folder = ReadTitleSource(root_, title).availability;
+  report.shadowmount = registry_.Query(title);
+  report.activity = Activity(title);
+  return report;
+}
+std::string Ps5NativeCoordinator::AvailabilityReport::Text() const {
+  const auto text = [](TitleAvailability value) {
+    return value == TitleAvailability::kFree ? "free" : value == TitleAvailability::kOccupied ? "occupied" : "unknown";
+  };
+  const char* state = "unavailable";
+  switch (shadowmount.state) {
+    case RegistrationState::kUnavailable: break;
+    case RegistrationState::kAbsent: state = "absent"; break;
+    case RegistrationState::kPending: state = "pending"; break;
+    case RegistrationState::kReady: state = "ready"; break;
+    case RegistrationState::kCollision: state = "collision"; break;
+  }
+  return std::string("app.db=") + text(database) + " folder=" + text(folder) + " shadowmount=" + state +
+         (shadowmount.reason.empty() ? "" : "(" + shadowmount.reason + ")") + " activity=" +
+         (activity == runtime::NativeActivity::kActive ? "active" : activity == runtime::NativeActivity::kStopped ? "stopped" : "unknown");
+}
 runtime::TitleAvailability Ps5NativeCoordinator::Inventory(const std::string& title) {
   return IsPlaydenGameTitle(title) ? operations_.database(title).inventory : TitleAvailability::kUnknown;
 }

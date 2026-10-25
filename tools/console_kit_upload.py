@@ -53,9 +53,19 @@ def remote_sha256(ftp, path):
     return digest.hexdigest()
 
 
+def kit_folder(path):
+    """The kit folder: the given one, or the one kit inside it (an unzipped playden-kit-<version> folder)."""
+    if (path / "manifest.json").is_file():
+        return path
+    kits = [child for child in sorted(path.iterdir()) if (child / "manifest.json").is_file()]
+    if len(kits) != 1:
+        raise SystemExit(f"{path}: no kit found (a folder with manifest.json, or one that holds exactly one)")
+    return kits[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kit", type=Path)
+    parser.add_argument("kit", type=Path, help="the kit folder, or the unzipped playden-kit-<version> folder")
     parser.add_argument("--host", default=os.environ.get("PLAYDEN_PS5_HOST"),
                         help="the PS5's IP address (or set PLAYDEN_PS5_HOST)")
     parser.add_argument("--port", type=int, default=2120)
@@ -65,6 +75,7 @@ def main():
     args = parser.parse_args()
     if not args.host:
         parser.error("give the PS5's address with --host or PLAYDEN_PS5_HOST")
+    args.kit = kit_folder(args.kit)
     manifest = json.loads((args.kit / "manifest.json").read_text())
     kit_id = manifest["kit_id"]
     final = f"{args.remote_parent}/{kit_id}"
@@ -158,6 +169,11 @@ def main():
                 print(f"deleted older copy {name}")
     ftp.rename(staging, final)
     print(f"verified {len(files)} files and {len(directories)} directories; installed {final}")
+    # A kit installed under another id (renamed since): Playden versions that use this id retire it at
+    # their next start, as a previous kit the next update removes; versions that use the other id keep it.
+    for name, (_, is_dir, _) in sorted(parent.items()):
+        if is_dir and not name.startswith(".") and name != kit_id:
+            print(f"note: {args.remote_parent}/{name} holds a kit under another id; it is left as it is")
     ftp.quit()
     return 0
 

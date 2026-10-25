@@ -915,7 +915,7 @@ void ImportedGamePlaysInPlace() {
     open_details(model, game);
     CHECK(model.action("focus:details-more") && model.action("cross"));
     CHECK(model.action("focus:game-settings") && model.action("cross"));
-    CHECK(model.action("focus:section-more") && model.action("cross"));
+    CHECK(model.action("focus:section-compatibility") && model.action("cross"));
     // Sky's recipe leaves Graphics automatic; 120 Hz output is for DXVK and OpenGL.
     tick_until([&] { const auto* row = row_of(model, "setting-graphics"); return row && row->enabled; });
     CHECK(model.action("focus:setting-graphics") && model.action("cross"));

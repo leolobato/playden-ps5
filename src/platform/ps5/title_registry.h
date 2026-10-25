@@ -9,6 +9,8 @@ enum class RegistrationState { kUnavailable, kAbsent, kPending, kReady, kCollisi
 struct TitleRegistration {
   RegistrationState state = RegistrationState::kUnavailable;
   std::string path;
+  // Why the state is kUnavailable, for logs.
+  std::string reason;
 };
 // Synchronous worker-only boundary to the existing ShadowMountPlus local API.
 class TitleRegistry {
@@ -16,6 +18,8 @@ class TitleRegistry {
   using Transport = std::function<std::optional<std::string>(const std::string&, const std::string&)>;
   explicit TitleRegistry(Transport transport) : transport_(std::move(transport)) {}
   TitleRegistration Query(const std::string& title_id);
+  // For logs: "shadowmount=<version> api=<n>", or why ShadowMountPlus did not answer.
+  std::string DescribeVersion();
   // Caller must independently check native install/source paths and establish
   // ownership before registration. ShadowMount inventory alone cannot reserve IDs.
   TitleResult Register(const std::string& title_id);

@@ -27,7 +27,20 @@ namespace playden::runtime {
 // A recipe only supplies starting values: the program, its folder and arguments, the
 // arguments the game needs and the library overrides each have a row the player can change.
 
-enum class SettingTier { kBasic, kCompatibility, kAdvanced };
+// Where the Game settings sheet lists a setting, in sheet order. Button mapping and Controller tuning are submenus of
+// Controls; Compatibility (with its Graphics and Windows parts) and Advanced start collapsed.
+enum class SettingGroup {
+  kGame,
+  kDisplay,
+  kControls,
+  kButtonMapping,
+  kControllerTuning,
+  kSound,
+  kCompatibility,
+  kGraphics,
+  kWindows,
+  kAdvanced,
+};
 enum class ApplyMode { kNextLaunch, kGameClosed, kPreparesBottle };
 enum class SettingKind { kChoice, kText };
 enum class ValueSource { kPlayden, kRecipe, kPreset, kUser };
@@ -52,6 +65,10 @@ struct KitCapabilities {
   // that runs this kit's runtime: an older runtime refuses a profile with frame_rate (KitForTitleRuntime).
   bool display_120hz = false;
   bool display_120hz_needs_update = false;  // the kit has it, but the game's title still runs an older runtime
+  // [runtime] version = 2: the title applies the driver's defaults (wave32 pixel shaders), and keeps wave64 for a
+  // profile without the key. Counts only for a title that runs this kit's runtime, like display_120hz.
+  bool profile_version_2 = false;
+  bool profile_version_2_needs_update = false;
 };
 
 struct SettingChoice {
@@ -65,7 +82,7 @@ struct SettingDefinition {
   std::string label;
   std::string effect;       // one-line description under the name
   std::string also_called;  // technical names: profile keys, DXVK options
-  SettingTier tier = SettingTier::kBasic;
+  SettingGroup group = SettingGroup::kGame;
   int phase = 1;            // roadmap phase that ships it
   ApplyMode apply = ApplyMode::kNextLaunch;
   SettingKind kind = SettingKind::kChoice;
@@ -205,6 +222,12 @@ struct EffectiveSettings {
   bool debug_env_lines = false;
   // Direct3D 12 through vkd3d-proton: ApplyD3D12Library puts its DLLs in the bottle before the game starts.
   bool vkd3d_proton = false;
+  // Pixel shaders as the driver gets them: "wave32" or "wave64" adds a variable to the environment; empty (a kit
+  // without environment variables) leaves the driver's default.
+  std::string pixel_shader_waves;
+  // The profile's [runtime] version: 2 when the game's title applies the driver's defaults (wave32 pixel shaders, so
+  // Wave32 needs no variable); 1 (no key written) otherwise, and Wave32 adds pswave32 itself.
+  int profile_version = 1;
   // The title's runtime honors [display] refresh on every graphics path and paces [display] frame_rate itself
   // (KitCapabilities::display_120hz); without it Frame limit is DXVK's maxFrameRate, as before.
   bool display_120hz = false;
@@ -387,6 +410,14 @@ bool ApplyMediaRegistry(const std::string& runtime_dir, const std::string& prefi
 bool ApplyD3D12Library(const std::string& runtime_dir, const std::string& template_dir, const std::string& prefix_dir,
                        bool vkd3d_proton, std::string* reason);
 
+// Points the stopped bottle's Wine Mono (HKCU\Software\Wine\Mono RuntimePath) where the kit template's points: a
+// bottle copied from an earlier kit names that kit's folder, which a renamed kit (or another Mono version) no longer
+// has. Only a value that names a folder under /data/playden/kits changes; a bottle without the value (made before
+// the kit had Mono), a template without it, or a bottle not made yet is left as it is. changed tells whether
+// user.reg was written (with a user.reg.playden-backup, as ApplyBottleRegistryValues does).
+bool PointBottleAtKitMono(const std::string& template_dir, const std::string& prefix_dir, std::int64_t unix_time,
+                          bool* changed, std::string* reason);
+
 // The <InstallGuidString> of an Unreal Engine 3 (UDK) Binaries/InstallInfo.xml: exactly one,
 // a 36-character 8-4-4-4-12 hex GUID once surrounding whitespace is trimmed.
 bool ParseUe3InstallGuid(std::string_view install_info, std::string* guid);
@@ -483,6 +514,9 @@ inline constexpr const char* kKitVkd3dProton = "vkd3d-proton";
 // The runtime honors [display] refresh = 60|120 on every graphics path (Wine reports the rate it asked for) and
 // [display] frame_rate = 0|120|60|40|30, which the display paces. Runtimes without it refuse a profile with frame_rate.
 inline constexpr const char* kKitDisplay120Hz = "display-120hz";
+// The title reads [runtime] version: version 2 takes the driver's defaults (pixel shaders in wave32), a profile without
+// it (version 1) keeps wave64. Runtimes without it refuse a profile with [runtime] version.
+inline constexpr const char* kKitProfileVersion2 = "profile-version-2";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the
@@ -492,7 +526,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz is off and display_120hz_needs_update says why.
+// display_120hz and profile_version_2 are off and their _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 
 // Everything one game's settings put on disk for its next launch.

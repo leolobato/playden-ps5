@@ -29,6 +29,16 @@ class Ps5NativeCoordinator final : public runtime::NativeCoordinator {
       TitleRegistry& registry, std::filesystem::path homebrew_root = "/data/homebrew",
       NativeCoordinatorOperations operations = {});
   runtime::NativeTitleAvailability Availability(const std::string& title_id);
+  // What each source says about a title. Availability() needs every source to say free.
+  struct AvailabilityReport {
+    runtime::TitleAvailability database = runtime::TitleAvailability::kUnknown;
+    runtime::TitleAvailability folder = runtime::TitleAvailability::kUnknown;
+    TitleRegistration shadowmount;
+    runtime::NativeActivity activity = runtime::NativeActivity::kUnknown;
+    // For logs, e.g. "app.db=free folder=free shadowmount=unavailable(no-response) activity=stopped".
+    std::string Text() const;
+  };
+  AvailabilityReport ReportAvailability(const std::string& title_id);
   // The console's own inventory (app.db) only: ShadowMount's cache is left out
   // because it does not refresh while any title, Playden included, runs.
   runtime::TitleAvailability Inventory(const std::string& title_id);

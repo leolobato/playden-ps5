@@ -968,6 +968,18 @@ void BusyCdnIsRetriedAfterAWait(const std::filesystem::path& root) {
   CHECK((waits == std::vector<int>{1000, 2000, 4000}));
 }
 
+void NoContentServersSaysWhy(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  auto hooks = world.Hooks();
+  hooks.servers = [](std::uint32_t, const std::atomic<bool>&, std::vector<ContentServer>*) { return CdnError::kProtocol; };
+  hooks.last_failure = [] { return std::string("servers=3 usable=0"); };
+  DepotInstaller installer(std::move(hooks));
+  std::atomic<bool> cancel{false};
+  const auto outcome = installer.Run({}, Target(root), cancel);
+  CHECK(outcome.error == InstallError::kNetwork && outcome.detail == "no content servers servers=3 usable=0");
+  CHECK(world.chunk_calls == 0);
+}
+
 void BrokenManifestIsFetchedAgainElsewhere(const std::filesystem::path& root) {
   // A busy CDN answers 502 or sends a cut-off manifest: the next server is asked after a wait.
   auto world = MakeWorld();
@@ -1076,6 +1088,7 @@ int main() {
   DefaultSpaceQueryFailurePreventsDownload(base / "space-default-query");
   CorruptChunksFailAfterRetries(base / "corrupt");
   BusyCdnIsRetriedAfterAWait(base / "busy");
+  NoContentServersSaysWhy(base / "no-servers");
   BrokenManifestIsFetchedAgainElsewhere(base / "manifest");
   RemovesOnlyManagedFolders(base);
   std::filesystem::remove_all(base);

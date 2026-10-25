@@ -60,8 +60,11 @@ if ! fresh "$deps/ps5-opengl" "$gl_sha"; then
     tar -xzf "$downloads/ps5-opengl-sdk-$gl_version.tar.gz" -C "$deps/ps5-opengl"
     stamp "$deps/ps5-opengl" "$gl_sha"
 fi
-library="$deps/ps5-opengl/ps5-opengl-sdk-$gl_version/sdk/lib/libPS5OpenGL.a"
-[[ $(sha256 "$library") == "$(lock ps5_opengl libPS5OpenGL_sha256)" ]] || { echo "libPS5OpenGL.a hash mismatch" >&2; exit 1; }
+gl_sdk="$deps/ps5-opengl/ps5-opengl-sdk-$gl_version/sdk"
+[[ $(sha256 "$gl_sdk/lib/libPS5OpenGL.a") == "$(lock ps5_opengl libPS5OpenGL_sha256)" ]] || { echo "libPS5OpenGL.a hash mismatch" >&2; exit 1; }
+# libPS5OpenGL.a only names the real libraries; the SDK's manifest lists every file with its hash.
+[[ $(sha256 "$gl_sdk/manifest.sha256") == "$(lock ps5_opengl sdk_manifest_sha256)" ]] || { echo "ps5-opengl SDK manifest hash mismatch" >&2; exit 1; }
+(cd "$gl_sdk" && shasum -a 256 -c --quiet manifest.sha256) || { echo "ps5-opengl SDK files do not match its manifest" >&2; exit 1; }
 echo "Ready: $deps/ps5-opengl"
 
 rt_sha=$(lock compiler_rt_builtins archive_sha256)

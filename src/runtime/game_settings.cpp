@@ -37,14 +37,14 @@ using platform::ManagedDirectory;
 bool RetiredSetting(std::string_view id) { return id == "opengl_thread"; }
 
 SettingDefinition Choice(std::string id, std::string label, std::string effect, std::string also_called,
-                         SettingTier tier, std::vector<SettingChoice> choices, std::string playden_default,
+                         SettingGroup group, std::vector<SettingChoice> choices, std::string playden_default,
                          int phase = 1, ApplyMode apply = ApplyMode::kNextLaunch) {
   SettingDefinition definition;
   definition.id = std::move(id);
   definition.label = std::move(label);
   definition.effect = std::move(effect);
   definition.also_called = std::move(also_called);
-  definition.tier = tier;
+  definition.group = group;
   definition.phase = phase;
   definition.apply = apply;
   definition.choices = std::move(choices);
@@ -53,74 +53,87 @@ SettingDefinition Choice(std::string id, std::string label, std::string effect, 
 }
 
 SettingDefinition Text(std::string id, std::string label, std::string effect, std::string also_called,
-                       SettingTier tier) {
-  auto definition = Choice(std::move(id), std::move(label), std::move(effect), std::move(also_called), tier, {}, "");
+                       SettingGroup group) {
+  auto definition = Choice(std::move(id), std::move(label), std::move(effect), std::move(also_called), group, {}, "");
   definition.kind = SettingKind::kText;
   return definition;
 }
 
 std::vector<SettingDefinition> BuildCatalogue() {
-  using T = SettingTier;
+  using G = SettingGroup;
   std::vector<SettingDefinition> list;
-  // Settings (T1).
+  // Game.
   // A new program or folder applies like other settings: applying them switches the prepared
   // title's program (RuntimeHost::RepublishSettings). The picker also lists the game folder's
   // programs, which set "program".
   list.push_back(Choice("launch_option", "Program", "Which program starts when you press Play.",
-                        "Steam launch option · [application] executable", T::kBasic, {}, "", 1));
+                        "Steam launch option · [application] executable", G::kGame, {}, "", 1));
   {
     // Not a row of its own: the Program picker sets it to a program from the game folder.
     auto program = Text("program", "Program file", "A program from the game folder instead of a launch option.",
-                        "[application] executable", T::kBasic);
+                        "[application] executable", G::kGame);
     list.push_back(std::move(program));
   }
+  list.push_back(Text("extra_arguments", "Extra arguments", "Added after the arguments the game needs.",
+                      "[application] arguments", G::kGame));
+  // Display.
   list.push_back(Choice("resolution", "Resolution", "Size of the game's screen. Higher is sharper and slower.",
-                        "[display] desktop", T::kBasic,
+                        "[display] desktop", G::kDisplay,
                         {{"1280x720", "1280×720", "Smoother frame rate in heavy scenes. Softer on a 4K TV."},
                          {"1920x1080", "1920×1080", "Full HD."},
                          {"2560x1440", "2560×1440", "Sharper image. May drop below 60 fps."},
                          {"3840x2160", "3840×2160", "The TV's own size. For light games; heavy ones run slowly."}},
                         "1920x1080"));
-  list.push_back(Choice("controller", "Controller", "How the game sees your DualSense.", "[input] mode", T::kBasic,
+  list.push_back(Choice("refresh", "Refresh rate",
+                        "How often the TV shows a new frame. Some older games run too fast at 120 Hz: if so, set it "
+                        "back to 60 Hz.",
+                        "[display] refresh", G::kDisplay,
+                        {{"60", "60 Hz", "The TV refreshes 60 times a second."},
+                         {"120", "120 Hz", "Needs a TV with 120 Hz and the PS5's 120 Hz output on."}},
+                        "60"));
+  // With a display-120hz runtime the display paces the cap ([display] frame_rate); otherwise DXVK does.
+  list.push_back(Choice("frame_limit", "Frame limit", "Caps the frame rate for steadier motion and less heat.",
+                        "[display] frame_rate · dxgi.maxFrameRate · d3d9.maxFrameRate", G::kDisplay,
+                        {{"off", "Off", "No cap."}, {"120", "120", ""}, {"60", "60", ""}, {"40", "40", ""},
+                         {"30", "30", ""}},
+                        "off", 2));
+  list.push_back(Choice("vsync", "VSync", "Waits for the TV before showing a frame. Stops tearing, adds some delay.",
+                        "dxgi.syncInterval · d3d9.presentInterval", G::kDisplay,
+                        {{"game", "Game default", "The game's own setting."},
+                         {"on", "On", ""},
+                         {"off", "Off", ""}},
+                        "game", 2));
+  list.push_back(Choice("performance_overlay", "Performance overlay", "Frame rate in the corner of the screen.",
+                        "DXVK HUD · [display] show_fps", G::kDisplay,
+                        {{"off", "Off", ""}, {"on", "On", "Shows frames per second."}}, "off"));
+  list.push_back(Choice("overlay_detail", "Overlay detail", "What the performance overlay shows.", "dxvk.hud",
+                        G::kDisplay,
+                        {{"fps", "Frame rate", ""},
+                         {"frametimes", "Frame rate and frame times", "Adds a graph of how long each frame took."},
+                         {"full", "Everything", "Also memory, GPU load and the DXVK version."}},
+                        "fps", 2));
+  list.push_back(Choice("scaling", "Scaling", "How the game's screen fills the TV.", "[display] scaling",
+                        G::kDisplay,
+                        {{"fit", "Fit", "Keeps the shape; black bars if needed."},
+                         {"integer", "Integer", "Whole-number steps; sharp pixels."},
+                         {"stretch", "Stretch", "Fills the screen."}},
+                        "fit"));
+  list.push_back(Choice("window_view", "Window view", "Show only game windows, or the whole Windows desktop.",
+                        "[display] view", G::kDisplay,
+                        {{"window", "Game windows", ""}, {"desktop", "Entire desktop", ""}}, "window"));
+  // Controls.
+  list.push_back(Choice("controller", "Controller", "How the game sees your DualSense.", "[input] mode", G::kControls,
                         {{"xinput", "Xbox controller", "For games with controller support."},
                          {"keyboard", "Keyboard and mouse mapping", "Buttons send keys and mouse clicks."}},
                         "xinput"));
   list.push_back(Choice("controller_preset", "Controller preset", "Ready-made button layout for this kind of game.",
-                        "[input] preset", T::kBasic,
+                        "[input] preset", G::kControls,
                         {{"none", "None", "Only the buttons set here."},
                          {"gamepad", "Gamepad", "Xbox controller layout; no stick moves the pointer."},
                          {"mouse", "Mouse", "Left stick moves the pointer; Cross clicks, Circle right-clicks, Options Enter."},
                          {"arrows", "Arrow keys", "D-pad sends the arrows; Cross Z, Circle X, Triangle C, Options Enter."}},
                         "none"));
-  list.push_back(Choice("volume", "Volume", "How loud this game plays, without changing the console's volume.",
-                        "[audio] volume", T::kBasic,
-                        {{"100", "100%", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
-                         {"0", "Muted", ""}},
-                        "100", 4));
-  list.push_back(Choice("performance_overlay", "Performance overlay", "Frame rate in the corner of the screen.",
-                        "DXVK HUD · [display] show_fps", T::kBasic,
-                        {{"off", "Off", ""}, {"on", "On", "Shows frames per second."}}, "off"));
-  list.push_back(Choice("overlay_detail", "Overlay detail", "What the performance overlay shows.", "dxvk.hud",
-                        T::kBasic,
-                        {{"fps", "Frame rate", ""},
-                         {"frametimes", "Frame rate and frame times", "Adds a graph of how long each frame took."},
-                         {"full", "Everything", "Also memory, GPU load and the DXVK version."}},
-                        "fps", 2));
-  list.push_back(Text("extra_arguments", "Extra arguments", "Added after the arguments the game needs.",
-                      "[application] arguments", T::kBasic));
-  // With a display-120hz runtime the display paces the cap ([display] frame_rate); otherwise DXVK does.
-  list.push_back(Choice("frame_limit", "Frame limit", "Caps the frame rate for steadier motion and less heat.",
-                        "[display] frame_rate · dxgi.maxFrameRate · d3d9.maxFrameRate", T::kBasic,
-                        {{"off", "Off", "No cap."}, {"120", "120", ""}, {"60", "60", ""}, {"40", "40", ""},
-                         {"30", "30", ""}},
-                        "off", 2));
-  list.push_back(Choice("vsync", "VSync", "Waits for the TV before showing a frame. Stops tearing, adds some delay.",
-                        "dxgi.syncInterval · d3d9.presentInterval", T::kBasic,
-                        {{"game", "Game default", "The game's own setting."},
-                         {"on", "On", ""},
-                         {"off", "Off", ""}},
-                        "game", 2));
-  // More settings (T2).
+  // Controls › Button mapping.
   static const std::map<std::string, std::string> button_names = {
       {"cross", "Cross"},   {"circle", "Circle"}, {"square", "Square"},   {"triangle", "Triangle"},
       {"l1", "L1"},         {"r1", "R1"},         {"l2", "L2"},           {"r2", "R2"},
@@ -129,150 +142,158 @@ std::vector<SettingDefinition> BuildCatalogue() {
       {"touchpad", "Touchpad"}};
   for (const auto& button : ProsperoButtons()) {
     auto definition = Text("button." + button, button_names.at(button), "Key or mouse button this button sends.",
-                           "[input] " + button, T::kCompatibility);
+                           "[input] " + button, G::kButtonMapping);
     list.push_back(std::move(definition));
   }
+  // Controls › Controller tuning.
   list.push_back(Choice("pointer_stick", "Pointer stick", "Move the mouse pointer with a stick, for menus.",
-                        "[input] mouse", T::kCompatibility,
+                        "[input] mouse", G::kControllerTuning,
                         {{"none", "None", ""}, {"left_stick", "Left stick", ""}, {"right_stick", "Right stick", ""}},
                         "none"));
   list.push_back(Choice("pointer_speed", "Pointer speed", "How fast the pointer moves, in pixels per second.",
-                        "[input] mouse_speed", T::kCompatibility,
+                        "[input] mouse_speed", G::kControllerTuning,
                         {{"600", "600", ""}, {"900", "900", ""}, {"1200", "1200", ""}, {"1800", "1800", ""},
                          {"2400", "2400", ""}},
                         "1200"));
   list.push_back(Choice("stick_deadzone", "Stick dead zone",
                         "How far a stick moves before the game sees it. Raise it if the camera drifts.",
-                        "[input] stick_deadzone", T::kCompatibility,
+                        "[input] stick_deadzone", G::kControllerTuning,
                         {{"0", "Off", "The game's own dead zone only."}, {"5", "5%", ""}, {"10", "10%", ""},
                          {"15", "15%", ""}, {"20", "20%", ""}, {"30", "30%", "For a badly drifting stick."}},
                         "0", 4));
   list.push_back(Choice("rumble", "Rumble", "How strongly the controller vibrates.", "[input] rumble",
-                        T::kCompatibility,
+                        G::kControllerTuning,
                         {{"100", "Full", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
                          {"0", "Off", ""}},
                         "100", 4));
   list.push_back(Choice("invert_stick", "Invert stick", "Flip a stick's up and down for this game.",
-                        "[input] invert", T::kCompatibility,
+                        "[input] invert", G::kControllerTuning,
                         {{"none", "None", ""}, {"left_y", "Left stick up/down", ""}, {"right_y", "Right stick up/down", ""}},
                         "none", 4));
   list.push_back(Choice("trigger_deadzone", "Trigger dead zone",
                         "How far L2 and R2 travel before the game sees them. Raise it for worn triggers.",
-                        "[input] trigger_deadzone", T::kCompatibility,
+                        "[input] trigger_deadzone", G::kControllerTuning,
                         {{"0", "Off", ""}, {"5", "5%", ""}, {"10", "10%", ""}, {"20", "20%", ""}, {"30", "30%", ""}},
                         "0", 4));
   list.push_back(Choice("wheel_stick", "Mouse wheel stick", "Scroll the mouse wheel by pushing a stick up or down.",
-                        "[input] wheel", T::kCompatibility,
+                        "[input] wheel", G::kControllerTuning,
                         {{"none", "None", ""}, {"left_stick", "Left stick", ""}, {"right_stick", "Right stick", ""}},
                         "none", 4));
-  list.push_back(Choice("scaling", "Scaling", "How the game's screen fills the TV.", "[display] scaling",
-                        T::kCompatibility,
-                        {{"fit", "Fit", "Keeps the shape; black bars if needed."},
-                         {"integer", "Integer", "Whole-number steps; sharp pixels."},
-                         {"stretch", "Stretch", "Fills the screen."}},
-                        "fit"));
-  list.push_back(Choice("window_view", "Window view", "Show only game windows, or the whole Windows desktop.",
-                        "[display] view", T::kCompatibility,
-                        {{"window", "Game windows", ""}, {"desktop", "Entire desktop", ""}}, "window"));
-  list.push_back(Choice("refresh", "120 Hz output",
-                        "Sends up to 120 frames per second to a 120 Hz TV. Some older games run too fast at 120 Hz: "
-                        "if so, set it back to 60 Hz.",
-                        "[display] refresh", T::kCompatibility,
-                        {{"60", "60 Hz", "The TV refreshes 60 times a second."},
-                         {"120", "120 Hz", "Needs a TV with 120 Hz and the PS5's 120 Hz output on."}},
-                        "60"));
+  // Sound.
+  list.push_back(Choice("volume", "Volume", "How loud this game plays, without changing the console's volume.",
+                        "[audio] volume", G::kSound,
+                        {{"100", "100%", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
+                         {"0", "Muted", ""}},
+                        "100", 4));
+  // Compatibility.
+  // Shown only for a game whose program Playden refuses for a reason a run could get past.
+  list.push_back(Choice("start_check", "Known problems", "What Playden does with a problem it found in the game's program.",
+                        ".NET · shared section", G::kCompatibility,
+                        {{"stop", "Don't start", "Playden stops before a program it expects to fail."},
+                         {"try", "Try anyway", "Prepares the game anyway. It may not start."}},
+                        "stop", 1));
+  // Compatibility › Graphics.
   // "OpenGL worker thread" ([display] opengl_thread) was the PS5 OpenGL SDK's; Zink has none, so the row is gone.
   // Saved values for it are dropped when the record loads (RecordFromValue).
   list.push_back(Choice("graphics", "Graphics", "How Direct3D is drawn on the PS5 GPU.", "[application] graphics",
-                        T::kCompatibility,
+                        G::kGraphics,
                         {{"auto", "Automatic", ""}, {"gdi", "GDI", "2D only."}, {"dxvk", "DXVK", "Direct3D 9-11 on Vulkan."},
                          {"opengl", "OpenGL", ""}},
                         "auto"));
   list.push_back(Choice("d3d12", "Direct3D 12", "What draws a Direct3D 12 game.", "d3d12.dll · d3d12core.dll",
-                        T::kCompatibility,
+                        G::kGraphics,
                         {{"wine", "Wine", "Wine's own Direct3D 12."},
                          {"vkd3d-proton", "vkd3d-proton", "Direct3D 12 on Vulkan, as in Proton. Experimental."}},
                         "wine"));
-  list.push_back(Choice("steam_features", "Steam features", "How the game reaches Steam without the Steam client.",
-                        "steam_api.dll · steam_api64.dll", T::kCompatibility,
-                        {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
-                         {"game", "Game's own files", "The game's Steam library, unchanged."}},
-                        "game", 1, ApplyMode::kGameClosed));
+  // RADV runs pixel shaders in wave64 on the PS5's GPU by default; some never finish there and the console freezes
+  // (Stray). Wave32 ran the same as wave64 in every game tested, so it is the default. A saved "auto" (the earlier
+  // Automatic choice) is dropped when the record loads (RecordFromValue).
+  list.push_back(Choice("pixel_shader_waves", "Pixel shaders",
+                        "How many pixels the GPU shades at once. Change it only if a game freezes or draws wrong.",
+                        "RADV_PERFTEST=pswave32", G::kGraphics,
+                        {{"wave32", "Wave32", "32 at a time. Works in every game tested so far."},
+                         {"wave64", "Wave64",
+                          "64 at a time, the older default. Freezes the console in some games: try it only if a game "
+                          "draws wrong in Wave32."}},
+                        "wave32"));
   list.push_back(Choice("frame_latency", "Frame latency", "How many frames can wait in the queue.",
-                        "dxgi.maxFrameLatency · d3d9.maxFrameLatency", T::kCompatibility,
+                        "dxgi.maxFrameLatency · d3d9.maxFrameLatency", G::kGraphics,
                         {{"game", "Game default", ""}, {"1", "1", "Lowest delay."}, {"2", "2", ""}, {"3", "3", ""}},
                         "game", 2));
   list.push_back(Choice("reported_gpu", "Reported graphics card", "Which GPU maker the game is told it runs on.",
-                        "dxgi.customVendorId", T::kCompatibility,
+                        "dxgi.customVendorId", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"amd", "AMD", ""}, {"nvidia", "NVIDIA", ""}, {"intel", "Intel", ""}},
                         "game", 2));
   list.push_back(Choice("reported_vram", "Reported video memory", "How much VRAM the game is told it has. Does not add memory.",
-                        "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", T::kCompatibility,
+                        "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"2048", "2 GB", ""}, {"4096", "4 GB", ""}}, "game", 2));
+  // Compatibility › Windows.
+  list.push_back(Choice("steam_features", "Steam features", "How the game reaches Steam without the Steam client.",
+                        "steam_api.dll · steam_api64.dll", G::kWindows,
+                        {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
+                         {"online", "Online (experimental)",
+                          "The emulator, plus a Steam sign-in: tickets, lobbies, friends."},
+                         {"game", "Game's own files", "The game's Steam library, unchanged."}},
+                        "game", 1, ApplyMode::kGameClosed));
   list.push_back(Choice("windows_version", "Windows version", "Which Windows the game is told it runs on.",
-                        "winver · registry", T::kCompatibility,
+                        "winver · registry", G::kWindows,
                         {{"win10", "Windows 10", ""}, {"win81", "Windows 8.1", ""}, {"win7", "Windows 7", ""},
                          {"winxp", "Windows XP", ""}},
                         "win10", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("text_scale", "Text scale", "Size of Windows text and dialogs. Shared by every game in the same bottle.",
-                        "LogPixels · DPI", T::kCompatibility,
+                        "LogPixels · DPI", G::kWindows,
                         {{"96", "100%", ""}, {"120", "125%", ""}, {"144", "150%", ""}}, "96", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("locale", "Language and region", "Which Windows language and region the game sees.",
-                        "LocaleName · registry", T::kCompatibility,
+                        "LocaleName · registry", G::kWindows,
                         {{"en-US", "English (United States)", ""}, {"en-GB", "English (United Kingdom)", ""},
                          {"de-DE", "German", ""}, {"fr-FR", "French", ""}, {"es-ES", "Spanish", ""},
                          {"pt-BR", "Portuguese (Brazil)", ""}, {"ja-JP", "Japanese", ""}},
                         "en-US", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("cpu_topology", "CPU cores", "How many processor cores the game is told about.",
-                        "WINE_CPU_TOPOLOGY", T::kCompatibility,
+                        "WINE_CPU_TOPOLOGY", G::kWindows,
                         {{"kit", "Runtime default", ""}, {"4", "4 cores", "For games that fail with many cores."},
                          {"8", "8 cores", ""}},
                         "kit", 3, ApplyMode::kGameClosed));
-  // Shown only for a game whose program Playden refuses for a reason a run could get past.
-  list.push_back(Choice("start_check", "Known problems", "What Playden does with a problem it found in the game's program.",
-                        ".NET · shared section", T::kCompatibility,
-                        {{"stop", "Don't start", "Playden stops before a program it expects to fail."},
-                         {"try", "Try anyway", "Prepares the game anyway. It may not start."}},
-                        "stop", 1));
   list.push_back(Choice("logging", "Logging", "How much detail goes into the game's log file.", "WINEDEBUG",
-                        T::kCompatibility,
+                        G::kWindows,
                         {{"normal", "Normal", "Errors and loaded modules."},
                          {"verbose", "Verbose", "Also warnings and exceptions, for one session; then Normal again."},
-                         {"input", "Input", "Also keyboard, mouse and controller calls, for one session; then Normal again."}},
+                         {"input", "Input", "Also keyboard, mouse and controller calls, for one session; then Normal again."},
+                         {"network", "Network", "Also connections, name lookups and network adapters, for one session; then Normal again."}},
                         "normal"));
-  // Advanced (T3).
+  // Advanced.
   {
     auto environment = Text("environment", "Environment variables",
                             "Extra variables for the game, separated by ';', like WINE_CPU_TOPOLOGY=4:0,1,2,3.",
-                            "[environment]", T::kAdvanced);
+                            "[environment]", G::kAdvanced);
     environment.phase = 2;
     list.push_back(std::move(environment));
   }
   {
     auto folder = Text("program_folder", "Program folder",
                        "Folder the program starts in, inside the game folder; . is the game folder itself. Empty: the program's own folder.",
-                       "[application] working_directory", T::kAdvanced);
+                       "[application] working_directory", G::kAdvanced);
     list.push_back(std::move(folder));
   }
   list.push_back(Text("program_arguments", "Program arguments", "The program's own arguments, as Steam lists them.",
-                      "launch option arguments", T::kAdvanced));
+                      "launch option arguments", G::kAdvanced));
   list.push_back(Text("arguments", "Required arguments",
                       "Arguments the game needs, from its recipe. {resolution} adds the Resolution size.",
-                      "[application] arguments", T::kAdvanced));
+                      "[application] arguments", G::kAdvanced));
   list.push_back(Choice("architecture", "Program type", "Follows the program: 32-bit or 64-bit Windows.",
-                        "[application] architecture", T::kAdvanced,
+                        "[application] architecture", G::kAdvanced,
                         {{"pe32", "32-bit", ""}, {"pe64", "64-bit", ""}}, "pe32"));
   list.push_back(Text("dll_overrides", "Library overrides",
                       "Windows libraries the game loads from its own copy, from the recipe, DXVK and you.",
-                      "WINEDLLOVERRIDES · [application] dll_overrides", T::kAdvanced));
+                      "WINEDLLOVERRIDES · [application] dll_overrides", G::kAdvanced));
   // Earlier builds kept only the player's additions here. Still read, never shown: the full
   // list above starts from them, and changing it replaces them.
   list.push_back(Text("library_overrides", "Added library overrides", "Library overrides added after the recipe's.",
-                      "[application] dll_overrides", T::kAdvanced));
+                      "[application] dll_overrides", G::kAdvanced));
   {
     auto registry = Text("registry_dll_overrides", "Library load order in the registry",
                          "Library overrides kept in the game's Windows registry, like name=n,b.",
-                         "HKCU\\Software\\Wine\\DllOverrides", T::kAdvanced);
+                         "HKCU\\Software\\Wine\\DllOverrides", G::kAdvanced);
     registry.phase = 3;
     registry.apply = ApplyMode::kGameClosed;
     list.push_back(std::move(registry));
@@ -280,11 +301,100 @@ std::vector<SettingDefinition> BuildCatalogue() {
   return list;
 }
 
+std::string TrimSpaces(std::string text) {
+  while (!text.empty() && text.front() == ' ') text.erase(0, 1);
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  return text;
+}
+
+// The Environment variables with the one Pixel shaders sets, which wins over the player's own:
+// - wave32: RADV_PERFTEST gets pswave32 (added to the player's value when there is one) and goes first, so the entry
+//   limits never drop it; a RADV_PS5_PS_WAVE64 of the player's is left out.
+// - wave64: RADV_PS5_PS_WAVE64=1 goes first; pswave32 is taken out of the player's RADV_PERFTEST, which stays where it
+//   was (or is left out when nothing else is in it). A RADV_PERFTEST with "all" fails: it turns pswave32 on.
+// - empty (the row is unavailable on this kit): the player's text, unchanged.
+// driver_wave32: the title applies the driver's own default, wave32 ([runtime] version 2), so wave32 adds no pswave32;
+// the player's RADV_PERFTEST stays as typed and a RADV_PS5_PS_WAVE64 of the player's is still left out.
+// debug_env: the variables go to [debug] env lines, whose values are shorter than [environment]'s. Fails with a reason
+// when RADV_PERFTEST with pswave32 no longer fits there: the game must not start without it.
+// Options are read as PS5_Mesa's parse_debug_string (src/util/u_debug.c) reads them.
+bool WithPixelShaderEnvironment(const std::string& entries, const std::string& waves, bool driver_wave32, bool debug_env,
+                                std::string* out, std::string* reason) {
+  if (waves != "wave32" && waves != "wave64") {
+    *out = entries;
+    return true;
+  }
+  const bool wave32 = waves == "wave32";
+  std::string perftest;  // wave32: the player's RADV_PERFTEST options, pswave32 added
+  bool listed = false;
+  std::string rest;
+  std::size_t start = 0;
+  while (!entries.empty() && start <= entries.size()) {
+    const auto end = std::min(entries.find(';', start), entries.size());
+    const std::string entry = entries.substr(start, end - start);
+    start = end + 1;
+    const auto equals = entry.find('=');
+    const auto name = TrimSpaces(equals == std::string::npos ? entry : entry.substr(0, equals));
+    if (equals != std::string::npos && name == "RADV_PS5_PS_WAVE64") continue;
+    if (equals != std::string::npos && name == "RADV_PERFTEST") {
+      // Options split as RADV's parse_debug_string splits them: at commas, spaces and newlines. Written back with
+      // commas.
+      const auto item = entry.substr(equals + 1);
+      std::string kept;
+      std::size_t at = 0;
+      while (at <= item.size()) {
+        const auto separator = std::min(item.find_first_of(", \n", at), item.size());
+        const auto option = item.substr(at, separator - at);
+        at = separator + 1;
+        if (option.empty()) continue;
+        // parse_debug_string turns on every option for "all", and for any option that "all" starts with ("a", "al").
+        if (!wave32 && std::string_view("all").substr(0, option.size()) == option) {
+          if (reason)
+            *reason = "RADV_PERFTEST=" + option +
+                      " in Environment variables turns on wave32 pixel shaders. Remove it, or set Pixel shaders to "
+                      "Wave32.";
+          return false;
+        }
+        if (option == "pswave32") {
+          if (!wave32 || listed) continue;
+          listed = true;
+        }
+        kept += (kept.empty() ? "" : ",") + option;
+      }
+      if (wave32) perftest = kept;
+      else if (!kept.empty()) rest += (rest.empty() ? "" : ";") + std::string("RADV_PERFTEST=") + kept;
+      continue;
+    }
+    if (!TrimSpaces(entry).empty()) rest += (rest.empty() ? "" : ";") + entry;
+  }
+  std::string first;
+  if (wave32 && driver_wave32) {
+    if (!perftest.empty()) first = "RADV_PERFTEST=" + perftest;
+  } else if (wave32) {
+    if (!listed) perftest += (perftest.empty() ? "" : ",") + std::string("pswave32");
+    if (debug_env ? !IsProsperoDebugEnvEntry("RADV_PERFTEST", perftest)
+                  : !IsProsperoEnvironmentEntry("RADV_PERFTEST", perftest)) {
+      if (reason)
+        *reason = "RADV_PERFTEST in Environment variables is too long to add pswave32 for Pixel shaders. Shorten it.";
+      return false;
+    }
+    first = "RADV_PERFTEST=" + perftest;
+  } else {
+    first = "RADV_PS5_PS_WAVE64=1";
+  }
+  *out = first.empty() ? rest : rest.empty() ? first : first + ";" + rest;
+  return true;
+}
+
 constexpr const char* kVerboseWinedebug = "err+all,warn+all,fixme-all,+loaddll,+process,+seh";
 // Raw Input, DirectInput, the winmm joystick API and the HID drivers the game hosts: what a game asks for and
 // what it finds.
 constexpr const char* kInputWinedebug =
     "err+all,warn+all,+loaddll,+process,+rawinput,+dinput,+winmm,+ntoskrnl,+plugplay,+hid,+hidclass";
+
+// Sockets, name lookups and the network adapters a game sees: where a request or a P2P connection stops. The TLS and
+// certificate channels are left out; they filled the session log's kept part within seconds.
+constexpr const char* kNetworkWinedebug = "err+all,+winsock,+dnsapi,+nsi,+iphlpapi,+winhttp";
 
 std::string Backslashes(std::string text) {
   std::replace(text.begin(), text.end(), '/', '\\');
@@ -388,7 +498,9 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if ((id == "windows_version" || id == "text_scale") && !kit.registry)
     return "Needs a verified runtime kit with access to the game's bottle.";
   // A Zink kit's runtime (upstream prospero-win) reads MESA_, DXVK_, RADV_ and the like as [debug] env.
-  if (id == "environment" && !kit.environment && !kit.opengl_zink) return "Needs a prospero-win update that reads [environment].";
+  // Pixel shaders is an environment variable for the driver, so it goes where Environment variables go.
+  if ((id == "environment" || id == "pixel_shader_waves") && !kit.environment && !kit.opengl_zink)
+    return "Needs a prospero-win update that reads [environment].";
   if (id == "wheel_stick" && !kit.input_wheel) return "Needs a prospero-win update that turns the mouse wheel.";
   if (id == "volume" && !kit.audio_volume) return "Needs a prospero-win update with per-game volume.";
   if (id == "stick_deadzone" || id == "rumble" || id == "trigger_deadzone") {
@@ -488,9 +600,9 @@ std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::str
   const bool at_120 = refresh != settings.values.end() &&
                       (refresh->second.available || refresh->second.waits_for_update) &&
                       ChosenValue(refresh->second) == "120";
-  if (high && !at_120) return "Only with 120 Hz output.";
+  if (high && !at_120) return "Only with Refresh rate 120 Hz.";
   // 30 at 120 Hz takes four vblanks per frame, which the display cannot pace; DXVK's and vkd3d-proton's limiters can.
-  if (value == "30" && at_120 && settings.graphics != "dxvk") return "At 120 Hz output, only with DXVK.";
+  if (value == "30" && at_120 && settings.graphics != "dxvk") return "At 120 Hz, only with DXVK.";
   return {};
 }
 
@@ -633,6 +745,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.graphics = out.values["graphics"].value;
   out.environment_as_debug_env = !kit.environment && kit.opengl_zink;
   out.debug_env_lines = kit.opengl_zink;
+  out.profile_version = kit.profile_version_2 ? 2 : 1;
   out.display_120hz = kit.display_120hz;
   out.display_120hz_needs_update = kit.display_120hz_needs_update;
 
@@ -692,6 +805,9 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
       value.waits_for_update = true;
     }
   }
+
+  // Pixel shaders: only where Environment variables can carry it; empty leaves the driver's default.
+  if (const auto& waves = out.values["pixel_shader_waves"]; waves.available) out.pixel_shader_waves = waves.value;
 
   // The program: the chosen launch entry, or a program the player picked in the game folder.
   // The player's folder and arguments apply to either.
@@ -963,17 +1079,28 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   const bool audio_section = settings.values.at("volume").available && value("volume") != "100";
   if (audio_section) text += "\n[audio]\nvolume = " + value("volume") + "\n";
 
+  // [runtime] version 2: the title takes the driver's defaults. Without the line the profile is version 1.
+  if (settings.profile_version == 2) text += "\n[runtime]\nversion = 2\n";
   if (value("logging") == "verbose") text += std::string("\n[debug]\nwinedebug = ") + kVerboseWinedebug + "\n";
   if (value("logging") == "input") text += std::string("\n[debug]\nwinedebug = ") + kInputWinedebug + "\n";
+  if (value("logging") == "network") text += std::string("\n[debug]\nwinedebug = ") + kNetworkWinedebug + "\n";
 
   const auto& environment = settings.values.at("environment");
+  // The player's variables, with the one Pixel shaders sets (none for the driver's default).
+  std::string environment_entries;
+  if (environment.available) {
+    std::string why;
+    if (!WithPixelShaderEnvironment(environment.value, settings.pixel_shader_waves, settings.profile_version == 2,
+                                    settings.environment_as_debug_env, &environment_entries, &why))
+      return fail(why);
+  }
   bool debug_env = false;
-  if (environment.available && !environment.value.empty() && settings.debug_env_lines) {
+  if (environment.available && !environment_entries.empty() && settings.debug_env_lines) {
     // [debug] env = NAME=value, one line per variable; names the runtime does not take are left out, and so are
     // names that go to [environment] on a kit that reads it.
     std::string lines;
     std::size_t start = 0, count = 0;
-    const auto& entries = environment.value;
+    const auto& entries = environment_entries;
     while (start <= entries.size()) {
       const auto end = std::min(entries.find(';', start), entries.size());
       std::string entry = entries.substr(start, end - start);
@@ -1015,7 +1142,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   }
   if (environment.available && !settings.environment_as_debug_env) {
     std::size_t start = 0;
-    const auto& entries = environment.value;
+    const auto& entries = environment_entries;
     while (!entries.empty() && start <= entries.size()) {
       const auto end = std::min(entries.find(';', start), entries.size());
       std::string entry = entries.substr(start, end - start);
@@ -1044,6 +1171,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.input_wheel = wheel;
   features.audio_section = audio_section;
   features.display_frame_rate = frame_rate;
+  features.runtime_version = settings.profile_version == 2;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
   return true;
@@ -1335,6 +1463,10 @@ bool RecordFromValue(const storage_json::Value& root, GameSettingsRecord* out) {
     out->steam_app_id = ParseSteamAppId(app->text()).value_or(0);
   if (const auto* launch = root.Find("steam_launch"); launch && launch->is_string())
     out->steam_launch = steam::RelativeGamePath(launch->text()).value_or(std::string());
+  // Pixel shaders "auto" (Automatic) is gone; such a record takes the default, wave32.
+  if (const auto waves = out->overrides.find("pixel_shader_waves");
+      waves != out->overrides.end() && waves->second == "auto")
+    out->overrides.erase(waves);
   // Settings this build does not know are dropped so an older record still loads.
   for (auto it = out->overrides.begin(); it != out->overrides.end();)
     it = FindSetting(it->first) || IsUnlockKey(it->first) ? std::next(it) : out->overrides.erase(it);
@@ -2630,6 +2762,73 @@ bool ApplyD3D12Library(const std::string& runtime_dir, const std::string& templa
   return true;
 }
 
+namespace {
+
+// The data of one value in a Wine registry file, in Wine's text form ("\"...\"" for a string), or nothing when
+// its key or the value isn't there or is written more than once.
+std::optional<std::string> RegistryData(const std::string& text, const std::string& key, const std::string& name) {
+  const auto header = RegistryHeader(key);
+  const auto line_prefix = "\"" + name + "\"=";
+  std::optional<std::string> data;
+  bool inside = false, seen = false;
+  for (std::size_t at = 0; at < text.size();) {
+    const auto newline = text.find('\n', at);
+    const auto next = newline == std::string::npos ? text.size() : newline + 1;
+    auto content_end = newline == std::string::npos ? text.size() : newline;
+    if (content_end > at && text[content_end - 1] == '\r') --content_end;
+    const std::string_view line(text.data() + at, content_end - at);
+    at = next;
+    if (!line.empty() && line.front() == '[') {
+      // Wine writes a key's header with its time after a space.
+      inside = line.size() >= header.size() && RegistryEqual(line.substr(0, header.size()), header) &&
+               (line.size() == header.size() || line[header.size()] == ' ');
+      if (inside && seen) return std::nullopt;
+      seen = seen || inside;
+      continue;
+    }
+    if (!inside || line.size() < line_prefix.size() || !RegistryEqual(line.substr(0, line_prefix.size()), line_prefix))
+      continue;
+    if (data || line.back() == '\\') return std::nullopt;
+    data = std::string(line.substr(line_prefix.size()));
+  }
+  return data;
+}
+
+}  // namespace
+
+bool PointBottleAtKitMono(const std::string& template_dir, const std::string& prefix_dir, std::int64_t unix_time,
+                          bool* changed, std::string* reason) {
+  const auto fail = [&](std::string why) {
+    if (reason) *reason = std::move(why);
+    return false;
+  };
+  *changed = false;
+  constexpr const char* kKey = "Software\\Wine\\Mono";
+  constexpr const char* kName = "RuntimePath";
+  constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
+  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  if (!bottle) return errno == ENOENT ? true : fail("cannot open the bottle");
+  std::string bottle_reg;
+  const auto state = ReadRegularAt(*bottle, "user.reg", kMaxRegistryBytes, &bottle_reg, nullptr, true);
+  if (state == RelativeRead::kMissing) return true;  // the bottle comes later
+  if (state != RelativeRead::kPresent) return fail("cannot read the bottle's user.reg");
+  const auto current = RegistryData(bottle_reg, kKey, kName);
+  // The packaged template writes Z:\data\playden\kits\<kit id>\mono\wine-mono-<version>, escaped.
+  static constexpr std::string_view kKitsFolder = R"("Z:\\data\\playden\\kits\\)";
+  if (!current || current->size() <= kKitsFolder.size() ||
+      !RegistryEqual(std::string_view(*current).substr(0, kKitsFolder.size()), kKitsFolder))
+    return true;
+  auto kit = ManagedDirectory::Open(template_dir, DirectoryPolicy::kApprovedTree);
+  std::string template_reg;
+  if (!kit || ReadRegularAt(*kit, "user.reg", kMaxRegistryBytes, &template_reg) != RelativeRead::kPresent)
+    return fail("cannot read the kit template's user.reg");
+  const auto wanted = RegistryData(template_reg, kKey, kName);
+  if (!wanted || *wanted == *current) return true;
+  if (!ApplyRegistryFileValues({{kKey, kName, *wanted}}, prefix_dir, unix_time, reason)) return false;
+  *changed = true;
+  return true;
+}
+
 bool ParseUe3InstallGuid(std::string_view install_info, std::string* guid) {
   static constexpr std::string_view open = "<InstallGuidString>", close = "</InstallGuidString>";
   const auto start = install_info.find(open);
@@ -2739,6 +2938,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.wine_mono = has(kKitWineMono);
   kit.vkd3d_proton = has(kKitVkd3dProton);
   kit.display_120hz = has(kKitDisplay120Hz);
+  kit.profile_version_2 = has(kKitProfileVersion2);
   kit.registry = bottle_access;
   return kit;
 }
@@ -2747,6 +2947,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.display_120hz) {
     kit.display_120hz = false;
     kit.display_120hz_needs_update = true;
+  }
+  if (!title_runtime_current && kit.profile_version_2) {
+    kit.profile_version_2 = false;
+    kit.profile_version_2_needs_update = true;
   }
   return kit;
 }

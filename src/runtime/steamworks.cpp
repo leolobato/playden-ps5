@@ -135,6 +135,30 @@ std::vector<std::uint32_t> Sorted(std::vector<std::uint32_t> values) {
   return values;
 }
 
+// The account's refresh token for the online bridge, readable by the app user only. A value that would break a
+// line is refused.
+bool WriteOnlineSettings(const fs::path& settings, const SteamworksIdentity& identity) {
+  const auto clean = [](const std::string& value) {
+    return !value.empty() && std::none_of(value.begin(), value.end(), [](char c) {
+      return static_cast<unsigned char>(c) < 0x20 || c == 0x7f;
+    });
+  };
+  if (!clean(identity.refresh_token) || !clean(identity.account_name)) return false;
+  std::string text = "app_id=" + std::to_string(identity.app_id) + "\nsteam_id=" + std::to_string(identity.steam_id) +
+                     "\naccount_name=" + identity.account_name + "\nrefresh_token=" + identity.refresh_token + "\n";
+  const bool ok = WriteAtomic(settings / kSteamOnlineSettingsName, text, 0600);
+  std::fill(text.begin(), text.end(), '\0');
+  return ok;
+}
+
+// The online bridge's files beside a DLL that no longer has it.
+bool RemoveOnlineFiles(const fs::path& folder, bool pe64) {
+  for (const auto& path : {folder / (pe64 ? kSteamOnlineEmulator64Name : kSteamOnlineEmulator32Name),
+                           folder / "steam_settings" / kSteamOnlineSettingsName})
+    if (::unlink(path.c_str()) != 0 && errno != ENOENT) return false;
+  return true;
+}
+
 bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, const std::string& original) {
   const auto settings = folder / "steam_settings";
   if (!EnsureFolder(settings)) return false;
@@ -155,7 +179,9 @@ bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, c
                            "\n\n[user::saves]\nlocal_save_path=" + kSteamworksSavePath + "\n";
   std::string apps = "[app::dlcs]\nunlock_all=0\n";
   for (const auto dlc : Sorted(identity.owned_dlc)) apps += std::to_string(dlc) + "=dlc" + std::to_string(dlc) + "\n";
-  const std::string main = "[main::connectivity]\ndisable_lan_only=0\noffline=1\ndisable_networking=1\n";
+  // Online, the emulator says Steam is connected (BLoggedOn); its own networking stays off either way.
+  const std::string main = std::string("[main::connectivity]\ndisable_lan_only=0\noffline=") +
+                           (identity.online ? "0" : "1") + "\ndisable_networking=1\n";
   static const char* const kLanguages =
       "arabic\nbulgarian\nschinese\ntchinese\nczech\ndanish\ndutch\nenglish\nfinnish\nfrench\ngerman\ngreek\n"
       "hungarian\nitalian\njapanese\nkoreana\nnorwegian\npolish\nportuguese\nbrazilian\nromanian\nrussian\n"
@@ -175,9 +201,10 @@ struct Emulator {
   std::string sha256;
 };
 
-// Playden's emulator, the current build or a retired one.
+// Playden's emulator, the online bridge, the current build or a retired one.
 bool IsPlaydenEmulator(const std::string& digest, const std::vector<std::string>& retired) {
-  return digest == kSteamApi32Sha256 || digest == kSteamApi64Sha256 ||
+  return digest == kSteamApi32Sha256 || digest == kSteamApi64Sha256 || digest == kSteamOnlineBridge64Sha256 ||
+         digest == kSteamOnlineBridge32Sha256 ||
          std::find(retired.begin(), retired.end(), digest) != retired.end();
 }
 
@@ -186,6 +213,14 @@ std::optional<Emulator> LoadEmulator(const std::string& emulator_dir, bool pe64)
   if (!bytes) return std::nullopt;
   const auto digest = HashArtifactBytes(*bytes);
   if (!digest || *digest != (pe64 ? kSteamApi64Sha256 : kSteamApi32Sha256)) return std::nullopt;
+  return Emulator{*bytes, *digest};
+}
+
+std::optional<Emulator> LoadOnlineBridge(const std::string& emulator_dir, bool pe64) {
+  const auto bytes = ReadFile(fs::path(emulator_dir) / (pe64 ? "steam_api64_online.dll" : "steam_api_online.dll"), kMaxDllBytes);
+  if (!bytes) return std::nullopt;
+  const auto digest = HashArtifactBytes(*bytes);
+  if (!digest || *digest != (pe64 ? kSteamOnlineBridge64Sha256 : kSteamOnlineBridge32Sha256)) return std::nullopt;
   return Emulator{*bytes, *digest};
 }
 
@@ -260,6 +295,11 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
     const bool pe64 = Lower(path.filename().string()) == "steam_api64.dll";
     const auto emulator = LoadEmulator(emulator_dir, pe64);
     if (!emulator) return fail("Playden's Steam emulator files are missing or damaged; reinstall Playden.");
+    // Online (with a token): the bridge is the game's DLL and the emulator sits beside it.
+    const bool online = identity.online && !identity.refresh_token.empty();
+    const auto bridge = online ? LoadOnlineBridge(emulator_dir, pe64) : std::nullopt;
+    if (online && !bridge) return fail("Playden's Steam online files are missing or damaged; reinstall Playden.");
+    const Emulator& installed = online ? *bridge : *emulator;
     const auto current = ReadFile(path, kMaxDllBytes);
     if (!current) return fail("Playden could not read the game's " + relative + ".");
     const auto digest = HashArtifactBytes(*current);
@@ -274,8 +314,8 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
       const auto kept_digest = HashArtifactBytes(*kept);
       if (!kept_digest || IsPlaydenEmulator(*kept_digest, retired))
         return fail("An earlier Playden lost the game's own " + relative + "; reinstall the game to get it back.");
-      if (*digest != emulator->sha256) {
-        if (!WriteAtomic(path, emulator->bytes)) return fail("Playden could not set up Steam features for this game.");
+      if (*digest != installed.sha256) {
+        if (!WriteAtomic(path, installed.bytes)) return fail("Playden could not set up Steam features for this game.");
         result.changed.push_back(relative);
       }
       original = *kept;
@@ -285,12 +325,24 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
       const auto kept = IsRegular(orig) ? ReadFile(orig, kMaxDllBytes) : std::nullopt;
       if ((!kept || *kept != *current) && !WriteAtomic(orig, *current))
         return fail("Playden could not keep a copy of the game's " + relative + ".");
-      if (!WriteAtomic(path, emulator->bytes)) return fail("Playden could not set up Steam features for this game.");
+      if (!WriteAtomic(path, installed.bytes)) return fail("Playden could not set up Steam features for this game.");
       result.changed.push_back(relative);
       original = *current;
     }
-    if (!WriteSettings(path.parent_path(), identity, original))
+    SteamworksIdentity settings = identity;
+    settings.online = online;
+    if (!WriteSettings(path.parent_path(), settings, original))
       return fail("Playden could not write the game's Steam settings.");
+    if (online) {
+      const auto beside = path.parent_path() / (pe64 ? kSteamOnlineEmulator64Name : kSteamOnlineEmulator32Name);
+      const auto present = IsRegular(beside) ? ReadFile(beside, kMaxDllBytes) : std::nullopt;
+      if ((!present || *present != emulator->bytes) && !WriteAtomic(beside, emulator->bytes))
+        return fail("Playden could not set up Steam online features for this game.");
+      if (!WriteOnlineSettings(path.parent_path() / "steam_settings", identity))
+        return fail("Playden could not write the game's Steam online settings.");
+    } else if (!RemoveOnlineFiles(path.parent_path(), pe64)) {
+      return fail("Playden could not remove the game's Steam online settings.");
+    }
   }
   result.ok = true;
   return result;
@@ -381,6 +433,10 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
   result.found = FindSteamApi(install_root);
   for (const auto& relative : result.found) {
     const auto path = root / relative;
+    if (!RemoveOnlineFiles(path.parent_path(), Lower(path.filename().string()) == "steam_api64.dll")) {
+      result.message = "Playden could not remove the game's Steam online settings.";
+      return result;
+    }
     const auto current = ReadFile(path, kMaxDllBytes);
     const auto digest = current ? HashArtifactBytes(*current) : std::nullopt;
     if (!digest || !IsPlaydenEmulator(*digest, retired)) continue;  // already the game's own

@@ -88,7 +88,7 @@ struct LiveVolume {
     std::optional<std::uint64_t> free_bytes;
     bool writable = true;    // Playden can make its games folder there
 };
-// The compatibility kit in use, for Settings > About. Every field is empty when no kit is usable.
+// The runtime kit in use, for Settings > About. Every field is empty when no kit is usable.
 struct LiveKitInfo {
     std::string kit_id;
     std::string manifest_sha256;
@@ -120,6 +120,14 @@ struct LiveSelfUpdate {
     bool quiet = false;          // the available version is one the player went back from: no dialog
     std::string finished_message;  // the previous run's update result, shown once
     bool finished_failed = false;
+    // The kit-only install (first run, or a kit that isn't this version's): idle, checking, not-needed,
+    // unavailable, available, downloading, unpacking, installed, failed.
+    std::string kit_phase = "idle";
+    bool kit_replaces = false;   // another kit is installed: this one replaces it
+    std::uint64_t kit_download_bytes = 0;
+    std::uint64_t kit_done = 0;
+    std::uint64_t kit_total = 0;
+    std::string kit_error;
 };
 // Live: what Game settings needs to choose a game's program, projected from the runtime host.
 // A program a Steam launch option names, as a path in the game folder.
@@ -404,6 +412,7 @@ struct Game {
     std::optional<std::int64_t> last_played;
     std::optional<std::uint64_t> playtime_minutes;
     std::optional<bool> windows_installable;  // from Steam app info; absent until fetched
+    bool demo = false;  // a Steam demo; Sort and filters › Demos hides it
     bool art_pending = false;
     bool art_failed = false;
 };
@@ -584,7 +593,7 @@ struct State {
     // empty until they choose.
     std::string queue_expanded;
     std::size_t runtime_leftover_requests = 0;          // live: unused settings requests to clean up
-    LiveKitInfo kit;                                    // live: the compatibility kit in use
+    LiveKitInfo kit;                                    // live: the runtime kit in use
     LiveSelfUpdate self_update;                         // live: Playden's own update
     std::vector<LiveKeptBottle> kept_bottles;           // live: saves kept from uninstalled games
     std::vector<LiveExternalGame> external_games;       // live: games playing in place (imported)
@@ -617,6 +626,7 @@ struct State {
     bool reduced_motion = false;
     bool title_store_suffix = false;  // PS5 titles named "<game> (Steam)"
     bool cloud_saves_auto = false;    // Cloud saves move before Play, after sessions and at startup (opt-in)
+    bool beta_updates = false;
     bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Storage)
     bool controller_connected = true;
     ControllerState controller;
@@ -852,6 +862,8 @@ public:
     [[nodiscard]] bool EffectiveSettingsFor(GameId id, playden::runtime::EffectiveSettings* settings) const;
     // Whether Game settings lists "Known problems" (Try anyway) for a game.
     [[nodiscard]] bool known_problem(GameId id) const;
+    void follow_refresh_rate(GameId game);
+    [[nodiscard]] bool game_settings_row_shown(const playden::runtime::SettingDefinition& definition, GameId game) const;
     // The overrides a preset change or a reset keeps: the program choices (simulation.cpp).
     [[nodiscard]] std::map<std::string, std::string> kept_start_choices(GameId id) const;
     // Opens the picker, editor or "Change anyway" for one Game settings row.
@@ -880,6 +892,7 @@ private:
     std::vector<std::string> self_update_requests_;
     std::string self_update_prompted_;   // "available 0.3.0" or "staged 0.3.0": each prompt shows once
     std::string pending_update_prompt_;  // a prompt waiting for the open dialog to close
+    bool kit_prompted_ = false;          // the kit was offered since its last check (a cancel doesn't offer it again)
     void show_update_prompt();
     void sync_self_update_job();
     void request_self_update_restart(const std::string& request = "restart");
@@ -968,6 +981,10 @@ private:
     // Games refused at Prepare whose program or "Try anyway" the player changed since: their page
     // no longer shows the old refusal.
     std::set<GameId> rechosen_after_refusal_;
+    // Launches that stopped before their store's library arrived (a start from Home reported when Playden
+    // starts): told once the game's name is known.
+    std::map<GameId, std::string> pending_play_stops_;
+    void tell_play_stopped(GameId id, const std::string& reason);
     // Game settings asked for on a game not set up yet: it opens once preparing makes a draft or a title.
     std::set<GameId> settings_after_prepare_;
     void open_settings_after_prepare();
