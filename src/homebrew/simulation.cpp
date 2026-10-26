@@ -5210,14 +5210,14 @@ void Simulation::rebuild_view() {
             if (found > 0) entry.value = std::to_string(found) + " found";
         }
         if (live()) {
-            auto& suffix = add("settings-title-store", RowKind::Toggle, "Store name in PS5 titles", "toggle-title-store");
-            suffix.selected = state_.title_store_suffix;
-            suffix.subtitle = "Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.";
             // Steam ships localisations as separate depots, so the language has to be chosen
             // before a game is downloaded.
             auto& content = add("settings-content-language", RowKind::Action, "Game language", "content-language-picker");
             content.value = playden::steam::LanguageName(state_.content_language);
             content.subtitle = "Which language new downloads are in, when the game has it. Games already installed keep theirs.";
+            auto& suffix = add("settings-title-store", RowKind::Toggle, "Store name in PS5 titles", "toggle-title-store");
+            suffix.selected = state_.title_store_suffix;
+            suffix.subtitle = "Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.";
             auto& cloud = add("settings-cloud-saves", RowKind::Toggle, "Sync Cloud saves automatically", "toggle-cloud-saves");
             cloud.selected = state_.cloud_saves_auto;
             cloud.subtitle = state_.cloud_saves_auto ? "Before Play, after each game and when Playden starts."

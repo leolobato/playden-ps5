@@ -1185,8 +1185,9 @@ void live_storage_section_and_installed_games() {
         check(section_of(key) == "Storage", "the storage rows are in the Storage section");
     std::vector<std::string> library;
     for (const auto& row : model.view().rows) if (row.section == "Library") library.push_back(row.key);
-    check(library == std::vector<std::string>{"settings-import", "settings-title-store", "settings-cloud-saves"},
-          "Library starts with Import games, then its two toggles");
+    check(library == std::vector<std::string>{"settings-import", "settings-content-language", "settings-title-store",
+                                              "settings-cloud-saves"},
+          "Library starts with Import games and Game language, then its two toggles");
     check(find_row(model, "settings-storage")->action == "storage-picker", "Games storage opens the drive picker");
     std::vector<std::string> order;
     for (const auto& row : model.view().rows) if (row.section == "Storage") order.push_back(row.key);
