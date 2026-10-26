@@ -5017,6 +5017,7 @@ void Simulation::rebuild_view() {
                 if (installation->available) {
                     // The primary action says what pressing does; setup facts and a single
                     // player-facing hint carry its state without repeating technical diagnostics.
+                    bool uninstalling = pending_uninstalls_.contains(game->id);
                     const auto play_game = state_.runtime_games.find(game->id);
                     if (play_game != state_.runtime_games.end()) {
                         const auto& value = play_game->second;
@@ -5029,43 +5030,51 @@ void Simulation::rebuild_view() {
                         const bool pending = value.status == "Registration pending";
                         const bool attention = value.can_prepare && (recovery || removing || pending);
                         const bool enabled = no_kit || value.can_play || prepares_first || value.awaiting_registration || attention;
+                        const bool active_uninstall = !removing && !value.uninstall_status.empty();
+                        const bool queued_uninstall = !removing && !active_uninstall && pending_uninstalls_.contains(game->id);
+                        uninstalling = active_uninstall || queued_uninstall;
                         auto& play = row("details-play", RowKind::Action,
-                            no_kit ? "Open Settings" : removing ? "Finish removing" : pending ? "Check again"
+                            no_kit ? "Open Settings"
+                            : removing ? "Finish removing"
+                            : active_uninstall ? "Uninstalling"
+                            : queued_uninstall ? "Uninstall queued"
+                            : pending ? "Check again"
                             : recovery || value.awaiting_registration ? "Finish setup" : "Play",
-                            no_kit ? "details-kit-settings" : value.awaiting_registration ? "quit-to-home"
+                            uninstalling ? ""
+                            : no_kit ? "details-kit-settings" : value.awaiting_registration ? "quit-to-home"
                             : attention ? (removing ? "runtime-remove-retry" : "runtime-prepare")
                             : enabled ? "runtime-play" : "");
-                        play.value = value.awaiting_registration ? "Quits to Home"
+                        play.value = active_uninstall ? value.uninstall_status
+                            : queued_uninstall ? "Uninstalling…"
+                            : value.awaiting_registration ? "Quits to Home"
                             : !value.play_status.empty() ? value.play_status
                             : prepares_first ? (kit_update ? "Kit update first" : value.status == "Needs repair" ? "Repairs first" : "Sets up first")
                             : value.status == "Preparing" ? value.detail
                             : value.status == "Checking" || value.status == "Removing" || value.status == "Unavailable" ? value.status
                             : std::string{};
-                        play.enabled = enabled && value.uninstall_status.empty();
+                        play.enabled = enabled && !uninstalling;
                         // Setting up waits for the player to choose the game's program.
-                        if (const auto setup = game_setups_.find(game->id); setup != game_setups_.end() &&
-                            !setup->second.steam_choices.empty() && !value.ready && value.status != "Preparing") {
-                            play.title = "Choose program";
-                            play.action = "steam-programs";
-                            play.value.clear();
-                            play.enabled = value.uninstall_status.empty();
+                        if (!uninstalling) {
+                            if (const auto setup = game_setups_.find(game->id); setup != game_setups_.end() &&
+                                !setup->second.steam_choices.empty() && !value.ready && value.status != "Preparing") {
+                                play.title = "Choose program";
+                                play.action = "steam-programs";
+                                play.value.clear();
+                                play.enabled = true;
+                            }
+                            // Finish setup would fail as before over a title or bottle an earlier kit made: make it again.
+                            if (value.setup_other_kit) {
+                                play.title = "Recreate bottle";
+                                play.action = "prep-recreate-" + ToKey(game->id);
+                                play.value = value.maintenance_running ? "Working…" : std::string{};
+                                play.enabled = !value.maintenance_running;
+                            }
                         }
-                        // Finish setup would fail as before over a title or bottle an earlier kit made: make it again.
-                        if (value.setup_other_kit) {
-                            play.title = "Recreate bottle";
-                            play.action = "prep-recreate-" + ToKey(game->id);
-                            play.value = value.maintenance_running ? "Working…" : std::string{};
-                            play.enabled = !value.maintenance_running;
-                        }
-                        if (!value.uninstall_status.empty()) {
-                            play.value = value.uninstall_status;
-                            play.action.clear();
-                        }
-                        if (value.queued && value.uninstall_status.empty()) {
+                        if (value.queued && !uninstalling) {
                             play.value = "Queued";
                             play.enabled = false;
                             play.action.clear();
-                        } else if (!play.enabled && value.uninstall_status.empty() && value.status != "Preparing") {
+                        } else if (!play.enabled && !uninstalling && value.status != "Preparing") {
                             const auto other = std::find_if(state_.runtime_games.begin(), state_.runtime_games.end(),
                                 [&](const auto& entry) { return entry.first != game->id && entry.second.status == "Preparing"; });
                             if (other != state_.runtime_games.end()) play.value = "Waiting";
@@ -5086,7 +5095,7 @@ void Simulation::rebuild_view() {
                         const bool choice = cloud_status == CloudStatus::Conflict || cloud_status == CloudStatus::NeedsAccount;
                         // Stays a button while it works, disabled, so it keeps its place in the row.
                         auto& saves = row("details-cloud", RowKind::Action, "Cloud saves",
-                                          busy ? "" : choice ? "cloud-choose" : "cloud-sync");
+                                          busy || uninstalling ? "" : choice ? "cloud-choose" : "cloud-sync");
                         saves.value = cloud_status == CloudStatus::None        ? "Sync"
                                       : busy                                  ? (cloud_status == CloudStatus::Checking ? "Checking…" : "Syncing…")
                                       : choice                                ? "Choose"
@@ -5094,7 +5103,7 @@ void Simulation::rebuild_view() {
                                       : cloud_status == CloudStatus::Unsupported ? "Unavailable"
                                                                               : "Synced";
                         if (cloud != state_.cloud.end()) saves.subtitle = cloud->second.message;
-                        saves.enabled = !busy;
+                        saves.enabled = !busy && !uninstalling;
                     }
                 }
             } else if (job) {
@@ -5168,10 +5177,12 @@ void Simulation::rebuild_view() {
         if (installed) {
             const auto found = state_.runtime_games.find(game->id);
             const auto* runtime = found == state_.runtime_games.end() ? nullptr : &found->second;
+            const bool runtime_uninstalling = runtime && (!runtime->uninstall_status.empty() || pending_uninstalls_.contains(game->id)) &&
+                                              runtime->status != "Removal incomplete";
             const std::string status = !installation->available ? "Unavailable"
-                : runtime && !runtime->uninstall_status.empty() ? "Removing"
+                : runtime_uninstalling ? "Removing"
                 : runtime ? runtime->status : !live() ? (installation->runtime_ready ? "Ready" : "No kit") : "Checking";
-            const bool waiting = runtime && runtime->awaiting_registration && installation->available && runtime->uninstall_status.empty();
+            const bool waiting = runtime && runtime->awaiting_registration && installation->available && !runtime_uninstalling;
             const bool kit_update = status == "Kit update available" || status == "Update available";
             const std::string tone = waiting || kit_update ? "busy" : status == "Ready" ? "good"
                 : status == "Failed" || status == "No kit" ? "problem"

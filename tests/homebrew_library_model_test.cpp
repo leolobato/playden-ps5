@@ -1032,6 +1032,13 @@ void live_uninstall_removes_title_and_keeps_saves() {
     auto requests = model.TakeInstallRequests();
     check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Uninstall && requests[0].game_id == SteamId(42) &&
               requests[0].delete_saves, "Uninstall carries the saves choice");
+    check(model.action("details:42"), "details reopen after confirm");
+    const auto* queued_play = find_row(model, "details-play");
+    check(queued_play && !queued_play->enabled && queued_play->title == "Uninstall queued" &&
+              queued_play->value == "Uninstalling…", "Play shows Uninstall queued while pending");
+    const auto* queued_cloud = find_row(model, "details-cloud");
+    check(queued_cloud && !queued_cloud->enabled && queued_cloud->action.empty(),
+          "Cloud saves is disabled while uninstall is queued");
 
     // While it runs, Play waits; an interrupted removal offers Finish removing.
     ready.uninstall_status = "Removing PS5 title…"; ready.can_play = false;
@@ -1039,6 +1046,16 @@ void live_uninstall_removes_title_and_keeps_saves() {
     check(model.action("details:42"), "details reopen");
     const auto* play = find_row(model, "details-play");
     check(play && !play->enabled && play->value == "Removing PS5 title…", "Play shows the uninstall in progress");
+    check(play && play->title == "Uninstalling", "Play shows Uninstalling label");
+    const auto* active_cloud = find_row(model, "details-cloud");
+    check(active_cloud && !active_cloud->enabled && active_cloud->action.empty(),
+          "Cloud saves is disabled during active uninstall");
+    ready.progress = 0.42F;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {ready, plain});
+    play = find_row(model, "details-play");
+    check(play && !play->enabled && play->title == "Uninstalling" && play->progress == 0.42F &&
+              play->value == "Removing PS5 title 42%", "Uninstall progress shows percentage and Uninstalling title");
+    ready.progress.reset();
     check(find_row(model, "details-setup") && find_row(model, "details-setup")->value == "Removing",
           "active uninstall replaces Ready with Removing in setup facts");
     check(!has_row(model, "details-hint"), "active uninstall has no interrupted setup hint");
