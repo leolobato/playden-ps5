@@ -59,10 +59,16 @@ add_library(playden_diagnostic_log STATIC "${CMAKE_SOURCE_DIR}/src/app/diagnosti
 target_include_directories(playden_diagnostic_log PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_diagnostic_log PUBLIC cxx_std_17)
 
+# The languages Steam ships game content in. The depot selection, the preferences and the
+# Steamworks emulator all name them, and none of those may depend on the others.
+add_library(playden_steam_content_language STATIC
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/content_language.cpp")
+target_include_directories(playden_steam_content_language PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_features(playden_steam_content_language PUBLIC cxx_std_17)
 add_library(playden_preferences STATIC "${CMAKE_SOURCE_DIR}/src/app/preferences.cpp")
 target_include_directories(playden_preferences PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_preferences PUBLIC cxx_std_17)
-target_link_libraries(playden_preferences PUBLIC playden_storage)
+target_link_libraries(playden_preferences PUBLIC playden_storage playden_steam_content_language)
 
 add_library(playden_persistence_service STATIC "${CMAKE_SOURCE_DIR}/src/app/persistence_service.cpp")
 target_include_directories(playden_persistence_service PUBLIC "${CMAKE_SOURCE_DIR}/src")

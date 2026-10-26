@@ -37,12 +37,21 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include "homebrew/store_fetch.hpp"
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace {
+
+// Settings › Game language, read by the install and details workers when they start a job.
+std::mutex content_language_lock;
+std::string content_language{playden::steam::kDefaultContentLanguage};
+std::string selected_content_language() {
+    const std::lock_guard<std::mutex> guard(content_language_lock);
+    return content_language;
+}
 
 struct Options {
     std::string scenario;
@@ -522,12 +531,14 @@ int main(int argc, char** argv) {
         details_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
         details_source = std::make_unique<playden::steam::CmAppDetailsSource>(*details_cm);
         details_source->SetLicensedDepots(&licensed_depots);
+        details_source->SetContentLanguage([] { return selected_content_language(); });
         details_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
         app_details = std::make_unique<playden::steam::AppDetailsService>(*details_source, *details_sessions);
         install_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
         install_cdn = std::make_unique<playden::steam::CdnClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
         install_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
         install_runner = std::make_unique<playden::steam::SteamInstallRunner>(*install_sessions, *install_cm, *install_cdn);
+        install_runner->SetContentLanguage([] { return selected_content_language(); });
         install_runner->SetLog([log_directory](std::uint32_t app, const char* step, const char* category, const char* detail) {
             char line[640];
             if (std::string(step) == "install-removal")
@@ -720,6 +731,10 @@ int main(int argc, char** argv) {
             static_cast<float>(now_us - last_render_us) / 1000000.0F;
         last_render_us = now_us;
         if (services) services->Tick();
+        {
+            const std::lock_guard<std::mutex> guard(content_language_lock);
+            content_language = simulation.state().content_language;
+        }
         render->draw(simulation, width, height, options->headless ? 1.0F / 60.0F : frame_dt);
         rendered_once = true;
         if (simulation.state().quit_requested) running = false;

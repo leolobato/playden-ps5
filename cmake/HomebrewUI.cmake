@@ -77,7 +77,7 @@ target_include_directories(playden_steam_cm_codec PUBLIC "${CMAKE_SOURCE_DIR}/sr
 target_include_directories(playden_steam_cm_codec PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
 target_compile_features(playden_steam_cm_codec PUBLIC cxx_std_17)
 target_link_libraries(playden_steam_cm_codec PUBLIC playden_game_paths playden_steam_protocol playden_managed_directory
-    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library)
+    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library playden_steam_content_language)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_steam_cm_codec PRIVATE -fno-exceptions -fno-rtti)
 endif()

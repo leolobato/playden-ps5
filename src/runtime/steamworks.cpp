@@ -1,6 +1,7 @@
 #include "runtime/steamworks.h"
 
 #include "runtime/artifact_hash.h"
+#include "steam/backend/content_language.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -400,19 +401,27 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
   return result;
 }
 
-std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc) {
-  return "depots=" + Join(Sorted(depots), ",") + "\ndlc=" + Join(Sorted(owned_dlc), ",") + "\n";
+std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
+                                     const std::string& language) {
+  std::string text = "depots=" + Join(Sorted(depots), ",") + "\ndlc=" + Join(Sorted(owned_dlc), ",") + "\n";
+  // The language the depots were installed for. Older files have no line and read as English,
+  // which is what they were installed in.
+  if (!language.empty() && language != std::string(steam::kDefaultContentLanguage))
+    text += "language=" + language + "\n";
+  return text;
 }
 
 bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std::uint32_t>& depots,
-                          const std::vector<std::uint32_t>& owned_dlc) {
-  return WriteAtomic(fs::path(install_root) / kSteamworksFactsFile, SerializeSteamworksFacts(depots, owned_dlc));
+                          const std::vector<std::uint32_t>& owned_dlc, const std::string& language) {
+  return WriteAtomic(fs::path(install_root) / kSteamworksFactsFile,
+                     SerializeSteamworksFacts(depots, owned_dlc, language));
 }
 
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity) {
   const auto text = ReadFile(fs::path(install_root) / kSteamworksFactsFile, 64 * 1024);
   if (!text) return false;
   std::vector<std::uint32_t> depots, dlc;
+  std::string language;
   std::size_t start = 0;
   while (start < text->size()) {
     auto end = text->find('\n', start);
@@ -421,6 +430,13 @@ bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* id
     start = end + 1;
     const auto equals = line.find('=');
     if (equals == std::string::npos) continue;
+    if (line.compare(0, equals, "language") == 0) {
+      const auto value = line.substr(equals + 1);
+      // Only a language Steam names; anything else leaves the game on English rather than
+      // handing the emulator a value it cannot use.
+      if (steam::IsContentLanguage(value)) language = value;
+      continue;
+    }
     auto* target = line.compare(0, equals, "depots") == 0 ? &depots : line.compare(0, equals, "dlc") == 0 ? &dlc : nullptr;
     if (!target) continue;
     std::size_t at = equals + 1;
@@ -439,6 +455,7 @@ bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* id
   }
   identity->depots = std::move(depots);
   identity->owned_dlc = std::move(dlc);
+  if (!language.empty()) identity->language = language;
   return true;
 }
 

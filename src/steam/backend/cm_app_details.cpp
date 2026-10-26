@@ -5,7 +5,8 @@
 namespace playden::steam {
 
 AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
-                              const std::optional<LicensedDepots::Grant>& licensed) {
+                              const std::optional<LicensedDepots::Grant>& licensed,
+                              std::string_view language) {
   AppDetails details;
   details.id = GameId::Steam(id);
   const auto app = ParseAppInfo(id, buffer);
@@ -22,9 +23,9 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
   if (licensed) {
     auto apps = licensed->apps;
     apps.insert(id);
-    selected = SelectDepots(*app, apps, licensed->depots, &depots, &reason);
+    selected = SelectDepots(*app, apps, licensed->depots, language, &depots, &reason);
   }
-  if (!selected && !SelectDepots(*app, owned, std::nullopt, &depots, &reason)) {
+  if (!selected && !SelectDepots(*app, owned, std::nullopt, language, &depots, &reason)) {
     details.reason = "No Windows content to install.";
     return details;
   }
@@ -58,6 +59,7 @@ std::vector<AppDetails> CmAppDetailsSource::Fetch(const StoredSession& session,
   const auto fetched = client_.FetchAppInfo(session, app_ids, cancel);
   std::vector<AppDetails> result;
   if (!fetched.ok()) return result;  // the service reports these as retryable
+  const auto language = language_ ? language_() : std::string(kDefaultContentLanguage);
   for (const auto id : apps) {
     const auto found = fetched.buffers.find(id);
     if (found == fetched.buffers.end()) {
@@ -67,7 +69,7 @@ std::vector<AppDetails> CmAppDetailsSource::Fetch(const StoredSession& session,
       result.push_back(std::move(missing));
       continue;
     }
-    result.push_back(DetailsFromAppInfo(id, found->second, licensed_ ? licensed_->Get() : std::nullopt));
+    result.push_back(DetailsFromAppInfo(id, found->second, licensed_ ? licensed_->Get() : std::nullopt, language));
   }
   return result;
 }

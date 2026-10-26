@@ -240,6 +240,31 @@ void OtherBranchOptionsAreCandidates() {
          dragonwilds.launches[1].executable == "Aqua-Coyote.exe");
 }
 
+// The size shown has to count the depots the install will fetch: a localised game is bigger in
+// a language it carries, and the free-space check is made against that figure.
+void SizesFollowTheContentLanguage() {
+  const std::string buffer = R"("appinfo"
+{
+  "appid" "400"
+  "common" { "name" "Portal" "type" "Game" }
+  "config" { "launch" { "0" { "executable" "portal.exe" "config" { "oslist" "windows" } } } }
+  "depots"
+  {
+    "401" { "config" { "oslist" "windows" } "manifests" { "public" { "gid" "1" "size" "1000" "download" "400" } } }
+    "402" { "config" { "oslist" "windows" "language" "russian" } "manifests" { "public" { "gid" "2" "size" "500" "download" "200" } } }
+  }
+})";
+  const auto english = DetailsFromAppInfo(400, buffer);
+  assert(english.available && english.install_bytes == 1000u && english.download_bytes == 400u);
+
+  const auto russian = DetailsFromAppInfo(400, buffer, std::nullopt, "russian");
+  assert(russian.available && russian.install_bytes == 1500u && russian.download_bytes == 600u);
+
+  // A language the game does not carry is installed in English, and sized as English.
+  const auto polish = DetailsFromAppInfo(400, buffer, std::nullopt, "polish");
+  assert(polish.available && polish.install_bytes == 1000u && polish.download_bytes == 400u);
+}
+
 int main() {
   SizesCountOnlyLicensedDepots();
   RequestsAreDeduplicatedPerGeneration();
@@ -249,4 +274,5 @@ int main() {
   DefaultBetaKeyIsThePublicBranch();
   OtherBranchOptionsAreCandidates();
   ImpossibleDownloadSizeFallsBackToInstallSize();
+  SizesFollowTheContentLanguage();
 }

@@ -154,6 +154,23 @@ int main(int argc, char** argv) {
   SteamworksIdentity facts;
   CHECK(ReadSteamworksFacts(root.string(), &facts));
   CHECK((facts.depots == std::vector<std::uint32_t>{10, 20}) && (facts.owned_dlc == std::vector<std::uint32_t>{3000, 3001}));
+  // A file from before Playden could choose a language reads as English, which is what it got.
+  CHECK(facts.language == "english");
+
+  // Each game keeps the language it was downloaded in, whatever Settings says now, so the
+  // emulator tells the game the language its files are actually in.
+  Write(root / kSteamworksFactsFile, SerializeSteamworksFacts({20, 10}, {3001, 3000}, "russian"));
+  SteamworksIdentity localised;
+  CHECK(ReadSteamworksFacts(root.string(), &localised));
+  CHECK(localised.language == "russian" && (localised.depots == std::vector<std::uint32_t>{10, 20}));
+  // English is the default, so it is not written out; the reader answers with it either way.
+  CHECK(SerializeSteamworksFacts({10}, {}, "english").find("language=") == std::string::npos);
+  // A language Steam does not have leaves the game on English rather than reaching the emulator.
+  Write(root / kSteamworksFactsFile, "depots=10\ndlc=\nlanguage=klingon\n");
+  SteamworksIdentity unknown;
+  CHECK(ReadSteamworksFacts(root.string(), &unknown));
+  CHECK(unknown.language == "english");
+
   Write(root / kSteamworksFactsFile, "depots=1,x\n");
   CHECK(!ReadSteamworksFacts(root.string(), &facts));
   // A game without steam_api: nothing to do.

@@ -120,7 +120,8 @@ InstallRunner::Result SteamInstallRunner::InstallApp(const StoredSession& sessio
     log("entitlements", "partial", ("skipped_packages=" + std::to_string(entitlements.skipped_packages)).c_str());
   std::set<std::uint32_t> owned_apps = entitlements.owned_apps;
   owned_apps.insert(id);
-  if (!SelectDepots(*app, owned_apps, entitlements.owned_depots, &target.depots, &reason)) {
+  const std::string language = language_ ? language_() : std::string(kDefaultContentLanguage);
+  if (!SelectDepots(*app, owned_apps, entitlements.owned_depots, language, &target.depots, &reason)) {
     log("depots", "none", reason.c_str());
     result.failure = "No Windows content to install.";
     return result;
@@ -177,7 +178,7 @@ InstallRunner::Result SteamInstallRunner::InstallApp(const StoredSession& sessio
         depots.push_back(depot.id);
     for (const auto app_id : app->dlc_app_ids)
       if (entitlements.owned_apps.count(app_id)) dlc.push_back(app_id);
-    if (!runtime::WriteSteamworksFacts(root, depots, dlc)) log("steamworks_facts", "write-failed", root.c_str());
+    if (!runtime::WriteSteamworksFacts(root, depots, dlc, language)) log("steamworks_facts", "write-failed", root.c_str());
   }
   result.canceled = outcome.error == InstallError::kCanceled;
   result.retry_later = outcome.error == InstallError::kNetwork;
