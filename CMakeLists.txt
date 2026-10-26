@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PlaydenLauncher VERSION 0.7.1 LANGUAGES C CXX)
+project(PlaydenLauncher VERSION 0.7.2 LANGUAGES C CXX)
 
 set(PLAYDEN_PRERELEASE "" CACHE STRING "Pre-release suffix: empty or beta.N (1-999999)")
 set(PLAYDEN_FULL_VERSION "${PROJECT_VERSION}")

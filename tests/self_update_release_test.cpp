@@ -9,7 +9,7 @@ static const std::string kSha(64, 'a');
 
 static std::string Manifest(const std::string& app_override = {}, const std::string& kit_override = {}) {
   const std::string app = app_override.empty()
-      ? R"({"version":"0.3.0","title_id":"FAKE77031","min_from":"0.2.0","asset":"playden-ps5-0.3.0.zip","prefix":"playden-ps5-0.3.0/FAKE77031/"})"
+      ? R"({"version":"0.3.0","title_id":"FAKE77031","min_from":"0.2.0","asset":"playden-ps5-0.3.0.zip","prefix":"FAKE77031/"})"
       : app_override;
   const std::string kit = kit_override.empty()
       ? R"({"kit_id":"playden-kit","revision":"0.13","manifest_sha256":")" + kSha +
@@ -46,7 +46,7 @@ int main() {
   CHECK(manifest);
   CHECK(manifest->app_version == (Version{0, 3, 0}) && manifest->min_from == (Version{0, 2, 0}));
   CHECK(manifest->title_id == "FAKE77031" && manifest->app_asset == "playden-ps5-0.3.0.zip");
-  CHECK(manifest->app_prefix == "playden-ps5-0.3.0/FAKE77031/");
+  CHECK(manifest->app_prefix == "FAKE77031/");
   CHECK(manifest->kit.kit_id == "playden-kit" && manifest->kit.revision == "0.13" && manifest->kit.manifest_sha256 == kSha);
   CHECK(manifest->kit.prefix == "playden-kit-0.13/playden-kit/" && manifest->notes == "Faster downloads.");
 

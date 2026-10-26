@@ -3,18 +3,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // A title cannot start itself after it exits. Just before Playden quits to finish an update it
-// sends this payload to the payload loader on 127.0.0.1:9021. The payload reads the title to open
-// from REQUEST's first line ("FAKE77031\n"), and the quitting title from its second line (the same
-// title when there is none), waits until the quitting title's sandbox (/mnt/sandbox/<id>_*) is
-// gone, and starts the title with sceLncUtilLaunchApp, falling back to sceSystemServiceLaunchApp.
-// It gives up after 120 s. If the start fails, a notification asks the player to open Playden.
+// sends this payload to the payload loader on 127.0.0.1:9021. The payload reads the title id
+// from REQUEST ("FAKE77031\n"), waits until that title's sandbox (/mnt/sandbox/<id>_*) is gone,
+// and starts it again with sceLncUtilLaunchApp, falling back to sceSystemServiceLaunchApp. It
+// gives up after 120 s. If the start fails, a notification asks the player to open Playden.
 // Measured in results/20261015-self-update-probes: the sandbox goes about 5 s after the quit.
-//
-// When Playden moves to another title ("PPSA97031\nFAKE77031\n"), ShadowMountPlus registers the
-// new title only once the old one has closed (results/20261025-ppsa97031-probe: about 1 s later),
-// so the payload waits up to 60 s for its /user/app/<id>/mount.lnk. If the new title can't be
-// started, it opens the old one, which tells the player where the update went. Playden rewrites
-// REQUEST when the move fails at quit, so the first line is read again once the old title is gone.
 #include <dirent.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -85,82 +78,42 @@ static void notify(const char* text) {
     fprintf(out, "notify rc=0x%08x\n", sceKernelSendNotificationRequest(0, &request, sizeof request, 0));
 }
 
-// 1 once ShadowMountPlus has registered the title (its mount.lnk), 0 when it has not after 60 s.
-static int registered(const char* title) {
-    char link[64];
-    snprintf(link, sizeof link, "/user/app/%s/mount.lnk", title);
-    const double start = now();
-    while (access(link, F_OK) != 0) {
-        if (now() - start > 60) return 0;
-        usleep(250000);
-    }
-    usleep(1000000);  // the Home screen entry follows the link by about a second
-    return 1;
-}
-
-static uint32_t launch(const char* title, uint32_t user) {
-    launch_params params = {sizeof params, user, 0, 0, 0, 0};
-    uint32_t rc = sceLncUtilLaunchApp(title, NULL, &params);
-    fprintf(out, "%s sceLncUtilLaunchApp rc=0x%08x\n", title, rc);
-    if (rc & 0x80000000u) {
-        launch_params fallback = {sizeof fallback, user, 0, 0, 0, 1};
-        rc = sceSystemServiceLaunchApp(title, NULL, &fallback);
-        fprintf(out, "%s sceSystemServiceLaunchApp rc=0x%08x\n", title, rc);
-    }
-    return rc;
-}
-
 int main(void) {
     out = fopen(LOG, "w");
     if (!out) return 1;
     setvbuf(out, NULL, _IONBF, 0);
-    char title[32] = {0}, quitting[32] = {0};
+    char title[32] = {0};
     FILE* request = fopen(REQUEST, "r");
     if (!request || !fgets(title, sizeof title, request)) {
         fprintf(out, "no request\n");
         if (request) fclose(request);
         return 1;
     }
-    if (!fgets(quitting, sizeof quitting, request)) quitting[0] = 0;
     fclose(request);
     title[strcspn(title, "\r\n")] = 0;
-    quitting[strcspn(quitting, "\r\n")] = 0;
-    if (!quitting[0]) strcpy(quitting, title);
-    if (!valid_title(title) || !valid_title(quitting)) {
+    if (!valid_title(title)) {
         fprintf(out, "bad title id\n");
         return 1;
     }
     const double start = now();
     int state;
-    while ((state = running(quitting)) == 1 && now() - start < 120) usleep(250000);
-    fprintf(out, "title=%s quitting=%s wait state=%d s=%.2f\n", title, quitting, state, now() - start);
+    while ((state = running(title)) == 1 && now() - start < 120) usleep(250000);
+    fprintf(out, "title=%s wait state=%d s=%.2f\n", title, state, now() - start);
     if (state != 0) {
         notify("Playden was updated. Open it again from the Home screen.");
         return 1;
-    }
-    char final_title[32] = {0};
-    if ((request = fopen(REQUEST, "r"))) {
-        if (fgets(final_title, sizeof final_title, request)) {
-            final_title[strcspn(final_title, "\r\n")] = 0;
-            if (valid_title(final_title) && strcmp(final_title, title) != 0) {
-                fprintf(out, "title changed to %s\n", final_title);
-                strcpy(title, final_title);
-            }
-        }
-        fclose(request);
     }
     sceUserServiceInitialize(NULL);
     uint32_t user = 0;
     sceUserServiceGetForegroundUser(&user);
     sceLncUtilInitialize();
-    uint32_t rc = 0x80000000u;
-    if (strcmp(title, quitting) == 0) {
-        rc = launch(title, user);
-    } else {
-        const int ready = registered(title);
-        fprintf(out, "%s registered=%d s=%.2f\n", title, ready, now() - start);
-        if (ready) rc = launch(title, user);
-        if (rc & 0x80000000u) rc = launch(quitting, user);
+    launch_params params = {sizeof params, user, 0, 0, 0, 0};
+    uint32_t rc = sceLncUtilLaunchApp(title, NULL, &params);
+    fprintf(out, "sceLncUtilLaunchApp rc=0x%08x\n", rc);
+    if (rc & 0x80000000u) {
+        launch_params fallback = {sizeof fallback, user, 0, 0, 0, 1};
+        rc = sceSystemServiceLaunchApp(title, NULL, &fallback);
+        fprintf(out, "sceSystemServiceLaunchApp rc=0x%08x\n", rc);
     }
     if (rc & 0x80000000u) notify("Playden was updated. Open it again from the Home screen.");
     fclose(out);

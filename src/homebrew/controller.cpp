@@ -2136,7 +2136,6 @@ void Controller::TickSelfUpdate() {
     else if (request == "cancel") self_update_->Cancel();
     else if (request == "restart") self_update_->RequestRestart();
     else if (request == "rollback") self_update_->RequestRollback();
-    else if (request == "open-successor") self_update_->RequestOpenSuccessor();
     else if (request == "acknowledge") self_update_->AcknowledgeFinished();
     else if (request == "kit-check") self_update_->CheckKit();
     else if (request == "kit-install") self_update_->InstallKit();
@@ -2200,7 +2199,6 @@ void Controller::TickSelfUpdate() {
   }
   live.download_bytes = snapshot.download_bytes;
   live.kit_needed = snapshot.kit_needed;
-  live.moves = snapshot.moves;
   live.user_check = snapshot.user_check;
   live.error = snapshot.error;
   live.previous = snapshot.previous;
@@ -2209,7 +2207,6 @@ void Controller::TickSelfUpdate() {
   live.current_notes_url = snapshot.current_notes_url;
   live.whats_new = snapshot.whats_new;
   live.quiet = snapshot.quiet;
-  live.moved_to = snapshot.moved_to;
   live.finished_message = snapshot.finished_message;
   live.finished_failed = snapshot.finished_failed;
   live.kit_phase = update::KitInstallPhaseName(snapshot.kit.phase);

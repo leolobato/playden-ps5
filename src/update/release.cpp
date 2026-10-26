@@ -103,11 +103,6 @@ const ReleaseAsset* Release::Find(std::string_view name) const {
   return nullptr;
 }
 
-const ReleaseAsset* Release::Manifest() const {
-  const auto* v2 = Find(kUpdateManifestAssetV2);
-  return v2 ? v2 : Find(kUpdateManifestAsset);
-}
-
 namespace {
 
 std::optional<Release> ReleaseFrom(const Json* doc, std::string* error) {

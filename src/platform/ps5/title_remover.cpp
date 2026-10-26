@@ -55,7 +55,6 @@ bool WriteRequest(const std::filesystem::path& directory, const std::string& tex
 TitleRemoverOutcome RunTitleRemover(const TitleRemoverConfig& config, const std::string& title, const std::string& nonce) {
   TitleRemoverOutcome outcome;
   const auto& directory = config.request_directory;
-  auto held = config.hold_user ? config.hold_user() : nullptr;
   // The payload trusts only a directory owned by Playden's user that others cannot write.
   struct stat info{};
   if (lstat(directory.c_str(), &info) != 0) {
@@ -75,7 +74,6 @@ TitleRemoverOutcome RunTitleRemover(const TitleRemoverConfig& config, const std:
     outcome.detail = "request could not be written";
     return outcome;
   }
-  held.reset();
   const auto payload = ReadNoFollow(config.payload, kMaxPayload);
   if (!payload || payload->size() < 4 || payload->compare(0, 4, "\x7f" "ELF") != 0) {
     outcome.detail = "payload missing";

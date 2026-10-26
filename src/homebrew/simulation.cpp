@@ -498,7 +498,7 @@ std::string action_label(const std::string& key) {
         {"about-version", "Version"}, {"self-update-install", "Download and install"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
         {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
-        {"self-update-back-confirm", "Go back"}, {"release-notes-ok", "OK"}, {"successor-open", "Open the new Playden"},
+        {"self-update-back-confirm", "Go back"}, {"release-notes-ok", "OK"},
         {"about-build", "Build"}, {"about-framework", "Framework"}, {"about-platform", "Platform"},
         {"about-kit", "Runtime kit"}, {"about-kit-source", "Built from"},
         {"about-back", "Back"}, {"inject-library-refresh", "Refresh library fixture"},
@@ -1674,7 +1674,7 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
                          before.part != update.part || before.current != update.current ||
                          before.bytes_per_second != update.bytes_per_second || before.previous != update.previous ||
                          before.quiet != update.quiet || before.current_notes_url != update.current_notes_url ||
-                         before.whats_new != update.whats_new || before.moved_to != update.moved_to ||
+                         before.whats_new != update.whats_new ||
                          before.kit_phase != update.kit_phase || before.kit_done != update.kit_done ||
                          before.kit_total != update.kit_total || before.kit_error != update.kit_error ||
                          !update.finished_message.empty();
@@ -1694,9 +1694,7 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
         state_.self_update.finished_message.clear();
         self_update_requests_.push_back("acknowledge");
     }
-    if (!update.moved_to.empty() && before.moved_to.empty()) {
-        pending_update_prompt_ = "moved";
-    } else if (update.phase == "available" && update.quiet) {
+    if (update.phase == "available" && update.quiet) {
         self_update_prompted_ = "available " + update.available;  // Settings still lists it
     } else if (update.phase == "available" && self_update_prompted_ != "available " + update.available) {
         self_update_prompted_ = "available " + update.available;
@@ -1762,18 +1760,9 @@ void Simulation::show_update_prompt() {
                       size + "You can sign in and keep using Playden while it downloads.";
         open_modal(std::move(prompt));
     } else if (pending_update_prompt_ == "available" && update.phase == "available") {
-        const std::string beta = update.available.find("-beta.") != std::string::npos ? " (Beta)" : "";
-        // The same version as a new app: the step that follows an update from 0.7.1-beta.2 or older.
-        const bool same = update.moves && update.available == update.current;
-        ModalEntry prompt{"confirmation",
-                          same ? std::string("Move Playden to its new app")
-                               : "Playden " + update.available + beta + " is available",
-                          state_.navigation.focus_key, {"self-update-install", "ready-later"}, 0, false};
-        const std::string move = "Playden " + update.available + " installs as a new app next to this one, so "
-                                 "ProsperoStore can install and update it. Your sign-in, games and settings stay, and "
-                                 "this app is removed once the new one has started.\n\n";
-        prompt.body = (same ? std::string() : update.notes.empty() ? std::string() : update.notes + "\n\n") +
-                      (update.moves ? move : std::string()) + "The download is " +
+        ModalEntry prompt{"confirmation", "Playden " + update.available + (update.available.find("-beta.") != std::string::npos ? " (Beta)" : "") + " is available", state_.navigation.focus_key,
+                          {"self-update-install", "ready-later"}, 0, false};
+        prompt.body = (update.notes.empty() ? std::string() : update.notes + "\n\n") + "The download is " +
                       format_bytes(update.download_bytes) +
                       (update.kit_needed ? ", with a new runtime kit." : ".") +
                       " You can keep using Playden while it downloads.";
@@ -1784,15 +1773,6 @@ void Simulation::show_update_prompt() {
                           {"self-update-restart", "ready-later"}, 0, false};
         prompt.body = "Restart Playden to finish the update. It closes and opens again by itself; if it doesn't, "
                       "open it from the Home screen.";
-        open_modal(std::move(prompt));
-    } else if (pending_update_prompt_ == "moved" && !update.moved_to.empty()) {
-        // This title updated to the new one, which hasn't started yet: its tile may be missing.
-        ModalEntry prompt{"confirmation", "Playden " + update.moved_to + " is a new app", state_.navigation.focus_key,
-                          {"successor-open", "ready-later"}, 0, false};
-        prompt.body = "Playden " + update.moved_to + " was installed as a new app, and this one no longer updates. "
-                      "Open the new Playden from Home.\n\nIf it isn't on Home, choose Open the new Playden: this "
-                      "Playden closes, asks the PS5 to add the new one, and opens it. If this Playden opens again "
-                      "instead, restart the PS5 and look on Home.";
         open_modal(std::move(prompt));
     } else if (pending_update_prompt_ == "whats-new" || pending_update_prompt_ == "release-notes") {
         open_release_notes(pending_update_prompt_ == "whats-new");
@@ -1860,7 +1840,7 @@ void Simulation::close_game_modals() {
     modals.erase(std::remove_if(modals.begin(), modals.end(), [](const ModalEntry& modal) {
         return std::none_of(modal.action_keys.begin(), modal.action_keys.end(), [](const std::string& key) {
             return key == "self-update-install" || key == "self-update-restart" || key == "release-notes-ok" ||
-                   key == "kit-install" || key == "successor-open";
+                   key == "kit-install";
         });
     }), modals.end());
 }
@@ -1884,11 +1864,6 @@ void Simulation::request_self_update_restart(const std::string& request) {
         const auto& game = entry.second;
         return game.status == "Preparing" || !game.uninstall_status.empty() || game.maintenance_running;
     });
-    if (busy && request == "open-successor") {
-        show_alert("Open the new Playden later", "A game is being prepared or removed. When it is done, close Playden "
-                                                  "and open the new one from Home, or restart the PS5 if it isn't there.");
-        return;
-    }
     if (busy) {
         show_alert("Restart Playden later", "A game is being prepared or removed. Restart Playden from Settings when it is done.");
         return;
@@ -5277,10 +5252,8 @@ void Simulation::rebuild_view() {
                 item.value = "Checking…";
                 item.subtitle = "Looking for a newer Playden on GitHub";
             } else if (update.phase == "available") {
-                item.value = update.moves && update.available == update.current ? "New app available"
-                                                                                  : update.available + " available";
-                item.subtitle = (update.moves ? "Installs as a new app · download " : "Download ") +
-                                format_bytes(update.download_bytes);
+                item.value = update.available + " available";
+                item.subtitle = "Download " + format_bytes(update.download_bytes);
             } else if (update.phase == "downloading" || update.phase == "unpacking") {
                 item.value = update.total ? std::to_string(update.done * 100 / update.total) + "%" : "Working…";
                 item.subtitle = update.phase == "downloading" ? "Downloading Playden " + update.available
@@ -7601,7 +7574,6 @@ void Simulation::activate() {
     else if (live() && action_name == "kit-cancel") { close_modal(); self_update_requests_.push_back("kit-cancel"); }
     else if (live() && action_name == "self-update-cancel") { close_modal(); self_update_requests_.push_back("cancel"); }
     else if (live() && action_name == "self-update-restart") { close_modal(); request_self_update_restart(); }
-    else if (live() && action_name == "successor-open") { close_modal(); request_self_update_restart("open-successor"); }
     else if (live() && action_name == "self-update-notes") open_release_notes(false);
     else if (action_name == "release-notes-ok") close_modal();
     else if (live() && action_name == "self-update-back") {

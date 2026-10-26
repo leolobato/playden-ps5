@@ -113,7 +113,8 @@ Other versions can work, but these are the ones we know.
 ## Install
 
 Download `playden-ps5-<version>.zip` from the latest [release](../../releases): the Playden app (`FAKE77031`) and
-the console tools used below. Unzip it. Installing takes one copy over the network, the app folder. Playden
+the console tools used below. Unzip it into a folder of its own, `playden-ps5-<version>` (most unzip tools make it;
+with `unzip` on the command line, use `unzip playden-ps5-<version>.zip -d playden-ps5-<version>`). Installing takes one copy over the network, the app folder. Playden
 downloads its runtime kit on its first start, and after that it updates itself (see [Update Playden](#update-playden)).
 
 Like other PS5 homebrew, Playden is a folder in `/data/homebrew/`, and

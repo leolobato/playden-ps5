@@ -32,19 +32,6 @@ struct UpdateConfig {
   // Ids the kit had before (runtime::kKitIdRenames): a Playden that used one leaves its kit at
   // <kits_root>/<that id> when it updates to this one, and Start retires it as a previous kit.
   std::vector<std::string> renamed_kit_ids;
-  // The title Playden moves to when a release's update information names it instead of title_id
-  // (FAKE77031 -> PPSA97031, the ID ProsperoStore can install). The update goes into
-  // successor_root, the running app stays, and register_title asks ShadowMountPlus to add it.
-  // Empty: the update information must name title_id.
-  std::string successor_title_id;
-  std::string successor_root;                   // /data/homebrew/PPSA97031
-  std::function<bool(const std::string& folder)> register_title;
-  // The title this one replaced (PPSA97031 builds: FAKE77031). Start moves its app folder out of
-  // /data/homebrew once it holds no player data, and unregister_title removes its tile: true once the
-  // console no longer lists it. The folder is deleted at the next start. Empty: nothing replaced.
-  std::string predecessor_title_id;
-  std::string predecessor_root;                 // /data/homebrew/FAKE77031
-  std::function<bool(const std::string& title)> unregister_title;
   std::string appmeta_root;                     // /user/appmeta/FAKE77031
   std::string registered_app_root;              // /user/app/FAKE77031
   // The 0.6 layout move's record (/data/playden/runtime-state/layout-0.6.json). While it exists,
@@ -122,16 +109,12 @@ struct UpdateSnapshot {
   std::uint64_t total = 0;
   std::uint64_t download_bytes = 0;  // what Install will download
   bool kit_needed = false;
-  bool moves = false;          // the available release installs Playden as the successor title
   std::string error;           // for kFailed: one short sentence
   bool user_check = false;     // the last check was asked for in Settings
   bool restart_requested = false;
   // The version kept from the last update, which "go back" restores; empty when there is none.
   std::string previous;
   bool rollback_requested = false;
-  // This title moved to the successor, which has not started yet: the version it moved to.
-  std::string moved_to;
-  bool open_successor_requested = false;
   // The available version is one the player went back from: Settings lists it, no dialog offers it.
   bool quiet = false;
   // One-shot result of the previous run's update ("Playden was updated to 0.3.0."), shown once.
@@ -165,11 +148,6 @@ class UpdateService {
   void InstallKit();
   // Marks a staged update to be applied when Playden quits.
   void RequestRestart();
-  // The successor is installed: when Playden quits, it is registered again and opened instead.
-  void RequestOpenSuccessor();
-  // The title to open after quitting: the successor while a move to it is staged (or it was asked
-  // for), else title_id.
-  std::string RelaunchTitle() const;
   // Marks the previous version (and its kit) to be put back when Playden quits.
   void RequestRollback();
   UpdateSnapshot Snapshot() const;
@@ -181,8 +159,7 @@ class UpdateService {
   // Stops the worker (cancels a download; the bytes are kept for next time).
   void Shutdown();
   // Last step before the process exits, with every other service stopped: swaps the app folder
-  // when a staged update was requested. Returns true when the new version is in place (or, with
-  // the successor asked for, once its registration is requested).
+  // when a staged update was requested. Returns true when the new version is in place.
   bool ApplyAtQuit();
   // The newest app backup (".../backup/<version>-<time>") and its version, when it is complete.
   struct Backup {
@@ -198,20 +175,6 @@ class UpdateService {
   void DoInstall();
   void ConfirmApplied(const std::string& state);
   bool RollBackAtQuit();
-  bool MoveAtQuit();
-  // Puts the staged kit in place, the installed one going to previous_kit; as root. SwapKitBack undoes it.
-  bool SwapKitIn(const std::string& installed_kit, const std::string& previous_kit, std::string* error);
-  void SwapKitBack(const std::string& installed_kit, const std::string& previous_kit);
-  // Whether a staged update moves Playden to the successor title.
-  bool Moving() const;
-  // Start without the background work it leaves for the worker.
-  void StartState();
-  // Removes the predecessor title: its folder leaves /data/homebrew now, its tile in the background
-  // (UnregisterPredecessor, queued by Start).
-  void RetirePredecessor();
-  void UnregisterPredecessor();
-  // Why the predecessor's folder must stay (it may hold player data), or empty.
-  std::string PredecessorRefusal() const;
   // Why going back to `to` is refused (it can't read the 0.6 data layout), or empty.
   std::string LayoutRefusal(const Version& to) const;
   void FindPrevious();
@@ -250,11 +213,7 @@ class UpdateService {
   std::optional<ReleaseAsset> kit_zip_;
   // The staged update (from this run or a previous one): app folder, version, and the staged kit
   // folder with its kit id (empty when the installed kit is already the release's).
-  // The successor title is installed: this title no longer updates or installs kits.
-  bool superseded_ = false;
-  bool unregister_pending_ = false;
   std::string staged_folder_;
-  std::string staged_title_;
   Version staged_version_;
   std::string staged_kit_;
   std::string staged_kit_id_;

@@ -10,8 +10,7 @@
     "foundation_revision": "9c0b994a048521af6fb84c73ded364504fe250e9",
     "protocol_sha256": "bb02c4aa814eaba7a7a423a31b29ff41f786212c2953678cf29434e85fa0f869",
     "variants": {
-      "FAKE77031": "910f12157ea9ddcb3fd1c84864b02a0eee95d33133bafdf9058426f66d3dd316",
-      "PPSA97031": "2ec5761c36349c53e98b10b78037e7f70916fee9750292e793cbc86ac2b41c31"
+      "FAKE77031": "910f12157ea9ddcb3fd1c84864b02a0eee95d33133bafdf9058426f66d3dd316"
     },
     "payload_sdk": {
       "version": "v0.42",
@@ -21,7 +20,7 @@
     "source": "third_party/PS5-Lapy-JB-Daemon submodule, fork branch main at owned_title_revision; build with scripts/build-lapy-helper.sh"
   },
   "title_remover": {
-    "sha256": "5a452a90476a582b230504a841be863c6966187f998f7c29b4f222b7f2524deb",
+    "sha256": "b39725072337816d4c6d2b159849df5e5a3d86505b7450357d774cc8d8f90ca0",
     "payload_sdk": "ps5_payload_sdk",
     "source": "tools/title-remover/main.c; build with scripts/build-title-remover.sh (reproducible; sent by Playden to the payload loader on 127.0.0.1:9021)"
   },
@@ -35,7 +34,7 @@
     "purpose": "Reads release zips for Playden's self-update; writing APIs left out"
   },
   "self_update_relaunch": {
-    "sha256": "31a4ffb53de58b0bd5e9266a79a8a2f44df33586dffd4fe0fdb0df1510b14265",
+    "sha256": "e32c635cca2d67b0a94b388e17711748c9f4955238a02914135b432d529396e2",
     "payload_sdk": "ps5_payload_sdk",
     "source": "tools/self-update-relaunch/main.c; build with scripts/build-self-update-relaunch.sh (reproducible; sent by Playden to the payload loader on 127.0.0.1:9021 when it quits to finish an update)"
   },

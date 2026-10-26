@@ -13,9 +13,6 @@
 namespace playden::update {
 
 inline constexpr const char* kUpdateManifestAsset = "playden-update.json";
-// From 0.8.0 a release has two: playden-update.json names a FAKE77031 build, the only one Playden 0.7.1-beta.2
-// and older can read; playden-update-v2.json names the PPSA97031 app, and newer builds read it first.
-inline constexpr const char* kUpdateManifestAssetV2 = "playden-update-v2.json";
 
 struct ReleaseAsset {
   std::string name;
@@ -32,8 +29,6 @@ struct Release {
   bool prerelease = false;
   std::vector<ReleaseAsset> assets;
   const ReleaseAsset* Find(std::string_view name) const;
-  // The update information this build reads: playden-update-v2.json when the release has one.
-  const ReleaseAsset* Manifest() const;
 };
 
 // The JSON of GET /repos/<owner>/<repo>/releases/latest. The tag must be a version ("v0.3.0").

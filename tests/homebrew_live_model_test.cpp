@@ -1006,71 +1006,6 @@ void live_self_update(const std::filesystem::path& base) {
               "update: Download and install still has the focus");
     }
 
-    // The old title after the move to the new one, which hasn't started yet: a dialog says where Playden
-    // went, and its button quits to open the new title (registered again at quit). It shows once.
-    {
-        auto old_title = make_live(base);
-        old_title.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(old_title.UpdateLibrary({{}, false, {}, false, true, 100}), "moved: library delivered");
-        LiveSelfUpdate moved;
-        moved.current = "0.7.1";
-        moved.moved_to = "0.8.0";
-        old_title.UpdateSelfUpdate(moved);
-        check(!old_title.state().navigation.modals.empty() &&
-                  old_title.state().navigation.modals.back().title == "Playden 0.8.0 is a new app" &&
-                  old_title.state().navigation.modals.back().body.find("restart the PS5") != std::string::npos,
-              "moved: the old title says where Playden went");
-        playden::GameSummary game;
-        game.id = SteamId(220);
-        game.title = "Half-Life 2";
-        check(old_title.UpdateLibrary({{game}, false, {}, false, true, 100}) &&
-                  !old_title.state().navigation.modals.empty(),
-              "moved: the games arriving leave the dialog open");
-        check(old_title.action("cross") && old_title.state().quit_requested &&
-                  old_title.TakeSelfUpdateRequests() == std::vector<std::string>{"open-successor"},
-              "moved: Open the new Playden quits to open it");
-        auto later = make_live(base);
-        later.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(later.UpdateLibrary({{}, false, {}, false, true, 100}), "moved: library delivered again");
-        later.UpdateSelfUpdate(moved);
-        check(later.action("right") && later.action("cross") && later.state().navigation.modals.empty() &&
-                  !later.state().quit_requested && later.TakeSelfUpdateRequests().empty(),
-              "moved: Later keeps this Playden open");
-        later.UpdateSelfUpdate(moved);
-        check(later.state().navigation.modals.empty(), "moved: the dialog shows once");
-    }
-
-    // The bridge (0.8.0 as the old title) offers the same version as a new app; a newer move says so too.
-    {
-        auto bridge = make_live(base);
-        bridge.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(bridge.UpdateLibrary({{}, false, {}, false, true, 100}), "bridge: library delivered");
-        LiveSelfUpdate move;
-        move.current = "0.8.0";
-        move.phase = "available";
-        move.available = "0.8.0";
-        move.moves = true;
-        move.notes = "Notes already seen.";
-        bridge.UpdateSelfUpdate(move);
-        check(!bridge.state().navigation.modals.empty() &&
-                  bridge.state().navigation.modals.back().title == "Move Playden to its new app" &&
-                  bridge.state().navigation.modals.back().body.find("new app next to this one") != std::string::npos &&
-                  bridge.state().navigation.modals.back().body.find("Notes already seen.") == std::string::npos,
-              "bridge: the same version is offered as a move");
-        check(bridge.action("cross") && bridge.TakeSelfUpdateRequests() == std::vector<std::string>{"install"},
-              "bridge: the move downloads like an update");
-        auto newer = make_live(base);
-        newer.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(newer.UpdateLibrary({{}, false, {}, false, true, 100}), "bridge: library delivered again");
-        move.current = "0.7.1";
-        newer.UpdateSelfUpdate(move);
-        check(!newer.state().navigation.modals.empty() &&
-                  newer.state().navigation.modals.back().title == "Playden 0.8.0 is available" &&
-                  newer.state().navigation.modals.back().body.find("Notes already seen.") != std::string::npos &&
-                  newer.state().navigation.modals.back().body.find("new app next to this one") != std::string::npos,
-              "bridge: a newer move keeps its notes and says it is a new app");
-    }
-
     // A failed install says why; the previous run's result shows once.
     auto failing = make_live(base);
     failing.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
@@ -1187,11 +1122,11 @@ void live_root_access_missing() {
         {"stable launcher source is invalid: assets root is unavailable", true, "Playden's app folder is incomplete",
          "Copy the whole app folder"},
         {"stable launcher source identity does not match", true, "Playden can't start", "restart the PS5"},
-        {"launcher is not installed in /data/homebrew/PPSA97031; helper stage=done status=0 error=0", true,
-         "Install Playden on console storage", "Playden runs only from /data/homebrew/PPSA97031, on the console's"},
-        {"launcher is not installed in /data/homebrew/PPSA97031", false, "Install Playden on console storage",
+        {"launcher is not installed in /data/homebrew/FAKE77031; helper stage=done status=0 error=0", true,
+         "Install Playden on console storage", "Playden runs only from /data/homebrew/FAKE77031, on the console's"},
+        {"launcher is not installed in /data/homebrew/FAKE77031", false, "Install Playden on console storage",
          "set Settings > Install location to /data/homebrew, hold Uninstall"},
-        {"launcher is not installed in /data/homebrew/PPSA97031", false, "Install Playden on console storage",
+        {"launcher is not installed in /data/homebrew/FAKE77031", false, "Install Playden on console storage",
          "move the app folder to /data/homebrew."},
     };
     for (const auto& item : cases) {

@@ -10,7 +10,6 @@
 #include "stores/local/copy_runner.h"
 #include "stores/local/library_source.h"
 #include "app/diagnostic_log.h"
-#include "platform/ps5/title_database.h"
 #include "platform/ps5/title_registry.h"
 #include "platform/ps5/title_remover.h"
 #include "platform/ps5/title_runtime.h"
@@ -42,9 +41,6 @@
 #include "platform/ps5/system.hpp"
 
 #include <array>
-#include <cerrno>
-#include <chrono>
-#include <thread>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -399,47 +395,6 @@ int main() {
         update_config.kit_manifest_sha256 = playden::runtime::kExpectedKitManifestSha256;
         for (const auto& renamed : playden::runtime::kKitIdRenames)
             if (std::string(renamed.to) == playden::runtime::kDevelopmentKitId) update_config.renamed_kit_ids.push_back(renamed.from);
-        // Playden moves from FAKE77031 to PPSA97031, the ID ProsperoStore can install: a release whose update
-        // information names PPSA97031 installs as that title, and ShadowMountPlus registers it.
-        if (std::string(PLAYDEN_PS5_TITLE_ID) == "FAKE77031") {
-            update_config.successor_title_id = "PPSA97031";
-            update_config.successor_root = "/data/homebrew/PPSA97031";
-            update_config.register_title = [](const std::string& folder) {
-                const auto added = playden::ps5::ShadowMountPost("/api/v1/manual/add", "{\"path\":\"" + folder + "\"}");
-                playden::ps5::ShadowMountPost("/api/v1/scan", "{}");  // deferred until no title runs
-                return added && added->find("\"status\":0") != std::string::npos;
-            };
-        }
-        // Moved here from FAKE77031: the old title's folder and tile go once it holds no player data.
-        if (std::string(PLAYDEN_PS5_TITLE_ID) == "PPSA97031") {
-            update_config.predecessor_title_id = "FAKE77031";
-            update_config.predecessor_root = "/data/homebrew/FAKE77031";
-            update_config.unregister_title = [title_root = paths.title_root](const std::string& title) {
-                const auto gone = [&title] {
-                    struct stat info{};
-                    return playden::ps5::ReadNativeTitleDatabase(title).inventory == playden::runtime::TitleAvailability::kFree &&
-                           lstat(("/user/app/" + title).c_str(), &info) != 0 && errno == ENOENT;
-                };
-                // Its manual source goes first: ShadowMountPlus would add the title again from it.
-                playden::ps5::ShadowMountPost("/api/v1/manual/remove", "{\"path\":\"/data/homebrew/" + title + "\"}");
-                if (gone()) return true;
-                // ShadowMountPlus refuses to uninstall while a title runs: the title remover payload does it.
-                playden::ps5::TitleRemoverConfig remover;
-                remover.payload = title_root + "/title-remover.elf";
-                remover.send = playden::ps5::SendToPayloadLoader;
-                char nonce[24];
-                std::snprintf(nonce, sizeof nonce, "%016llx",
-                              static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count()));
-                // The request is written as the app's user: no other thread raises root meanwhile.
-                remover.hold_user = playden::ps5::HoldEffectiveUid;
-                const auto outcome = playden::ps5::RunTitleRemover(remover, title, nonce);
-                playden::app::AppendLogLine(log_root, "update.log", "self-update: title remover for " + title + " sent=" +
-                    std::to_string(outcome.sent) + " code=" + (outcome.code ? std::to_string(*outcome.code) : "none") +
-                    " detail=" + outcome.detail);
-                for (int poll = 0; poll < 60 && !gone(); ++poll) std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                return gone();
-            };
-        }
         update_config.appmeta_root = std::string("/user/appmeta/") + PLAYDEN_PS5_TITLE_ID;
         update_config.registered_app_root = std::string("/user/app/") + PLAYDEN_PS5_TITLE_ID;
         update_config.layout_journal = "/data/playden/runtime-state/layout-0.6.json";
@@ -970,8 +925,7 @@ int main() {
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown self-update start");
         self_update.Shutdown();
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown done");
-        if (self_update.Snapshot().restart_requested || self_update.Snapshot().rollback_requested ||
-            self_update.Snapshot().open_successor_requested) {
+        if (self_update.Snapshot().restart_requested || self_update.Snapshot().rollback_requested) {
             // The relaunch payload starts first: it waits until Playden has gone, then opens it again.
             std::string elf, error;
             if (FILE* file = std::fopen((paths.title_root + "/self-update-relaunch.elf").c_str(), "rb")) {
@@ -982,20 +936,12 @@ int main() {
             }
             const std::string request = "/data/playden/self-update/relaunch-title";
             FILE* title = std::fopen(request.c_str(), "w");
-            // The title to open, then this one (they differ when the update moves Playden to a new title).
-            const std::string titles = self_update.RelaunchTitle() + "\n" PLAYDEN_PS5_TITLE_ID "\n";
-            const bool requested = title && std::fputs(titles.c_str(), title) >= 0;
+            const bool requested = title && std::fputs(PLAYDEN_PS5_TITLE_ID "\n", title) >= 0;
             if (title) std::fclose(title);
             const bool sent = !elf.empty() && requested && playden::ps5::SendToPayloadLoader(elf, &error);
             playden::app::AppendLogLine(log_root, "update.log", std::string("self-update: relaunch payload ") +
                                                                     (sent ? "sent" : "not sent: " + (elf.empty() ? std::string("missing") : error)));
             const bool swapped = self_update.ApplyAtQuit();
-            // A move that did not happen reopens this title: the payload reads the request again once Playden is gone.
-            if (!swapped && self_update.RelaunchTitle() != PLAYDEN_PS5_TITLE_ID)
-                if (FILE* again = std::fopen(request.c_str(), "w")) {
-                    std::fputs(PLAYDEN_PS5_TITLE_ID "\n" PLAYDEN_PS5_TITLE_ID "\n", again);
-                    std::fclose(again);
-                }
             playden::app::AppendLogLine(log_root, "update.log", std::string("self-update: quit ") +
                                                                     (swapped ? "with the new files in place" : "without changing the app"));
         }

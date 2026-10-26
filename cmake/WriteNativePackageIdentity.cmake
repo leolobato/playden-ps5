@@ -1,4 +1,4 @@
-if(NOT DEFINED APP_DIR OR NOT TITLE_ID MATCHES "^(FAKE|PPSA)[0-9][0-9][0-9][0-9][0-9]$")
+if(NOT DEFINED APP_DIR OR NOT TITLE_ID MATCHES "^FAKE[0-9][0-9][0-9][0-9][0-9]$")
     message(FATAL_ERROR "APP_DIR and a canonical native TITLE_ID are required")
 endif()
 if(NOT EXISTS "${APP_DIR}/eboot.bin" OR IS_DIRECTORY "${APP_DIR}/eboot.bin" OR IS_SYMLINK "${APP_DIR}/eboot.bin")

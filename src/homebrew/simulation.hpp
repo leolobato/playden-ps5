@@ -110,7 +110,6 @@ struct LiveSelfUpdate {
     std::optional<int> eta_seconds;
     std::uint64_t download_bytes = 0;
     bool kit_needed = false;
-    bool moves = false;          // the update installs Playden as a new app (its new title)
     bool user_check = false;     // the last check was asked for in Settings
     std::string error;
     std::string previous;        // the version "go back" restores; empty when none is kept
@@ -119,7 +118,6 @@ struct LiveSelfUpdate {
     std::string current_notes_url;
     bool whats_new = false;      // the previous run updated Playden: show its release notes once
     bool quiet = false;          // the available version is one the player went back from: no dialog
-    std::string moved_to;        // Playden moved to its new title, which hasn't started yet: its version
     std::string finished_message;  // the previous run's update result, shown once
     bool finished_failed = false;
     // The kit-only install (first run, or a kit that isn't this version's): idle, checking, not-needed,

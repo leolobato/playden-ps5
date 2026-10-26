@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Write playden-update.json, the release asset Playden's self-update reads.
 
-Run it on the two release zips before publishing a GitHub release, and attach its output to the
+Run it on the app zip (the FAKE77031/ app folder at the top, tools and documents next to it) and the kit zip before publishing a GitHub release, and attach its output to the
 release next to them:
 
-    python3 tools/write_update_manifest.py --app-zip playden-ps5-0.3.0.zip \\
+    python3 tools/write_update_manifest.py --app-zip FAKE77031.zip \\
         --kit-zip playden-kit-0.10.zip --kit-revision 0.10 --min-from 0.2.0 \\
         --notes "Faster downloads and simpler game settings." --out playden-update.json
 
@@ -33,6 +33,16 @@ def version(text):
     if not match:
         raise SystemExit(f"not a version: {text!r}")
     return ".".join(str(int(part)) for part in match.groups()[:3]) + (f"-beta.{match[4]}" if match[4] else "")
+
+
+def app_prefix(archive):
+    """The "<title id>/" app folder at the top of the app zip, the layout ProsperoStore installs. Tools and
+    documents may sit next to it."""
+    found = sorted({name[: -len("sce_sys/param.json")] for name in archive.namelist()
+                    if name.endswith("/sce_sys/param.json") and name.count("/") == 2})
+    if len(found) != 1 or found[0] in ("./", "../"):
+        raise SystemExit(f"{archive.filename}: needs exactly one <title id>/sce_sys/param.json at the top, found {found}")
+    return found[0]
 
 
 def inner_prefix(archive, marker):
@@ -86,11 +96,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     with zipfile.ZipFile(args.app_zip) as app:
-        app_prefix = inner_prefix(app, "sce_sys/param.json")
-        param = json.loads(app.read(app_prefix + "sce_sys/param.json"))
+        prefix = app_prefix(app)
+        param = json.loads(app.read(prefix + "sce_sys/param.json"))
         numeric_version = version(param["contentVersion"])
         try:
-            full_text = app.read(app_prefix + "playden-version").decode("ascii")
+            full_text = app.read(prefix + "playden-version").decode("ascii")
             app_version = version(full_text.removesuffix("\n"))
         except KeyError:
             app_version = numeric_version  # Packages predating full version metadata.
@@ -101,6 +111,8 @@ def main(argv=None):
     title_id = param["titleId"]
     if not re.fullmatch(r"[A-Z]{4}\d{5}", title_id):
         raise SystemExit(f"unexpected title id {title_id!r}")
+    if prefix != title_id + "/":
+        raise SystemExit(f"app folder {prefix!r} is not named after the title id {title_id!r}")
 
     with zipfile.ZipFile(args.kit_zip) as kit:
         kit_prefix = inner_prefix(kit, "manifest.json")
@@ -121,7 +133,7 @@ def main(argv=None):
     update = {
         "format": 1,
         "app": {"version": app_version, "title_id": title_id, "min_from": version(args.min_from),
-                "asset": args.app_zip.name, "prefix": app_prefix},
+                "asset": args.app_zip.name, "prefix": prefix},
         "kit": {"kit_id": kit_id, "revision": args.kit_revision, "manifest_sha256": kit_sha,
                 "asset": args.kit_zip.name, "prefix": kit_prefix},
         "notes": notes,

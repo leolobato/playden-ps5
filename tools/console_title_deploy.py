@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy or restore the Playden package files (FAKE77031 unless --title says otherwise) over FTP.
+"""Deploy or restore the Playden FAKE77031 package files over FTP.
 
 deploy: compares every packaged file with the console, backs up each differing
 console file locally (bytes, mode, SHA-256), then replaces it through a staged
@@ -17,7 +17,6 @@ import hashlib
 import io
 import json
 import os
-import re
 from pathlib import Path, PurePosixPath
 import sys
 
@@ -106,22 +105,14 @@ def main():
     parser.add_argument("--host", default=os.environ.get("PLAYDEN_PS5_HOST"),
                         help="the PS5's IP address (or set PLAYDEN_PS5_HOST)")
     parser.add_argument("--port", type=int, default=2120)
-    parser.add_argument("--title", default="FAKE77031", help="Playden's title ID (default FAKE77031)")
     args = parser.parse_args()
     if not args.host:
         parser.error("give the PS5's address with --host or PLAYDEN_PS5_HOST")
-    if not re.fullmatch(r"(?:FAKE|PPSA)[0-9]{5}", args.title):
-        parser.error("--title must be FAKE or PPSA and five digits")
-    global TITLE
-    TITLE = "/data/homebrew/" + args.title
     ftp = ftplib.FTP()
     ftp.connect(args.host, args.port, timeout=60)
     ftp.login()
     if args.command == "restore":
         record = json.loads((args.backup / "backup.json").read_text())
-        if record["title"] != TITLE:
-            print(f"refusing: the backup is of {record['title']}, not {TITLE}", file=sys.stderr)
-            return 1
         for path, entry in record["files"].items():
             remote = f"{TITLE}/{path}"
             if entry["sha256"] is None:
