@@ -88,11 +88,14 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
 // Steam `oslist`: empty means every platform; otherwise a comma list that must name windows.
 bool OsListMatchesWindows(std::string_view os_list);
 
-// Windows/English depot selection: eligible by OS, language, shared install, access and DLC
-// ownership, then only those with a public manifest, sorted by id. Returns false with a short
-// reason when nothing is eligible or available.
+// Windows depot selection: eligible by OS, language, shared install, access and DLC ownership,
+// then only those with a public manifest, sorted by id. `language` is the content language the
+// player chose, as Steam names it ("german"); a depot with no language belongs to every
+// language. A game that carries no depot in that language is selected for English instead, so
+// asking for a language the game does not have never installs less than before. Returns false
+// with a short reason when nothing is eligible or available.
 bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
-                  const std::optional<std::set<std::uint32_t>>& owned_depots,
+                  const std::optional<std::set<std::uint32_t>>& owned_depots, std::string_view language,
                   std::vector<DepotInfo>* selected, std::string* reason);
 
 // Depots that look like the game itself but the account's licenses do not grant: no oslist, no

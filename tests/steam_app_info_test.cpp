@@ -262,32 +262,73 @@ void TestSelectDepots() {
   CHECK(app);
   std::vector<DepotInfo> selected;
   std::string reason;
-  CHECK(SelectDepots(*app, {kApp}, std::nullopt, &selected, &reason));
+  CHECK(SelectDepots(*app, {kApp}, std::nullopt, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{101, 106}));
-  CHECK(SelectDepots(*app, {kApp, 999}, std::nullopt, &selected, &reason));
+  CHECK(SelectDepots(*app, {kApp, 999}, std::nullopt, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{101, 105, 106}));
-  CHECK(SelectDepots(*app, {kApp, 999}, std::set<std::uint32_t>{101}, &selected, &reason));
+  CHECK(SelectDepots(*app, {kApp, 999}, std::set<std::uint32_t>{101}, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{101}));
-  CHECK(!SelectDepots(*app, {999}, std::nullopt, &selected, &reason));
+  CHECK(!SelectDepots(*app, {999}, std::nullopt, "english", &selected, &reason));
   CHECK(reason.find("does not own") != std::string::npos);
 
-  CHECK(!SelectDepots(*app, {kApp}, std::set<std::uint32_t>{102, 103, 104}, &selected, &reason));
+  CHECK(!SelectDepots(*app, {kApp}, std::set<std::uint32_t>{102, 103, 104}, "english", &selected, &reason));
   CHECK(reason.find("no downloadable") != std::string::npos);
 
   AppInfo empty_manifest = *app;
   for (DepotInfo& d : empty_manifest.depots) d.manifest_gid = 0;
-  CHECK(!SelectDepots(empty_manifest, {kApp, 999}, std::nullopt, &selected, &reason));
+  CHECK(!SelectDepots(empty_manifest, {kApp, 999}, std::nullopt, "english", &selected, &reason));
   CHECK(reason.find("public branch") != std::string::npos);
 
   AppInfo duplicate = *app;
   duplicate.depots.push_back(duplicate.depots[0]);
-  CHECK(!SelectDepots(duplicate, {kApp}, std::nullopt, &selected, &reason));
+  CHECK(!SelectDepots(duplicate, {kApp}, std::nullopt, "english", &selected, &reason));
 
   // depot_from_app grants access even when the account's depot list omits it.
   AppInfo from_app = *app;
   from_app.depots[0].depot_from_app = 5;
-  CHECK(SelectDepots(from_app, {kApp}, std::set<std::uint32_t>{106}, &selected, &reason));
+  CHECK(SelectDepots(from_app, {kApp}, std::set<std::uint32_t>{106}, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{101, 106}));
+}
+
+// The content language picks the localised depots to install beside the language-neutral ones.
+void TestDepotLanguage() {
+  const auto app = ParseAppInfo(kApp, Buffer());
+  CHECK(app);
+  std::vector<DepotInfo> selected;
+  std::string reason;
+
+  // 101 and 106 carry no language and belong to every one; 103 is the German depot.
+  CHECK(SelectDepots(*app, {kApp}, std::nullopt, "german", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101, 103, 106}));
+  CHECK(SelectDepots(*app, {kApp}, std::nullopt, "GERMAN", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101, 103, 106}));
+
+  // The game has no Russian depot, so it is installed in English rather than without its
+  // localised content: asking for a language a game does not carry never installs less.
+  CHECK(SelectDepots(*app, {kApp}, std::nullopt, "russian", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101, 106}));
+  // An empty language is English, which is what Playden installed before it could be chosen.
+  CHECK(SelectDepots(*app, {kApp}, std::nullopt, "", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101, 106}));
+
+  // A language depot the licenses do not grant is left out, like any other.
+  CHECK(SelectDepots(*app, {kApp}, std::set<std::uint32_t>{101, 103}, "german", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101, 103}));
+  CHECK(SelectDepots(*app, {kApp}, std::set<std::uint32_t>{101}, "german", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101}));
+
+  // Nothing to install says which language it looked for.
+  CHECK(!SelectDepots(*app, {kApp}, std::set<std::uint32_t>{102, 104}, "german", &selected, &reason));
+  CHECK(reason.find("German") != std::string::npos);
+
+  // A game whose only Windows content is localised installs that content.
+  AppInfo localised = *app;
+  for (DepotInfo& depot : localised.depots)
+    if (depot.id == 101) depot.language = "german";
+  CHECK(SelectDepots(localised, {kApp}, std::nullopt, "german", &selected, &reason));
+  CHECK((Ids(selected) == U32s{101, 103, 106}));
+  CHECK(SelectDepots(localised, {kApp}, std::nullopt, "english", &selected, &reason));
+  CHECK((Ids(selected) == U32s{106}));
 }
 
 // A partial grant must not install as if complete (issue #58): Team Fortress 2's content depot has
@@ -311,12 +352,12 @@ void TestMissingBaseDepots() {
   std::string reason;
 
   const std::set<std::uint32_t> partial{232251};
-  CHECK(SelectDepots(app, {440}, partial, &selected, &reason));
+  CHECK(SelectDepots(app, {440}, partial, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{232251}));
   CHECK((MissingBaseDepots(app, partial, selected) == U32s{441, 450}));
 
   const std::set<std::uint32_t> full{441, 232251};
-  CHECK(SelectDepots(app, {440}, full, &selected, &reason));
+  CHECK(SelectDepots(app, {440}, full, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{441, 232251}));
   // An unowned depot smaller than the game is an extra, not the game.
   CHECK(MissingBaseDepots(app, full, selected).empty());
@@ -324,7 +365,7 @@ void TestMissingBaseDepots() {
   CHECK(MissingBaseDepots(app, std::nullopt, selected).empty());
   AppInfo sizeless = app;
   for (DepotInfo& depot : sizeless.depots) depot.size = 0;
-  CHECK(SelectDepots(sizeless, {440}, partial, &selected, &reason));
+  CHECK(SelectDepots(sizeless, {440}, partial, "english", &selected, &reason));
   CHECK(MissingBaseDepots(sizeless, partial, selected).empty());
 
   // Marvel Rivals: the free license grants one content depot; a same-size copy and a third content
@@ -341,7 +382,7 @@ void TestMissingBaseDepots() {
   other.size = 20'311'069'758ull;
   rivals.depots = {granted, copy, other};
   const std::set<std::uint32_t> free_license{2767031};
-  CHECK(SelectDepots(rivals, {2767030}, free_license, &selected, &reason));
+  CHECK(SelectDepots(rivals, {2767030}, free_license, "english", &selected, &reason));
   CHECK((Ids(selected) == U32s{2767031}));
   CHECK(MissingBaseDepots(rivals, free_license, selected).empty());
 }
@@ -451,6 +492,7 @@ int main() {
   TestParse();
   TestParseDefaultsAndFailures();
   TestSelectDepots();
+  TestDepotLanguage();
   TestMissingBaseDepots();
   TestEligibleLaunches();
   TestWindowsArguments();

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 
+#include "steam/backend/content_language.h"
 #include "steam/backend/vdf.h"
 
 namespace playden::steam {
@@ -95,7 +96,7 @@ int NaturalCompare(std::string_view a, std::string_view b) {
   return 0;
 }
 
-bool Fail(std::string* reason, const char* text) {
+bool Fail(std::string* reason, std::string_view text) {
   if (reason != nullptr) *reason = text;
   return false;
 }
@@ -386,7 +387,7 @@ bool OsListMatchesWindows(std::string_view os_list) {
 }
 
 bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
-                  const std::optional<std::set<std::uint32_t>>& owned_depots,
+                  const std::optional<std::set<std::uint32_t>>& owned_depots, std::string_view language,
                   std::vector<DepotInfo>* selected, std::string* reason) {
   if (owned_apps.count(app.app_id) == 0) {
     return Fail(reason, "This account does not own the selected game.");
@@ -401,9 +402,18 @@ bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
     if (depot.depot_from_app) accessible.insert(depot.id);
   }
 
+  const std::string wanted = language.empty() ? std::string(kDefaultContentLanguage) : LowerString(language);
+  // A game that has no depot in the wanted language gets English, which is what Playden has
+  // always installed: asking for a language the game does not carry must not take content away.
+  const bool carries_wanted = std::any_of(app.depots.begin(), app.depots.end(), [&](const DepotInfo& depot) {
+    return !depot.language.empty() && LowerString(depot.language) == wanted;
+  });
+  const std::string chosen = carries_wanted ? wanted : std::string(kDefaultContentLanguage);
+
   std::vector<DepotInfo> eligible;
   for (const DepotInfo& depot : app.depots) {
-    const bool language_ok = depot.language.empty() || LowerString(depot.language) == "english";
+    // A depot with no language belongs to every language; the rest only to their own.
+    const bool language_ok = depot.language.empty() || LowerString(depot.language) == chosen;
     const bool dlc_ok = (!depot.is_dlc && !depot.dlc_app_id) ||
                         (depot.dlc_app_id && owned_apps.count(*depot.dlc_app_id) != 0);
     if (OsListMatchesWindows(depot.os_list) && language_ok && !depot.shared_install &&
@@ -412,7 +422,7 @@ bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
     }
   }
   if (eligible.empty()) {
-    return Fail(reason, "This game has no downloadable Windows content for English.");
+    return Fail(reason, "This game has no downloadable Windows content for " + LanguageName(chosen) + ".");
   }
   std::vector<DepotInfo> result;
   std::set<std::uint32_t> ids;

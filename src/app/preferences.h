@@ -23,6 +23,10 @@ struct Preferences {
   // saved on the PS5, so every Playden start asks for a sign-in. On (the default) keeps it in session.v1.
   bool steam_stay_signed_in = true;
   bool beta_updates = false;
+  // The language game content is downloaded in, as Steam names its depot languages
+  // ("german", "koreana"). Steam ships localisations as separate depots; a game that has none
+  // in this language is installed in English, as every game was before this could be chosen.
+  std::string content_language = "english";
 };
 
 enum class PreferencesLoadStatus {
