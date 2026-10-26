@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-4241920",
+  "recipe_version": 1,
+  "app_id": 4241920,
+  "name": "BRAZILIAN DRUG DEALER BEFORE 4: DEMONS FROM THE PORTAL TO HELL I OPENED ARE STILL IN THE FAVELA AND NOW I HAVE TO SAVE MAMADAS FROM RONALDO",
+  "launch_entries": [
+    {"id": "program", "label": "AVIAO3GAME.exe", "executable": "AVIAO3GAME.exe", "working_directory": "", "arguments": ""}
+  ],
+  "arguments": "",
+  "resolution_arguments": "",
+  "dll_overrides": "",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "opengl",
+  "detected": "unknown",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 4241920,
+  "executable": "AVIAO3GAME.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "works",
+    "notes": "",
+    "author": "brokenglasszero"
+  }
+}
