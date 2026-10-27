@@ -1,0 +1,33 @@
+{
+  "recipe_id": "community-3112260",
+  "recipe_version": 1,
+  "app_id": 3112260,
+  "name": "Virtua Fighter 5 R.E.V.O. World Stage",
+  "launch_entries": [
+    {"id": "launch-1", "label": "start_protected_game.exe", "executable": "runtime/media/start_protected_game.exe", "working_directory": "runtime/media", "arguments": ""}
+  ],
+  "arguments": "",
+  "resolution_arguments": "",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n;d3d12,d3d12core=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "detected": "d3d11,d3d12,d3d9,dxgi,opengl,vulkan,anticheat",
+  "defaults": {
+    "d3d12": "vkd3d-proton",
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 3112260,
+  "executable": "runtime/media/start_protected_game.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "broken",
+    "notes": "Anti-cheat failure.",
+    "author": "brokenglasszero"
+  }
+}
