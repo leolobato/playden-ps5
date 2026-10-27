@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-2104460",
+  "recipe_version": 1,
+  "app_id": 2104460,
+  "name": "Mala Petaka",
+  "launch_entries": [
+    {"id": "launch-1", "label": "MalaPetaka.exe", "executable": "MalaPetaka.exe", "working_directory": "", "arguments": ""}
+  ],
+  "arguments": "",
+  "resolution_arguments": "",
+  "dll_overrides": "",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "opengl",
+  "detected": "opengl,vulkan",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 2104460,
+  "executable": "MalaPetaka.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "works",
+    "notes": "",
+    "author": "brokenglasszero"
+  }
+}
