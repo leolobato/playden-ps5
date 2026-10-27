@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-613830",
+  "recipe_version": 1,
+  "app_id": 613830,
+  "name": "CHRONO TRIGGER",
+  "launch_entries": [
+    {"id": "launch-1", "label": "Chrono Trigger.exe", "executable": "Chrono Trigger.exe", "working_directory": "", "arguments": ""}
+  ],
+  "arguments": "",
+  "resolution_arguments": "",
+  "dll_overrides": "",
+  "architecture": "pe32",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "opengl",
+  "detected": "opengl",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 613830,
+  "executable": "Chrono Trigger.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "works",
+    "notes": "",
+    "author": "brokenglasszero"
+  }
+}
