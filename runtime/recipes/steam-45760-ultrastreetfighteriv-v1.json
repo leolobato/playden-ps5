@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-45760",
+  "recipe_version": 1,
+  "app_id": 45760,
+  "name": "Ultra Street Fighter IV",
+  "launch_entries": [
+    {"id": "launch-1", "label": "SSFIV.exe", "executable": "SSFIV.exe", "working_directory": "", "arguments": ""}
+  ],
+  "arguments": "",
+  "resolution_arguments": "",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe32",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "detected": "d3d9",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 45760,
+  "executable": "SSFIV.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "broken",
+    "notes": "Endless loading after title screen.",
+    "author": "brokenglasszero"
+  }
+}
