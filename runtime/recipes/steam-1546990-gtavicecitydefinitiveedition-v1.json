@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-1546990",
+  "recipe_version": 1,
+  "app_id": 1546990,
+  "name": "Grand Theft Auto: Vice City - The Definitive Edition",
+  "launch_entries": [
+    {"id": "launch-1", "label": "Play", "executable": "PlayGTAViceCity.exe", "working_directory": "", "arguments": ""}
+  ],
+  "arguments": "-dx11",
+  "resolution_arguments": "",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "detected": "unreal",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 1546990,
+  "executable": "PlayGTAViceCity.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "broken",
+    "notes": "",
+    "author": "brokenglasszero"
+  }
+}
