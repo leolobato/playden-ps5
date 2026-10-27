@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-1173800",
+  "recipe_version": 1,
+  "app_id": 1173800,
+  "name": "FINAL FANTASY IV",
+  "launch_entries": [
+    {"id": "launch-1", "label": "FINAL FANTASY IV.exe", "executable": "FINAL FANTASY IV.exe", "working_directory": "", "arguments": ""}
+  ],
+  "arguments": "-force-d3d11 {resolution}",
+  "resolution_arguments": "-screen-width {w} -screen-height {h}",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "detected": "unity-il2cpp,d3d11,d3d12,d3d9,dxgi,opengl,vulkan",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 1173800,
+  "executable": "FINAL FANTASY IV.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "works",
+    "notes": "",
+    "author": "brokenglasszero"
+  }
+}
