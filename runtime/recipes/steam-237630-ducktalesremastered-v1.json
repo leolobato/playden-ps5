@@ -1,0 +1,32 @@
+{
+  "recipe_id": "community-237630",
+  "recipe_version": 1,
+  "app_id": 237630,
+  "name": "DuckTales Remastered",
+  "launch_entries": [
+    {"id": "launch-1", "label": "Launch Game", "executable": "executable/DuckTales.exe", "working_directory": "", "arguments": "", "in_install_root": true}
+  ],
+  "arguments": "",
+  "resolution_arguments": "",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe32",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "detected": "d3d9",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "locked": [],
+  "steam_appid": 237630,
+  "executable": "executable/DuckTales.exe",
+  "community": {
+    "format_version": 1,
+    "min_kit": "playden-kit",
+    "tested_firmware": "13.00",
+    "tested_date": "2026-10-26",
+    "status": "works",
+    "notes": "",
+    "author": "brokenglasszero"
+  }
+}
