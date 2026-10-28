@@ -1,0 +1,6 @@
+.git
+build
+deps
+out
+**/.deps
+third_party/*/build

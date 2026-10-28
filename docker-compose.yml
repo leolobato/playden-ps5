@@ -1,0 +1,36 @@
+# Linux build environment for the PS5 package. See docs/building.md > Build with Docker.
+#
+# The checkout is bind-mounted. Everything the container builds or downloads lives in named volumes instead,
+# so it never mixes with the macOS (or Windows) build products in the same checkout. The finished package is
+# copied to ./out/FAKE77031.
+services:
+  playden-builder:
+    build: .
+    image: playden-builder:local
+    working_dir: /workspace
+    environment:
+      - LLVM_CONFIG=llvm-config-18
+      - HOST_CXX=clang++-18
+    volumes:
+      - .:/workspace
+      - ./out:/out
+      - build:/workspace/build
+      - deps:/workspace/deps
+      - network-deps:/workspace/scripts/network-deps/.deps
+      - lapy-build:/workspace/third_party/PS5-Lapy-JB-Daemon/build
+    command:
+      - /bin/bash
+      - -c
+      - >-
+        set -e;
+        scripts/fetch-deps.sh;
+        scripts/build-lapy-helper.sh;
+        scripts/build-homebrew-ps5.sh;
+        rm -rf /out/FAKE77031;
+        cp -a build/homebrew-ps5/dist/FAKE77031 /out/
+
+volumes:
+  build:
+  deps:
+  network-deps:
+  lapy-build:
