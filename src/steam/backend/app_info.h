@@ -89,8 +89,9 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
 bool OsListMatchesWindows(std::string_view os_list);
 
 // Windows/English depot selection: eligible by OS, language, shared install, access and DLC
-// ownership, then only those with a public manifest, sorted by id. Returns false with a short
-// reason when nothing is eligible or available.
+// ownership, then only those with a public manifest. A usable 64-bit Windows depot excludes
+// 32-bit alternates but not architecture-neutral content. Results are sorted by id. Returns
+// false with a short reason when nothing is eligible or available.
 bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
                   const std::optional<std::set<std::uint32_t>>& owned_depots,
                   std::vector<DepotInfo>* selected, std::string* reason);

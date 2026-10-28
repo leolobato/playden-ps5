@@ -288,6 +288,32 @@ void TestSelectDepots() {
   from_app.depots[0].depot_from_app = 5;
   CHECK(SelectDepots(from_app, {kApp}, std::set<std::uint32_t>{106}, &selected, &reason));
   CHECK((Ids(selected) == U32s{101, 106}));
+
+  AppInfo architectures;
+  architectures.app_id = kApp;
+  DepotInfo win64;
+  win64.id = 201;
+  win64.os_list = "windows";
+  win64.os_arch = "64";
+  win64.manifest_gid = 201;
+  DepotInfo win32 = win64;
+  win32.id = 202;
+  win32.os_arch = "32";
+  DepotInfo shared = win64;
+  shared.id = 203;
+  shared.os_arch.clear();
+  architectures.depots = {win32, shared, win64};
+  CHECK(SelectDepots(architectures, {kApp}, std::nullopt, &selected, &reason));
+  CHECK((Ids(selected) == U32s{201, 203}));
+
+  architectures.depots.erase(architectures.depots.begin() + 2);
+  CHECK(SelectDepots(architectures, {kApp}, std::nullopt, &selected, &reason));
+  CHECK((Ids(selected) == U32s{202, 203}));
+
+  architectures.depots.push_back(win64);
+  architectures.depots.back().manifest_gid = 0;
+  CHECK(SelectDepots(architectures, {kApp}, std::nullopt, &selected, &reason));
+  CHECK((Ids(selected) == U32s{202, 203}));
 }
 
 // A partial grant must not install as if complete (issue #58): Team Fortress 2's content depot has
