@@ -414,9 +414,17 @@ bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
   if (eligible.empty()) {
     return Fail(reason, "This game has no downloadable Windows content for English.");
   }
+  bool has_win64 = false;
+  for (const DepotInfo& depot : eligible) {
+    if (LowerString(Trim(depot.os_arch)) == "64" && depot.manifest_gid && *depot.manifest_gid != 0) {
+      has_win64 = true;
+      break;
+    }
+  }
   std::vector<DepotInfo> result;
   std::set<std::uint32_t> ids;
   for (const DepotInfo& depot : eligible) {
+    if (has_win64 && LowerString(Trim(depot.os_arch)) == "32") continue;
     if (depot.manifest_gid && *depot.manifest_gid != 0) {
       result.push_back(depot);
       ids.insert(depot.id);
