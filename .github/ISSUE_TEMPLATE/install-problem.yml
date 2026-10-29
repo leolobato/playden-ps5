@@ -49,7 +49,7 @@ body:
     attributes:
       label: Playden and kit versions
       description: The zips you downloaded, or Settings > About if Playden starts.
-      placeholder: playden-ps5-0.7.1.zip, playden-kit-0.13.zip
+      placeholder: playden-ps5-0.8.0.zip, playden-kit-0.13.zip
     validations:
       required: true
   - type: input

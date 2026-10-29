@@ -165,6 +165,30 @@ ZipExtractResult ExtractZip(const std::string& zip_path, const std::string& dest
     entries.push_back({i, relative, folder, mode, stat.m_uncomp_size});
   }
   // A file's folders are created even when the zip has no folder entries for them.
+  std::set<std::string> made;
+  const auto make_folder = [&](const std::string& relative) {
+    for (std::size_t i = 0; i <= relative.size(); ++i) {
+      if (i != relative.size() && relative[i] != '/') continue;
+      const std::string part = relative.substr(0, i);
+      if (!made.insert(part).second) continue;
+      const std::string path = dest + "/" + part;
+      if (mkdir(path.c_str(), 0777) != 0 && errno != EEXIST) return false;
+      if (!IsFolder(path)) return false;
+      if (!options.folder_mode) continue;
+      const unsigned want = *options.folder_mode & 07777;
+      struct stat st{};
+      if (stat(path.c_str(), &st) != 0) return false;
+      if ((st.st_mode & 07777) == want) continue;
+      const int chmod_rc = options.set_folder_mode ? options.set_folder_mode(path, want) : chmod(path.c_str(), want);
+      // Created while another thread held root, like the files below.
+      if (chmod_rc != 0 && !(errno == EPERM && options.fix_mode && options.fix_mode(path, want))) {
+        if (options.log) options.log("unzip: cannot set the mode of folder " + part + " errno=" + std::to_string(errno));
+        return false;
+      }
+      if (stat(path.c_str(), &st) != 0 || (st.st_mode & 07777) != want) return false;
+    }
+    return true;
+  };
   Sink sink;
   sink.buffer.resize(kWriteBuffer);
   sink.cancel = options.cancel;
@@ -172,11 +196,13 @@ ZipExtractResult ExtractZip(const std::string& zip_path, const std::string& dest
     if (cancelled()) { result.cancelled = true; return fail("cancelled"); }
     const std::string path = dest + "/" + entry.relative;
     if (entry.folder) {
-      if (!MakeFolders(path)) return fail("cannot create folder " + entry.relative);
+      if (!make_folder(entry.relative)) return fail("cannot create folder " + entry.relative);
       ++result.folders;
       continue;
     }
-    if (!MakeParents(path)) return fail("cannot create folder for " + entry.relative);
+    const auto slash = entry.relative.rfind('/');
+    if (slash != std::string::npos && !make_folder(entry.relative.substr(0, slash)))
+      return fail("cannot create folder for " + entry.relative);
     bool written = false;
     for (int attempt = 0; attempt < 3 && !written; ++attempt) {
       // A new file each time: one created with someone else's owner can't take our mode.

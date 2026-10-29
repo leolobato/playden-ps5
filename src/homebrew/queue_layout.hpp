@@ -28,6 +28,7 @@ struct QueueEntry {
     std::string tone;    // good, busy, attention, problem, quiet
     int position = 0;    // waiting preparations, from 1
     bool uninstall = false;
+    bool leftover = false;
     bool completed = false;
     std::int64_t finished_at = 0;  // completed entries (Unix seconds), 0 unknown
 };
@@ -43,6 +44,7 @@ struct QueueSection {
     std::vector<QueueEntry> rows;
     std::size_t running = 0;    // downloading, preparing or uninstalling now
     std::size_t copying = 0;    // of those running, imported games copied into Playden
+    std::size_t deleting = 0;  // leftover PS5 titles
     std::size_t uninstalling = 0;  // of those running, uninstalls
     std::size_t waiting = 0;    // queued to run, card included when it only waits
     std::size_t attention = 0;  // paused, failed or blocked: not ordinary waiting work

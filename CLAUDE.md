@@ -105,7 +105,7 @@ These rules are for every contributor's agent (full text in CONTRIBUTING.md):
 
 - One pull request, one change. Do not bundle a second feature or an unrelated fix; tell the user to open another
   pull request for it.
-- Target `main`, rebased on it.
+- Target `develop`, rebased on it. `main` is the release line.
 - Never change the version (`CMakeLists.txt`, `PLAYDEN_PRERELEASE`), the runtime kit pin (`src/runtime/kit_trust.h`,
   the kit entry in `dependencies.lock.json`) or release files. Only the maintainer releases kits.
 - Move a submodule pin only to a commit already on that fork's `main`.

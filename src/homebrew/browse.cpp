@@ -140,6 +140,8 @@ std::vector<const Game*> filtered_games(const State& state)
         // Demos show unless the player hides them, so the stored filter is the hiding one.
         if (state.library.filters.contains("hide-demos") && game.demo)
             continue;
+        if (state.library.filters.contains("hide-family") && game.family_shared)
+            continue;
         if (state.library.filters.contains("genre-adventure") &&
             std::find(game.genres.begin(), game.genres.end(), "Adventure") == game.genres.end())
             continue;

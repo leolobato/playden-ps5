@@ -29,6 +29,7 @@ struct GameProbe {
   // child process, which the console cannot do): the *-Shipping.exe to start instead,
   // relative to the install root, as spelled on disk.
   std::string unreal_program;
+  bool unreal5 = false;  // Unreal Engine 5 (its Shipping program names Nanite's settings)
 };
 
 inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull;

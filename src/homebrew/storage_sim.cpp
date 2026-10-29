@@ -25,7 +25,9 @@ std::uint64_t add_saturated(std::uint64_t left, std::uint64_t right) noexcept {
 } // namespace
 
 InstallAssessment assess_install(const State& state, GameId game_id,
-                                  const std::string& volume_id, std::uint64_t safety_margin_bytes) noexcept {
+                                  const std::string& volume_id, std::uint64_t safety_margin_bytes,
+                                  const GameVersion* version, const std::string& language,
+                                  const MeasuredInstallSize* measured) noexcept {
     InstallAssessment result;
     const auto game = find_item(state.games, [game_id](const Game& value) {
         return value.id == game_id;
@@ -33,7 +35,21 @@ InstallAssessment assess_install(const State& state, GameId game_id,
     if (game != state.games.end()) {
         result.download_bytes = game->download_bytes;
         result.installed_bytes = game->install_bytes;
-        if (game->install_bytes) result.required_bytes = add_saturated(*game->install_bytes, safety_margin_bytes);
+        if (version != nullptr && version->install_bytes) {
+            result.download_bytes = version->download_bytes;
+            result.installed_bytes = version->install_bytes;
+        }
+        if (version != nullptr && !language.empty())
+            for (const auto& size : version->languages)
+                if (size.language == language && size.install_bytes) {
+                    result.download_bytes = size.download_bytes ? std::optional<std::uint64_t>(size.download_bytes) : std::nullopt;
+                    result.installed_bytes = size.install_bytes;
+                }
+        if (measured != nullptr && measured->install_bytes) {
+            result.installed_bytes = measured->install_bytes;
+            if (measured->download_bytes) result.download_bytes = measured->download_bytes;
+        }
+        if (result.installed_bytes) result.required_bytes = add_saturated(*result.installed_bytes, safety_margin_bytes);
     }
 
     const auto volume = find_item(state.volumes, [&volume_id](const Volume& value) {
@@ -55,7 +71,7 @@ InstallAssessment assess_install(const State& state, GameId game_id,
         result.readiness = InstallReadiness::UnknownCapacity;
     } else if (*result.free_bytes < safety_margin_bytes) {
         result.readiness = InstallReadiness::Insufficient;
-    } else if (game == state.games.end() || !game->install_bytes) {
+    } else if (game == state.games.end() || !result.installed_bytes) {
         result.readiness = InstallReadiness::UnknownSize;
     } else if (*result.required_bytes > *result.free_bytes) {
         result.readiness = InstallReadiness::Insufficient;

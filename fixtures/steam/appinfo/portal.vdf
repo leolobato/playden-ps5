@@ -1,0 +1,100 @@
+"appinfo"
+{
+	"appid"		"400"
+	"common"
+	{
+		"name"		"Portal"
+		"type"		"Game"
+	}
+	"config"
+	{
+		"installdir"		"Portal"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"hl2.exe"
+				"arguments"		"-game portal"
+				"type"		"default"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"401"
+		{
+			"name"		"Portal Content"
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4045049296223218186"
+					"size"		"3474712839"
+					"download"		"2081548640"
+				}
+			}
+		}
+		"402"
+		{
+			"name"		"Portal Russian"
+			"config"
+			{
+				"language"		"russian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6409223925208618125"
+					"size"		"191883542"
+					"download"		"115906656"
+				}
+			}
+		}
+		"403"
+		{
+			"name"		"Portal Win32 Binaries"
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7766208939843315163"
+					"size"		"37282372"
+					"download"		"16217568"
+				}
+			}
+		}
+		"404"
+		{
+			"name"		"Portal Mac Binaries"
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3171519891470436024"
+					"size"		"41120548"
+					"download"		"17383616"
+				}
+			}
+		}
+		"branches"
+		{
+			"public"
+			{
+				"buildid"		"5814134"
+			}
+		}
+	}
+}

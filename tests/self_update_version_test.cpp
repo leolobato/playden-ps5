@@ -17,6 +17,9 @@ int main() {
   CHECK((Version{0, 3, 10}).ToString() == "0.3.10");
   // The build's own version comes from CMake.
   CHECK(ParseVersion(PLAYDEN_VERSION) && CurrentVersion() == *ParseVersion(PLAYDEN_VERSION));
+  // And its commit from git, when the source is a checkout.
+  CHECK(BuildCommit() == PLAYDEN_BUILD_COMMIT);
+  CHECK(BuildCommit().empty() || BuildCommit().find_first_not_of("0123456789abcdef") == std::string::npos);
   const auto beta = ParseVersion("v0.7.1-beta.1");
   CHECK(beta);
   CHECK(beta->ToString() == "0.7.1-beta.1");
@@ -27,6 +30,24 @@ int main() {
   CHECK(*beta != *ParseVersion("0.7.1"));
   for (const char* bad : {"0.7.1-rc.1", "0.7.1-beta.0", "0.7.1-beta.01", "0.7.1-beta.1000000",
                           "0.7.1-beta.-1", "0.7.1-beta.1+meta", "0.7.1+meta", "0.7.1-beta.1.2"})
+    CHECK(!ParseVersion(bad));
+  // Nightly builds: before every beta and the stable release of their version, after the one before.
+  const auto nightly = ParseVersion("0.8.0-nightly.20261027.2");
+  CHECK(nightly && nightly->nightly() && nightly->nightly_date == 20261027 && nightly->nightly_build == 2);
+  CHECK(nightly->ToString() == "0.8.0-nightly.20261027.2");
+  CHECK(ParseVersion(nightly->ToString()) == nightly);
+  CHECK(*ParseVersion("0.7.2") < *nightly);
+  CHECK(*ParseVersion("0.8.0-nightly.20261027.1") < *nightly);
+  CHECK(*nightly < *ParseVersion("0.8.0-nightly.20261028.1"));
+  CHECK(*nightly < *ParseVersion("0.8.0-beta.1"));
+  CHECK(*nightly < *ParseVersion("0.8.0"));
+  CHECK(!(*ParseVersion("0.8.0") < *nightly) && !(*ParseVersion("0.8.0-beta.1") < *nightly));
+  CHECK(*nightly < *ParseVersion("0.8.1-nightly.20200101.1"));
+  CHECK(*nightly != *ParseVersion("0.8.0-nightly.20261027.3"));
+  for (const char* bad : {"0.8.0-nightly", "0.8.0-nightly.20261027", "0.8.0-nightly.20261027.0", "0.8.0-nightly.20261027.01",
+                          "0.8.0-nightly.20261027.1000", "0.8.0-nightly.2026102.1", "0.8.0-nightly.20261327.1",
+                          "0.8.0-nightly.20261000.1", "0.8.0-nightly.020261027.1", "0.8.0-nightly.20261027.1.1",
+                          "0.8.0-beta.1-nightly.20261027.1", "0.8.0-nightly.20261027.1-beta.1"})
     CHECK(!ParseVersion(bad));
   return 0;
 }

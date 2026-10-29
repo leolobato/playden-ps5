@@ -20,6 +20,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cerrno>
 #include <ctime>
 #include <fcntl.h>
@@ -34,11 +35,12 @@
 #include <type_traits>
 
 namespace playden::homebrew {
-std::string FormatDownloadRate(std::optional<std::uint64_t> rate, std::optional<int> eta) {
+std::string FormatDownloadRate(std::optional<std::uint64_t> rate, std::optional<int> eta, const std::string& server_name) {
     if (!rate) return "—";
     char text[64];
-    std::snprintf(text, sizeof(text), "%.1f MB/s", static_cast<double>(*rate) / (1024.0 * 1024.0));
-    std::string result(text);
+    // Decimal megabytes, as the sizes beside it and the download server picker.
+    std::snprintf(text, sizeof(text), "%.1f MB/s", static_cast<double>(*rate) / 1e6);
+    std::string result = server_name.empty() ? std::string(text) : server_name + " · " + text;
     result += " · ";
     if (!eta || *eta < 0) return result + "—";
     if (*eta < 60) return result + "~" + std::to_string(*eta) + " sec left";
@@ -100,6 +102,21 @@ GameId steam_value(const json::Value* value) {
 }
 
 // The profile file names games by Steam app ID (0: none).
+// A version as players read it: "0.7.1-beta.1 (Beta)", and a nightly as "0.8.0 (Nightly)" (About names the build).
+std::string version_label(const std::string& version) {
+    if (const auto nightly = version.find("-nightly."); nightly != std::string::npos)
+        return version.substr(0, nightly) + " (Nightly)";
+    return version + (version.find("-beta.") != std::string::npos ? " (Beta)" : "");
+}
+
+// "20261027.2 · d94c0b384d" for a nightly (Version already says Nightly), the commit for any other build.
+std::string build_label(const std::string& version, const std::string& commit) {
+    const auto nightly = version.find("-nightly.");
+    std::string label = nightly == std::string::npos ? std::string() : version.substr(nightly + 9);
+    if (!commit.empty()) label += (label.empty() ? "" : " · ") + commit;
+    return label.empty() ? "Unknown" : label;
+}
+
 std::string app_text(const GameId& id) { return std::to_string(id.steam_app().value_or(0)); }
 
 // The game a row key or action names; invalid (selects nothing) unless it is a canonical key.
@@ -365,6 +382,27 @@ std::string time_ago(std::int64_t now, std::int64_t then) {
     return std::to_string(seconds / 86'400) + " days ago";
 }
 
+// A version's name as the install sheet shows it: Steam's public branch is "Public".
+// As the picker shows it: Steam's branch names are often lowercase ("beta"), and a choice row's title starts upper case.
+std::string version_title(const std::string& name) {
+    if (name == "public") return "Public";
+    auto title = name;
+    if (!title.empty()) title[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(title[0])));
+    return title;
+}
+
+// "31 Aug 2024", as the Saves tab dates files from another year. The console has no gmtime_r: the
+// day comes from the log timestamp (UTC).
+std::string version_date(std::int64_t time) {
+    static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const auto stamp = playden::app::FormatLogTimestamp(time);  // YYYY-MM-DDTHH:MM:SSZ
+    if (stamp.size() < 10) return {};
+    const int month = std::atoi(stamp.substr(5, 2).c_str());
+    if (month < 1 || month > 12) return {};
+    return stamp.substr(8, 2) + " " + kMonths[month - 1] + " " + stamp.substr(0, 4);
+}
+
 constexpr std::array<const char*, 5> kSavesFilters = {"All", "Needs you", "In sync", "This console only", "Not installed"};
 
 // What the Saves tab says about one game's saves.
@@ -472,7 +510,7 @@ std::string action_label(const std::string& key) {
         {"cloud-use-local", "Use console saves"}, {"cloud-confirm-account", "Use this account"},
         {"cloud-confirm-account-all", "Upload all"},
         {"saves-delete-confirm", "Delete saves"}, {"manage-saves", "Manage saves"}, {"saves-leftover-confirm", "Remove"}, {"saves-quit-anyway", "Play without syncing"},
-        {"install-confirm", "Install"}, {"storage-picker", "Change storage"}, {"installed-close", "Close"},
+        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "Includes"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage"}, {"installed-close", "Close"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as recipe"}, {"program-scan", "Looking for programs…"},
         {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
@@ -482,7 +520,7 @@ std::string action_label(const std::string& key) {
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
         {"sort-playtime", "Playtime"}, {"sort-install-size", "Install size"}, {"filter-installed", "Installed"},
         {"filter-genre-adventure", "Adventure"}, {"filter-controller-full", "Full controller support"},
-        {"filter-compat-playable", "Playable"}, {"filter-hide-demos", "Demos"}, {"filters-reset", "Reset filters"}, {"refresh-library", "Refresh library"}, {"advance-clock", "Advance fixture clock"},
+        {"filter-compat-playable", "Playable"}, {"filter-hide-demos", "Demos"}, {"filter-hide-family", "Family sharing"}, {"filters-reset", "Reset filters"}, {"refresh-library", "Refresh library"}, {"advance-clock", "Advance fixture clock"},
         {"inject-download-failed", "Inject download failure"}, {"inject-verification-failed", "Inject verification failure"},
         {"inject-uninstall-failed", "Inject uninstall failure"},
         {"inject-storage-disconnect", "Disconnect storage"}, {"inject-controller-disconnect", "Disconnect controller"},
@@ -499,9 +537,9 @@ std::string action_label(const std::string& key) {
         {"about-version", "Version"}, {"self-update-install", "Download and install"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
         {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
-        {"self-update-back-confirm", "Go back"}, {"release-notes-ok", "OK"}, {"successor-open", "Open the new Playden"},
-        {"about-build", "Build"}, {"about-framework", "Framework"}, {"about-platform", "Platform"},
-        {"about-kit", "Runtime kit"}, {"about-kit-source", "Built from"},
+        {"self-update-back-confirm", "Go back"}, {"release-notes-ok", "OK"},
+        {"about-build", "Build"},
+        {"about-kit", "Runtime kit in use"}, {"about-kit-source", "Kit built from"},
         {"about-back", "Back"}, {"inject-library-refresh", "Refresh library fixture"},
         {"inject-startup-loading", "Show startup loading"}};
     if (const auto found = labels.find(key); found != labels.end()) return found->second;
@@ -726,7 +764,8 @@ StartupProblem describe_startup_problem(const std::string& detail, bool granted)
                     "The Playden that started is not the copy in /data/homebrew. If you just copied a new version, "
                     "restart the PS5; if it stays, copy the whole app folder to /data/homebrew again."};
         return {"Playden can't start", "Playden has root access but can't use its data in /data/playden. "
-                                       "Restart Playden; if it stays, check that folder's permissions over FTP."};
+                                       "Restart Playden. Don't change permissions inside /data/playden over FTP: its private folders "
+                                       "must stay owner-only. If it stays, send logs/native-startup.log from Playden's app folder."};
     }
     if (has("launcher source is invalid") || has("launcher source identity is unavailable") ||
         stage({"find-helper", "validate-helper", "open-helper", "stat-helper"}))
@@ -908,6 +947,46 @@ std::vector<CloudRequest> Simulation::TakeCloudRequests() {
 std::vector<GameId> Simulation::TakeRuntimePrepareRequests() {
     auto requests = std::move(pending_runtime_prepare_requests_);
     pending_runtime_prepare_requests_.clear();
+    return requests;
+}
+
+void Simulation::UpdateLeftoverTitles(std::vector<LiveLeftoverTitle> titles) {
+    state_.leftover_titles = std::move(titles);
+    std::erase_if(leftover_selected_, [this](const std::string& id) {
+        return std::none_of(state_.leftover_titles.begin(), state_.leftover_titles.end(),
+                            [&](const LiveLeftoverTitle& item) { return item.title_id == id; });
+    });
+    // An open manager lists what is left now; with nothing left it closes.
+    auto& modals = state_.navigation.modals;
+    for (std::size_t index = 0; index < modals.size(); ++index) {
+        auto& modal = modals[index];
+        if (modal.id != "leftover-titles") continue;
+        if (state_.leftover_titles.empty()) {
+            // Nothing left to choose: the manager closes with anything over it (its confirmation).
+            if (pending_destructive_action_ == "leftover-selection-delete") pending_destructive_action_.clear();
+            state_.navigation.focus_key = modal.opener_focus_key;
+            modals.erase(modals.begin() + static_cast<std::ptrdiff_t>(index), modals.end());
+            break;
+        }
+        const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+        modal.action_keys = leftover_manager_actions();
+        const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), focused);
+        modal.focused_action = found == modal.action_keys.end()
+            ? std::min(modal.focused_action, static_cast<int>(modal.action_keys.size()) - 1)
+            : static_cast<int>(found - modal.action_keys.begin());
+        if (index + 1 == modals.size()) state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+    }
+    rebuild_view();
+}
+
+void Simulation::UpdateLeftoverDeletions(std::vector<LiveLeftoverDelete> deletions) {
+    state_.leftover_deletions = std::move(deletions);
+    rebuild_view();
+}
+
+std::vector<std::string> Simulation::TakeLeftoverDeleteRequests() {
+    auto requests = std::move(pending_leftover_delete_requests_);
+    pending_leftover_delete_requests_.clear();
     return requests;
 }
 
@@ -1342,6 +1421,20 @@ std::vector<std::string> Simulation::kept_manager_actions() const {
     return actions;
 }
 
+std::vector<std::string> Simulation::leftover_manager_actions() const {
+    std::vector<std::string> actions{"leftover-select-all"};
+    for (const auto& title : state_.leftover_titles) actions.push_back("leftover-toggle-" + title.title_id);
+    actions.push_back("leftover-selection-delete");
+    actions.push_back("cancel");
+    return actions;
+}
+
+// A title whose deletion is queued or running; one that stopped with a failure can be chosen again.
+bool Simulation::leftover_queued(const std::string& title_id) const {
+    return std::any_of(state_.leftover_deletions.begin(), state_.leftover_deletions.end(),
+                       [&](const LiveLeftoverDelete& deletion) { return deletion.title_id == title_id && deletion.failure.empty(); });
+}
+
 std::vector<GameId> Simulation::installed_list() const {
     struct Entry { GameId id; std::uint64_t bytes; std::optional<std::int64_t> played; std::string title; };
     std::vector<Entry> entries;
@@ -1683,7 +1776,7 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
                          before.part != update.part || before.current != update.current ||
                          before.bytes_per_second != update.bytes_per_second || before.previous != update.previous ||
                          before.quiet != update.quiet || before.current_notes_url != update.current_notes_url ||
-                         before.whats_new != update.whats_new || before.moved_to != update.moved_to ||
+                         before.whats_new != update.whats_new ||
                          before.kit_phase != update.kit_phase || before.kit_done != update.kit_done ||
                          before.kit_total != update.kit_total || before.kit_error != update.kit_error ||
                          !update.finished_message.empty();
@@ -1703,9 +1796,7 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
         state_.self_update.finished_message.clear();
         self_update_requests_.push_back("acknowledge");
     }
-    if (!update.moved_to.empty() && before.moved_to.empty()) {
-        pending_update_prompt_ = "moved";
-    } else if (update.phase == "available" && update.quiet) {
+    if (update.phase == "available" && update.quiet) {
         self_update_prompted_ = "available " + update.available;  // Settings still lists it
     } else if (update.phase == "available" && self_update_prompted_ != "available " + update.available) {
         self_update_prompted_ = "available " + update.available;
@@ -1771,18 +1862,9 @@ void Simulation::show_update_prompt() {
                       size + "You can sign in and keep using Playden while it downloads.";
         open_modal(std::move(prompt));
     } else if (pending_update_prompt_ == "available" && update.phase == "available") {
-        const std::string beta = update.available.find("-beta.") != std::string::npos ? " (Beta)" : "";
-        // The same version as a new app: the step that follows an update from 0.7.1-beta.2 or older.
-        const bool same = update.moves && update.available == update.current;
-        ModalEntry prompt{"confirmation",
-                          same ? std::string("Move Playden to its new app")
-                               : "Playden " + update.available + beta + " is available",
-                          state_.navigation.focus_key, {"self-update-install", "ready-later"}, 0, false};
-        const std::string move = "Playden " + update.available + " installs as a new app next to this one, so "
-                                 "ProsperoStore can install and update it. Your sign-in, games and settings stay, and "
-                                 "this app is removed once the new one has started.\n\n";
-        prompt.body = (same ? std::string() : update.notes.empty() ? std::string() : update.notes + "\n\n") +
-                      (update.moves ? move : std::string()) + "The download is " +
+        ModalEntry prompt{"confirmation", "Playden " + version_label(update.available) + " is available", state_.navigation.focus_key,
+                          {"self-update-install", "ready-later"}, 0, false};
+        prompt.body = (update.notes.empty() ? std::string() : update.notes + "\n\n") + "The download is " +
                       format_bytes(update.download_bytes) +
                       (update.kit_needed ? ", with a new runtime kit." : ".") +
                       " You can keep using Playden while it downloads.";
@@ -1793,15 +1875,6 @@ void Simulation::show_update_prompt() {
                           {"self-update-restart", "ready-later"}, 0, false};
         prompt.body = "Restart Playden to finish the update. It closes and opens again by itself; if it doesn't, "
                       "open it from the Home screen.";
-        open_modal(std::move(prompt));
-    } else if (pending_update_prompt_ == "moved" && !update.moved_to.empty()) {
-        // This title updated to the new one, which hasn't started yet: its tile may be missing.
-        ModalEntry prompt{"confirmation", "Playden " + update.moved_to + " is a new app", state_.navigation.focus_key,
-                          {"successor-open", "ready-later"}, 0, false};
-        prompt.body = "Playden " + update.moved_to + " was installed as a new app, and this one no longer updates. "
-                      "Open the new Playden from Home.\n\nIf it isn't on Home, choose Open the new Playden: this "
-                      "Playden closes, asks the PS5 to add the new one, and opens it. If this Playden opens again "
-                      "instead, restart the PS5 and look on Home.";
         open_modal(std::move(prompt));
     } else if (pending_update_prompt_ == "whats-new" || pending_update_prompt_ == "release-notes") {
         open_release_notes(pending_update_prompt_ == "whats-new");
@@ -1869,7 +1942,7 @@ void Simulation::close_game_modals() {
     modals.erase(std::remove_if(modals.begin(), modals.end(), [](const ModalEntry& modal) {
         return std::none_of(modal.action_keys.begin(), modal.action_keys.end(), [](const std::string& key) {
             return key == "self-update-install" || key == "self-update-restart" || key == "release-notes-ok" ||
-                   key == "kit-install" || key == "successor-open";
+                   key == "kit-install";
         });
     }), modals.end());
 }
@@ -1877,8 +1950,7 @@ void Simulation::close_game_modals() {
 void Simulation::open_release_notes(bool after_update) {
     const auto& update = state_.self_update;
     ModalEntry notes{"confirmation",
-                     (after_update ? "What's new in Playden " : "Playden ") + update.current +
-                         (update.current.find("-beta.") != std::string::npos ? " (Beta)" : "") +
+                     (after_update ? "What's new in Playden " : "Playden ") + version_label(update.current) +
                          (after_update ? std::string() : std::string(" release notes")),
                      state_.navigation.focus_key, {"release-notes-ok"}, 0, false};
     notes.body = (after_update ? "Playden was updated to " + update.current + ".\n\n" : std::string()) +
@@ -1893,11 +1965,6 @@ void Simulation::request_self_update_restart(const std::string& request) {
         const auto& game = entry.second;
         return game.status == "Preparing" || !game.uninstall_status.empty() || game.maintenance_running;
     });
-    if (busy && request == "open-successor") {
-        show_alert("Open the new Playden later", "A game is being prepared or removed. When it is done, close Playden "
-                                                  "and open the new one from Home, or restart the PS5 if it isn't there.");
-        return;
-    }
     if (busy) {
         show_alert("Restart Playden later", "A game is being prepared or removed. Restart Playden from Settings when it is done.");
         return;
@@ -2090,14 +2157,21 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         };
         for (const auto& [id, previous] : live_job_states_) {
             if (job_states.contains(id) || !installed_ids.contains(id)) continue;
-            push_notice({"install-" + ToKey(id), "Download complete", "", false, kLiveNoticeSeconds, false, title(id)});
+            const bool update = live_update_jobs_.contains(id);
+            if (update && canceled_updates_.erase(id)) continue;
+            push_notice({"install-" + ToKey(id), update ? "Update complete" : "Download complete", "", false, kLiveNoticeSeconds,
+                         false, title(id)});
+            // What Steam said about the update is answered: the details page asks again.
+            if (update)
+                if (auto* game = const_cast<Game*>(find_game(state_, id))) game->update = {};
         }
         for (const auto& job : jobs) {
             const auto previous = live_job_states_.find(job.game_id);
             if (job.state != JobState::Failed || (previous != live_job_states_.end() && previous->second == JobState::Failed)) continue;
             // The queue carries on with the next game and Downloads keeps the failure with Resume, so the
             // player is told in a corner instead of a dialog that stops what they are doing.
-            push_notice({"install-" + ToKey(job.game_id), "Download failed", "", false, kLiveNoticeSeconds * 2, true,
+            push_notice({"install-" + ToKey(job.game_id), job.update ? "Update failed" : "Download failed", "", false,
+                         kLiveNoticeSeconds * 2, true,
                          title(job.game_id) + (job.failure.empty() ? std::string() : " · " + job.failure), false});
         }
         for (const auto id : live_installed_ids_) {
@@ -2111,6 +2185,9 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         it = installed_ids.contains(*it) ? std::next(it) : pending_uninstalls_.erase(it);
     live_installs_seen_ = true;
     live_job_states_ = std::move(job_states);
+    live_update_jobs_.clear();
+    for (const auto& job : jobs) if (job.update) live_update_jobs_.insert(job.game_id);
+    std::erase_if(canceled_updates_, [this](GameId id) { return !live_update_jobs_.contains(id); });
     live_installed_ids_ = std::move(installed_ids);
     std::vector<Job> projected;
     int order = 0;
@@ -2129,6 +2206,15 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         if (live_job.state == JobState::Downloading) {
             job.bytes_per_second = live_job.bytes_per_second;
             job.eta_seconds = live_job.eta_seconds;
+            job.server_name = live_job.server_name;
+        }
+        // An update reads "Updating · <state>"; its own steps stand for the state while they run.
+        job.update = live_job.update;
+        job.locked = live_job.locked;
+        if (live_job.update) {
+            job.stage_text = "Updating";
+            if (live_job.state == JobState::Downloading && live_job.checking_files) job.state_text = "Checking files";
+            else if (live_job.state == JobState::Downloading && live_job.applying) job.state_text = "Applying";
         }
         projected.push_back(std::move(job));
     }
@@ -2140,7 +2226,9 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         job.game_id = finished.game_id;
         job.queue_order = order++;
         job.state = JobState::Downloaded;
-        job.completed_bytes = job.total_bytes = finished.install_bytes;
+        // An update lists what it downloaded, not the whole game.
+        job.update = finished.update_bytes > 0;
+        job.completed_bytes = job.total_bytes = job.update ? finished.update_bytes : finished.install_bytes;
         job.volume_id = finished.volume_id;
         job.finished_at = finished.finished_at;
         job.completion_applied = true;
@@ -2278,6 +2366,12 @@ void Simulation::leave_steam_sign_in() {
 
 void Simulation::clear_account_specific_state() {
     ++state_.account_generation;
+    // Sizes follow the account's licenses; a check asked for the last account is never answered.
+    size_checks_.clear();
+    size_checks_running_.clear();
+    size_checks_answered_.clear();
+    size_checks_failed_.clear();
+    measured_sizes_.clear();
     state_.account().challenge_url.clear();
     state_.account().challenge_expiry = 0;
     state_.account().last_sync = 0;
@@ -2437,16 +2531,139 @@ void Simulation::UpdateAccount(AccountUpdate update) {
     rebuild_view();
 }
 
+std::string Simulation::install_language(GameId id) const {
+    if (!install_language_.empty()) return install_language_;
+    const auto* game = find_game(state_, id);
+    return playden::steam::ResolveContentLanguage(game ? game->content_languages : std::vector<std::string>{},
+                                                  state_.content_language);
+}
+
+const GameVersion* Simulation::install_version(GameId id) const {
+    if (install_version_.empty()) return nullptr;
+    const auto* game = find_game(state_, id);
+    if (!game) return nullptr;
+    for (const auto& version : game->versions)
+        if (version.name == install_version_) return &version;
+    return nullptr;
+}
+
+// The version whose sizes an install sheet shows: the chosen one, else the public branch the install gets.
+const GameVersion* Simulation::install_sized_version(GameId id) const {
+    if (const auto* chosen = install_version(id)) return chosen;
+    const auto* game = find_game(state_, id);
+    if (!game) return nullptr;
+    for (const auto& version : game->versions)
+        if (version.name == "public") return &version;
+    return nullptr;
+}
+
+SizeCheckRequest Simulation::install_size_check(GameId id) const {
+    const auto* version = install_sized_version(id);
+    // The language as an install asks for it (the sheet's choice, else Settings'): each part of the game falls
+    // back from it on its own.
+    return {id, version ? version->name : std::string("public"),
+            install_language_.empty() ? state_.content_language : install_language_};
+}
+
+void Simulation::ResetSizeChecks() {
+    size_checks_.clear();
+    size_checks_running_.clear();
+    size_checks_failed_.clear();
+    rebuild_view();
+}
+
+const MeasuredInstallSize* Simulation::measured_install_size(GameId id) const {
+    const auto check = install_size_check(id);
+    const auto found = measured_sizes_.find({check.id, check.branch, check.language});
+    return found == measured_sizes_.end() ? nullptr : &found->second;
+}
+
+bool Simulation::install_size_checking(GameId id) const {
+    const auto check = install_size_check(id);
+    return size_checks_running_.count({check.id, check.branch, check.language}) > 0;
+}
+
+InstallAssessment Simulation::install_assessment(GameId id) const {
+    return assess_install(state_, id, install_target(), steam::kInstallSpaceMargin, install_sized_version(id),
+                          install_language(id), measured_install_size(id));
+}
+
+std::vector<SizeCheckRequest> Simulation::TakeSizeChecks() { return std::exchange(size_checks_, {}); }
+
+void Simulation::UpdateMeasuredSize(const SizeCheckRequest& request, bool measured, bool failed, MeasuredInstallSize size) {
+    const auto key = std::make_tuple(request.id, request.branch, request.language);
+    size_checks_running_.erase(key);
+    if (failed) size_checks_failed_.insert(key);
+    else size_checks_answered_.insert(key);
+    if (measured && size.install_bytes) measured_sizes_[key] = size;
+    rebuild_view();
+}
+
+std::vector<std::string> Simulation::live_install_sheet_actions(GameId id) const {
+    const auto* game = find_game(state_, id);
+    std::vector<std::string> actions{"install-confirm"};
+    if (game && game->versions.size() >= 2) actions.push_back("install-version");
+    if (game && game->content_languages.size() >= 2) actions.push_back("install-language");
+    // Owned DLC the download includes, as a status row.
+    if (game && game->dlc_count > 0) actions.push_back("install-dlc");
+    actions.push_back("storage-picker");
+    actions.push_back("cancel");
+    return actions;
+}
+
+Simulation::UpdateCheck Simulation::update_check(GameId id) const {
+    UpdateCheck check;
+    const auto* game = find_game(state_, id);
+    const auto* installation = find_installation(state_, id);
+    if (!game || !installation) { check.reason = "Not installed"; return check; }
+    check.download_bytes = game->update.download_bytes;
+    const auto* volume = find_volume(const_cast<State&>(state_), installation->volume_id);
+    check.volume_label = volume ? volume->label : std::string("its drive");
+    if (!installation->available || !volume || !volume->available) { check.reason = "Drive disconnected"; return check; }
+    if (!volume->writable) { check.reason = "Drive is read-only"; return check; }
+    // Steam's estimate counts whole depots, not the changed files that download beside the game: it is
+    // shown, never checked. The download checks the room its changed files need and fails as an install does.
+    if (volume->capacity_known) {
+        const auto occupied = std::min(volume->capacity_bytes, volume->used_bytes + volume->reserved_bytes);
+        check.free_bytes = volume->capacity_bytes - occupied;
+    }
+    // Files are put in place while the game is closed.
+    const auto runtime = state_.runtime_games.find(id);
+    if (runtime != state_.runtime_games.end() &&
+        (runtime->second.activity == TitleActivity::Running || runtime->second.play_status == "Playing" ||
+         runtime->second.play_status == "Starting…")) {
+        check.reason = "Quit " + game->title + " first";
+        return check;
+    }
+    check.allowed = true;
+    check.reason = "Starts the download";
+    return check;
+}
+
+bool Simulation::update_locked(GameId id) const {
+    return std::any_of(state_.jobs.begin(), state_.jobs.end(), [id](const Job& job) { return job.game_id == id && job.locked; });
+}
+
 bool Simulation::UpdateAppDetails(GameId id, std::optional<std::uint64_t> download_bytes,
                                   std::optional<std::uint64_t> install_bytes,
-                                  std::optional<bool> windows_installable) {
+                                  std::optional<bool> windows_installable, std::vector<std::string> languages,
+                                  std::uint32_t dlc_count, std::vector<GameVersion> versions, GameUpdate update) {
     if (!live()) return false;
+    // New details may name other files (a newer build): the game's exact sizes are checked again.
+    const auto of_game = [id](const auto& key) { return std::get<0>(key) == id; };
+    std::erase_if(size_checks_answered_, of_game);
+    std::erase_if(size_checks_failed_, of_game);
+    std::erase_if(measured_sizes_, [id](const auto& entry) { return std::get<0>(entry.first) == id; });
     const auto game = std::find_if(state_.games.begin(), state_.games.end(),
                                    [id](const Game& candidate) { return candidate.id == id; });
     if (game == state_.games.end()) return false;
     game->download_bytes = download_bytes;
     game->install_bytes = install_bytes;
     game->windows_installable = windows_installable;
+    game->content_languages = std::move(languages);
+    game->dlc_count = dlc_count;
+    game->versions = std::move(versions);
+    game->update = update;
     apply_live_volume_usage();
     rebuild_view();
     return true;
@@ -2517,6 +2734,7 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
             if (summary.added_at_unix_seconds)
                 game.added_at = static_cast<std::int64_t>(*summary.added_at_unix_seconds);
             game.demo = summary.demo;
+            game.family_shared = summary.family_shared;
             if (const auto facts = store_facts_.find(game.id); facts != store_facts_.end()) {
                 if (!facts->second.description.empty()) game.description = facts->second.description;
                 game.genres = facts->second.genres;
@@ -2677,9 +2895,101 @@ playden::OrganizationSnapshot Simulation::ExportOrganization() const {
     return result;
 }
 
+std::vector<DownloadServerRequest> Simulation::TakeDownloadServerRequests() {
+    auto requests = std::move(download_server_requests_);
+    download_server_requests_.clear();
+    return requests;
+}
+
+bool Simulation::download_server_test_allowed() const {
+    return state_.account(Store::kSteam).authentication == AuthState::SignedIn &&
+           std::none_of(state_.jobs.begin(), state_.jobs.end(), [](const Job& job) {
+               return job.state == JobState::Downloading || job.state == JobState::Pausing;
+           });
+}
+
+// The modal action for the stored choice; a server that is not listed falls back to Steam default.
+std::string Simulation::download_server_choice_key() const {
+    if (state_.download_server == kFastestDownloadServer) return "download-server-fastest";
+    for (std::size_t index = 0; index < download_servers_.servers.size(); ++index)
+        if (download_servers_.servers[index].id == state_.download_server) return "download-server-" + std::to_string(index);
+    return "download-server-auto";
+}
+
+std::string Simulation::best_tested_download_server() const {
+    const DownloadServerResult* fastest = nullptr;
+    for (const auto& server : download_servers_.servers) {
+        for (const auto& rate : download_servers_.rates) {
+            if (rate.id == server.id && !rate.failed && std::isfinite(rate.mb_per_s) && rate.mb_per_s > 0 &&
+                (!fastest || rate.mb_per_s > fastest->mb_per_s)) fastest = &rate;
+        }
+    }
+    return fastest ? fastest->id : std::string{};
+}
+
+void Simulation::refresh_download_servers(const std::string& focus) {
+    for (auto& modal : state_.navigation.modals) {
+        if (modal.id != "download-server") continue;
+        const auto prior = modal.action_keys.empty() ? std::string{} :
+            modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+        modal.action_keys = {"download-server-fastest", "download-server-auto"};
+        for (std::size_t index = 0; index < download_servers_.servers.size(); ++index)
+            modal.action_keys.push_back("download-server-" + std::to_string(index));
+        if (download_servers_.phase == "listing" || download_servers_.phase == "idle")
+            modal.action_keys.push_back("download-server-listing");
+        else if (download_servers_.phase == "list-failed") {
+            modal.action_keys.push_back("download-server-list-failed");
+            modal.action_keys.push_back("download-server-retry");
+        }
+        modal.action_keys.push_back("download-server-test");
+        modal.action_keys.push_back("cancel");
+        const auto wanted = focus.empty() ? prior : focus;
+        const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), wanted);
+        modal.focused_action = found == modal.action_keys.end() ? 1 : static_cast<int>(found - modal.action_keys.begin());
+        if (&modal == &state_.navigation.modals.back())
+            state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+    }
+}
+
+void Simulation::RequestQuit() {
+    if (state_.quit_requested || state_.quit_waiting) return;
+    quit_to_home();
+    rebuild_view();
+}
+
+void Simulation::ApplyLiveWebAccess(const LiveWebAccess& snapshot) {
+    if (web_access_ == snapshot) return;
+    web_access_ = snapshot;
+    rebuild_view();
+}
+
+void Simulation::ApplyLiveDownloadServers(const LiveDownloadServers& snapshot) {
+    const bool finished = (download_servers_.phase == "testing" || download_server_test_requested_) && snapshot.phase == "tested" &&
+                          !download_server_cancel_pending_;
+    download_servers_ = snapshot;
+    if (snapshot.phase != "testing" && snapshot.phase != "listing") {
+        download_server_cancel_pending_ = false;
+        download_server_test_requested_ = false;
+    }
+    // After a test the focus goes to the fastest tested server (not to Fastest); otherwise to the choice.
+    std::string focus;
+    if (finished) {
+        const auto best = best_tested_download_server();
+        for (std::size_t index = 0; index < snapshot.servers.size(); ++index)
+            if (!best.empty() && snapshot.servers[index].id == best) focus = "download-server-" + std::to_string(index);
+        download_server_focus_choice_ = false;
+    } else if (download_server_focus_choice_ && snapshot.phase != "listing" && snapshot.phase != "idle") {
+        focus = download_server_choice_key();
+        download_server_focus_choice_ = false;
+    }
+    refresh_download_servers(focus);
+    rebuild_view();
+}
+
 playden::Preferences Simulation::ExportPreferences() const {
     return {state_.reduced_motion, state_.title_store_suffix, state_.cloud_saves_auto, state_.sign_in_password,
-            state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.language};
+            state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
+            state_.web_access, state_.content_language, state_.language};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -2897,6 +3207,7 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
                                   const playden::PreferencesLoadResult& loaded) {
     if (!live() || !preferences_load_pending_ || !(token == preferences_load_token_)) return false;
     preferences_load_pending_ = false;
+    preferences_loaded_ = true;
     preferences_load_failed_ = loaded.status == playden::PreferencesLoadStatus::kDefaultCorrupt ||
                                loaded.status == playden::PreferencesLoadStatus::kDefaultReadError;
     if (preferences_load_may_apply_ && preferences_revision_ == token.baseline_revision) {
@@ -2906,8 +3217,11 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.sign_in_password = loaded.preferences.steam_sign_in_password;
         state_.beta_updates = loaded.preferences.beta_updates;
         state_.downloads_slow_network = loaded.preferences.downloads_slow_network;
+        state_.download_server = loaded.preferences.download_server;
+        state_.web_access = loaded.preferences.web_access;
         state_.stay_signed_in = loaded.preferences.steam_stay_signed_in;
         apply_language(loaded.preferences.language);
+        state_.content_language = loaded.preferences.content_language;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
     }
@@ -2986,8 +3300,11 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.cloud_saves_auto != captured_preferences_.cloud_saves_auto ||
                                       after_preferences.steam_sign_in_password != captured_preferences_.steam_sign_in_password ||
                                       after_preferences.downloads_slow_network != captured_preferences_.downloads_slow_network ||
+                                      after_preferences.download_server != captured_preferences_.download_server ||
+                                      after_preferences.web_access != captured_preferences_.web_access ||
                                       after_preferences.beta_updates != captured_preferences_.beta_updates ||
                                       after_preferences.language != captured_preferences_.language ||
+                                      after_preferences.content_language != captured_preferences_.content_language ||
                                       after_preferences.steam_stay_signed_in != captured_preferences_.steam_stay_signed_in);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
@@ -3012,8 +3329,11 @@ bool Simulation::record_live_persistence() {
                 state_.sign_in_password = captured_preferences_.steam_sign_in_password;
                 state_.beta_updates = captured_preferences_.beta_updates;
                 state_.downloads_slow_network = captured_preferences_.downloads_slow_network;
+                state_.download_server = captured_preferences_.download_server;
+                state_.web_access = captured_preferences_.web_access;
                 state_.stay_signed_in = captured_preferences_.steam_stay_signed_in;
                 apply_language(captured_preferences_.language);
+                state_.content_language = captured_preferences_.content_language;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -3072,6 +3392,7 @@ void Simulation::load_fixtures() {
             if (const auto played = optional_uint(item.get("last_played"))) game.last_played = static_cast<std::int64_t>(*played);
             game.playtime_minutes = optional_uint(item.get("playtime_minutes"));
             game.demo = bool_value(item.get("demo"));
+            game.family_shared = bool_value(item.get("family_shared"));
             state_.games.push_back(std::move(game));
         }
     }
@@ -3186,6 +3507,9 @@ void Simulation::load_profile() {
     state_.account().display_name = saved_account.empty() ? std::string{} : string_value(root->get("account_display_name"), "Connected fixture account");
     state_.reduced_motion = bool_value(root->get("reduced_motion"));
     apply_language(string_value(root->get("language"), std::string(i18n::kSourceLanguage)));
+    state_.download_server = string_value(root->get("download_server"));
+    if (const auto saved = string_value(root->get("content_language")); playden::steam::IsContentLanguage(saved))
+        state_.content_language = saved;
     if (saved_auth == "signed-out" || saved_auth == "cancelled" || (saved_auth == "waiting" && saved_account.empty())) {
         state_.account().authentication = AuthState::SignedOut; state_.account().id.clear(); state_.account().display_name.clear();
         state_.account().cache_available = false; state_.account().challenge_expiry = 0; state_.navigation.route = Route::Startup; state_.navigation.focus_key = "startup-connect";
@@ -3325,6 +3649,8 @@ bool Simulation::save_profile() {
         + "\",\"authentication\":\"" + auth_name(state_.account().authentication) + "\",\"account_last_sync\":" + std::to_string(state_.account().last_sync)
         + ",\"next_job_serial\":" + std::to_string(next_job_serial_) + ",\"reduced_motion\":"
         + (state_.reduced_motion ? "true" : "false") + ",\"language\":\"" + json::escape(state_.language)
+        + (state_.reduced_motion ? "true" : "false") + ",\"download_server\":\"" + json::escape(state_.download_server)
+        + "\",\"content_language\":\"" + json::escape(state_.content_language)
         + "\",\"query\":\"" + json::escape(state_.library.query)
         + "\",\"scope\":\"" + json::escape(state_.library.scope) + "\",\"favorites\":[";
     bool first = true;
@@ -3406,7 +3732,41 @@ bool Simulation::save_profile() {
 
 bool Simulation::scenario(const std::string& name) {
     if (live()) return false;
-    if (name == "default") {
+    if (name == "leftover-titles") {
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-leftovers";
+        state_.leftover_titles = {{"FAKE78001", "A Short Hike", 12'000'000}, {"FAKE78002", "Portal", 8'000'000}};
+        state_.leftover_deletions.clear();
+        state_.jobs.clear();
+    } else if (name == "web-access") {
+        // Settings › Web access with its made-up address and QR code.
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-web-access";
+        state_.web_access = true;
+        state_.jobs.clear();
+    } else if (name == "download-servers") {
+        download_server_fixture_ = true;
+        download_servers_ = {};
+        download_servers_.phase = "listed";
+        download_servers_.servers = {{"steampipe.akamaized.net", "Akamai"},
+            {"fastly.cdn.steampipe.steamcontent.com", "Fastly"},
+            {"google2.cdn.steampipe.steamcontent.com", "Google Cloud"},
+            {"alibaba.cdn.steampipe.steamcontent.com", "Alibaba Cloud", true},
+            {"edgenext.cdn.steampipe.steamcontent.com", "EdgeNext", true},
+            {"cache5-fra1.steamcontent.com", "Steam (Valve) · cache5-fra1"},
+            {"cache2-ams1.steamcontent.com", "Steam (Valve) · cache2-ams1"}};
+        download_server_test_requested_ = false;
+        download_server_cancel_pending_ = false;
+        state_.account().authentication = AuthState::SignedIn;
+        state_.jobs.clear();
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-download-server";
+    } else if (name == "default") {
         state_.account().authentication = AuthState::SignedIn;
         state_.navigation.route = Route::Home;
         state_.navigation.selected_index = 0;
@@ -3502,7 +3862,9 @@ bool Simulation::scenario(const std::string& name) {
             item.total_bytes = total;
             item.completed_bytes = done;
             item.volume_id = "internal";
-            if (job_state == JobState::Downloading) { item.bytes_per_second = 18'200'000; item.eta_seconds = 152; }
+            if (job_state == JobState::Downloading) {
+                item.bytes_per_second = 18'200'000; item.eta_seconds = 152; item.server_name = "Fastly";
+            }
             if (job_state == JobState::Downloaded) { item.finished_at = now - 3600; item.completion_applied = true; }
             state_.jobs.push_back(item);
         };
@@ -3597,6 +3959,68 @@ bool Simulation::scenario(const std::string& name) {
             game->art_pending = name == "delayed-art";
             game->art_failed = name == "failed-art";
         }
+    } else if (name == "update-available" || name == "dlc-available") {
+        // An installed game's details with an update from Steam (or DLC bought since): Update after Play,
+        // its size under the buttons. Replay "action focus:details-update" and "action cross" for the sheet.
+        const auto id = GameId::Steam(900001);
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        std::erase_if(state_.jobs, [id](const Job& job) { return job.game_id == id; });
+        if (auto* installation = find_installation(state_, id)) installation->runtime_ready = true;
+        if (auto* game = const_cast<Game*>(find_game(state_, id)))
+            game->update = name == "dlc-available" ? GameUpdate{true, true, 312'000'000} : GameUpdate{true, false, 1'240'000'000};
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_origin = Route::Library;
+        state_.navigation.detail_id = id;
+        state_.navigation.selected_game_id = id;
+        state_.navigation.focus_key = "details-update";
+    } else if (name == "install-options") {
+        // The install sheet of a game in several languages and versions, with owned DLC: its Version,
+        // Language and Includes rows.
+        const auto id = GameId::Steam(900012);
+        state_.account().authentication = AuthState::SignedIn;
+        if (auto* game = const_cast<Game*>(find_game(state_, id))) {
+            game->content_languages = {"english", "german", "french", "japanese"};
+            game->dlc_count = 2;
+            game->versions = {{"public", "", 1'760'000'000, 90, game->download_bytes, game->install_bytes},
+                              {"4.04", "Patch 4.04 (DirectX 11)", 1'670'000'000, 40, game->download_bytes, game->install_bytes}};
+        }
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_origin = Route::Library;
+        state_.navigation.detail_id = id;
+        state_.navigation.selected_game_id = id;
+        state_.navigation.focus_key = "details-install";
+        state_.navigation.modals.clear();
+        open_modal({"install", "Install game", "details-install", live_install_sheet_actions(id), 0, false});
+    } else if (name == "updating") {
+        // Queue with updates: one putting its files in place (Play waits for it), one downloading, one queued.
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.route = Route::Downloads;
+        state_.navigation.modals.clear();
+        state_.jobs.clear();
+        const auto update = [&](GameId id, int order, JobState job_state, std::uint64_t total, std::uint64_t done,
+                                std::string step, bool locked) {
+            Job item;
+            item.id = "update-" + ToKey(id);
+            item.game_id = id;
+            item.queue_order = order;
+            item.state = job_state;
+            item.total_bytes = total;
+            item.completed_bytes = done;
+            item.volume_id = "external";
+            item.update = true;
+            item.locked = locked;
+            item.stage_text = "Updating";
+            item.state_text = std::move(step);
+            if (job_state == JobState::Downloading && item.state_text.empty()) {
+                item.bytes_per_second = 18'200'000; item.eta_seconds = 41; item.server_name = "Fastly";
+            }
+            state_.jobs.push_back(std::move(item));
+        };
+        update(GameId::Steam(900001), 0, JobState::Downloading, 1'240'000'000, 1'240'000'000, "Applying", true);
+        update(GameId::Steam(900002), 1, JobState::Queued, 312'000'000, 0, "", false);
+        update(GameId::Steam(900003), 2, JobState::Paused, 2'100'000'000, 640'000'000, "", false);
+        state_.navigation.focus_key = "queue-downloads";
     } else if (name == "install-ready" || name == "unknown-size" || name == "insufficient-space") {
         state_.navigation.route = Route::Details;
         state_.navigation.detail_id = name == "unknown-size" ? GameId::Steam(900006) : GameId::Steam(900012);
@@ -3664,6 +4088,24 @@ bool Simulation::scenario(const std::string& name) {
             demo.genres = full->genres;
         }
         if (!find_game(state_, demo.id)) state_.games.push_back(std::move(demo));
+        reconcile_library_selection(state_);
+    } else if (name == "family-sharing") {
+        // Games a Steam family member shares. The external drive is disconnected and a download is
+        // interrupted, so status badges have to fit beside "Family".
+        state_.navigation.route = Route::Library;
+        if (auto* volume = find_volume(state_, "external")) volume->available = false;
+        // The demos fixture's demo, when loaded first, shows both corner badges.
+        std::vector<GameId> shared{GameId::Steam(900014), GameId::Steam(900011), GameId::Steam(900025)};
+        if (auto* job = find_job(state_, "job-1")) {
+            job->state = JobState::Interrupted;
+            job->failure = "Storage disconnected";
+            shared.push_back(job->game_id);
+        }
+        const auto external = std::find_if(state_.installations.begin(), state_.installations.end(),
+                                           [](const Installation& item) { return item.volume_id == "external"; });
+        if (external != state_.installations.end()) shared.push_back(external->game_id);
+        for (const auto id : shared)
+            if (auto* game = const_cast<Game*>(find_game(state_, id))) game->family_shared = true;
         reconcile_library_selection(state_);
     } else if (name == "stress") {
         const auto source = read_file(fixture_directory_.parent_path() / "library.json");
@@ -3823,7 +4265,15 @@ void Simulation::rebuild_view() {
         state_.navigation.selected_game_id = selected_game_id;
     }
     view_ = {};
-    if (state_.navigation.route != Route::Downloads) queue_shown_ = false;
+    // A game's page opened from the Queue is part of that visit: Back finds the same section open.
+    const bool queue_details = state_.navigation.route == Route::Details && state_.navigation.detail_origin == Route::Downloads &&
+                               !queue_return_focus_.empty();
+    if (state_.navigation.route != Route::Downloads && !queue_details) queue_shown_ = false;
+    if (state_.navigation.route != Route::Downloads && !queue_details) queue_return_focus_.clear();
+    // A size check that failed is asked again when the install sheet opens next, not while it stays open.
+    if (!rebuilding_overlay_ && std::none_of(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                                             [](const ModalEntry& modal) { return modal.id == "install"; }))
+        size_checks_failed_.clear();
     view_.surface = route_name(state_.navigation.route);
     view_.show_simulation_label = state_.simulation_mode;
     if (state_.editor.active) view_.surface = "keyboard";
@@ -3910,16 +4360,26 @@ void Simulation::rebuild_view() {
         if (modal.id == "install" && live()) {
             // Shown when the game does not fit as is: say why, and where it would go.
             const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
-            const auto assessment = assess_install(state_, id, install_target(), steam::kInstallSpaceMargin);
+            // Steam's figures add up each part of the game; its exact size, once checked, replaces them.
+            const auto check = install_size_check(id);
+            const auto key = std::make_tuple(check.id, check.branch, check.language);
+            if (!size_checks_running_.count(key) && !size_checks_answered_.count(key) && !size_checks_failed_.count(key)) {
+                size_checks_.push_back(check);
+                size_checks_running_.insert(key);
+            }
+            const auto assessment = install_assessment(id);
+            const bool checking = install_size_checking(id);
+            const bool exact = measured_install_size(id) != nullptr;
             const auto* volume = find_volume(state_, install_target());
             const auto* fallback = find_volume(state_, selected_volume_id_);
             view_.subtitle = "To " + (volume ? volume->label : std::string("unavailable storage")) +
                 (install_volume_id_.empty() ? "" : " (this game only)") + ". ";
             view_.subtitle += assessment.free_bytes ? format_bytes(*assessment.free_bytes) + " free. " : "";
             view_.subtitle += assessment.installed_bytes
-                ? "Needs about " + format_bytes(*assessment.installed_bytes) + ". "
+                ? (exact ? "Needs " : "Needs about ") + format_bytes(*assessment.installed_bytes) + ". "
                 : "Its size is checked when the download starts. ";
-            if (assessment.readiness == InstallReadiness::Insufficient) view_.subtitle += "Not enough space: choose another drive or free up space.";
+            if (assessment.readiness == InstallReadiness::Insufficient && checking) view_.subtitle += "Checking its exact size…";
+            else if (assessment.readiness == InstallReadiness::Insufficient) view_.subtitle += "Not enough space: choose another drive or free up space.";
             else if (assessment.readiness == InstallReadiness::Unavailable) view_.subtitle += "This drive is disconnected.";
             else if (assessment.readiness == InstallReadiness::ReadOnly) view_.subtitle += "This drive is read-only.";
             else if (assessment.readiness == InstallReadiness::UnknownCapacity)
@@ -3929,6 +4389,28 @@ void Simulation::rebuild_view() {
                 view_.subtitle += (view_.subtitle.back() == ' ' ? "" : " ") + std::string("Other games still install to ") +
                                   fallback->label + ".";
         }
+        if (modal.id == "update") {
+            // As the install sheet says it: where, how much room, and what the download is.
+            const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+            const auto check = update_check(id);
+            const auto* game = find_game(state_, id);
+            const bool dlc = game && game->update.new_dlc;
+            view_.subtitle = dlc ? "DLC you own now downloads into the game"
+                                 : "A newer version of the game downloads";
+            view_.subtitle += game && game->update.newer && dlc ? ", with the game's update. " : ". ";
+            view_.subtitle += "On " + check.volume_label + ". ";
+            if (check.free_bytes) view_.subtitle += format_bytes(*check.free_bytes) + " free. ";
+            view_.subtitle += check.download_bytes
+                ? "Downloads up to " + format_bytes(check.download_bytes) + ", only the files that changed. "
+                : "Its size is checked when the download starts. ";
+            view_.subtitle += check.allowed ? std::string("You can play until the update puts its files in place.")
+                                            : check.reason + ".";
+        }
+        if (modal.id == "install-version")
+            view_.subtitle = "For this install only. Steam keeps older versions as branches; Public is the current one.";
+        if (modal.id == "install-language")
+            view_.subtitle = "For this game only. New downloads of other games stay in " +
+                             playden::steam::LanguageName(state_.content_language) + ".";
         if (modal.id == "storage" && live() && picking_install_volume_) {
             const auto* fallback = find_volume(state_, selected_volume_id_);
             view_.subtitle = "For this game only." + (fallback ? " Other games still install to " + fallback->label + "." : std::string());
@@ -3973,13 +4455,131 @@ void Simulation::rebuild_view() {
         if (modal.id == "kept-data")
             view_.subtitle = "Saves and settings kept when a game was uninstalled. Installing a game again brings its saves "
                              "back. Saves in Steam Cloud stay in Steam Cloud.";
+        if (modal.id == "leftover-titles")
+            view_.subtitle = "PS5 titles Playden made but no longer has a record of. Deleting one removes its title and Home "
+                             "tile; its saves and settings move to Kept game data, and its game files stay in the Library.";
+        if (modal.id == "download-server")
+            view_.subtitle = "Applies to downloads that start or resume from now.";
+        if (modal.id == "content-language")
+            view_.subtitle = "New downloads are in this language when the game has it, otherwise in English or the game's "
+                             "first language. Games already installed keep the language they were downloaded in.";
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
-            // Demos is on unless the player hid them.
-            if (action_key == "filter-hide-demos") {
+            if (modal.id == "download-server") {
+                if (action_key == "download-server-fastest") {
+                    item.title = "Fastest";
+                    item.subtitle = "Tests the servers when a download starts and uses the fastest one.";
+                    item.selected = state_.download_server == kFastestDownloadServer;
+                } else if (action_key == "download-server-auto") {
+                    item.title = "Steam default";
+                    item.subtitle = "Uses the server Steam lists first.";
+                    item.selected = state_.download_server.empty();
+                } else if (action_key == "download-server-listing" || action_key == "download-server-list-failed") {
+                    item.title = action_key == "download-server-listing" ? "Getting the server list…" : "Could not get the server list.";
+                    item.kind = RowKind::Status;
+                    item.enabled = false;
+                } else if (action_key == "download-server-retry") {
+                    item.title = "Try again";
+                } else if (action_key == "download-server-test") {
+                    item.title = "Test servers";
+                    item.enabled = download_server_test_allowed() && download_servers_.phase != "listing" &&
+                                   download_servers_.phase != "testing" && !download_server_cancel_pending_;
+                    if (download_server_cancel_pending_) item.title = "Canceling test…";
+                    else if (download_servers_.phase == "testing" && !download_servers_.servers.empty()) {
+                        const auto index = std::min(download_servers_.testing_index, download_servers_.servers.size() - 1);
+                        item.title = "Testing " + download_servers_.servers[index].name + " (" + std::to_string(index + 1) +
+                                     " of " + std::to_string(download_servers_.servers.size()) + ")…";
+                    }
+                    if (state_.account(Store::kSteam).authentication != AuthState::SignedIn || download_servers_.needs_sign_in)
+                        item.subtitle = "Sign in to Steam to test servers.";
+                    else if (!download_server_test_allowed()) item.subtitle = "Pause downloads to test servers.";
+                    else if (download_servers_.needs_installed_game) item.subtitle = "Install a game to test servers.";
+                    else if (download_servers_.phase == "test-failed")
+                        item.subtitle = download_servers_.message.empty() ? "Could not test the servers. Try again." : download_servers_.message;
+                    else item.subtitle = "Downloads up to 160 MB to measure each server.";
+                } else if (action_key == "cancel") {
+                    item.title = "Cancel";
+                } else {
+                    std::size_t index = 0;
+                    const auto number = action_key.substr(std::string("download-server-").size());
+                    const auto parsed = std::from_chars(number.data(), number.data() + number.size(), index);
+                    if (parsed.ec == std::errc{} && index < download_servers_.servers.size()) {
+                        const auto& option = download_servers_.servers[index];
+                        item.title = option.name;
+                        item.selected = state_.download_server == option.id;
+                        if (option.plain_http) item.subtitle = "HTTP";
+                        for (const auto& rate : download_servers_.rates) if (rate.id == option.id) {
+                            if (rate.failed) item.value = "Failed";
+                            else if (std::isfinite(rate.mb_per_s) && rate.mb_per_s >= 0) {
+                                char value[64];
+                                std::snprintf(value, sizeof(value), "%.1f MB/s", rate.mb_per_s);
+                                item.value = value;
+                            }
+                        }
+                        if (option.id == best_tested_download_server()) item.badge = "Fastest";
+                    }
+                }
+                continue;
+            }
+            // The game-language picker: every language Steam has, with the one in use ticked.
+            if (modal.id == "content-language" && action_key.rfind("content-language-", 0) == 0) {
+                const auto code = action_key.substr(17);
+                item.kind = RowKind::Choice;
+                item.title = playden::steam::LanguageName(code);
+                item.selected = code == state_.content_language;
+                if (item.selected) item.value = "In use";
+            }
+            // This install's language: the ones the game carries, with the one it would use ticked.
+            if (modal.id == "install-language" && action_key.rfind("install-language-", 0) == 0) {
+                const auto code = action_key.substr(17);
+                item.kind = RowKind::Choice;
+                item.title = playden::steam::LanguageName(code);
+                item.selected = code == install_language(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
+            }
+            // This install's version: Public, then the branches Steam offers, each with its build date.
+            if (modal.id == "install-version" && action_key.rfind("install-version-", 0) == 0) {
+                const auto name = action_key.substr(16);
+                const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+                const auto* game = find_game(state_, id);
+                item.kind = RowKind::Choice;
+                item.title = version_title(name);
+                if (game)
+                    for (const auto& version : game->versions)
+                        if (version.name == name) {
+                            item.subtitle = version.description;
+                            if (version.time_updated > 0) item.value = "Built " + version_date(version.time_updated);
+                        }
+                const auto* chosen = install_version(id);
+                item.selected = chosen ? chosen->name == name : name == "public";
+            }
+            if (modal.id == "install" && action_key == "install-version") {
+                const auto* chosen = install_version(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
+                item.value = version_title(chosen ? chosen->name : "public");
+                item.subtitle = chosen ? (chosen->description.empty() ? std::string("This install only") : chosen->description)
+                                       : "The current version";
+            }
+            if (modal.id == "update" && action_key == "update-confirm") {
+                const auto check = update_check(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
+                if (check.download_bytes) item.value = "Up to " + format_bytes(check.download_bytes);
+                item.subtitle = check.reason;
+                item.enabled = check.allowed;
+            }
+            if (modal.id == "install" && action_key == "install-dlc") {
+                const auto* game = find_game(state_, state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
+                item.kind = RowKind::Status;
+                item.value = std::to_string(game ? game->dlc_count : 0) + " DLC";
+                item.enabled = false;
+            }
+            if (modal.id == "install" && action_key == "install-language") {
+                const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+                item.value = playden::steam::LanguageName(install_language(id));
+                item.subtitle = install_language_.empty() ? "From Settings › Downloads" : "This game only";
+            }
+            // Demos and Family sharing are on unless the player hid them.
+            if (action_key == "filter-hide-demos" || action_key == "filter-hide-family") {
                 item.kind = RowKind::Toggle;
-                item.selected = !state_.library.filters.contains("hide-demos");
+                item.selected = !state_.library.filters.contains(action_key.substr(7));
                 item.value = item.selected ? "On" : "Off";
             }
             // The menu's Favorite says what it will do for this game.
@@ -4445,6 +5045,38 @@ void Simulation::rebuild_view() {
                 item.enabled = !kept_selected_.empty();
                 if (!kept_selected_.empty()) item.value = kept_count(kept_selected_.size()) + " · " + format_bytes(bytes);
             }
+            else if (action_key == "leftover-select-all") {
+                std::size_t choosable = 0;
+                for (const auto& title : state_.leftover_titles) if (!leftover_queued(title.title_id)) ++choosable;
+                item.title = choosable > 0 && leftover_selected_.size() == choosable ? "Clear selection" : "Select all";
+                item.enabled = choosable > 0;
+            }
+            else if (action_key.rfind("leftover-toggle-", 0) == 0) {
+                const auto id = action_key.substr(std::strlen("leftover-toggle-"));
+                for (const auto& title : state_.leftover_titles) {
+                    if (title.title_id != id) continue;
+                    item.kind = RowKind::Toggle;
+                    item.title = title.name.empty() ? id : title.name;
+                    item.value = format_bytes(title.bytes);
+                    item.subtitle = id;
+                    for (const auto& deletion : state_.leftover_deletions)
+                        if (deletion.title_id == id)
+                            item.subtitle += " · " + (!deletion.failure.empty() ? deletion.failure
+                                                      : !deletion.step.empty() ? deletion.step : std::string("Queued"));
+                    item.enabled = !leftover_queued(id);
+                    item.selected = leftover_selected_.contains(id);
+                }
+            }
+            else if (action_key == "leftover-selection-delete") {
+                std::uint64_t bytes = 0;
+                for (const auto& title : state_.leftover_titles) if (leftover_selected_.contains(title.title_id)) bytes += title.bytes;
+                item.title = "Delete selected";
+                item.dangerous = true;
+                item.enabled = !leftover_selected_.empty();
+                if (!leftover_selected_.empty())
+                    item.value = std::to_string(leftover_selected_.size()) + (leftover_selected_.size() == 1 ? " title · " : " titles · ") +
+                                 format_bytes(bytes);
+            }
             else if (action_key == "uninstall-delete-saves") {
                 item.kind = RowKind::Toggle;
                 item.dangerous = false;
@@ -4476,25 +5108,21 @@ void Simulation::rebuild_view() {
             else if (action_key == "account-auth") { item.kind = RowKind::Status; item.value = auth_name(state_.account().authentication); item.subtitle = state_.account().error; item.enabled = false; }
             else if (action_key == "account-last-sync") { item.kind = RowKind::Status; item.value = state_.account().last_sync == 0 ? "Never" : std::to_string(state_.account().last_sync); item.enabled = false; }
             else if (action_key.rfind("open-game:", 0) == 0) item.title = "Open game";
-            else if (action_key == "about-version") { item.kind = RowKind::Status; item.value = live() ? "Playden " + state_.self_update.current +
-                (state_.self_update.current.find("-beta.") != std::string::npos ? " (Beta)" : "") : "Simulated"; item.enabled = false; }
-            else if (action_key == "about-build") { item.kind = RowKind::Status; item.value = live() ? "Live service model" : "UI comparison fixture"; item.enabled = false; }
-            else if (action_key == "about-framework") { item.kind = RowKind::Status; item.value = "Homebrew native model + Hui"; item.enabled = false; }
-            else if (action_key == "about-platform") { item.kind = RowKind::Status; item.value = "Host / PS5 homebrew"; item.enabled = false; }
+            else if (action_key == "about-version") { item.kind = RowKind::Status; item.value = live() ? "Playden " + version_label(state_.self_update.current) : "Simulated"; item.enabled = false; }
+            else if (action_key == "about-build") { item.kind = RowKind::Status; item.value = live() ? build_label(state_.self_update.current, state_.self_update.commit) : "UI comparison fixture"; item.enabled = false; }
             else if (action_key == "about-kit" || action_key == "about-kit-source") {
-                // The kit in use, and the one this build was tested with when they differ.
+                // The kit in use, and the one this version of Playden expects when they differ.
                 LiveKitInfo kit = state_.kit;
-                if (!live()) kit = {"playden-kit", std::string(64, 'b'), std::string(64, 'b'), std::string(40, '2'), false, {}};
-                const auto short_hash = [](const std::string& hash) { return hash.substr(0, 12); };
+                if (!live()) kit = {"playden-kit", std::string(64, 'b'), std::string(64, 'b'), std::string(40, '2'), false, {}, "0.13"};
+                const auto short_hash = [](const std::string& hash) { return hash.substr(0, 10); };
                 item.kind = RowKind::Status; item.enabled = false;
                 if (kit.kit_id.empty()) {
                     item.value = action_key == "about-kit" ? "None" : "—";
                     if (action_key == "about-kit") item.subtitle = kit.unavailable_reason.empty() ? "Checking" : kit.unavailable_reason;
                 } else if (action_key == "about-kit") {
-                    item.value = kit.kit_id + " · " + short_hash(kit.manifest_sha256);
-                    item.subtitle = kit.manifest_sha256 == kit.expected_manifest_sha256
-                        ? "The kit this version of Playden was tested with"
-                        : "Not the kit this version was tested with (" + short_hash(kit.expected_manifest_sha256) + ")";
+                    item.value = kit.kit_id + (kit.version.empty() ? "" : " " + kit.version) + " · " + short_hash(kit.manifest_sha256);
+                    if (kit.manifest_sha256 != kit.expected_manifest_sha256)
+                        item.subtitle = "This version of Playden expects " + short_hash(kit.expected_manifest_sha256);
                 } else {
                     item.value = "prospero-win " + kit.prospero_win_revision.substr(0, 7);
                     if (kit.source_dirty) item.subtitle = "Includes uncommitted changes";
@@ -4503,12 +5131,12 @@ void Simulation::rebuild_view() {
             else if (action_key == "install-confirm" || action_key == "install-estimate-retry") {
                 const auto id = live() ? state_.navigation.detail_id.value_or(state_.navigation.selected_game_id)
                                        : state_.navigation.selected_game_id;
-                const auto assessment = assess_install(state_, id, live() ? install_target() : selected_volume_id_,
-                                                       live() ? steam::kInstallSpaceMargin : 0);
+                const auto assessment = live() ? install_assessment(id) : assess_install(state_, id, selected_volume_id_);
                 if (action_key == "install-estimate-retry") item.enabled = assessment.readiness == InstallReadiness::UnknownSize;
                 else if (live()) {
                     item.enabled = live_install_allowed(assessment.readiness, free_space_supported_);
-                    item.subtitle = assessment.readiness == InstallReadiness::Insufficient ? "Not enough space"
+                    item.subtitle = assessment.readiness == InstallReadiness::Insufficient && install_size_checking(id) ? "Checking size"
+                        : assessment.readiness == InstallReadiness::Insufficient ? "Not enough space"
                         : assessment.readiness == InstallReadiness::Unavailable ? "Drive disconnected"
                         : assessment.readiness == InstallReadiness::ReadOnly ? "Drive is read-only"
                         : assessment.readiness == InstallReadiness::UnknownCapacity && free_space_supported_ ? "Free space unknown"
@@ -4568,6 +5196,9 @@ void Simulation::rebuild_view() {
         else if (modal.id == "import-games") view_.legends = {"Cross Select", "Circle Close"};
         else if (modal.id == "import-programs" || modal.id == "import-choice") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "steam-programs") view_.legends = {"Cross Choose", "Circle Cancel"};
+        else if (modal.id == "content-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
         else if (modal.id == "installed-games") view_.legends = {"Cross Select", "Triangle Uninstall", "Circle Close"};
         else if (!modal.setting_id.empty()) view_.legends = {"Cross Select", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
@@ -4766,11 +5397,47 @@ void Simulation::rebuild_view() {
         const Job* copying = imported && in_place ? import_copy_job(game->id) : nullptr;
         // Live installations are only finished installs; their size may be unknown on an absent drive.
         const bool installed = installation && (live() || installation->installed_bytes > 0);
+        // An installed game's update, after Play: the button opens the Update sheet; the size goes in the
+        // note under the buttons. While its job runs, the note follows it instead.
+        const auto update_rows = [&] {
+            if (!game || !installed || !installation->available || in_place) return;
+            if (pending_uninstalls_.contains(game->id)) return;
+            const auto job = std::find_if(state_.jobs.begin(), state_.jobs.end(), [&](const Job& value) {
+                return value.game_id == game->id && value.kind == "install" && value.state != JobState::Downloaded &&
+                       value.state != JobState::Cancelled;
+            });
+            if (job != state_.jobs.end()) {
+                if (!job->update) return;
+                std::string progress = !job->state_text.empty() ? job->state_text : JobStateText(*job);
+                if (job->state == JobState::Downloading && job->state_text.empty() && job->total_bytes > 0)
+                    progress = std::to_string(static_cast<int>(100.0 * static_cast<double>(job->completed_bytes) /
+                                                               static_cast<double>(job->total_bytes))) + "%";
+                auto& note = row("details-updating", RowKind::Status, "Updating", "");
+                note.value = progress;
+                if (!job->failure.empty()) note.subtitle = job->failure;
+                note.enabled = false;
+                return;
+            }
+            if (!game->update.available()) return;
+            const bool dlc = game->update.new_dlc;
+            auto& button = row("details-update", RowKind::Action, dlc ? "DLC available" : "Update", "details-update");
+            button.game_id = game->id;
+            auto& note = row("details-update-note", RowKind::Status, dlc ? "DLC available" : "Update available", "");
+            // Steam's size for the changed depots; only the files that changed download.
+            if (game->update.download_bytes) note.value = "Up to " + format_bytes(game->update.download_bytes);
+            note.enabled = false;
+        };
         if (!live()) {
             auto& primary = row(installed ? "details-play" : "details-install", RowKind::Action,
                                 installed ? (installation->runtime_ready ? "Play" : "Open Settings") : "Install",
                                 installed ? (installation->runtime_ready ? "launch" : "details-kit-settings") : "install");
             primary.enabled = true;
+            if (installed && game && update_locked(game->id)) {
+                primary.enabled = false;
+                primary.action.clear();
+                primary.value = "Finishing the update…";
+            }
+            update_rows();
         }
         if (live() && game) {
             // Real install state: an install job, a finished install, or what Steam allows.
@@ -4789,6 +5456,7 @@ void Simulation::rebuild_view() {
                 if (installation->available) {
                     // The primary action says what pressing does; setup facts and a single
                     // player-facing hint carry its state without repeating technical diagnostics.
+                    bool uninstalling = pending_uninstalls_.contains(game->id);
                     const auto play_game = state_.runtime_games.find(game->id);
                     if (play_game != state_.runtime_games.end()) {
                         const auto& value = play_game->second;
@@ -4801,43 +5469,51 @@ void Simulation::rebuild_view() {
                         const bool pending = value.status == "Registration pending";
                         const bool attention = value.can_prepare && (recovery || removing || pending);
                         const bool enabled = no_kit || value.can_play || prepares_first || value.awaiting_registration || attention;
+                        const bool active_uninstall = !removing && !value.uninstall_status.empty();
+                        const bool queued_uninstall = !removing && !active_uninstall && pending_uninstalls_.contains(game->id);
+                        uninstalling = active_uninstall || queued_uninstall;
                         auto& play = row("details-play", RowKind::Action,
-                            no_kit ? "Open Settings" : removing ? "Finish removing" : pending ? "Check again"
+                            no_kit ? "Open Settings"
+                            : removing ? "Finish removing"
+                            : active_uninstall ? "Uninstalling"
+                            : queued_uninstall ? "Uninstall queued"
+                            : pending ? "Check again"
                             : recovery || value.awaiting_registration ? "Finish setup" : "Play",
-                            no_kit ? "details-kit-settings" : value.awaiting_registration ? "quit-to-home"
+                            uninstalling ? ""
+                            : no_kit ? "details-kit-settings" : value.awaiting_registration ? "quit-to-home"
                             : attention ? (removing ? "runtime-remove-retry" : "runtime-prepare")
                             : enabled ? "runtime-play" : "");
-                        play.value = value.awaiting_registration ? "Quits to Home"
+                        play.value = active_uninstall ? value.uninstall_status
+                            : queued_uninstall ? "Uninstalling…"
+                            : value.awaiting_registration ? "Quits to Home"
                             : !value.play_status.empty() ? value.play_status
                             : prepares_first ? (kit_update ? "Kit update first" : value.status == "Needs repair" ? "Repairs first" : "Sets up first")
                             : value.status == "Preparing" ? value.detail
                             : value.status == "Checking" || value.status == "Removing" || value.status == "Unavailable" ? value.status
                             : std::string{};
-                        play.enabled = enabled && value.uninstall_status.empty();
+                        play.enabled = enabled && !uninstalling;
                         // Setting up waits for the player to choose the game's program.
-                        if (const auto setup = game_setups_.find(game->id); setup != game_setups_.end() &&
-                            !setup->second.steam_choices.empty() && !value.ready && value.status != "Preparing") {
-                            play.title = "Choose program";
-                            play.action = "steam-programs";
-                            play.value.clear();
-                            play.enabled = value.uninstall_status.empty();
+                        if (!uninstalling) {
+                            if (const auto setup = game_setups_.find(game->id); setup != game_setups_.end() &&
+                                !setup->second.steam_choices.empty() && !value.ready && value.status != "Preparing") {
+                                play.title = "Choose program";
+                                play.action = "steam-programs";
+                                play.value.clear();
+                                play.enabled = true;
+                            }
+                            // Finish setup would fail as before over a title or bottle an earlier kit made: make it again.
+                            if (value.setup_other_kit) {
+                                play.title = "Recreate bottle";
+                                play.action = "prep-recreate-" + ToKey(game->id);
+                                play.value = value.maintenance_running ? "Working…" : std::string{};
+                                play.enabled = !value.maintenance_running;
+                            }
                         }
-                        // Finish setup would fail as before over a title or bottle an earlier kit made: make it again.
-                        if (value.setup_other_kit) {
-                            play.title = "Recreate bottle";
-                            play.action = "prep-recreate-" + ToKey(game->id);
-                            play.value = value.maintenance_running ? "Working…" : std::string{};
-                            play.enabled = !value.maintenance_running;
-                        }
-                        if (!value.uninstall_status.empty()) {
-                            play.value = value.uninstall_status;
-                            play.action.clear();
-                        }
-                        if (value.queued && value.uninstall_status.empty()) {
+                        if (value.queued && !uninstalling) {
                             play.value = "Queued";
                             play.enabled = false;
                             play.action.clear();
-                        } else if (!play.enabled && value.uninstall_status.empty() && value.status != "Preparing") {
+                        } else if (!play.enabled && !uninstalling && value.status != "Preparing") {
                             const auto other = std::find_if(state_.runtime_games.begin(), state_.runtime_games.end(),
                                 [&](const auto& entry) { return entry.first != game->id && entry.second.status == "Preparing"; });
                             if (other != state_.runtime_games.end()) play.value = "Waiting";
@@ -4848,7 +5524,16 @@ void Simulation::rebuild_view() {
                                 play.value = trimmed(play.value.substr(0, play.value.find("…"))) + " " +
                                              std::to_string(static_cast<int>(*value.progress * 100.0F)) + "%";
                         }
+                        // An update putting its files in place: the game can't start until it finishes.
+                        if (!uninstalling && update_locked(game->id)) {
+                            play.title = "Play";
+                            play.action.clear();
+                            play.value = "Finishing the update…";
+                            play.progress = 0.0F;
+                            play.enabled = false;
+                        }
                     }
+                    update_rows();
                     // Steam Cloud saves: sync on demand; a pending choice opens its dialog. Only stores
                     // with Cloud saves have the row.
                     if (Traits(game->id.store).cloud_saves) {
@@ -4858,7 +5543,7 @@ void Simulation::rebuild_view() {
                         const bool choice = cloud_status == CloudStatus::Conflict || cloud_status == CloudStatus::NeedsAccount;
                         // Stays a button while it works, disabled, so it keeps its place in the row.
                         auto& saves = row("details-cloud", RowKind::Action, "Cloud saves",
-                                          busy ? "" : choice ? "cloud-choose" : "cloud-sync");
+                                          busy || uninstalling ? "" : choice ? "cloud-choose" : "cloud-sync");
                         saves.value = cloud_status == CloudStatus::None        ? "Sync"
                                       : busy                                  ? (cloud_status == CloudStatus::Checking ? "Checking…" : "Syncing…")
                                       : choice                                ? "Choose"
@@ -4866,7 +5551,7 @@ void Simulation::rebuild_view() {
                                       : cloud_status == CloudStatus::Unsupported ? "Unavailable"
                                                                               : "Synced";
                         if (cloud != state_.cloud.end()) saves.subtitle = cloud->second.message;
-                        saves.enabled = !busy;
+                        saves.enabled = !busy && !uninstalling;
                     }
                 }
             } else if (job) {
@@ -4940,10 +5625,12 @@ void Simulation::rebuild_view() {
         if (installed) {
             const auto found = state_.runtime_games.find(game->id);
             const auto* runtime = found == state_.runtime_games.end() ? nullptr : &found->second;
+            const bool runtime_uninstalling = runtime && (!runtime->uninstall_status.empty() || pending_uninstalls_.contains(game->id)) &&
+                                              runtime->status != "Removal incomplete";
             const std::string status = !installation->available ? "Unavailable"
-                : runtime && !runtime->uninstall_status.empty() ? "Removing"
+                : runtime_uninstalling ? "Removing"
                 : runtime ? runtime->status : !live() ? (installation->runtime_ready ? "Ready" : "No kit") : "Checking";
-            const bool waiting = runtime && runtime->awaiting_registration && installation->available && runtime->uninstall_status.empty();
+            const bool waiting = runtime && runtime->awaiting_registration && installation->available && !runtime_uninstalling;
             const bool kit_update = status == "Kit update available" || status == "Update available";
             const std::string tone = waiting || kit_update ? "busy" : status == "Ready" ? "good"
                 : status == "Failed" || status == "No kit" ? "problem"
@@ -5249,10 +5936,20 @@ void Simulation::rebuild_view() {
                 kept.value = kept_count(state_.kept_bottles.size()) + " · " + format_bytes(bytes);
             }
         }
+        if (!state_.leftover_titles.empty()) {
+            // PS5 titles Playden made but has no record of: one row that opens their manager, like kept game data.
+            std::uint64_t bytes = 0;
+            for (const auto& title : state_.leftover_titles) bytes += title.bytes;
+            const auto count = state_.leftover_titles.size();
+            auto& item = add("settings-leftovers", RowKind::Action, "Leftover PS5 titles", "leftover-manage");
+            item.subtitle = "Game titles Playden no longer has a record of";
+            item.value = std::to_string(count) + (count == 1 ? " title · " : " titles · ") + format_bytes(bytes);
+        }
         if (live() && state_.runtime_leftover_requests > 0) {
             // Explicit recovery: settings requests no game is using any more.
             auto& leftovers = add("settings-runtime-cleanup", RowKind::Action, "Unused game settings data", "runtime-cleanup");
-            leftovers.value = std::to_string(state_.runtime_leftover_requests);
+            // The requests are Playden's own files, always on the console, wherever the games are.
+            leftovers.value = std::to_string(state_.runtime_leftover_requests) + " · Console storage";
             leftovers.subtitle = "Left by interrupted or finished preparations. Clean up removes only what no game is using.";
         }
         auto& runtime = add("settings-runtime", RowKind::Action, "Runtime status", "settings-runtime");
@@ -5261,12 +5958,35 @@ void Simulation::rebuild_view() {
             runtime.subtitle = state_.runtime_problem.empty() ? "Games run through prospero-win" : state_.runtime_problem;
             runtime.kind = RowKind::Status; runtime.action.clear(); runtime.enabled = false;
         }
+        section = "Downloads";
         if (live()) {
+            // Steam ships localisations as separate depots, so the language has to be chosen
+            // before a game is downloaded.
+            auto& content = add("settings-content-language", RowKind::Action, "Download language", "content-language-picker");
+            content.value = playden::steam::LanguageName(state_.content_language);
+            content.subtitle = "Used for new installs. A game without it falls back to English or its first language.";
+        }
+        if (live() || download_server_fixture_) {
             auto& slow = add("settings-downloads-slow", RowKind::Toggle, "Downloads for slow networks", "toggle-downloads-slow");
             slow.selected = state_.downloads_slow_network;
             slow.subtitle = state_.downloads_slow_network
                 ? "8 pieces at a time. Turn it off if downloads got slower."
                 : "Off: 4 pieces at a time. Turn it on if downloads stay near 1 MB/s.";
+            auto& server = add("settings-download-server", RowKind::Action, "Download server", "download-server-picker");
+            const bool fastest = state_.download_server == kFastestDownloadServer;
+            server.value = state_.download_server.empty() ? "Steam default" : fastest ? "Fastest"
+                : download_servers_.preferred_name.empty() ? state_.download_server : download_servers_.preferred_name;
+            bool offered = false;
+            for (const auto& option : download_servers_.servers) if (option.id == state_.download_server) {
+                server.value = option.name;
+                offered = true;
+            }
+            const bool listed = download_servers_.phase == "listed" || download_servers_.phase == "testing" ||
+                                download_servers_.phase == "tested" || download_servers_.phase == "test-failed";
+            server.subtitle = state_.download_server.empty() ? "Uses the server Steam lists first."
+                : fastest ? "Tests the servers when a download starts and uses the fastest one."
+                : listed && !offered ? "Not offered on this network now. Steam default is used."
+                : "If it stops answering, Playden uses another one.";
         }
         section = "Display";
         // Only worth a row when a catalog beyond English shipped.
@@ -5299,10 +6019,8 @@ void Simulation::rebuild_view() {
                 item.value = "Checking…";
                 item.subtitle = "Looking for a newer Playden on GitHub";
             } else if (update.phase == "available") {
-                item.value = update.moves && update.available == update.current ? "New app available"
-                                                                                  : update.available + " available";
-                item.subtitle = (update.moves ? "Installs as a new app · download " : "Download ") +
-                                format_bytes(update.download_bytes);
+                item.value = update.available + " available";
+                item.subtitle = "Download " + format_bytes(update.download_bytes);
             } else if (update.phase == "downloading" || update.phase == "unpacking") {
                 item.value = update.total ? std::to_string(update.done * 100 / update.total) + "%" : "Working…";
                 item.subtitle = update.phase == "downloading" ? "Downloading Playden " + update.available
@@ -5358,7 +6076,39 @@ void Simulation::rebuild_view() {
         }
         if (live() && !state_.self_update.current_notes_url.empty()) {
             auto& notes = add("settings-release-notes", RowKind::Action, "Release notes", "self-update-notes");
-            notes.subtitle = "What changed in Playden " + state_.self_update.current;
+            notes.subtitle = "What changed in Playden " + version_label(state_.self_update.current);
+        }
+        section = "Web access";
+        {
+            auto& toggle = add("settings-web-access", RowKind::Toggle, "Web access", "toggle-web-access");
+            toggle.selected = state_.web_access;
+            // The simulation shows a made-up address; live, the controller reports the server's.
+            LiveWebAccess shown = web_access_;
+            if (!live()) shown = state_.web_access ? LiveWebAccess{"on", "http://192.168.1.50:7031/", 7031, {}} : LiveWebAccess{};
+            if (!state_.web_access) {
+                toggle.subtitle = "Off: Playden's logs can't be opened from a browser.";
+            } else if (shown.state == "on" && !shown.url.empty()) {
+                toggle.subtitle = "Playden's logs on the local network while Playden is open.";
+                auto& address = add("settings-web-address", RowKind::Status, "Open on a phone or computer on the same network", "");
+                address.value = shown.url.substr(0, shown.url.size() - 1);  // without the trailing "/"
+                address.subtitle = "Shows Playden's logs, with your Steam name removed. Nothing can be changed from there yet.";
+                address.qr = shown.url;
+                address.enabled = false;  // nothing to do on it: focus stays on the switch
+            } else if (shown.state == "on") {
+                toggle.subtitle = "Playden's logs on the local network while Playden is open.";
+                auto& address = add("settings-web-address", RowKind::Status, "Address unknown", "");
+                address.value = "port " + std::to_string(shown.port);
+                address.subtitle = "Open the console's IP address shown in the PS5's network settings, port " +
+                                   std::to_string(shown.port) + ", on a phone or computer on the same network.";
+                address.enabled = false;  // nothing to do on it: focus stays on the switch
+            } else if (shown.state == "failed") {
+                toggle.subtitle = "Playden's logs on the local network while Playden is open.";
+                auto& problem = add("settings-web-problem", RowKind::Status, "Web access is not open", "");
+                problem.subtitle = "Web access could not start: " + shown.error + ". Turn it off and on to try again.";
+                problem.enabled = false;  // nothing to do on it: focus stays on the switch
+            } else {
+                toggle.subtitle = "Starting…";
+            }
         }
         section = "About";
         add("settings-about", RowKind::Action, "About", "about").subtitle = "Playden for PlayStation 5";
@@ -5506,6 +6256,16 @@ void Simulation::close_modal() {
         import_choice_game_ = {};
     state_.navigation.modals.pop_back();
     state_.navigation.focus_key = opener;
+}
+
+// A game's page from a Queue row (after its dialog closed): it starts on its first action, as from the
+// Library, and Back returns to that row with the same section open.
+void Simulation::open_details_from_queue(GameId id) {
+    queue_return_focus_ = state_.navigation.focus_key;
+    state_.navigation.selected_game_id = id; state_.navigation.detail_id = id;
+    state_.navigation.detail_origin = Route::Downloads; state_.navigation.route = Route::Details;
+    details_primary_pending_ = live();
+    state_.navigation.focus_key = live() ? "details-favorite" : (is_installed(state_, id) ? "details-play" : "details-install");
 }
 
 void Simulation::start_logs() {
@@ -5894,6 +6654,14 @@ void Simulation::cancel() {
         return;
     }
     if (!state_.navigation.modals.empty()) {
+        if (state_.navigation.modals.back().id == "download-server" &&
+            (download_servers_.phase == "testing" || download_server_test_requested_) && !download_server_cancel_pending_) {
+            if (live()) download_server_requests_.push_back(DownloadServerRequest::CancelTest);
+            download_server_cancel_pending_ = live();
+            download_server_test_requested_ = false;
+            if (!live()) download_servers_.phase = "listed";
+            return;
+        }
         const bool crash_logs = state_.navigation.modals.back().id == "logs" && state_.session == SessionState::Crashed;
         const bool settings_sheet = state_.navigation.modals.back().id == "game-settings";
         close_modal();
@@ -5923,6 +6691,8 @@ void Simulation::cancel() {
     } else if (state_.navigation.route == Route::Details || state_.navigation.route == Route::Session) {
         state_.navigation.route = state_.navigation.route == Route::Session ? Route::Details : state_.navigation.detail_origin;
         state_.navigation.focus_key = state_.navigation.route == Route::Details ? "details-play" : game_key(state_.navigation.selected_game_id);
+        if (state_.navigation.route == Route::Downloads && !queue_return_focus_.empty()) state_.navigation.focus_key = queue_return_focus_;
+        queue_return_focus_.clear();
     } else if (state_.navigation.route != Route::Home) {
         state_.navigation.route = Route::Home;
         state_.navigation.focus_key = game_key(state_.navigation.selected_game_id);
@@ -6447,7 +7217,117 @@ void Simulation::activate() {
         }
     } else if (action_name == "context") open_modal({"context", "Game actions", "details-more", details_context_actions(), 0, false});
     else if (action_name == "install") open_modal({"install", "Install game", "details-install", {"install-confirm", "install-estimate-retry", "storage-picker", "cancel"}, 0, false});
-    else if (action_name == "storage-picker") {
+    else if (action_name == "download-server-picker") {
+        download_server_focus_choice_ = true;
+        if (live()) {
+            download_server_requests_.push_back(DownloadServerRequest::List);
+            download_servers_.phase = "listing";
+        }
+        open_modal({"download-server", "Download server", state_.navigation.focus_key, {"download-server-auto", "cancel"}, 0, false});
+        refresh_download_servers(download_server_choice_key());
+    } else if (action_name == "download-server-retry") {
+        if (live()) download_server_requests_.push_back(DownloadServerRequest::List);
+        download_servers_.phase = "listing";
+        refresh_download_servers();
+    } else if (action_name == "download-server-test") {
+        if (!download_server_test_allowed() || download_servers_.phase == "testing" ||
+            download_servers_.phase == "listing" || download_server_cancel_pending_) return;
+        if (live()) download_server_requests_.push_back(DownloadServerRequest::Test);
+        download_server_test_requested_ = true;
+        download_server_focus_choice_ = false;
+        download_servers_.phase = "testing";
+        download_servers_.testing_index = 0;
+        download_servers_.rates.clear();
+        refresh_download_servers();
+    } else if (action_name == "download-server-auto" || action_name.rfind("download-server-", 0) == 0) {
+        if (action_name == "download-server-auto") state_.download_server.clear();
+        else if (action_name == "download-server-fastest") state_.download_server = kFastestDownloadServer;
+        else {
+            std::size_t index = 0;
+            const auto number = action_name.substr(std::string("download-server-").size());
+            const auto parsed = std::from_chars(number.data(), number.data() + number.size(), index);
+            if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || index >= download_servers_.servers.size()) return;
+            state_.download_server = download_servers_.servers[index].id;
+            download_servers_.preferred_name = download_servers_.servers[index].name;
+        }
+        if (download_server_test_requested_ || download_servers_.phase == "testing") {
+            if (live() && !download_server_cancel_pending_) download_server_requests_.push_back(DownloadServerRequest::CancelTest);
+            if (!live()) download_servers_.phase = "listed";
+            download_server_test_requested_ = false;
+        }
+        save_profile();
+        close_modal();
+    } else if (action_name == "content-language-picker") {
+        std::vector<std::string> actions;
+        actions.reserve(playden::steam::ContentLanguages().size() + 1);
+        for (const auto& language : playden::steam::ContentLanguages())
+            actions.push_back("content-language-" + std::string(language.code));
+        actions.push_back("cancel");
+        // Opens on the language in use, so a list this long does not start at the top every time.
+        int focus = 0;
+        for (std::size_t index = 0; index < actions.size(); ++index)
+            if (actions[index] == "content-language-" + state_.content_language) focus = static_cast<int>(index);
+        open_modal({"content-language", "Download language", state_.navigation.focus_key, std::move(actions), focus, false});
+    } else if (action_name.rfind("content-language-", 0) == 0) {
+        const auto code = action_name.substr(17);
+        if (playden::steam::IsContentLanguage(code)) {
+            state_.content_language = code;
+            save_profile();
+        }
+        close_modal();
+        return;
+    } else if (live() && action_name == "install-version") {
+        // From the install sheet: the versions Steam offers for this game, for this install only.
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        if (!game || game->versions.size() < 2) return;
+        const auto* chosen = install_version(id);
+        std::vector<std::string> actions;
+        int focus = 0;
+        for (const auto& version : game->versions) {
+            if (chosen ? version.name == chosen->name : version.name == "public") focus = static_cast<int>(actions.size());
+            actions.push_back("install-version-" + version.name);
+        }
+        actions.push_back("cancel");
+        open_modal({"install-version", "Version", state_.navigation.focus_key, std::move(actions), focus, false});
+    } else if (live() && action_name.rfind("install-version-", 0) == 0) {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        const auto name = action_name.substr(16);
+        if (game && std::any_of(game->versions.begin(), game->versions.end(),
+                                [&](const GameVersion& version) { return version.name == name; }))
+            install_version_ = name == "public" ? std::string() : name;  // public is no choice
+        close_modal();
+        state_.navigation.focus_key = "install-confirm";  // back on the sheet, ready to install
+        return;
+    } else if (live() && action_name == "install-language") {
+        // From the install sheet: the languages this game carries, for this install only.
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        if (!game || game->content_languages.size() < 2) return;
+        std::vector<std::string> actions;
+        const auto current = install_language(id);
+        int focus = 0;
+        for (const auto& code : game->content_languages) {
+            if (code == current) focus = static_cast<int>(actions.size());
+            actions.push_back("install-language-" + code);
+        }
+        actions.push_back("cancel");
+        open_modal({"install-language", "Language", state_.navigation.focus_key, std::move(actions), focus, false});
+    } else if (live() && action_name.rfind("install-language-", 0) == 0) {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        const auto code = action_name.substr(17);
+        if (game && std::find(game->content_languages.begin(), game->content_languages.end(), code) !=
+                        game->content_languages.end()) {
+            // The Settings language's own choice for the game is no choice: it follows Settings.
+            install_language_ = code == playden::steam::ResolveContentLanguage(game->content_languages, state_.content_language)
+                ? std::string() : code;
+        }
+        close_modal();
+        state_.navigation.focus_key = "install-confirm";  // back on the sheet, ready to install
+        return;
+    } else if (action_name == "storage-picker") {
         // From the install sheet the choice is for that install only; Settings changes the default.
         picking_install_volume_ = live() && !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "install";
         std::vector<std::string> actions;
@@ -6466,7 +7346,13 @@ void Simulation::activate() {
             if (volume && volume->available) install_volume_id_ = id == selected_volume_id_ ? std::string() : id;
             picking_install_volume_ = false;
             close_modal();
-            state_.navigation.focus_key = "install-confirm";  // back on the sheet, ready to install
+            // Back on the sheet, ready to install; the sheet's own focus moves too, so Down goes on from Install.
+            if (!state_.navigation.modals.empty()) {
+                auto& sheet = state_.navigation.modals.back();
+                const auto found = std::find(sheet.action_keys.begin(), sheet.action_keys.end(), "install-confirm");
+                if (found != sheet.action_keys.end()) sheet.focused_action = static_cast<int>(found - sheet.action_keys.begin());
+            }
+            state_.navigation.focus_key = "install-confirm";
             return;
         } else if (live()) {
             // The install service owns the choice; reflect it now and let its next snapshot confirm.
@@ -6483,12 +7369,16 @@ void Simulation::activate() {
     } else if (action_name == "install-confirm") {
         const auto id = live() ? state_.navigation.detail_id.value_or(state_.navigation.selected_game_id)
                                : state_.navigation.selected_game_id;
-        const auto assessment = assess_install(state_, id, live() ? install_target() : selected_volume_id_,
-                                               live() ? steam::kInstallSpaceMargin : 0);
+        const auto assessment = live() ? install_assessment(id) : assess_install(state_, id, selected_volume_id_);
         if (live()) {
             if (live_install_allowed(assessment.readiness, free_space_supported_)) {
-                if (id.valid()) pending_install_requests_.push_back({InstallRequestKind::Install, id, install_volume_id_});
+                if (id.valid())
+                    pending_install_requests_.push_back({InstallRequestKind::Install, id, install_volume_id_, false, install_language_,
+                                                         install_version(id) ? install_version_ : std::string(),
+                                                         assessment.installed_bytes});
                 install_volume_id_.clear();
+                install_language_.clear();
+                install_version_.clear();
                 close_modal();
             }
         } else if (assessment.readiness == InstallReadiness::UnknownSize || !assessment.download_bytes) {
@@ -6545,8 +7435,14 @@ void Simulation::activate() {
             if (finished > 1) actions.push_back("job-clear-completed");
         }
         else if (job && job->state != JobState::Cancelled) actions.push_back("job-cancel-" + id);
+        // An update putting its files in place can't be paused or canceled: it finishes first.
+        if (job && job->locked)
+            std::erase_if(actions, [](const std::string& action) {
+                return action.rfind("job-pause-", 0) == 0 || action.rfind("job-cancel-", 0) == 0;
+            });
         actions.push_back("logs"); actions.push_back("cancel");
-        open_modal({"job-actions", "Download actions", selected.key, std::move(actions), 0, false});
+        open_modal({"job-actions", job && job->update ? "Update actions" : "Download actions", selected.key, std::move(actions), 0,
+                    false});
     } else if (action_name == "details-prepare-next") {
         prepare_next(selected.game_id);
         state_.navigation.focus_key = selected.key;
@@ -6565,6 +7461,13 @@ void Simulation::activate() {
                    static_cast<std::size_t>(std::count_if(state_.ended_uninstalls.begin(), state_.ended_uninstalls.end(),
                                                           [](const EndedUninstall& ended) { return ended.stopped.empty(); }));
         };
+        if (key.rfind("prep-leftover-", 0) == 0) {
+            ModalEntry progress{"prep-actions", "Title deletion", selected.key, {"cancel"}, 0, false};
+            progress.body = selected.title + " · " + selected.value +
+                            (selected.subtitle.empty() ? std::string() : "\n" + selected.subtitle);
+            open_modal(std::move(progress));
+            return;
+        }
         if (key.rfind("prep-unin-", 0) == 0) {
             // An uninstall: its game's page while the library has it; one that ended leaves the list.
             if (find_game(state_, selected.game_id)) actions.push_back("prep-open-" + id);
@@ -6606,8 +7509,7 @@ void Simulation::activate() {
     } else if (action_name.rfind("prep-open-", 0) == 0) {
         const auto id = key_id(std::string_view(action_name).substr(std::strlen("prep-open-")));
         close_modal();
-        state_.navigation.selected_game_id = id; state_.navigation.detail_id = id;
-        state_.navigation.detail_origin = Route::Downloads; state_.navigation.route = Route::Details;
+        open_details_from_queue(id);
     } else if (action_name.rfind("prep-recreate-", 0) == 0) {
         // The same request as Maintenance › Recreate bottle. The runtime refuses to remove a title that runs,
         // so this doesn't wait for the console's answer on whether the game runs, as Maintenance's rows do.
@@ -6781,7 +7683,7 @@ void Simulation::activate() {
         ModalEntry confirm{"confirmation", "Clean up unused game settings data?", state_.navigation.focus_key,
                            {"cancel", "runtime-cleanup-confirm"}, 0, true};
         confirm.body = std::to_string(count) + (count == 1 ? " request" : " requests") +
-                       " left by interrupted or finished preparations. Playden removes only what no game is using; "
+                       " on Console storage, left by interrupted or finished preparations. Playden removes only what no game is using; "
                        "games and saves are not touched.";
         open_modal(std::move(confirm));
     } else if (live() && action_name == "runtime-cleanup-confirm") {
@@ -6790,23 +7692,43 @@ void Simulation::activate() {
         push_notice({"runtime-cleanup", "Unused game settings data cleaned up", "", false, kLiveNoticeSeconds, false, ""});
     } else if (live() && action_name == "runtime-play") {
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
-        if (id.valid()) {
+        if (id.valid() && !update_locked(id)) {
             // A new attempt may fail for the same reason; only background refreshes
             // should be deduplicated against the previous outcome.
             if (auto previous = state_.runtime_games.find(id); previous != state_.runtime_games.end())
                 previous->second.play_detail.clear();
             pending_runtime_play_requests_.push_back(id);
         }
+    } else if (action_name == "details-update") {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        if (game && game->update.available())
+            open_modal({"update", "Update game", "details-update", {"update-confirm", "cancel"}, 0, false});
+    } else if (action_name == "update-confirm") {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        if (!update_check(id).allowed) return;
+        if (live()) pending_install_requests_.push_back({InstallRequestKind::Update, id});
+        else push_notice({"update-" + ToKey(id), "Update queued", "", false, kLiveNoticeSeconds, false, "Fixture: nothing downloads"});
+        close_modal();
+        state_.navigation.focus_key = "details-play";
     } else if (live() && action_name == "live-install") {
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
         // Install at once when the game fits the default drive (or its size is checked later);
         // otherwise the sheet says why and offers another drive for this install.
         install_volume_id_.clear();
-        if (id.valid() && live_install_allowed(assess_install(state_, id, selected_volume_id_, steam::kInstallSpaceMargin).readiness,
-                                            free_space_supported_))
+        install_language_.clear();
+        install_version_.clear();
+        const auto* game = find_game(state_, id);
+        // A game in several languages or versions opens the sheet, where its Language and Version rows
+        // choose them for this install.
+        const bool languages = game && game->content_languages.size() >= 2;
+        const bool versions = game && game->versions.size() >= 2;
+        if (id.valid() && !languages && !versions &&
+            live_install_allowed(assess_install(state_, id, selected_volume_id_, steam::kInstallSpaceMargin).readiness,
+                                 free_space_supported_))
             pending_install_requests_.push_back({InstallRequestKind::Install, id});
         else if (id.valid())
-            open_modal({"install", "Install game", "details-install", {"install-confirm", "storage-picker", "cancel"}, 0, false});
+            open_modal({"install", "Install game", "details-install", live_install_sheet_actions(id), 0, false});
     } else if (live() && action_name == "steam-programs") {
         open_steam_programs(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
     } else if (live() && action_name.rfind("steam-program-", 0) == 0) {
@@ -6882,10 +7804,10 @@ void Simulation::activate() {
         }
         close_modal();
     } else if (action_name.rfind("job-open-", 0) == 0) {
-        if (const auto* job = find_job(state_, action_name.substr(9))) {
-            state_.navigation.selected_game_id = job->game_id; state_.navigation.detail_id = job->game_id; state_.navigation.detail_origin = Route::Downloads; state_.navigation.route = Route::Details;
-        }
+        const auto* job = find_job(state_, action_name.substr(9));
+        const auto id = job ? job->game_id : GameId{};
         close_modal();
+        if (id.valid()) open_details_from_queue(id);
     } else if (action_name == "job-clear-completed") {
         close_modal();
         if (live()) pending_install_requests_.push_back({InstallRequestKind::ClearCompleted, {}});
@@ -7150,6 +8072,49 @@ void Simulation::activate() {
         confirmation.body = "The game's folder and files stay where they are, and Import games can add it again. Its PS5 "
                             "title is removed; its saves and settings on this console are kept.";
         open_modal(std::move(confirmation));
+    } else if (action_name == "leftover-manage") {
+        if (state_.leftover_titles.empty()) return;
+        leftover_selected_.clear();
+        open_modal({"leftover-titles", "Leftover PS5 titles", state_.navigation.focus_key, leftover_manager_actions(), 0, false});
+    } else if (action_name == "leftover-select-all") {
+        std::set<std::string> choosable;
+        for (const auto& title : state_.leftover_titles) if (!leftover_queued(title.title_id)) choosable.insert(title.title_id);
+        if (leftover_selected_ == choosable) leftover_selected_.clear();
+        else leftover_selected_ = std::move(choosable);
+    } else if (action_name.rfind("leftover-toggle-", 0) == 0) {
+        const auto id = action_name.substr(std::strlen("leftover-toggle-"));
+        if (leftover_queued(id)) return;
+        if (!leftover_selected_.erase(id)) leftover_selected_.insert(id);
+    } else if (action_name == "leftover-selection-delete") {
+        if (leftover_selected_.empty()) return;
+        std::uint64_t bytes = 0;
+        std::string only;
+        for (const auto& title : state_.leftover_titles)
+            if (leftover_selected_.contains(title.title_id)) {
+                bytes += title.bytes;
+                only = (title.name.empty() ? title.title_id : title.name) + " (" + title.title_id + ")";
+            }
+        pending_destructive_action_ = action_name;
+        const bool one = leftover_selected_.size() == 1;
+        ModalEntry confirmation{"confirmation", one ? "Delete leftover PS5 title?" : "Delete leftover PS5 titles?",
+                                state_.navigation.focus_key, {"cancel", "confirm-destructive"}, 0, true};
+        confirmation.body = (one ? only + " and its PS5 Home tile are" : std::to_string(leftover_selected_.size()) +
+                             " leftover PS5 titles and their Home tiles are") + " deleted (" + format_bytes(bytes) + "). " +
+                            (one ? "Its" : "Their") + " saves and settings move to Kept game data; game files are not touched.";
+        open_modal(std::move(confirmation));
+    } else if (action_name == "confirm-destructive" && pending_destructive_action_ == "leftover-selection-delete") {
+        pending_destructive_action_.clear();
+        for (const auto& title : state_.leftover_titles) {
+            if (!leftover_selected_.contains(title.title_id) || leftover_queued(title.title_id)) continue;
+            const auto id = title.title_id;
+            std::erase_if(state_.leftover_deletions, [&](const LiveLeftoverDelete& deletion) { return deletion.title_id == id; });
+            state_.leftover_deletions.push_back({id, title.name, "", ""});
+            if (live()) pending_leftover_delete_requests_.push_back(id);
+            else if (state_.leftover_deletions.size() == 1) leftover_delete_ticks_ = 0;
+        }
+        leftover_selected_.clear();
+        state_.navigation.focus_key = state_.navigation.modals.front().opener_focus_key;
+        state_.navigation.modals.clear();
     } else if (live() && action_name == "kept-manage") {
         if (state_.kept_bottles.empty()) return;
         kept_selected_.clear();
@@ -7242,6 +8207,8 @@ void Simulation::activate() {
             uninstall_delete_saves_ = false;
         } else if (const auto* job = find_job(state_, pending_destructive_action_.substr(11))) {
             pending_install_requests_.push_back({InstallRequestKind::Cancel, job->game_id});
+            // A canceled update leaves the game installed: its job ending is not "Update complete".
+            if (job->update) canceled_updates_.insert(job->game_id);
         }
         pending_destructive_action_.clear();
         state_.navigation.modals.clear();
@@ -7561,6 +8528,7 @@ void Simulation::activate() {
     else if (action_name == "toggle-motion") { state_.reduced_motion = !state_.reduced_motion; save_profile(); }
     else if (action_name == "toggle-title-store") { state_.title_store_suffix = !state_.title_store_suffix; save_profile(); }
     else if (action_name == "toggle-cloud-saves") { state_.cloud_saves_auto = !state_.cloud_saves_auto; save_profile(); }
+    else if (action_name == "toggle-web-access") { state_.web_access = !state_.web_access; save_profile(); }
     else if (action_name == "toggle-downloads-slow") {
         state_.downloads_slow_network = !state_.downloads_slow_network;
         save_profile();
@@ -7603,10 +8571,10 @@ void Simulation::activate() {
         state_.navigation.focus_key = "settings-about";
         settings_focus_section_ = "About";
         open_modal({"about", live() ? "About Playden" : "About Playden UI simulation", "settings-about",
-            {"about-version", "about-build", "about-framework", "about-platform", "about-kit", "about-kit-source", "about-back"}, 4, false});
+            {"about-version", "about-build", "about-kit", "about-kit-source", "about-back"}, 2, false});
     }
     else if (action_name == "about") open_modal({"about", live() ? "About Playden" : "About Playden UI simulation", state_.navigation.focus_key,
-        {"about-version", "about-build", "about-framework", "about-platform", "about-kit", "about-kit-source", "about-back"}, 0, false});
+        {"about-version", "about-build", "about-kit", "about-kit-source", "about-back"}, 0, false});
     else if (action_name == "about-back") close_modal();
     else if (live() && action_name == "toggle-beta-updates") {
         state_.beta_updates = !state_.beta_updates;
@@ -7634,7 +8602,6 @@ void Simulation::activate() {
     else if (live() && action_name == "kit-cancel") { close_modal(); self_update_requests_.push_back("kit-cancel"); }
     else if (live() && action_name == "self-update-cancel") { close_modal(); self_update_requests_.push_back("cancel"); }
     else if (live() && action_name == "self-update-restart") { close_modal(); request_self_update_restart(); }
-    else if (live() && action_name == "successor-open") { close_modal(); request_self_update_restart("open-successor"); }
     else if (live() && action_name == "self-update-notes") open_release_notes(false);
     else if (action_name == "release-notes-ok") close_modal();
     else if (live() && action_name == "self-update-back") {
@@ -7647,7 +8614,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});
@@ -7963,6 +8930,9 @@ bool Simulation::action(const std::string& logical_action) {
     else if ((logical_action == "l1" || logical_action == "r1") && !state_.navigation.modals.empty() &&
              (state_.navigation.modals.back().id == "game-settings" || state_.navigation.modals.back().id == "preset-picker" ||
               state_.navigation.modals.back().id == "game-maintenance" ||
+              state_.navigation.modals.back().id == "content-language" ||
+              state_.navigation.modals.back().id == "install-language" ||
+              state_.navigation.modals.back().id == "install-version" ||
               state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-tuning" ||
               !state_.navigation.modals.back().setting_id.empty()))
         move(0, logical_action == "l1" ? -5 : 5);  // L1/R1 jump five rows, as on macOS
@@ -8042,8 +9012,13 @@ bool Simulation::action(const std::string& logical_action) {
             : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime", "sort-install-size",
                                       "filter-installed", "filter-genre-adventure", "filter-controller-full", "filter-compat-playable",
                                       "filters-reset", "refresh-library", "cancel"};
+            // Family sharing likewise, for games a Steam family member shares.
+            const bool family = state_.library.filters.contains("hide-family") ||
+                std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.family_shared; });
             if (demos)
                 actions.insert(std::find(actions.begin(), actions.end(), "filters-reset"), "filter-hide-demos");
+            if (family)
+                actions.insert(std::find(actions.begin(), actions.end(), "filters-reset"), "filter-hide-family");
         open_modal({"filters", "Sort and filters", state_.navigation.focus_key, std::move(actions), 0, false});
         }
     }
@@ -8219,6 +9194,28 @@ void Simulation::tick(int ticks) {
     for (int index = 0; index < std::max(0, ticks); ++index) {
         if (!state_.screenshot_mode) {
             ++state_.clock_ticks;
+            if (download_server_fixture_ && download_servers_.phase == "testing") {
+                auto progress = download_servers_;
+                const auto index = progress.testing_index;
+                if (index < progress.servers.size()) {
+                    constexpr double rates[] = {12.4, 41.2, 9.7, 0.0, 2.5, 18.3, 6.1};
+                    progress.rates.push_back({progress.servers[index].id, rates[index % 7], index == 3});
+                    if (index + 1 < progress.servers.size()) ++progress.testing_index;
+                    else progress.phase = "tested";
+                }
+                ApplyLiveDownloadServers(progress);
+            }
+            if (!state_.leftover_deletions.empty()) {
+                auto& deletion = state_.leftover_deletions.front();
+                ++leftover_delete_ticks_;
+                deletion.step = leftover_delete_ticks_ < 3 ? "Removing PS5 title…" : "Deleting title files…";
+                if (leftover_delete_ticks_ >= 6) {
+                    const auto id = deletion.title_id;
+                    std::erase_if(state_.leftover_titles, [&](const LiveLeftoverTitle& title) { return title.title_id == id; });
+                    state_.leftover_deletions.erase(state_.leftover_deletions.begin());
+                    leftover_delete_ticks_ = 0;
+                }
+            }
             advance_jobs();
             // A finished copy of an imported game: it plays from Playden's storage, not its folder.
             for (const auto& job : state_.jobs)

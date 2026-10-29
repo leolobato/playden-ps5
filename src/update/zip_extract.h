@@ -28,6 +28,11 @@ struct ZipExtractOptions {
   // Sets the mode of a file the app user doesn't own, as root (see ExtractZip). Without it such a
   // file is deleted and written again instead.
   std::function<bool(const std::string& path, unsigned mode)> fix_mode;
+  // When set, every folder it creates below dest gets this mode, also the ones the zip only implies
+  // (mkdir alone is umasked). A folder the app user can't chmod gets it through fix_mode.
+  std::optional<unsigned> folder_mode;
+  // Sets a created folder's mode; chmod by default (tests replace it).
+  std::function<int(const std::string& path, unsigned mode)> set_folder_mode;
 };
 
 struct ZipExtractResult {
@@ -41,7 +46,8 @@ struct ZipExtractResult {
   std::uint64_t mode_fixed = 0;  // root-owned files whose mode fix_mode set
 };
 
-// Unpacks into dest, which must be an existing empty folder. Folders are created 0777. Every
+// Unpacks into dest, which must be an existing empty folder. Folders are created 0777 (less the
+// umask, unless folder_mode is set). Every
 // file is checked after it is written (size and mode, by fstat). On the PS5 another thread may
 // hold root's effective user id for a moment (euid is per process): a file created then belongs to
 // root and the app user can't change its mode (results/20261015-self-update-probes). Such a file

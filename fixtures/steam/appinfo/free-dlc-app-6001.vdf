@@ -1,0 +1,29 @@
+"appinfo"
+{
+	"appid"		"6001"
+	"common"
+	{
+		"name"		"Free DLC Test - Free Expansion"
+		"type"		"DLC"
+		"parent"		"6000"
+	}
+	"depots"
+	{
+		"6011"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"611"
+					"size"		"200"
+					"download"		"100"
+				}
+			}
+		}
+	}
+}

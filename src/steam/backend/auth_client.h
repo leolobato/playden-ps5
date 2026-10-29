@@ -18,10 +18,10 @@ struct AuthClientHooks {
   std::function<bool(std::uint32_t, const std::atomic<bool>&)> wait;
   // Optional sanitized failure report: method name, HTTP status and X-EResult number only.
   std::function<void(const char* method, long http_status, int eresult)> failure;
-  // Optional renewal through an authenticated CM session, used when the Web API refuses a
-  // SteamClient refresh token with AccessDenied. Returns the updated session or an error.
+  // Renews the access token through an authenticated CM session, the only place the refresh token is sent
+  // after sign-in. Returns the updated session or an error; without it no token can be renewed.
   std::function<AuthResult(const StoredSession&, const std::atomic<bool>&)> cm_renew;
-  // Optional report of a successful restore: which path (stored, web, cm), and the refresh token's
+  // Optional report of a successful restore: which path (stored, cm), and the refresh token's
   // fingerprint before and after (they differ when Steam rotated it).
   std::function<void(const char* path, const std::string& before, const std::string& after)> restored;
   // Optional: the machine ID the CM logon sends, so a sign-in names the same device (empty: none sent).
@@ -62,7 +62,7 @@ class AuthClient final : public AuthBackend {
   // get: the message goes in the query string (GetPasswordRSAPublicKey); otherwise it is the form body.
   AuthError Post(const char* method, const std::vector<std::uint8_t>& message,
                  const std::atomic<bool>& cancel, std::uint32_t timeout_ms,
-                 bool restoring, std::vector<std::uint8_t>* body, bool get = false);
+                 std::vector<std::uint8_t>* body, bool get = false);
   // One PollAuthSessionStatus round. Updates client_id when Steam replaces it.
   AuthError Poll(std::uint64_t* client_id, const std::vector<std::uint8_t>& request_id,
                  const std::atomic<bool>& cancel, std::uint32_t timeout_ms,
@@ -70,8 +70,7 @@ class AuthClient final : public AuthBackend {
   // Checks the approved tokens and renews a missing access token.
   AuthResult Approved(auth::PollAuthSessionStatusResponse approval, std::uint64_t started,
                       std::uint64_t lifetime_ms, const std::atomic<bool>& cancel);
-  AuthResult Renew(const StoredSession& session, const std::atomic<bool>& cancel,
-                   std::uint32_t timeout_ms, bool restoring);
+  AuthResult Renew(const StoredSession& session, const std::atomic<bool>& cancel);
   AuthResult Restored(const char* path, const StoredSession& before, AuthResult result);
   AuthClientHooks hooks_;
   int last_eresult_ = 1;  // X-EResult of the most recent refused Post, for renewal fallback

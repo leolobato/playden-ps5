@@ -82,10 +82,13 @@ SteamworksResult RemoveLegacySteam(const std::string& install_root, const std::v
 // Interface versions a steam_api DLL asks for, as gbe_fork's generate_interfaces finds them.
 std::vector<std::string> SteamInterfaces(std::string_view dll_bytes);
 
-// The facts file the download writes, and its reader (missing or unreadable: false).
-std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc);
+// The facts file the download writes, and its reader (missing or unreadable: false). `language`
+// is the content language the depots were installed for; English, and files written before
+// Playden could choose one, leave the line out.
+std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
+                                     const std::string& language = {});
 bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std::uint32_t>& depots,
-                          const std::vector<std::uint32_t>& owned_dlc);
+                          const std::vector<std::uint32_t>& owned_dlc, const std::string& language = {});
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity);
 
 }  // namespace playden::runtime

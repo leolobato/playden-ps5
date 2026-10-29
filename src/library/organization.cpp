@@ -112,9 +112,9 @@ bool ValidSort(const std::string& value) {
          value == "playtime";
 }
 
-// Version 1 knows only Playable; version 2 also keeps demos hidden (they show by default).
+// Version 1 knows only Playable; version 2 also keeps demos and family-shared games hidden (they show by default).
 bool ValidFilter(const std::string& value, std::uint16_t version) {
-  return value == "compat-playable" || (version != kVersion1 && value == "hide-demos");
+  return value == "compat-playable" || (version != kVersion1 && (value == "hide-demos" || value == "hide-family"));
 }
 
 // Version 1 stores Steam app IDs only; version 2 any valid game.
@@ -175,7 +175,7 @@ bool Validate(const OrganizationSnapshot& snapshot, std::uint16_t version) {
       return false;
     }
   }
-  if (snapshot.filters.size() > (version == kVersion1 ? 1u : 2u)) return false;
+  if (snapshot.filters.size() > (version == kVersion1 ? 1u : 3u)) return false;
   for (const auto& filter : snapshot.filters) {
     if (!ValidText(filter, kMaximumFilterBytes, false) || !ValidFilter(filter, version)) return false;
   }
@@ -504,7 +504,7 @@ Loaded DecodeV2(const Bytes& bytes) {
   if (!reader.String(snapshot.query, kMaximumQueryBytes) ||
       !reader.String(snapshot.scope, kMaximumScopeBytes) ||
       !reader.String(snapshot.sort, kMaximumSortBytes) ||
-      !reader.U32(filter_count) || filter_count > 2) {
+      !reader.U32(filter_count) || filter_count > 3) {
     return InvalidLoad("view state");
   }
   for (std::uint32_t index = 0; index < filter_count; ++index) {

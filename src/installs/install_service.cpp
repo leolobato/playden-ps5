@@ -106,7 +106,7 @@ std::vector<CompletedDownload> AllCompletedDownloads(const std::vector<Installed
   for (const auto& game : installed) {
     if (game.finished_at <= 0 || game.finished_at > now || now - game.finished_at > kCompletedDays * 24 * 60 * 60) continue;
     if (std::find(dismissed.begin(), dismissed.end(), std::make_pair(game.id, game.finished_at)) != dismissed.end()) continue;
-    completed.push_back({game.id, game.install_bytes, game.volume_id, game.finished_at});
+    completed.push_back({game.id, game.install_bytes, game.volume_id, game.finished_at, game.update_bytes});
   }
   std::stable_sort(completed.begin(), completed.end(), [](const CompletedDownload& left, const CompletedDownload& right) {
     return left.finished_at > right.finished_at;
@@ -129,12 +129,19 @@ std::int64_t RateNowMs() {
       std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-constexpr const char* kRecord = ".playden-install.json";
+constexpr const char* kRecord = kInstallRecordName;
 constexpr const char* kJournal = ".playden-download";
 constexpr const char* kRegistry = ".playden-games";
 constexpr const char* kDefaultVolume = ".playden-default-volume";
 constexpr const char* kDismissed = ".playden-downloads-dismissed";
 constexpr const char* kVolumeUnavailable = "The game's storage is not available.";
+constexpr const char* kInterrupted = "Interrupted. Resume to continue.";
+
+// An update on disk that is putting its files in place: the game can't run until it finishes.
+bool UpdateLocked(const std::string& root) {
+  const auto state = ReadUpdateState(root);
+  return state && state->phase != UpdatePhase::kStaging;
+}
 // What Downloads says while a job waits to try again, when its runner says nothing.
 constexpr const char* kWaiting = "Waiting. It tries again by itself.";
 
@@ -176,6 +183,20 @@ bool ValidVolumeId(std::string_view id) {
   return true;
 }
 
+// An install option value kept in the registry: short, printable ASCII without spaces, tabs or "=".
+bool ValidOptionValue(std::string_view value) {
+  if (value.size() > 64) return false;
+  for (const char c : value)
+    if (c <= ' ' || c > '~' || c == '=') return false;
+  return true;
+}
+
+InstallOptions Registrable(InstallOptions options) {
+  if (!ValidOptionValue(options.language)) options.language.clear();
+  if (!ValidOptionValue(options.branch)) options.branch.clear();
+  return options;
+}
+
 struct RegistryEntry {
   GameId id;
   std::string volume_id;
@@ -183,12 +204,16 @@ struct RegistryEntry {
   bool queued = false;  // written for a job in Downloads: "<id>\t<volume>\t0"
   bool paused = false;  // "<id>\t<volume>\t0\tpaused": the player paused it, or it failed
   bool removing = false;  // "<id>\t<volume>\t<install bytes>\tremoving": uninstalled, folder not deleted yet
+  bool update = false;    // "<id>\t<volume>\t<install bytes>\tupdate": installed, with an update job
+  InstallOptions options;  // a job's "lang=<code>" and "branch=<name>" fields
 };
 
 // One line per game: "<key>" (legacy, primary volume) or "<key>\t<volume id>\t<install bytes>",
 // followed by "\tpaused" for a job that should wait for Resume after a restart, or "\tremoving" for
-// an uninstall whose folder is not deleted yet. The key is ToKey: a Steam game's app ID,
-// "local-<uuid>" for an imported game.
+// an uninstall whose folder is not deleted yet, or "\tupdate" for an installed game with an update job
+// (then "\tpaused" is the update's), then a job's install options as "\tlang=<code>" and
+// "\tbranch=<name>" (none: the defaults). Fields after the install bytes may come in any order, and
+// unknown ones are skipped. The key is ToKey: a Steam game's app ID, "local-<uuid>" for an imported game.
 std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
   RegistryEntry entry;
   const auto first_tab = line.find('\t');
@@ -202,14 +227,24 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
   if (!ValidVolumeId(volume)) return std::nullopt;
   entry.volume_id = std::string(volume);
   if (second_tab != std::string_view::npos) {
-    const auto fields = rest.substr(second_tab + 1);
+    auto fields = rest.substr(second_tab + 1);
     const auto third_tab = fields.find('\t');
     const auto bytes = fields.substr(0, third_tab);
     std::from_chars(bytes.data(), bytes.data() + bytes.size(), entry.install_bytes);
     entry.queued = entry.install_bytes == 0;
-    const auto flag = third_tab == std::string_view::npos ? std::string_view{} : fields.substr(third_tab + 1);
-    entry.paused = flag == "paused";
-    entry.removing = flag == "removing";
+    fields = third_tab == std::string_view::npos ? std::string_view{} : fields.substr(third_tab + 1);
+    while (!fields.empty()) {
+      const auto tab = fields.find('\t');
+      const auto field = fields.substr(0, tab);
+      fields = tab == std::string_view::npos ? std::string_view{} : fields.substr(tab + 1);
+      constexpr std::string_view kLanguage = "lang=", kBranch = "branch=";
+      if (field == "paused") entry.paused = true;
+      else if (field == "removing") entry.removing = true;
+      else if (field == "update") entry.update = true;
+      else if (field.substr(0, kLanguage.size()) == kLanguage) entry.options.language = std::string(field.substr(kLanguage.size()));
+      else if (field.substr(0, kBranch.size()) == kBranch) entry.options.branch = std::string(field.substr(kBranch.size()));
+    }
+    entry.options = Registrable(std::move(entry.options));
   }
   return entry;
 }
@@ -295,9 +330,15 @@ void InstallService::Scan() {
   const auto& primary = volumes_.front().games_root;
   std::vector<RegistryEntry> entries;
   if (FILE* registry = std::fopen((primary + "/" + kRegistry).c_str(), "r")) {
-    char line[160];
+    char line[512];
     while (std::fgets(line, sizeof(line), registry) && entries.size() < kMaxJobs * 4) {
       const auto length = std::strcspn(line, "\r\n");
+      // A line longer than the buffer isn't one Playden wrote: it and its remainder are skipped.
+      if (line[length] == '\0' && length == sizeof(line) - 1) {
+        int rest = 0;
+        while ((rest = std::fgetc(registry)) != EOF && rest != '\n') {}
+        continue;
+      }
       auto entry = ParseRegistryLine(std::string_view(line, length));
       if (!entry) continue;
       if (entry->volume_id.empty()) entry->volume_id = volumes_.front().id;
@@ -331,9 +372,33 @@ void InstallService::Scan() {
       continue;
     }
     const auto root = RootOn(entry.volume_id, entry.id);
+    // An update in progress is read first: its game stays installed, and its job comes back.
+    const auto update = Exists(root + "/" + kRecord) ? ReadUpdateState(root) : std::nullopt;
     if (Exists(root + "/" + kRecord)) {
       installed_.push_back({entry.id, RecordedBytes(root + "/" + kRecord), root, entry.volume_id, true,
-                            RecordTime(root + "/" + kRecord)});
+                            RecordTime(root + "/" + kRecord), ReadInstallRecord(root + "/" + kRecord)});
+      if ((update || entry.update) && jobs_.size() < kMaxJobs) {
+        Job job;
+        job.view.id = entry.id;
+        job.view.kind = InstallJobKind::kUpdate;
+        job.view.volume_id = entry.volume_id;
+        // The registry keeps what the player chose; what it doesn't say, the update on disk was for.
+        job.options = entry.options;
+        if (update) {
+          if (job.options.language.empty()) job.options.language = update->language;
+          if (job.options.branch.empty()) job.options.branch = update->branch;
+        }
+        job.options = Registrable(job.options);
+        job.view.locked = update && update->phase != UpdatePhase::kStaging;
+        if (job.view.locked || (entry.update && !entry.paused)) {
+          // One putting its files in place finishes by itself: the game can't run until it does.
+          job.view.state = InstallJobState::kQueued;
+        } else {
+          job.view.state = InstallJobState::kPaused;
+          job.view.failure = kInterrupted;
+        }
+        jobs_.push_back(job);
+      }
     } else if ((Exists(root + "/" + kJournal) || entry.queued) && jobs_.size() < kMaxJobs) {
       // A job that failed or waited before writing anything (no journal yet) stays in
       // Downloads too, so a failure while Steam connects doesn't lose the queued game. A job that
@@ -345,9 +410,10 @@ void InstallService::Scan() {
         job.view.state = InstallJobState::kQueued;
       } else {
         job.view.state = InstallJobState::kPaused;
-        job.view.failure = "Interrupted. Resume to continue.";
+        job.view.failure = kInterrupted;
       }
       job.view.volume_id = entry.volume_id;
+      job.options = entry.options;
       jobs_.push_back(job);
     } else if (entry.install_bytes > 0) {
       // The drive is there but the game's folder isn't (moved aside or renamed): keep the game
@@ -385,12 +451,26 @@ void InstallService::SaveRegistry() {
   const auto temporary = path + ".tmp";
   FILE* registry = std::fopen(temporary.c_str(), "w");
   if (!registry) return;
-  for (const auto& game : installed_)
-    std::fprintf(registry, "%s\t%s\t%llu\n", ToKey(game.id).c_str(), game.volume_id.c_str(),
-                 static_cast<unsigned long long>(game.install_bytes));
-  for (const auto& job : jobs_) {
+  const auto job_fields = [](const Job& job) {
     const bool waits = job.view.state == InstallJobState::kPaused || job.view.state == InstallJobState::kFailed;
-    std::fprintf(registry, "%s\t%s\t0%s\n", ToKey(job.view.id).c_str(), job.view.volume_id.c_str(), waits ? "\tpaused" : "");
+    std::string fields = waits ? "\tpaused" : "";
+    if (!job.options.language.empty()) fields += "\tlang=" + job.options.language;
+    if (!job.options.branch.empty()) fields += "\tbranch=" + job.options.branch;
+    return fields;
+  };
+  // An update job rides on its game's line, which stays an installed game's line for older versions.
+  for (const auto& game : installed_) {
+    std::string fields;
+    for (const auto& job : jobs_)
+      if (job.view.id == game.id && job.view.kind == InstallJobKind::kUpdate && !job.dropped)
+        fields = "\tupdate" + job_fields(job);
+    std::fprintf(registry, "%s\t%s\t%llu%s\n", ToKey(game.id).c_str(), game.volume_id.c_str(),
+                 static_cast<unsigned long long>(game.install_bytes), fields.c_str());
+  }
+  for (const auto& job : jobs_) {
+    if (job.view.kind == InstallJobKind::kUpdate || job.dropped) continue;
+    std::fprintf(registry, "%s\t%s\t0%s\n", ToKey(job.view.id).c_str(), job.view.volume_id.c_str(),
+                 job_fields(job).c_str());
   }
   for (const auto& game : uninstalling_)
     std::fprintf(registry, "%s\t%s\t%llu\tremoving\n", ToKey(game.id).c_str(), game.volume_id.c_str(),
@@ -466,7 +546,8 @@ void InstallService::Publish() {
   SaveRegistry();
 }
 
-void InstallService::Install(GameId id, std::optional<std::uint64_t> estimated_bytes, const std::string& volume_id) {
+void InstallService::Install(GameId id, std::optional<std::uint64_t> estimated_bytes, const std::string& volume_id,
+                             const InstallOptions& options) {
   std::lock_guard<std::mutex> lock(mutex_);
   // Only a store with a runner installs.
   if (stopping_ || !id.valid() || !RunnerFor(id.store) || Find(id) || jobs_.size() >= kMaxJobs) return;
@@ -476,6 +557,88 @@ void InstallService::Install(GameId id, std::optional<std::uint64_t> estimated_b
   Job job;
   job.view.id = id;
   const auto& target = volume_id.empty() ? default_volume_id_ : volume_id;
+  job.options = Registrable(options);
+  Admit(job, target, estimated_bytes);
+  jobs_.push_back(job);
+  Publish();
+  wake_.notify_all();
+}
+
+void InstallService::Update(GameId id, const InstallOptions& options, std::optional<std::uint64_t> estimated_bytes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (stopping_ || !id.valid() || !RunnerFor(id.store) || Find(id) || jobs_.size() >= kMaxJobs) return;
+  const auto game = std::find_if(installed_.begin(), installed_.end(), [id](const InstalledGame& entry) { return entry.id == id; });
+  if (game == installed_.end() || !game->available) return;
+  Job job;
+  job.view.id = id;
+  job.view.kind = InstallJobKind::kUpdate;
+  // What the install record says, for what the player didn't choose.
+  job.options = options;
+  if (game->record) {
+    if (job.options.language.empty()) job.options.language = game->record->language;
+    if (job.options.branch.empty()) job.options.branch = game->record->branch;
+  }
+  job.options = Registrable(job.options);
+  Admit(job, game->volume_id, estimated_bytes);
+  jobs_.push_back(job);
+  Publish();
+  wake_.notify_all();
+}
+
+// Held for its game: only the gate is asked next time, at Steam nothing. While the game runs it is asked again soon,
+// so a game closed from Home lets the update go in place at once; while the console doesn't say (each question may
+// take the gate's whole wait), the wait doubles as for Steam.
+std::chrono::milliseconds InstallService::WaitForGame(const Job& job) const {
+  if (!job.game_unknown) return first_retry_;
+  return job.retry_delay.count() == 0 ? first_retry_ : std::min(job.retry_delay * 2, most_retry_);
+}
+
+void InstallService::SetApplyGate(std::function<ApplyAnswer(GameId)> may_apply) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  apply_gate_ = std::move(may_apply);
+}
+
+ApplyAnswer InstallService::AskApplyGate(GameId id) {
+  std::function<ApplyAnswer(GameId)> gate;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    gate = apply_gate_;
+  }
+  return gate ? gate(id) : ApplyAnswer::kApply;
+}
+
+// Locks the game before asking, so a launch that marks the game as starting and then checks Locked can't
+// slip in between; a refusal gives the lock back unless the update stopped part way through applying.
+ApplyAnswer InstallService::MayApply(GameId id) {
+  bool was_locked = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto* job = Find(id);
+    if (!job) return ApplyAnswer::kUnknown;
+    was_locked = job->view.locked;
+    if (!job->view.locked) {
+      job->view.locked = true;
+      ++revision_;
+    }
+  }
+  const auto answer = AskApplyGate(id);
+  if (answer == ApplyAnswer::kApply) return answer;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (auto* job = Find(id); job && !was_locked) {
+    job->view.locked = false;
+    ++revision_;
+  }
+  return answer;
+}
+
+bool InstallService::Locked(GameId id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto* job = Find(id);
+  return job && job->view.kind == InstallJobKind::kUpdate && job->view.locked;
+}
+
+// Sets the job's volume and estimate; a volume that is absent or short of space fails the job.
+bool InstallService::Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes) {
   job.view.volume_id = target;
   job.estimated_bytes = estimated_bytes;
   const auto* volume = FindVolume(target);
@@ -502,18 +665,16 @@ void InstallService::Install(GameId id, std::optional<std::uint64_t> estimated_b
       job.view.failure = "Not enough free space after reserving space for other downloads.";
     }
   }
-  jobs_.push_back(job);
-  Publish();
-  wake_.notify_all();
+  return job.view.state != InstallJobState::kFailed;
 }
 
 void InstallService::Pause(GameId id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto* job = Find(id);
-  if (!job) return;
+  if (!job || job->view.locked || job->dropped) return;
   if (active_ == id) active_cancel_.store(true);
   job->view.state = InstallJobState::kPaused;
-  job->rate.Reset(); job->view.bytes_per_second.reset(); job->view.eta_seconds.reset();
+  job->rate.Reset(); job->view.bytes_per_second.reset(); job->view.eta_seconds.reset(); job->view.server_name.clear();
   job->view.failure.clear();
   job->waiting = false;
   Publish();
@@ -523,7 +684,7 @@ void InstallService::Pause(GameId id) {
 void InstallService::Resume(GameId id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto* job = Find(id);
-  if (!job || job->view.state == InstallJobState::kRunning) return;
+  if (!job || job->dropped || job->view.state == InstallJobState::kRunning) return;
   // The player asks for it now: a job that waited to try again tries at once.
   ClearWait(*job);
   job->view.state = InstallJobState::kQueued;
@@ -535,7 +696,8 @@ void InstallService::Resume(GameId id) {
 void InstallService::DownloadNow(GameId id) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto found = std::find_if(jobs_.begin(), jobs_.end(), [id](const Job& job) { return job.view.id == id; });
-  if (found == jobs_.end() || found->view.state == InstallJobState::kRunning || found->cancel_requested) return;
+  if (found == jobs_.end() || found->view.state == InstallJobState::kRunning || found->cancel_requested || found->dropped)
+    return;
   Job job = *found;
   jobs_.erase(found);
   ClearWait(job);
@@ -545,7 +707,8 @@ void InstallService::DownloadNow(GameId id) {
   // The running download stops and goes back in the queue right behind it, so it resumes next.
   if (active_ && *active_ != id) {
     const auto running = std::find_if(jobs_.begin(), jobs_.end(), [this](const Job& job) { return job.view.id == *active_; });
-    if (running != jobs_.end() && !running->cancel_requested) {
+    // An update putting its files in place finishes first.
+    if (running != jobs_.end() && !running->cancel_requested && !running->dropped && !running->view.locked) {
       Job stopped = *running;
       jobs_.erase(running);
       stopped.view.state = InstallJobState::kQueued;
@@ -579,16 +742,19 @@ void InstallService::MoveQueued(GameId id, bool up) {
 void InstallService::Cancel(GameId id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto* job = Find(id);
-  if (!job) return;
+  // An update that is putting its files in place can't stop half way.
+  if (!job || job->view.locked || job->dropped) return;
   job->cancel_requested = true;
   if (active_ == id) {
     active_cancel_.store(true);
   } else {
+    const bool update = job->view.kind == InstallJobKind::kUpdate;
     const auto* volume = FindVolume(job->view.volume_id);
     const auto root = volume && volume->available ? RootOn(job->view.volume_id, id) : std::string();
     jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [id](const Job& entry) { return entry.view.id == id; }),
                 jobs_.end());
-    if (!root.empty()) QueueRemoval({id.store, root, std::nullopt, std::nullopt});
+    // A canceled update deletes only its downloads.
+    if (!root.empty()) QueueRemoval({id.store, root, std::nullopt, std::nullopt, update});
   }
   Publish();
   wake_.notify_all();
@@ -604,6 +770,16 @@ void InstallService::Uninstall(GameId id) {
   if (!found->available && (!volume || !volume->available)) return;
   const auto game = *found;
   installed_.erase(found);
+  // Its update goes with it: a running one stops and is forgotten, and the uninstall deletes its files too.
+  if (auto* update = Find(id)) {
+    if (active_ == id) {
+      update->dropped = true;
+      active_cancel_.store(true);
+    } else {
+      jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [id](const Job& entry) { return entry.view.id == id; }),
+                  jobs_.end());
+    }
+  }
   // Its runner still hears of a game whose folder is missing, to forget what it keeps of the game.
   if (game.available) QueueRemoval({id.store, RootOn(game.volume_id, id), std::nullopt, game});
   else QueueRemoval({id.store, {}, id, std::nullopt});
@@ -621,7 +797,8 @@ bool InstallService::Adopt(GameId id, const std::string& volume_id, std::uint64_
     return false;
   const auto root = RootOn(volume_id, id);
   if (!Exists(root + "/" + kRecord)) return false;
-  installed_.push_back({id, install_bytes, root, volume_id, true, RecordTime(root + "/" + kRecord)});
+  installed_.push_back({id, install_bytes, root, volume_id, true, RecordTime(root + "/" + kRecord),
+                        ReadInstallRecord(root + "/" + kRecord)});
   std::sort(installed_.begin(), installed_.end(),
             [](const InstalledGame& left, const InstalledGame& right) { return left.id < right.id; });
   Publish();
@@ -636,9 +813,11 @@ void InstallService::QueueRemoval(Removal removal) {
   if (uninstall) uninstalling_.push_back(*removal.game);
   removals_.push_back(std::move(removal));
   if (!uninstall || !active_) return;
-  if (auto* running = Find(*active_); running && running->view.state == InstallJobState::kRunning && !running->cancel_requested) {
+  if (auto* running = Find(*active_); running && running->view.state == InstallJobState::kRunning &&
+                                      !running->cancel_requested && !running->dropped) {
     running->view.state = InstallJobState::kQueued;
     running->rate.Reset(); running->view.bytes_per_second.reset(); running->view.eta_seconds.reset();
+    running->view.server_name.clear();
     active_cancel_.store(true);
   }
 }
@@ -671,7 +850,8 @@ InstallSnapshot InstallService::Snapshot() {
     }
   }
   snapshot.revision = revision_;
-  for (const auto& job : jobs_) snapshot.jobs.push_back(job.view);
+  for (const auto& job : jobs_)
+    if (!job.dropped) snapshot.jobs.push_back(job.view);
   snapshot.installed = installed_;
   for (const auto& game : uninstalling_) snapshot.uninstalling.push_back(game.id);
   snapshot.completed = CompletedDownloads(installed_, dismissed_, WallNow());
@@ -698,6 +878,8 @@ void InstallService::Run() {
     InstallRunner* runner = nullptr;
     std::string next_root;
     std::string next_games_root;
+    InstallOptions next_options;
+    bool next_update = false;
     std::optional<Removal> removal;
     {
       std::unique_lock<std::mutex> lock(mutex_);
@@ -745,12 +927,14 @@ void InstallService::Run() {
           // Trying again: what it said while it waited no longer applies.
           if (job.waiting) { job.waiting = false; job.view.failure.clear(); }
           job.rate.Reset();
-          job.view.bytes_per_second.reset(); job.view.eta_seconds.reset();
+          job.view.bytes_per_second.reset(); job.view.eta_seconds.reset(); job.view.server_name.clear();
           job.view.step = InstallStep::kStarting;
           job.view.step_since = std::chrono::steady_clock::now();
           next = job.view.id;
           next_root = RootOn(job.view.volume_id, job.view.id);
           next_games_root = volume->games_root;
+          next_options = job.options;
+          next_update = job.view.kind == InstallJobKind::kUpdate;
           active_ = next;
           active_cancel_.store(false);
           Publish();
@@ -762,6 +946,7 @@ void InstallService::Run() {
       std::string failure;
       if (auto* remover = RunnerFor(removal->store)) {
         if (removal->forget) remover->Forget(*removal->forget);
+        else if (removal->update) remover->DiscardUpdate(removal->root);
         else failure = remover->Remove(removal->root);
       } else if (removal->game) {
         failure = "Playden can't delete this game's files.";
@@ -787,6 +972,28 @@ void InstallService::Run() {
     }
     if (!next) continue;
 
+    // An update that waited for its game to close asks the gate first; the game still running, it waits
+    // again without asking Steam anything.
+    bool still_waiting = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (const auto* job = Find(*next); job && job->waiting_for_game) still_waiting = true;
+    }
+    if (const auto answer = still_waiting ? AskApplyGate(*next) : ApplyAnswer::kApply; answer != ApplyAnswer::kApply) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      active_.reset();
+      if (auto* job = Find(*next); job && job->view.state == InstallJobState::kRunning) {
+        job->view.state = InstallJobState::kQueued;
+        job->view.failure = InstallRunner::kWaitingForGame;
+        job->waiting = true;
+        job->game_unknown = answer == ApplyAnswer::kUnknown;
+        job->retry_delay = WaitForGame(*job);
+        job->not_before = std::chrono::steady_clock::now() + job->retry_delay;
+      }
+      Publish();
+      continue;
+    }
+
     // The volume's folder may have been made over FTP and not be writable by the app user.
     if (folder_check_) {
       const std::string unwritable = folder_check_(next_games_root);
@@ -803,41 +1010,88 @@ void InstallService::Run() {
       }
     }
 
-    const auto result = runner->Install(*next, next_root, active_cancel_,
-                                        [this, id = *next](std::uint64_t done, std::uint64_t total, std::uint64_t held) {
-                                          std::lock_guard<std::mutex> lock(mutex_);
-                                          if (auto* job = Find(id)) {
-                                            // Under way: a later wait starts short again.
-                                            job->retry_delay = std::chrono::milliseconds{0};
-                                            if (job->view.state == InstallJobState::kRunning) job->rate.Record(done, RateNowMs());
-                                            job->view.done_bytes = done;
-                                            job->view.total_bytes = total;
-                                            job->view.held_bytes = held;
-                                            ++revision_;  // progress only; the registry is unchanged
-                                          }
-                                        },
-                                        [this, id = *next](InstallStep step) {
-                                          std::lock_guard<std::mutex> lock(mutex_);
-                                          if (auto* job = Find(id)) job->retry_delay = std::chrono::milliseconds{0};
-                                          if (auto* job = Find(id); job && job->view.step != step) {
-                                            job->view.step = step;
-                                            job->view.step_since = std::chrono::steady_clock::now();
-                                            ++revision_;
-                                          }
-                                        });
+    const auto progress = [this, runner, id = *next](std::uint64_t done, std::uint64_t total, std::uint64_t held) {
+      // On this worker, inside runner->Install.
+      auto server = runner->DownloadServerName();
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (auto* job = Find(id)) {
+        // Under way: a later wait starts short again.
+        job->retry_delay = std::chrono::milliseconds{0};
+        if (job->view.state == InstallJobState::kRunning) job->rate.Record(done, RateNowMs());
+        job->view.done_bytes = done;
+        job->view.total_bytes = total;
+        job->view.held_bytes = held;
+        if (job->view.state == InstallJobState::kRunning) job->view.server_name = std::move(server);
+        ++revision_;  // progress only; the registry is unchanged
+      }
+    };
+    const auto step = [this, id = *next](InstallStep step) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (auto* job = Find(id)) job->retry_delay = std::chrono::milliseconds{0};
+      if (auto* job = Find(id); job && job->view.step != step) {
+        job->view.step = step;
+        job->view.step_since = std::chrono::steady_clock::now();
+        ++revision_;
+      }
+      // Reported before the update touches the game's files.
+      if (auto* job = Find(id); job && step == InstallStep::kApplying &&
+                                job->view.kind == InstallJobKind::kUpdate && !job->view.locked) {
+        job->view.locked = true;
+        ++revision_;
+      }
+    };
+    bool held_for_game = false, game_unknown = false;
+    const std::function<bool()> may_apply = [this, id = *next, &held_for_game, &game_unknown] {
+      const auto answer = MayApply(id);
+      held_for_game = answer != ApplyAnswer::kApply;
+      game_unknown = answer == ApplyAnswer::kUnknown;
+      return !held_for_game;
+    };
+    const auto result = next_update ? runner->Update(*next, next_root, next_options, active_cancel_, progress, step, may_apply)
+                                    : runner->Install(*next, next_root, next_options, active_cancel_, progress, step);
 
-    bool remove_files = false;
+    bool remove_files = false, discard_update = false;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       active_.reset();
       auto* job = Find(*next);
-      if (job && result.ok) {
+      const auto erase_job = [&] {
+        jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [&](const Job& entry) { return entry.view.id == *next; }),
+                    jobs_.end());
+        job = nullptr;
+      };
+      // Whether the update on disk is putting its files in place, read while the job is not running.
+      const bool locked_on_disk = next_update && UpdateLocked(next_root);
+      if (job && job->dropped) {
+        // Uninstalled meanwhile: the uninstall deletes the files.
+        erase_job();
+      } else if (job && result.ok && next_update) {
+        const auto downloaded = job->view.done_bytes;
+        erase_job();
+        for (auto& game : installed_) {
+          if (game.id != *next) continue;
+          game.install_bytes = result.install_bytes;
+          game.finished_at = WallNow();
+          game.update_bytes = downloaded;
+          game.record = ReadInstallRecord(next_root + "/" + kRecord);
+        }
+      } else if (job && job->cancel_requested && next_update && !locked_on_disk) {
+        // The game stays as it was; only the update's downloads go.
+        erase_job();
+        discard_update = true;
+      } else if (job && job->cancel_requested && next_update) {
+        // Canceled too late: the update is putting its files in place and finishes first.
+        job->cancel_requested = false;
+        ClearWait(*job);
+        job->view.state = InstallJobState::kQueued;
+      } else if (job && result.ok) {
         // Installed, even when a cancel arrived meanwhile: it came too late (a copy may already have
         // deleted its source), so the game stays and can be uninstalled.
         const auto volume_id = job->view.volume_id;
         jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [&](const Job& entry) { return entry.view.id == *next; }),
                     jobs_.end());
-        installed_.push_back({*next, result.install_bytes, next_root, volume_id, true, WallNow()});
+        installed_.push_back({*next, result.install_bytes, next_root, volume_id, true, WallNow(),
+                              ReadInstallRecord(next_root + "/" + kRecord)});
       } else if (job && job->cancel_requested) {
         jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(), [&](const Job& entry) { return entry.view.id == *next; }),
                     jobs_.end());
@@ -846,24 +1100,33 @@ void InstallService::Run() {
         // Playden is closing: the download stays queued, so the next start carries on with it.
         job->view.state = InstallJobState::kQueued;
       } else if (job && job->view.state == InstallJobState::kRunning && !result.ok && !result.canceled && result.retry_later) {
+        // A running game that held the update back is asked about before the next try.
+        job->waiting_for_game = held_for_game;
+        job->game_unknown = game_unknown;
         // Not yet (no sign-in, or the store is out of reach, as it often is for a moment after Playden
         // starts): the job keeps its place and tries again after a wait that doubles each time, while
         // the worker goes on with the other jobs.
         job->view.state = InstallJobState::kQueued;
         job->view.failure = result.waiting.empty() ? kWaiting : result.waiting;
         job->waiting = true;
-        job->retry_delay = job->retry_delay.count() == 0 ? first_retry_ : std::min(job->retry_delay * 2, most_retry_);
+        job->retry_delay = held_for_game ? WaitForGame(*job)
+                         : job->retry_delay.count() == 0 ? first_retry_ : std::min(job->retry_delay * 2, most_retry_);
         job->not_before = std::chrono::steady_clock::now() + job->retry_delay;
-        job->rate.Reset(); job->view.bytes_per_second.reset(); job->view.eta_seconds.reset();
+        job->rate.Reset(); job->view.bytes_per_second.reset(); job->view.eta_seconds.reset(); job->view.server_name.clear();
       } else if (job && job->view.state == InstallJobState::kRunning) {
         // A Pause or Resume that arrived while the run was stopping already chose the state.
         ClearWait(*job);
         job->view.state = result.canceled ? InstallJobState::kPaused : InstallJobState::kFailed;
         job->view.failure = result.canceled ? std::string() : result.failure;
+        // A pause can't leave the game half updated: putting the files in place carries on.
+        if (locked_on_disk && result.canceled) job->view.state = InstallJobState::kQueued;
       }
+      if (job && next_update) job->view.locked = locked_on_disk;
+      if (job && !held_for_game) job->waiting_for_game = false;
       Publish();
     }
     if (remove_files) runner->Remove(next_root);
+    if (discard_update) runner->DiscardUpdate(next_root);
   }
 }
 

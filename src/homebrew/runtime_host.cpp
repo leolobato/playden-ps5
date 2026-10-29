@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 #include "homebrew/runtime_host.hpp"
+#include "installs/install_record.h"
 
 #include "platform/random_id.h"
 #include "platform/storage.h"
@@ -17,6 +18,7 @@
 #include "runtime/session_storage.h"
 #include "runtime/steam_stub.h"
 #include "runtime/steamworks.h"
+#include "runtime/self_heal.h"
 #include "runtime/writable_folders.h"
 #include "platform/managed_file_lock.h"
 #include "steam/backend/cloud_mapping.h"
@@ -308,6 +310,9 @@ struct RuntimeHost::Composition {
   // PS5 titles removed while Playden runs: the console keeps their registration until Playden
   // quits, so a new game reusing one fails publication ("ownership is unavailable or incoherent").
   std::set<std::string> retired_titles;
+  std::map<std::string, LeftoverDelete> leftover_deletes;
+  std::set<std::string> blocked_leftover_titles;
+  bool leftover_journals_known = true;
   rt::RuntimeInstallRepository repository;
   rt::RepositoryInstallRecordStore records;
   std::optional<RuntimeKit> kit;
@@ -428,6 +433,7 @@ void RuntimeHost::Prepare(RuntimePrepareRequest request) {
     if (queued != prepare_requests_.end()) {
       *queued = std::move(request);
     } else {
+      prepare_order_[request.runtime_number] = ++next_work_order_;
       snapshot_.queued_prepares.push_back(request.runtime_number);
       prepare_requests_.push_back(std::move(request));
     }
@@ -444,7 +450,11 @@ bool RuntimeHost::PrepareNext(std::uint32_t app_id) {
                                      [&](const auto& waiting) { return waiting.runtime_number == app_id; });
     if (queued == prepare_requests_.end()) return false;
     // The others keep their order behind it.
+    std::vector<std::uint64_t> orders;
+    for (const auto& request : prepare_requests_) orders.push_back(prepare_order_.at(request.runtime_number));
     std::rotate(prepare_requests_.begin(), queued, queued + 1);
+    for (std::size_t i = 0; i < prepare_requests_.size(); ++i)
+      prepare_order_[prepare_requests_[i].runtime_number] = orders[i];
     snapshot_.queued_prepares.clear();
     for (const auto& waiting : prepare_requests_) snapshot_.queued_prepares.push_back(waiting.runtime_number);
     ++snapshot_.revision;
@@ -460,6 +470,7 @@ bool RuntimeHost::WithdrawPrepare(std::uint32_t app_id) {
                                      [&](const auto& waiting) { return waiting.runtime_number == app_id; });
     if (queued == prepare_requests_.end()) return false;
     prepare_requests_.erase(queued);
+    prepare_order_.erase(app_id);
     std::erase(snapshot_.queued_prepares, app_id);
     ++snapshot_.revision;
   }
@@ -588,7 +599,7 @@ void RuntimeHost::Remove(std::uint32_t app_id, bool delete_saves) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
-    remove_requests_.emplace_back(app_id, delete_saves);
+    remove_requests_.push_back({app_id, delete_saves, std::nullopt, ++next_work_order_});
   }
   wake_.notify_all();
 }
@@ -600,6 +611,29 @@ void RuntimeHost::DeleteKeptBottle(std::uint32_t app_id) {
     kept_delete_requests_.push_back(app_id);
   }
   wake_.notify_all();
+}
+
+bool RuntimeHost::DeleteLeftoverTitle(const std::string& title_id, std::string* error) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return false;
+    const auto found = std::find_if(snapshot_.leftover_titles.begin(), snapshot_.leftover_titles.end(),
+                                    [&](const auto& title) { return title.title_id == title_id; });
+    if (found == snapshot_.leftover_titles.end()) {
+      if (error) *error = "This leftover PS5 title is no longer available.";
+      return false;
+    }
+    if (snapshot_.deleting_leftover_title == title_id ||
+        std::find(snapshot_.queued_leftover_deletes.begin(), snapshot_.queued_leftover_deletes.end(), title_id) !=
+            snapshot_.queued_leftover_deletes.end()) return true;
+    remove_requests_.push_back({0, false, LeftoverDelete{*found, {}, "retire"}, ++next_work_order_});
+    snapshot_.queued_leftover_deletes.push_back(title_id);
+    snapshot_.leftover_delete_failures.erase(title_id);
+    ++snapshot_.revision;
+  }
+  published_.notify_all();
+  wake_.notify_all();
+  return true;
 }
 
 void RuntimeHost::ScanPrograms(std::uint32_t app_id, std::string install_path) {
@@ -1111,6 +1145,21 @@ void RuntimeHost::SetTitleNames(std::map<std::uint32_t, std::string> names) {
   wake_.notify_all();
 }
 
+void RuntimeHost::RecheckInstalls() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    installs_recheck_requested_ = true;
+  }
+  wake_.notify_all();
+}
+
+bool RuntimeHost::FilesChanged(const rt::RuntimeInstall& record) const {
+  if (record.install_path.empty()) return false;
+  struct stat info{};
+  return lstat((HostPath(record.install_path) / installs::kFilesChangedName).c_str(), &info) == 0 && S_ISREG(info.st_mode);
+}
+
 void RuntimeHost::CheckActivity(std::uint32_t app_id) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1387,6 +1436,7 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
     }
     if (const auto found = composition.admission.find(record.install_id); found != composition.admission.end())
       view.admission = found->second;
+    view.files_changed = record.state == rt::PreparationState::kReady && FilesChanged(record);
     view.settings_revision = record.settings_revision;
     view.launch_entry_id = record.launch_entry_id;
     view.launch_path = record.launch_path;
@@ -1418,8 +1468,9 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   if (!c.kit) return {};
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
-  return kit.display_120hz || kit.profile_version_2 ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
-                                                    : kit;
+  return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen
+             ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
+             : kit;
 }
 
 // The complete OWNER protocol for the publish-profile step: persist the exact
@@ -1721,7 +1772,7 @@ std::string RuntimeHost::RepublishSettings(Composition& c, const rt::RuntimeInst
 
 std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeInstall& record, bool* published,
                                               bool steam_account_known, bool* prepare_again, std::string* code,
-                                              bool force) {
+                                              bool force, bool defaults_published) {
   if (code) code->clear();
   // Refusals only a new preparation gets past (the title's recipe or settings can't be published again).
   const auto again = [prepare_again](std::string message) {
@@ -1732,7 +1783,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   auto saved = stored.value_or(rt::GameSettingsRecord{});
   // A forced publication republishes the title's own revision for another runtime, so it needs the saved settings of
   // that revision or a newer one: Playden defaults standing in for a missing or unreadable record are not they.
-  if (force && (!stored || saved.revision < record.settings_revision)) {
+  if (force && (!stored ? !(defaults_published && record.settings_revision == 0) : saved.revision < record.settings_revision)) {
     Log("forced republish skipped app=" + std::to_string(record.runtime_number) + " saved=" +
         (stored ? std::to_string(saved.revision) : std::string("none")) +
         " title=" + std::to_string(record.settings_revision));
@@ -2145,8 +2196,28 @@ RuntimeRelocationResult RuntimeHost::RunRelocate(Composition& c, const RuntimeRe
 // Fresh facts for one launch, from the package layer, the bottle's start check
 // and the console's inventory and activity. Runs on the worker; the application
 // thread reuses the worker's latest result while it is fresh.
+// A bottle opened up over FTP (a recursive chmod) fails the title's start check and Playden's own:
+// its modes go back first. The title can't have started from it like that, but one that is running
+// or suspended (a chmod while it played) keeps its bottle as it is: a mode change reads as ESTALE there.
+void RuntimeHost::HealBottle(Composition& c, const std::string& data_root, const std::string& title_id) {
+  const auto bottle = HostPath(data_root);
+  if (!rt::BottleTooOpen(bottle)) return;
+  if (!title_id.empty()) {
+    const auto activity = c.coordinator->Activity(title_id);
+    if (activity != rt::NativeActivity::kStopped) {
+      Log("bottle heal skipped path=" + data_root + " title=" + title_id + " activity=" +
+          std::to_string(static_cast<int>(activity)));
+      return;
+    }
+  }
+  const auto healed = rt::TightenBottleModes(bottle, [this](const std::string& line) { Log(line); });
+  Log("bottle heal path=" + data_root + " tightened=" + std::to_string(healed.tightened) +
+      " left=" + std::to_string(healed.foreign) + " failed=" + std::to_string(healed.failed));
+}
+
 rt::LaunchPreflight RuntimeHost::Preflight(Composition& c, const rt::RuntimeInstall& record) {
   if (!pthread_equal(pthread_self(), application_thread_)) {
+    HealBottle(c, record.data_root, record.title_id);
     rt::LaunchPreflight p;
     p.capability_available = c.kit.has_value() && static_cast<bool>(config_.launch_title);
     const auto root = config_.host_namespace_prefix.empty()
@@ -2255,6 +2326,10 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id) {
       result = rt::LaunchResult::Failure(rt::LaunchError::kNotFound, "This game has no PS5 title yet.");
     } else if (const auto replaced = KitReplaced(c); !replaced.empty()) {
       result = rt::LaunchResult::Failure(rt::LaunchError::kPreflight, replaced);
+    } else if (record->state == rt::PreparationState::kReady && FilesChanged(*record)) {
+      // Its launch names the files from before the update: Prepare makes it again first.
+      result = rt::LaunchResult::Failure(rt::LaunchError::kPreflight,
+                                         "This game was updated. Press Play again to set it up for the new version.");
     } else if (const auto unwritable = EnsureWritable(record->install_path,
                                                       WorkingFolder(record->launch_working_directory, record->launch_path, record->launch_in_install_root));
                !unwritable.empty()) {
@@ -2469,6 +2544,45 @@ std::string GeneratedRecipeFile(const std::string& recipe_id) { return "recipe-"
 // The recipe a game is prepared with: Playden's shipped one, otherwise one generated
 // from Steam's launch options and saved so recovery and later settings changes use the
 // same launch entries. Returns null with the reason for the player.
+std::string RuntimeHost::RefreshChangedFiles(Composition& c, const RuntimePrepareRequest& request,
+                                             const rt::RuntimeInstall& record) {
+  const auto app = std::to_string(record.runtime_number);
+  // A recipe Playden generated from the old files is made again from the new ones, with the launch options and
+  // Game settings choices a fresh preparation uses: a program the player chose still starts while it is there,
+  // and one that is gone is refused as a fresh preparation refuses it. A shipped recipe names its programs itself.
+  if (rt::IsGeneratedRecipeId(record.recipe_id)) {
+    std::string reason;
+    const auto* recipe = RecipeForPrepare(c, request, &reason);
+    if (!recipe) {
+      Log("files changed app=" + app + " recipe refused: " + reason);
+      return reason;
+    }
+    if (recipe->id != record.recipe_id || std::to_string(recipe->version) != record.recipe_version) {
+      Log("files changed app=" + app + " recipe " + record.recipe_id + "/" + record.recipe_version + " became " + recipe->id +
+          "/" + std::to_string(recipe->version));
+      return std::string("This game's setup changed with its update.") + kRecreateHint;
+    }
+  }
+  // Settings older than the title's can't be published over it (a forced publication skips them silently).
+  if (const auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+      saved && saved->revision < record.settings_revision)
+    return "The game's saved settings are older than its PS5 title's; prepare it again.";
+  // Published again with the new recipe: a program that is gone moves to the one the recipe starts now.
+  bool published = false;
+  const auto refused = PublishSavedSettings(c, record, &published, true, nullptr, nullptr, true, true);
+  const auto current = c.records.Find(record.install_id);
+  Log("files changed app=" + app + " published=" + std::to_string(published) + " launch=" +
+      (current ? current->launch_entry_id + ":" + current->launch_path : std::string("-")) +
+      (refused.empty() ? std::string() : " refused=" + refused));
+  if (!refused.empty()) return refused;
+  // A marker that can't go only means the next Play sets the game up again (publishing nothing new).
+  const auto marker = HostPath(record.install_path) / installs::kFilesChangedName;
+  if (unlink(marker.c_str()) != 0 && errno != ENOENT)
+    Log("files changed app=" + app + " marker unlink errno=" + std::to_string(errno));
+  PublishInstalls(c, record.install_id);
+  return {};
+}
+
 const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const RuntimePrepareRequest& request,
                                                     std::string* reason) {
   for (const auto& candidate : c.recipes)
@@ -2617,6 +2731,7 @@ void RuntimeHost::PublishRecipes(const Composition& c) {
 }
 
 std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest& request, bool* awaiting) {
+  if (!c.leftover_journals_known) return "The PS5 title removal records cannot be read; restart Playden before preparing games.";
   if (!c.kit) return Snapshot().kit_reason;
   if (const auto replaced = KitReplaced(c); !replaced.empty()) return replaced;
   // Where the time before the first step goes: the recipe, the reservation and the title's metadata.
@@ -2636,6 +2751,9 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
   std::optional<rt::RuntimeInstall> existing;
   for (const auto& record : c.repository.Snapshot())
     if (record.runtime_number == request.runtime_number) existing = record;
+  HealBottle(c, config_.package_paths.console_data_root + "/playden/games/" +
+                    (existing ? existing->install_id : ToInstallId(GameOf(request.game, request.runtime_number))),
+             existing ? existing->title_id : std::string());
   // A title being removed because its game moved drives is finished here; any other removal by Uninstall.
   const bool moving = existing && existing->state == rt::PreparationState::kRemoving && existing->journal &&
                       existing->journal->operation == "remove-move";
@@ -2848,6 +2966,13 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       PublishInstalls(c);
       if (admission != "ok") return "The PS5 title still fails its start check: " + admission;
       OpenGameFolders(c, *existing);
+      // An update changed the game's files since its launch was set up: the launch is made again from them.
+      if (FilesChanged(*existing)) {
+        if (const auto refused = RefreshChangedFiles(c, request, *existing); !refused.empty()) return refused;
+        changed = true;
+        existing = c.records.Find(existing->install_id);
+        if (!existing) return "The game's install record is missing.";
+      }
       // The profile was built for the runtime the title had then; the kit's may take more keys (120 Hz output) or
       // fewer. Every Update that gets here publishes the saved settings again when they now write something else
       // (nothing otherwise), so an Update that failed after its title refresh is finished by the next one.
@@ -2966,8 +3091,10 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     reserve.volume_id = request.volume_id;
     // Titles removed during this run go last: a kit with fixed titles still gets one back.
     std::vector<std::string> retired;
-    for (auto& title : rt::KitTitleCandidates(c.kit->view))
+    for (auto& title : rt::KitTitleCandidates(c.kit->view)) {
+      if (c.blocked_leftover_titles.count(title)) continue;
       (c.retired_titles.count(title) ? retired : reserve.kit_title_variants).push_back(std::move(title));
+    }
     reserve.kit_title_variants.insert(reserve.kit_title_variants.end(), retired.begin(), retired.end());
     auto reserved = c.repository.Reserve(reserve);
     if (!reserved.ok()) {
@@ -3456,6 +3583,441 @@ void RuntimeHost::PublishKeptBottles(Composition& c) {
   Publish([&](RuntimeSnapshot& s) { s.kept_bottles = std::move(kept); });
 }
 
+std::optional<RuntimeHost::RemovalFailure> RuntimeHost::RetireTitle(
+    Composition& c, const std::string& title_id, const std::string& operation_id,
+    const rt::LeftoverTitle* expected) {
+  const auto source = config_.homebrew_root / title_id;
+  // ShadowMount must no longer discover the source before the native title goes.
+  const auto manual = c.registry.RemoveManualSource(title_id);
+  Log("remove manual source title=" + title_id + " ok=" + std::to_string(manual.ok) + " stage=" + manual.stage);
+  struct stat info{};
+  if (lstat(source.c_str(), &info) != 0) {
+    if (errno == ENOENT) return std::nullopt;
+    return RemovalFailure{"source-unavailable", "The PS5 title's folder cannot be checked."};
+  }
+  if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid())
+    return RemovalFailure{"source-foreign", "The PS5 title's folder is not Playden's; it was left as it is."};
+  if (expected && (expected->device != static_cast<std::uint64_t>(info.st_dev) ||
+                   expected->inode != static_cast<std::uint64_t>(info.st_ino)))
+    return RemovalFailure{"source-changed", "The PS5 title's folder changed since it was found; it was left as it is."};
+  std::string reason;
+  const auto trash = config_.state_root / "trash";
+  if (!rt::EnsurePrivateDirectories(config_.boundary, config_.state_root, trash, &reason))
+    return RemovalFailure{"trash-unavailable", "Playden could not prepare its private trash: " + reason};
+  auto homebrew = platform::ManagedDirectory::Open(config_.homebrew_root, platform::DirectoryPolicy::kApprovedTree);
+  auto destination = platform::ManagedDirectory::Open(trash, platform::DirectoryPolicy::kApprovedTree);
+  struct stat checked{};
+  if (!homebrew || !destination || !homebrew->InspectChild(title_id, &checked) ||
+      checked.st_dev != info.st_dev || checked.st_ino != info.st_ino || checked.st_uid != info.st_uid ||
+      !homebrew->RenameChild(title_id, *destination, title_id + "-" + operation_id, false) ||
+      !homebrew->Sync() || !destination->Sync())
+    return RemovalFailure{"retire-failed", "The PS5 title's folder could not be moved away (error " +
+                                           std::to_string(errno) + ")."};
+  Log("remove retired title=" + title_id);
+  return std::nullopt;
+}
+
+std::optional<RuntimeHost::RemovalFailure> RuntimeHost::UnregisterTitle(
+    Composition& c, const std::string& title_id, const std::string& operation_id) {
+  bool listed = TitleListed(c, title_id);
+  TitleRemoverResult result;
+  if (listed) {
+    if (!config_.unregister_title)
+      return RemovalFailure{"remover-unavailable", "Removing PS5 titles is not available in this build."};
+    result = config_.unregister_title(title_id, operation_id);
+    Log("remove unregister title=" + title_id + " sent=" + std::to_string(result.sent) + " code=" +
+        (result.code ? std::to_string(*result.code) : std::string("none")) + " detail=" + result.detail);
+    for (int poll = 0; listed && poll < config_.removal_confirm_polls && !Stopping(); ++poll) {
+      listed = TitleListed(c, title_id);
+      if (!listed) break;
+      std::unique_lock<std::mutex> lock(mutex_);
+      wake_.wait_for(lock, config_.removal_poll_interval, [this] { return stopping_; });
+    }
+    if (listed) listed = TitleListed(c, title_id);
+  }
+  if (!listed) return std::nullopt;
+  if (!result.sent)
+    return RemovalFailure{"remover-unavailable", "Playden could not start its title remover. Retry to try again."};
+  if (result.code && *result.code != 0) {
+    char code[16]; std::snprintf(code, sizeof(code), "0x%08x", static_cast<unsigned>(*result.code));
+    return RemovalFailure{"unregister-refused", std::string("The console refused to remove the PS5 title (") + code + ")."};
+  }
+  return RemovalFailure{"unregister-unconfirmed",
+                        "The console has not confirmed that the PS5 title is gone. Retry checks again."};
+}
+
+std::string RuntimeHost::DeleteRetiredTitle(const std::string& title_id, const std::string& operation_id) {
+  const auto trash = config_.state_root / "trash" / (title_id + "-" + operation_id);
+  struct stat info{};
+  if (lstat(trash.c_str(), &info) != 0 && errno == ENOENT) return {};
+  auto parent = platform::ManagedDirectory::Open(trash.parent_path(), platform::DirectoryPolicy::kPrivate);
+  if (!parent || !parent->InspectChild(trash.filename().string(), &info) ||
+      !S_ISDIR(info.st_mode) || info.st_uid != geteuid())
+    return "The retired PS5 title's folder is not Playden's; it was left as it is.";
+  const auto total = CountTreeNoFollow(trash.string());
+  std::uint64_t done = 0;
+  const std::function<void()> removed = [&] { ReportWork(++done, total); };
+  std::error_code error;
+  RemoveTreeNoFollow(trash, error, &removed);
+  ClearWork();
+  return error ? "The PS5 title's folder could not be deleted: " + error.message() : std::string{};
+}
+
+namespace {
+std::string LeftoverDeleteFile(const std::string& title) { return "leftover-" + title + ".json"; }
+
+bool LeftoverOperationId(const std::string& operation) {
+  if (operation.size() != 36) return false;
+  for (std::size_t i = 0; i < operation.size(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) { if (operation[i] != '-') return false; }
+    else if (!((operation[i] >= '0' && operation[i] <= '9') ||
+               (operation[i] >= 'a' && operation[i] <= 'f'))) return false;
+  }
+  return true;
+}
+}  // namespace
+
+std::string RuntimeHost::SaveLeftoverDelete(Composition& c, const LeftoverDelete& request) {
+  const auto& title = request.title;
+  const auto text = "{\"schema\":1,\"title\":\"" + title.title_id + "\",\"operation_id\":\"" + request.operation_id +
+      "\",\"step\":\"" + request.step + "\",\"device\":" + std::to_string(title.device) +
+      ",\"inode\":" + std::to_string(title.inode) + ",\"name\":\"" + JsonEscaped(title.name) +
+      "\",\"bytes\":" + std::to_string(title.bytes) + "}\n";
+  // Storage's durable writer uses ManagedDirectory and creates the journal 0600 before writing.
+  c.blocked_leftover_titles.insert(title.title_id);
+  const auto saved = c.storage.WriteDurable(LeftoverDeleteFile(title.title_id), Bytes(text.begin(), text.end()));
+  if (!saved.ok()) {
+    // A failed sync may follow a successful rename: only a fresh journal read after restart may
+    // decide which step is durable. Never continue using the previous in-memory step.
+    c.leftover_deletes.erase(title.title_id);
+    return "The removal could not be recorded; restart Playden before retrying: " + saved.message();
+  }
+  c.leftover_deletes[title.title_id] = request;
+  return {};
+}
+
+void RuntimeHost::PublishLeftoverTitles(Composition& c) {
+  auto titles = rt::FindLeftoverTitles(config_.homebrew_root, c.repository.Loaded() && c.leftover_journals_known, c.repository.Snapshot(),
+                                      [&c](const std::string& title) { return c.coordinator->Activity(title); }, geteuid());
+  // A retired title still waiting for the remover remains available to retry, even though its
+  // source has left the scan root. Its private journal reserves the ID until completion.
+  if (c.repository.Loaded())
+    for (const auto& [id, request] : c.leftover_deletes) {
+      const auto records = c.repository.Snapshot();
+      if (std::any_of(records.begin(), records.end(), [&](const auto& record) { return record.title_id == id; }) ||
+          c.coordinator->Activity(id) != rt::NativeActivity::kStopped) continue;
+      if (std::none_of(titles.begin(), titles.end(), [&](const auto& title) { return title.title_id == id; }))
+        titles.push_back(request.title);
+    }
+  std::sort(titles.begin(), titles.end(), [](const auto& a, const auto& b) { return a.title_id < b.title_id; });
+  std::string ids;
+  for (const auto& title : titles) ids += " " + title.title_id;
+  Log("leftover titles found=" + std::to_string(titles.size()) + ids);
+  Publish([&](RuntimeSnapshot& s) { s.leftover_titles = std::move(titles); });
+}
+
+std::string RuntimeHost::RunDeleteLeftover(Composition& c, LeftoverDelete request) {
+  const auto id = request.title.title_id;
+  const auto fail = [&](const std::string& message) {
+    Log("leftover delete failed title=" + id + " step=" + request.step + " " + message);
+    return message;
+  };
+  if (!c.leftover_journals_known) return fail("The PS5 title removal records cannot be read; restart Playden before retrying.");
+  if (!c.repository.Loaded()) {
+    const auto loaded = c.repository.Load();
+    PublishInstalls(c);
+    if (!loaded.ok()) return fail("Playden's records of PS5 titles cannot be read: " + loaded.message() + ".");
+  }
+  for (const auto& record : c.repository.Snapshot())
+    if (record.title_id == id) return fail("This PS5 title now belongs to an installed game; it was left as it is.");
+  if (const auto pending = c.leftover_deletes.find(id); pending != c.leftover_deletes.end()) request = pending->second;
+  else if (c.blocked_leftover_titles.count(id))
+    return fail("The removal record cannot be read; restart Playden before retrying.");
+  auto homebrew = platform::ManagedDirectory::Open(config_.homebrew_root, platform::DirectoryPolicy::kApprovedTree);
+  if (!homebrew) return fail("The PS5 title's folder cannot be checked.");
+  const auto activity = c.coordinator->Activity(id);
+  if (activity == rt::NativeActivity::kActive) return fail("Close the game before uninstalling it.");
+  if (activity != rt::NativeActivity::kStopped) return fail(kActivityUnknown);
+  const auto source = config_.homebrew_root / id;
+  struct stat info{};
+  if (lstat(source.c_str(), &info) == 0) {
+    if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid())
+      return fail("The PS5 title's folder is not Playden's; it was left as it is.");
+    if (request.step != "retire" || request.title.device != static_cast<std::uint64_t>(info.st_dev) ||
+        request.title.inode != static_cast<std::uint64_t>(info.st_ino))
+      return fail("The PS5 title's folder changed since it was found; it was left as it is.");
+  } else if (errno != ENOENT) return fail("The PS5 title's folder cannot be checked.");
+  else if (request.operation_id.empty()) return fail("This leftover PS5 title is no longer available.");
+  if (!request.operation_id.empty()) {
+    const auto trash = config_.state_root / "trash";
+    const auto retired = trash / (id + "-" + request.operation_id);
+    if (lstat(retired.c_str(), &info) == 0) {
+      const auto parent = platform::ManagedDirectory::Open(trash, platform::DirectoryPolicy::kPrivate);
+      if (!parent || !S_ISDIR(info.st_mode) || info.st_uid != geteuid() ||
+          request.title.device != static_cast<std::uint64_t>(info.st_dev) ||
+          request.title.inode != static_cast<std::uint64_t>(info.st_ino))
+        return fail("The retired PS5 title's folder changed; it was left as it is.");
+    } else if (errno != ENOENT) return fail("The retired PS5 title's folder cannot be checked.");
+  }
+  // Check the inventory before retiring: an unavailable remover must leave a listed title's source intact.
+  if (TitleListed(c, id) && !config_.unregister_title)
+    return fail("Removing PS5 titles is not available in this build.");
+  if (request.operation_id.empty()) {
+    const auto operation = config_.uuid();
+    if (!operation || !LeftoverOperationId(*operation)) return fail("No secure random source for the removal.");
+    request.operation_id = *operation;
+    if (const auto error = SaveLeftoverDelete(c, request); !error.empty()) return fail(error);
+  }
+  if (request.step == "retire") {
+    Publish([](RuntimeSnapshot& s) { s.deleting_leftover_step = "Removing PS5 title…"; });
+    if (const auto error = RetireTitle(c, id, request.operation_id, &request.title)) return fail(error->message);
+    request.step = "unregister";
+    if (const auto error = SaveLeftoverDelete(c, request); !error.empty()) return fail(error);
+  }
+  if (request.step == "unregister") {
+    Publish([](RuntimeSnapshot& s) { s.deleting_leftover_step = "Removing PS5 title…"; });
+    if (Stopping()) return fail("The removal will continue when Playden starts again.");
+    if (const auto error = UnregisterTitle(c, id, request.operation_id)) return fail(error->message);
+    request.step = "trash";
+    if (const auto error = SaveLeftoverDelete(c, request); !error.empty()) return fail(error);
+  }
+  // A restart or a retry still checks the native inventory before clearing the durable journal.
+  if (TitleListed(c, id)) return fail("The console has not confirmed that the PS5 title is gone. Retry checks again.");
+  Publish([](RuntimeSnapshot& s) { s.deleting_leftover_step = "Deleting title files…"; });
+  if (const auto error = DeleteRetiredTitle(id, request.operation_id); !error.empty()) return fail(error);
+  const auto cleared = c.storage.RemoveDurable(LeftoverDeleteFile(id));
+  if (!cleared.ok()) {
+    c.leftover_deletes.erase(id);
+    return fail("The removal could not be completed; restart Playden before retrying: " + cleared.message());
+  }
+  c.leftover_deletes.erase(id);
+  c.blocked_leftover_titles.erase(id);
+  c.retired_titles.insert(id);
+  Log("leftover delete complete title=" + id);
+  return {};
+}
+
+void RuntimeHost::ResumeLeftoverDeletes(Composition& c) {
+  // Every entry named like a journal counts, whatever it is: one that cannot be inspected still
+  // reserves its title. A listing that stops early leaves the journals unknown.
+  std::vector<std::string> names;
+  DIR* directory = opendir(config_.state_root.c_str());
+  if (!directory && errno != ENOENT) {
+    c.leftover_journals_known = false;
+    Log("leftover removal journals unavailable: errno " + std::to_string(errno));
+    return;
+  }
+  if (directory) {
+    for (;;) {
+      errno = 0;
+      const dirent* entry = readdir(directory);
+      if (!entry) break;
+      const std::string name = entry->d_name;
+      if (name.rfind("leftover-", 0) == 0) names.push_back(name);
+    }
+    const int listing_error = errno;
+    closedir(directory);
+    if (listing_error != 0) {
+      c.leftover_journals_known = false;
+      Log("leftover removal journals unavailable: errno " + std::to_string(listing_error));
+      return;
+    }
+  }
+  for (const auto& entry_name : names) {
+    // A journal is written before the removal changes anything, so a half-written one alone (.tmp) holds nothing.
+    if (entry_name.size() > 4 && entry_name.compare(entry_name.size() - 4, 4, ".tmp") == 0) continue;
+    const auto id = entry_name.size() == 23 && entry_name.substr(18) == ".json" ? entry_name.substr(9, 9) : std::string();
+    if (!rt::IsManagedTitle(id)) {
+      Log("leftover removal journal name not understood: " + entry_name);
+      continue;
+    }
+    c.blocked_leftover_titles.insert(id);
+    const auto directory = platform::ManagedDirectory::Open(config_.state_root, platform::DirectoryPolicy::kPrivate);
+    struct stat journal_info{};
+    if (!directory || !directory->InspectChild(entry_name, &journal_info) || !S_ISREG(journal_info.st_mode) ||
+        journal_info.st_uid != geteuid() || (journal_info.st_mode & 07777) != 0600) {
+      Log("leftover removal journal permissions invalid title=" + id); continue;
+    }
+    const auto bytes = c.storage.ReadDurable(entry_name, 8192);
+    const auto json = bytes.ok() ? steam::json::Parse(std::string(bytes.value().begin(), bytes.value().end())) : std::nullopt;
+    if (!json || !json->is_object()) { Log("leftover removal journal invalid title=" + id); continue; }
+    const auto schema = json->Find("schema"), title = json->Find("title"), operation = json->Find("operation_id"),
+               step = json->Find("step"), device = json->Find("device"), inode = json->Find("inode"),
+               name = json->Find("name"), size = json->Find("bytes");
+    if (json->object().size() != 8 || !schema || schema->AsUint64() != 1 || !title || !title->is_string() ||
+        title->text() != id || !operation || !operation->is_string() || !LeftoverOperationId(operation->text()) ||
+        !step || !step->is_string() || (step->text() != "retire" && step->text() != "unregister" && step->text() != "trash") ||
+        !device || !device->AsUint64() || !inode || !inode->AsUint64() || !name || !name->is_string() ||
+        name->text().size() > 4096 || !size || !size->AsUint64()) {
+      Log("leftover removal journal invalid title=" + id); continue;
+    }
+    LeftoverDelete request;
+    request.title = {id, config_.homebrew_root / id, name->text(), *size->AsUint64(), *device->AsUint64(), *inode->AsUint64()};
+    request.operation_id = operation->text();
+    request.step = step->text();
+    c.leftover_deletes[id] = request;
+  }
+  // Each journal is reconciled before startup's trash housekeeping; failed ones retain their folder.
+  const auto pending = c.leftover_deletes;
+  for (const auto& [id, request] : pending) {
+    Publish([&](RuntimeSnapshot& s) { s.deleting_leftover_title = id; });
+    const auto error = RunDeleteLeftover(c, request);
+    ClearWork();
+    Publish([&](RuntimeSnapshot& s) {
+      s.deleting_leftover_title.reset();
+      s.deleting_leftover_step.clear();
+      if (!error.empty()) s.leftover_delete_failures[id] = error;
+      else s.leftover_delete_failures.erase(id);
+      ++s.leftover_deletes_handled;
+    });
+  }
+}
+
+std::optional<RuntimeHost::RemovalFailure> RuntimeHost::KeepBottle(
+    const std::filesystem::path& bottle, const std::string& install_id, const GameId& game,
+    std::uint32_t runtime_number, const std::string& name, const std::string& operation_id) {
+  const auto kept = bottle.parent_path() / (install_id + kKeptSuffix);
+  std::error_code error;
+  struct stat info{};
+  // A Steam game's marker is as before; another store's also names its game.
+  const auto identity = game.store == Store::kSteam ? std::string()
+      : ",\"store\":\"" + std::string(Traits(game.store).key) + "\",\"game\":\"" + JsonEscaped(game.value) + "\"";
+  const auto marker = "{\"schema\":1,\"install_id\":\"" + install_id + "\",\"app_id\":" +
+                      std::to_string(runtime_number) + identity + ",\"name\":\"" + JsonEscaped(name) +
+                      "\",\"kept_at\":" + std::to_string(config_.unix_time ? config_.unix_time() : std::int64_t(time(nullptr))) +
+                      ",\"bytes\":" + std::to_string(TreeBytes(bottle)) + "}\n";
+  const int fd = open((bottle / kKeptMarker).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  const bool written = fd >= 0 && write(fd, marker.data(), marker.size()) == static_cast<ssize_t>(marker.size()) &&
+                       fsync(fd) == 0;
+  if (fd >= 0) close(fd);
+  if (!written) return RemovalFailure{"bottle-keep", "The game's saves could not be marked as kept."};
+  const bool restored = lstat((bottle / kRestoredMarker).c_str(), &info) == 0;
+  if (lstat(kept.c_str(), &info) == 0 && !restored) {
+    // The kept copy's saves were never brought back into this bottle (a preparation after a move or
+    // reinstall stopped before that): the kept copy holds them and stays. The newer bottle is set
+    // aside beside it, never deleted.
+    const auto aside = bottle.parent_path() / (install_id + ".set-aside-" + operation_id);
+    Log("remove keeps the unrestored kept bottle install=" + install_id + "; newer bottle set aside");
+    if (rename(bottle.c_str(), aside.c_str()) != 0)
+      return RemovalFailure{"bottle-keep", "The game's newer bottle could not be set aside (error " + std::to_string(errno) + ")."};
+  } else if (lstat(kept.c_str(), &info) == 0) {
+    // An older kept copy whose saves this bottle already has: the bottle replaces it.
+    Log("remove replaces older kept bottle install=" + install_id);
+    RemoveTreeNoFollow(kept, error);
+    if (error) return RemovalFailure{"bottle-keep", "An older copy of the game's saves could not be replaced."};
+    if (rename(bottle.c_str(), kept.c_str()) != 0)
+      return RemovalFailure{"bottle-keep", "The game's saves could not be kept (error " + std::to_string(errno) + ")."};
+  } else if (rename(bottle.c_str(), kept.c_str()) != 0) {
+    return RemovalFailure{"bottle-keep", "The game's saves could not be kept (error " + std::to_string(errno) + ")."};
+  }
+  return std::nullopt;
+}
+
+void RuntimeHost::KeepUnrecordedBottles(Composition& c) {
+  // Every reason to doubt which bottles are unrecorded stops the whole pass: a kept bottle is
+  // renamed away from where its game's title looks for it.
+  // A leftover deletion journal, even an unreadable one, may stand for a retired title that still names a bottle.
+  if (!c.repository.Loaded() || !c.leftover_journals_known || !c.blocked_leftover_titles.empty()) return;
+  const auto records = c.repository.Snapshot();
+  std::set<std::string> recorded_installs;
+  for (const auto& record : records) recorded_installs.insert(record.install_id);
+  // A PS5 title starts the bottle its game-launch.json names, running or not, whatever owns its folder and
+  // whatever the records say about it: that bottle stays until the title is deleted (Storage lists it as a leftover).
+  std::set<std::string> named_installs, named_roots;
+  {
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(config_.homebrew_root, error), end; !error && it != end;
+         it.increment(error)) {
+      const auto title = it->path().filename().string();
+      if (!rt::IsManagedTitle(title)) continue;
+      struct stat info{};
+      if (lstat(it->path().c_str(), &info) != 0) {
+        Log("unrecorded bottles not kept: " + title + " cannot be inspected");
+        return;
+      }
+      if (!S_ISDIR(info.st_mode)) continue;
+      const int fd = open((it->path() / "game-launch.json").c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+      std::string bytes;
+      if (fd >= 0) {
+        char chunk[4096];
+        for (ssize_t count; (count = read(fd, chunk, sizeof(chunk))) > 0 && bytes.size() <= 8192;)
+          bytes.append(chunk, static_cast<std::size_t>(count));
+        close(fd);
+      } else if (errno == ENOENT) {
+        continue;  // no descriptor: the title names no bottle
+      }
+      const auto json = bytes.size() <= 8192 ? playden::steam::json::Parse(bytes) : std::nullopt;
+      const auto* install = json ? json->Find("install_id") : nullptr;
+      const auto* root = json ? json->Find("data_root") : nullptr;
+      if (!install || !install->is_string() || !root || !root->is_string()) {
+        Log("unrecorded bottles not kept: the game-launch.json of " + title + " cannot be read");
+        return;
+      }
+      named_installs.insert(install->text());
+      named_roots.insert(root->text());
+    }
+    if (error) {
+      Log("unrecorded bottles not kept: " + config_.homebrew_root.string() + " cannot be listed");
+      return;
+    }
+  }
+  const auto console_games = config_.package_paths.console_data_root + "/playden/games";
+  const auto games = HostPath(console_games);
+  std::vector<std::string> found;
+  {
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(games, error), end; !error && it != end; it.increment(error)) {
+      const auto install_id = it->path().filename().string();
+      if (!KeptInstallId(install_id) || recorded_installs.count(install_id) || named_installs.count(install_id) ||
+          named_roots.count(console_games + "/" + install_id))
+        continue;
+      struct stat info{};
+      if (lstat(it->path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != geteuid()) continue;
+      found.push_back(install_id);
+    }
+  }
+  bool kept_any = false;
+  for (const auto& install_id : found) {
+    const auto game = ParseInstallId(install_id);
+    if (!game) continue;
+    std::uint32_t number = 0;
+    if (const auto app = game->steam_app()) {
+      number = *app;
+    } else {
+      const auto assigned = c.repository.RuntimeNumberFor(*game);
+      if (!assigned.ok()) {
+        Log("unrecorded bottle not kept install=" + install_id + ": " + assigned.message());
+        // A failed write leaves the records unread: every later decision would rest on them.
+        if (!c.repository.Loaded()) return;
+        continue;
+      }
+      number = assigned.value();
+    }
+    const auto operation = config_.uuid();
+    if (!operation) { Log("unrecorded bottles not kept: no secure random source"); return; }
+    const auto bottle = games / install_id;
+    std::string name;
+    {
+      const int fd = open((bottle / "title-metadata/sce_sys/param.json").c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+      if (fd >= 0) {
+        std::string bytes;
+        char chunk[4096];
+        for (ssize_t count; (count = read(fd, chunk, sizeof(chunk))) > 0 && bytes.size() < 64 * 1024;)
+          bytes.append(chunk, static_cast<std::size_t>(count));
+        close(fd);
+        name = WithoutStoreSuffix(TitleNameOf(bytes).value_or(std::string{}));
+      }
+    }
+    if (const auto failed = KeepBottle(bottle, install_id, *game, number, name, *operation)) {
+      Log("unrecorded bottle not kept install=" + install_id + ": " + failed->message);
+      continue;
+    }
+    Log("unrecorded bottle kept install=" + install_id);
+    kept_any = true;
+  }
+  if (kept_any) PublishKeptBottles(c);
+}
+
 // Removal of a game's PS5 title, journaled in its install record so an interrupted
 // removal continues where it stopped: retire the title folder out of ShadowMount's
 // scan root, unregister the title through the one-shot remover, keep or delete the
@@ -3536,53 +4098,13 @@ std::string RuntimeHost::RunRemove(Composition& c, std::uint32_t app, bool delet
       " delete_saves=" + std::to_string(delete_saves));
   const auto source = config_.homebrew_root / record.title_id;
   if (record.journal->step == "retire") {
-    // ShadowMount registers any folder under its scan root, so the folder leaves
-    // it in one move before the title is unregistered.
-    const auto manual = c.registry.RemoveManualSource(record.title_id);
-    Log("remove manual source title=" + record.title_id + " ok=" + std::to_string(manual.ok) + " stage=" + manual.stage);
-    struct stat info{};
-    if (lstat(source.c_str(), &info) == 0) {
-      if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid())
-        return fail("source-foreign", "The PS5 title's folder is not Playden's; it was left as it is.");
-      std::string reason;
-      const auto trash = config_.state_root / "trash";
-      if (!rt::EnsurePrivateDirectories(config_.boundary, config_.state_root, trash, &reason))
-        return fail("trash-unavailable", "Playden could not prepare its private trash: " + reason);
-      const auto retired = trash / (record.title_id + "-" + record.journal->operation_id);
-      if (rename(source.c_str(), retired.c_str()) != 0)
-        return fail("retire-failed", "The PS5 title's folder could not be moved away (error " +
-                                     std::to_string(errno) + ").");
-    } else if (errno != ENOENT) {
-      return fail("source-unavailable", "The PS5 title's folder cannot be checked.");
-    }
+    if (const auto failed = RetireTitle(c, record.title_id, record.journal->operation_id))
+      return fail(failed->code, failed->message);
     if (auto failed = advance("unregister"); !failed.empty()) return failed;
   }
   if (record.journal->step == "unregister") {
-    // Inventory first: a title the console no longer lists is never sent again.
-    bool listed = TitleListed(c, record.title_id);
-    TitleRemoverResult result;
-    if (listed) {
-      result = config_.unregister_title(record.title_id, record.journal->operation_id);
-      Log("remove unregister title=" + record.title_id + " sent=" + std::to_string(result.sent) + " code=" +
-          (result.code ? std::to_string(*result.code) : std::string("none")) + " detail=" + result.detail);
-      for (int poll = 0; listed && poll < config_.removal_confirm_polls && !Stopping(); ++poll) {
-        listed = TitleListed(c, record.title_id);
-        if (!listed) break;
-        std::unique_lock<std::mutex> lock(mutex_);
-        wake_.wait_for(lock, config_.removal_poll_interval, [this] { return stopping_; });
-      }
-      if (listed) listed = TitleListed(c, record.title_id);
-    }
-    if (listed) {
-      if (!result.sent)
-        return fail("remover-unavailable", "Playden could not start its title remover. Retry to try again.");
-      if (result.code && *result.code != 0) {
-        char code[16]; std::snprintf(code, sizeof(code), "0x%08x", static_cast<unsigned>(*result.code));
-        return fail("unregister-refused", std::string("The console refused to remove the PS5 title (") + code + ").");
-      }
-      // No answer is not a failure of the console: the next attempt checks again.
-      return fail("unregister-unconfirmed", "The console has not confirmed that the PS5 title is gone. Retry checks again.");
-    }
+    if (const auto failed = UnregisterTitle(c, record.title_id, record.journal->operation_id))
+      return fail(failed->code, failed->message);
     if (auto failed = advance("bottle"); !failed.empty()) return failed;
   }
   if (record.journal->step == "bottle") {
@@ -3602,38 +4124,9 @@ std::string RuntimeHost::RunRemove(Composition& c, std::uint32_t app, bool delet
       ClearWork();
       if (error) return fail("bottle-delete", "The game's saves and settings could not be deleted: " + error.message());
     } else if (present) {
-      // A Steam game's marker is as before; another store's also names its game.
-      const auto game = GameOf(record);
-      const auto identity = game.store == Store::kSteam ? std::string()
-          : ",\"store\":\"" + std::string(Traits(game.store).key) + "\",\"game\":\"" + JsonEscaped(game.value) + "\"";
-      const auto marker = "{\"schema\":1,\"install_id\":\"" + record.install_id + "\",\"app_id\":" +
-                          std::to_string(record.runtime_number) + identity + ",\"name\":\"" + JsonEscaped(game_name) +
-                          "\",\"kept_at\":" + std::to_string(config_.unix_time ? config_.unix_time() : std::int64_t(time(nullptr))) +
-                          ",\"bytes\":" + std::to_string(TreeBytes(bottle)) + "}\n";
-      const int fd = open((bottle / kKeptMarker).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
-      const bool written = fd >= 0 && write(fd, marker.data(), marker.size()) == static_cast<ssize_t>(marker.size()) &&
-                           fsync(fd) == 0;
-      if (fd >= 0) close(fd);
-      if (!written) return fail("bottle-keep", "The game's saves could not be marked as kept.");
-      const bool restored = lstat((bottle / kRestoredMarker).c_str(), &info) == 0;
-      if (lstat(kept.c_str(), &info) == 0 && !restored) {
-        // The kept copy's saves were never brought back into this bottle (a preparation after a move or
-        // reinstall stopped before that): the kept copy holds them and stays. The newer bottle is set
-        // aside beside it, never deleted.
-        const auto aside = bottle.parent_path() / (record.install_id + ".set-aside-" + record.journal->operation_id);
-        Log("remove keeps the unrestored kept bottle install=" + record.install_id + "; newer bottle set aside");
-        if (rename(bottle.c_str(), aside.c_str()) != 0)
-          return fail("bottle-keep", "The game's newer bottle could not be set aside (error " + std::to_string(errno) + ").");
-      } else if (lstat(kept.c_str(), &info) == 0) {
-        // An older kept copy whose saves this bottle already has: the bottle replaces it.
-        Log("remove replaces older kept bottle install=" + record.install_id);
-        RemoveTreeNoFollow(kept, error);
-        if (error) return fail("bottle-keep", "An older copy of the game's saves could not be replaced.");
-        if (rename(bottle.c_str(), kept.c_str()) != 0)
-          return fail("bottle-keep", "The game's saves could not be kept (error " + std::to_string(errno) + ").");
-      } else if (rename(bottle.c_str(), kept.c_str()) != 0) {
-        return fail("bottle-keep", "The game's saves could not be kept (error " + std::to_string(errno) + ").");
-      }
+      if (const auto failed = KeepBottle(bottle, record.install_id, GameOf(record), record.runtime_number, game_name,
+                                         record.journal->operation_id))
+        return fail(failed->code, failed->message);
     }
     if (auto failed = advance("erase"); !failed.empty()) return failed;
   }
@@ -3666,16 +4159,8 @@ std::string RuntimeHost::RunRemove(Composition& c, std::uint32_t app, bool delet
     PublishRecipes(c);
   }
   c.admission.erase(record.install_id);
-  {
-    // The retired title folder: its progress is the entries removed of those counted.
-    const auto trash = config_.state_root / "trash" / (record.title_id + "-" + record.journal->operation_id);
-    const std::uint64_t total = CountTreeNoFollow(trash.string());
-    std::uint64_t done = 0;
-    const std::function<void()> removed = [&] { ReportWork(++done, total); };
-    std::error_code ignored;
-    RemoveTreeNoFollow(trash, ignored, &removed);
-    ClearWork();
-  }
+  // A normal uninstall's record is already erased; leftover failures keep their private journal.
+  DeleteRetiredTitle(record.title_id, record.journal->operation_id);
   PublishInstalls(c);
   Log("remove complete install=" + record.install_id + " title=" + record.title_id);
   c.retired_titles.insert(record.title_id);
@@ -3819,19 +4304,26 @@ bool RuntimeHost::RunServices() {
       PublishKeptBottles(c);
       Log("startup kept bottles published");
       ShareNumbers(&c.repository);
-      // Startup only reads durable state. Records with a journal wait for an
-      // explicit recovery action; nothing resumes, registers or rebuilds here.
+      // Install records with a journal wait for an explicit recovery action. Leftover-title
+      // deletion journals are resumed separately before their retired folders can be swept.
       Log("startup records loaded installs=" + std::to_string(c.repository.Snapshot().size()));
       LoadGeneratedRecipes(c);
       Log("startup generated recipes loaded");
       PublishInstalls(c);
       Log("startup installs published");
+      ResumeLeftoverDeletes(c);
+      PublishLeftoverTitles(c);
+      KeepUnrecordedBottles(c);
       // Retired title folders left by an earlier removal are outside the scan
       // root already; deleting them is only housekeeping.
-      {
+      if (c.leftover_journals_known) {
         std::error_code error;
         for (std::filesystem::directory_iterator it(config_.state_root / "trash", error), end; !error && it != end;
              it.increment(error)) {
+          const auto entry = it->path().filename().string();
+          const bool pending = std::any_of(c.blocked_leftover_titles.begin(), c.blocked_leftover_titles.end(),
+                                           [&](const auto& title) { return entry.rfind(title + "-", 0) == 0; });
+          if (pending) continue;
           std::error_code ignored;
           RemoveTreeNoFollow(it->path(), ignored);  // never follows links
         }
@@ -3973,7 +4465,7 @@ bool RuntimeHost::RunServices() {
   bool reload = false;
   for (;;) {
     std::vector<std::uint32_t> plays;
-    std::vector<std::pair<std::uint32_t, bool>> removals;
+    std::vector<RemovalRequest> removals;
     std::vector<std::uint32_t> kept_deletes;
     std::vector<std::pair<std::uint32_t, RuntimeMaintenance>> maintenance;
     std::vector<std::pair<std::uint32_t, std::string>> scans;
@@ -3993,6 +4485,7 @@ bool RuntimeHost::RunServices() {
         return stopping_ || (!prepare_requests_.empty() && !snapshot_.handoff_ready && !prepares_held_) ||
                !play_requests_.empty() ||
                cleanup_requested_ || measure_requested_ || !activity_requests_.empty() || title_names_changed_ ||
+               installs_recheck_requested_ ||
                (!remove_requests_.empty() && !snapshot_.handoff_ready) ||
                (!kept_delete_requests_.empty() && !snapshot_.handoff_ready) ||
                !scan_requests_.empty() || !prepared_dismissals_.empty() || prepared_clear_requested_ ||
@@ -4012,7 +4505,12 @@ bool RuntimeHost::RunServices() {
       }
       plays.swap(play_requests_);
       // Removal changes install records that Handoff reads, like preparation.
-      if (!snapshot_.handoff_ready) removals.swap(remove_requests_);
+      if (!snapshot_.handoff_ready && !remove_requests_.empty() &&
+          (prepare_requests_.empty() || prepares_held_ ||
+           remove_requests_.front().order < prepare_order_.at(prepare_requests_.front().runtime_number))) {
+        removals.push_back(std::move(remove_requests_.front()));
+        remove_requests_.erase(remove_requests_.begin());
+      }
       if (!snapshot_.handoff_ready) kept_deletes.swap(kept_delete_requests_);
       scans.swap(scan_requests_);
       // Maintenance changes the bottle and install record, like removal.
@@ -4025,8 +4523,9 @@ bool RuntimeHost::RunServices() {
       measure = measure_requested_;
       measure_requested_ = false;
       checks.swap(activity_requests_);
-      names_changed = title_names_changed_;
+      names_changed = title_names_changed_ || installs_recheck_requested_;
       title_names_changed_ = false;
+      installs_recheck_requested_ = false;
       dismissals.swap(prepared_dismissals_);
       clear_prepared = prepared_clear_requested_;
       prepared_clear_requested_ = false;
@@ -4102,7 +4601,31 @@ bool RuntimeHost::RunServices() {
         relocations.clear();
       }
     }
-    for (const auto& [app, delete_saves] : removals) {
+    for (const auto& request : removals) {
+      const auto app = request.app;
+      const auto delete_saves = request.delete_saves;
+      if (request.leftover) {
+        const auto& title = request.leftover->title.title_id;
+        Publish([&](RuntimeSnapshot& s) {
+          std::erase(s.queued_leftover_deletes, title);
+          s.deleting_leftover_title = title;
+          s.leftover_delete_failures.erase(title);
+        });
+        const auto refusal = composition ? RunDeleteLeftover(*composition, *request.leftover)
+                                         : "The runtime services are unavailable.";
+        if (composition) {
+          PublishLeftoverTitles(*composition);
+          KeepUnrecordedBottles(*composition);
+        }
+        ClearWork();
+        Publish([&](RuntimeSnapshot& s) {
+          s.deleting_leftover_title.reset();
+          s.deleting_leftover_step.clear();
+          if (!refusal.empty()) s.leftover_delete_failures[title] = refusal;
+          ++s.leftover_deletes_handled;
+        });
+        continue;
+      }
       std::string refusal;
       if (!composition) {
         const auto current = Snapshot();
@@ -4111,6 +4634,7 @@ bool RuntimeHost::RunServices() {
         Publish([&](RuntimeSnapshot& s) { s.removing_app = app; s.removal_failures.erase(app); });
         refusal = RunRemove(*composition, app, delete_saves);
         PublishKeptBottles(*composition);
+        PublishLeftoverTitles(*composition);
       }
       Log("remove result app=" + std::to_string(app) + " " + (refusal.empty() ? "removed" : refusal));
       if (refusal.empty() && std::erase_if(prepared_history_, [app](const PreparedGame& entry) { return entry.runtime_number == app; })) {
@@ -4181,9 +4705,12 @@ bool RuntimeHost::RunServices() {
     std::optional<RuntimePrepareRequest> next;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (!prepare_requests_.empty() && !snapshot_.handoff_ready && !prepares_held_ && !stopping_) {
+      if (!prepare_requests_.empty() && !snapshot_.handoff_ready && !prepares_held_ && !stopping_ &&
+          (remove_requests_.empty() ||
+           prepare_order_.at(prepare_requests_.front().runtime_number) < remove_requests_.front().order)) {
         next = std::move(prepare_requests_.front());
         prepare_requests_.erase(prepare_requests_.begin());
+        prepare_order_.erase(next->runtime_number);
         auto& queued = snapshot_.queued_prepares;
         queued.erase(std::remove(queued.begin(), queued.end(), next->runtime_number), queued.end());
         if (composition) {

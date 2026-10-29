@@ -353,6 +353,7 @@ void V2RoundTripsEveryStore() {
   expected.notes[kLocalGame] = "Imported";
   expected.selected_game_id = kLocalGame;
   expected.filters.insert("hide-demos");
+  expected.filters.insert("hide-family");
   Check(playden::OrganizationSnapshotIsValid(expected), "a Local game is valid organization");
   Check(store.Save(kDevice, expected).ok(), "device organization saves");
   const auto restored = store.Load(kDevice);
@@ -364,7 +365,11 @@ void V2RoundTripsEveryStore() {
   Check(!store.SaveV1(kFirstAccount, v1_demos).ok(), "version 1 cannot hold hidden demos");
   auto three_filters = expected;
   three_filters.filters.insert("controller-full");
-  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds at most Playable and hidden demos");
+  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds at most Playable, hidden demos and hidden family games");
+  auto v1_family = Example();
+  v1_family.schema_version = 1;
+  v1_family.filters = {"hide-family"};
+  Check(!store.SaveV1(kFirstAccount, v1_family).ok(), "version 1 cannot hold hidden family games");
   playden::OrganizationSnapshot unselected;
   Check(store.Save(kDevice, unselected).ok(), "no selection saves");
   const auto empty = store.Load(kDevice);

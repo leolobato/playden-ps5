@@ -451,6 +451,38 @@ void StartupDefersGamesWithoutActivityChecks() {
   CHECK(LoadLayoutJournal(f->paths.state_root)->step == "games");
 }
 
+// runtime-state deleted or replaced by hand after the move: the record is written again from what
+// the folders show, and startup goes on instead of holding on its own moved data.
+void RebuildsALostMoveRecord() {
+  bool rebuilt = false;
+  {
+    auto f = Make("lost-record");
+    CHECK(MigrateLayout(f->paths, f->ops).games_moved && MarkLayoutDone(f->paths.state_root));
+    fs::remove_all(f->paths.state_root);
+    Write(f->paths.app_root / "logs" / "native-startup.log", "pre-grant\n");  // every start writes one
+    const auto result = MigrateLayout(f->paths, f->ops);
+    CHECK(result.runtime_ready && result.user_moved && result.logs_moved && result.games_moved && result.notice.empty());
+    CHECK(result.user_root == f->paths.user_root && Read(f->paths.user_root / "session.v1") == "credentials");
+    const auto journal = LoadLayoutJournal(f->paths.state_root);
+    CHECK(journal && journal->step == "games-moved" && journal->to == f->paths.games_root.string());
+    for (const auto& line : f->lines) rebuilt = rebuilt || line.find("move record rebuilt") != std::string::npos;
+    CHECK(rebuilt);
+    // It resumed at the logs step: the app folder's new log moved too, beside the one already there.
+    CHECK(!fs::exists(f->paths.app_root / "logs" / "native-startup.log"));
+    CHECK(Read(f->paths.log_root / "native-startup.log.moved") == "pre-grant\n");
+  }
+  {
+    // Lost while the games still waited in the app folder: their move goes on later.
+    auto f = Make("lost-record-deferred");
+    f->ops.defer_games = true;
+    CHECK(MigrateLayout(f->paths, f->ops).user_moved);
+    fs::remove_all(f->paths.state_root);
+    const auto result = MigrateLayout(f->paths, f->ops);
+    CHECK(result.runtime_ready && result.user_moved && !result.games_moved);
+    CHECK(LoadLayoutJournal(f->paths.state_root)->step == "games" && fs::exists(f->paths.app_root / "games/220"));
+  }
+}
+
 void PartialUserMoveBlocksServicesAndOnlyMovesForward() {
   auto f = Make("partial-user");
   const auto old = f->paths.app_root / "playden-data";
@@ -553,6 +585,7 @@ int main() {
   RunningGameFromHomeHoldsTheMove();
   MovesReadyGameWithCommittedPublication();
   RefusesToMergeIntoNonEmptyTarget();
+  RebuildsALostMoveRecord();
   AbortsOnCrossDevice();
   RevertsTheMove();
   RevertKeepsConflictsAndJournal();

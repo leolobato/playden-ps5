@@ -119,7 +119,7 @@ AuthClient::AuthClient(AuthClientHooks hooks) : hooks_(std::move(hooks)) {}
 
 AuthError AuthClient::Post(const char* method, const std::vector<std::uint8_t>& message,
                           const std::atomic<bool>& cancel, std::uint32_t timeout_ms,
-                          bool restoring, std::vector<std::uint8_t>* body, bool get) {
+                          std::vector<std::uint8_t>* body, bool get) {
   body->clear();
   if (cancel.load()) return AuthError::kCanceled;
   if (!timeout_ms) return AuthError::kExpired;
@@ -152,7 +152,7 @@ AuthError AuthClient::Post(const char* method, const std::vector<std::uint8_t>& 
   };
   if (!response.ok()) return report(AuthError::kNetwork, 0);
   if (response.status_code == 401 || response.status_code == 403)
-    return report(restoring ? AuthError::kCredentialsRevoked : AuthError::kRejected, 0);
+    return report(AuthError::kRejected, 0);
   if (response.status_code == 429 || response.status_code >= 500) return report(AuthError::kNetwork, 0);
   if (response.status_code != 200 || response.body.size() > kBodyLimit) return report(AuthError::kProtocol, 0);
   int result = 1; bool seen = false;
@@ -170,8 +170,6 @@ AuthError AuthClient::Post(const char* method, const std::vector<std::uint8_t>& 
   // Match the reference's absent-header success policy; malformed/duplicate
   // headers fail closed instead of silently becoming success.
   if (result != 1) {
-    if (restoring && (result == 5 || result == 15 || result == 26 || result == 27))
-      return report(AuthError::kCredentialsRevoked, result);
     if (result == 9 || result == 27) return report(AuthError::kExpired, result);
     return report(AuthError::kRejected, result);
   }
@@ -190,7 +188,7 @@ AuthResult AuthClient::AuthenticateQr(const std::atomic<bool>& cancel,
   if (hooks_.machine_id) begin.device_details.machine_id = hooks_.machine_id();
   std::vector<std::uint8_t> request, response;
   if (!auth::Encode(begin, &request).ok()) return Failure(AuthError::kProtocol);
-  auto error = Post("BeginAuthSessionViaQR", request, cancel, Remaining(started,hooks_), false, &response);
+  auto error = Post("BeginAuthSessionViaQR", request, cancel, Remaining(started,hooks_), &response);
   if (error != AuthError::kNone) return Failure(error);
   if (!Remaining(started,hooks_)) return Failure(AuthError::kExpired);
   auth::BeginAuthSessionViaQrResponse session;
@@ -226,7 +224,7 @@ AuthError AuthClient::Poll(std::uint64_t* client_id, const std::vector<std::uint
   poll.client_id = *client_id; poll.request_id = request_id;
   std::vector<std::uint8_t> request, response;
   if (!auth::Encode(poll,&request).ok()) return AuthError::kProtocol;
-  const auto error = Post("PollAuthSessionStatus",request,cancel,timeout_ms,false,&response);
+  const auto error = Post("PollAuthSessionStatus",request,cancel,timeout_ms,&response);
   if (error != AuthError::kNone) return error;
   if (!auth::Decode(response,approval).ok()) return AuthError::kProtocol;
   if (approval->new_client_id) {
@@ -252,7 +250,9 @@ AuthResult AuthClient::Approved(auth::PollAuthSessionStatusResponse approval, st
   StoredSession stored{claims->steam_id, approval.account_name, std::move(approval.refresh_token),
                        std::move(approval.access_token), std::nullopt};
   if (stored.access_token.empty()) {
-    auto renewed = Renew(stored,cancel,Remaining(started,hooks_,lifetime_ms),false);
+    auto renewed = Renew(stored,cancel);
+    // A refused new token fails this sign-in only; a saved session it would have replaced stays.
+    if (renewed.error == AuthError::kCredentialsRevoked) renewed.error = AuthError::kRejected;
     if (cancel.load()) return Failure(AuthError::kCanceled);
     if (!Remaining(started,hooks_,lifetime_ms)) return Failure(AuthError::kExpired);
     return signed_in(std::move(renewed));
@@ -281,7 +281,7 @@ AuthResult AuthClient::AuthenticateCredentials(Credentials& credentials, const s
   key_request.account_name = credentials.account_name;
   std::vector<std::uint8_t> request, response;
   if (!auth::Encode(key_request, &request).ok()) return Failure(AuthError::kProtocol);
-  auto error = Post("GetPasswordRSAPublicKey", request, cancel, remaining(), false, &response, true);
+  auto error = Post("GetPasswordRSAPublicKey", request, cancel, remaining(), &response, true);
   if (error != AuthError::kNone) return Failure(refused(error));
   auth::GetPasswordRsaPublicKeyResponse key;
   if (!auth::Decode(response, &key).ok() || !key.timestamp) return Failure(AuthError::kProtocol);
@@ -295,7 +295,7 @@ AuthResult AuthClient::AuthenticateCredentials(Credentials& credentials, const s
   if (!encrypted) return Failure(AuthError::kProtocol);
   begin.encrypted_password = std::move(*encrypted);
   if (!auth::Encode(begin, &request).ok()) return Failure(AuthError::kProtocol);
-  error = Post("BeginAuthSessionViaCredentials", request, cancel, remaining(), false, &response);
+  error = Post("BeginAuthSessionViaCredentials", request, cancel, remaining(), &response);
   if (error != AuthError::kNone) return Failure(refused(error));
   if (!remaining()) return Failure(AuthError::kSignInTimedOut);
   auth::BeginAuthSessionViaCredentialsResponse session;
@@ -356,7 +356,7 @@ AuthResult AuthClient::AuthenticateCredentials(Credentials& credentials, const s
         std::vector<std::uint8_t> code_request;
         if (usable && !auth::Encode(update, &code_request).ok()) return Failure(AuthError::kProtocol);
         ZeroizeSecret(update.code);
-        error = usable ? Post("UpdateAuthSessionWithSteamGuardCode", code_request, cancel, remaining(), false, &response)
+        error = usable ? Post("UpdateAuthSessionWithSteamGuardCode", code_request, cancel, remaining(), &response)
                        : AuthError::kRejected;
         if (usable) std::fill(code_request.begin(), code_request.end(), std::uint8_t{0});
         // DuplicateRequest (29): Steam already took this code.
@@ -395,23 +395,11 @@ AuthResult AuthClient::AuthenticateCredentials(Credentials& credentials, const s
   return Failure(AuthError::kCanceled);
 }
 
-AuthResult AuthClient::Renew(const StoredSession& session, const std::atomic<bool>& cancel,
-                            std::uint32_t timeout_ms, bool restoring) {
-  auth::GenerateAccessTokenForAppRequest req;
-  req.refresh_token = session.refresh_token; req.steam_id = session.steam_id;
-  std::vector<std::uint8_t> request, response;
-  if (!auth::Encode(req,&request).ok()) return Failure(AuthError::kProtocol);
-  const auto error = Post("GenerateAccessTokenForApp",request,cancel,timeout_ms,restoring,&response);
-  if (error != AuthError::kNone) return Failure(error);
-  auth::GenerateAccessTokenForAppResponse renewed;
-  if (!auth::Decode(response,&renewed).ok()) return Failure(AuthError::kProtocol);
-  const auto now = hooks_.unix_seconds();
-  if (!ValidToken(renewed.access_token,session.steam_id,now) ||
-      (renewed.refresh_token && !ValidToken(*renewed.refresh_token,session.steam_id,now))) return Failure(AuthError::kProtocol);
-  auto updated = session;
-  updated.access_token = std::move(renewed.access_token);
-  if (renewed.refresh_token) updated.refresh_token = std::move(*renewed.refresh_token);
-  return {AuthError::kNone,std::move(updated)};
+AuthResult AuthClient::Renew(const StoredSession& session, const std::atomic<bool>& cancel) {
+  // As the Steam client: a SteamClient refresh token goes only to an authenticated CM session. Sent to the
+  // Web API it was refused, and every saved sign-in was gone from the first renewal, about a day after it.
+  if (!hooks_.cm_renew) return Failure(AuthError::kProtocol);
+  return hooks_.cm_renew(session, cancel);
 }
 
 AuthResult AuthClient::Restored(const char* path, const StoredSession& before, AuthResult result) {
@@ -430,16 +418,7 @@ AuthResult AuthClient::Restore(const StoredSession& session,const std::atomic<bo
   if (const auto claims = InspectTokenClaims(session.access_token);
       claims && claims->steam_id == session.steam_id && claims->expires_at_unix_seconds > now + 60)
     return Restored("stored", session, {AuthError::kNone, session});
-  auto renewed = Renew(session,cancel,kRequestTimeoutMs,true);
-  // The Web API refuses SteamClient refresh tokens with AccessDenied (15), and some days with
-  // AccountLogonDenied (63), although the CM accepts them; only a refused CM logon then means the
-  // credentials are gone.
-  const bool web_refused = (renewed.error == AuthError::kCredentialsRevoked && last_eresult_ == 15) ||
-                           (renewed.error == AuthError::kRejected && last_eresult_ == 63);
-  if (web_refused && hooks_.cm_renew && !cancel.load()) {
-    // Its outcome, with Steam's result code, is in steam-cm.log (owner=auth).
-    return Restored("cm", session, hooks_.cm_renew(session, cancel));
-  }
-  return Restored("web", session, std::move(renewed));
+  // Its outcome, with Steam's result code, is in steam-cm.log (owner=auth).
+  return Restored("cm", session, Renew(session, cancel));
 }
 }  // namespace playden::steam

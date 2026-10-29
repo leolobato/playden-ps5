@@ -8,9 +8,16 @@ update manifest:
 
 1. Raise the version in `CMakeLists.txt` (`project(PlaydenLauncher VERSION …)`) and build the PS5 package. The
    version becomes `param.json`'s `contentVersion` and the version Playden compares.
-2. Make the two zips: `playden-ps5-<version>.zip` (with the `FAKE77031` folder inside `playden-ps5-<version>/`) and
-   `playden-kit-<kit version>.zip` (with the kit folder, named after its `kit_id`, inside
-   `playden-kit-<kit version>/`, for example `playden-kit-0.13/playden-kit/`).
+2. Make the zips:
+   - `playden-ps5-<version>.zip`: the `FAKE77031` folder at the top of the archive, with `tools/` (the console
+     tools), `README.md`, `COMPATIBILITY.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md` next to it. The ProsperoStore
+     catalog needs the app folder at the top (see its
+     [artifact formats](https://github.com/darkxex/ps5-homebrew-catalog/blob/main/docs/artifact-formats.md)) and
+     ignores the rest; a store install copies only the app folder, so the package build puts `LICENSE` and
+     `THIRD_PARTY_NOTICES.md` inside it too. Playden 0.6.0 and newer unpack the folder the manifest's `prefix` names,
+     so they update from this layout as well. Releases up to 0.7.1 had everything inside `playden-ps5-<version>/`.
+   - `playden-kit-<kit version>.zip` (with the kit folder, named after its `kit_id`, inside
+     `playden-kit-<kit version>/`, for example `playden-kit-0.13/playden-kit/`).
 3. Write the manifest:
 
    ```sh
@@ -23,7 +30,8 @@ update manifest:
    first line of the release notes. The dialog links to the release page, as a QR code, for the full notes. The tool
    refuses a kit that `dependencies.lock.json` does not pin. `--min-from` is the oldest version that can update
    to this one; older versions are told to install by hand.
-4. Attach `playden-update.json` and both zips to the release, then publish it. GitHub records each file's SHA-256,
+4. Attach `playden-update.json` and the zips to the release, then publish it. Never replace an asset of a
+   published release: the ProsperoStore catalog pins it by its SHA-256. GitHub records each file's SHA-256,
    and Playden checks the downloads against it. If the kit did not change, the kit zip may be left out: consoles
    that already have that kit download only the app, and the others take the zip from an older release that has it.
    Playden 0.7.0 and older look only in the new release, so keep the zip while a version that old can update to it

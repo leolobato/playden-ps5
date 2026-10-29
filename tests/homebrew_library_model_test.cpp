@@ -457,6 +457,8 @@ void live_install_confirmation_checks_space_and_unknowns() {
     activate(model, "details-install");
     check(model.view().surface == "install" && !find_row(model, "install-confirm")->enabled,
           "a game that does not fit opens the install sheet without a usable Install");
+    // Its exact size has nothing to change (the controller answers so for a game without overlapping parts).
+    for (const auto& size_check : model.TakeSizeChecks()) model.UpdateMeasuredSize(size_check, false, false, {});
     check(model.view().subtitle.find("Not enough space") != std::string::npos, "the sheet says why");
     check(model.TakeInstallRequests().empty(), "nothing is queued while it does not fit");
 
@@ -467,6 +469,11 @@ void live_install_confirmation_checks_space_and_unknowns() {
     activate(model, "volume-m2");
     check(model.view().surface == "install" && find_row(model, "install-confirm")->enabled,
           "a drive with room enables Install");
+    // Back on Install, the sheet moves on from there: Down goes to the row under it, not under Change storage.
+    check(model.state().navigation.focus_key == "install-confirm" && model.action("down") &&
+              model.state().navigation.focus_key == "storage-picker" && model.action("up") &&
+              model.state().navigation.focus_key == "install-confirm",
+          "the focus moves on from Install");
     check(model.view().subtitle.find("To M.2 SSD (this game only)") == 0 &&
               model.view().subtitle.find("Other games still install to Console storage") != std::string::npos,
           "the sheet names the one-off drive and the unchanged default");
@@ -522,6 +529,252 @@ void live_install_confirmation_checks_space_and_unknowns() {
     model.UpdateVolumes({{"internal", "Console storage", true, std::nullopt, std::nullopt}}, "internal");
     activate(model, "details-install");
     check(model.TakeInstallRequests().size() == 1, "a console that cannot read free space still installs, as before");
+}
+
+// Owned DLC the download includes: an "Includes" status row on the install sheet, only when there is some.
+void live_install_dlc_row() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "With DLC"), game(SteamId(43), "Without DLC")}, false, {}, false, false, {}}),
+          "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {"english", "german"}, 3);
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    const auto* row = find_row(model, "install-dlc");
+    check(model.view().surface == "install" && row && row->title == "Includes" && row->value == "3 DLC" &&
+              row->kind == RowKind::Status && !row->enabled,
+          "the sheet says how many DLC the download includes");
+    activate(model, "cancel");
+    // DLC alone doesn't open the sheet; without DLC there is no row.
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {"english", "german"}, 0);
+    check(model.action("details:43"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface == "install" && find_row(model, "install-dlc") == nullptr, "no DLC, no row");
+    activate(model, "cancel");
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {"german"}, 3);
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface != "install" && model.TakeInstallRequests().size() == 1,
+          "a game with one language still installs at once");
+}
+
+// A game in several languages: the install sheet's Language row chooses one for this install only.
+void live_install_language_row() {
+    using playden::homebrew::InstallRequestKind;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Localised"), game(SteamId(43), "Neutral")}, false, {}, false, false, {}}),
+          "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {"german"});
+    check(model.action("details:43"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface != "install" && model.TakeInstallRequests().size() == 1,
+          "a game with one language installs at once, as before");
+
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {"english", "german", "french"});
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface == "install" && model.TakeInstallRequests().empty(),
+          "a game in several languages opens the install sheet");
+    const auto* row = find_row(model, "install-language");
+    check(row && row->title == "Language" && row->value == "English" && row->subtitle == "From Settings › Downloads",
+          "the Language row shows the language the Settings one resolves to");
+    activate(model, "install-language");
+    check(model.view().surface == "install-language", "the row opens the game's languages");
+    std::vector<std::string> keys;
+    for (const auto& item : model.view().rows) keys.push_back(item.key);
+    check(keys == std::vector<std::string>{"install-language-english", "install-language-german", "install-language-french",
+                                           "cancel"}, "the picker lists only the languages the game carries");
+    check(find_row(model, "install-language-english")->selected && !find_row(model, "install-language-german")->selected,
+          "the language in use is ticked");
+    activate(model, "install-language-german");
+    check(model.view().surface == "install" && find_row(model, "install-language")->value == "German" &&
+              find_row(model, "install-language")->subtitle == "This game only",
+          "the choice is shown on the sheet");
+    check(model.state().content_language == "english", "the Settings language does not change");
+    activate(model, "install-confirm");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install && requests[0].language == "german",
+          "the install request carries this install's language");
+
+    // The next install starts from the Settings language again.
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    check(find_row(model, "install-language")->value == "English", "the one-off choice does not stay");
+    activate(model, "install-confirm");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].language.empty(), "no choice sends the Settings language");
+}
+
+// A game with several versions: the install sheet's Version row chooses one for this install only,
+// and the size the sheet checks follows it.
+void live_install_version_row() {
+    using playden::homebrew::GameVersion;
+    using playden::homebrew::InstallRequestKind;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Versions"), game(SteamId(43), "Single")}, false, {}, false, false, {}}),
+          "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {}, 0, {GameVersion{"public", "", 1760000000, 9000, 100, 600}});
+    check(model.action("details:43"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface != "install" && model.TakeInstallRequests().size() == 1,
+          "a game with one version installs at once");
+
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
+                           {GameVersion{"public", "", 1760000000, 9000, 100, 600},
+                            GameVersion{"4.04", "Patch 4.04 (pre next-gen)", 1670000000, 4040, 200, 1'500'000'000}});
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface == "install" && model.TakeInstallRequests().empty(), "a game with versions opens the install sheet");
+    check(find_row(model, "install-language") == nullptr, "one language, no Language row");
+    const auto* row = find_row(model, "install-version");
+    check(row && row->title == "Version" && row->value == "Public" && row->subtitle == "The current version",
+          "the Version row starts on Public");
+    check(find_row(model, "install-confirm")->enabled, "Public fits");
+    activate(model, "install-version");
+    check(model.view().surface == "install-version", "the row opens the versions");
+    std::vector<std::string> keys;
+    for (const auto& item : model.view().rows) keys.push_back(item.key);
+    check(keys == std::vector<std::string>{"install-version-public", "install-version-4.04", "cancel"}, "public first, then branches");
+    const auto* old = find_row(model, "install-version-4.04");
+    check(old->title == "4.04" && old->subtitle == "Patch 4.04 (pre next-gen)" && old->value == "Built 02 Dec 2022" && !old->selected,
+          "a branch shows its description and build date");
+    check(find_row(model, "install-version-public")->selected && find_row(model, "install-version-public")->title == "Public" &&
+              find_row(model, "install-version-public")->value == "Built 09 Oct 2025",
+          "Public is ticked");
+    activate(model, "install-version-4.04");
+    row = find_row(model, "install-version");
+    check(model.view().surface == "install" && row->value == "4.04" && row->subtitle == "Patch 4.04 (pre next-gen)",
+          "the choice is shown on the sheet");
+    // 4.04 needs 1.5 GB: it does not fit the 1 GB free, so its size is the one checked.
+    check(!find_row(model, "install-confirm")->enabled, "the size follows the chosen version");
+    activate(model, "install-version");
+    activate(model, "install-version-public");
+    check(find_row(model, "install-version")->value == "Public" && find_row(model, "install-confirm")->enabled,
+          "back on Public");
+    activate(model, "install-confirm");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install && requests[0].branch.empty(),
+          "Public sends no branch");
+    check(requests[0].install_bytes == std::optional<std::uint64_t>(600), "Public's estimate goes with it");
+
+    // A branch that fits is sent with the install, and doesn't stay for the next one.
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
+                           {GameVersion{"public", "", 1760000000, 9000, 100, 600},
+                            GameVersion{"4.04", "Patch 4.04 (pre next-gen)", 1670000000, 4040, 200, 700}});
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    activate(model, "install-version");
+    activate(model, "install-version-4.04");
+    activate(model, "install-confirm");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].branch == "4.04", "the install request carries the version");
+    check(requests[0].install_bytes == std::optional<std::uint64_t>(700), "and the version's install estimate");
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    check(find_row(model, "install-version")->value == "Public", "the one-off choice does not stay");
+}
+
+// The install sheet's size follows the language chosen on it as well as the version.
+void live_install_language_size() {
+    using playden::homebrew::GameVersion;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Voices")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    GameVersion version{"public", "", 1760000000, 9000, 300'000'000, 600'000'000, {}};
+    version.languages = {{"english", 300'000'000, 600'000'000}, {"russian", 900'000'000, 1'500'000'000}};
+    model.UpdateAppDetails(SteamId(42), 300'000'000, 600'000'000, true, {"english", "russian"}, 0, {version});
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    check(model.view().surface == "install" && model.view().subtitle.find("Needs about 600 MB") != std::string::npos &&
+              find_row(model, "install-confirm")->enabled,
+          "English: the Settings language's size");
+    activate(model, "install-language");
+    activate(model, "install-language-russian");
+    check(model.view().surface == "install" && model.view().subtitle.find("Needs about 1.5 GB") != std::string::npos,
+          "Russian: its own size");
+    check(!find_row(model, "install-confirm")->enabled, "and that size is the one checked");
+}
+
+// Steam's figures add up each part of a game; the sheet asks for the exact size of the chosen version and language,
+// and a game that only fits by it can install once it is known.
+void live_install_exact_size() {
+    using playden::homebrew::GameVersion;
+    using playden::homebrew::SizeCheckRequest;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(400), "Portal")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    GameVersion version{"public", "", 1760000000, 9000, 900'000'000, 1'500'000'000, {}};
+    version.languages = {{"english", 900'000'000, 1'500'000'000}, {"russian", 1'000'000'000, 1'600'000'000}};
+    model.UpdateAppDetails(SteamId(400), 900'000'000, 1'500'000'000, true, {"english", "russian"}, 0, {version});
+    check(model.action("details:400"), "details open");
+    activate(model, "details-install");
+    auto checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && checks[0].id == SteamId(400) && checks[0].branch == "public" && checks[0].language == "english",
+          "the sheet asks for its choice's exact size");
+    check(model.view().subtitle.find("Needs about 1.5 GB") != std::string::npos &&
+              model.view().subtitle.find("Checking its exact size") != std::string::npos &&
+              !find_row(model, "install-confirm")->enabled && find_row(model, "install-confirm")->subtitle == "Checking size",
+          "Steam's sum doesn't fit: the sheet waits for the exact size");
+    check(model.TakeSizeChecks().empty(), "asked once");
+    model.UpdateMeasuredSize(checks[0], true, false, {600'000'000, 400'000'000});
+    check(model.view().subtitle.find("Needs 600 MB") != std::string::npos && find_row(model, "install-confirm")->enabled,
+          "the exact size fits");
+    // Another language is another check; one that fails keeps Steam's sum and isn't asked again while the sheet is open.
+    activate(model, "install-language");
+    activate(model, "install-language-russian");
+    checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && checks[0].language == "russian", "Russian is checked too");
+    model.UpdateMeasuredSize(checks[0], false, true, {});
+    check(model.view().subtitle.find("Needs about 1.6 GB") != std::string::npos &&
+              model.view().subtitle.find("Not enough space") != std::string::npos && !find_row(model, "install-confirm")->enabled,
+          "a failed check keeps Steam's sum");
+    check(model.TakeSizeChecks().empty(), "not asked again while the sheet is open");
+    model.action("circle");
+    activate(model, "details-install");
+    activate(model, "install-language");
+    activate(model, "install-language-russian");
+    checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && checks[0].language == "russian", "asked again when the sheet opens next");
+    // The service dropped it (the language changed in Settings): asked again.
+    model.ResetSizeChecks();
+    checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && checks[0].language == "russian", "a dropped check is asked again");
+    // Nothing to measure: Steam's figures stand, and the sheet says so as before.
+    model.UpdateMeasuredSize(checks[0], false, false, {});
+    check(model.view().subtitle.find("Not enough space") != std::string::npos, "a choice with nothing to check keeps Steam's sum");
+    check(model.TakeSizeChecks().empty(), "answered: not asked again");
+    // New details (a newer build) forget the game's exact sizes: the sheet checks again.
+    model.UpdateAppDetails(SteamId(400), 900'000'000, 1'500'000'000, true, {"english", "russian"}, 0, {version});
+    checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && checks[0].language == "russian", "new details are checked again");
+    activate(model, "install-language");
+    activate(model, "install-language-english");
+    model.TakeSizeChecks();
+    check(model.view().subtitle.find("Needs about 1.5 GB") != std::string::npos, "the old exact size is gone");
+}
+
+// A branch named in lower case shows as the picker shows it.
+void live_install_version_title() {
+    using playden::homebrew::GameVersion;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Beta")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
+                           {GameVersion{"public", "", 1760000000, 9000, 100, 600}, GameVersion{"beta", "", 1750000000, 9001, 100, 600}});
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    activate(model, "install-version");
+    check(find_row(model, "install-version-beta")->title == "Beta", "the picker says Beta");
+    activate(model, "install-version-beta");
+    check(find_row(model, "install-version")->value == "Beta", "and so does the sheet");
 }
 
 void live_install_notifications() {
@@ -923,6 +1176,47 @@ void live_demos_filter_defaults_on() {
     check(row!=nullptr && !row->selected,"Demos stays listed while demos are hidden");
 }
 
+// A game a Steam family member shares keeps that mark in the Library; the rest of the library does not.
+void live_family_shared_projected() {
+    auto model=make_live();
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    auto shared=game(SteamId(43),"Synthetic Shared");shared.family_shared=true;
+    check(model.UpdateLibrary({{game(SteamId(42),"Synthetic"),shared},false,{},false,false,{}}),"library with a shared game loaded");
+    check(model.state().games.back().family_shared && !model.state().games.front().family_shared,"family mark projected");
+    check(model.action("r1") && model.visible_games().size()==2,"shared games show with the rest");
+}
+
+// Family sharing works like Demos: on by default, turning it off hides shared games and is saved, and the
+// row is listed only while the library has a shared game or they are hidden.
+void live_family_filter_defaults_on() {
+    auto model=make_live();
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    check(model.UpdateLibrary({{game(SteamId(42),"Synthetic")},false,{},false,false,{}}),"library without shared games loaded");
+    check(model.action("r1") && model.action("triangle"),"live filter modal opens");
+    check(find_row(model,"filter-hide-family")==nullptr,"a library without shared games has no Family sharing row");
+    model.action("circle");
+
+    auto shared=game(SteamId(43),"Synthetic Shared");shared.family_shared=true;auto demo=game(SteamId(44),"Synthetic Demo");demo.demo=true;
+    check(model.UpdateLibrary({{game(SteamId(42),"Synthetic"),shared,demo},false,{},false,false,{}}),"library with a shared game loaded");
+    check(model.action("triangle"),"filter modal opens");
+    const auto* row=find_row(model,"filter-hide-family");
+    check(row!=nullptr && row->title=="Family sharing" && row->kind==RowKind::Toggle && row->selected && row->value=="On",
+          "Family sharing is a toggle, on");
+    activate(model,"filter-hide-family");
+    check(model.visible_games().size()==2 && model.ExportOrganization().filters==std::set<std::string>{"hide-family"},
+          "turning Family sharing off hides the shared game and is saved");
+    check(model.action("triangle"),"filter modal opens again");
+    activate(model,"filter-hide-demos");
+    check(model.visible_games().size()==1 && model.visible_games().front()->id==SteamId(42),"both filters compose");
+    check(model.ExportOrganization().filters==std::set<std::string>{"hide-demos","hide-family"},"both hidden kinds are saved");
+    check(model.action("triangle"),"filter modal opens again");
+    row=find_row(model,"filter-hide-family");
+    check(row!=nullptr && !row->selected && row->value=="Off","Family sharing shows off");
+    activate(model,"filter-hide-family");
+    check(model.visible_games().size()==2 && model.ExportOrganization().filters==std::set<std::string>{"hide-demos"},
+          "turning Family sharing on shows it again");
+}
+
 // Sort and filters offers Refresh library: it asks the controller for Steam's current list and the
 // Library stays on screen. While a refresh runs, the row waits.
 void live_sort_sheet_refreshes_the_library() {
@@ -1032,6 +1326,13 @@ void live_uninstall_removes_title_and_keeps_saves() {
     auto requests = model.TakeInstallRequests();
     check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Uninstall && requests[0].game_id == SteamId(42) &&
               requests[0].delete_saves, "Uninstall carries the saves choice");
+    check(model.action("details:42"), "details reopen after confirm");
+    const auto* queued_play = find_row(model, "details-play");
+    check(queued_play && !queued_play->enabled && queued_play->title == "Uninstall queued" &&
+              queued_play->value == "Uninstalling…", "Play shows Uninstall queued while pending");
+    const auto* queued_cloud = find_row(model, "details-cloud");
+    check(queued_cloud && !queued_cloud->enabled && queued_cloud->action.empty(),
+          "Cloud saves is disabled while uninstall is queued");
 
     // While it runs, Play waits; an interrupted removal offers Finish removing.
     ready.uninstall_status = "Removing PS5 title…"; ready.can_play = false;
@@ -1039,6 +1340,16 @@ void live_uninstall_removes_title_and_keeps_saves() {
     check(model.action("details:42"), "details reopen");
     const auto* play = find_row(model, "details-play");
     check(play && !play->enabled && play->value == "Removing PS5 title…", "Play shows the uninstall in progress");
+    check(play && play->title == "Uninstalling", "Play shows Uninstalling label");
+    const auto* active_cloud = find_row(model, "details-cloud");
+    check(active_cloud && !active_cloud->enabled && active_cloud->action.empty(),
+          "Cloud saves is disabled during active uninstall");
+    ready.progress = 0.42F;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {ready, plain});
+    play = find_row(model, "details-play");
+    check(play && !play->enabled && play->title == "Uninstalling" && play->progress == 0.42F &&
+              play->value == "Removing PS5 title 42%", "Uninstall progress shows percentage and Uninstalling title");
+    ready.progress.reset();
     check(find_row(model, "details-setup") && find_row(model, "details-setup")->value == "Removing",
           "active uninstall replaces Ready with Removing in setup facts");
     check(!has_row(model, "details-hint"), "active uninstall has no interrupted setup hint");
@@ -1186,13 +1497,23 @@ void live_storage_section_and_installed_games() {
     std::vector<std::string> library;
     for (const auto& row : model.view().rows) if (row.section == "Library") library.push_back(row.key);
     check(library == std::vector<std::string>{"settings-import", "settings-title-store", "settings-cloud-saves"},
-          "Library starts with Import games, then its two toggles");
+          "Library starts with Import games, then the store name and Cloud saves rows");
     check(find_row(model, "settings-storage")->action == "storage-picker", "Games storage opens the drive picker");
     std::vector<std::string> order;
     for (const auto& row : model.view().rows) if (row.section == "Storage") order.push_back(row.key);
-    check(order == std::vector<std::string>{"settings-storage", "settings-installed", "settings-kept",
-                                            "settings-runtime", "settings-downloads-slow"},
+    check(order == std::vector<std::string>{"settings-storage", "settings-installed", "settings-kept", "settings-runtime"},
           "Storage lists its rows in order, without the hidden cleanup row");
+    std::vector<std::string> downloads;
+    for (const auto& row : model.view().rows) if (row.section == "Downloads") downloads.push_back(row.key);
+    check(downloads == std::vector<std::string>{"settings-content-language", "settings-downloads-slow",
+                                                "settings-download-server"},
+          "Downloads holds the download language, the slow-network toggle and the download server");
+    {
+        const auto* language = find_row(model, "settings-content-language");
+        check(language->title == "Download language" && language->value == "English" &&
+                  language->subtitle == "Used for new installs. A game without it falls back to English or its first language.",
+              "the download language row names the language in use");
+    }
     // Downloads for slow networks (#29): off by default, a toggle saved with the preferences.
     check(!find_row(model, "settings-downloads-slow")->selected && !model.ExportPreferences().downloads_slow_network,
           "standard downloads by default");
@@ -1204,8 +1525,37 @@ void live_storage_section_and_installed_games() {
     std::vector<std::string> sections;
     for (const auto& row : model.view().rows)
         if (sections.empty() || sections.back() != row.section) sections.push_back(row.section);
-    check(sections == std::vector<std::string>{"Account", "Library", "Storage", "Display", "Updates", "About", "Quit Playden"},
-          "the rail order is Account, Library, Storage, Display, Updates, About, Quit");
+    check(sections == std::vector<std::string>{"Account", "Library", "Storage", "Downloads", "Display", "Updates", "Web access",
+                                                  "About", "Quit Playden"},
+          "the rail order is Account, Library, Storage, Downloads, Display, Updates, Web access, About, Quit");
+    // Web access: on by default; the address and its QR once the server reports them; the reason when it can't open.
+    check(find_row(model, "settings-web-access")->selected && model.ExportPreferences().web_access, "web access is on by default");
+    check(!find_row(model, "settings-web-address"), "no address before the server reports one");
+    model.ApplyLiveWebAccess({"on", "http://192.168.1.50:7031/", 7031, {}});
+    const auto* address = find_row(model, "settings-web-address");
+    check(address && address->qr == "http://192.168.1.50:7031/" && address->value == "http://192.168.1.50:7031" &&
+              address->section == "Web access" && address->subtitle.find("your Steam name removed") != std::string::npos &&
+              !address->enabled,
+          "the page's address shows with its QR code");
+    model.ApplyLiveWebAccess({"on", "", 7032, {}});
+    check(find_row(model, "settings-web-address") && find_row(model, "settings-web-address")->qr.empty() &&
+              find_row(model, "settings-web-address")->title == "Address unknown" &&
+              find_row(model, "settings-web-address")->value == "port 7032",
+          "an unknown address is said, never guessed");
+    model.ApplyLiveWebAccess({"failed", "", 0, "port 7039: Address already in use (errno 48)"});
+    check(find_row(model, "settings-web-problem") &&
+              find_row(model, "settings-web-problem")->subtitle.rfind(
+                  "Web access could not start: port 7039: Address already in use (errno 48).", 0) == 0,
+          "a port that could not be opened says why");
+    activate(model, "settings-web-access");
+    check(!find_row(model, "settings-web-access")->selected && !model.ExportPreferences().web_access &&
+              !find_row(model, "settings-web-problem") && !find_row(model, "settings-web-address"),
+          "the toggle turns web access off");
+    activate(model, "settings-web-access");
+    check(model.ExportPreferences().web_access, "and on again");
+    check(!model.state().quit_requested, "not quitting yet");
+    model.RequestQuit();
+    check(model.state().quit_requested, "the page's Quit Playden quits when nothing is being prepared");
     const auto* empty = find_row(model, "settings-installed");
     check(empty && !empty->enabled && empty->value == "None", "nothing installed says None");
     check(find_row(model, "settings-kept")->value == "None" && !has_row(model, "settings-runtime-cleanup"),
@@ -1214,7 +1564,7 @@ void live_storage_section_and_installed_games() {
     order.clear();
     for (const auto& row : model.view().rows) if (row.section == "Storage") order.push_back(row.key);
     check(order == std::vector<std::string>{"settings-storage", "settings-installed", "settings-kept",
-                                            "settings-runtime-cleanup", "settings-runtime", "settings-downloads-slow"},
+                                            "settings-runtime-cleanup", "settings-runtime"},
           "unused settings data sits before Runtime status when there is some");
     model.SetRuntimeLeftovers(0);
     // The Settings drive picker changes the default, not one install's drive.
@@ -1229,9 +1579,9 @@ void live_storage_section_and_installed_games() {
               model.view().rows[static_cast<std::size_t>(model.view().focused_row)].section == "Storage",
           "Up on Storage's first row does not leave the section");
     if (model.state().navigation.tabs_focused) model.action("down");
-    check(model.action("focus:settings-downloads-slow"), "Downloads for slow networks is focused");
+    check(model.action("focus:settings-download-server"), "Download server is focused");
     model.action("down");
-    check(model.state().navigation.focus_key == "settings-downloads-slow", "Down on Storage's last row stays on it");
+    check(model.state().navigation.focus_key == "settings-download-server", "Down on Downloads' last row stays on it");
     model.action("left");
     model.action("down");
     model.action("right");
@@ -1479,9 +1829,13 @@ void live_settings_focus_stays_near_a_removed_row() {
     model.SetRuntimeLeftovers(2);
     model.UpdateVolumes({{"internal", "Console storage", true, {}, {}}}, "internal");
     model.action("l1");
+    check(find_row(model, "settings-runtime-cleanup")->value == "2 · Console storage",
+          "the row says where the unused settings data is");
     activate(model, "settings-runtime-cleanup");
     check(!model.TakeRuntimeCleanupRequest() && !model.state().navigation.modals.empty() &&
               model.state().navigation.modals.back().destructive, "cleanup asks before deleting");
+    check(model.state().navigation.modals.back().body.find("on Console storage") != std::string::npos,
+          "the confirmation says where the data is");
     activate(model, "cancel");
     check(!model.TakeRuntimeCleanupRequest() && has_row(model, "settings-runtime-cleanup"), "Cancel keeps the data");
     activate(model, "settings-runtime-cleanup");
@@ -2229,6 +2583,46 @@ void live_completed_downloads_follow_the_queue() {
     check(std::none_of(model.state().jobs.begin(), model.state().jobs.end(),
                        [](const Job& job) { return job.state == JobState::Downloaded; }) && !has_row(model, "queue-downloads"),
           "Clear completed empties the list");
+}
+
+void live_queue_game_page_returns_to_its_row() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.SetWallClock(100'000);
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Updated"), game(SteamId(43), "Installed"), game(SteamId(44), "Another"),
+                                game(SteamId(46), "One more"), game(SteamId(47), "And another"), game(SteamId(45), "Earlier")},
+                               false, {}, false, false, {}}), "library loaded");
+    // 42 finished an update that downloaded 30 of its 100 bytes. 45 is far down the list.
+    model.UpdateInstalls({}, {{SteamId(42), 100, "internal", true}, {SteamId(43), 50, "internal", true}, {SteamId(44), 10, "internal", true},
+                              {SteamId(46), 10, "internal", true}, {SteamId(47), 10, "internal", true}, {SteamId(45), 300, "m2", true}},
+                         {{SteamId(43), 50, "internal", 99'990}, {SteamId(42), 100, "internal", 99'880, 30}, {SteamId(44), 10, "internal", 99'870},
+                          {SteamId(46), 10, "internal", 99'860}, {SteamId(47), 10, "internal", 99'850}, {SteamId(45), 300, "m2", 92'800}});
+    const auto& jobs = model.state().jobs;
+    const auto updated = std::find_if(jobs.begin(), jobs.end(), [](const Job& job) { return job.game_id == SteamId(42); });
+    const auto installed = std::find_if(jobs.begin(), jobs.end(), [](const Job& job) { return job.game_id == SteamId(43); });
+    check(updated != jobs.end() && updated->update && updated->total_bytes == 30 && updated->completed_bytes == 30,
+          "a finished update lists what it downloaded, not the whole game");
+    check(installed != jobs.end() && !installed->update && installed->total_bytes == 50, "a finished install lists the game's size");
+
+    model.action("r1");
+    model.action("r1");
+    check(model.state().navigation.route == Route::Downloads && model.state().queue_expanded == kQueueDownloads, "Downloads open");
+    // The page's first action, as the Library opens it.
+    check(model.action("details:45"), "details open");
+    const auto first_action = model.state().navigation.focus_key;
+    model.action("circle");
+    check(model.state().navigation.route == Route::Downloads, "back in Downloads");
+    activate(model, "job-45");
+    activate(model, "job-open-45");
+    check(model.state().navigation.route == Route::Details && model.state().navigation.detail_id == SteamId(45), "Open game shows its page");
+    check(model.state().navigation.focus_key == first_action,
+          "the page starts on its first action, not on the button at the Queue row's place");
+    model.action("circle");
+    check(model.state().navigation.route == Route::Downloads && model.state().navigation.focus_key == "job-45" &&
+              model.state().queue_expanded == kQueueDownloads && has_row(model, "job-45"),
+          "Back returns to the same row, with Downloads still open");
+
 }
 
 void game_collections_sheet_adds_and_removes_the_game() {
@@ -3102,7 +3496,366 @@ void live_import_choice_and_details() {
           "then copies it to the chosen drive");
 }
 
+
+void live_download_server_picker() {
+    using playden::homebrew::DownloadServerRequest;
+    using playden::homebrew::LiveDownloadServers;
+    using playden::homebrew::JobState;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    model.action("l1");
+    LiveDownloadServers servers;
+    servers.phase = "listed";
+    servers.servers = {{"akamai.invalid", "Akamai"}, {"fastly.invalid", "Fastly"}, {"cache.invalid", "Network cache", true}};
+    model.ApplyLiveDownloadServers(servers);
+    check(find_row(model, "settings-download-server")->value == "Steam default" &&
+              find_row(model, "settings-download-server")->subtitle == "Uses the server Steam lists first.",
+          "the server row explains Steam default");
+    activate(model, "settings-download-server");
+    check(model.TakeDownloadServerRequests() == std::vector<DownloadServerRequest>{DownloadServerRequest::List},
+          "opening the picker asks the worker for a new list");
+    check(find_row(model, "download-server-listing")->title == "Getting the server list…" &&
+              model.state().navigation.focus_key == "download-server-auto" &&
+              model.view().subtitle == "Applies to downloads that start or resume from now.",
+          "listing keeps Steam default available and explains when the choice applies");
+    model.ApplyLiveDownloadServers(servers);
+    check(model.state().navigation.modals.back().action_keys ==
+                  std::vector<std::string>{"download-server-fastest", "download-server-auto", "download-server-0",
+                                           "download-server-1", "download-server-2", "download-server-test", "cancel"} &&
+              find_row(model, "download-server-fastest")->title == "Fastest" &&
+              find_row(model, "download-server-fastest")->subtitle ==
+                  "Tests the servers when a download starts and uses the fastest one." &&
+              !find_row(model, "download-server-fastest")->selected &&
+              find_row(model, "download-server-auto")->title == "Steam default" &&
+              find_row(model, "download-server-auto")->selected,
+          "Fastest comes first, then Steam default, the listed servers and Test servers");
+    check(find_row(model, "download-server-2")->subtitle == "HTTP", "plain HTTP servers are marked");
+    activate(model, "download-server-1");
+    check(model.state().navigation.modals.empty() && model.state().download_server == "fastly.invalid" &&
+              model.ExportPreferences().download_server == "fastly.invalid" && model.PreferencesDirty() &&
+              find_row(model, "settings-download-server")->value == "Fastly" &&
+              find_row(model, "settings-download-server")->subtitle == "If it stops answering, Playden uses another one.",
+          "choosing a server closes the picker and records a preference change");
+    auto restarted = make_live();
+    playden::PreferencesLoadResult loaded;
+    loaded.preferences = model.ExportPreferences();
+    check(restarted.ApplyPreferences(restarted.BeginPreferencesLoad(), loaded) &&
+              restarted.state().download_server == "fastly.invalid" && !restarted.PreferencesDirty(),
+          "loading saved preferences restores the chosen server");
+    restarted.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    restarted.action("l1");
+    restarted.ApplyLiveDownloadServers(servers);
+    activate(restarted, "settings-download-server");
+    (void)restarted.TakeDownloadServerRequests();
+    restarted.ApplyLiveDownloadServers(servers);
+    check(restarted.state().navigation.focus_key == "download-server-1", "the picker opens focused on the current choice");
+    activate(restarted, "download-server-test");
+    check(restarted.TakeDownloadServerRequests() == std::vector<DownloadServerRequest>{DownloadServerRequest::Test},
+          "Test servers asks the service to test without closing the picker");
+    servers.phase = "testing";
+    servers.testing_index = 1;
+    restarted.ApplyLiveDownloadServers(servers);
+    check(find_row(restarted, "download-server-test")->title == "Testing Fastly (2 of 3)…" &&
+              !find_row(restarted, "download-server-test")->enabled, "testing names the current server and progress");
+    restarted.action("circle");
+    check(!restarted.state().navigation.modals.empty() &&
+              restarted.TakeDownloadServerRequests() == std::vector<DownloadServerRequest>{DownloadServerRequest::CancelTest},
+          "the first Circle cancels the test and keeps the picker open");
+    restarted.ApplyLiveDownloadServers(servers);  // a worker request may still be unwinding
+    restarted.action("circle");
+    check(restarted.state().navigation.modals.empty() && restarted.TakeDownloadServerRequests().empty(),
+          "a second Circle closes while cancellation is pending");
+    servers.phase = "listed";
+    restarted.ApplyLiveDownloadServers(servers);
+    activate(restarted, "settings-download-server");
+    (void)restarted.TakeDownloadServerRequests();
+    restarted.ApplyLiveDownloadServers(servers);
+    activate(restarted, "download-server-test");
+    (void)restarted.TakeDownloadServerRequests();
+    servers.phase = "tested";
+    servers.rates = {{"akamai.invalid", 41.2}, {"fastly.invalid", 3.1}, {"cache.invalid", 0, true}};
+    restarted.ApplyLiveDownloadServers(servers);
+    check(find_row(restarted, "download-server-0")->value == "41.2 MB/s" &&
+              find_row(restarted, "download-server-0")->badge == "Fastest" &&
+              find_row(restarted, "download-server-2")->value == "Failed" &&
+              restarted.state().navigation.focus_key == "download-server-0" &&
+              restarted.state().download_server == "fastly.invalid" && !restarted.PreferencesDirty(),
+          "a finished test displays rates and focuses the fastest without selecting or saving it");
+    activate(restarted, "download-server-0");
+    check(restarted.ExportPreferences().download_server == "akamai.invalid" && restarted.PreferencesDirty(),
+          "one Cross chooses the fastest result");
+    servers.servers.erase(servers.servers.begin());
+    servers.preferred_name = "Akamai";
+    restarted.ApplyLiveDownloadServers(servers);
+    check(find_row(restarted, "settings-download-server")->value == "Akamai" &&
+              find_row(restarted, "settings-download-server")->subtitle ==
+                  "Not offered on this network now. Steam default is used.", "a missing stored server falls back visibly");
+    activate(restarted, "settings-download-server");
+    (void)restarted.TakeDownloadServerRequests();
+    servers.phase = "list-failed";
+    restarted.ApplyLiveDownloadServers(servers);
+    check(find_row(restarted, "download-server-list-failed")->title == "Could not get the server list." &&
+              find_row(restarted, "download-server-retry")->title == "Try again", "a failed listing offers retry");
+    activate(restarted, "download-server-retry");
+    check(restarted.TakeDownloadServerRequests() == std::vector<DownloadServerRequest>{DownloadServerRequest::List},
+          "retry lists again on the worker");
+    servers.phase = "listed";
+    restarted.ApplyLiveDownloadServers(servers);
+    restarted.UpdateAccount({AuthState::Offline, "account", "Owner", {}, {}, false});
+    check(!find_row(restarted, "download-server-test")->enabled &&
+              find_row(restarted, "download-server-test")->subtitle == "Sign in to Steam to test servers." &&
+              find_row(restarted, "download-server-0")->enabled, "offline accounts can choose servers but cannot test");
+    activate(restarted, "download-server-test");
+    check(restarted.TakeDownloadServerRequests().empty(), "a disabled test sends no request");
+    restarted.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    restarted.UpdateLibrary({{game(SteamId(10), "Downloading game")}, false, {}, false, true, 1234});
+    activate(restarted, "settings-download-server");
+    (void)restarted.TakeDownloadServerRequests();
+    restarted.ApplyLiveDownloadServers(servers);
+    restarted.UpdateInstalls({{SteamId(10), JobState::Downloading, 1, 100}}, {});
+    check(!find_row(restarted, "download-server-test")->enabled &&
+              find_row(restarted, "download-server-test")->subtitle == "Pause downloads to test servers.",
+          "an active download disables measurement");
+    restarted.UpdateInstalls({{SteamId(10), JobState::Paused, 1, 100}}, {});
+    check(find_row(restarted, "download-server-test")->enabled, "pausing the download enables measurement");
+    activate(restarted, "download-server-auto");
+    check(restarted.state().download_server.empty() && restarted.ExportPreferences().download_server.empty(),
+          "Steam default clears the stored choice");
+    activate(restarted, "settings-download-server");
+    (void)restarted.TakeDownloadServerRequests();
+    restarted.ApplyLiveDownloadServers(servers);
+    activate(restarted, "download-server-fastest");
+    check(restarted.state().navigation.modals.empty() && restarted.ExportPreferences().download_server == "fastest" &&
+              find_row(restarted, "settings-download-server")->value == "Fastest" &&
+              find_row(restarted, "settings-download-server")->subtitle ==
+                  "Tests the servers when a download starts and uses the fastest one.",
+          "choosing Fastest stores it and the row says so");
+    activate(restarted, "settings-download-server");
+    (void)restarted.TakeDownloadServerRequests();
+    check(restarted.state().navigation.focus_key == "download-server-fastest", "the picker opens on Fastest while listing");
+    restarted.ApplyLiveDownloadServers(servers);
+    check(restarted.state().navigation.focus_key == "download-server-fastest" &&
+              find_row(restarted, "download-server-fastest")->selected && !find_row(restarted, "download-server-auto")->selected,
+          "the picker marks and focuses Fastest");
+    restarted.UpdateInstalls({{SteamId(10), JobState::Paused, 1, 100}}, {});
+    activate(restarted, "download-server-test");
+    (void)restarted.TakeDownloadServerRequests();
+    servers.phase = "tested";
+    servers.rates = {{"fastly.invalid", 3.1}, {"cache.invalid", 9.5}};
+    restarted.ApplyLiveDownloadServers(servers);
+    check(restarted.state().navigation.focus_key == "download-server-1" && restarted.state().download_server == "fastest",
+          "after a test the focus goes to the fastest tested server, not to Fastest");
+    // A version 8 file written with Fastest loads as Fastest.
+    auto reloaded = make_live();
+    playden::PreferencesLoadResult fastest;
+    fastest.preferences.download_server = "fastest";
+    check(reloaded.ApplyPreferences(reloaded.BeginPreferencesLoad(), fastest) &&
+              reloaded.state().download_server == "fastest", "a stored Fastest loads");
+    reloaded.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    reloaded.action("l1");
+    servers.phase = "listed";
+    reloaded.ApplyLiveDownloadServers(servers);
+    check(find_row(reloaded, "settings-download-server")->value == "Fastest", "a loaded Fastest shows in Settings");
+}
+
+void leftover_titles_require_confirmation_and_follow_the_queue() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    model.action("l1");
+    check(!has_row(model, "settings-leftovers"), "no leftover row without titles");
+    model.UpdateLeftoverTitles({{"FAKE78001", "Lost game (Steam)", 12'000'000}, {"FAKE78002", "", 3'000'000}});
+    const auto* row = find_row(model, "settings-leftovers");
+    check(row && row->title == "Leftover PS5 titles" && row->value == "2 titles · 15 MB" && row->section == "Storage" &&
+              !has_row(model, "settings-leftover-FAKE78001"),
+          "Storage has one Leftover PS5 titles row with their count and size, like Kept game data");
+    activate(model, "settings-leftovers");
+    check(model.state().navigation.modals.back().id == "leftover-titles" && model.view().surface == "leftover-titles",
+          "the row opens the leftover titles manager");
+    const auto* named = find_row(model, "leftover-toggle-FAKE78001");
+    check(named && named->title == "Lost game (Steam)" && named->subtitle == "FAKE78001" && named->value == "12 MB" &&
+              named->kind == RowKind::Toggle && !named->selected,
+          "each title is a checkbox with its ID and size");
+    check(find_row(model, "leftover-toggle-FAKE78002")->title == "FAKE78002", "an unnamed title uses its ID");
+    check(!find_row(model, "leftover-selection-delete")->enabled, "nothing to delete before choosing");
+    activate(model, "leftover-toggle-FAKE78001");
+    check(find_row(model, "leftover-selection-delete")->value == "1 title · 12 MB", "Delete selected counts the choice");
+    activate(model, "leftover-selection-delete");
+    check(model.TakeLeftoverDeleteRequests().empty(), "opening the confirmation deletes nothing");
+    check(model.state().navigation.focus_key == "cancel" &&
+              model.state().navigation.modals.back().body.find("Lost game (Steam) (FAKE78001)") != std::string::npos &&
+              model.state().navigation.modals.back().body.find("move to Kept game data") != std::string::npos,
+          "confirmation starts on Cancel and describes the deletion scope");
+    activate(model, "cancel");
+    check(model.TakeLeftoverDeleteRequests().empty() && model.state().navigation.modals.back().id == "leftover-titles",
+          "Cancel deletes nothing and returns to the manager");
+    activate(model, "leftover-select-all");
+    activate(model, "leftover-selection-delete");
+    check(model.state().navigation.modals.back().body.find("2 leftover PS5 titles") != std::string::npos,
+          "several titles are named by count");
+    activate(model, "confirm-destructive");
+    check(model.TakeLeftoverDeleteRequests() == std::vector<std::string>{"FAKE78001", "FAKE78002"},
+          "every confirmed title is requested, in list order");
+    check(model.TakeLeftoverDeleteRequests().empty(), "requests are consumed once");
+    check(model.state().navigation.modals.empty() && model.state().navigation.focus_key == "settings-leftovers",
+          "confirming closes the manager and returns to the Storage row");
+    model.UpdateLeftoverDeletions({{"FAKE78001", "Lost game (Steam)", "Removing PS5 title…", ""},
+                                  {"FAKE78002", "", "", ""}});
+    const auto layout = playden::homebrew::BuildQueueLayout(model.state());
+    check(layout.preparation.active && layout.preparation.active->key == "prep-leftover-FAKE78001" &&
+              layout.preparation.active->note == "Removing PS5 title…" && layout.preparation.waiting == 1 &&
+              playden::homebrew::QueuePending(model.state()) == 2,
+          "Queue keeps active and waiting titles distinct with the actual step");
+    activate(model, "settings-leftovers");
+    const auto* queued = find_row(model, "leftover-toggle-FAKE78002");
+    check(queued && !queued->enabled && queued->subtitle == "FAKE78002 · Queued" &&
+              find_row(model, "leftover-toggle-FAKE78001")->subtitle == "FAKE78001 · Removing PS5 title…",
+          "a queued title shows its step and cannot be chosen again");
+    check(!find_row(model, "leftover-select-all")->enabled, "Select all has nothing to choose while both are queued");
+    model.UpdateLeftoverDeletions({{"FAKE78001", "Lost game (Steam)", "", "The PS5 refused removal."}});
+    const auto stopped = playden::homebrew::BuildQueueLayout(model.state());
+    check(stopped.preparation.attention == 1 && stopped.preparation.rows.front().note == "The PS5 refused removal.",
+          "a failed leftover deletion remains visible in Queue");
+    const auto* failed = find_row(model, "leftover-toggle-FAKE78001");
+    check(failed && failed->enabled && failed->subtitle == "FAKE78001 · The PS5 refused removal.",
+          "a failed title shows why and can be chosen again");
+    activate(model, "leftover-toggle-FAKE78002");
+    activate(model, "leftover-selection-delete");
+    model.UpdateLeftoverTitles({{"FAKE78001", "Lost game (Steam)", 12'000'000}});
+    activate(model, "confirm-destructive");
+    check(model.TakeLeftoverDeleteRequests().empty(), "a title that disappeared while confirming is not requested");
+    model.UpdateLeftoverDeletions({});
+    activate(model, "settings-leftovers");
+    activate(model, "leftover-toggle-FAKE78001");
+    activate(model, "leftover-selection-delete");
+    model.UpdateLeftoverTitles({});
+    check(model.state().navigation.modals.empty() && !has_row(model, "settings-leftovers"),
+          "the manager and its confirmation close and the row disappears when no leftovers remain");
+    check(model.TakeLeftoverDeleteRequests().empty(), "closing the confirmation requested nothing");
+}
+
+// An installed game with an update or new DLC: the details offer it after Play, the sheet confirms it, the
+// queue follows the job, and Play waits while the update puts its files in place.
+void live_game_update() {
+    using playden::homebrew::GameUpdate;
+    using playden::homebrew::InstallRequestKind;
+    using playden::homebrew::JobState;
+    using playden::homebrew::LiveInstallJob;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Updated")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 100'000'000'000, 50'000'000'000}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(42), 6'000'000'000, "internal"}});
+    playden::homebrew::LiveRuntimeGame ready{SteamId(42), "Ready", "FAKE78001", false, true};
+    ready.can_play = true;
+    ready.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {ready});
+    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true);
+    check(model.action("details:42"), "details open");
+    check(!has_row(model, "details-update") && !has_row(model, "details-update-note"), "nothing to update, no button");
+
+    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, 0, {}, GameUpdate{true, false, 1'200'000'000});
+    const auto& rows = model.view().rows;
+    const auto play_at = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-play"; });
+    const auto update_at = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-update"; });
+    check(play_at != rows.end() && update_at == play_at + 1 && update_at->title == "Update" && update_at->enabled,
+          "Update follows Play");
+    const auto* note = find_row(model, "details-update-note");
+    check(note && note->title == "Update available" && note->value == "Up to 1.2 GB", "the note says the update's size");
+    activate(model, "details-update");
+    check(model.view().surface == "update" && model.view().title == "Update game", "Update opens its sheet");
+    const auto* confirm = find_row(model, "update-confirm");
+    check(confirm && confirm->title == "Download and install" && confirm->value == "Up to 1.2 GB" && confirm->enabled &&
+              confirm->subtitle == "Starts the download",
+          "the sheet's confirm row has the size, as the install sheet");
+    check(model.view().subtitle.find("On Console storage. ") != std::string::npos &&
+              model.view().subtitle.find("Downloads up to 1.2 GB") != std::string::npos,
+          "the sheet says where and how much");
+    activate(model, "update-confirm");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Update && requests[0].game_id == SteamId(42),
+          "confirming sends one update request");
+    check(model.view().surface != "update", "the sheet closes");
+
+    // DLC bought since wins the label, even when an update downloads with it.
+    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, 0, {}, GameUpdate{true, true, 300'000'000});
+    check(find_row(model, "details-update")->title == "DLC available" &&
+              find_row(model, "details-update-note")->title == "DLC available" &&
+              find_row(model, "details-update-note")->value == "Up to 300 MB",
+          "new DLC says DLC available");
+
+    // Less room than Steam's whole-depot estimate: only the download knows what the changed files need, so the
+    // sheet shows the estimate and lets it start.
+    model.UpdateVolumes({{"internal", "Console storage", true, 100'000'000'000, 200'000'000}}, "internal");
+    activate(model, "details-update");
+    confirm = find_row(model, "update-confirm");
+    check(confirm && confirm->enabled && confirm->subtitle == "Starts the download", "the estimate doesn't block the update");
+    check(model.view().subtitle.find("Downloads up to 300 MB") != std::string::npos, "it is shown as an estimate");
+    activate(model, "update-confirm");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Update, "the update is sent");
+    model.UpdateVolumes({{"internal", "Console storage", true, 100'000'000'000, 50'000'000'000}}, "internal");
+    // A disconnected drive still blocks it.
+    model.UpdateVolumes({{"internal", "Console storage", false, 100'000'000'000, 50'000'000'000}}, "internal");
+    check(model.action("details:42"), "details reopen");
+    activate(model, "details-update");
+    confirm = find_row(model, "update-confirm");
+    check(confirm && !confirm->enabled && confirm->subtitle == "Drive disconnected", "a missing drive blocks the update");
+    activate(model, "cancel");
+    model.UpdateVolumes({{"internal", "Console storage", true, 100'000'000'000, 50'000'000'000}}, "internal");
+
+    // The update downloads: the button goes, the note follows the job, Play stays.
+    LiveInstallJob job;
+    job.game_id = SteamId(42);
+    job.state = JobState::Downloading;
+    job.done_bytes = 150'000'000;
+    job.total_bytes = 300'000'000;
+    job.volume_id = "internal";
+    job.update = true;
+    model.UpdateInstalls({job}, {{SteamId(42), 6'000'000'000, "internal"}});
+    check(model.action("details:42"), "details reopen");
+    check(!has_row(model, "details-update"), "no Update button while the update runs");
+    const auto* updating = find_row(model, "details-updating");
+    check(updating && updating->title == "Updating" && updating->value == "50%", "the note follows the update");
+    check(find_row(model, "details-play")->enabled, "the game plays while its update downloads");
+    const auto queued = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
+                                     [](const auto& value) { return value.game_id == SteamId(42); });
+    check(queued != model.state().jobs.end() && queued->stage_text == "Updating" && queued->state_text.empty(),
+          "the queue says Updating with the job's own state");
+
+    // Putting the files in place: Play waits and says why; Pause and Cancel are not offered.
+    job.applying = true;
+    job.locked = true;
+    model.UpdateInstalls({job}, {{SteamId(42), 6'000'000'000, "internal"}});
+    check(model.action("details:42"), "details reopen");
+    const auto* play = find_row(model, "details-play");
+    check(play && !play->enabled && play->action.empty() && play->value == "Finishing the update…",
+          "Play is disabled while the update puts its files in place");
+    model.action("focus:details-play");
+    model.action("cross");
+    check(model.TakeRuntimePlayRequests().empty(), "a locked game is not started");
+    check(find_row(model, "details-updating")->value == "Applying", "the note names the step");
+    const auto locked = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
+                                     [](const auto& value) { return value.game_id == SteamId(42); });
+    check(locked->state_text == "Applying" && locked->locked, "the queue names the step");
+
+    // Finished: "Update complete", and what Steam said is asked again before the button comes back.
+    model.UpdateInstalls({}, {{SteamId(42), 6'100'000'000, "internal"}});
+    const auto* done = find_notice(model, "install-42");
+    check(done && done->message == "Update complete", "a finished update says so");
+    check(model.action("details:42") && !has_row(model, "details-update") && find_row(model, "details-play")->enabled,
+          "after the update, no button and Play again");
+}
+
 int main() {
+    live_game_update();
+    live_install_language_row();
+    live_install_version_row();
+    live_install_language_size();
+    live_install_exact_size();
+    live_install_version_title();
+    live_install_dlc_row();
+    leftover_titles_require_confirmation_and_follow_the_queue();
+    live_download_server_picker();
     live_import_sheet_sends_requests();
     live_import_choice_and_details();
     store_art_follows_the_store();
@@ -3127,6 +3880,7 @@ int main() {
     live_install_confirmation_checks_space_and_unknowns();
     live_install_notifications();
     live_completed_downloads_follow_the_queue();
+    live_queue_game_page_returns_to_its_row();
     live_download_card_keeps_queue_order();
     game_collections_sheet_adds_and_removes_the_game();
     live_log_viewer();
@@ -3136,6 +3890,8 @@ int main() {
     live_store_without_cloud_never_asks_the_cloud();
     live_filters_only_use_available_facts();
     live_demos_filter_defaults_on();
+    live_family_shared_projected();
+    live_family_filter_defaults_on();
     live_sort_sheet_refreshes_the_library();
     continue_playing_more_keeps_the_chosen_sort();
     live_empty_filter_keeps_the_signed_in_account();

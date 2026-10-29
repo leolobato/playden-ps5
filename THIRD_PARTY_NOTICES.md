@@ -30,7 +30,8 @@ These are compiled into Playden's PS5 package (`FAKE77031`) or copied into it.
 | Barlow, Barlow Condensed | — | SIL Open Font License 1.1 | [jpt/barlow](https://github.com/jpt/barlow) |
 | Noto Sans, Noto Sans CJK SC, Noto Sans Arabic | — | SIL Open Font License 1.1 | [notofonts](https://github.com/notofonts) |
 
-The font licenses are shipped next to the fonts, in `assets/fonts/` of the package.
+The font licenses are shipped next to the fonts, in `assets/fonts/` of the package. The web access page serves two
+Barlow faces from inside the app, with the license at `/assets/barlow-OFL.txt`.
 
 ## Shipped with Playden for games
 

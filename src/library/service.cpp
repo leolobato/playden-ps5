@@ -294,9 +294,13 @@ void LibraryService::ExecuteRefresh(const Job& job) {
     if (previous != previous_added_at.end()) game.added_at_unix_seconds = previous->second;
   }
   snapshot.metadata_partial = result.metadata_partial;
-  // Only a library with demos needs schema 6; one without stays readable by older versions.
+  // Only a library with demos needs schema 6, and one with family-shared games schema 7; one without stays
+  // readable by older versions.
   if (std::any_of(snapshot.games.begin(), snapshot.games.end(), [](const GameSummary& game) { return game.demo; }))
     snapshot.schema_version = 6;
+  if (std::any_of(snapshot.games.begin(), snapshot.games.end(),
+                  [](const GameSummary& game) { return game.family_shared; }))
+    snapshot.schema_version = 7;
   if (cache_) {
     const auto saved = cache_->Save(job.account, snapshot);
     if (!Current(job)) return;

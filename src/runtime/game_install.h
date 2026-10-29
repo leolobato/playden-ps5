@@ -91,6 +91,9 @@ struct RuntimeInstall {
   std::string moved_from;
 };
 
+// The title range reserved for Playden games; excludes the launcher itself.
+bool IsManagedTitle(const std::string& title);
+
 // Shared OWNER record validation; this grants no filesystem ownership or readiness.
 bool ValidateRuntimeInstallRecord(const RuntimeInstall& record);
 // Same install: install, title, runtime number and game, data root and game folder. Runtime

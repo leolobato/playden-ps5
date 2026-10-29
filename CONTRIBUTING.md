@@ -67,7 +67,8 @@ guide explains why.
 runtime kit, the title shell contract or the install pipeline. Describe the problem and the approach. This keeps you
 from spending a weekend on something that conflicts with work in progress or with where the project is going.
 
-Pull requests target `main`. Rebase on `main` rather than merging it in: the history is linear.
+Pull requests target `develop`, which holds the next release. Rebase on `develop` rather than merging it in: the history
+is linear. `main` is the release line; the maintainer brings fixes there.
 
 ## Files that stay out of pull requests
 

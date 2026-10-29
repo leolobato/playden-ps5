@@ -333,6 +333,64 @@ int main() {
     CHECK(recipe.launch_entries[0].working_directory == "Game/Binaries/Win64");
     CHECK(recipe.launch_entries[0].arguments == "-nosplash" && recipe.arguments == "-dx11" && recipe.graphics == "dxvk");
     CHECK(recipe.detected == "unreal,anticheat graphics=dxvk");
+    // Unreal 4 stays on Direct3D 11 with vkd3d-proton in the kit.
+    RuntimeAbilities vkd3d;
+    vkd3d.vkd3d_proton = true;
+    CHECK(!probe.unreal5 && DefaultsFor(probe, vkd3d).d3d12.empty());
+  }
+  {  // Unreal 5 (Nanite's settings in the Shipping program, behind the root launcher) gets vkd3d-proton.
+    const auto root = fresh();
+    WritePe(root / "Hellraiser.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(root / "Engine/Binaries/Win64");
+    PeSpec shipping{true, {"d3d11.dll", "d3d12.dll"}};
+    shipping.text = std::string("r\0.\0N\0a\0n\0i\0t\0e\0.\0", 18);
+    WritePe(root / "Hellraiser/Binaries/Win64/Hellraiser-Win64-Shipping.exe", shipping);
+    const auto probe = ProbeGame(root.string(), "Hellraiser.exe");
+    CHECK(probe.engine == "unreal" && probe.unreal5);
+    RuntimeAbilities vkd3d;
+    vkd3d.vkd3d_proton = true;
+    const auto defaults = DefaultsFor(probe, vkd3d);
+    CHECK(defaults.d3d12 == "vkd3d-proton" && defaults.arguments == "-dx11" && defaults.graphics == "dxvk");
+    CHECK(defaults.summary == "unreal5,dx12 graphics=dxvk");
+    CHECK(DetectedLabel(defaults.summary) == "Unreal Engine 5 \xC2\xB7 Direct3D 12");
+    // Without vkd3d-proton it starts on Direct3D 11, as before.
+    const auto older = DefaultsFor(probe);
+    CHECK(older.d3d12.empty() && older.arguments == "-dx11");
+    CHECK(DetectedLabel(older.summary) == "Unreal Engine 5 \xC2\xB7 Direct3D 11");
+    // Started as the Shipping program itself (which imports d3d12), the same, label included.
+    // A redistributable installer beside the Engine folder is not the game (the Program picker labelled it Unreal 5).
+    WritePe(root / "VC_redist.x64.exe", {false, {"KERNEL32.dll"}});
+    const auto redist = ProbeGame(root.string(), "VC_redist.x64.exe");
+    CHECK(redist.engine.empty() && !redist.unreal5 && redist.unreal_program.empty());
+    const auto direct = ProbeGame(root.string(), "Hellraiser/Binaries/Win64/Hellraiser-Win64-Shipping.exe");
+    CHECK(direct.unreal5 && DefaultsFor(direct, vkd3d).d3d12 == "vkd3d-proton");
+    CHECK(DetectedLabel(DefaultsFor(direct).summary) == "Unreal Engine 5 \xC2\xB7 Direct3D 11");
+    CHECK(DetectedLabel(DefaultsFor(direct, vkd3d).summary) == "Unreal Engine 5 \xC2\xB7 Direct3D 12");
+    // The generated recipe starts it with -dx12 on a kit with vkd3d-proton.
+    KitCapabilities vkd3d_kit;
+    vkd3d_kit.vkd3d_proton = true;
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(5184670, "Hellraiser", {{"", "", "Hellraiser.exe", "", ""}}, root.string(), &recipe,
+                             &reason, vkd3d_kit));
+    CHECK(recipe.defaults.at("d3d12") == "vkd3d-proton" && recipe.arguments == "-dx11");
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(recipe, nullptr, {}, vkd3d_kit, &settings, &error));
+    CHECK(settings.vkd3d_proton && settings.values.at("arguments").value == "-dx12");
+  }
+  {  // Nanite's name in a game that isn't Unreal, or no Shipping program behind the launcher: no Unreal 5.
+    const auto root = fresh();
+    PeSpec named{true, {"d3d11.dll"}};
+    named.text = std::string("r\0.\0N\0a\0n\0i\0t\0e\0", 16);
+    WritePe(root / "Other.exe", named);
+    const auto other = ProbeGame(root.string(), "Other.exe");
+    CHECK(other.engine.empty() && !other.unreal5 && DefaultsFor(other).summary == "d3d11 graphics=dxvk");
+    const auto bare = fresh();
+    WritePe(bare / "Game.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(bare / "Engine/Binaries/Win64");
+    const auto launcher = ProbeGame(bare.string(), "Game.exe");
+    CHECK(launcher.engine == "unreal" && launcher.unreal_program.empty() && !launcher.unreal5);
   }
   {  // Generated recipes: DXVK through overrides that follow the graphics value; graphics is open.
     const auto root = fresh();

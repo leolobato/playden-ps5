@@ -7,6 +7,8 @@ preparation requests. DNS/TCP/TLS/TTFB cover all CDN requests in the run. TTFB i
 cumulative curl start-transfer time, so it overlaps TCP/TLS and is not a separate
 write-loop stage. File creation floor is the requested comparison (22.5 ms/file),
 not a measured duration. Interrupted runs use their last progress snapshot.
+Per-server MB/s uses the logged whole MB divided by summed fetch time, so parallel
+requests do not make it a wall-clock download rate.
 
 Example: download_speed_report.py --host 192.168.1.50 --app 439490 \
     --since 2026-10-12T10:00:00Z --csv results/baseline.csv
@@ -25,8 +27,12 @@ LOGS = "/data/playden/logs"
 OLD_LOGS = "/data/homebrew/FAKE77031/logs"  # before 0.6.0
 LINE = re.compile(r"^(\S+) app=(\d+) step=(\S+) result=(\S+) detail=(.*)$")
 METRIC = re.compile(r"\b([a-z_]+)=(\d+)\b")
+SERVER_LABEL = r"(?:akamai|fastly|google|alibaba|edgenext|valve|cache|other)"
+FIRST_SERVER = re.compile(r"\bfirst=(" + SERVER_LABEL + r"@[0-8])(?: |$)")
+SERVER_METRIC = re.compile(r"(" + SERVER_LABEL + r"@[0-8]):req=\d+,fail=\d+,mb=(\d+),ms=(\d+)(?: |$)")
 STAGES = ("fetch", "proc", "create", "write", "jrnl", "back")
 COLUMNS = ("app", "start", "outcome", "sample", "files_total", "compressed_bytes", "download_ms", "mb_s",
+           "first_server", "server_mb_s",
            *(stage + "_pct" for stage in STAGES), "req", "conn", "retry", "bad", "slots", "reuse",
            "creation_floor_ms", "res", "tcp", "tls", "ttfb", "http_ms", "http_b", "fail",
            "access", "servers", "manifest", "prep", "ch", "sk", "fc", "dc", "original_bytes",
@@ -46,7 +52,8 @@ def parse_runs(text):
     active, runs = {}, []
 
     def begin(app, start):
-        run = {"app": app, "start": start, "outcome": "interrupted", "sample": "missing", "metrics": {}}
+        run = {"app": app, "start": start, "outcome": "interrupted", "sample": "missing", "metrics": {},
+               "first_server": None, "server_rates": {}}
         active[app] = run
         runs.append(run)
         return run
@@ -64,6 +71,14 @@ def parse_runs(text):
             run["metrics"].update({key: int(value) for key, value in METRIC.findall(detail)})
             if result != "shape":
                 run["sample"] = result
+        elif step == "servers" and result == "listed":
+            run = active.get(app) or begin(app, start)
+            first = FIRST_SERVER.search(detail)
+            run["first_server"] = first.group(1) if first else None
+        elif step == "stats" and result == "servers":
+            run = active.get(app) or begin(app, start)
+            for server, mb, milliseconds in SERVER_METRIC.findall(detail):
+                run["server_rates"][server] = int(mb) * 1000 / int(milliseconds) if int(milliseconds) else None
         elif step == "install":
             run = active.pop(app, None) or begin(app, start)
             run["outcome"] = result
@@ -78,6 +93,9 @@ def parse_runs(text):
     rows = []
     for run in runs:
         metrics = run.pop("metrics")
+        rates = run.pop("server_rates")
+        run["server_mb_s"] = " ".join(server + ":" + (f"{rate:.2f}" if rate is not None else "-")
+                                      for server, rate in rates.items()) or None
         row = {column: None for column in COLUMNS}
         row.update(run)
         row.update({key: value for key, value in metrics.items() if key in COLUMNS})
@@ -162,7 +180,7 @@ def main(argv=None):
                 with Path(args.csv).open("w", newline="") as output:
                     write_csv(rows, output)
         else:
-            columns = COLUMNS[:21]
+            columns = COLUMNS[:23]
             print("\t".join(columns))
             for row in rows:
                 print("\t".join("-" if row[column] is None else

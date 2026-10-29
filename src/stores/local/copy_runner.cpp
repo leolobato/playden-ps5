@@ -392,7 +392,7 @@ installs::InstallRunner::Result LocalCopyRunner::Abandon(const ImportEntry& entr
 }
 
 installs::InstallRunner::Result LocalCopyRunner::Install(
-    const GameId& id, const std::string& root, const std::atomic<bool>& cancel,
+    const GameId& id, const std::string& root, const installs::InstallOptions&, const std::atomic<bool>& cancel,
     const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
     const std::function<void(installs::InstallStep)>& step) {
   Result result;

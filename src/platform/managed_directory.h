@@ -52,7 +52,8 @@ class ManagedDirectory {
 
   // A folder it creates gets created_mode exactly (umask ignored); an existing
   // folder is never chmodded. kPrivate children are always created 0700,
-  // kPrivateTraversable ones 0700 or 0711.
+  // kPrivateTraversable ones 0700 or 0711. (Startup's self-heal, runtime/self_heal.h,
+  // tightens the app's own private state before anything opens it.)
   std::optional<ManagedDirectory> OpenChild(const std::string& name,
                                            DirectoryPolicy policy,
                                            bool create = false,

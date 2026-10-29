@@ -7,6 +7,7 @@
 #include "library/organization.h"
 #include "library/model.h"
 #include "runtime/game_settings.h"
+#include "steam/backend/content_language.h"
 
 #include <array>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <string>
 #include <vector>
 
@@ -35,25 +37,67 @@ struct ServiceRequest {
 inline bool operator==(const ServiceRequest& request, ServiceAction action) { return request.action == action; }
 inline bool operator!=(const ServiceRequest& request, ServiceAction action) { return request.action != action; }
 enum class AuthState { SignedOut, Restoring, Waiting, Expired, Failed, Cancelled, Syncing, SigningOut, SignedIn, Offline };
+enum class DownloadServerRequest { List, Test, CancelTest };
+// The controller projects the download-server service here; no credentials or Steam backend types enter the UI.
+struct DownloadServerOption {
+    std::string id;
+    std::string name;
+    bool plain_http = false;
+};
+struct DownloadServerResult {
+    std::string id;
+    double mb_per_s = 0;
+    bool failed = false;
+};
+struct LiveDownloadServers {
+    std::string phase = "idle";  // idle, listing, listed, list-failed, testing, tested, test-failed
+    std::vector<DownloadServerOption> servers;
+    std::vector<DownloadServerResult> rates;
+    std::size_t testing_index = 0;
+    bool needs_sign_in = false;
+    bool needs_installed_game = false;
+    std::string preferred_name;  // the stored choice's display name, even when absent from this list
+    std::string message;  // user-facing explanation, supplied by the controller
+};
+// Web access as the controller reports it (web::Service): the page's address for the QR, or why it isn't open.
+struct LiveWebAccess {
+    std::string state = "off";  // off, starting, on, failed
+    std::string url;            // on: http://<address>:<port>/, empty when the address is unknown
+    std::uint16_t port = 0;
+    std::string error;          // failed: why
+    bool operator==(const LiveWebAccess&) const = default;
+};
 enum class JobState { Queued, Downloading, Pausing, Paused, Verifying, Downloaded, Failed, Cancelled, Interrupted };
 enum class JobStage { Download, Verify, Install, Uninstall };
 enum class SessionState { Idle, Preparing, Launching, Running, Stopping, Failed, Crashed };
 enum class RuntimeState { Unavailable, Checking, Ready, Failed };
 enum class LogState { Loading, Ready, Failed };
+// Update: an installed game's update (or DLC bought since), from its details page.
 enum class InstallRequestKind { Install, Pause, Resume, DownloadNow, MoveUp, MoveDown, Cancel, Uninstall, SetDefaultVolume,
-                                DismissCompleted, ClearCompleted };
+                                DismissCompleted, ClearCompleted, Update };
 struct InstallRequest {
     InstallRequestKind kind = InstallRequestKind::Install;
     GameId game_id;
     std::string volume_id;  // SetDefaultVolume; Install: this install's drive (empty: the default)
     bool delete_saves = false;  // Uninstall only: also delete the game's kept saves and settings
+    // Install: the content language chosen in the install sheet for this install (empty: the Settings
+    // download language), and the branch (empty: public).
+    std::string language;
+    std::string branch;
+    // Install: the install-size estimate of the chosen version (the game's when Steam gives none for it),
+    // which the install service reserves on the drive; empty: unknown.
+    std::optional<std::uint64_t> install_bytes;
 };
 // Game maintenance the details page offers (simulated in fixture mode).
 enum class MaintenanceKind { ApplySettings, ClearShaderCache, Repair, BackupSaves, RecreateBottle, UpdateRuntime };
 // Whether a game's PS5 title runs now, as the console last answered.
 enum class TitleActivity { Unknown, Stopped, Running };
 // Live install state projected from the real install service.
-std::string FormatDownloadRate(std::optional<std::uint64_t> bytes_per_second, std::optional<int> eta_seconds);
+// The stored download server choice that races the servers when a download starts.
+inline constexpr const char* kFastestDownloadServer = "fastest";
+// "Fastly · 18.2 MB/s · ~3 min left": the server's name comes first when there is a rate.
+std::string FormatDownloadRate(std::optional<std::uint64_t> bytes_per_second, std::optional<int> eta_seconds,
+                               const std::string& server_name = {});
 struct LiveInstallJob {
     GameId game_id;
     JobState state = JobState::Queued;
@@ -65,6 +109,11 @@ struct LiveInstallJob {
     std::optional<int> eta_seconds;
     std::uint64_t held_bytes = 0;  // installed bytes already on the drive
     bool checking_licenses = false;  // a slow Steam license check before the download starts
+    std::string server_name;  // while downloading: the download server's display name
+    bool update = false;          // an installed game's update, not an install
+    bool locked = false;          // the update is putting its files in place: the game can't be played
+    bool checking_files = false;  // while running: the update hashes the installed files
+    bool applying = false;        // while running: the update puts its files in place
 };
 struct LiveInstalledGame {
     GameId game_id;
@@ -78,6 +127,7 @@ struct LiveCompletedDownload {
     std::uint64_t install_bytes = 0;
     std::string volume_id;
     std::int64_t finished_at = 0;  // Unix seconds
+    std::uint64_t update_bytes = 0;  // an update: what it downloaded; 0 for an install
 };
 // A drive the real install service can use. Space is absent when the platform cannot report it.
 struct LiveVolume {
@@ -96,11 +146,13 @@ struct LiveKitInfo {
     std::string prospero_win_revision;     // what the kit's PS5 titles were built from
     bool source_dirty = false;             // built from uncommitted changes
     std::string unavailable_reason;        // why no kit is in use
+    std::string version;                   // "0.13", from its runtime's artifact name; empty for older kits
 };
 // Live: Playden's own update (update/update_service.h), projected for Settings, Downloads and prompts.
 struct LiveSelfUpdate {
     std::string phase = "idle";  // idle, checking, up-to-date, available, downloading, unpacking, staged, failed
     std::string current;         // "0.2.0"
+    std::string commit;          // the commit this build was made from, when known
     std::string available;       // the newer version, when known
     std::string notes;
     std::string part;            // "kit" or "app" while downloading or unpacking
@@ -110,7 +162,6 @@ struct LiveSelfUpdate {
     std::optional<int> eta_seconds;
     std::uint64_t download_bytes = 0;
     bool kit_needed = false;
-    bool moves = false;          // the update installs Playden as a new app (its new title)
     bool user_check = false;     // the last check was asked for in Settings
     std::string error;
     std::string previous;        // the version "go back" restores; empty when none is kept
@@ -119,7 +170,6 @@ struct LiveSelfUpdate {
     std::string current_notes_url;
     bool whats_new = false;      // the previous run updated Playden: show its release notes once
     bool quiet = false;          // the available version is one the player went back from: no dialog
-    std::string moved_to;        // Playden moved to its new title, which hasn't started yet: its version
     std::string finished_message;  // the previous run's update result, shown once
     bool finished_failed = false;
     // The kit-only install (first run, or a kit that isn't this version's): idle, checking, not-needed,
@@ -235,6 +285,20 @@ struct LiveKeptBottle {
     std::int64_t kept_at = 0;
     std::uint64_t bytes = 0;
     bool operator==(const LiveKeptBottle&) const = default;
+};
+// A PS5 title folder no install record owns; only its title is removed.
+struct LiveLeftoverTitle {
+    std::string title_id;
+    std::string name;
+    std::uint64_t bytes = 0;
+    bool operator==(const LiveLeftoverTitle&) const = default;
+};
+struct LiveLeftoverDelete {
+    std::string title_id;
+    std::string name;
+    std::string step;  // empty while queued
+    std::string failure;
+    bool operator==(const LiveLeftoverDelete&) const = default;
 };
 // A game that plays in place from a folder Playden doesn't manage (an imported game on a drive):
 // never in Installed games, its files never deleted.
@@ -396,6 +460,48 @@ inline bool operator==(PersistenceLoadToken left, PersistenceLoadToken right) {
     return left.id == right.id && left.baseline_revision == right.baseline_revision;
 }
 
+// A version of a game (a Steam branch) an install can choose, from Steam app info.
+struct GameVersion {
+    std::string name;  // as Steam names the branch; "public" is the default
+    std::string description;
+    std::int64_t time_updated = 0;  // unix seconds; 0 = unknown
+    std::uint64_t build_id = 0;
+    std::optional<std::uint64_t> download_bytes;
+    std::optional<std::uint64_t> install_bytes;
+    // The same per content language ("german"), for an install in another language than Settings'.
+    struct LanguageSize {
+        std::string language;
+        std::uint64_t download_bytes = 0;
+        std::uint64_t install_bytes = 0;
+    };
+    std::vector<LanguageSize> languages;
+};
+
+struct InstallAssessment;  // storage_sim.hpp
+
+// One install choice's size measured from its manifests: Steam's figures add up each depot, so depots holding the
+// same files count them twice.
+struct MeasuredInstallSize {
+    std::uint64_t install_bytes = 0;
+    std::uint64_t download_bytes = 0;
+};
+
+// A size check the install sheet asks for: a version (Steam branch) and a content language.
+struct SizeCheckRequest {
+    GameId id;
+    std::string branch;
+    std::string language;
+};
+
+// An installed game's update, from Steam app info compared with its install record.
+struct GameUpdate {
+    bool newer = false;    // a newer version of the game's content
+    bool new_dlc = false;  // DLC the account owns that the install doesn't hold
+    std::uint64_t download_bytes = 0;  // Steam's estimate for the changed content; 0 unknown
+    [[nodiscard]] bool available() const noexcept { return newer || new_dlc; }
+    bool operator==(const GameUpdate&) const = default;
+};
+
 struct Game {
     GameId id;
     std::string title;
@@ -414,7 +520,12 @@ struct Game {
     std::optional<std::int64_t> last_played;
     std::optional<std::uint64_t> playtime_minutes;
     std::optional<bool> windows_installable;  // from Steam app info; absent until fetched
+    std::vector<std::string> content_languages;  // from Steam app info: the languages an install can choose
+    std::uint32_t dlc_count = 0;  // from Steam app info: owned DLC an install includes
+    std::vector<GameVersion> versions;  // from Steam app info: public first; two or more offer a choice
+    GameUpdate update;  // from Steam app info, for an installed game
     bool demo = false;  // a Steam demo; Sort and filters › Demos hides it
+    bool family_shared = false;  // shared by a Steam family member; the tile says "Family"
     bool art_pending = false;
     bool art_failed = false;
 };
@@ -471,6 +582,9 @@ struct Job {
     std::uint64_t held_bytes = 0;  // live: installed bytes already on the drive
     std::int64_t finished_at = 0;  // live: when a Downloaded job finished (Unix seconds), 0 unknown
     bool checking_licenses = false;  // live: a slow Steam license check before the download starts
+    std::string server_name;  // live, while downloading: the download server's display name
+    bool update = false;  // an installed game's update (kind stays "install": a game's download)
+    bool locked = false;  // the update is putting its files in place: Play waits for it
     // A job that is not a game's (the Playden update): its title and the words for its stage and state.
     std::string title;
     std::string stage_text;
@@ -597,6 +711,8 @@ struct State {
     std::size_t runtime_leftover_requests = 0;          // live: unused settings requests to clean up
     LiveKitInfo kit;                                    // live: the runtime kit in use
     LiveSelfUpdate self_update;                         // live: Playden's own update
+    std::vector<LiveLeftoverTitle> leftover_titles;
+    std::vector<LiveLeftoverDelete> leftover_deletions;
     std::vector<LiveKeptBottle> kept_bottles;           // live: saves kept from uninstalled games
     std::vector<LiveExternalGame> external_games;       // live: games playing in place (imported)
     std::vector<LiveImportCandidate> import_candidates; // live: folders on the drives that could be imported
@@ -630,7 +746,13 @@ struct State {
     bool cloud_saves_auto = false;    // Cloud saves move before Play, after sessions and at startup (opt-in)
     bool beta_updates = false;
     std::string language = "en";  // UI language: a catalog code in assets/translations
+    // The language games are downloaded in, as Steam names its depot languages ("german").
+    std::string content_language{playden::steam::kDefaultContentLanguage};
     bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Storage)
+    // Empty: Steam default (Steam's order); kFastestDownloadServer: Fastest (raced at each download); otherwise
+    // the chosen provider's stable identifier.
+    std::string download_server;
+    bool web_access = true;  // Settings › Web access: the logs page on the local network (on by default)
     bool controller_connected = true;
     ControllerState controller;
     bool persistence_available = true;
@@ -663,6 +785,7 @@ struct ViewRow {
     std::string tone;     // Saves: the status colour (good, busy, attention, problem, quiet)
     std::string aside;    // Saves: the right-hand note (size, last sync)
     bool rail_only = false;  // Settings: the section's rail entry is the action (Quit Playden), no card
+    std::string qr;          // Settings: a link drawn as a QR code beside the row's text (Web access)
 };
 
 struct ViewData {
@@ -737,6 +860,13 @@ public:
     bool UpdateLibrary(LibraryUpdate update);
     // Live mode: requests for the real install service, and its state for display.
     [[nodiscard]] std::vector<InstallRequest> TakeInstallRequests();
+    // Live mode: the exact sizes the install sheet asks for, and the answers. `measured` false: Steam's figures
+    // stand (nothing to check, or the check failed; `failed` lets the sheet ask again when it opens next).
+    [[nodiscard]] std::vector<SizeCheckRequest> TakeSizeChecks();
+    void UpdateMeasuredSize(const SizeCheckRequest& request, bool measured, bool failed, MeasuredInstallSize size);
+    // The details service dropped what it was asked (another account, or the language changed): checks
+    // still waiting for an answer are asked again.
+    void ResetSizeChecks();
     void UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const std::vector<LiveInstalledGame>& installed,
                         const std::vector<LiveCompletedDownload>& completed = {});
     // Live mode: Steam Cloud save requests for the cloud service, and its state for display.
@@ -757,6 +887,9 @@ public:
     [[nodiscard]] bool TakeRuntimeCleanupRequest();
     // Live mode: kept game data, deletions the player confirmed, and why an uninstall stopped.
     void UpdateKeptBottles(std::vector<LiveKeptBottle> kept);
+    void UpdateLeftoverTitles(std::vector<LiveLeftoverTitle> titles);
+    void UpdateLeftoverDeletions(std::vector<LiveLeftoverDelete> deletions);
+    [[nodiscard]] std::vector<std::string> TakeLeftoverDeleteRequests();
     // Live mode: games playing in place, and what the drives offer to import.
     void UpdateExternalGames(std::vector<LiveExternalGame> games);
     void UpdateImportCandidates(std::vector<LiveImportCandidate> candidates, bool scanning);
@@ -806,6 +939,12 @@ public:
     // version back at quit; quit follows) and "acknowledge" (a finished update's message was shown).
     void UpdateSelfUpdate(const LiveSelfUpdate& update);
     [[nodiscard]] std::vector<std::string> TakeSelfUpdateRequests();
+    void ApplyLiveDownloadServers(const LiveDownloadServers& snapshot);
+    void ApplyLiveWebAccess(const LiveWebAccess& snapshot);
+    // Quit Playden from outside the UI (web access). A game being prepared or queued is waited for, with the
+    // dialog the TV shows then, since nobody may be in front of the TV to see a half-made title.
+    void RequestQuit();
+    [[nodiscard]] std::vector<DownloadServerRequest> TakeDownloadServerRequests();
     // Live mode: the folder holding install.log, auth.log and launch.log for the log viewer.
     void SetLogDirectory(std::filesystem::path directory);
     // Live mode: the drives installs can use and the one new installs go to.
@@ -815,8 +954,13 @@ public:
     // False on a console that cannot read free space at all: installs are then allowed without it.
     void SetFreeSpaceSupported(bool supported) noexcept { free_space_supported_ = supported; }
     // Live mode: Steam app-info estimates for one game (download/install size, installability).
+    // `languages`: the content languages the game carries, as Steam names them. `dlc_count`: owned
+    // DLC with content an install includes, shown on the install sheet. `versions`: the versions an
+    // install can choose, public first. `update`: an installed game's update or new DLC.
     bool UpdateAppDetails(GameId id, std::optional<std::uint64_t> download_bytes,
-                          std::optional<std::uint64_t> install_bytes, std::optional<bool> windows_installable);
+                          std::optional<std::uint64_t> install_bytes, std::optional<bool> windows_installable,
+                          std::vector<std::string> languages = {}, std::uint32_t dlc_count = 0,
+                          std::vector<GameVersion> versions = {}, GameUpdate update = {});
     // Live mode: the Steam store's description, genres and controller support for one game;
     // kept across library refreshes.
     void UpdateStoreDetails(GameId id, std::string description, std::vector<std::string> genres,
@@ -837,6 +981,8 @@ public:
     [[nodiscard]] std::uint64_t PreferencesRevision() const noexcept { return preferences_revision_; }
     [[nodiscard]] bool OrganizationDirty() const noexcept;
     [[nodiscard]] bool PreferencesDirty() const noexcept;
+    // The saved preferences have been read (or found missing), so a setting such as web access is the player's.
+    [[nodiscard]] bool PreferencesLoaded() const noexcept { return preferences_loaded_; }
     [[nodiscard]] bool OrganizationReadyForSave() const noexcept;
     void OrganizationSaveResult(std::uint64_t account, std::uint64_t revision,
                                 playden::StorageError error);
@@ -893,6 +1039,16 @@ private:
     std::string last_error_;
     std::string pending_destructive_action_;
     std::vector<std::string> self_update_requests_;
+    LiveDownloadServers download_servers_;
+    std::vector<DownloadServerRequest> download_server_requests_;
+    bool download_server_focus_choice_ = false;
+    bool download_server_cancel_pending_ = false;
+    bool download_server_test_requested_ = false;
+    bool download_server_fixture_ = false;
+    void refresh_download_servers(const std::string& focus = {});
+    [[nodiscard]] std::string best_tested_download_server() const;
+    [[nodiscard]] std::string download_server_choice_key() const;
+    [[nodiscard]] bool download_server_test_allowed() const;
     std::string self_update_prompted_;   // "available 0.3.0" or "staged 0.3.0": each prompt shows once
     std::string pending_update_prompt_;  // a prompt waiting for the open dialog to close
     bool kit_prompted_ = false;          // the kit was offered since its last check (a cancel doesn't offer it again)
@@ -907,6 +1063,11 @@ private:
     // and whether the open storage picker chooses it rather than the default.
     std::string install_volume_id_;
     bool picking_install_volume_ = false;
+    // Live: the content language chosen in the install sheet for this one install (empty: the one the
+    // Settings download language resolves to for the game).
+    std::string install_language_;
+    // Live: the version (branch) chosen in the install sheet for this one install (empty: public).
+    std::string install_version_;
     bool free_space_supported_ = true;
     std::vector<playden::runtime::SettingsPreset> settings_presets_;
     // Shipped and generated recipes by game (runtime::RecipeGame).
@@ -957,13 +1118,18 @@ private:
     // Live install events become notifications; the first snapshot is restored history, not an event.
     bool live_installs_seen_ = false;
     std::map<GameId, JobState> live_job_states_;
+    std::set<GameId> live_update_jobs_;  // the live jobs that are updates, as last projected
+    std::set<GameId> canceled_updates_;  // updates the player canceled, until their job ends
     std::set<GameId> live_installed_ids_;
     std::set<GameId> pending_uninstalls_;
     std::vector<GameId> pending_kept_delete_requests_;
+    std::vector<std::string> pending_leftover_delete_requests_;
+    int leftover_delete_ticks_ = 0;
     std::vector<std::pair<GameId, MaintenanceKind>> pending_maintenance_requests_;
     std::vector<GameId> pending_activity_requests_;
     bool uninstall_delete_saves_ = false;  // the uninstall dialog's choice
     std::set<GameId> kept_selected_;  // the kept game data manager's checked games
+    std::set<std::string> leftover_selected_;  // the leftover titles manager's checked title IDs
     // Installed games (Settings > Storage): the checked games and the list's order.
     std::set<GameId> installed_selected_;
     bool installed_by_played_ = false;  // false: largest first; true: never played, then the oldest
@@ -1006,6 +1172,13 @@ private:
     int settings_focus_index_ = 0;
     int queue_focus_index_ = 0;  // Queue: the focused row's place, for when that row goes away
     bool queue_shown_ = false;   // Queue was on screen at the last rebuild
+    std::string queue_return_focus_;  // Queue: the row a game page was opened from, focused again on Back
+    // Install sheet size checks by (game, branch, language): asked and not answered, and the answers.
+    std::vector<SizeCheckRequest> size_checks_;
+    std::set<std::tuple<GameId, std::string, std::string>> size_checks_running_;
+    std::set<std::tuple<GameId, std::string, std::string>> size_checks_answered_;
+    std::set<std::tuple<GameId, std::string, std::string>> size_checks_failed_;  // not asked again until the sheet reopens
+    std::map<std::tuple<GameId, std::string, std::string>, MeasuredInstallSize> measured_sizes_;
     std::string settings_focus_section_;
 
     struct OrganizationJournalEntry {
@@ -1029,6 +1202,8 @@ private:
     bool organization_journal_full_ = false;
     bool organization_save_suppressed_ = false;
     bool preferences_load_pending_ = false;
+    bool preferences_loaded_ = false;
+    LiveWebAccess web_access_;
     bool preferences_load_may_apply_ = false;
     bool preferences_load_failed_ = false;
     bool preferences_save_failed_ = false;
@@ -1068,6 +1243,7 @@ private:
     void open_modal(ModalEntry modal);
     void prepare_next(GameId id);
     void close_modal();
+    void open_details_from_queue(GameId id);
     void start_editor(std::string purpose, std::string value, bool secret = false);
     // Sign-in screen: opened in the remembered method, its actions, and the form's secrets wiped.
     void open_sign_in(bool reauthenticate = false);
@@ -1081,6 +1257,8 @@ private:
     void advance_jobs();
     [[nodiscard]] std::vector<std::string> game_settings_actions() const;
     [[nodiscard]] std::vector<std::string> kept_manager_actions() const;
+    [[nodiscard]] std::vector<std::string> leftover_manager_actions() const;
+    [[nodiscard]] bool leftover_queued(const std::string& title_id) const;
     // The Import sheet: Look for games, then the candidates grouped by drive (headings never take
     // the focus), then Close. Opened from Startup, Home's empty state and Settings › Library.
     [[nodiscard]] std::vector<std::string> import_sheet_actions() const;
@@ -1202,6 +1380,29 @@ private:
         return install_volume_id_.empty() ? selected_volume_id_ : install_volume_id_;
     }
     [[nodiscard]] std::string next_job_id();
+    // The language the install sheet would install `id` in, and the sheet's rows for it.
+    [[nodiscard]] std::string install_language(GameId id) const;
+    // The version chosen in the install sheet for `id`, when it is not the public one.
+    [[nodiscard]] const GameVersion* install_version(GameId id) const;
+    [[nodiscard]] const GameVersion* install_sized_version(GameId id) const;
+    // The install sheet's choice for `id` as a size check names it, and its measured size once known.
+    [[nodiscard]] SizeCheckRequest install_size_check(GameId id) const;
+    [[nodiscard]] const MeasuredInstallSize* measured_install_size(GameId id) const;
+    [[nodiscard]] bool install_size_checking(GameId id) const;
+    // The live install sheet's fit check: the chosen version, language and drive, with the measured size.
+    [[nodiscard]] InstallAssessment install_assessment(GameId id) const;
+    [[nodiscard]] std::vector<std::string> live_install_sheet_actions(GameId id) const;
+    // An installed game's update on its own drive: whether it can start, and the words the sheet shows.
+    struct UpdateCheck {
+        bool allowed = false;
+        std::string volume_label;
+        std::optional<std::uint64_t> free_bytes;
+        std::uint64_t download_bytes = 0;  // 0 unknown
+        std::string reason;  // short, for the confirm row: why not, or what pressing does
+    };
+    [[nodiscard]] UpdateCheck update_check(GameId id) const;
+    // The game's update is putting its files in place: Play waits.
+    [[nodiscard]] bool update_locked(GameId id) const;
 };
 
 } // namespace playden::homebrew

@@ -146,7 +146,7 @@ add_library(playden_runtime_steamworks STATIC "${CMAKE_SOURCE_DIR}/src/runtime/s
     "${CMAKE_SOURCE_DIR}/src/runtime/dotnet_heap.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/steam_stub.cpp")
 target_compile_features(playden_runtime_steamworks PUBLIC cxx_std_17)
 target_include_directories(playden_runtime_steamworks PUBLIC "${CMAKE_SOURCE_DIR}/src")
-target_link_libraries(playden_runtime_steamworks PUBLIC playden_runtime_artifact_hash)
+target_link_libraries(playden_runtime_steamworks PUBLIC playden_runtime_artifact_hash playden_steam_content_language)
 target_link_libraries(playden_runtime_steamworks PRIVATE playden_curl_8_22)
 add_library(playden_runtime_kit_admission STATIC
     "${CMAKE_SOURCE_DIR}/src/runtime/kit_admission.cpp")

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <charconv>
+#include <iterator>
 
+#include "steam/backend/content_language.h"
 #include "steam/backend/vdf.h"
 
 namespace playden::steam {
@@ -95,7 +97,7 @@ int NaturalCompare(std::string_view a, std::string_view b) {
   return 0;
 }
 
-bool Fail(std::string* reason, const char* text) {
+bool Fail(std::string* reason, std::string_view text) {
   if (reason != nullptr) *reason = text;
   return false;
 }
@@ -129,16 +131,47 @@ DepotInfo ParseDepot(std::uint32_t id, const VdfNode& value) {
   depot.depot_from_app = ChildU32(&value, "depotfromapp");
   depot.dlc_app_id = ChildU32(&value, "dlcappid");
   depot.is_dlc = depot.dlc_app_id.has_value();
-  const VdfNode* manifests = value.Find("manifests");
-  const VdfNode* pub = manifests != nullptr ? manifests->Find("public") : nullptr;
-  if (pub != nullptr) {
-    // Old appinfo format: gid directly as a string; new: dict {gid, size, download}.
-    depot.manifest_gid = pub->Uint64("gid");
-    if (!depot.manifest_gid && !pub->is_dict) depot.manifest_gid = ParseU64(pub->value);
-    depot.size = pub->Uint64("size").value_or(0);
-    depot.download_size = pub->Uint64("download").value_or(0);
+  // Every branch's manifest. Old appinfo format: the gid directly as a string; new: a dict {gid, size, download}.
+  if (const VdfNode* manifests = value.Find("manifests"); manifests != nullptr && manifests->is_dict) {
+    for (const auto& [branch, entry] : manifests->children) {
+      BranchManifest manifest;
+      manifest.gid = entry.is_dict ? entry.Uint64("gid").value_or(0) : ParseU64(entry.value).value_or(0);
+      manifest.size = entry.is_dict ? entry.Uint64("size").value_or(0) : 0;
+      manifest.download = entry.is_dict ? entry.Uint64("download").value_or(0) : 0;
+      if (LowerString(branch) == "public") {
+        if (manifest.gid != 0) depot.manifest_gid = manifest.gid;
+        depot.size = manifest.size;
+        depot.download_size = manifest.download;
+      } else {
+        depot.branches[branch] = manifest;
+      }
+    }
+  }
+  // A password branch's manifest is encrypted with the branch password: listed, but not usable.
+  if (const VdfNode* encrypted = value.Find("encryptedmanifests"); encrypted != nullptr && encrypted->is_dict) {
+    for (const auto& entry : encrypted->children) {
+      if (LowerString(entry.first) == "public") continue;
+      auto& manifest = depot.branches[entry.first];
+      if (manifest.gid == 0) manifest.encrypted = true;
+    }
   }
   return depot;
+}
+
+// The depot's usable manifest on `branch` (matched case-insensitively), if any: the public one from
+// the depot's own fields, another branch's from its branches.
+std::optional<BranchManifest> UsableManifest(const DepotInfo& depot, const std::string& branch) {
+  const auto wanted = LowerString(branch);
+  if (wanted == "public") {
+    if (!depot.manifest_gid || *depot.manifest_gid == 0) return std::nullopt;
+    return BranchManifest{*depot.manifest_gid, depot.size, depot.download_size, false};
+  }
+  auto found = depot.branches.find(branch);
+  if (found == depot.branches.end())
+    found = std::find_if(depot.branches.begin(), depot.branches.end(),
+                         [&](const auto& entry) { return LowerString(entry.first) == wanted; });
+  if (found == depot.branches.end() || found->second.encrypted || found->second.gid == 0) return std::nullopt;
+  return found->second;
 }
 
 std::vector<std::uint32_t> ParseDlcList(std::string_view list) {
@@ -354,21 +387,31 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
     for (const auto& entry : depots->children) {
       if (LowerString(entry.first) == "branches") {
         if (!entry.second.is_dict) continue;
-        for (const auto& branch : entry.second.children) {
-          const std::uint64_t build = branch.second.Uint64("buildid").value_or(0);
+        for (const auto& child : entry.second.children) {
+          const std::string& name = child.first;
+          const VdfNode& value = child.second;
+          AppBranch branch;
+          branch.name = name;
+          branch.build_id = value.Uint64("buildid").value_or(0);
+          branch.description = ChildString(&value, "description");
+          branch.time_updated = static_cast<std::int64_t>(value.Uint64("timeupdated").value_or(0));
+          branch.pwd_required = value.String("pwdrequired") == std::string_view("1");
           auto existing = std::find_if(app.branches.begin(), app.branches.end(),
-                                       [&](const auto& b) { return b.first == branch.first; });
+                                       [&](const AppBranch& b) { return b.name == name; });
           if (existing != app.branches.end()) {
-            existing->second = build;
+            *existing = std::move(branch);
           } else {
-            app.branches.emplace_back(branch.first, build);
+            app.branches.push_back(std::move(branch));
           }
         }
         continue;
       }
       const auto id = ParseU32(entry.first);
       if (!id) continue;  // baselanguages, overridescddb, ...
-      app.depots.push_back(ParseDepot(*id, entry.second));
+      DepotInfo depot = ParseDepot(*id, entry.second);
+      depot.source_app = app.app_id;
+      depot.owner_app = depot.dlc_app_id.value_or(app.app_id);
+      app.depots.push_back(std::move(depot));
     }
   }
   return app;
@@ -385,50 +428,228 @@ bool OsListMatchesWindows(std::string_view os_list) {
   return false;
 }
 
-bool SelectDepots(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
-                  const std::optional<std::set<std::uint32_t>>& owned_depots,
-                  std::vector<DepotInfo>* selected, std::string* reason) {
+namespace {
+
+// The languages `depots` carry, in listing order, lower case. Content with no language is the
+// game's English (Portal ships its English beside a Russian voice depot), so English is carried
+// when any depot has no language.
+std::vector<std::string> CarriedLanguages(const std::vector<const DepotInfo*>& depots) {
+  std::vector<std::string> carried;
+  bool neutral = false;
+  for (const DepotInfo* depot : depots) {
+    if (depot->language.empty()) {
+      neutral = true;
+      continue;
+    }
+    const auto code = LowerString(Trim(depot->language));
+    if (std::find(carried.begin(), carried.end(), code) == carried.end()) carried.push_back(code);
+  }
+  const std::string english(kDefaultContentLanguage);
+  if (neutral && !carried.empty() && std::find(carried.begin(), carried.end(), english) == carried.end())
+    carried.insert(carried.begin(), english);
+  return carried;
+}
+
+bool InLanguage(const DepotInfo& depot, const std::string& language) {
+  return depot.language.empty() || LowerString(Trim(depot.language)) == language;
+}
+
+}  // namespace
+
+bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, const std::set<std::uint32_t>& owned_apps,
+                  const std::optional<std::set<std::uint32_t>>& owned_depots, const DepotSelection& selection,
+                  SelectionResult* result) {
+  SelectionResult local;
+  SelectionResult& out = result != nullptr ? *result : local;
+  out = SelectionResult{};
   if (owned_apps.count(app.app_id) == 0) {
-    return Fail(reason, "This account does not own the selected game.");
+    out.reason = "This account does not own the selected game.";
+    return false;
   }
-  std::set<std::uint32_t> accessible;
-  if (owned_depots) {
-    accessible = *owned_depots;
-  } else {
-    for (const DepotInfo& depot : app.depots) accessible.insert(depot.id);
-  }
-  for (const DepotInfo& depot : app.depots) {
-    if (depot.depot_from_app) accessible.insert(depot.id);
+  // The branch as appinfo names it, matched case-insensitively.
+  std::string branch = selection.branch.empty() ? std::string("public") : std::string(Trim(selection.branch));
+  for (const AppBranch& listed_branch : app.branches)
+    if (LowerString(listed_branch.name) == LowerString(branch)) branch = listed_branch.name;
+  const auto reject = [&out](const DepotInfo& depot, const char* why) {
+    out.rejected.push_back({depot.id, depot.source_app, why});
+  };
+
+  // Every listed depot once: the game's in listing order, then each DLC app's in listofdlc order.
+  std::vector<DepotInfo> listed;
+  const auto add = [&](const DepotInfo& raw, std::uint32_t source, std::uint32_t owner) -> bool {
+    DepotInfo depot = raw;
+    depot.source_app = source;
+    depot.owner_app = owner;
+    // The chosen branch's manifest, and nothing else: no fallback to the public one.
+    const auto manifest = UsableManifest(raw, branch);
+    depot.manifest_gid = manifest ? std::optional<std::uint64_t>(manifest->gid) : std::nullopt;
+    depot.size = manifest ? manifest->size : 0;
+    depot.download_size = manifest ? manifest->download : 0;
+    const auto same = std::find_if(listed.begin(), listed.end(), [&](const DepotInfo& seen) { return seen.id == depot.id; });
+    if (same == listed.end()) {
+      listed.push_back(std::move(depot));
+      return true;
+    }
+    const std::uint64_t a = same->manifest_gid.value_or(0), b = depot.manifest_gid.value_or(0);
+    if (a != 0 && b != 0 && a != b) return false;
+    // The listing with a manifest on the branch is the one installed (a DLC app can list a copy of the
+    // game's depot with the branch's manifest when the game's own listing has none). The first listing
+    // keeps its place, the mounting order, and says whose content it is.
+    if (a == 0 && b != 0) {
+      const auto owner = same->owner_app;
+      std::swap(*same, depot);
+      same->owner_app = owner;
+    }
+    reject(depot, "duplicate");
+    return true;
+  };
+  bool consistent = true;
+  for (const DepotInfo& depot : app.depots) consistent &= add(depot, app.app_id, depot.dlc_app_id.value_or(app.app_id));
+  std::vector<const AppInfo*> dlc_order;
+  for (const auto id : app.dlc_app_ids)
+    for (const AppInfo& dlc : dlc_apps)
+      if (dlc.app_id == id && std::find(dlc_order.begin(), dlc_order.end(), &dlc) == dlc_order.end()) dlc_order.push_back(&dlc);
+  for (const AppInfo& dlc : dlc_apps)
+    if (dlc.app_id != app.app_id && std::find(dlc_order.begin(), dlc_order.end(), &dlc) == dlc_order.end())
+      dlc_order.push_back(&dlc);
+  for (const AppInfo* dlc : dlc_order)
+    for (const DepotInfo& depot : dlc->depots) consistent &= add(depot, dlc->app_id, dlc->app_id);
+  if (!consistent) {
+    out.rejected.clear();
+    out.reason = "This game lists conflicting depots.";
+    return false;
   }
 
-  std::vector<DepotInfo> eligible;
-  for (const DepotInfo& depot : app.depots) {
-    const bool language_ok = depot.language.empty() || LowerString(depot.language) == "english";
-    const bool dlc_ok = (!depot.is_dlc && !depot.dlc_app_id) ||
-                        (depot.dlc_app_id && owned_apps.count(*depot.dlc_app_id) != 0);
-    if (OsListMatchesWindows(depot.os_list) && language_ok && !depot.shared_install &&
-        accessible.count(depot.id) != 0 && dlc_ok) {
-      eligible.push_back(depot);
+  // The per-depot gates, in order.
+  std::set<std::uint32_t> from_app;
+  for (const DepotInfo& depot : listed)
+    if (depot.depot_from_app) from_app.insert(depot.id);
+  std::vector<const DepotInfo*> passed;
+  bool eligible = false;
+  for (const DepotInfo& depot : listed) {
+    if (!OsListMatchesWindows(depot.os_list)) { reject(depot, "os"); continue; }
+    if (depot.shared_install) { reject(depot, "shared"); continue; }
+    if (owned_depots && owned_depots->count(depot.id) == 0 && from_app.count(depot.id) == 0) { reject(depot, "licence"); continue; }
+    if (depot.owner_app != app.app_id && owned_apps.count(depot.owner_app) == 0) { reject(depot, "dlc"); continue; }
+    eligible = true;
+    if (!depot.manifest_gid || *depot.manifest_gid == 0) { reject(depot, "branch"); continue; }
+    passed.push_back(&depot);
+  }
+  if (!eligible) {
+    out.reason = "This game has no downloadable Windows content.";
+    return false;
+  }
+
+  // Per owner: the language, then the architecture. The game's own group comes first.
+  std::vector<std::uint32_t> owners{app.app_id};
+  for (const DepotInfo* depot : passed)
+    if (std::find(owners.begin(), owners.end(), depot->owner_app) == owners.end()) owners.push_back(depot->owner_app);
+  const std::string requested = selection.language.empty() ? std::string(kDefaultContentLanguage)
+                                                           : LowerString(Trim(selection.language));
+  std::set<const DepotInfo*> kept;
+  for (const auto owner : owners) {
+    std::vector<const DepotInfo*> group;
+    for (const DepotInfo* depot : passed)
+      if (depot->owner_app == owner) group.push_back(depot);
+    // The game's language comes from its own installable content: a Mac-only or DLC-only
+    // localisation does not make the game carry that language (issue #45). Each DLC resolves from
+    // the requested language, not the game's.
+    const auto carried = CarriedLanguages(group);
+    const std::string language = ResolveContentLanguage(carried, requested);
+    if (owner == app.app_id) {
+      out.effective_language = language;
+      out.languages = carried;
+    }
+    std::vector<const DepotInfo*> in_language;
+    for (const DepotInfo* depot : group) {
+      if (group.size() == 1 || InLanguage(*depot, language)) in_language.push_back(depot);
+      else reject(*depot, "language");
+    }
+    bool has_win64 = false;
+    for (const DepotInfo* depot : in_language)
+      if (LowerString(Trim(depot->os_arch)) == "64") has_win64 = true;
+    for (const DepotInfo* depot : in_language) {
+      if (has_win64 && LowerString(Trim(depot->os_arch)) == "32") reject(*depot, "arch");
+      else kept.insert(depot);
     }
   }
-  if (eligible.empty()) {
-    return Fail(reason, "This game has no downloadable Windows content for English.");
+  for (const DepotInfo& depot : listed)
+    if (kept.count(&depot)) out.depots.push_back(depot);
+  if (out.depots.empty()) {
+    out.reason = "The game's Windows content is not available on its " + branch + " branch.";
+    return false;
   }
-  std::vector<DepotInfo> result;
-  std::set<std::uint32_t> ids;
-  for (const DepotInfo& depot : eligible) {
-    if (depot.manifest_gid && *depot.manifest_gid != 0) {
-      result.push_back(depot);
-      ids.insert(depot.id);
-    }
+  // DLC alone is no version of the game: an update to it would delete the game. depotfromapp content the
+  // game lists counts as the game's.
+  if (std::none_of(out.depots.begin(), out.depots.end(),
+                   [&app](const DepotInfo& depot) { return depot.owner_app == app.app_id; })) {
+    out.reason = "This version has no content of the game itself.";
+    return false;
   }
-  if (result.empty() || ids.size() != result.size()) {
-    return Fail(reason, "The game's Windows content is not available on its public branch.");
-  }
-  std::sort(result.begin(), result.end(),
-            [](const DepotInfo& a, const DepotInfo& b) { return a.id < b.id; });
-  if (selected != nullptr) *selected = std::move(result);
   return true;
+}
+
+void DepotBytes(const std::vector<DepotInfo>& depots, std::uint64_t* install, std::uint64_t* download) {
+  std::uint64_t total = 0;
+  std::uint64_t compressed = 0;
+  for (const auto& depot : depots) {
+    total += depot.size;
+    compressed += depot.size && depot.download_size > depot.size ? depot.size : depot.download_size;
+  }
+  if (install != nullptr) *install = total;
+  if (download != nullptr) *download = compressed;
+}
+
+std::vector<BranchOffer> OfferedBranches(const AppInfo& app, const std::vector<AppInfo>& dlc_apps,
+                                         const std::set<std::uint32_t>& owned_apps,
+                                         const std::optional<std::set<std::uint32_t>>& owned_depots,
+                                         const std::string& language) {
+  const auto offer = [&](const std::string& name, const AppBranch* info) -> std::optional<BranchOffer> {
+    BranchOffer result;
+    result.name = name;
+    if (info != nullptr) {
+      result.description = info->description;
+      result.time_updated = info->time_updated;
+      result.build_id = info->build_id;
+    }
+    SelectionResult selected;
+    if (!SelectDepots(app, dlc_apps, owned_apps, owned_depots, DepotSelection{language, name}, &selected)) return std::nullopt;
+    // A branch that only carries DLC or another platform's content is no version of the game.
+    if (std::none_of(selected.depots.begin(), selected.depots.end(),
+                     [&](const DepotInfo& depot) { return depot.owner_app == app.app_id; }))
+      return std::nullopt;
+    DepotBytes(selected.depots, &result.install_bytes, &result.download_bytes);
+    // A language swaps depots in and out, so an install sheet that changes it needs that selection's size.
+    for (const auto& carried : selected.languages) {
+      LanguageBytes bytes{carried, result.install_bytes, result.download_bytes};
+      SelectionResult other;
+      if (carried != selected.effective_language) {
+        if (!SelectDepots(app, dlc_apps, owned_apps, owned_depots, DepotSelection{carried, name}, &other)) continue;
+        DepotBytes(other.depots, &bytes.install_bytes, &bytes.download_bytes);
+      }
+      result.languages.push_back(std::move(bytes));
+    }
+    return result;
+  };
+  const auto is_public = [](const AppBranch& branch) { return LowerString(branch.name) == "public"; };
+  const auto listed_public = std::find_if(app.branches.begin(), app.branches.end(), is_public);
+  const AppBranch* public_info = listed_public != app.branches.end() ? &*listed_public : nullptr;
+  // The public branch is what an install without a choice gets: always offered, first.
+  std::vector<BranchOffer> offers;
+  if (auto pub = offer("public", public_info)) offers.push_back(std::move(*pub));
+  else offers.push_back(BranchOffer{"public", public_info ? public_info->description : std::string(),
+                                    public_info ? public_info->time_updated : 0, public_info ? public_info->build_id : 0, 0, 0});
+  std::vector<BranchOffer> others;
+  for (const AppBranch& branch : app.branches) {
+    if (is_public(branch) || branch.pwd_required) continue;
+    if (auto found = offer(branch.name, &branch)) others.push_back(std::move(*found));
+  }
+  std::stable_sort(others.begin(), others.end(), [](const BranchOffer& a, const BranchOffer& b) {
+    if (a.time_updated != b.time_updated) return a.time_updated > b.time_updated;
+    return NaturalCompare(a.name, b.name) < 0;
+  });
+  offers.insert(offers.end(), std::make_move_iterator(others.begin()), std::make_move_iterator(others.end()));
+  return offers;
 }
 
 std::vector<std::uint32_t> MissingBaseDepots(const AppInfo& app,
@@ -439,45 +660,56 @@ std::vector<std::uint32_t> MissingBaseDepots(const AppInfo& app,
     return !depot.depot_from_app && !depot.shared_install && !depot.is_dlc && depot.os_list.empty() &&
            depot.language.empty() && depot.manifest_gid && *depot.manifest_gid != 0;
   };
-  // A license that grants base content of its own holds the game: the base depots it leaves out
-  // are alternates for other licenses (Marvel Rivals lists a second copy of its content), and
-  // Steam installs only what the license grants.
-  for (const DepotInfo& depot : selected)
-    if (base_content(depot) && depot.size) return {};
-  std::uint64_t selected_size = 0;
-  for (const DepotInfo& depot : selected) selected_size += depot.size;
   std::vector<std::uint32_t> missing;
-  std::uint64_t missing_size = 0;
+  std::uint64_t missing_size = 0, largest_missing = 0;
   for (const DepotInfo& depot : app.depots) {
     if (owned_depots->count(depot.id) != 0 || !base_content(depot)) continue;
     missing.push_back(depot.id);
     missing_size += depot.size;
+    largest_missing = std::max(largest_missing, depot.size);
   }
+  // A license that grants base content of its own holds the game: the base depots it leaves out
+  // are alternates for other licenses (Marvel Rivals lists a second copy of its content), and
+  // Steam installs only what the license grants. Only content of a size near the largest one left
+  // out counts: Counter-Strike: Source's 51 KB depot 209 is not its 4.5 GB content depot 241.
+  // Only the game's own content: DLC in the selection, also a DLC app's own depot, does not stand in for it.
+  const auto own = [&app](const DepotInfo& depot) {
+    return !depot.dlc_app_id && (depot.owner_app == 0 || depot.owner_app == app.app_id);
+  };
+  for (const DepotInfo& depot : selected)
+    if (own(depot) && base_content(depot) && depot.size && depot.size >= largest_missing / 2) return {};
+  std::uint64_t selected_size = 0;
+  for (const DepotInfo& depot : selected)
+    if (own(depot)) selected_size += depot.size;
   // An unowned extra (a bonus or edition depot) is smaller than the game; old appinfo has no sizes.
   if (missing_size == 0 || missing_size <= selected_size) return {};
   return missing;
 }
 
-bool BetaKeyMatchesPublic(std::string_view beta_key) {
+bool BetaKeyMatchesBranch(std::string_view beta_key, std::string_view branch) {
   if (Trim(beta_key).empty()) return true;
+  const auto wanted = LowerString(Trim(branch));
+  const bool is_public = wanted.empty() || wanted == "public";
   // A comma list of branches (Minecraft Dungeons II lists "public, build_debug, ..."). "default"
   // tags the public branch's option when other branches have their own (Half-Life 2, issue #10).
   while (!beta_key.empty()) {
     const std::size_t comma = beta_key.find(',');
-    const auto branch = LowerString(Trim(beta_key.substr(0, comma)));
-    if (branch == "public" || branch == "default") return true;
+    const auto listed = LowerString(Trim(beta_key.substr(0, comma)));
+    if (is_public ? (listed == "public" || listed == "default") : listed == wanted) return true;
     if (comma == std::string_view::npos) break;
     beta_key.remove_prefix(comma + 1);
   }
   return false;
 }
 
-bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_apps,
+bool BetaKeyMatchesPublic(std::string_view beta_key) { return BetaKeyMatchesBranch(beta_key, "public"); }
+
+bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_apps, std::string_view branch,
                       std::vector<AppLaunch>* launches, std::string* reason, bool* any_branch) {
   const auto eligible_for = [&](bool ignore_branch) {
     std::vector<AppLaunch> eligible;
     for (const AppLaunch& launch : app.launches) {
-      const bool beta_ok = ignore_branch || !launch.beta_key || BetaKeyMatchesPublic(*launch.beta_key);
+      const bool beta_ok = ignore_branch || !launch.beta_key || BetaKeyMatchesBranch(*launch.beta_key, branch);
       const bool dlc_ok = !launch.required_dlc || *launch.required_dlc == 0 ||
                           owned_apps.count(*launch.required_dlc) != 0;
       // A level editor or a dedicated server is not the game (Selaco lists its .NET editor).

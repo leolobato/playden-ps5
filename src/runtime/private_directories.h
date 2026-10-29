@@ -18,7 +18,8 @@ struct PrivateTraversal {
 // boundary is an existing trusted directory; private_root and descendants must
 // belong to that user and have mode 0700 (or 0711 for traversal folders).
 // Existing foreign/public directories in the private tree are rejected, never
-// chmodded or taken over. Missing folders between boundary and private_root are
+// chmodded or taken over (startup's self-heal, runtime/self_heal.h, only takes extra
+// bits away from the app's own). Missing folders between boundary and private_root are
 // created 01777.
 bool EnsurePrivateDirectories(const std::filesystem::path& boundary,
                               const std::filesystem::path& private_root,

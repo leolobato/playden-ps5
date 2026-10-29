@@ -201,7 +201,14 @@ void AddImports(const PeFacts& facts, std::set<std::string>* apis) {
 constexpr std::pair<const char*, const char*> kEngineMarks[] = {{"sil_windows_use_", "sil"},
                                                                 {"microsoft.xna.framework", "xna"}};
 
-void ScanNames(const std::string& path, std::set<std::string>* apis, std::string* engine = nullptr) {
+// An installer the game ships beside Unreal's Engine folder (VC_redist.x64.exe) is not the game.
+constexpr const char* kInstallerWords[] = {"redist", "dxsetup", "uninst", "prereq"};
+
+// Unreal Engine 5 names Nanite's console variables (as UTF-16, scanned in lower case); Unreal 4 has no Nanite.
+constexpr char kUnreal5Mark[] = "r\0.\0n\0a\0n\0i\0t\0e\0";
+
+void ScanNames(const std::string& path, std::set<std::string>* apis, std::string* engine = nullptr,
+               bool* unreal5 = nullptr) {
   Program program(path);
   std::vector<std::string> needles;
   std::vector<const char*> found_as;
@@ -213,6 +220,7 @@ void ScanNames(const std::string& path, std::set<std::string>* apis, std::string
     needles.push_back(wide);
     found_as.push_back(api);
   }
+  const std::string_view unreal5_mark(kUnreal5Mark, sizeof(kUnreal5Mark) - 1);
   constexpr std::size_t kChunk = 1 << 20;
   constexpr std::size_t kOverlap = 32;
   std::vector<unsigned char> buffer(kChunk + kOverlap);  // heap: console worker stacks are small
@@ -229,6 +237,7 @@ void ScanNames(const std::string& path, std::set<std::string>* apis, std::string
     if (engine && engine->empty())
       for (const auto& [mark, name] : kEngineMarks)
         if (text.find(mark) != std::string_view::npos) *engine = name;
+    if (unreal5 && !*unreal5 && text.find(unreal5_mark) != std::string_view::npos) *unreal5 = true;
     offset += count;
     kept = std::min(kOverlap, size);
     std::memmove(buffer.data(), buffer.data() + size - kept, kept);
@@ -347,16 +356,26 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   for (const auto& [name, directory] : here)
     if (!directory && EndsWith(Lower(name), ".dll")) AddImports(ReadPe((root / folder / name).string()), &probe.apis);
   std::string marked_engine;
-  ScanNames((root / executable).string(), &probe.apis, &marked_engine);
+  ScanNames((root / executable).string(), &probe.apis, &marked_engine, &probe.unreal5);
 
   if (const auto unity = Find(here, "unityplayer.dll", false); unity || Find(here, Lower(stem) + "_data", true)) {
     probe.engine = "unity";
     probe.il2cpp = Find(here, "gameassembly.dll", false).has_value();
     probe.legacy_unity = !unity;
     if (unity) ScanNames((root / folder / *unity).string(), &probe.apis);
-  } else if (EndsWith(lower_file, "-shipping.exe") || Find(here, "engine", true)) {
+  } else if (EndsWith(lower_file, "-shipping.exe") ||
+             (Find(here, "engine", true) && std::none_of(std::begin(kInstallerWords), std::end(kInstallerWords),
+                                                         [&](const char* word) {
+                                                           return lower_file.find(word) != std::string::npos;
+                                                         }))) {
     probe.engine = "unreal";
-    if (!EndsWith(lower_file, "-shipping.exe")) probe.unreal_program = FindShipping(root, folder, 0);
+    if (!EndsWith(lower_file, "-shipping.exe")) {
+      probe.unreal_program = FindShipping(root, folder, 0);
+      // The root program is only a launcher: the engine version is in the Shipping program.
+      std::set<std::string> shipping_apis;
+      if (!probe.unreal_program.empty())
+        ScanNames((root / probe.unreal_program).string(), &shipping_apis, nullptr, &probe.unreal5);
+    }
   } else if (const auto bin = Find(here, "bin", true); bin && Find(Entries(root / folder / *bin), "engine.dll", false)) {
     probe.engine = "source";
   } else if (Find(here, "data.win", false)) {
@@ -389,6 +408,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   } else {
     probe.engine = marked_engine;
   }
+  if (probe.engine != "unreal") probe.unreal5 = false;  // the mark only means Unreal 5 in an Unreal game
   for (const auto* entries : {&here, &top})
     if (Find(*entries, "easyanticheat", true) || Find(*entries, "battleye", true)) probe.anticheat = true;
   return probe;
@@ -420,8 +440,11 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     out.arguments = probe.legacy_unity ? "-force-d3d9 {resolution}" : "-force-d3d11 {resolution}";
     out.resolution_arguments = "-screen-width {w} -screen-height {h}";
   } else if (probe.engine == "unreal") {
+    // Unreal 4 draws on DXVK. Unreal 5 projects are often Direct3D 12 only ("Unable to launch with RHI 'DirectX
+    // 11'"), so they get vkd3d-proton, which turns -dx11 into -dx12 (game_settings.cpp).
     out.graphics = "dxvk";
     out.arguments = "-dx11";
+    if (probe.unreal5 && runtime.vkd3d_proton) out.d3d12 = "vkd3d-proton";
   } else if (probe.engine == "source") {
     out.graphics = "dxvk";
     out.arguments = "{resolution}";
@@ -462,9 +485,12 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     out.refusal_soft = true;
   }
   std::string facts = probe.engine;
+  if (probe.unreal5) facts += "5";
   if (probe.il2cpp) facts += facts.empty() ? "il2cpp" : "-il2cpp";
   if (probe.legacy_unity) facts += "-legacy";
   for (const auto& api : probe.apis) facts += (facts.empty() ? "" : ",") + api;
+  // An Unreal 5 game names both renderers; this says which one it starts on.
+  if (probe.unreal5) facts += out.d3d12.empty() ? ",dx11" : ",dx12";
   if (probe.anticheat) facts += (facts.empty() ? "" : ",") + std::string("anticheat");
   if (probe.shared_section) facts += (facts.empty() ? "" : ",") + std::string("shared-section");
   out.summary = (facts.empty() ? "unknown" : facts) + " graphics=" + out.graphics;
@@ -483,12 +509,14 @@ std::string DetectedLabel(const std::string& summary) {
   }
   std::string engine;
   for (const auto& [id, name] : std::initializer_list<std::pair<const char*, const char*>>{
-           {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unreal", "Unreal Engine"}, {"source", "Source"},
+           {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
            {"gamemaker", "GameMaker"}, {"godot", "Godot"}, {"love", "L\xC3\x96VE"}, {"nwjs", "NW.js"}, {"sil", "SIL"},
            {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}})
     if (facts.count(id)) engine = name;
   std::string api;
   if (graphics == "opengl") api = "OpenGL";
+  else if (graphics == "dxvk" && engine == "Unreal Engine 5")
+    api = facts.count("dx12") ? "Direct3D 12" : "Direct3D 11";
   else if (graphics == "dxvk" && facts.count("d3d12") && engine != "Unity" && engine != "Unreal Engine")
     // Direct3D 12 also loads dxgi; a game that names both 11 and 12 can draw with either.
     api = facts.count("d3d11") ? "Direct3D 11 and 12" : "Direct3D 12";

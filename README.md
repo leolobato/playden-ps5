@@ -116,7 +116,8 @@ Other versions can work, but these are the ones we know.
 ## Install
 
 Download `playden-ps5-<version>.zip` from the latest [release](../../releases): the Playden app (`FAKE77031`) and
-the console tools used below. Unzip it. Installing takes one copy over the network, the app folder. Playden
+the console tools used below. Unzip it into a folder of its own, `playden-ps5-<version>` (most unzip tools make it;
+with `unzip` on the command line, use `unzip playden-ps5-<version>.zip -d playden-ps5-<version>`). Installing takes one copy over the network, the app folder. Playden
 downloads its runtime kit on its first start, and after that it updates itself (see [Update Playden](#update-playden)).
 
 Like other PS5 homebrew, Playden is a folder in `/data/homebrew/`, and
@@ -334,6 +335,10 @@ Playden's interface is written in English and translated when it is drawn. A lan
 
 ## Known issues
 
+- Uninstall games from Playden. Title folders belong to Playden; FTP and file managers can't delete them.
+  Leftover titles appear in Settings › Storage. Deleting a leftover removes its title folder and Home tile;
+  its saves and settings move to Kept game data, where you can delete them or get them back by installing the game
+  again.
 - New games can stay at *Waiting for the PS5* after you quit Playden when ShadowMountPlus stops registering titles.
   Reload ShadowMountPlus.
   Until the game is registered, its Cloud saves are not synced before its first launch.
@@ -362,9 +367,14 @@ Playden's interface is written in English and translated when it is drawn. A lan
 - The 120 Hz choice of the "Refresh rate" game setting needs a newer runtime kit; it is not available with this kit.
 - When you close a game from the PS5 menu, it can stay suspended. Pressing Play again resumes it instead of starting
   it again.
-- Downloads can be slow (about 1 MB/s) on some networks, far from a fast Steam server. Turn on Settings › Storage ›
+- Downloads can be slow (about 1 MB/s) on some networks, far from a fast Steam server. Turn on Settings › Downloads ›
   **Downloads for slow networks**: Playden then downloads 8 pieces at the same time instead of 4. On a fast connection
-  it can be slower, so turn it off again if downloads get slower.
+  it can be slower, so turn it off again if downloads get slower. If downloads stay slow, open Settings › Downloads ›
+  **Download server**, use **Test servers** and choose the fastest server. The test downloads up to 160 MB.
+  Or choose **Fastest**: each download of 200 MB or more then starts with a short test on its own files, uses the
+  fastest server and tests again if that server slows down. **Steam default** is still the default: it uses the
+  server Steam lists first. Each provider chooses its nearby server through DNS or anycast, so your DNS resolver
+  can affect the result.
 
 See the [compatibility list](COMPATIBILITY.md) for what we know about each game.
 

@@ -1,0 +1,76 @@
+"appinfo"
+{
+	"appid"		"5002"
+	"common"
+	{
+		"name"		"DLC Test - Voices"
+		"type"		"DLC"
+		"parent"		"5000"
+	}
+	"depots"
+	{
+		"5001"
+		{
+			"depotfromapp"		"5000"
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"51"
+					"size"		"1000"
+					"download"		"500"
+				}
+			}
+		}
+		"5021"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"521"
+					"size"		"40"
+					"download"		"20"
+				}
+			}
+		}
+		"5022"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"language"		"english"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"522"
+					"size"		"40"
+					"download"		"20"
+				}
+			}
+		}
+		"5023"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"523"
+					"size"		"10"
+					"download"		"5"
+				}
+			}
+		}
+	}
+}

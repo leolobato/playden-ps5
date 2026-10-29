@@ -224,6 +224,7 @@ bool DecodeLicenseList(const std::vector<std::uint8_t>& body, LicenseList* list)
         case 4: if (!IsVarint(entry)) return false; license.minute_limit = AsInt32(entry.value); break;
         case 5: if (!IsVarint(entry)) return false; license.minutes_used = AsInt32(entry.value); break;
         case 7: if (!IsVarint(entry)) return false; license.flags = static_cast<std::uint32_t>(entry.value); break;
+        case 9: if (!IsVarint(entry)) return false; license.license_type = static_cast<std::uint32_t>(entry.value); break;
         case 12: if (!IsVarint(entry)) return false; license.owner_id = static_cast<std::uint32_t>(entry.value); break;
         case 17: if (!IsVarint(entry)) return false; license.access_token = entry.value; break;
         default: break;
@@ -380,12 +381,12 @@ bool DecodeDepotKeyResponse(const std::vector<std::uint8_t>& body, DepotKeyRespo
 }
 
 std::vector<std::uint8_t> EncodeManifestRequestCodeRequest(std::uint32_t app_id, std::uint32_t depot_id,
-                                                           std::uint64_t manifest_id) {
+                                                           std::uint64_t manifest_id, std::string_view branch) {
   proto::Writer body;
   body.AddVarint(1, app_id);
   body.AddVarint(2, depot_id);
   body.AddVarint(3, manifest_id);
-  body.AddString(4, "public");
+  body.AddString(4, branch.empty() ? std::string("public") : std::string(branch));
   return body.bytes();
 }
 
@@ -400,6 +401,60 @@ bool DecodeManifestRequestCodeResponse(const std::vector<std::uint8_t>& body, st
   }
   if (!reader.ok()) return false;
   *code = value;
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeFreeLicenseRequest(const std::vector<std::uint32_t>& app_ids) {
+  proto::Writer body;
+  for (const auto id : app_ids) body.AddVarint(2, id);
+  return body.bytes();
+}
+
+namespace {
+
+// One repeated uint32 field entry: a varint, or a packed run of them.
+bool AppendUint32s(const proto::Field& field, std::vector<std::uint32_t>* out) {
+  if (IsVarint(field)) {
+    if (out->size() >= kMaxRepeatedEntries) return false;
+    out->push_back(static_cast<std::uint32_t>(field.value));
+    return true;
+  }
+  if (!IsBytes(field)) return false;
+  std::size_t offset = 0;
+  while (offset < field.size) {
+    std::uint64_t value = 0;
+    int shift = 0;
+    for (;;) {
+      if (offset >= field.size || shift > 63) return false;
+      const std::uint8_t byte = field.data[offset++];
+      value |= static_cast<std::uint64_t>(byte & 0x7f) << shift;
+      if ((byte & 0x80) == 0) break;
+      shift += 7;
+    }
+    if (out->size() >= kMaxRepeatedEntries) return false;
+    out->push_back(static_cast<std::uint32_t>(value));
+  }
+  return true;
+}
+
+}  // namespace
+
+bool DecodeFreeLicenseResponse(const std::vector<std::uint8_t>& body, FreeLicenseResponse* response) {
+  proto::Reader reader(body, kLimits);
+  proto::Field field;
+  FreeLicenseResponse decoded;
+  while (reader.Next(&field)) {
+    if (field.number == 1) {
+      if (!IsVarint(field)) return false;
+      decoded.eresult = AsInt32(field.value);
+    } else if (field.number == 2) {
+      if (!AppendUint32s(field, &decoded.granted_packages)) return false;
+    } else if (field.number == 3) {
+      if (!AppendUint32s(field, &decoded.granted_apps)) return false;
+    }
+  }
+  if (!reader.ok()) return false;
+  *response = std::move(decoded);
   return true;
 }
 

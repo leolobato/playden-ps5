@@ -116,15 +116,6 @@ bool IsHexDigest(const std::string& value) {
          });
 }
 
-bool IsManagedTitle(const std::string& value) {
-  if (value.size() != 9 || value.compare(0, 4, "FAKE") != 0) return false;
-  if (!std::all_of(value.begin() + 4, value.end(), [](unsigned char byte) {
-        return byte >= '0' && byte <= '9';
-      }))
-    return false;
-  return value.compare("FAKE78000") >= 0 && value.compare("FAKE78999") <= 0;
-}
-
 bool IsSafeRelative(const std::string& value) {
   if (value.empty() || value.find('\\') != std::string::npos) return false;
   const fs::path path(value);

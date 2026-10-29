@@ -1,0 +1,47 @@
+"appinfo"
+{
+	"appid"		"5000"
+	"common"
+	{
+		"name"		"DLC Test"
+		"type"		"Game"
+	}
+	"extended"
+	{
+		"listofdlc"		"5002,5001"
+	}
+	"depots"
+	{
+		"5001"
+		{
+			"name"		"Content"
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"51"
+					"size"		"1000"
+					"download"		"500"
+				}
+			}
+		}
+		"5003"
+		{
+			"name"		"Soundtrack (listed by the game)"
+			"dlcappid"		"5001"
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"53"
+					"size"		"30"
+					"download"		"20"
+				}
+			}
+		}
+	}
+}

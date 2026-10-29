@@ -1,5 +1,6 @@
 #pragma once
 
+#include "installs/install_record.h"
 #include "library/model.h"
 #include "steam/download_rate.h"
 
@@ -46,9 +47,26 @@ struct InstallRequest {
 // A line that doesn't parse is skipped.
 std::vector<InstallRequest> ParseInstallRequests(const std::string& text);
 
+// How one install selects its content, chosen in the install sheet. Empty fields use the defaults: the
+// Settings download language and Steam's public branch. Only Steam's runner reads them.
+struct InstallOptions {
+  std::string language;  // a Steam content language code ("german")
+  std::string branch;    // a Steam branch name
+  bool operator==(const InstallOptions& other) const { return language == other.language && branch == other.branch; }
+  bool operator!=(const InstallOptions& other) const { return !(*this == other); }
+};
+
 enum class InstallJobState { kQueued, kRunning, kPaused, kFailed };
-// What a running install is doing before its first progress report.
-enum class InstallStep { kStarting, kCheckingLicenses, kDownloading };
+// A job downloads a game (install) or brings an installed one to another version (update).
+enum class InstallJobKind { kInstall, kUpdate };
+// What a running job is doing. An update checks which installed files changed (kCheckingFiles: hashing
+// the files of an install that kept no file tree), downloads the changed ones beside the game, then puts
+// them in place (kApplying), when the game can't be played until the job finishes.
+enum class InstallStep { kStarting, kCheckingLicenses, kDownloading, kCheckingFiles, kApplying };
+
+// What the apply gate says about putting an update's files in place now: go ahead, the game runs (or starts), or
+// the console didn't say.
+enum class ApplyAnswer { kApply, kGameRunning, kUnknown };
 
 // A place games can be installed: a folder on one drive. `available` means the folder exists and
 // Playden can write to it now; installs recorded on a volume that is absent stay listed.
@@ -61,7 +79,11 @@ struct InstallVolume {
 
 struct InstallJobView {
   GameId id;
+  InstallJobKind kind = InstallJobKind::kInstall;
   InstallJobState state = InstallJobState::kQueued;
+  // An update that is putting its files in place (or was, when Playden stopped): the game must not run
+  // until it finishes. Pause and Cancel are refused meanwhile.
+  bool locked = false;
   std::uint64_t done_bytes = 0;
   std::uint64_t total_bytes = 0;
   std::uint64_t held_bytes = 0;  // installed bytes already on disk (see PendingInstallBytes)
@@ -69,6 +91,7 @@ struct InstallJobView {
   std::string volume_id;
   std::optional<std::uint64_t> bytes_per_second;
   std::optional<int> eta_seconds;
+  std::string server_name;  // while running: where the download comes from, a display name (never a host)
   InstallStep step = InstallStep::kStarting;  // while running
   std::chrono::steady_clock::time_point step_since{};
 };
@@ -80,6 +103,11 @@ struct InstalledGame {
   std::string volume_id;
   bool available = true;  // false while the game's volume, or its folder on that volume, is missing
   std::int64_t finished_at = 0;  // Unix seconds the install finished (its record's time); 0 unknown
+  // What its install record says (branch, language, depots); none while its folder is unavailable or
+  // the record can't be read.
+  std::optional<InstalledRecord> record;
+  // An update that finished this session: what it downloaded (0 for an install, or after a restart).
+  std::uint64_t update_bytes = 0;
 };
 
 // A recent finished download that Downloads lists after the queue until the player dismisses it.
@@ -88,6 +116,7 @@ struct CompletedDownload {
   std::uint64_t install_bytes = 0;
   std::string volume_id;
   std::int64_t finished_at = 0;
+  std::uint64_t update_bytes = 0;  // an update: what it downloaded; 0 for an install
 };
 
 // Installs that finished at most `kCompletedDays` before `now` and were not dismissed (a dismissal
@@ -132,10 +161,33 @@ class InstallRunner {
     bool retry_later = false;  // the job waits and tries again
     std::string waiting;       // with retry_later: what Downloads says meanwhile
   };
-  virtual Result Install(const GameId& id, const std::string& root, const std::atomic<bool>& cancel,
+  // An update's `waiting` while the game runs: its files go in place once the game is closed.
+  static constexpr const char* kWaitingForGame = "Waiting for the game to close.";
+  virtual Result Install(const GameId& id, const std::string& root, const InstallOptions& options,
+                         const std::atomic<bool>& cancel,
                          const std::function<void(std::uint64_t done, std::uint64_t total, std::uint64_t held)>& progress,
                          const std::function<void(InstallStep)>& step) = 0;
   virtual std::string Remove(const std::string& root) = 0;
+  // Brings the installed game at `root` to the content `options` select. Downloads go beside the game
+  // and it stays playable until the runner reports InstallStep::kApplying. Called again after any
+  // interruption, it carries on where the update stopped. Right before the game's files start to change
+  // (also before an interrupted apply carries on) it asks `may_apply`; false (the game runs): nothing
+  // changes and it returns retry_later with kWaitingForGame. Default: the store can't update.
+  virtual Result Update(const GameId& id, const std::string& root, const InstallOptions& options,
+                        const std::atomic<bool>& cancel,
+                        const std::function<void(std::uint64_t done, std::uint64_t total, std::uint64_t held)>& progress,
+                        const std::function<void(InstallStep)>& step, const std::function<bool()>& may_apply) {
+    (void)id; (void)root; (void)options; (void)cancel; (void)progress; (void)step; (void)may_apply;
+    Result result;
+    result.failure = "This game can't be updated.";
+    return result;
+  }
+  // Deletes a canceled update's downloads, leaving the installed game as it was; refuses (a short failure
+  // text) once the update is putting its files in place.
+  virtual std::string DiscardUpdate(const std::string& root) { (void)root; return {}; }
+  // While Install runs, called on its thread from `progress`: the display name of the server the
+  // download comes from, or empty.
+  virtual std::string DownloadServerName() const { return {}; }
   // An uninstalled game whose folder is missing: forgotten with nothing to delete (on the worker).
   virtual void Forget(const GameId& id) { (void)id; }
 };
@@ -165,9 +217,21 @@ class InstallService {
 
   // Installs to `volume_id`, or the default drive when empty; the default is not changed. The
   // estimate is reserved (less what the download already holds on disk) until the job ends, and
-  // the runner still checks the selected manifests before writing game data.
+  // the runner still checks the selected manifests before writing game data. `options` go to the
+  // runner and are kept with the job across restarts; values that don't fit the registry are dropped.
   void Install(GameId id, std::optional<std::uint64_t> estimated_bytes = std::nullopt,
-               const std::string& volume_id = {});
+               const std::string& volume_id = {}, const InstallOptions& options = {});
+  // Queues an update of an installed game: `options` select the content; empty fields keep what its
+  // install record says (its branch and language). The game stays installed and playable while the
+  // update downloads; once the update puts its files in place, Locked is true until it finishes. A
+  // game with a job, or that isn't installed and available, is not updated. `estimated_bytes` (the
+  // download) is reserved as for installs.
+  void Update(GameId id, const InstallOptions& options = {}, std::optional<std::uint64_t> estimated_bytes = std::nullopt);
+  // True while the game's update is putting files in place, also when Playden stopped during that:
+  // the game must not run then.
+  bool Locked(GameId id);
+  // Pause and Cancel do nothing to an update that is putting its files in place. Cancel of an update
+  // deletes only its downloads; the game stays as it was.
   void Pause(GameId id);
   void Resume(GameId id);
   // Moves the download to the front of the queue and starts it. A download that was running stops
@@ -193,6 +257,13 @@ class InstallService {
   // Checks the volume's games folder (and may fix it) when a download starts; a non-empty answer
   // fails the download with it as the message. Set before the first Install; empty: no check.
   void SetFolderCheck(std::function<std::string(const std::string& games_root)> check) { folder_check_ = std::move(check); }
+  // Asked on the worker right before an update puts its files in place (also before one that stopped
+  // doing so carries on): false while the game may run (its title runs or starts, or that is unknown).
+  // Locked is already true while it is asked, so a launch that checks Locked after it marked the game
+  // as starting either sees the lock or is seen by the gate. A refused update waits as "Waiting for the
+  // game to close." with the game playable (unless it stopped part way) and asks again later. Set
+  // any time; until then (or empty) always allowed.
+  void SetApplyGate(std::function<ApplyAnswer(GameId)> may_apply);
   // How long a job that asked to retry later waits: `first`, doubling each time up to `most`.
   void SetRetryDelays(std::chrono::milliseconds first, std::chrono::milliseconds most);
   // What the store's jobs waited for may be there now (Steam: a sign-in): the jobs of the store that
@@ -209,18 +280,25 @@ class InstallService {
   struct Job {
     InstallJobView view;
     steam::DownloadRate rate;
-    bool cancel_requested = false;  // delete files when the run stops
+    bool cancel_requested = false;  // delete files when the run stops (an update's downloads only)
+    bool dropped = false;           // uninstalled while it ran: forget it, the uninstall deletes the files
     std::optional<std::uint64_t> estimated_bytes;
+    InstallOptions options;
     // Waiting after a retry_later: not tried again before `not_before`; the next wait is `retry_delay`.
     bool waiting = false;
     std::chrono::steady_clock::time_point not_before{};
     std::chrono::milliseconds retry_delay{0};
+    // An update that waits for its game to close: the gate is asked again before the runner runs. Soon while the game
+    // runs; after the usual doubling wait while the console doesn't say (each question may take the gate's whole wait).
+    bool waiting_for_game = false;
+    bool game_unknown = false;
   };
   struct Removal {
     Store store = Store::kSteam;
     std::string root;
     std::optional<GameId> forget;  // set: InstallRunner::Forget instead of deleting `root`
     std::optional<InstalledGame> game;  // an uninstall's folder; none for a canceled download
+    bool update = false;  // a canceled update: InstallRunner::DiscardUpdate, the game stays
   };
   void Run();
   void Scan();
@@ -237,11 +315,16 @@ class InstallService {
 
   InstallRunner* RunnerFor(Store store) const;
   static void ClearWait(Job& job);
+  bool Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes);
 
   Runners runners_;
   std::chrono::milliseconds first_retry_{5000};
   std::chrono::milliseconds most_retry_{60000};
   std::function<std::string(const std::string&)> folder_check_;
+  std::function<ApplyAnswer(GameId)> apply_gate_;  // guarded by mutex_, called without it
+  ApplyAnswer MayApply(GameId id);
+  std::chrono::milliseconds WaitForGame(const Job& job) const;
+  ApplyAnswer AskApplyGate(GameId id);
   std::vector<InstallVolume> volumes_;
   std::string default_volume_id_;
   bool default_volume_saved_ = true;

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -30,9 +31,16 @@ constexpr std::size_t kMaxJobBytes = 16 * 1024 * 1024;
 constexpr std::size_t kDirectoryBodyLimit = 256 * 1024;
 constexpr const char* kDeviceSeedFile = "steam-device-id";
 // ELicenseFlags that make a license unavailable: renewal failed, pending, expired, cancelled,
-// fraud, not activated, pending refund, borrowed, cancelled by partner.
+// fraud, not activated, pending refund, cancelled by partner. Borrowed (0x4000) is not among them: a
+// license another Steam family member shares is usable here.
 constexpr std::uint32_t kUnavailableLicense =
-    0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x400 | 0x800 | 0x2000 | 0x4000 | 0x40000;
+    0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x400 | 0x800 | 0x2000 | 0x40000;
+constexpr std::uint32_t kRenewLicense = 0x1;
+constexpr std::uint32_t kBorrowedLicense = 0x4000;
+// At most this many per-license family lines per dump, so a huge account cannot rotate the log away.
+constexpr std::size_t kMaxFamilyLicenseLines = 300;
+// At most this many package IDs on one family PICS line.
+constexpr std::size_t kMaxFamilyIds = 100;
 
 std::string Hex(const unsigned char* data, std::size_t size) {
   static constexpr char kDigits[] = "0123456789abcdef";
@@ -63,10 +71,132 @@ bool ValidEndpoint(const std::string& endpoint) {
 
 // Package 0 counts: older accounts hold Valve's games there (Team Fortress 2's content, issue #58), and the
 // reference reads every package in the license list.
-bool OwnedActiveLicense(const cm::License& license, std::uint32_t account_id) {
-  return (license.flags & kUnavailableLicense) == 0 &&
-         (license.owner_id == 0 || license.owner_id == account_id) &&
-         (license.minute_limit <= 0 || license.minutes_used < license.minute_limit);
+bool OwnLicense(const cm::License& license, std::uint32_t account_id) {
+  return (license.owner_id == 0 || license.owner_id == account_id) && (license.flags & kBorrowedLicense) == 0;
+}
+
+// Why an unusable license is left out, or nullptr when it is usable: own or borrowed from a family member.
+const char* UnusableLicense(const cm::License& license) {
+  if (license.flags & kUnavailableLicense) return "flags";
+  if (license.minute_limit > 0 && license.minutes_used >= license.minute_limit) return "minutes";
+  return nullptr;
+}
+
+std::string HexFlags(std::uint32_t flags) {
+  char text[16];
+  std::snprintf(text, sizeof(text), "0x%x", flags);
+  return text;
+}
+
+// Comma-separated IDs, at most kMaxFamilyIds of them, then how many more there were.
+std::string IdList(const std::vector<std::uint32_t>& ids) {
+  std::string text;
+  for (std::size_t index = 0; index < ids.size() && index < kMaxFamilyIds; ++index)
+    text += (index ? "," : "") + std::to_string(ids[index]);
+  if (ids.size() > kMaxFamilyIds) text += ",+" + std::to_string(ids.size() - kMaxFamilyIds);
+  return text.empty() ? "none" : text;
+}
+
+// FNV-1a over what the per-license family lines show, to dump them only when the list changed.
+std::uint64_t LicenseListHash(const std::vector<cm::License>& licenses, std::uint32_t account_id) {
+  std::uint64_t hash = 0xcbf29ce484222325ull;
+  auto mix = [&hash](std::uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+      hash ^= (value >> shift) & 0xff;
+      hash *= 0x100000001b3ull;
+    }
+  };
+  mix(account_id);
+  for (const auto& license : licenses) {
+    mix(license.package_id);
+    mix(license.owner_id);
+    mix(license.flags);
+    mix(license.license_type);
+    mix(license.time_created);
+    mix(static_cast<std::uint32_t>(license.minute_limit) ^
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(license.minutes_used)) << 32));
+    mix(license.access_token != 0);
+  }
+  return hash;
+}
+
+// The license list whose per-license family lines were last written, process-wide: a library refresh
+// with the same list writes only the summary.
+std::mutex g_family_mutex;
+std::uint64_t g_family_dumped = 0;
+
+bool ShouldDumpLicenses(std::uint64_t hash) {
+  std::lock_guard<std::mutex> lock(g_family_mutex);
+  if (hash == g_family_dumped) return false;
+  g_family_dumped = hash;
+  return true;
+}
+
+// The family summary of one license-list load and, when the list changed, a line per license that isn't
+// plainly the account's own.
+void LogLicenses(const std::function<void(const std::string&)>& log, const std::vector<cm::License>& licenses,
+                 const std::map<std::uint32_t, const cm::License*>& chosen, std::uint32_t account_id) {
+  std::size_t own = 0, borrowed = 0, dropped = 0;
+  std::map<std::uint32_t, std::size_t> owners;  // other account IDs
+  std::size_t bits[32] = {};
+  for (const auto& license : licenses) {
+    if (UnusableLicense(license)) ++dropped;
+    else if (OwnLicense(license, account_id)) ++own;
+    else ++borrowed;
+    if (license.owner_id != 0 && license.owner_id != account_id) ++owners[license.owner_id];
+    for (int bit = 0; bit < 32; ++bit) bits[bit] += (license.flags >> bit) & 1;
+  }
+  const auto hash = LicenseListHash(licenses, account_id);
+  const bool dump = ShouldDumpLicenses(hash);
+  std::string owner_text, flag_text;
+  std::size_t listed = 0;
+  for (const auto& [owner, count] : owners) {
+    if (listed++ == 16) {
+      owner_text += ",+" + std::to_string(owners.size() - 16);
+      break;
+    }
+    owner_text += (owner_text.empty() ? "" : ",") + std::to_string(owner) + ":" + std::to_string(count);
+  }
+  for (int bit = 0; bit < 32; ++bit)
+    if (bits[bit])
+      flag_text += (flag_text.empty() ? "" : ",") + HexFlags(1u << bit) + ":" + std::to_string(bits[bit]);
+  log("family step=licenses total=" + std::to_string(licenses.size()) + " own=" + std::to_string(own) +
+      " borrowed=" + std::to_string(borrowed) + " dropped=" + std::to_string(dropped) +
+      " owners=" + (owner_text.empty() ? "none" : owner_text) + " flags=" + (flag_text.empty() ? "none" : flag_text) +
+      " changed=" + (dump ? "y" : "n"));
+  if (!dump) return;
+  // Another owner, any flag but Renew, or left out. Licenses from another account or marked Borrowed come
+  // first, so the cap never hides them behind an old account's flagged licenses.
+  std::size_t lines = 0, left_out = 0;
+  auto detail = [&](const cm::License& license) {
+    if (lines == kMaxFamilyLicenseLines) {
+      ++left_out;
+      return;
+    }
+    ++lines;
+    std::string verdict;
+    if (const auto* reason = UnusableLicense(license)) {
+      verdict = std::string("result=dropped reason=") + reason;
+      if (license.flags & kUnavailableLicense) verdict += ":" + HexFlags(license.flags & kUnavailableLicense);
+    } else if (chosen.at(license.package_id) != &license) {
+      verdict = "result=superseded reason=" +
+                std::string(OwnLicense(*chosen.at(license.package_id), account_id) ? "own" : "duplicate");
+    } else {
+      verdict = std::string("result=kept reason=") + (OwnLicense(license, account_id) ? "own" : "borrowed");
+    }
+    log("family step=license package=" + std::to_string(license.package_id) +
+        " owner=" + std::to_string(license.owner_id) + " flags=" + HexFlags(license.flags) +
+        " type=" + std::to_string(license.license_type) + " created=" + std::to_string(license.time_created) +
+        " token=" + (license.access_token ? "y" : "n") + " " + verdict);
+  };
+  auto family = [account_id](const cm::License& license) {
+    return (license.owner_id != 0 && license.owner_id != account_id) || (license.flags & kBorrowedLicense);
+  };
+  for (const auto& license : licenses)
+    if (family(license)) detail(license);
+  for (const auto& license : licenses)
+    if (!family(license) && ((license.flags & ~kRenewLicense) != 0 || UnusableLicense(license))) detail(license);
+  if (left_out) log("family step=license truncated=" + std::to_string(left_out));
 }
 
 std::uint32_t RemainingMs(Clock::time_point deadline) {
@@ -356,6 +486,16 @@ class CmClient::Session {
   // whenever the account's licenses change (a game bought or added to the library).
   const std::optional<cm::LicenseList>& licenses() const { return licenses_; }
   std::uint64_t license_serial() const { return license_serial_; }
+
+  // Waits at most `wait` for a license list newer than `serial`. kTimeout when none came; the
+  // call's own deadline is kept for what follows.
+  CmError WaitForLicensesAfter(std::uint64_t serial, Clock::duration wait) {
+    const auto saved = deadline_;
+    deadline_ = Clock::now() + wait;
+    const auto waited = WaitFor([this, serial] { return license_serial_ > serial; });
+    deadline_ = saved;
+    return waited;
+  }
 
   // An idle turn until the deadline: answers the server and sends a heartbeat when due. kTimeout
   // means the session is still fine.
@@ -840,39 +980,68 @@ DepotAccessResult CmClient::FetchDepotAccess(const StoredSession& stored, std::u
   if (const auto open = Acquire(stored, cancel, deadline, &lease); open != CmError::kNone)
     return finish(open);
   auto& session = lease.session;
+  // Each depot's key and manifest request code result, with Steam's EResult, for every install.
   for (const auto& depot : depots) {
+    // A DLC app's own depot is asked for under that app.
+    const std::uint32_t depot_app = depot.app_id ? depot.app_id : app_id;
+    auto note = [this, depot_app](const char* step, std::uint32_t depot_id, const std::string& outcome) {
+      Log(std::string("step=") + step + " app=" + std::to_string(depot_app) + " depot=" + std::to_string(depot_id) +
+          " " + outcome);
+    };
     DepotGrant grant;
     grant.depot_id = depot.depot_id;
     grant.manifest_gid = depot.manifest_gid;
     std::vector<std::uint8_t> reply;
     if (const auto call = session->Call(cm::kEMsgClientGetDepotDecryptionKey, {},
-                                        cm::EncodeDepotKeyRequest(depot.depot_id, app_id),
+                                        cm::EncodeDepotKeyRequest(depot.depot_id, depot_app),
                                         cm::kEMsgClientGetDepotDecryptionKeyResponse, &reply);
-        call != CmError::kNone)
+        call != CmError::kNone) {
+      // Steam's EResult rides only on a refusal; other failures never reached it.
+      note("depot_key", depot.depot_id,
+           std::string("error=") + CmErrorName(call) +
+               (call == CmError::kRejected ? " eresult=" + std::to_string(session->last_eresult()) : ""));
       return finish(call);
+    }
     cm::DepotKeyResponse key;
-    if (!cm::DecodeDepotKeyResponse(reply, &key)) return finish(CmError::kProtocol);
+    if (!cm::DecodeDepotKeyResponse(reply, &key)) {
+      note("depot_key", depot.depot_id, "error=protocol");
+      return finish(CmError::kProtocol);
+    }
     if (key.eresult == cm::kEResultAccessDenied && depot.optional) {
+      note("depot_key", depot.depot_id, "result=skipped eresult=" + std::to_string(key.eresult));
       result.skipped.push_back(depot.depot_id);
       continue;
     }
     if (key.eresult != cm::kEResultOk) {
+      note("depot_key", depot.depot_id, "result=refused eresult=" + std::to_string(key.eresult));
       result.detail = "depot key refused eresult=" + std::to_string(key.eresult);
       return finish(CmError::kRejected);
     }
-    if (key.depot_id != depot.depot_id || key.key.size() != grant.key.size()) return finish(CmError::kProtocol);
+    if (key.depot_id != depot.depot_id || key.key.size() != grant.key.size()) {
+      note("depot_key", depot.depot_id, "error=protocol");
+      return finish(CmError::kProtocol);
+    }
+    note("depot_key", depot.depot_id, "result=ok");
     std::copy(key.key.begin(), key.key.end(), grant.key.begin());
     reply.clear();
     if (const auto call = session->ServiceMethod(
             "ContentServerDirectory.GetManifestRequestCode#1",
-            cm::EncodeManifestRequestCodeRequest(app_id, depot.depot_id, depot.manifest_gid), &reply);
-        call != CmError::kNone)
+            cm::EncodeManifestRequestCodeRequest(depot_app, depot.depot_id, depot.manifest_gid, depot.branch), &reply);
+        call != CmError::kNone) {
+      const auto eresult = std::to_string(session->last_eresult());
+      const bool refused = call == CmError::kRejected;
+      note("manifest_code", depot.depot_id,
+           std::string("error=") + CmErrorName(call) + (refused ? " eresult=" + eresult : ""));
+      if (refused) result.detail = "manifest request code refused eresult=" + eresult;
       return finish(call);
+    }
     if (!cm::DecodeManifestRequestCodeResponse(reply, &grant.manifest_request_code) ||
         grant.manifest_request_code == 0) {
+      note("manifest_code", depot.depot_id, "result=refused code=0");
       result.detail = "manifest request code refused";
       return finish(CmError::kRejected);
     }
+    note("manifest_code", depot.depot_id, "result=ok");
     result.grants.push_back(grant);
   }
   return finish(CmError::kNone);
@@ -954,6 +1123,56 @@ AppInfoBuffers CmClient::FetchAppInfo(const StoredSession& stored,
   return finish(CmError::kNone);
 }
 
+FreeLicenseResult CmClient::RequestFreeLicenses(const StoredSession& stored, const std::vector<std::uint32_t>& app_ids,
+                                                std::uint32_t license_wait_ms, const std::atomic<bool>& cancel) {
+  FreeLicenseResult result;
+  if (app_ids.empty() || app_ids.size() > kMaxAppInfoBatch) return result;  // kProtocol
+  const auto deadline = Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms);
+  Lease lease;
+  auto finish = [&](CmError error) {
+    Release(&lease, error);
+    result.error = error;
+    return result;
+  };
+  if (const auto open = Acquire(stored, cancel, deadline, &lease); open != CmError::kNone) return finish(open);
+  Session& session = *lease.session;
+  // The list from logon first: a grant's list is told apart from it by the serial.
+  std::vector<cm::License> licenses;
+  if (const auto waited = session.Licenses(&licenses); waited != CmError::kNone) return finish(waited);
+  const auto serial = session.license_serial();
+  std::vector<std::uint8_t> reply;
+  if (const auto call = session.Call(cm::kEMsgClientRequestFreeLicense, {}, cm::EncodeFreeLicenseRequest(app_ids),
+                                     cm::kEMsgClientRequestFreeLicenseResponse, &reply);
+      call != CmError::kNone) {
+    if (call == CmError::kRejected) result.eresult = session.last_eresult();
+    Log(std::string("step=free_license error=") + CmErrorName(call) +
+        (call == CmError::kRejected ? " eresult=" + std::to_string(result.eresult) : ""));
+    return finish(call);
+  }
+  cm::FreeLicenseResponse response;
+  if (!cm::DecodeFreeLicenseResponse(reply, &response)) {
+    Log("step=free_license error=protocol");
+    return finish(CmError::kProtocol);
+  }
+  result.eresult = response.eresult;
+  result.granted_apps = std::move(response.granted_apps);
+  result.granted_packages = std::move(response.granted_packages);
+  Log("step=free_license requested=" + std::to_string(app_ids.size()) + " eresult=" + std::to_string(result.eresult) +
+      " granted_apps=" + std::to_string(result.granted_apps.size()) +
+      " granted_packages=" + std::to_string(result.granted_packages.size()));
+  if (result.eresult != cm::kEResultOk) return finish(CmError::kRejected);
+  if (!result.granted_apps.empty() || !result.granted_packages.empty()) {
+    const auto start = Clock::now();
+    const auto waited = session.WaitForLicensesAfter(serial, std::chrono::milliseconds(license_wait_ms));
+    result.waited_ms = static_cast<std::uint32_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count());
+    result.licenses_updated = waited == CmError::kNone;
+    // Running out of time leaves the session fine; anything else ends the call.
+    if (waited != CmError::kNone && waited != CmError::kTimeout) return finish(waited);
+  }
+  return finish(CmError::kNone);
+}
+
 AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
                                                   const std::atomic<bool>& cancel) {
   AcquisitionResult result;
@@ -968,6 +1187,7 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
       result.owned_depots.clear();
       result.package_apps.clear();
       result.package_depots.clear();
+      result.shared_apps.clear();
     }
     return result;
   };
@@ -981,17 +1201,27 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
   const auto adopted = session.steam_id();
   const auto account_id = static_cast<std::uint32_t>(
       adopted != cm::kAnonymousSteamId ? adopted : stored.steam_id);
-  std::map<std::uint32_t, std::uint64_t> tokens;
-  std::vector<const cm::License*> active;
+  // One license per package: the account's own wins over one borrowed from a family member, whatever
+  // the list order, so its token and date are used.
+  std::map<std::uint32_t, const cm::License*> chosen;
   for (const auto& license : licenses) {
-    if (!OwnedActiveLicense(license, account_id)) continue;
-    active.push_back(&license);
-    tokens[license.package_id] = license.access_token;
+    if (UnusableLicense(license)) continue;
+    auto [entry, inserted] = chosen.emplace(license.package_id, &license);
+    if (!inserted && !OwnLicense(*entry->second, account_id) && OwnLicense(license, account_id))
+      entry->second = &license;
   }
+  LogLicenses([this](const std::string& line) { Log(line); }, licenses, chosen, account_id);
   std::vector<cm::PackageRequest> packages;
-  for (const auto& [id, token] : tokens) packages.push_back({id, token});
+  std::set<std::uint32_t> borrowed_packages;
+  for (const auto& [id, license] : chosen) {
+    packages.push_back({id, license->access_token});
+    if (!OwnLicense(*license, account_id)) borrowed_packages.insert(id);
+  }
 
   std::map<std::uint32_t, std::vector<std::uint32_t>> package_apps;
+  // What the borrowed packages did in PICS, for the family log.
+  std::vector<std::uint32_t> borrowed_missing_token, borrowed_unparsable, borrowed_absent;
+  std::set<std::uint32_t> borrowed_apps, borrowed_depots;
   for (std::size_t start = 0; start < packages.size(); start += kPicsBatch) {
     // Each batch gets its own deadline: an account with thousands of licenses needs hundreds of
     // batches, more than one deadline covers (issue #47). A stalled batch still times out.
@@ -1003,26 +1233,62 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
     if (const auto pics = session.Pics(batch, &parts); pics != CmError::kNone) return finish(pics);
     std::set<std::uint32_t> wanted;
     for (const auto& package : batch) wanted.insert(package.package_id);
-    std::set<std::uint32_t> received;
+    std::set<std::uint32_t> received, answered;
     for (const auto& part : parts) {
       for (const auto& package : part.packages) {
         if (!wanted.count(package.package_id)) continue;
+        const bool borrowed = borrowed_packages.count(package.package_id) > 0;
+        // A borrowed package's first answer, for the family log.
+        const bool first_answer = borrowed && answered.insert(package.package_id).second;
+        if (first_answer && package.missing_token) borrowed_missing_token.push_back(package.package_id);
+        if (package.missing_token) continue;
         PackageContents contents;
         // One odd license must not block every install (issue #1): skip it, its apps stay unowned.
-        if (package.missing_token ||
-            !ParsePackageBuffer(package.buffer.data(), package.buffer.size(), package.package_id,
-                                &contents))
+        if (!ParsePackageBuffer(package.buffer.data(), package.buffer.size(), package.package_id, &contents)) {
+          if (first_answer) borrowed_unparsable.push_back(package.package_id);
           continue;
+        }
         auto& apps = package_apps[package.package_id];
         apps.insert(apps.end(), contents.app_ids.begin(), contents.app_ids.end());
         auto& depots = result.package_depots[package.package_id];
         depots.insert(depots.end(), contents.depot_ids.begin(), contents.depot_ids.end());
         result.owned_apps.insert(contents.app_ids.begin(), contents.app_ids.end());
         result.owned_depots.insert(contents.depot_ids.begin(), contents.depot_ids.end());
+        // Steam2-era packages list their content depots among the apps (Counter-Strike: Source's 241), as
+        // depots were apps then: an ID in either list grants that depot, as DepotDownloader checks. Steam
+        // gives apps and depots IDs from one pool, so an app ID never names another app's depot.
+        result.owned_depots.insert(contents.app_ids.begin(), contents.app_ids.end());
+        if (borrowed) {
+          borrowed_apps.insert(contents.app_ids.begin(), contents.app_ids.end());
+          borrowed_depots.insert(contents.depot_ids.begin(), contents.depot_ids.end());
+        }
         received.insert(package.package_id);
       }
     }
+    for (const auto id : wanted)
+      if (borrowed_packages.count(id) && !answered.count(id)) borrowed_absent.push_back(id);
     result.skipped_packages += static_cast<std::uint32_t>(wanted.size() - received.size());
+  }
+
+  // Apps any of the account's own packages grant are its own, even when a family member shares them too.
+  std::set<std::uint32_t> own_apps;
+  for (const auto& [id, apps] : package_apps)
+    if (!borrowed_packages.count(id)) own_apps.insert(apps.begin(), apps.end());
+  for (const auto app : borrowed_apps)
+    if (!own_apps.count(app)) result.shared_apps.insert(app);
+  {
+    std::uint32_t borrowed_received = 0;
+    for (const auto& entry : package_apps) borrowed_received += borrowed_packages.count(entry.first) ? 1 : 0;
+    Log("family step=pics borrowed_packages=" + std::to_string(borrowed_packages.size()) +
+        " received=" + std::to_string(borrowed_received) +
+        " missing_token=" + std::to_string(borrowed_missing_token.size()) +
+        " unparsable=" + std::to_string(borrowed_unparsable.size()) +
+        " absent=" + std::to_string(borrowed_absent.size()) + " apps=" + std::to_string(borrowed_apps.size()) +
+        " depots=" + std::to_string(borrowed_depots.size()) + " shared_apps=" +
+        std::to_string(result.shared_apps.size()));
+    if (!borrowed_missing_token.empty()) Log("family step=pics missing_token_packages=" + IdList(borrowed_missing_token));
+    if (!borrowed_unparsable.empty()) Log("family step=pics unparsable_packages=" + IdList(borrowed_unparsable));
+    if (!borrowed_absent.empty()) Log("family step=pics absent_packages=" + IdList(borrowed_absent));
   }
   // Nothing usable at all is a reply this client does not understand, not a few odd licenses.
   if (!packages.empty() && result.skipped_packages == packages.size()) return finish(CmError::kProtocol);
@@ -1031,11 +1297,14 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
                        ? hooks_.unix_now()
                        : static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
                              std::chrono::system_clock::now().time_since_epoch()).count());
-  for (const auto* license : active) {
+  for (const auto& [id, license] : chosen) {
     if (license->time_created == 0 || license->time_created > now) continue;
-    const auto found = package_apps.find(license->package_id);
+    const auto found = package_apps.find(id);
     if (found == package_apps.end()) continue;
+    const bool borrowed = borrowed_packages.count(id) > 0;
     for (const auto app : found->second) {
+      // A borrowed license dates only an app the account doesn't own itself.
+      if (borrowed && own_apps.count(app)) continue;
       auto [entry, inserted] = result.acquired_at.emplace(app, license->time_created);
       if (!inserted) entry->second = std::min(entry->second, license->time_created);
     }

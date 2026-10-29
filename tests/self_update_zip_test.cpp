@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 using namespace playden::update;
 using zip_fixture::Entry;
@@ -140,6 +141,38 @@ int main() {
     // A root hook that fails falls back to writing the file again.
     options.fix_mode = [](const std::string&, unsigned) { return false; };
     CHECK(!Run({{"a.dll", "aa"}}, options).ok);
+  }
+  // folder_mode sets every created folder's mode, also folders the zip only implies, whatever the umask.
+  {
+    std::string out;
+    ZipExtractOptions options;
+    options.folder_mode = 0777;
+    const mode_t old_umask = umask(022);
+    const auto result = Run({{"a/b/c.txt", "c"}, {"d/", "", 040755}, {"d/e/", "", 040700}}, options, &out);
+    umask(old_umask);
+    CHECK(result.ok && result.files == 1 && result.folders == 2);
+    CHECK(Mode(out + "/a") == 0777 && Mode(out + "/a/b") == 0777);
+    CHECK(Mode(out + "/d") == 0777 && Mode(out + "/d/e") == 0777);
+    // Without it (the kit unpack) folders keep mkdir's 0777 less the umask.
+    umask(022);
+    const auto plain = Run({{"a/b/c.txt", "c"}, {"d/", "", 040777}}, {}, &out);
+    umask(old_umask);
+    CHECK(plain.ok && Mode(out + "/a") == 0755 && Mode(out + "/a/b") == 0755 && Mode(out + "/d") == 0755);
+    // A folder the app user can't chmod (made while another thread held root) gets its mode as root.
+    options.set_folder_mode = [](const std::string&, unsigned) { errno = EPERM; return -1; };
+    std::vector<std::string> fixed;
+    options.fix_mode = [&fixed](const std::string& path, unsigned mode) {
+      fixed.push_back(path);
+      return chmod(path.c_str(), mode) == 0;
+    };
+    umask(022);
+    const auto rescued = Run({{"x/y.txt", "y"}}, options, &out);
+    CHECK(rescued.ok && fixed.size() == 1 && fixed[0] == out + "/x" && Mode(out + "/x") == 0777);
+    // Without a working root hook the unpack fails.
+    options.fix_mode = [](const std::string&, unsigned) { return false; };
+    const auto stuck = Run({{"x/y.txt", "y"}}, options);
+    umask(old_umask);
+    CHECK(!stuck.ok && stuck.error.find("x/y.txt") != std::string::npos);
   }
   // A damaged file fails its CRC check.
   {

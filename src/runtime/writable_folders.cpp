@@ -96,7 +96,7 @@ std::string EnsureWritableFolders(const std::vector<std::filesystem::path>& fold
                    : !ran ? " fix=root-refused"
                           : fixed ? " after-fix=" + Error(second) : " chmod=" + Error(fix_error)));
     return "Playden can't write to " + folder.string() +
-           ". Make the folder writable over FTP (permissions 777), then try again.";
+           ". Make that folder writable over FTP (777 on the folder only, not its contents), then try again.";
   }
   return {};
 }
@@ -136,7 +136,7 @@ std::string PrepareRuntimeRoot(const std::filesystem::path& root, const Writable
   const std::string detail = failed + " failed" + (failed_error ? " error=" + Error(failed_error) : "");
   if (log) log("runtime root repair failed path=" + root.string() + " " + detail);
   return "Playden can't write to " + root.string() + " (" + detail +
-         "). Make the folder writable over FTP (permissions 777), then try again.";
+         "). Make that folder writable over FTP (777 on the folder only, not its contents), then try again.";
 }
 
 std::string PrepareDropFolder(const std::filesystem::path& folder, const WritableFoldersAsRoot& as_root,

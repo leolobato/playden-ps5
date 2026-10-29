@@ -1,6 +1,5 @@
 #include "update/update_service.h"
 
-#include <dirent.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -22,7 +21,7 @@ struct UpdateService::Shared {
   UpdateSnapshot snapshot;
   std::atomic<bool> cancel{false};
   std::atomic<bool> busy{false};
-  std::vector<std::function<void()>> queued;  // jobs asked for while another ran, in order (under mutex)
+  std::function<void()> queued;  // one job asked for while another ran (under mutex)
   bool thread_started = false;
   pthread_t thread{};
 };
@@ -68,17 +67,19 @@ std::string Gigabytes(std::uint64_t bytes) {
   return text;
 }
 
-// An app file's mode on the console: executables 0755 (as the FTP deploy tool sets them),
-// everything else as the zip has it.
-std::optional<unsigned> AppMode(const std::string& relative, unsigned zip_mode) {
+// An app file's mode on the console: 0777 for executables, 0666 for everything else, whatever the
+// zip has. Someone may install a build by hand over a self-updated app, with FTP or the web file
+// manager. They run as other users, and root has no DAC bypass on /data, so they can only write over
+// files that everyone can write. Nothing in Playden needs the app files to be read-only.
+std::optional<unsigned> AppMode(const std::string& relative, unsigned) {
   const auto slash = relative.rfind('/');
   const std::string name = slash == std::string::npos ? relative : relative.substr(slash + 1);
   const auto ends = [&](const char* suffix) {
     const std::string tail = suffix;
     return name.size() > tail.size() && name.compare(name.size() - tail.size(), tail.size(), tail) == 0;
   };
-  if (name == "eboot.bin" || ends(".prx") || ends(".elf")) return 0755u;
-  return zip_mode;
+  if (name == "eboot.bin" || ends(".prx") || ends(".elf")) return 0777u;
+  return 0666u;
 }
 
 }  // namespace
@@ -162,7 +163,8 @@ void UpdateService::LoadCurrentNotes() {
       }
     }
   }
-  if (url.empty()) url = PageFor("v" + config_.current.ToString());
+  // A nightly has no release page: its notes are on the page that lists the nightly builds.
+  if (url.empty()) url = config_.current.nightly() ? config_.nightly_page : PageFor("v" + config_.current.ToString());
   Set([&](UpdateSnapshot& s) {
     s.current_notes = notes;
     s.current_notes_url = url;
@@ -181,8 +183,7 @@ void UpdateService::Fail(const std::string& message, const std::string& detail) 
 std::string UpdateService::StatePath() const { return config_.work_root + "/state.json"; }
 
 bool UpdateService::SaveState(const std::string& phase, const std::string& extra) {
-  // The owner: after a move both titles share the work folder, and each leaves the other's state alone.
-  const std::string text = "{\"phase\":" + Quote(phase) + ",\"owner\":" + Quote(config_.title_id) + extra + "}\n";
+  const std::string text = "{\"phase\":" + Quote(phase) + extra + "}\n";
   const bool ok = WriteFileAtomically(StatePath(), text);
   if (!ok) Log("cannot save " + StatePath());
   return ok;
@@ -191,8 +192,7 @@ bool UpdateService::SaveState(const std::string& phase, const std::string& extra
 std::string UpdateService::StagedFields() const {
   const auto snapshot = Snapshot();
   return ",\"version\":" + Quote(staged_version_.ToString()) + ",\"from\":" + Quote(config_.current.ToString()) +
-         ",\"stage\":" + Quote(staged_folder_) + ",\"title\":" + Quote(staged_title_) + ",\"kit\":" +
-         Quote(staged_kit_) + ",\"kit_id\":" +
+         ",\"stage\":" + Quote(staged_folder_) + ",\"kit\":" + Quote(staged_kit_) + ",\"kit_id\":" +
          Quote(staged_kit_id_) + ",\"notes\":" + Quote(snapshot.notes) + ",\"notes_url\":" + Quote(snapshot.notes_url);
 }
 
@@ -242,16 +242,6 @@ void UpdateService::RetireRenamedKits() {
 
 // The app user's leftovers of a confirmed update, on the worker and without root: the stage, the
 // downloads, the replaced entries and the files of a kit left by going back.
-namespace {
-// The titleId in a folder's sce_sys/param.json, or empty.
-std::string ParamTitle(const std::string& folder) {
-  std::string text;
-  const auto param = ReadSmallFile(folder + "/sce_sys/param.json", &text) ? steam::json::Parse(text) : std::nullopt;
-  const auto* title = param && param->is_object() ? param->Find("titleId") : nullptr;
-  return title && title->is_string() ? title->text() : std::string();
-}
-}  // namespace
-
 void UpdateService::CleanUpLeftovers() {
   std::vector<std::string> paths;
   for (const char* name : {"/stage", "/downloads", "/replaced"})
@@ -273,10 +263,10 @@ bool UpdateService::RemoveOwnedTree(const std::string& path) {
 void UpdateService::Run(std::function<void()> work) {
   {
     // A job asked for while another runs waits for it (the startup check behind the cleanup of a
-    // confirmed update and the old title's removal, an install behind a check).
+    // confirmed update, an install behind a check); a third request replaces nothing.
     std::lock_guard<std::mutex> lock(shared_->mutex);
     if (shared_->busy) {
-      shared_->queued.push_back(std::move(work));
+      if (!shared_->queued) shared_->queued = std::move(work);
       return;
     }
     shared_->busy = true;
@@ -293,12 +283,12 @@ void UpdateService::Run(std::function<void()> work) {
       std::function<void()> next;
       {
         std::lock_guard<std::mutex> lock(shared->mutex);
-        if (shared->queued.empty()) {
+        next = std::move(shared->queued);
+        shared->queued = nullptr;
+        if (!next) {
           shared->busy = false;
           return;
         }
-        next = std::move(shared->queued.front());
-        shared->queued.erase(shared->queued.begin());
       }
       if (!shared->cancel) next();
     }
@@ -313,7 +303,7 @@ void UpdateService::Run(std::function<void()> work) {
     {
       std::lock_guard<std::mutex> lock(shared_->mutex);
       shared_->busy = false;
-      shared_->queued.clear();
+      shared_->queued = nullptr;
     }
     Fail("Playden could not start the update.", "pthread_create " + std::to_string(rc));
     return;
@@ -346,9 +336,6 @@ std::optional<UpdateService::Backup> UpdateService::LatestBackup() const {
     const auto version = dash == std::string::npos ? std::nullopt : ParseVersion(name.substr(0, dash));
     const std::string path = config_.work_root + "/backup/" + name;
     if (!version || !Exists(path + "/eboot.bin")) continue;
-    // Another title's app (from before a move) never goes into this title's folder.
-    const auto title = ParamTitle(path);
-    if (!title.empty() && title != config_.title_id) continue;
     // Names end in the swap time; the newest has the largest.
     const auto stamp = name.substr(dash + 1);
     if (!latest || stamp.size() > latest_name.size() || (stamp.size() == latest_name.size() && stamp > latest_name)) {
@@ -396,123 +383,6 @@ void UpdateService::RequestRestart() {
   });
 }
 
-bool UpdateService::Moving() const {
-  return !staged_title_.empty() && staged_title_ != config_.title_id && staged_title_ == config_.successor_title_id &&
-         !config_.successor_root.empty();
-}
-
-void UpdateService::RequestOpenSuccessor() {
-  if (!superseded_) return;
-  Set([](UpdateSnapshot& s) { s.open_successor_requested = true; });
-}
-
-std::string UpdateService::RelaunchTitle() const {
-  const auto snapshot = Snapshot();
-  if (superseded_) return snapshot.open_successor_requested ? config_.successor_title_id : config_.title_id;
-  return snapshot.restart_requested && !snapshot.rollback_requested && Moving() ? staged_title_ : config_.title_id;
-}
-
-std::string UpdateService::PredecessorRefusal() const {
-  const std::string& root = config_.predecessor_root;
-  std::string text;
-  if (!ReadSmallFile(root + "/playden-version", &text, 64)) return "no playden-version";
-  if (!text.empty() && text.back() == '\n') text.pop_back();
-  const auto version = ParseVersion(text);
-  // Before 0.6.0 the sign-in, games and logs lived in the app folder.
-  if (!version || *version < kLayoutBoundary) return "version " + text + " keeps its data in the app folder";
-  // A move to the 0.6 layout that never ran (the old version was never opened) leaves them there too.
-  // A folder that can't be read may hold them as well.
-  for (const char* data : {"/games", "/playden-data"}) {
-    DIR* folder = opendir((root + data).c_str());
-    if (!folder) {
-      if (errno == ENOENT) continue;
-      return std::string(data + 1) + " can't be read (errno=" + std::to_string(errno) + ")";
-    }
-    bool empty = true;
-    while (const dirent* entry = readdir(folder)) {
-      const std::string name = entry->d_name;
-      if (name != "." && name != ".." && name != "MOVED.txt") empty = false;
-    }
-    closedir(folder);
-    if (!empty) return std::string(data + 1) + " is not empty";
-  }
-  return {};
-}
-
-void UpdateService::RetirePredecessor() {
-  const std::string& title = config_.predecessor_title_id;
-  if (title.empty() || config_.predecessor_root.empty() || !config_.unregister_title) return;
-  const std::string retired = config_.work_root + "/retired/" + title;
-  const std::string unregistered = retired + ".unregistered";
-  if (Exists(unregistered)) {
-    if (RemoveOwnedTree(retired)) unlink(unregistered.c_str());
-    Log(Exists(retired) ? "the old " + title + " app could not be deleted" : "the old " + title + " app is deleted");
-  }
-  if (Exists(config_.predecessor_root + "/eboot.bin") && !Exists(retired)) {
-    // Right after the move the old app stays one more start: if this title fails before it has started
-    // once, the old one still works (it only points to this one).
-    std::string moving;
-    const auto pending = ReadSmallFile(StatePath(), &moving) ? steam::json::Parse(moving) : std::nullopt;
-    const auto pending_field = [&](const char* name) -> std::string {
-      const auto* value = pending && pending->is_object() ? pending->Find(name) : nullptr;
-      return value && value->is_string() ? value->text() : std::string();
-    };
-    if (pending_field("phase") == "applied" && pending_field("moved_to") == config_.title_id) {
-      Log("the old " + title + " app stays until this one has started once");
-      return;
-    }
-    const auto refusal = PredecessorRefusal();
-    if (!refusal.empty()) {
-      Log(title + " left in place: " + refusal);
-      return;
-    }
-    // ShadowMountPlus registers any folder in /data/homebrew again, so the folder leaves first. Root is
-    // process-wide: it is raised here, before the runtime starts (see ConfirmApplied).
-    const bool moved = MakeFolders(config_.work_root + "/retired") && config_.as_root([&] {
-      return rename(config_.predecessor_root.c_str(), retired.c_str()) == 0;
-    });
-    Log(moved ? "the old " + title + " app left /data/homebrew" : "the old " + title + " app could not be moved");
-    if (!moved) return;
-    // Its backups are of the old title's app, which this title must never restore into its folder.
-    for (const auto& name : ListFolder(config_.work_root + "/backup"))
-      if (ParamTitle(config_.work_root + "/backup/" + name) == title) RemoveOwnedTree(config_.work_root + "/backup/" + name);
-    // So is an update it staged (states from before 0.7.1 name no owner); only its move to this title stays.
-    std::string text;
-    const auto state = ReadSmallFile(StatePath(), &text) ? steam::json::Parse(text) : std::nullopt;
-    const auto field = [&](const char* name) -> std::string {
-      const auto* value = state && state->is_object() ? state->Find(name) : nullptr;
-      return value && value->is_string() ? value->text() : std::string();
-    };
-    const bool its = field("owner").empty() || field("owner") == title;
-    if (state && its && !(field("phase") == "applied" && field("moved_to") == config_.title_id)) {
-      Log("the old " + title + " app's update state is removed");
-      if (field("phase") == "staged") {
-        if (!field("stage").empty()) RemoveOwnedTree(field("stage"));
-        if (!field("kit").empty()) RemoveOwnedTree(field("kit"));
-      }
-      unlink(StatePath().c_str());
-    }
-  }
-  // Its tile goes from the worker once Start's own root work is over (root is process-wide; the title
-  // remover's request is written as the app's user).
-  unregister_pending_ = Exists(retired) && !Exists(unregistered);
-}
-
-void UpdateService::UnregisterPredecessor() {
-  const std::string& title = config_.predecessor_title_id;
-  const std::string retired = config_.work_root + "/retired/" + title;
-  const std::string unregistered = retired + ".unregistered";
-  if (!config_.unregister_title(title)) {
-    Log(title + " is still registered: tried again at the next start");
-    return;
-  }
-  WriteFileAtomically(unregistered, "");
-  // Most of the app's files are the app user's to delete; what is left goes at the next start, as root.
-  RemoveTree(retired);
-  if (!Exists(retired)) unlink(unregistered.c_str());
-  Log(title + " is unregistered");
-}
-
 DownloadOptions UpdateService::Downloads(const std::string& part) {
   DownloadOptions options;
   options.fetch = config_.fetch;
@@ -544,43 +414,6 @@ std::string UpdateService::ReadyKit(const KitPart& kit) const {
 }
 
 void UpdateService::Start() {
-  StartState();
-  if (unregister_pending_) Run([this] { UnregisterPredecessor(); });
-}
-
-void UpdateService::StartState() {
-  // The successor title is installed (this title moved to it, or it came from ProsperoStore): updates,
-  // kits and the shared update state are its business now, and this title points the player to it.
-  if (!config_.successor_root.empty() && Exists(config_.successor_root + "/eboot.bin")) {
-    superseded_ = true;
-    LoadCurrentNotes();
-    std::string text;
-    const auto state = ReadSmallFile(StatePath(), &text) ? steam::json::Parse(text) : std::nullopt;
-    const auto text_field = [&](const char* name) -> std::string {
-      const auto* value = state && state->is_object() ? state->Find(name) : nullptr;
-      return value && value->is_string() ? value->text() : std::string();
-    };
-    // The move this title made and the new title has not confirmed yet: ShadowMountPlus is asked again,
-    // in case the new title has no tile yet.
-    const bool unconfirmed = text_field("phase") == "applied" && text_field("moved_to") == config_.successor_title_id &&
-                             (text_field("owner").empty() || text_field("owner") == config_.title_id);
-    Log(config_.successor_title_id + " is installed: updates are left to it" +
-        (unconfirmed ? "; the move to " + text_field("version") + " is not confirmed yet" : std::string()));
-    Set([&](UpdateSnapshot& s) {
-      // Not started yet: a dialog says where Playden went, in case its tile is missing. Else a short notice.
-      if (unconfirmed) {
-        s.moved_to = text_field("version");
-      } else {
-        s.finished_message = "Open the new Playden from Home.";
-        s.finished_failed = false;
-      }
-    });
-    if (unconfirmed && config_.register_title)
-      Run([this] { Log(config_.register_title(config_.successor_root) ? "new title registration requested"
-                                                                        : "new title registration not answered"); });
-    return;
-  }
-  RetirePredecessor();
   FindPrevious();
   LoadCurrentNotes();
   RemoveReplacedKits();
@@ -601,13 +434,6 @@ void UpdateService::StartState() {
     return value && value->is_string() ? value->text() : std::string();
   };
   const std::string phase = field("phase");
-  // Another title's state (the two share the work folder after a move) is left alone, except the move to this one.
-  // Every version of a title that replaced another names the owner; a state without one is the old title's.
-  const std::string owner = field("owner").empty() ? config_.predecessor_title_id : field("owner");
-  if (!owner.empty() && owner != config_.title_id && !(phase == "applied" && field("moved_to") == config_.title_id)) {
-    Log("update state of " + owner + " left alone");
-    return;
-  }
   if (phase == "applied") {
     ConfirmApplied(text);
     return;
@@ -616,14 +442,9 @@ void UpdateService::StartState() {
     const auto version = ParseVersion(field("version"));
     const std::string stage = field("stage");
     const std::string kit = field("kit");
-    // States from before the move to a successor title have no title: they are this one.
-    const std::string title = field("title").empty() ? config_.title_id : field("title");
-    const bool title_known = title == config_.title_id || (title == config_.successor_title_id && !config_.successor_root.empty());
     const bool kit_present = kit.empty() || (config_.verify_kit && config_.verify_kit(kit));
-    if (version && config_.current < *version && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present &&
-        title_known) {
+    if (version && config_.current < *version && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
       staged_folder_ = stage;
-      staged_title_ = title;
       staged_version_ = *version;
       staged_kit_ = kit;
       staged_kit_id_ = field("kit_id");
@@ -724,7 +545,6 @@ void UpdateService::ConfirmApplied(const std::string& text) {
 bool UpdateService::SetIncludeBetas(bool enabled) { return include_betas_.exchange(enabled) != enabled; }
 
 void UpdateService::Check(bool user_asked) {
-  if (superseded_) return;
   {
     std::lock_guard<std::mutex> lock(shared_->mutex);
     const auto phase = shared_->snapshot.phase;
@@ -735,7 +555,6 @@ void UpdateService::Check(bool user_asked) {
 }
 
 void UpdateService::Install() {
-  if (superseded_) return;
   Run([this] {
     // A track change can arrive while a download is being cancelled or a check is queued.
     if (release_ && (release_->prerelease || release_->version.beta) && !include_betas_.load()) {
@@ -781,7 +600,7 @@ void UpdateService::DoCheck(bool user_asked) {
     if (!release) return Fail("The latest release on GitHub could not be read.", error);
     if (release->draft || release->prerelease || release->version.beta) release.reset();
   }
-  const auto up_to_date = [&] {
+  if (!release || !(config_.current < release->version)) {
     Log("up to date: running " + config_.current.ToString());
     release_.reset();
     manifest_.reset();
@@ -790,24 +609,16 @@ void UpdateService::DoCheck(bool user_asked) {
       s.phase = UpdatePhase::kUpToDate;
       s.available = release ? release->version : config_.current;
     });
-  };
-  const bool can_move = !config_.successor_title_id.empty() && !config_.successor_root.empty();
-  // This version's own release can still move Playden: the FAKE77031 build that 0.7.1-beta.2 and older update
-  // to first (they read only playden-update.json) finds the same version under the successor title.
-  const bool newer = release && config_.current < release->version;
-  const bool same = release && release->version == config_.current;
-  if (!newer && !(same && can_move && release->Find(kUpdateManifestAssetV2))) return up_to_date();
-  const auto* asset = release->Manifest();
+    return;
+  }
+  const auto* asset = release->Find(kUpdateManifestAsset);
   if (!asset) return Fail("Release " + release->tag + " has no update information. Install it by hand.", "no asset");
-  const auto manifest_text = local ? read_local(asset->name)
+  const auto manifest_text = local ? read_local(kUpdateManifestAsset)
                                    : FetchSmall(asset->url, 256 << 10, options, "application/octet-stream", &error);
   if (!manifest_text) return Fail("Playden could not read the update information.", error);
   const auto manifest = ParseUpdateManifest(*manifest_text, &error);
   if (!manifest) return Fail("The update information of " + release->tag + " is not valid.", error);
-  // A release under the successor title is a move: it installs next to this one.
-  const bool moves = can_move && manifest->title_id == config_.successor_title_id;
-  if (!newer && !moves) return up_to_date();
-  if (manifest->app_version != release->version || (manifest->title_id != config_.title_id && !moves))
+  if (manifest->app_version != release->version || manifest->title_id != config_.title_id)
     return Fail("The update information does not match release " + release->tag + ".", "version or title");
   if (config_.current < manifest->min_from)
     return Fail("Playden " + release->version.ToString() + " cannot update from this version. Install it by hand.",
@@ -838,8 +649,7 @@ void UpdateService::DoCheck(bool user_asked) {
   manifest_ = *manifest;
   if (kit_needed) kit_zip_ = *kit;
   else kit_zip_.reset();
-  Log("update " + release->tag + " available" + (moves ? " as " + manifest->title_id : std::string()) + ": app " +
-      std::to_string(app->size) + " bytes, kit " +
+  Log("update " + release->tag + " available: app " + std::to_string(app->size) + " bytes, kit " +
       (kit_needed ? std::to_string(kit->size) + " bytes" : "already installed"));
   std::string declined;
   ReadSmallFile(config_.work_root + "/declined-version", &declined, 64);
@@ -852,7 +662,6 @@ void UpdateService::DoCheck(bool user_asked) {
     s.notes_url = release->page.empty() ? PageFor(release->tag) : release->page;
     s.kit_needed = kit_needed;
     s.download_bytes = app->size + (kit_needed ? kit->size : 0);
-    s.moves = moves;
   });
 }
 
@@ -879,7 +688,6 @@ void UpdateService::DoInstall() {
     kit_folder = ReadyKit(manifest.kit);
   }
   if (!StageApp(release, manifest)) return;
-  staged_title_ = manifest.title_id;
   staged_version_ = release.version;
   // The installed kit already matches: nothing to swap for it.
   staged_kit_ = kit_folder == config_.kits_root + "/" + manifest.kit.kit_id ? std::string() : kit_folder;
@@ -1024,13 +832,11 @@ std::optional<std::vector<Release>> UpdateService::FetchReleases(std::string* er
 }
 
 void UpdateService::CheckKit() {
-  if (superseded_) return;
   if (config_.kit_id.empty() || config_.kit_manifest_sha256.empty()) return;
   Run([this] { DoCheckKit(); });
 }
 
 void UpdateService::InstallKit() {
-  if (superseded_) return;
   Run([this] {
     if (!kit_asset_ || !kit_part_) DoCheckKit();
     if (Snapshot().kit.phase != KitInstallPhase::kAvailable) return;
@@ -1061,23 +867,29 @@ void UpdateService::DoCheckKit() {
   std::string error;
   const auto releases = FetchReleases(&error);
   if (!releases) return FailKit("Playden could not reach GitHub to download its runtime kit.", error);
+  // The running version's release names its kit. A nightly has no release: the newest release before it
+  // stands in, and is used only if it names the same kit (checked below).
   const Release* own = nullptr;
-  for (const auto& release : *releases)
-    if (!release.draft && release.version == config_.current) own = &release;
+  for (const auto& release : *releases) {
+    if (release.draft) continue;
+    if (release.version == config_.current) own = &release;
+    else if (config_.current.nightly() && release.version < config_.current &&
+             (!own || (own->version != config_.current && own->version < release.version)))
+      own = &release;
+  }
   if (!own) return unavailable("no release has version " + config_.current.ToString());
-  const auto* manifest_asset = own->Manifest();
+  const auto* manifest_asset = own->Find(kUpdateManifestAsset);
   if (!manifest_asset) return unavailable("release " + own->tag + " has no update information");
   auto options = Downloads("");
   options.max_attempts = 2;
-  const std::string local_manifest = config_.local_release_dir + "/" + manifest_asset->name;
-  const bool local = !config_.local_release_dir.empty() && Exists(local_manifest);
+  const bool local = !config_.local_release_dir.empty() && Exists(config_.local_release_dir + "/" + kUpdateManifestAsset);
   std::optional<std::string> manifest_text;
   if (!local) {
     manifest_text = FetchSmall(manifest_asset->url, 256 << 10, options, "application/octet-stream", &error);
-  } else if (std::string text; ReadSmallFile(local_manifest, &text, 256 << 10)) {
+  } else if (std::string text; ReadSmallFile(config_.local_release_dir + "/" + kUpdateManifestAsset, &text, 256 << 10)) {
     manifest_text = std::move(text);
   } else {
-    error = "cannot read " + manifest_asset->name;
+    error = std::string("cannot read ") + kUpdateManifestAsset;
   }
   if (!manifest_text) return FailKit("Playden could not read the kit information.", error);
   const auto manifest = ParseUpdateManifest(*manifest_text, &error);
@@ -1201,6 +1013,7 @@ bool UpdateService::StageApp(const Release& release, const UpdateManifest& manif
     return config_.as_root([&] { return chmod(path.c_str(), mode) == 0; });
   };
   unzip.mode_for = AppMode;
+  unzip.folder_mode = 0777u;  // for the same reason as AppMode
   unzip.log = [this](const std::string& line) { Log(line); };
   unzip.progress = [this](std::uint64_t done, std::uint64_t total) {
     Set([&](UpdateSnapshot& s) { s.done = done; s.total = total; });
@@ -1228,7 +1041,7 @@ bool UpdateService::StageApp(const Release& release, const UpdateManifest& manif
   const auto full_version = has_full ? ParseVersion(full_text)
                                     : (Exists(stage + "/playden-version") ? std::nullopt : content_version);
   const Version numeric{release.version.major, release.version.minor, release.version.patch};
-  if (!title || !title->is_string() || title->text() != manifest.title_id || !content_version ||
+  if (!title || !title->is_string() || title->text() != config_.title_id || !content_version ||
       *content_version != numeric || !full_version || *full_version != release.version ||
       !Exists(stage + "/eboot.bin")) {
     RemoveOwnedTree(stage);
@@ -1333,16 +1146,8 @@ bool UpdateService::RollBackAtQuit() {
 }
 
 bool UpdateService::ApplyAtQuit() {
-  if (superseded_) {
-    // Asked for from the old title: ShadowMountPlus adds the new title once this one has closed.
-    if (!Snapshot().open_successor_requested) return false;
-    const bool registered = config_.register_title && config_.register_title(config_.successor_root);
-    Log(std::string("opening ") + config_.successor_title_id + (registered ? ", registration requested" : ", registration not answered"));
-    return true;
-  }
   if (Snapshot().rollback_requested) return RollBackAtQuit();
   if (!Snapshot().restart_requested || staged_folder_.empty()) return false;
-  if (Moving()) return MoveAtQuit();
   const std::string stamp = std::to_string(config_.now());
   const std::string backup = config_.work_root + "/backup/" + config_.current.ToString() + "-" + stamp;
   const std::string installed_kit = staged_kit_id_.empty() ? std::string() : config_.kits_root + "/" + staged_kit_id_;
@@ -1373,14 +1178,27 @@ bool UpdateService::ApplyAtQuit() {
       if (name.compare(0, 10, ".previous-") == 0) RemoveTree(config_.kits_root + "/" + name);
     // One transaction: the kit first, then the app; a failed app swap puts the kit back.
     if (!staged_kit_.empty()) {
-      if (!SwapKitIn(installed_kit, previous_kit, &swap.error)) return false;
+      if (!Exists(staged_kit_)) {
+        swap.error = "staged kit is missing";
+        return false;
+      }
+      if (Exists(installed_kit) && rename(installed_kit.c_str(), previous_kit.c_str()) != 0) {
+        swap.error = "cannot move the installed kit aside";
+        return false;
+      }
+      if (rename(staged_kit_.c_str(), installed_kit.c_str()) != 0) {
+        rename(previous_kit.c_str(), installed_kit.c_str());
+        swap.error = "cannot move the new kit in";
+        return false;
+      }
       kit_swapped = true;
     }
     MakeFolders(config_.work_root + "/backup");
     swap = SwapApp(config_.installed_root, staged_folder_, backup, log);
     if (!swap.ok) {
       if (kit_swapped) {
-        SwapKitBack(installed_kit, previous_kit);
+        rename(installed_kit.c_str(), staged_kit_.c_str());
+        if (Exists(previous_kit)) rename(previous_kit.c_str(), installed_kit.c_str());
         kit_swapped = false;
       }
       return false;
@@ -1399,90 +1217,6 @@ bool UpdateService::ApplyAtQuit() {
   SaveState("applied", applied(kit_swapped && Exists(previous_kit)));
   Log("swapped to " + staged_version_.ToString() + " (" + std::to_string(swap.moved) + " entries" +
       (kit_swapped ? ", new kit" : "") + "), backup " + backup);
-  return true;
-}
-
-bool UpdateService::SwapKitIn(const std::string& installed_kit, const std::string& previous_kit, std::string* error) {
-  if (!Exists(staged_kit_)) {
-    *error = "staged kit is missing";
-    return false;
-  }
-  if (Exists(installed_kit) && rename(installed_kit.c_str(), previous_kit.c_str()) != 0) {
-    *error = "cannot move the installed kit aside";
-    return false;
-  }
-  if (rename(staged_kit_.c_str(), installed_kit.c_str()) != 0) {
-    rename(previous_kit.c_str(), installed_kit.c_str());
-    *error = "cannot move the new kit in";
-    return false;
-  }
-  return true;
-}
-
-void UpdateService::SwapKitBack(const std::string& installed_kit, const std::string& previous_kit) {
-  rename(installed_kit.c_str(), staged_kit_.c_str());
-  if (Exists(previous_kit)) rename(previous_kit.c_str(), installed_kit.c_str());
-}
-
-// A release under the successor title goes into its own folder: this app stays as it is (it runs until
-// the process exits, and is the way back if the new title does not open). ShadowMountPlus defers its
-// scan while a title runs and registers the new title once this one has closed.
-bool UpdateService::MoveAtQuit() {
-  const std::string stamp = std::to_string(config_.now());
-  const std::string installed_kit = staged_kit_id_.empty() ? std::string() : config_.kits_root + "/" + staged_kit_id_;
-  const std::string previous_kit = config_.kits_root + "/.previous-" + staged_kit_id_ + "-" + stamp;
-  // A folder already at the successor's place (an earlier try, or a copy installed by hand) is moved aside.
-  const std::string aside = config_.work_root + "/replaced/" + staged_title_ + "-" + stamp;
-  const auto applied = [&](bool kit_moved) {
-    return ",\"version\":" + Quote(staged_version_.ToString()) + ",\"from\":" + Quote(config_.current.ToString()) +
-           ",\"moved_to\":" + Quote(staged_title_) + ",\"notes\":" + Quote(Snapshot().notes) + ",\"notes_url\":" +
-           Quote(Snapshot().notes_url) + ",\"kit_id\":" + Quote(staged_kit_id_) + ",\"previous_kit\":" +
-           Quote(kit_moved ? previous_kit : std::string()) + ",\"next_kit\":" +
-           Quote(kit_moved ? staged_kit_ : std::string());
-  };
-  if (!SaveState("applied", applied(!staged_kit_.empty()))) {
-    Log("move failed: cannot save the state");
-    return false;
-  }
-  std::string error;
-  bool kit_swapped = false;
-  const bool moved = config_.as_root([&] {
-    // As for a swap: one previous version and kit are kept. The backups are of this title's app, which
-    // the new title must never restore into its own folder, so none is left.
-    for (const auto& name : ListFolder(config_.work_root + "/backup")) RemoveTree(config_.work_root + "/backup/" + name);
-    for (const auto& name : ListFolder(config_.kits_root))
-      if (name.compare(0, 10, ".previous-") == 0) RemoveTree(config_.kits_root + "/" + name);
-    if (!staged_kit_.empty()) {
-      if (!SwapKitIn(installed_kit, previous_kit, &error)) return false;
-      kit_swapped = true;
-    }
-    const bool occupied = Exists(config_.successor_root);
-    if (occupied && (!MakeFolders(config_.work_root + "/replaced") ||
-                     rename(config_.successor_root.c_str(), aside.c_str()) != 0)) {
-      error = "cannot move " + config_.successor_root + " aside";
-    } else if (rename(staged_folder_.c_str(), config_.successor_root.c_str()) != 0) {
-      error = "cannot move the new app to " + config_.successor_root;
-      if (occupied) rename(aside.c_str(), config_.successor_root.c_str());
-    } else {
-      // Like an app folder deployed by hand: Playden writes in it as the app's user.
-      chmod(config_.successor_root.c_str(), 0777);
-      return true;
-    }
-    if (kit_swapped) {
-      SwapKitBack(installed_kit, previous_kit);
-      kit_swapped = false;
-    }
-    return false;
-  });
-  if (!moved) {
-    Log("move failed: " + error);
-    SaveState("staged", StagedFields());  // still staged: the next quit tries again
-    return false;
-  }
-  SaveState("applied", applied(kit_swapped && Exists(previous_kit)));
-  const bool registered = config_.register_title && config_.register_title(config_.successor_root);
-  Log("moved to " + staged_title_ + " " + staged_version_.ToString() + " at " + config_.successor_root +
-      (kit_swapped ? " with a new kit" : "") + (registered ? ", registration requested" : ", registration not answered"));
   return true;
 }
 

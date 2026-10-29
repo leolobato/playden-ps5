@@ -17,6 +17,7 @@
 
 #include "steam/backend/auth_client.h"
 #include "steam/backend/cm_app_details.h"
+#include "steam/backend/download_server_source.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
 #include "steam/backend/steam_cloud_runner.h"
@@ -31,6 +32,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdio>
@@ -38,12 +40,21 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include "homebrew/store_fetch.hpp"
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace {
+
+// Settings › Game language, read by the install and details workers when they start a job.
+std::mutex content_language_lock;
+std::string content_language{playden::steam::kDefaultContentLanguage};
+std::string selected_content_language() {
+    const std::lock_guard<std::mutex> guard(content_language_lock);
+    return content_language;
+}
 
 struct Options {
     std::string scenario;
@@ -59,6 +70,12 @@ struct Options {
     bool headless = false;
     bool record_motion = false;
     bool simulation = false;
+};
+
+struct DownloadTuningState {
+    std::atomic<bool> downloads_slow_network{false};
+    std::mutex mutex;
+    std::string download_server;
 };
 
 void usage(const char* executable) {
@@ -406,7 +423,11 @@ int main(int argc, char** argv) {
         else
             std::fprintf(stderr, "game settings data unavailable: %s\n", reason.c_str());
     }
+    // The install worker reads this snapshot when a download starts. Keep it alive
+    // until after install_runner is destroyed.
+    DownloadTuningState download_tuning_state;
     std::unique_ptr<playden::Storage> auth_storage;
+    const auto steam_cm = playden::steam::MakeCmSharedSession();
     std::unique_ptr<playden::steam::CmClient> auth_cm;
     std::unique_ptr<playden::steam::AuthClient> auth;
     std::unique_ptr<playden::SessionVault> session_vault;  // declared first: every session repository uses it
@@ -423,6 +444,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::OrganizationStore> organization;
     std::unique_ptr<playden::app::PersistenceService> persistence;
     std::unique_ptr<playden::steam::CmClient> details_cm;
+    std::unique_ptr<playden::steam::CmClient> sizes_cm;
+    std::unique_ptr<playden::steam::CdnClient> details_cdn;
+    std::unique_ptr<playden::steam::DepotInstaller> details_measurer;
     std::unique_ptr<playden::steam::CmAppDetailsSource> details_source;
     std::unique_ptr<playden::LocalSessionRepository> details_sessions;
     std::unique_ptr<playden::steam::AppDetailsService> app_details;
@@ -434,6 +458,13 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::stores::local::ImportStore> imports;
     std::unique_ptr<playden::stores::local::LocalCopyRunner> copy_runner;  // declared first: the install service uses it
     std::unique_ptr<playden::steam::InstallService> installs;
+    // Declared after installs: the fallback callback must finish before installs is destroyed.
+    std::unique_ptr<playden::steam::CmClient> servers_cm;
+    std::unique_ptr<playden::steam::CdnClient> servers_cdn;
+    std::unique_ptr<playden::LocalSessionRepository> servers_sessions;
+    std::unique_ptr<playden::steam::CdnDownloadServerSource> servers_source;
+    std::unique_ptr<playden::steam::DownloadServerService> servers;
+    std::unique_ptr<playden::web::Service> web;
     std::unique_ptr<playden::steam::CmClient> cloud_cm;
     std::unique_ptr<playden::steam::HttpClient> cloud_http;
     std::unique_ptr<playden::steam::SteamCloudRunner> cloud_runner;
@@ -484,6 +515,8 @@ int main(int argc, char** argv) {
         simulation.SetGameSettingsFile(settings_file.value_or(std::filesystem::path{}));
         auth_storage = std::make_unique<playden::Storage>(options->data_directory.string());
         auth_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *auth_storage);
+        auth_cm->SetOwner("auth");
+        auth_cm->SetSharedSession(steam_cm);
         auth = std::make_unique<playden::steam::AuthClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
         auth->SetMachineId([storage = auth_storage.get()] {
             return playden::steam::MakeDeviceIdentity(playden::steam::LoadOrCreateDeviceSeed(*storage)).machine_id;
@@ -515,22 +548,80 @@ int main(int argc, char** argv) {
         library_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
         library_storage = std::make_unique<playden::Storage>(options->data_directory.string());
         cm_client = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+        cm_client->SetOwner("library");
+        cm_client->SetSharedSession(steam_cm);
         library_backend = std::make_unique<playden::steam::EntitledLibraryBackend>(*owned_library, *cm_client);
         library_backend->SetLicensedDepots(&licensed_depots);
+        // Family sharing diagnostics.
+        library_backend->SetFamilyDiagnostics(PLAYDEN_HOMEBREW_CA_BUNDLE, [log_directory](const std::string& line) {
+            playden::app::AppendLogLine(log_directory, "steam-cm.log", line);
+        });
         library_cache = std::make_unique<playden::LibraryCache>(*library_storage);
         library_service = std::make_unique<playden::LibraryService>(*library_backend,*library_sessions,library_cache.get());
         preferences=std::make_unique<playden::PreferencesStore>(*library_storage);
+        {
+            // A download resumed at startup starts before the UI has loaded the settings: it reads the saved ones.
+            const auto saved = preferences->Load().preferences;
+            download_tuning_state.downloads_slow_network.store(saved.downloads_slow_network);
+            {
+                std::lock_guard lock(download_tuning_state.mutex);
+                download_tuning_state.download_server = saved.download_server;
+            }
+            const std::lock_guard<std::mutex> guard(content_language_lock);
+            content_language = saved.content_language;
+        }
         organization=std::make_unique<playden::OrganizationStore>(*library_storage);
         persistence=std::make_unique<playden::app::PersistenceService>(*preferences,*organization);
         details_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+        details_cm->SetOwner("details");
+        details_cm->SetSharedSession(steam_cm);
+        // The install sheet's exact sizes: manifests through the details connection, never written anywhere.
+        sizes_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+        sizes_cm->SetOwner("sizes");
+        sizes_cm->SetSharedSession(steam_cm);
+        details_cdn = std::make_unique<playden::steam::CdnClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
+        details_measurer = std::make_unique<playden::steam::DepotInstaller>(*sizes_cm, *details_cdn);
         details_source = std::make_unique<playden::steam::CmAppDetailsSource>(*details_cm);
+        details_source->SetMeasurer(details_measurer.get(), sizes_cm.get());
+        details_source->SetLog([log_directory](std::uint32_t app, const char* step, const char* result, const std::string& detail) {
+            playden::app::AppendLogLine(log_directory, "install.log", "app=" + std::to_string(app) + " step=" + step + " result=" + result + " detail=" + detail);
+        });
         details_source->SetLicensedDepots(&licensed_depots);
+        details_source->SetContentLanguage([] { return selected_content_language(); });
+        // Installed games' records, for their updates; the install service is made below and joined after the
+        // details worker (Controller::Shutdown).
+        details_source->SetInstalled([&installs](std::uint32_t app) -> std::optional<playden::installs::InstalledRecord> {
+            if (!installs) return std::nullopt;
+            const auto snapshot = installs->Snapshot();
+            for (const auto& game : snapshot.installed)
+                if (game.id == playden::GameId::Steam(app) && game.available) return game.record;
+            return std::nullopt;
+        });
         details_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
         app_details = std::make_unique<playden::steam::AppDetailsService>(*details_source, *details_sessions);
         install_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+        install_cm->SetOwner("install");
+        install_cm->SetSharedSession(steam_cm);
         install_cdn = std::make_unique<playden::steam::CdnClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
         install_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
         install_runner = std::make_unique<playden::steam::SteamInstallRunner>(*install_sessions, *install_cm, *install_cdn);
+        install_runner->SetTuning([data_directory = options->data_directory, &download_tuning_state] {
+            const auto file = data_directory / "dev" / "download-tuning.txt";
+            std::error_code error;
+            if (std::filesystem::exists(file, error))
+                return playden::steam::ReadDownloadTuning(file.string());
+            playden::steam::DownloadTuning tuning;
+            if (download_tuning_state.downloads_slow_network.load()) tuning.slots = 8;
+            {
+                std::lock_guard lock(download_tuning_state.mutex);
+                tuning.fastest = download_tuning_state.download_server == playden::steam::kFastestDownloadServer;
+                if (!tuning.fastest) tuning.preferred_server = download_tuning_state.download_server;
+            }
+            return tuning;
+        });
+        install_runner->SetContentLanguage([] { return selected_content_language(); });
+        install_runner->SetLicensedDepots(&licensed_depots);
+        install_runner->SetFreeDlcMemory(library_storage.get());
         install_runner->SetLog([log_directory](std::uint32_t app, const char* step, const char* category, const char* detail) {
             char line[640];
             if (std::string(step) == "install-removal")
@@ -559,7 +650,27 @@ int main(int argc, char** argv) {
             playden::installs::InstallService::Runners{{playden::Store::kSteam, install_runner.get()},
                                                        {playden::Store::kLocal, copy_runner.get()}},
             playden::steam::DiscoverInstallVolumes(candidates));
+        servers_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+        servers_cm->SetOwner("servers");
+        servers_cm->SetSharedSession(steam_cm);
+        servers_cdn = std::make_unique<playden::steam::CdnClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
+        servers_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
+        servers_source = std::make_unique<playden::steam::CdnDownloadServerSource>(*servers_cm, *servers_cdn, [service = installs.get()] {
+            const auto snapshot = service->Snapshot();
+            const playden::steam::InstalledGame* newest = nullptr;
+            for (const auto& game : snapshot.installed)
+                if (game.available && game.id.steam_app() && (!newest || game.finished_at > newest->finished_at)) newest = &game;
+            return newest ? *newest->id.steam_app() : 0u;
+        });
+        servers = std::make_unique<playden::steam::DownloadServerService>(*servers_source, *servers_sessions);
+        servers->SetLog([log_directory](std::uint32_t app, const char* step, const char* category, const char* detail) {
+            char line[640];
+            std::snprintf(line, sizeof(line), "app=%u step=%s result=%s detail=%s", app, step, category, detail);
+            playden::app::AppendLogLine(log_directory, "install.log", line);
+        });
         cloud_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+        cloud_cm->SetOwner("cloud");
+        cloud_cm->SetSharedSession(steam_cm);
         cloud_http = std::make_unique<playden::steam::HttpClient>(PLAYDEN_HOMEBREW_CA_BUNDLE);
         cloud_runner = std::make_unique<playden::steam::SteamCloudRunner>(*cloud_cm, *cloud_http);
         cloud_runner->SetLog([log_directory](std::uint32_t app, const char* event, const std::string& message) {
@@ -604,6 +715,18 @@ int main(int argc, char** argv) {
         services = std::make_unique<playden::homebrew::Controller>(simulation, *stores, persistence.get(), installs.get(),
                                                                    cloud.get(), nullptr, auth_log);
         services->SetLocalLibrary(local);
+        services->SetDownloadServers(servers.get());
+        {
+            // Web access on the Mac: the same page over the host's logs folder, on 127.0.0.1's network too.
+            playden::web::ServiceConfig web_config;
+            web_config.paths = {log_directory, (options->data_directory / "homebrew").string(),
+                                (options->data_directory / "kits").string(), options->data_directory.string()};
+            web_config.server.log = [log_directory](const std::string& line) {
+                playden::app::AppendLogLine(log_directory, "web.log", line);
+            };
+            web = std::make_unique<playden::web::Service>(std::move(web_config));
+            services->SetWebAccess(web.get());
+        }
         services->SetStaySignedIn([repository = sessions.get(), log_directory](bool stay) {
             const auto moved = repository->SetPersist(stay);
             playden::app::AppendLogLine(log_directory, "auth.log", std::string("stay signed in ") + (stay ? "on" : "off") +
@@ -614,7 +737,8 @@ int main(int argc, char** argv) {
     }
 
     if (!options->simulation) {
-        artwork_backend = std::make_unique<playden::homebrew::HttpArtworkBackend>(PLAYDEN_HOMEBREW_CA_BUNDLE);
+        const std::string art_cache_dir = (options->data_directory / "art").string();
+        artwork_backend = std::make_unique<playden::homebrew::HttpArtworkBackend>(PLAYDEN_HOMEBREW_CA_BUNDLE, art_cache_dir);
         artwork = std::make_unique<playden::homebrew::ArtworkService>(*artwork_backend);
     }
     auto render = std::make_unique<playden::homebrew::Render>(PLAYDEN_HOMEBREW_ASSETS_DIR, artwork.get());
@@ -723,6 +847,16 @@ int main(int argc, char** argv) {
             static_cast<float>(now_us - last_render_us) / 1000000.0F;
         last_render_us = now_us;
         if (services) services->Tick();
+        // Until the UI has the saved settings, its defaults would replace them.
+        if (simulation.PreferencesLoaded()) {
+            download_tuning_state.downloads_slow_network.store(simulation.state().downloads_slow_network);
+            {
+                std::lock_guard lock(download_tuning_state.mutex);
+                download_tuning_state.download_server = simulation.state().download_server;
+            }
+            const std::lock_guard<std::mutex> guard(content_language_lock);
+            content_language = simulation.state().content_language;
+        }
         render->draw(simulation, width, height, options->headless ? 1.0F / 60.0F : frame_dt);
         rendered_once = true;
         if (simulation.state().quit_requested) running = false;
@@ -752,9 +886,11 @@ int main(int argc, char** argv) {
     if (controller) SDL_GameControllerClose(controller);
     SDL_StopTextInput();
     if (services) services->Shutdown();
+    if (web) web->Shutdown();
     // The install service stops before the Local store goes (`stores` is destroyed before
     // `installs`): its copy runner's change callback calls into the Local store. Explicit here, so
     // it doesn't rest on the controller's shutdown or on declaration order.
+    if (servers) servers->Shutdown();
     if (installs) installs->Shutdown();
     if (copy_runner) copy_runner->SetChanged({});
     if (artwork) artwork->Shutdown();

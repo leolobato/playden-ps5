@@ -5,8 +5,7 @@
 // Playden (FAKE77031) cannot load libSceAppInstUtil itself, and ShadowMountPlus
 // refuses to uninstall while any title runs. This payload, which Playden sends to
 // the payload loader on 127.0.0.1:9021, unregisters one of Playden's game titles
-// (FAKE78xxx), or Playden's old title FAKE77031 once Playden runs as PPSA97031,
-// and exits. It reads one request from REQUEST_DIR:
+// (FAKE78xxx) and exits. It reads one request from REQUEST_DIR:
 //
 //   request   "title=FAKE78002\nnonce=<16..64 of [0-9a-f-]>\n"
 //
@@ -43,7 +42,6 @@ static int private_entry(const char *path, uid_t owner, int directory) {
 }
 
 static int valid_title(const char *title) {
-  if (strcmp(title, "FAKE77031") == 0) return 1;
   if (strlen(title) != 9 || strncmp(title, "FAKE78", 6) != 0) return 0;
   for (int i = 6; i < 9; ++i)
     if (title[i] < '0' || title[i] > '9') return 0;

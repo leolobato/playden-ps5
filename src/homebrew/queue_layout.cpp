@@ -131,6 +131,30 @@ QueueSection preparations(const State& state) {
         else uninstalls_running.push_back(std::move(item));
     }
     section.rows = std::move(uninstalls_running);
+    for (const auto& deletion : state.leftover_deletions) {
+        QueueEntry item;
+        item.key = "prep-leftover-" + deletion.title_id;
+        item.title = deletion.name.empty() ? deletion.title_id : deletion.name;
+        item.leftover = true;
+        item.note = deletion.failure.empty() ? deletion.step : deletion.failure;
+        if (!deletion.failure.empty()) {
+            item.status = "Deletion stopped";
+            item.tone = "attention";
+            ++section.attention;
+        } else if (deletion.step.empty()) {
+            item.status = "Waiting to delete";
+            item.note = deletion.title_id;
+            item.tone = "quiet";
+            ++section.waiting;
+        } else {
+            item.status = "Deleting title";
+            item.tone = "busy";
+            ++section.running;
+            ++section.deleting;
+            if (!section.active) { section.active = std::move(item); continue; }
+        }
+        section.rows.push_back(std::move(item));
+    }
     int position = 0;
     for (const auto id : queue.waiting) {
         if (queue.active && id == *queue.active) continue;
@@ -241,7 +265,7 @@ void summarize(QueueSection& section, const std::string& expanded_words, const s
     // Games after the card waiting their turn; what needs the player is counted apart.
     const std::size_t more = static_cast<std::size_t>(std::count_if(section.rows.begin(), section.rows.end(), [](const QueueEntry& row) {
         if (row.job) return row.job->state == JobState::Queued || running(*row.job);
-        return row.position > 0 || (row.uninstall && !row.completed && row.tone != "attention");
+        return row.position > 0 || ((row.uninstall || row.leftover) && !row.completed && row.tone != "attention");
     }));
     if (section.expanded) {
         text = expanded_words;
@@ -265,6 +289,8 @@ std::size_t QueuePending(const State& state) {
         return job.state != JobState::Cancelled && job.state != JobState::Downloaded && job.stage != JobStage::Uninstall;
     }));
     const auto& preparation = state.preparation_queue;
+    pending += std::count_if(state.leftover_deletions.begin(), state.leftover_deletions.end(),
+                             [](const LiveLeftoverDelete& deletion) { return deletion.failure.empty(); });
     return pending + preparation.waiting.size() + (preparation.active ? 1U : 0U) + preparation.uninstalls.size();
 }
 
@@ -307,7 +333,8 @@ QueueLayout BuildQueueLayout(const State& state) {
     if (failed) join(download_attention, std::to_string(failed) + " failed");
     summarize(download, downloads_words(download, paused, failed), download_attention, "No downloads");
     std::string prepare_words, prepare_attention;
-    if (prepare.running > prepare.uninstalling) join(prepare_words, "1 preparing");
+    if (prepare.running > prepare.uninstalling + prepare.deleting) join(prepare_words, "1 preparing");
+    if (prepare.deleting) join(prepare_words, std::to_string(prepare.deleting) + " deleting titles");
     if (prepare.uninstalling) join(prepare_words, std::to_string(prepare.uninstalling) + " uninstalling");
     if (prepare.waiting) join(prepare_words, std::to_string(prepare.waiting) + " waiting");
     if (prepare.attention) join(prepare_attention, need_attention(prepare.attention));
@@ -317,7 +344,8 @@ QueueLayout BuildQueueLayout(const State& state) {
     std::string summary;
     if (download.running > download.copying) join(summary, std::to_string(download.running - download.copying) + " downloading");
     if (download.copying) join(summary, std::to_string(download.copying) + " copying");
-    if (prepare.running > prepare.uninstalling) join(summary, "1 preparing");
+    if (prepare.running > prepare.uninstalling + prepare.deleting) join(summary, "1 preparing");
+    if (prepare.deleting) join(summary, std::to_string(prepare.deleting) + " deleting titles");
     if (prepare.uninstalling) join(summary, std::to_string(prepare.uninstalling) + " uninstalling");
     if (download.waiting + prepare.waiting) join(summary, std::to_string(download.waiting + prepare.waiting) + " waiting");
     if (download.attention + prepare.attention)

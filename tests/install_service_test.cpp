@@ -17,6 +17,7 @@
 
 using namespace playden;
 using namespace playden::steam;
+using playden::installs::ApplyAnswer;
 using namespace std::chrono_literals;
 
 #define CHECK(condition)                                                                  \
@@ -47,19 +48,23 @@ class Runner final : public SessionInstallRunner {
   std::atomic<bool> checking_licenses{false};  // holds the run in the license check
   bool telemetry = false;
   std::uint64_t held = 0;  // bytes the fake install reports on disk
+  std::string server;      // DownloadServerName while installing
   std::atomic<int> installs{0};
   std::atomic<int> canceled{0};
   std::atomic<int> unreachable{0};  // this many runs find Steam out of reach
   std::mutex mutex;
   std::vector<std::string> removed;
   std::vector<std::string> install_roots;
-  Result InstallApp(const StoredSession&, std::uint32_t, const std::string& root, const std::atomic<bool>& cancel,
+  std::vector<InstallOptions> install_options;
+  Result InstallApp(const StoredSession&, std::uint32_t, const std::string& root, const InstallOptions& options,
+                    const std::atomic<bool>& cancel,
                  const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
                  const std::function<void(InstallStep)>& step) override {
     ++installs;
     {
       std::lock_guard<std::mutex> lock(mutex);
       install_roots.push_back(root);
+      install_options.push_back(options);
     }
     if (unreachable > 0) { --unreachable; return {false, false, "Could not reach Steam.", 0, true}; }
     if (checking_licenses) {
@@ -84,6 +89,70 @@ class Runner final : public SessionInstallRunner {
     progress(100, 100, held);
     return {true, false, {}, 4096};
   }
+  // Updates: a fake that stages (holding while `block`), reports kApplying, holds while `apply_block`
+  // (cancel leaves it putting files in place), then writes a record of 8192 bytes.
+  std::atomic<bool> apply_block{false};
+  std::atomic<int> updates{0};
+  std::atomic<int> finishes{0};
+  std::vector<std::string> update_roots;
+  std::vector<InstallOptions> update_options;
+  std::vector<std::string> discarded;
+  static void WriteState(const std::string& root, const char* phase) {
+    std::filesystem::create_directories(std::filesystem::path(root) / ".playden-update");
+    std::ofstream(std::filesystem::path(root) / ".playden-update" / "update.json")
+        << "{\"version\":1,\"phase\":\"" << phase << "\",\"depots\":[],\"branch\":\"public\",\"language\":\"english\"}";
+  }
+  static Result Finish(const std::string& root) {
+    std::ofstream(std::filesystem::path(root) / ".playden-install.json") << "{\"install_bytes\":8192,\"branch\":\"beta\"}";
+    std::filesystem::remove_all(std::filesystem::path(root) / ".playden-update");
+    return {true, false, {}, 8192};
+  }
+  Result UpdateApp(const StoredSession&, std::uint32_t, const std::string& root, const InstallOptions& options,
+                   const std::atomic<bool>& cancel,
+                   const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
+                   const std::function<void(InstallStep)>& step, const std::function<bool()>& may_apply) override {
+    ++updates;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      update_roots.push_back(root);
+      update_options.push_back(options);
+    }
+    WriteState(root, "staging");
+    step(InstallStep::kDownloading);
+    progress(10, 100, 0);
+    while (block) {
+      if (cancel) return {false, true, {}, 0};
+      std::this_thread::sleep_for(1ms);
+    }
+    // As the installer: asked before the game's files change; the game running, the update waits.
+    if (may_apply && !may_apply()) return {false, false, {}, 0, true, kWaitingForGame};
+    step(InstallStep::kApplying);
+    WriteState(root, "replacing");
+    while (apply_block) {
+      if (cancel) return {false, true, {}, 0};
+      std::this_thread::sleep_for(1ms);
+    }
+    return Finish(root);
+  }
+  std::optional<Result> FinishUpdate(const std::string& root, const std::atomic<bool>& cancel,
+                                     const std::function<void(InstallStep)>& step) override {
+    const auto state = playden::installs::ReadUpdateState(root);
+    if (!state || state->phase == playden::installs::UpdatePhase::kStaging) return std::nullopt;
+    ++finishes;
+    step(InstallStep::kApplying);
+    while (apply_block) {
+      if (cancel) return Result{false, true, {}, 0};
+      std::this_thread::sleep_for(1ms);
+    }
+    return Finish(root);
+  }
+  std::string DiscardUpdate(const std::string& root) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    discarded.push_back(root);
+    std::filesystem::remove_all(std::filesystem::path(root) / ".playden-update");
+    return {};
+  }
+  std::string DownloadServerName() const override { return server; }
   std::string remove_failure;  // the next removals fail with this, leaving the folder
   std::string Remove(const std::string& root) override {
     std::lock_guard<std::mutex> lock(mutex);
@@ -174,7 +243,7 @@ void SpaceAdmission(const std::filesystem::path& root) {
 
 void LiveTelemetryDecaysWithoutCallbacks(const std::filesystem::path& root) {
   Sessions sessions;
-  Runner runner(sessions); runner.block = true; runner.telemetry = true;
+  Runner runner(sessions); runner.block = true; runner.telemetry = true; runner.server = "Fastly";
   InstallService service(runner, root.string());
   service.Install(SteamId(900));
   AwaitAt(__LINE__, service, [](const InstallSnapshot& snapshot) {
@@ -185,6 +254,7 @@ void LiveTelemetryDecaysWithoutCallbacks(const std::filesystem::path& root) {
   const auto* job = JobOf(moving, SteamId(900));
   CHECK(job && *job->bytes_per_second <= 100000000 && job->eta_seconds);
   CHECK(job->done_bytes == 9100000000ull); // only the fresh 100 MB belongs in the rate
+  CHECK(job->server_name == "Fastly");  // the runner's download server, with each progress report
   const auto deadline = std::chrono::steady_clock::now() + 9s;
   bool stalled = false;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -203,6 +273,7 @@ void LiveTelemetryDecaysWithoutCallbacks(const std::filesystem::path& root) {
   CHECK(!JobOf(paused, SteamId(900))->bytes_per_second && !JobOf(paused, SteamId(900))->eta_seconds);
   AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.canceled == 1; });
   CHECK(!JobOf(service.Snapshot(), SteamId(900))->bytes_per_second); // late callback cannot restore it
+  CHECK(JobOf(service.Snapshot(), SteamId(900))->server_name.empty());
   service.Resume(SteamId(900));
   AwaitAt(__LINE__, service, [&](const InstallSnapshot& snapshot) {
     const auto* current = JobOf(snapshot, SteamId(900));
@@ -329,7 +400,7 @@ class LocalRunner final : public InstallRunner {
   std::vector<GameId> installed;
   std::vector<std::string> removed;
   std::vector<GameId> forgotten;
-  Result Install(const GameId& id, const std::string& root, const std::atomic<bool>& cancel,
+  Result Install(const GameId& id, const std::string& root, const InstallOptions&, const std::atomic<bool>& cancel,
                  const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
                  const std::function<void(InstallStep)>&) override {
     while (block) {
@@ -673,7 +744,433 @@ void UninstallDeletesFilesWhileDownloading(const std::filesystem::path& base) {
   std::filesystem::remove_all(base);
 }
 
+// Install records: version 1 reads as the public branch in English with the game owning every depot.
+void InstallRecordsParse(const std::filesystem::path& root) {
+  using playden::installs::InstalledRecord;
+  using playden::installs::ParseInstallRecord;
+  using playden::installs::RecordedDepot;
+  const auto v1 = ParseInstallRecord(
+      "{\"version\":1,\"app_id\":220,\"install_bytes\":5000000000,\"files\":3,\"depots\":[{\"id\":221,"
+      "\"manifest\":\"1234567890123456789\"},{\"id\":222,\"manifest\":\"18446744073709551615\"}]}\n");
+  CHECK(v1 && v1->version == 1 && v1->app_id == 220 && v1->install_bytes == 5000000000ull);
+  CHECK(v1->branch == "public" && v1->language == "english");
+  CHECK((v1->depots == std::vector<RecordedDepot>{{221, 1234567890123456789ull, 220, 220},
+                                                  {222, 18446744073709551615ull, 220, 220}}));
+  const auto v2 = ParseInstallRecord(
+      "{\"version\":2,\"app_id\":220,\"install_bytes\":10,\"files\":1,\"branch\":\"beta\",\"language\":\"german\","
+      "\"future\":{\"nested\":[1,2]},\"depots\":[{\"id\":221,\"manifest\":\"5\",\"owner\":220,\"source\":220,\"x\":true},"
+      "{\"id\":330,\"manifest\":\"6\",\"owner\":330,\"source\":330}]}");
+  CHECK(v2 && v2->version == 2 && v2->branch == "beta" && v2->language == "german");
+  CHECK((v2->depots == std::vector<RecordedDepot>{{221, 5, 220, 220}, {330, 6, 330, 330}}));
+  // An imported game's copy and the test fakes' records: no version, no depots.
+  const auto copy = ParseInstallRecord("{\"version\":1,\"app_id\":4026531841,\"store\":\"local\",\"game\":\"x\",\"install_bytes\":7}");
+  CHECK(copy && copy->app_id == 4026531841u && copy->depots.empty() && copy->install_bytes == 7);
+  const auto bare = ParseInstallRecord("{}");
+  CHECK(bare && *bare == InstalledRecord{});
+  CHECK(!ParseInstallRecord(""));
+  CHECK(!ParseInstallRecord("[1]"));
+  CHECK(!ParseInstallRecord("{\"install_bytes\":"));
+  CHECK(!ParseInstallRecord("{\"depots\":[{\"manifest\":\"5\"}]}"));
+
+  // Scan reads each installed game's record into the installed view.
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root / "220");
+  std::filesystem::create_directories(root / "230");
+  std::ofstream(root / "220" / ".playden-install.json")
+      << "{\"version\":2,\"app_id\":220,\"install_bytes\":10,\"branch\":\"beta\",\"language\":\"german\","
+         "\"depots\":[{\"id\":221,\"manifest\":\"5\",\"owner\":220,\"source\":220}]}";
+  std::ofstream(root / "230" / ".playden-install.json") << "not json";
+  std::ofstream(root / ".playden-games") << "220\tinternal\t10\n230\tinternal\t20\n";
+  Sessions sessions;
+  Runner runner(sessions);
+  InstallService service(runner, root.string());
+  auto snapshot = service.Snapshot();
+  const auto game = [&snapshot](GameId id) -> const InstalledGame* {
+    for (const auto& entry : snapshot.installed)
+      if (entry.id == id) return &entry;
+    return nullptr;
+  };
+  CHECK(game(SteamId(220)) && game(SteamId(220))->record && game(SteamId(220))->record->branch == "beta" &&
+        game(SteamId(220))->record->language == "german" &&
+        (game(SteamId(220))->record->depots == std::vector<RecordedDepot>{{221, 5, 220, 220}}));
+  // A record that doesn't read still lists the game (by its bytes, as before), without a record.
+  CHECK(game(SteamId(230)) && !game(SteamId(230))->record);
+  // A finished install has its record at once.
+  service.Install(SteamId(240));
+  AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return Installed(s, SteamId(240)); });
+  snapshot = service.Snapshot();
+  CHECK(game(SteamId(240)) && game(SteamId(240))->record && game(SteamId(240))->record->install_bytes == 4096 &&
+        game(SteamId(240))->record->language == "english");
+  service.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
+// The install sheet's choices reach the runner, and a job keeps them in the registry across a restart.
+void InstallOptionsReachTheRunner(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  const auto options_at = [&runner](const std::filesystem::path& game) {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    std::optional<InstallOptions> found;
+    for (std::size_t index = 0; index < runner.install_roots.size(); ++index)
+      if (runner.install_roots[index] == game.string()) found = runner.install_options[index];
+    return found;
+  };
+  {
+    InstallService service(runner, root.string());
+    runner.block = true;
+    service.Install(SteamId(900), std::nullopt, {}, {"german", "beta"});
+    AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { auto* job = JobOf(s, SteamId(900)); return job && job->state == InstallJobState::kRunning; });
+    CHECK(options_at(root / "900") == (InstallOptions{"german", "beta"}));
+    service.Install(SteamId(901));
+    service.Install(SteamId(902), std::nullopt, {}, {"french", {}});
+    service.Pause(SteamId(902));
+    // Values the registry can't hold are dropped: the defaults apply.
+    service.Install(SteamId(903), std::nullopt, {}, {"bad value", "a\tb"});
+  }
+  {
+    std::ifstream registry(root / ".playden-games");
+    const std::string text((std::istreambuf_iterator<char>(registry)), std::istreambuf_iterator<char>());
+    const auto line_of = [&](const std::string& id) {
+      const auto at = text.find(id + "\t");
+      return at == std::string::npos ? std::string() : text.substr(at, text.find('\n', at) - at);
+    };
+    CHECK(line_of("900") == "900\tinternal\t0\tlang=german\tbranch=beta");
+    CHECK(line_of("901") == "901\tinternal\t0");
+    CHECK(line_of("902") == "902\tinternal\t0\tpaused\tlang=french");
+    CHECK(line_of("903") == "903\tinternal\t0");
+  }
+  // Fields after the bytes come in any order, unknown ones are skipped, and bad values are dropped.
+  {
+    std::ofstream registry(root / ".playden-games", std::ios::app);
+    registry << "904\tinternal\t0\tbranch=public\tfuture=1\tlang=spanish\tpaused\n"
+             << "905\tinternal\t0\tlang=\x01x\n";
+  }
+  runner.block = false;
+  InstallService again(runner, root.string());
+  AwaitAt(__LINE__, again, [](const InstallSnapshot& s) {
+    return Installed(s, SteamId(900)) && Installed(s, SteamId(901)) && Installed(s, SteamId(903)) && Installed(s, SteamId(905));
+  });
+  CHECK(options_at(root / "900") == (InstallOptions{"german", "beta"}));
+  CHECK(options_at(root / "901") == InstallOptions{});
+  CHECK(options_at(root / "903") == InstallOptions{});
+  CHECK(options_at(root / "905") == InstallOptions{});
+  const auto paused = again.Snapshot();
+  CHECK(JobOf(paused, SteamId(902)) && JobOf(paused, SteamId(902))->state == InstallJobState::kPaused);
+  CHECK(JobOf(paused, SteamId(904)) && JobOf(paused, SteamId(904))->state == InstallJobState::kPaused);
+  again.Resume(SteamId(902));
+  again.Resume(SteamId(904));
+  AwaitAt(__LINE__, again, [](const InstallSnapshot& s) { return Installed(s, SteamId(902)) && Installed(s, SteamId(904)); });
+  CHECK(options_at(root / "902") == (InstallOptions{"french", {}}));
+  CHECK(options_at(root / "904") == (InstallOptions{"spanish", "public"}));
+  again.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
+
+std::string ReadText(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+std::string RegistryLine(const std::filesystem::path& root, const std::string& key) {
+  const auto text = ReadText(root / ".playden-games");
+  const auto at = text.find(key + "\t");
+  return at == std::string::npos ? std::string() : text.substr(at, text.find('\n', at) - at);
+}
+
+std::uint64_t InstalledBytes(const InstallSnapshot& snapshot, GameId id) {
+  for (const auto& game : snapshot.installed) if (game.id == id) return game.install_bytes;
+  return 0;
+}
+
+// An update keeps the game installed and playable while it downloads; once it puts files in place the
+// game is locked, Pause and Cancel do nothing, and it finishes with the new record.
+void UpdatesAnInstalledGame(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  InstallService service(runner, root.string());
+  const auto game = SteamId(700);
+  // Not installed: nothing to update.
+  service.Update(game);
+  CHECK(!JobOf(service.Snapshot(), game));
+  service.Install(game);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return Installed(s, game) && !JobOf(s, game); });
+  std::ofstream(root / "700" / ".playden-install.json")
+      << "{\"version\":2,\"install_bytes\":4096,\"branch\":\"beta\",\"language\":\"german\"}";
+  // The record is read again at the next scan; Adopt-free: restart the service to read it.
+  service.Shutdown();
+  InstallService again(runner, root.string());
+  runner.block = true;
+  runner.apply_block = true;
+  again.Update(game);
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) {
+    const auto* job = JobOf(s, game);
+    return job && job->state == InstallJobState::kRunning && job->step == InstallStep::kDownloading && runner.updates == 1;
+  });
+  auto snapshot = again.Snapshot();
+  CHECK(JobOf(snapshot, game)->kind == InstallJobKind::kUpdate && !JobOf(snapshot, game)->locked);
+  CHECK(Installed(snapshot, game) && !again.Locked(game));
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    // The record's branch and language, as nothing else was chosen.
+    CHECK(runner.update_options.back() == (InstallOptions{"german", "beta"}));
+    CHECK(runner.update_roots.back() == (root / "700").string());
+  }
+  // A second update or an install of the same game is refused while the job is there.
+  again.Update(game, {"french", {}});
+  again.Install(game);
+  CHECK(again.Snapshot().jobs.size() == 1);
+  CHECK(RegistryLine(root, "700") == "700\tinternal\t4096\tupdate\tlang=german\tbranch=beta");
+  runner.block = false;
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot&) { return again.Locked(game); });
+  snapshot = again.Snapshot();
+  CHECK(JobOf(snapshot, game)->locked && JobOf(snapshot, game)->step == InstallStep::kApplying && Installed(snapshot, game));
+  again.Pause(game);
+  again.Cancel(game);
+  snapshot = again.Snapshot();
+  CHECK(JobOf(snapshot, game) && JobOf(snapshot, game)->state == InstallJobState::kRunning);
+  runner.apply_block = false;
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+  snapshot = again.Snapshot();
+  CHECK(Installed(snapshot, game) && InstalledBytes(snapshot, game) == 8192 && !again.Locked(game));
+  for (const auto& entry : snapshot.installed)
+    if (entry.id == game) CHECK(entry.record && entry.record->branch == "beta" && entry.finished_at > 0);
+  CHECK(std::count_if(snapshot.installed.begin(), snapshot.installed.end(), [&](const InstalledGame& g) { return g.id == game; }) == 1);
+  // Its finished entry says what the update downloaded, not the game's size.
+  const auto finished = std::find_if(snapshot.completed.begin(), snapshot.completed.end(),
+                                     [&](const playden::installs::CompletedDownload& entry) { return entry.id == game; });
+  CHECK(finished != snapshot.completed.end() && finished->update_bytes == 10 && finished->install_bytes == 8192);
+  CHECK(RegistryLine(root, "700") == "700\tinternal\t8192");
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.removed.empty() && runner.discarded.empty());
+  }
+  // Chosen options win over the record's; empty ones keep it.
+  runner.block = true;
+  again.Update(game, {"french", {}});
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot&) { return runner.updates == 2; });
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.update_options.back() == (InstallOptions{"french", "beta"}));
+  }
+  // Cancel while downloading deletes only the update's downloads.
+  again.Cancel(game);
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    return !JobOf(s, game) && !runner.discarded.empty();
+  });
+  snapshot = again.Snapshot();
+  CHECK(Installed(snapshot, game) && std::filesystem::exists(root / "700" / ".playden-install.json"));
+  CHECK(!std::filesystem::exists(root / "700" / ".playden-update"));
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.removed.empty() && runner.discarded.back() == (root / "700").string());
+  }
+  // Cancel of a queued (not running) update: the same.
+  again.Pause(game);
+  again.Update(game);
+  again.Pause(game);
+  CHECK(JobOf(again.Snapshot(), game) && JobOf(again.Snapshot(), game)->state == InstallJobState::kPaused);
+  CHECK(RegistryLine(root, "700") == "700\tinternal\t8192\tupdate\tpaused\tlang=english\tbranch=beta");
+  again.Cancel(game);
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    return !JobOf(s, game) && runner.discarded.size() == 2;
+  });
+  CHECK(Installed(again.Snapshot(), game));
+  // Uninstall during an update: the update goes and the game's folder is deleted.
+  again.Update(game);
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) { auto* job = JobOf(s, game); return job && job->state == InstallJobState::kRunning; });
+  again.Uninstall(game);
+  AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) {
+    return !JobOf(s, game) && !Installed(s, game) && s.uninstalling.empty();
+  });
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.removed.size() == 1 && runner.removed[0] == (root / "700").string());
+  }
+  CHECK(!std::filesystem::exists(root / "700") && RegistryLine(root, "700").empty());
+  runner.block = false;
+  again.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
+// At start an update on disk is read before the record: downloading → paused (the game playable);
+// putting files in place → the game is locked and the update finishes by itself, without a sign-in.
+void ScanFindsUpdatesFirst(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  for (const char* key : {"710", "720", "730", "740"}) {
+    std::filesystem::create_directories(root / key);
+    std::ofstream(root / key / ".playden-install.json") << "{\"install_bytes\":4096}";
+  }
+  Runner::WriteState((root / "710").string(), "staging");
+  Runner::WriteState((root / "720").string(), "replacing");
+  Runner::WriteState((root / "730").string(), "deleting");
+  std::ofstream(root / ".playden-games") << "710\tinternal\t4096\n720\tinternal\t4096\n730\tinternal\t4096\tupdate\tpaused\n"
+                                         << "740\tinternal\t4096\tupdate\tlang=german\n";
+  Sessions sessions;
+  sessions.present = false;  // finishing needs no sign-in
+  Runner runner(sessions);
+  runner.apply_block = true;
+  runner.block = true;
+  {
+    InstallService service(runner, root.string());
+    auto snapshot = service.Snapshot();
+    for (const auto id : {710u, 720u, 730u, 740u}) CHECK(Installed(snapshot, SteamId(id)));
+    const auto* staging = JobOf(snapshot, SteamId(710));
+    CHECK(staging && staging->kind == InstallJobKind::kUpdate && staging->state == InstallJobState::kPaused &&
+          staging->failure == "Interrupted. Resume to continue." && !staging->locked);
+    CHECK(!service.Locked(SteamId(710)));
+    CHECK(service.Locked(SteamId(720)) && service.Locked(SteamId(730)));
+    // A queued update that hadn't started (no update.json) carries on; it waits for the sign-in.
+    const auto* queued = JobOf(snapshot, SteamId(740));
+    CHECK(queued && queued->kind == InstallJobKind::kUpdate && !queued->locked);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.finishes >= 1; });
+    // Shutting down while one puts files in place leaves it to finish next time.
+  }
+  CHECK(RegistryLine(root, "720").find("\tupdate") != std::string::npos);
+  CHECK(RegistryLine(root, "730").find("\tupdate") != std::string::npos);
+  CHECK(RegistryLine(root, "740") == "740\tinternal\t4096\tupdate\tlang=german");
+  runner.apply_block = false;
+  InstallService service(runner, root.string());
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, SteamId(720)) && !JobOf(s, SteamId(730)); });
+  CHECK(!service.Locked(SteamId(720)) && !service.Locked(SteamId(730)));
+  auto snapshot = service.Snapshot();
+  CHECK(InstalledBytes(snapshot, SteamId(720)) == 8192 && InstalledBytes(snapshot, SteamId(730)) == 8192);
+  CHECK(runner.updates == 0);
+  CHECK(JobOf(snapshot, SteamId(710)) && JobOf(snapshot, SteamId(710))->state == InstallJobState::kPaused);
+  // Signed in, a resumed download-phase update runs as an update.
+  AwaitAt(__LINE__, service, [](const InstallSnapshot& s) {
+    const auto* job = JobOf(s, SteamId(740));
+    return job && job->state == InstallJobState::kQueued && job->failure == SessionInstallRunner::kWaitingForSignIn;
+  });
+  sessions.present = true;
+  runner.block = false;
+  service.RetryWaiting(Store::kSteam);
+  service.Resume(SteamId(710));
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, SteamId(710)) && !JobOf(s, SteamId(740)); });
+  CHECK(runner.updates == 2 && runner.installs == 0);
+  {
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(std::find(runner.update_options.begin(), runner.update_options.end(), InstallOptions{"german", {}}) !=
+          runner.update_options.end());
+  }
+  service.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
+// The game runs when an update is ready to put its files in place: the update waits, the game stays playable
+// (not locked) while it waits, the gate is asked again without running the update again, and the files go in
+// place once the game is closed. Locked is already true while the gate is asked. An update that stopped part
+// way through applying waits too, and stays locked.
+void UpdateWaitsForTheGameToClose(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root / "750");
+  std::filesystem::create_directories(root / "760");
+  std::ofstream(root / "750" / ".playden-install.json") << "{\"install_bytes\":4096}";
+  std::ofstream(root / "760" / ".playden-install.json") << "{\"install_bytes\":4096}";
+  Runner::WriteState((root / "760").string(), "replacing");
+  std::ofstream(root / ".playden-games") << "750\tinternal\t4096\n760\tinternal\t4096\tupdate\n";
+  Sessions sessions;
+  Runner runner(sessions);
+  InstallService service(runner, root.string());
+  service.SetRetryDelays(20ms, 30s);
+  std::atomic<bool> running{true};
+  std::atomic<int> asked{0};
+  std::mutex calls_mutex;
+  std::vector<std::pair<GameId, bool>> calls;  // each question, with Locked as it was then
+  service.SetApplyGate([&](GameId id) {
+    ++asked;
+    const bool locked = service.Locked(id);
+    std::lock_guard<std::mutex> lock(calls_mutex);
+    calls.emplace_back(id, locked);
+    return running.load() ? ApplyAnswer::kGameRunning : ApplyAnswer::kApply;
+  });
+  // The interrupted apply asks first and waits, still locked.
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) {
+    const auto* job = JobOf(s, SteamId(760));
+    return job && job->state == InstallJobState::kQueued && job->failure == InstallRunner::kWaitingForGame;
+  });
+  CHECK(service.Locked(SteamId(760)) && runner.finishes == 0);
+  const auto game = SteamId(750);
+  service.Update(game);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) {
+    const auto* job = JobOf(s, game);
+    return job && job->state == InstallJobState::kQueued && job->failure == InstallRunner::kWaitingForGame;
+  });
+  CHECK(!service.Locked(game) && !JobOf(service.Snapshot(), game)->locked && runner.updates == 1);
+  CHECK(Installed(service.Snapshot(), game));
+  // Waiting, the gate is asked again at the first retry's pace: 20 more questions come well within AwaitAt's
+  // deadline, where doubling waits would take minutes. The update is not run again for it.
+  const int before = asked.load();
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return asked.load() >= before + 20; });
+  CHECK(runner.updates == 1 && !service.Locked(game) && runner.finishes == 0);
+  // Closed: both put their files in place.
+  running = false;
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game) && !JobOf(s, SteamId(760)); });
+  CHECK(runner.updates == 2 && runner.finishes == 1);
+  {
+    // The question that let each apply go was asked with the game locked; the interrupted apply stayed locked.
+    std::lock_guard<std::mutex> lock(calls_mutex);
+    const auto last = std::find_if(calls.rbegin(), calls.rend(), [&](const auto& call) { return call.first == game; });
+    CHECK(last != calls.rend() && last->second);
+    for (const auto& call : calls) if (call.first == SteamId(760)) CHECK(call.second);
+  }
+  CHECK(InstalledBytes(service.Snapshot(), game) == 8192 && InstalledBytes(service.Snapshot(), SteamId(760)) == 8192);
+  service.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
+// The console doesn't say whether the game runs (each question may take the gate's whole wait): the update waits
+// longer each time, as for Steam, so it doesn't keep the worker from the other jobs. Once the game is seen running,
+// it is asked soon again.
+void UpdateWaitsLongerWhenTheConsoleDoesNotSay(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root / "750");
+  std::ofstream(root / "750" / ".playden-install.json") << "{\"install_bytes\":4096}";
+  std::ofstream(root / ".playden-games") << "750\tinternal\t4096\n";
+  Sessions sessions;
+  Runner runner(sessions);
+  InstallService service(runner, root.string());
+  service.SetRetryDelays(20ms, 30s);
+  std::atomic<int> answer{static_cast<int>(ApplyAnswer::kUnknown)};
+  std::atomic<int> asked{0};
+  service.SetApplyGate([&](GameId) {
+    ++asked;
+    return static_cast<ApplyAnswer>(answer.load());
+  });
+  const auto game = SteamId(750);
+  service.Update(game);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) {
+    const auto* job = JobOf(s, game);
+    return job && job->state == InstallJobState::kQueued && job->failure == InstallRunner::kWaitingForGame;
+  });
+  // Doubling from 20 ms, 1.5 s has room for about seven questions; at the first retry's pace it would be some 75.
+  std::this_thread::sleep_for(1500ms);
+  CHECK(asked.load() <= 10 && runner.updates == 1);
+  // Seen running now: once the doubled wait ends the job holds again, and from then on it is asked soon each time.
+  answer = static_cast<int>(ApplyAnswer::kGameRunning);
+  const int before = asked.load();
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return asked.load() >= before + 20; });
+  // Closed: the files go in place.
+  answer = static_cast<int>(ApplyAnswer::kApply);
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+  CHECK(runner.updates == 2);
+  service.Shutdown();
+  std::filesystem::remove_all(root);
+}
+
 int main() {
+  UpdateWaitsLongerWhenTheConsoleDoesNotSay(std::filesystem::temp_directory_path() /
+                                            ("playden-update-unknown-" + std::to_string(::getpid())));
+  UpdateWaitsForTheGameToClose(std::filesystem::temp_directory_path() / ("playden-update-wait-" + std::to_string(::getpid())));
+  UpdatesAnInstalledGame(std::filesystem::temp_directory_path() / ("playden-update-service-" + std::to_string(::getpid())));
+  ScanFindsUpdatesFirst(std::filesystem::temp_directory_path() / ("playden-update-scan-" + std::to_string(::getpid())));
+  InstallRecordsParse(std::filesystem::temp_directory_path() / ("playden-record-service-" + std::to_string(::getpid())));
+  InstallOptionsReachTheRunner(std::filesystem::temp_directory_path() / ("playden-options-service-" + std::to_string(::getpid())));
   FolderCheckGuardsDownloadStart(std::filesystem::temp_directory_path() / ("playden-foldercheck-service-" + std::to_string(::getpid())));
   UninstallDeletesFilesWhileDownloading(std::filesystem::temp_directory_path() /
                                         ("playden-uninstall-service-" + std::to_string(::getpid())));

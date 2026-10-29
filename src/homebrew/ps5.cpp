@@ -11,7 +11,6 @@
 #include "stores/local/copy_runner.h"
 #include "stores/local/library_source.h"
 #include "app/diagnostic_log.h"
-#include "platform/ps5/title_database.h"
 #include "platform/ps5/title_registry.h"
 #include "platform/ps5/title_remover.h"
 #include "platform/ps5/title_runtime.h"
@@ -21,17 +20,22 @@
 #include "homebrew/runtime_host.hpp"
 #include "homebrew/title_icon.hpp"
 #include "platform/ps5/title_allow_list.h"
+#include "platform/ps5/console_address.h"
 #include "platform/ps5/console_services.h"
 #include "platform/ps5/system_keyboard.h"
 #include "runtime/artifact_hash.h"
 #include "runtime/kit_admission.h"
 #include "runtime/kit_trust.h"
 #include "update/update_service.h"
+#include "web/address.h"
+#include "web/server.h"
+#include "web/service.h"
 #include "homebrew/input_adapter.hpp"
 #include "homebrew/usb_keyboard.hpp"
 #include "core/input.hpp"
 #include "steam/backend/auth_client.h"
 #include "steam/backend/cm_app_details.h"
+#include "steam/backend/download_server_source.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
 #include "steam/backend/steam_cloud_runner.h"
@@ -43,10 +47,8 @@
 #include "platform/ps5/system.hpp"
 
 #include <array>
-#include <cerrno>
-#include <chrono>
-#include <thread>
 #include <atomic>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -54,6 +56,7 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include "homebrew/store_fetch.hpp"
 #include <memory>
 #include <optional>
@@ -156,6 +159,17 @@ std::string title_root = "/app0";
 std::string log_root = "/app0/logs";
 // Settings › Downloads for slow networks, read by the install worker when a download starts.
 std::atomic<bool> downloads_slow_network{false};
+// The main loop updates this selection; the install worker copies it at download start.
+std::mutex download_server_mutex;
+std::string download_server;
+// Settings › Game language, read by the install worker when a download starts and by the
+// details worker when it estimates sizes. A string needs a lock; the UI writes it once a frame.
+std::mutex content_language_lock;
+std::string content_language{playden::steam::kDefaultContentLanguage};
+std::string selected_content_language() {
+    const std::lock_guard<std::mutex> guard(content_language_lock);
+    return content_language;
+}
 // Development requests are processed in file order on the first frame.
 std::vector<playden::steam::InstallRequest> take_install_requests(bool runtime_ready) {
     const std::string request_path = title_root + "/dev/install-request.txt";
@@ -244,6 +258,7 @@ int main() {
     // After the grant, user data, logs and games live outside the app folder (0.6 layout).
     log_root = playden::ps5::EffectiveLogRoot(paths);
     const std::string user_root = playden::ps5::EffectiveUserRoot(paths);
+    const std::string art_cache_dir = paths.runtime_data_root.empty() ? std::string{} : (paths.runtime_data_root + "/art");
     // Startup checkpoints: a launch that never shows its first frame can be told
     // apart from one that never opened the display.
     playden::app::AppendLogLine(log_root, "launch.log", "display open width=" + std::to_string(display.width()) +
@@ -326,7 +341,7 @@ int main() {
                 " after " + after);
         });
         // "Stay signed in" is known before the controller restores the session. Off, the session lives
-        // only in this vault, which all five repositories below share.
+        // only in this vault, which all repositories below share.
         const bool stay_signed_in = playden::PreferencesStore(auth_storage).Load().preferences.steam_stay_signed_in;
         playden::SessionVault session_vault(stay_signed_in);
         playden::LocalSessionRepository sessions(user_root, [](const std::string& diagnostic) {
@@ -343,16 +358,42 @@ int main() {
         playden::steam::EntitledLibraryBackend library_backend(owned_library, cm_client);
         playden::steam::LicensedDepots licensed_depots;
         library_backend.SetLicensedDepots(&licensed_depots);
+        // Family sharing diagnostics, with the CM license lines.
+        library_backend.SetFamilyDiagnostics(paths.trust_store, [](const std::string& line) {
+            playden::app::AppendLogLine(log_root, "steam-cm.log", line);
+        });
         playden::LibraryCache library_cache(library_storage);
         playden::LibraryService library_service(library_backend,library_sessions,&library_cache);
         playden::PreferencesStore preferences(library_storage);
+        {
+            // A download resumed at startup starts before the UI has loaded the settings: it reads the saved ones.
+            const auto saved = preferences.Load().preferences;
+            downloads_slow_network.store(saved.downloads_slow_network);
+            {
+                std::lock_guard lock(download_server_mutex);
+                download_server = saved.download_server;
+            }
+            const std::lock_guard<std::mutex> guard(content_language_lock);
+            content_language = saved.content_language;
+        }
         playden::OrganizationStore organization(library_storage);
         playden::app::PersistenceService persistence(preferences,organization);
         playden::steam::CmClient details_cm(paths.trust_store, library_storage);
         details_cm.SetOwner("details");
         details_cm.SetSharedSession(steam_cm);
+        // The install sheet's exact sizes: manifests through the details connection, never written anywhere.
+        playden::steam::CmClient sizes_cm(paths.trust_store, library_storage);
+        sizes_cm.SetOwner("sizes");
+        sizes_cm.SetSharedSession(steam_cm);
+        playden::steam::CdnClient details_cdn(paths.trust_store);
+        playden::steam::DepotInstaller details_measurer(sizes_cm, details_cdn);
         playden::steam::CmAppDetailsSource details_source(details_cm);
+        details_source.SetMeasurer(&details_measurer, &sizes_cm);
+        details_source.SetLog([](std::uint32_t app, const char* step, const char* result, const std::string& detail) {
+            playden::app::AppendLogLine(log_root, "install.log", "app=" + std::to_string(app) + " step=" + step + " result=" + result + " detail=" + detail);
+        });
         details_source.SetLicensedDepots(&licensed_depots);
+        details_source.SetContentLanguage([] { return selected_content_language(); });
         playden::LocalSessionRepository details_sessions(user_root, {}, &session_vault);
         playden::steam::AppDetailsService app_details(details_source, details_sessions);
         playden::steam::CmClient install_cm(paths.trust_store, library_storage);
@@ -367,8 +408,16 @@ int main() {
             if (::access(file.c_str(), F_OK) == 0) return playden::steam::ReadDownloadTuning(file);
             playden::steam::DownloadTuning tuning;
             if (downloads_slow_network.load()) tuning.slots = 8;
+            {
+                std::lock_guard lock(download_server_mutex);
+                tuning.fastest = download_server == playden::steam::kFastestDownloadServer;
+                if (!tuning.fastest) tuning.preferred_server = download_server;
+            }
             return tuning;
         });
+        install_runner.SetContentLanguage([] { return selected_content_language(); });
+        install_runner.SetLicensedDepots(&licensed_depots);
+        install_runner.SetFreeDlcMemory(&library_storage);
         install_runner.SetLog([](std::uint32_t app, const char* step, const char* category, const char* detail) {
             char line[640];
             if (std::string(step) == "install-removal")
@@ -395,6 +444,7 @@ int main() {
         playden::update::UpdateConfig update_config;
         update_config.latest_release_url = "https://api.github.com/repos/leolobato/playden-ps5/releases/latest";
         update_config.releases_page = "https://github.com/leolobato/playden-ps5/releases";
+        update_config.nightly_page = "https://builds.playden.club/";
         update_config.title_id = PLAYDEN_PS5_TITLE_ID;
         update_config.installed_root = std::string("/data/homebrew/") + PLAYDEN_PS5_TITLE_ID;
         update_config.work_root = "/data/playden/self-update";
@@ -404,47 +454,6 @@ int main() {
         update_config.kit_manifest_sha256 = playden::runtime::kExpectedKitManifestSha256;
         for (const auto& renamed : playden::runtime::kKitIdRenames)
             if (std::string(renamed.to) == playden::runtime::kDevelopmentKitId) update_config.renamed_kit_ids.push_back(renamed.from);
-        // Playden moves from FAKE77031 to PPSA97031, the ID ProsperoStore can install: a release whose update
-        // information names PPSA97031 installs as that title, and ShadowMountPlus registers it.
-        if (std::string(PLAYDEN_PS5_TITLE_ID) == "FAKE77031") {
-            update_config.successor_title_id = "PPSA97031";
-            update_config.successor_root = "/data/homebrew/PPSA97031";
-            update_config.register_title = [](const std::string& folder) {
-                const auto added = playden::ps5::ShadowMountPost("/api/v1/manual/add", "{\"path\":\"" + folder + "\"}");
-                playden::ps5::ShadowMountPost("/api/v1/scan", "{}");  // deferred until no title runs
-                return added && added->find("\"status\":0") != std::string::npos;
-            };
-        }
-        // Moved here from FAKE77031: the old title's folder and tile go once it holds no player data.
-        if (std::string(PLAYDEN_PS5_TITLE_ID) == "PPSA97031") {
-            update_config.predecessor_title_id = "FAKE77031";
-            update_config.predecessor_root = "/data/homebrew/FAKE77031";
-            update_config.unregister_title = [title_root = paths.title_root](const std::string& title) {
-                const auto gone = [&title] {
-                    struct stat info{};
-                    return playden::ps5::ReadNativeTitleDatabase(title).inventory == playden::runtime::TitleAvailability::kFree &&
-                           lstat(("/user/app/" + title).c_str(), &info) != 0 && errno == ENOENT;
-                };
-                // Its manual source goes first: ShadowMountPlus would add the title again from it.
-                playden::ps5::ShadowMountPost("/api/v1/manual/remove", "{\"path\":\"/data/homebrew/" + title + "\"}");
-                if (gone()) return true;
-                // ShadowMountPlus refuses to uninstall while a title runs: the title remover payload does it.
-                playden::ps5::TitleRemoverConfig remover;
-                remover.payload = title_root + "/title-remover.elf";
-                remover.send = playden::ps5::SendToPayloadLoader;
-                char nonce[24];
-                std::snprintf(nonce, sizeof nonce, "%016llx",
-                              static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count()));
-                // The request is written as the app's user: no other thread raises root meanwhile.
-                remover.hold_user = playden::ps5::HoldEffectiveUid;
-                const auto outcome = playden::ps5::RunTitleRemover(remover, title, nonce);
-                playden::app::AppendLogLine(log_root, "update.log", "self-update: title remover for " + title + " sent=" +
-                    std::to_string(outcome.sent) + " code=" + (outcome.code ? std::to_string(*outcome.code) : "none") +
-                    " detail=" + outcome.detail);
-                for (int poll = 0; poll < 60 && !gone(); ++poll) std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                return gone();
-            };
-        }
         update_config.appmeta_root = std::string("/user/appmeta/") + PLAYDEN_PS5_TITLE_ID;
         update_config.registered_app_root = std::string("/user/app/") + PLAYDEN_PS5_TITLE_ID;
         update_config.layout_journal = "/data/playden/runtime-state/layout-0.6.json";
@@ -561,12 +570,12 @@ int main() {
                 std::fclose(file);
                 if (!bytes.empty()) generic_icon = std::move(bytes);
             }
-            config.title_icon = [trust = paths.trust_store, generic_icon](const playden::GameId& game) -> std::optional<std::string> {
+            config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon](const playden::GameId& game) -> std::optional<std::string> {
                 // A store with no cover for the game (an imported one) gets the generic icon.
                 const auto source = playden::homebrew::CoverUrl(game);
                 std::optional<playden::homebrew::ArtworkImage> cover;
                 if (!source.empty()) {
-                    playden::homebrew::HttpArtworkBackend backend(trust);
+                    playden::homebrew::HttpArtworkBackend backend(trust, art_cache_dir);
                     const std::atomic<bool> cancel{false};
                     cover = backend.Load({1, game, source}, cancel);
                 }
@@ -721,6 +730,32 @@ int main() {
         playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, &install_runner}};
         if (copy_runner) install_runners[playden::Store::kLocal] = copy_runner.get();
         playden::steam::InstallService installs(std::move(install_runners), std::move(install_volumes));
+        // Installed games' records, for their updates. Set before the controller asks for details; its
+        // Shutdown joins the details worker before the install service stops.
+        details_source.SetInstalled([&installs](std::uint32_t app) -> std::optional<playden::installs::InstalledRecord> {
+            const auto snapshot = installs.Snapshot();
+            for (const auto& game : snapshot.installed)
+                if (game.id == playden::GameId::Steam(app) && game.available) return game.record;
+            return std::nullopt;
+        });
+        playden::steam::CmClient servers_cm(paths.trust_store, library_storage);
+        servers_cm.SetOwner("servers");
+        servers_cm.SetSharedSession(steam_cm);
+        playden::steam::CdnClient servers_cdn(paths.trust_store);
+        playden::LocalSessionRepository servers_sessions(user_root, {}, &session_vault);
+        playden::steam::CdnDownloadServerSource servers_source(servers_cm, servers_cdn, [&installs] {
+            const auto snapshot = installs.Snapshot();
+            const playden::steam::InstalledGame* newest = nullptr;
+            for (const auto& game : snapshot.installed)
+                if (game.available && game.id.steam_app() && (!newest || game.finished_at > newest->finished_at)) newest = &game;
+            return newest ? *newest->id.steam_app() : 0u;
+        });
+        playden::steam::DownloadServerService servers(servers_source, servers_sessions);
+        servers.SetLog([](std::uint32_t app, const char* step, const char* category, const char* detail) {
+            char line[640];
+            std::snprintf(line, sizeof(line), "app=%u step=%s result=%s detail=%s", app, step, category, detail);
+            playden::app::AppendLogLine(log_root, "install.log", line);
+        });
         // A games folder made over FTP is often root's and 0755: checked (and opened up) as a download starts.
         // Only the games folder itself: the primary volume's parent is /data, never chmodded.
         installs.SetFolderCheck([](const std::string& games_root) {
@@ -762,7 +797,38 @@ int main() {
             copy_runner->SetChanged([local_library] { local_library->Reload(); });
             stores.Add(std::move(source));
         }
+        // Web access, phase 0: with /data/playden/dev/web-probe present, a bare listener on 7031 answers every
+        // request with "ok" and logs each socket call to web.log, to learn whether a title can listen at all.
+        playden::web::Server web_probe;
+        const bool web_probe_on = !paths.runtime_data_root.empty() &&
+                                  access((paths.runtime_data_root + "/dev/web-probe").c_str(), F_OK) == 0;
+        if (web_probe_on) {
+            const auto web_log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "web.log", "probe " + line); };
+            std::string netctl;
+            const auto netctl_address = playden::ps5::ConsoleAddress(&netctl);
+            const auto udp_address = playden::web::LocalAddress();
+            web_log("address udp=" + (udp_address.empty() ? std::string("unknown") : udp_address) + " netctl=" +
+                    (netctl_address.empty() ? std::string("unknown") : netctl_address) + " " + netctl);
+            playden::web::ServerOptions probe;
+            probe.first_port = probe.last_port = 7031;
+            probe.verbose = true;
+            probe.log = web_log;
+            std::string error;
+            if (web_probe.Start(probe, [](const playden::web::Request&, playden::web::Response& response) {
+                    response.Send(200, "text/plain", "ok\n");
+                }, &error))
+                web_log("listening port=" + std::to_string(web_probe.port()));
+        }
+        // Web access: the logs page on the local network (off while the probe holds port 7031).
+        playden::web::ServiceConfig web_config;
+        web_config.paths = {log_root, "/data/homebrew", paths.runtime_data_root.empty() ? std::string() : paths.runtime_data_root + "/kits",
+                            "/data/homebrew/" PLAYDEN_PS5_TITLE_ID};
+        web_config.server.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "web.log", line); };
+        web_config.address_fallback = [] { return playden::ps5::ConsoleAddress(); };
+        playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
+        services.SetDownloadServers(&servers);
+        if (!web_probe_on) services.SetWebAccess(&web);
         services.SetLocalLibrary(local_library);
         playden::steam::StoreDetailsService store_details(playden::homebrew::StoreFetch(paths.trust_store));
         services.SetStoreDetails(&store_details);
@@ -781,7 +847,7 @@ int main() {
 #if PLAYDEN_UI_SIMULATION
         playden::homebrew::Render renderer(paths.assets_root);
 #else
-        playden::homebrew::HttpArtworkBackend artwork_backend(paths.trust_store);
+        playden::homebrew::HttpArtworkBackend artwork_backend(paths.trust_store, art_cache_dir);
         playden::homebrew::ArtworkService artwork(artwork_backend);
         playden::homebrew::Render renderer(paths.assets_root, &artwork);
 #endif
@@ -878,7 +944,16 @@ int main() {
             const auto dispatched = hui::sys::monotonic_us();
 #if !PLAYDEN_UI_SIMULATION
             services.Tick();
-            downloads_slow_network.store(simulation.state().downloads_slow_network);
+            // Until the UI has the saved settings, its defaults would replace them.
+            if (simulation.PreferencesLoaded()) {
+                downloads_slow_network.store(simulation.state().downloads_slow_network);
+                {
+                    std::lock_guard lock(download_server_mutex);
+                    download_server = simulation.state().download_server;
+                }
+                const std::lock_guard<std::mutex> guard(content_language_lock);
+                content_language = simulation.state().content_language;
+            }
 #endif
             const auto ticked = hui::sys::monotonic_us();
             if (simulation.state().quit_requested) break;
@@ -964,10 +1039,16 @@ int main() {
         }
 #if !PLAYDEN_UI_SIMULATION
         playden::app::AppendLogLine(log_root, "launch.log", "quit requested");
+        if (web_probe.running()) {
+            web_probe.Stop();
+            playden::app::AppendLogLine(log_root, "web.log", "probe stopped");
+        }
         services.Shutdown();
+        web.Shutdown();
         // The install service stops before the Local store goes (`stores` is destroyed before
         // `installs`): its copy runner's change callback calls into the Local store. Explicit here,
         // so it doesn't rest on the controller's shutdown or on declaration order.
+        servers.Shutdown();
         installs.Shutdown();
         if (copy_runner) copy_runner->SetChanged({});
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown artwork start");
@@ -975,8 +1056,7 @@ int main() {
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown self-update start");
         self_update.Shutdown();
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown done");
-        if (self_update.Snapshot().restart_requested || self_update.Snapshot().rollback_requested ||
-            self_update.Snapshot().open_successor_requested) {
+        if (self_update.Snapshot().restart_requested || self_update.Snapshot().rollback_requested) {
             // The relaunch payload starts first: it waits until Playden has gone, then opens it again.
             std::string elf, error;
             if (FILE* file = std::fopen((paths.title_root + "/self-update-relaunch.elf").c_str(), "rb")) {
@@ -987,20 +1067,12 @@ int main() {
             }
             const std::string request = "/data/playden/self-update/relaunch-title";
             FILE* title = std::fopen(request.c_str(), "w");
-            // The title to open, then this one (they differ when the update moves Playden to a new title).
-            const std::string titles = self_update.RelaunchTitle() + "\n" PLAYDEN_PS5_TITLE_ID "\n";
-            const bool requested = title && std::fputs(titles.c_str(), title) >= 0;
+            const bool requested = title && std::fputs(PLAYDEN_PS5_TITLE_ID "\n", title) >= 0;
             if (title) std::fclose(title);
             const bool sent = !elf.empty() && requested && playden::ps5::SendToPayloadLoader(elf, &error);
             playden::app::AppendLogLine(log_root, "update.log", std::string("self-update: relaunch payload ") +
                                                                     (sent ? "sent" : "not sent: " + (elf.empty() ? std::string("missing") : error)));
             const bool swapped = self_update.ApplyAtQuit();
-            // A move that did not happen reopens this title: the payload reads the request again once Playden is gone.
-            if (!swapped && self_update.RelaunchTitle() != PLAYDEN_PS5_TITLE_ID)
-                if (FILE* again = std::fopen(request.c_str(), "w")) {
-                    std::fputs(PLAYDEN_PS5_TITLE_ID "\n" PLAYDEN_PS5_TITLE_ID "\n", again);
-                    std::fclose(again);
-                }
             playden::app::AppendLogLine(log_root, "update.log", std::string("self-update: quit ") +
                                                                     (swapped ? "with the new files in place" : "without changing the app"));
         }

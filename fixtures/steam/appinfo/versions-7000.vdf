@@ -1,0 +1,185 @@
+"appinfo"
+{
+	"appid"		"7000"
+	"common"
+	{
+		"name"		"Versions"
+		"type"		"Game"
+	}
+	"config"
+	{
+		"installdir"		"Versions"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"bin/x64_dx12/game.exe"
+				"type"		"default"
+				"config"
+				{
+					"oslist"		"windows"
+					"betakey"		"default"
+				}
+			}
+			"1"
+			{
+				"executable"		"bin/x64/game.exe"
+				"type"		"default"
+				"config"
+				{
+					"oslist"		"windows"
+					"betakey"		"4.04"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"7001"
+		{
+			"name"		"Versions Content"
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1001"
+					"size"		"30000000000"
+					"download"		"20000000000"
+				}
+				"4.04"
+				{
+					"gid"		"1404"
+					"size"		"25000000000"
+					"download"		"18000000000"
+				}
+				"beta"
+				{
+					"gid"		"1500"
+					"size"		"31000000000"
+					"download"		"21000000000"
+				}
+				"legacy"		"1300"
+			}
+			"encryptedmanifests"
+			{
+				"secret"
+				{
+					"encrypted_gid_2"		"0A1B2C3D4E5F6071"
+					"encrypted_size_2"		"8899AABB"
+				}
+			}
+		}
+		"7002"
+		{
+			"name"		"Versions DX12 Binaries"
+			"config"
+			{
+				"oslist"		"windows"
+				"osarch"		"64"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2001"
+					"size"		"400000000"
+					"download"		"200000000"
+				}
+				"beta"
+				{
+					"gid"		"2500"
+					"size"		"410000000"
+					"download"		"205000000"
+				}
+			}
+			"encryptedmanifests"
+			{
+				"secret"
+				{
+					"encrypted_gid_2"		"1122334455667788"
+					"encrypted_size_2"		"0011AABB"
+				}
+			}
+		}
+		"7003"
+		{
+			"name"		"Versions x64 Binaries"
+			"config"
+			{
+				"oslist"		"windows"
+				"osarch"		"64"
+			}
+			"manifests"
+			{
+				"4.04"
+				{
+					"gid"		"3404"
+					"size"		"300000000"
+					"download"		"150000000"
+				}
+			}
+		}
+		"7004"
+		{
+			"name"		"Versions Mac Binaries"
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4001"
+					"size"		"500000000"
+					"download"		"250000000"
+				}
+				"macold"
+				{
+					"gid"		"4100"
+					"size"		"500000000"
+					"download"		"250000000"
+				}
+			}
+		}
+		"branches"
+		{
+			"public"
+			{
+				"buildid"		"9000"
+				"timeupdated"		"1760000000"
+			}
+			"4.04"
+			{
+				"buildid"		"4040"
+				"description"		"Patch 4.04 (pre next-gen)"
+				"timeupdated"		"1670000000"
+			}
+			"legacy"
+			{
+				"buildid"		"1300"
+				"description"		"Legacy release"
+				"timeupdated"		"1500000000"
+			}
+			"beta"
+			{
+				"buildid"		"9500"
+				"description"		"Public beta"
+				"timeupdated"		"1765000000"
+				"pwdrequired"		"1"
+			}
+			"secret"
+			{
+				"buildid"		"9600"
+				"description"		"Internal"
+				"timeupdated"		"1766000000"
+			}
+			"macold"
+			{
+				"buildid"		"4100"
+				"description"		"Old Mac build"
+				"timeupdated"		"1400000000"
+			}
+		}
+	}
+}

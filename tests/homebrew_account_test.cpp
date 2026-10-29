@@ -126,7 +126,7 @@ class LicenseCheckRunner final : public SessionInstallRunner {
  public:
   explicit LicenseCheckRunner(SessionRepository& sessions) : SessionInstallRunner(sessions) {}
   std::atomic<bool> release{false};
-  Result InstallApp(const StoredSession&,std::uint32_t,const std::string&,const std::atomic<bool>& cancel,
+  Result InstallApp(const StoredSession&,std::uint32_t,const std::string&,const InstallOptions&,const std::atomic<bool>& cancel,
                  const std::function<void(std::uint64_t,std::uint64_t,std::uint64_t)>&,
                  const std::function<void(InstallStep)>& step) override {
     step(InstallStep::kCheckingLicenses);

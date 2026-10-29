@@ -1,14 +1,13 @@
 #pragma once
 
 #include "homebrew/artwork.hpp"
+#include "steam/backend/http_client.h"
 
+#include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
-
-namespace playden::steam {
-class HttpClient;
-}
 
 namespace playden::homebrew {
 
@@ -29,7 +28,10 @@ std::optional<ArtworkImage> DecodeArtworkWithAllocationBudget(
 
 class HttpArtworkBackend final : public ArtworkBackend {
  public:
-  explicit HttpArtworkBackend(std::string ca_bundle);
+  using Perform = std::function<steam::HttpResponse(const steam::HttpRequest&, const std::atomic<bool>&)>;
+
+  explicit HttpArtworkBackend(std::string ca_bundle, std::string cache_dir = "");
+  HttpArtworkBackend(Perform perform, std::string cache_dir);  // tests
   ~HttpArtworkBackend() override;
   HttpArtworkBackend(const HttpArtworkBackend&) = delete;
   HttpArtworkBackend& operator=(const HttpArtworkBackend&) = delete;
@@ -37,9 +39,14 @@ class HttpArtworkBackend final : public ArtworkBackend {
   std::optional<ArtworkImage> Load(
       const ArtworkKey&, const std::atomic<bool>& cancel) override;
 
+  const std::string& cache_dir() const noexcept { return cache_dir_; }
+
  private:
-  std::string ca_bundle_;
+  struct Cache;
+  std::string cache_dir_;
   std::unique_ptr<steam::HttpClient> http_;
+  Perform perform_;
+  std::unique_ptr<Cache> cache_;
 };
 
 }  // namespace playden::homebrew

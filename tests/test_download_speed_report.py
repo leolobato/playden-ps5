@@ -64,6 +64,21 @@ class DownloadSpeedReportTest(unittest.TestCase):
             "2026-10-12T10:00:00Z app=440 step=app_info result=none detail=\n"
             "2026-10-12T10:00:00Z app=440 step=entitlements result=none detail=\n"), [])
 
+    def test_server_labels_and_split_throughput_lines(self):
+        rows = report.parse_runs("""2026-10-12T10:00:00Z app=440 step=trace result=access detail=
+2026-10-12T10:00:01Z app=440 step=servers result=listed detail=n=3 https=3 pref=chosen first=fastly@0 order=fastly:2,akamai:1,cache:1
+2026-10-12T10:00:03Z app=440 step=stats result=end detail=dl_ms=2000 cb=4000000
+2026-10-12T10:00:03Z app=440 step=stats result=servers detail=fastly@0:req=4,fail=0,mb=4,ms=2000 akamai@1:req=1,fail=1,mb=0,ms=0
+2026-10-12T10:00:03Z app=440 step=stats result=servers detail=cache@2:req=2,fail=0,mb=3,ms=1000
+2026-10-12T10:00:03Z app=440 step=install result=none detail=
+""")
+        self.assertEqual(rows[0]["first_server"], "fastly@0")
+        self.assertEqual(rows[0]["server_mb_s"], "fastly@0:2.00 akamai@1:- cache@2:3.00")
+        output = report.io.StringIO()
+        report.write_csv(rows, output)
+        self.assertIn("first_server,server_mb_s", output.getvalue())
+        self.assertIn("fastly@0:2.00", output.getvalue())
+
     def test_missing_rotated_log_is_not_requested(self):
         ftp = MagicMock()
         ftp.__enter__.return_value = ftp

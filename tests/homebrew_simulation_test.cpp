@@ -374,10 +374,10 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     activate(simulation, "game-settings");
     // Rows by topic: the frame-rate rows sit together in Display, and focus steps over the headings.
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
-    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 22));
+    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 23));
     check(top == std::vector<std::string>{"preset-picker", "heading-game", "setting-launch_option", "setting-extra_arguments",
                                           "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
-                                          "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
+                                          "setting-framegen", "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
                                           "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
                                           "setting-controller_preset", "button-mapping", "controller-tuning", "heading-sound",
                                           "setting-volume", "section-compatibility", "section-advanced"},
@@ -693,15 +693,56 @@ void t11_preferences_failure_and_controller_modal_recovery(const std::filesystem
               && switched_restart.state().library.favorites.contains(SteamId(900010)),
           "T11 switched account identity and organization restore only from its profile");
     restored.action("route:settings"); activate(restored, "settings-about");
-    check(restored.view().surface == "about" && restored.view().rows.size() == 7,
-          "T11 About exposes version, build, framework, platform, kit, kit source, and Back rows");
+    check(restored.view().surface == "about" && restored.view().rows.size() == 5,
+          "T11 About exposes version, build, kit, kit source, and Back rows");
     {
         const auto& rows = restored.view().rows;
         const auto kit = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "about-kit"; });
-        check(kit != rows.end() && kit->value.rfind("playden-kit · ", 0) == 0 &&
-                  kit->subtitle == "The kit this version of Playden was tested with",
-              "T11 About names the runtime kit and whether it is the tested one");
+        check(kit != rows.end() && kit->title == "Runtime kit in use" && kit->value.rfind("playden-kit 0.13 · ", 0) == 0 &&
+                  kit->subtitle.empty(),
+              "T11 About names the runtime kit in use, with no note when it is the one Playden expects");
     }
+}
+
+// The family-sharing fixture marks a few games shared by a Steam family member and leaves the rest owned.
+void family_sharing_scenario_marks_shared_games(const std::filesystem::path& fixtures,
+                                                const std::filesystem::path& profile) {
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    const auto count = simulation.state().games.size();
+    check(simulation.scenario("family-sharing"), "family-sharing scenario loads");
+    const auto& games = simulation.state().games;
+    const auto shared = std::count_if(games.begin(), games.end(), [](const playden::homebrew::Game& game) { return game.family_shared; });
+    check(games.size() == count && shared > 0 && static_cast<std::size_t>(shared) < count,
+          "family-sharing marks some fixture games shared without adding games");
+    check(simulation.snapshot().find("\"route\":\"library\"") != std::string::npos, "family-sharing opens the Library");
+}
+
+// The game update scenarios: Update or DLC available after Play with its sheet, the install sheet's options, and a
+// queue of updates whose first one locks Play.
+void game_update_scenarios(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    const auto row = [&simulation](const std::string& key) -> const playden::homebrew::ViewRow* {
+        for (const auto& item : simulation.view().rows) if (item.key == key) return &item;
+        return nullptr;
+    };
+    check(simulation.scenario("update-available"), "update-available loads");
+    check(row("details-update") && row("details-update")->title == "Update" && row("details-update-note") &&
+              row("details-update-note")->title == "Update available" && row("details-update-note")->value == "Up to 1.2 GB",
+          "update-available offers Update with its size");
+    check(simulation.action("cross") && simulation.view().surface == "update" && row("update-confirm") &&
+              row("update-confirm")->enabled && row("update-confirm")->value == "Up to 1.2 GB",
+          "Update opens the update sheet");
+    check(simulation.action("circle"), "the sheet closes");
+    check(simulation.scenario("dlc-available") && row("details-update")->title == "DLC available",
+          "dlc-available says DLC available");
+    check(simulation.scenario("install-options") && simulation.view().surface == "install" && row("install-version") &&
+              row("install-language") && row("install-dlc") && row("install-dlc")->value == "2 DLC",
+          "install-options shows Version, Language and Includes");
+    check(simulation.scenario("updating") && simulation.state().navigation.route == playden::homebrew::Route::Downloads,
+          "updating opens the queue");
+    check(simulation.action("details:900001") && row("details-play") && !row("details-play")->enabled &&
+              row("details-play")->value == "Finishing the update…" && !row("details-update"),
+          "an update putting its files in place locks Play");
 }
 
 void t12_stress_dataset_keeps_logical_focus(const std::filesystem::path& fixtures,
@@ -1373,12 +1414,115 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
           "T18 a drop-folder game imported to another drive is copied there and plays in place meanwhile");
 }
 
+
+void synthetic_download_servers(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using playden::homebrew::Simulation;
+    Simulation simulation(fixtures, profile);
+    check(simulation.scenario("download-servers"), "the download-server scenario exists");
+    const auto row = [&simulation](const std::string& key) -> const playden::homebrew::ViewRow* {
+        for (const auto& item : simulation.view().rows) if (item.key == key) return &item;
+        return nullptr;
+    };
+    const auto press = [&simulation](const std::string& key) {
+        check(simulation.action("focus:" + key) && simulation.action("cross"), "synthetic server action exists");
+    };
+    check(row("settings-download-server") && row("settings-download-server")->value == "Steam default",
+          "the synthetic scenario shows the Settings row");
+    press("settings-download-server");
+    check(row("download-server-6") && !row("download-server-7") && row("download-server-3")->subtitle == "HTTP" &&
+              row("download-server-5")->title == "Steam (Valve) · cache5-fra1",
+          "seven servers are shown, with HTTP and the host of repeated providers marked");
+    press("download-server-test");
+    check(row("download-server-test")->title == "Testing Akamai (1 of 7)…", "synthetic test starts with the first provider");
+    simulation.tick(1);
+    check(row("download-server-test")->title == "Testing Fastly (2 of 7)…" &&
+              row("download-server-0")->value == "12.4 MB/s", "synthetic progress produces rates");
+    simulation.action("circle");
+    check(!simulation.state().navigation.modals.empty(), "Circle cancels the synthetic test first");
+    simulation.action("circle");
+    check(simulation.state().navigation.modals.empty(), "the next Circle closes the picker");
+    press("settings-download-server");
+    press("download-server-test");
+    simulation.tick(7);
+    check(row("download-server-1")->value == "41.2 MB/s" && row("download-server-1")->badge == "Fastest" &&
+              row("download-server-3")->value == "Failed" && simulation.state().navigation.focus_key == "download-server-1" &&
+              simulation.state().download_server.empty(), "synthetic completion focuses the fastest without choosing it");
+    simulation.action("cross");
+    check(simulation.state().download_server == "fastly.cdn.steampipe.steamcontent.com" &&
+              simulation.TakeDownloadServerRequests().empty(), "the synthetic choice is saved without service requests");
+    Simulation restarted(fixtures, profile);
+    restarted.scenario("download-servers");
+    check(restarted.state().download_server == simulation.state().download_server,
+          "the simulation profile keeps the choice across restarts");
+    check(restarted.action("focus:settings-download-server") && restarted.action("cross") &&
+              restarted.state().navigation.focus_key == "download-server-1" &&
+              restarted.action("focus:download-server-fastest") && restarted.action("cross"),
+          "the synthetic picker offers Fastest");
+    check(restarted.state().download_server == "fastest" && restarted.state().navigation.modals.empty(),
+          "the synthetic Fastest choice is saved");
+    for (const auto& item : restarted.view().rows)
+        if (item.key == "settings-download-server") check(item.value == "Fastest", "the row shows Fastest");
+    // Queue: the download names its server before the rate.
+    check(restarted.scenario("queue-one-download"), "queue scenario exists");
+    check(restarted.state().jobs.front().server_name == "Fastly" &&
+              playden::homebrew::FormatDownloadRate(restarted.state().jobs.front().bytes_per_second,
+                                                    restarted.state().jobs.front().eta_seconds,
+                                                    restarted.state().jobs.front().server_name) ==
+                  "Fastly · 18.2 MB/s · ~3 min left",
+          "the Queue row names the download server");
+}
+
+void leftover_titles_simulation_uses_controller_navigation(const std::filesystem::path& fixtures,
+                                                          const std::filesystem::path& profile) {
+    using namespace playden::homebrew;
+    Simulation simulation(fixtures, profile);
+    check(simulation.scenario("web-access"), "web access scenario exists");
+    check(simulation.view().focused_row >= 0 &&
+              simulation.view().rows[static_cast<std::size_t>(simulation.view().focused_row)].key == "settings-web-access",
+          "the web access scenario opens Settings on Web access");
+    {
+        bool qr = false;
+        for (const auto& row : simulation.view().rows) qr = qr || row.qr == "http://192.168.1.50:7031/";
+        check(qr, "the simulation shows a made-up address with its QR code");
+    }
+    check(simulation.scenario("leftover-titles"), "leftover title scenario exists");
+    check(simulation.state().leftover_titles.size() == 2 &&
+              simulation.state().navigation.focus_key == "settings-leftovers", "the Leftover PS5 titles row starts focused");
+    simulation.action("cross");
+    check(simulation.state().navigation.focus_key == "leftover-select-all", "the manager opens on Select all");
+    simulation.action("down");
+    simulation.action("down");
+    check(simulation.state().navigation.focus_key == "leftover-toggle-FAKE78002", "Down reaches the second title");
+    simulation.action("cross");
+    simulation.action("focus:leftover-selection-delete");
+    simulation.action("cross");
+    check(simulation.state().navigation.focus_key == "cancel", "deletion starts on Cancel");
+    simulation.action("circle");
+    check(simulation.state().navigation.modals.back().id == "leftover-titles" &&
+              simulation.state().leftover_deletions.empty(), "Circle returns to the manager without deleting");
+    simulation.action("focus:leftover-selection-delete");
+    simulation.action("cross");
+    simulation.action("focus:confirm-destructive");
+    simulation.action("cross");
+    simulation.action("l1");
+    simulation.action("l1");
+    check(simulation.state().navigation.route == Route::Downloads, "L1 reaches Queue");
+    simulation.tick(1);
+    check(simulation.state().leftover_deletions.front().step == "Removing PS5 title…", "Queue starts title removal");
+    simulation.tick(5);
+    check(simulation.state().leftover_titles.size() == 1 && simulation.state().leftover_titles.front().title_id == "FAKE78001" &&
+              simulation.state().leftover_deletions.empty(), "only the confirmed title is removed");
+}
+
 int main(int argc, char** argv) {
     check(argc == 2, "fixture directory argument is required");
     const std::filesystem::path fixtures(argv[1]);
     const auto profile = temp_profile();
     auto clean = [&] { std::error_code error; std::filesystem::remove(profile, error); };
     clean();
+    synthetic_download_servers(fixtures, profile);
+    clean();
+    leftover_titles_simulation_uses_controller_navigation(fixtures, profile);
     t01_authentication_ignores_late_approval(fixtures, profile);
     clean();
     t02_focus_and_nested_modal_restoration(fixtures, profile);
@@ -1411,6 +1555,10 @@ int main(int argc, char** argv) {
     t11_preferences_failure_and_controller_modal_recovery(fixtures, profile);
     clean();
     t12_stress_dataset_keeps_logical_focus(fixtures, profile);
+    clean();
+    family_sharing_scenario_marks_shared_games(fixtures, profile);
+    clean();
+    game_update_scenarios(fixtures, profile);
     clean();
     t13_settings_sections_rail(fixtures, profile);
     clean();

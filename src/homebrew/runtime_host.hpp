@@ -9,6 +9,7 @@
 #include "runtime/game_settings.h"
 #include "runtime/install_service.h"
 #include "runtime/launch_service.h"
+#include "runtime/leftover_titles.h"
 #include "runtime/package_installer.h"
 #include "runtime/redist_install.h"
 
@@ -181,6 +182,9 @@ struct RuntimeInstallView {
   bool awaiting_registration = false;
   // False when a Ready title was made from an earlier kit; Prepare updates it.
   bool title_current = true;
+  // A Ready game whose files an update changed since its launch was set up (the update's marker in its
+  // folder): Play refuses it until Prepare has made its launch again from the new files and published it.
+  bool files_changed = false;
   // Whether the title runs the installed kit's runtime (its files and artifacts are the kit's). Unlike title_current,
   // a new game name or icon does not count. Settings only the newer runtime takes (120 Hz output) wait for Update.
   bool runtime_current = true;
@@ -305,7 +309,7 @@ struct RuntimeSnapshot {
   // Games whose preparation is asked for but not started yet, in the order they will start: each
   // waits behind another game's preparation, or for the runtime to finish starting.
   std::vector<std::uint32_t> queued_prepares;
-  // How far the current copy (preparing_app) or deletion (removing_app) is, when
+  // How far the current copy or deletion (including a leftover title) is, when
   // that is measurable; absent for steps whose progress is unknown.
   std::optional<float> work_progress;
   std::optional<RuntimeLaunchView> launch;
@@ -333,6 +337,13 @@ struct RuntimeSnapshot {
   std::uint64_t removals_handled = 0;
   // Game data kept when a game was uninstalled (bottles with no install record).
   std::vector<KeptBottleView> kept_bottles;
+  // Unrecorded PS5 titles, and their queued/running deletion or latest failure (keyed by title ID).
+  std::vector<runtime::LeftoverTitle> leftover_titles;
+  std::vector<std::string> queued_leftover_deletes;
+  std::optional<std::string> deleting_leftover_title;
+  std::string deleting_leftover_step;
+  std::map<std::string, std::string> leftover_delete_failures;
+  std::uint64_t leftover_deletes_handled = 0;
   // Maintenance per runtime number, and how many requests the worker has finished.
   std::map<std::uint32_t, RuntimeMaintenanceView> maintenance;
   std::uint64_t maintenance_handled = 0;
@@ -455,6 +466,9 @@ class RuntimeHost {
   void SetTitleNames(std::map<std::uint32_t, std::string> names);
   // Queues Play of a Ready game.
   void Play(std::uint32_t runtime_number);
+  // A game's files changed outside the runtime (an update finished): the installs are checked again, so
+  // RuntimeInstallView::files_changed follows.
+  void RecheckInstalls();
   // The signed-in Steam account, for the Steamworks emulator's settings (empty when signed out).
   void SetSteamAccount(std::string account_name, std::uint64_t steam_id);
   // Queues removal of a game's PS5 title. Its bottle (saves and settings) is kept
@@ -462,6 +476,8 @@ class RuntimeHost {
   void Remove(std::uint32_t runtime_number, bool delete_saves);
   // Queues deletion of a game's kept bottle.
   void DeleteKeptBottle(std::uint32_t runtime_number);
+  // Deletes only a scanned leftover's PS5 title and registration; its game files and saves stay.
+  bool DeleteLeftoverTitle(const std::string& title_id, std::string* error = nullptr);
   // Queues a scan of a game folder for the Program picker (RuntimeSnapshot::game_setups).
   void ScanPrograms(std::uint32_t runtime_number, std::string install_path);
   // Measures each game's Windows user folders (where saves of games without Steam Cloud live).
@@ -537,9 +553,18 @@ class RuntimeHost {
                                 bool* prepare_again = nullptr, std::string* upgrade_deferred = nullptr,
                                 std::string* code = nullptr, bool force = false);
   // RepublishSettings without the upgrade's fallback.
+  // `defaults_published`: with force, a game with no saved settings whose title has revision 0 was
+  // published from Playden's defaults, so they are published again.
   std::string PublishSavedSettings(Composition& composition, const runtime::RuntimeInstall& record,
                                    bool* published, bool steam_account_known, bool* prepare_again,
-                                   std::string* code = nullptr, bool force = false);
+                                   std::string* code = nullptr, bool force = false, bool defaults_published = false);
+  // Whether an update left its marker in the Ready game's folder (installs::kFilesChangedName).
+  bool FilesChanged(const runtime::RuntimeInstall& record) const;
+  // The Ready-path part of Prepare for a game whose files changed: its generated recipe is made again
+  // from the request's launch options and the files (as a fresh preparation makes it), the saved
+  // settings are published with it, and the marker goes. Empty, or why not (the marker stays).
+  std::string RefreshChangedFiles(Composition& composition, const RuntimePrepareRequest& request,
+                                  const runtime::RuntimeInstall& record);
   // A Ready game published owned (schema 2, before 0.6 or by a kit before 0.10) while the kit
   // admits unowned game folders: published again as unowned, so folders the player opened pass.
   bool NeedsUnownedPublication(const Composition& composition, const runtime::RuntimeInstall& record);
@@ -617,6 +642,8 @@ class RuntimeHost {
   // while no ManagedDirectory of the bottle is open. Failures are logged; the start check decides.
   void SettleBottle(Composition& composition, const runtime::RuntimeInstall& record, const char* when);
   runtime::LaunchPreflight Preflight(Composition& composition, const runtime::RuntimeInstall& record);
+  // Worker only. Tightens the bottle at data_root (console path) when it looks opened up and its title is stopped.
+  void HealBottle(Composition& composition, const std::string& data_root, const std::string& title_id);
   runtime::LaunchEvidence Evidence(Composition& composition, const runtime::RuntimeInstall& record,
                                    const std::string& session_id);
   void RunPlay(Composition& composition, std::uint32_t runtime_number);
@@ -624,6 +651,29 @@ class RuntimeHost {
   // moving: the title goes because its game was installed again elsewhere (journal "remove-move"),
   // so Prepare, not Uninstall, finishes a removal that stopped part way.
   std::string RunRemove(Composition& composition, std::uint32_t runtime_number, bool delete_saves, bool moving = false);
+  struct RemovalFailure { std::string code, message; };
+  std::optional<RemovalFailure> RetireTitle(Composition& composition, const std::string& title_id,
+                                           const std::string& operation_id,
+                                           const runtime::LeftoverTitle* expected = nullptr);
+  std::optional<RemovalFailure> UnregisterTitle(Composition& composition, const std::string& title_id,
+                                               const std::string& operation_id);
+  std::string DeleteRetiredTitle(const std::string& title_id, const std::string& operation_id);
+  // Marks a bottle as kept saves (<install id>.kept), as Uninstall without "delete saves" does.
+  std::optional<RemovalFailure> KeepBottle(const std::filesystem::path& bottle, const std::string& install_id,
+                                           const GameId& game, std::uint32_t runtime_number, const std::string& name,
+                                           const std::string& operation_id);
+  // Keeps bottles no install record and no unrecorded PS5 title names (their title was deleted
+  // as a leftover, or its record was lost) as kept saves, so Storage lists them.
+  void KeepUnrecordedBottles(Composition& composition);
+  struct LeftoverDelete {
+    runtime::LeftoverTitle title;
+    std::string operation_id;
+    std::string step = "retire";
+  };
+  std::string RunDeleteLeftover(Composition& composition, LeftoverDelete request);
+  std::string SaveLeftoverDelete(Composition& composition, const LeftoverDelete& request);
+  void ResumeLeftoverDeletes(Composition& composition);
+  void PublishLeftoverTitles(Composition& composition);
   // Whether the console still lists the title (app.db or /user/app); unknown counts as listed.
   bool TitleListed(Composition& composition, const std::string& title_id);
   // Moves the saves of a kept bottle into the game's new bottle and drops the kept copy.
@@ -686,7 +736,15 @@ class RuntimeHost {
   mutable std::uint64_t shared_revision_ = 0;
   std::vector<RuntimePrepareRequest> prepare_requests_;
   std::vector<std::uint32_t> play_requests_;
-  std::vector<std::pair<std::uint32_t, bool>> remove_requests_;
+  struct RemovalRequest {
+    std::uint32_t app = 0;
+    bool delete_saves = false;
+    std::optional<LeftoverDelete> leftover;
+    std::uint64_t order = 0;
+  };
+  std::vector<RemovalRequest> remove_requests_;
+  std::uint64_t next_work_order_ = 0;
+  std::map<std::uint32_t, std::uint64_t> prepare_order_;
   std::vector<std::uint32_t> kept_delete_requests_;
   std::vector<std::pair<std::uint32_t, std::string>> scan_requests_;
   std::vector<std::pair<std::uint32_t, RuntimeMaintenance>> maintenance_requests_;
@@ -705,6 +763,7 @@ class RuntimeHost {
   std::string steam_account_name_;                     // guarded by mutex_
   std::uint64_t steam_id_ = 0;                         // guarded by mutex_
   bool title_names_changed_ = false;
+  bool installs_recheck_requested_ = false;
   // Guards the worker's launch service and preflight cache for Handoff.
   std::mutex launch_mutex_;
   runtime::LaunchService* launch_ = nullptr;

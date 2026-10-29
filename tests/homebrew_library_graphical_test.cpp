@@ -158,6 +158,18 @@ int main(int argc,char** argv) {
       for(int i=0;i<4 && updating.state().navigation.route!=Route::Settings;++i) assert(updating.action("r1"));
       assert(updating.action("focus:settings-release-notes") && updating.action("cross"));
       capture_update("release-notes-short.png");
+      // About: every fact in full, the kit's notes under its rows.
+      while(!updating.state().navigation.modals.empty()) assert(updating.action("circle"));
+      fresh.current="0.8.0-nightly.20261027.2"; fresh.commit="e7a30f21e8";
+      updating.UpdateSelfUpdate(fresh);
+      updating.SetKitInfo({"playden-kit",std::string(64,'d'),std::string(64,'e'),std::string(40,'f'),true,{},"0.13-dev.20261024.3"});
+      assert(updating.action("focus:settings-about") && updating.action("cross"));
+      assert(updating.view().surface=="about" && updating.view().rows.size()==5);
+      assert(updating.view().rows[2].value=="playden-kit 0.13-dev.20261024.3 · dddddddddd" &&
+             updating.view().rows[2].subtitle=="This version of Playden expects eeeeeeeeee");
+      assert(updating.action("down") && updating.action("down") && updating.action("down"));
+      assert(updating.view().rows[static_cast<std::size_t>(updating.view().focused_row)].key=="about-kit-source");
+      capture_update("about.png");
     }
     {
       // Steam's options name no clear program: setting up asks which one starts the game.
@@ -266,6 +278,30 @@ int main(int argc,char** argv) {
       assert(live.action("cross"));
       assert(live.action("focus:kept-toggle-43") && live.action("cross"));
       capture_live("kept-manager.png");
+      // Leftover title folders: the title ID and size stay beside Delete, which always asks first.
+      while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
+      live.UpdateLeftoverTitles({{"FAKE78001", "A Short Hike", 12'000'000}, {"FAKE78002", "Portal", 8'000'000}});
+      assert(live.action("focus:settings-leftovers"));
+      capture_live("settings-leftover-titles.png");
+      assert(live.action("cross"));
+      assert(live.action("focus:leftover-toggle-FAKE78002"));
+      assert(live.action("cross"));
+      capture_live("leftover-titles-manager.png");
+      assert(live.action("focus:leftover-selection-delete"));
+      assert(live.action("cross"));
+      assert(live.state().navigation.focus_key == "cancel");
+      capture_live("leftover-title-confirm.png");
+      assert(live.action("circle"));
+      assert(live.action("circle"));
+      live.UpdateLeftoverDeletions({{"FAKE78001", "A Short Hike", "Deleting title files…", ""},
+                                   {"FAKE78002", "Portal", "", ""}});
+      live.action("l1"); live.action("l1");
+      assert(live.state().navigation.route == Route::Downloads);
+      capture_live("queue-leftover-titles.png");
+      live.action("r1"); live.action("r1");
+      assert(live.state().navigation.route == Route::Settings);
+      live.UpdateLeftoverTitles({});
+      live.UpdateLeftoverDeletions({});
       // Settings > Storage: the default drive's usage above the rows, then the installed games list.
       while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
       live.UpdateVolumes({{"internal","Console storage",true,825'000'000'000ull,512'000'000'000ull}}, "internal");

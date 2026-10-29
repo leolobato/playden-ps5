@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Reduced Steam CM (connection manager) messages: the protobuf frame, hello, logon, heartbeat,
@@ -23,6 +24,8 @@ enum EMsg : std::uint32_t {
   kEMsgClientGetDepotDecryptionKey = 5438,
   kEMsgClientGetDepotDecryptionKeyResponse = 5439,
   kEMsgClientLogon = 5514,
+  kEMsgClientRequestFreeLicense = 5572,
+  kEMsgClientRequestFreeLicenseResponse = 5573,
   kEMsgClientPICSProductInfoRequest = 8903,
   kEMsgClientPICSProductInfoResponse = 8904,
   kEMsgClientPICSAccessTokenRequest = 8905,
@@ -112,6 +115,7 @@ struct License {
   std::int32_t minute_limit = 0;
   std::int32_t minutes_used = 0;
   std::uint32_t flags = 0;
+  std::uint32_t license_type = 0;  // ELicenseType, for diagnostics only
   std::uint32_t owner_id = 0;
   std::uint64_t access_token = 0;
 };
@@ -162,9 +166,20 @@ struct DepotKeyResponse {
 };
 bool DecodeDepotKeyResponse(const std::vector<std::uint8_t>& body, DepotKeyResponse* response);
 
-// ContentServerDirectory.GetManifestRequestCode#1 on the public branch.
+// ContentServerDirectory.GetManifestRequestCode#1 for a manifest of `branch` (empty: public). No
+// branch password is sent: password branches are not offered.
 std::vector<std::uint8_t> EncodeManifestRequestCodeRequest(std::uint32_t app_id, std::uint32_t depot_id,
-                                                           std::uint64_t manifest_id);
+                                                           std::uint64_t manifest_id, std::string_view branch = "public");
 bool DecodeManifestRequestCodeResponse(const std::vector<std::uint8_t>& body, std::uint64_t* code);
+
+// CMsgClientRequestFreeLicense: asks Steam to add free apps (free DLC) to the account.
+std::vector<std::uint8_t> EncodeFreeLicenseRequest(const std::vector<std::uint32_t>& app_ids);
+struct FreeLicenseResponse {
+  std::int32_t eresult = kEResultFail;  // the proto default
+  std::vector<std::uint32_t> granted_packages;
+  std::vector<std::uint32_t> granted_apps;
+};
+// Accepts the repeated IDs packed or unpacked.
+bool DecodeFreeLicenseResponse(const std::vector<std::uint8_t>& body, FreeLicenseResponse* response);
 
 }  // namespace playden::steam::cm

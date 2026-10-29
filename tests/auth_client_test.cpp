@@ -43,10 +43,6 @@ HttpResponse Success(std::string refresh = Token(), std::string access = Token()
   proto::Writer w; w.AddString(3, refresh); w.AddString(4, access); w.AddString(6, name);
   return Reply(w);
 }
-HttpResponse Renew(std::string access = Token(), std::string refresh = "") {
-  proto::Writer w; w.AddString(1, access); if (!refresh.empty()) w.AddString(2, refresh);
-  return Reply(w);
-}
 struct Fixture {
   std::uint64_t clock = 0;
   std::atomic<bool> cancel{false};
@@ -189,9 +185,14 @@ void HeadersAndTokens() {
     assert(c.AuthenticateQr(f.cancel, f.Callback()).error == AuthError::kProtocol);
   }
   {
-    Fixture f; auto begin = Begin(); begin.headers.clear(); f.replies.push_back(begin); f.replies.push_back(Success(Token(), "")); f.replies.push_back(Renew());
-    AuthClient c(f.Hooks()); auto r = c.AuthenticateQr(f.cancel, f.Callback());
-    assert(r.error == AuthError::kNone && !r.session->access_token.empty() && f.requests.size() == 3);
+    // An approval without an access token gets one through the CM, not the Web API.
+    Fixture f; auto begin = Begin(); begin.headers.clear(); f.replies.push_back(begin); f.replies.push_back(Success(Token(), ""));
+    auto hooks = f.Hooks(); int cm_calls = 0;
+    hooks.cm_renew = [&](const StoredSession& s, const std::atomic<bool>&) {
+      ++cm_calls; auto renewed = s; renewed.access_token = Token(); return AuthResult{AuthError::kNone, renewed};
+    };
+    AuthClient c(hooks); auto r = c.AuthenticateQr(f.cancel, f.Callback());
+    assert(r.error == AuthError::kNone && !r.session->access_token.empty() && cm_calls == 1 && f.requests.size() == 2);
   }
 }
 void FailedReplacementKeepsSavedSession() {
@@ -211,8 +212,12 @@ void FailedReplacementKeepsSavedSession() {
     }
   } repository;
   Fixture f; f.replies.push_back(Begin()); f.replies.push_back(Success(Token("76561198000000002"),""));
-  proto::Writer rejected; f.replies.push_back(Reply(rejected,15));
-  AuthClient client(f.Hooks()); SteamService service(client,repository); service.BeginQrSignIn();
+  auto hooks = f.Hooks();
+  // What RenewThroughCm reports when the CM refuses the logon.
+  hooks.cm_renew = [](const StoredSession&, const std::atomic<bool>&) {
+    return AuthResult{AuthError::kCredentialsRevoked, std::nullopt};
+  };
+  AuthClient client(hooks); SteamService service(client,repository); service.BeginQrSignIn();
   bool failed = false;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (!failed && std::chrono::steady_clock::now() < deadline) {
@@ -284,58 +289,33 @@ void Restoration() {
     assert(r.error == AuthError::kNone && r.session->access_token == saved.access_token && f.requests.empty());
   }
   {
-    // The Web API refuses a SteamClient refresh token with AccessDenied: renew through the CM.
-    Fixture f; proto::Writer w; f.replies.push_back(Reply(w,15)); int cm_calls = 0;
+    // An expired access token is renewed through the CM only: the refresh token never goes to the Web API.
+    Fixture f; int cm_calls = 0; const auto rotation = Token("76561198000000001",2100000000);
     auto hooks = f.Hooks();
     hooks.cm_renew = [&](const StoredSession& s, const std::atomic<bool>&) {
-      ++cm_calls; auto renewed = s; renewed.access_token = Token(); return AuthResult{AuthError::kNone, renewed};
+      ++cm_calls; auto renewed = s; renewed.access_token = Token(); renewed.refresh_token = rotation;
+      return AuthResult{AuthError::kNone, renewed};
     };
+    std::string path;
+    hooks.restored = [&](const char* p, const std::string&, const std::string&) { path = p; };
     AuthClient c(hooks); auto r = c.Restore(Stored(),f.cancel);
-    assert(r.error == AuthError::kNone && cm_calls == 1 && r.session->access_token == Token());
+    assert(r.error == AuthError::kNone && cm_calls == 1 && r.session->refresh_token == rotation);
+    assert(r.session->cell_id == 7 && path == "cm" && f.requests.empty());
   }
-  {
-    // Some days the Web API answers AccountLogonDenied (63) instead: also renew through the CM (#51).
-    Fixture f; proto::Writer w; f.replies.push_back(Reply(w,63)); int cm_calls = 0;
-    auto hooks = f.Hooks();
-    hooks.cm_renew = [&](const StoredSession& s, const std::atomic<bool>&) {
-      ++cm_calls; auto renewed = s; renewed.access_token = Token(); return AuthResult{AuthError::kNone, renewed};
-    };
-    AuthClient c(hooks); auto r = c.Restore(Stored(),f.cancel);
-    assert(r.error == AuthError::kNone && cm_calls == 1 && r.session->access_token == Token());
-  }
-  {
-    // Any other refusal keeps its meaning; the CM is not consulted.
-    Fixture f; proto::Writer w; f.replies.push_back(Reply(w,5)); int cm_calls = 0;
-    auto hooks = f.Hooks();
-    hooks.cm_renew = [&](const StoredSession&, const std::atomic<bool>&) { ++cm_calls; return AuthResult{}; };
+  for (AuthError error : {AuthError::kCredentialsRevoked, AuthError::kNetwork, AuthError::kCanceled}) {
+    Fixture f; auto hooks = f.Hooks();
+    hooks.cm_renew = [&](const StoredSession&, const std::atomic<bool>&) { return AuthResult{error, std::nullopt}; };
     AuthClient c(hooks);
-    assert(c.Restore(Stored(),f.cancel).error == AuthError::kCredentialsRevoked && cm_calls == 0);
+    assert(c.Restore(Stored(),f.cancel).error == error && f.requests.empty());
   }
   {
-    Fixture f; const auto rotation = Token("76561198000000001",2100000000); f.replies.push_back(Renew(Token(), rotation));
-    AuthClient c(f.Hooks()); auto r = c.Restore(Stored(),f.cancel);
-    assert(r.error == AuthError::kNone && r.session->refresh_token == rotation && r.session->cell_id == 7);
-    assert(f.requests[0].url.find("GenerateAccessTokenForApp") != std::string::npos);
-  }
-  {
-    Fixture f; f.replies.push_back(Renew(Token(),Token("76561198000000002"))); AuthClient c(f.Hooks());
-    assert(c.Restore(Stored(),f.cancel).error == AuthError::kProtocol);
-  }
-  {
-    Fixture f; f.replies.push_back(Renew()); f.cancel_on_response = true; AuthClient c(f.Hooks());
-    assert(c.Restore(Stored(),f.cancel).error == AuthError::kCanceled);
-  }
-  for (int eresult : {5,15,26,27}) {
-    Fixture f; proto::Writer w; f.replies.push_back(Reply(w,eresult)); AuthClient c(f.Hooks());
-    assert(c.Restore(Stored(),f.cancel).error == AuthError::kCredentialsRevoked);
+    // Without a CM there is nothing to renew through.
+    Fixture f; AuthClient c(f.Hooks());
+    assert(c.Restore(Stored(),f.cancel).error == AuthError::kProtocol && f.requests.empty());
   }
   {
     Fixture f; auto saved = Stored(); saved.steam_id++; AuthClient c(f.Hooks());
     assert(c.Restore(saved,f.cancel).error == AuthError::kCredentialsRevoked && f.requests.empty());
-  }
-  {
-    Fixture f; auto r = Renew(); r.status_code = 503; f.replies.push_back(r); AuthClient c(f.Hooks());
-    assert(c.Restore(Stored(),f.cancel).error == AuthError::kNetwork);
   }
 }
 }

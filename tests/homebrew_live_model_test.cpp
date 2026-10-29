@@ -671,16 +671,22 @@ void live_download_telemetry() {
     model.UpdateInstalls({job}, {});
     check(model.state().jobs.size() == 1 && model.state().jobs[0].bytes_per_second == 40055603 &&
           model.state().jobs[0].eta_seconds == 300, "live transfer telemetry reaches the Downloads model");
-    check(FormatDownloadRate(job.bytes_per_second, job.eta_seconds) == "38.2 MB/s · ~5 min left", "rate and ETA formatting");
+    check(FormatDownloadRate(job.bytes_per_second, job.eta_seconds) == "40.1 MB/s · ~5 min left", "rate and ETA formatting");
     check(FormatDownloadRate(0, {}) == "0.0 MB/s · —", "stalled rate has no invented ETA");
-    check(FormatDownloadRate(1048576, {}) == "1.0 MB/s · —", "unknown total keeps rate but hides ETA");
+    check(FormatDownloadRate(1000000, {}) == "1.0 MB/s · —", "unknown total keeps rate but hides ETA");
     check(FormatDownloadRate({}, 300) == "—", "unknown rate hides stale ETA");
-    check(FormatDownloadRate(1048576, 59) == "1.0 MB/s · ~59 sec left", "short ETA");
-    check(FormatDownloadRate(1048576, 61) == "1.0 MB/s · ~2 min left", "ETA rounds up");
+    check(FormatDownloadRate(1000000, 61, "Fastly") == "Fastly · 1.0 MB/s · ~2 min left", "the server comes first");
+    check(FormatDownloadRate({}, 61, "Fastly") == "—", "no rate, no server");
+    job.server_name = "Akamai";
+    model.UpdateInstalls({job}, {});
+    check(model.state().jobs[0].server_name == "Akamai", "the live server name reaches the Queue");
+    check(FormatDownloadRate(1000000, 59) == "1.0 MB/s · ~59 sec left", "short ETA");
+    check(FormatDownloadRate(1000000, 61) == "1.0 MB/s · ~2 min left", "ETA rounds up");
     for (const auto state : {JobState::Paused, JobState::Queued, JobState::Failed}) {
         job.state = state; // stale incoming fields must never appear outside an active transfer
         model.UpdateInstalls({job}, {});
-        check(!model.state().jobs[0].bytes_per_second && !model.state().jobs[0].eta_seconds, "inactive telemetry clears");
+        check(!model.state().jobs[0].bytes_per_second && !model.state().jobs[0].eta_seconds &&
+                  model.state().jobs[0].server_name.empty(), "inactive telemetry clears");
     }
     // An imported game's copy into Playden says "Copying" (tiles, Queue) where a store's download says
     // "Downloading"; other states and a job's own words read the same for both.
@@ -827,6 +833,22 @@ void live_self_update(const std::filesystem::path& base) {
           find_row(model, "settings-beta-wait")->subtitle ==
               "Playden moves to the next stable version when it is out.",
           "opting out on a beta explains waiting for stable");
+    // Settings › About names a nightly as such, with its build number and commit.
+    update.current = "0.8.0-nightly.20261027.2";
+    update.commit = "d94c0b384d";
+    model.UpdateSelfUpdate(update);
+    activate(model, "settings-about");
+    check(find_row(model, "about-version") && find_row(model, "about-version")->value == "Playden 0.8.0 (Nightly)",
+          "about: a nightly's version");
+    check(find_row(model, "about-build") && find_row(model, "about-build")->value == "20261027.2 · d94c0b384d",
+          "about: a nightly's build and commit");
+    update.current = "0.7.1-beta.1";
+    model.UpdateSelfUpdate(update);
+    check(find_row(model, "about-version")->value == "Playden 0.7.1-beta.1 (Beta)" &&
+              find_row(model, "about-build")->value == "d94c0b384d",
+          "about: a beta's version and commit");
+    model.action("circle");
+    update.commit.clear();
     update.current = "0.2.0";
     model.UpdateSelfUpdate(update);
     check(find_row(model, "settings-update") && find_row(model, "settings-update")->value == "Check now",
@@ -1006,71 +1028,6 @@ void live_self_update(const std::filesystem::path& base) {
               "update: Download and install still has the focus");
     }
 
-    // The old title after the move to the new one, which hasn't started yet: a dialog says where Playden
-    // went, and its button quits to open the new title (registered again at quit). It shows once.
-    {
-        auto old_title = make_live(base);
-        old_title.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(old_title.UpdateLibrary({{}, false, {}, false, true, 100}), "moved: library delivered");
-        LiveSelfUpdate moved;
-        moved.current = "0.7.1";
-        moved.moved_to = "0.8.0";
-        old_title.UpdateSelfUpdate(moved);
-        check(!old_title.state().navigation.modals.empty() &&
-                  old_title.state().navigation.modals.back().title == "Playden 0.8.0 is a new app" &&
-                  old_title.state().navigation.modals.back().body.find("restart the PS5") != std::string::npos,
-              "moved: the old title says where Playden went");
-        playden::GameSummary game;
-        game.id = SteamId(220);
-        game.title = "Half-Life 2";
-        check(old_title.UpdateLibrary({{game}, false, {}, false, true, 100}) &&
-                  !old_title.state().navigation.modals.empty(),
-              "moved: the games arriving leave the dialog open");
-        check(old_title.action("cross") && old_title.state().quit_requested &&
-                  old_title.TakeSelfUpdateRequests() == std::vector<std::string>{"open-successor"},
-              "moved: Open the new Playden quits to open it");
-        auto later = make_live(base);
-        later.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(later.UpdateLibrary({{}, false, {}, false, true, 100}), "moved: library delivered again");
-        later.UpdateSelfUpdate(moved);
-        check(later.action("right") && later.action("cross") && later.state().navigation.modals.empty() &&
-                  !later.state().quit_requested && later.TakeSelfUpdateRequests().empty(),
-              "moved: Later keeps this Playden open");
-        later.UpdateSelfUpdate(moved);
-        check(later.state().navigation.modals.empty(), "moved: the dialog shows once");
-    }
-
-    // The bridge (0.8.0 as the old title) offers the same version as a new app; a newer move says so too.
-    {
-        auto bridge = make_live(base);
-        bridge.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(bridge.UpdateLibrary({{}, false, {}, false, true, 100}), "bridge: library delivered");
-        LiveSelfUpdate move;
-        move.current = "0.8.0";
-        move.phase = "available";
-        move.available = "0.8.0";
-        move.moves = true;
-        move.notes = "Notes already seen.";
-        bridge.UpdateSelfUpdate(move);
-        check(!bridge.state().navigation.modals.empty() &&
-                  bridge.state().navigation.modals.back().title == "Move Playden to its new app" &&
-                  bridge.state().navigation.modals.back().body.find("new app next to this one") != std::string::npos &&
-                  bridge.state().navigation.modals.back().body.find("Notes already seen.") == std::string::npos,
-              "bridge: the same version is offered as a move");
-        check(bridge.action("cross") && bridge.TakeSelfUpdateRequests() == std::vector<std::string>{"install"},
-              "bridge: the move downloads like an update");
-        auto newer = make_live(base);
-        newer.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
-        check(newer.UpdateLibrary({{}, false, {}, false, true, 100}), "bridge: library delivered again");
-        move.current = "0.7.1";
-        newer.UpdateSelfUpdate(move);
-        check(!newer.state().navigation.modals.empty() &&
-                  newer.state().navigation.modals.back().title == "Playden 0.8.0 is available" &&
-                  newer.state().navigation.modals.back().body.find("Notes already seen.") != std::string::npos &&
-                  newer.state().navigation.modals.back().body.find("new app next to this one") != std::string::npos,
-              "bridge: a newer move keeps its notes and says it is a new app");
-    }
-
     // A failed install says why; the previous run's result shows once.
     auto failing = make_live(base);
     failing.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
@@ -1150,7 +1107,8 @@ void live_root_access_missing() {
     const auto& data_view = granted.view();
     check(data_view.title == "Playden can't start", "root access: a data failure after the grant has its own title");
     check(data_view.subtitle == "Playden has root access but can't use its data in /data/playden. "
-                                "Restart Playden; if it stays, check that folder's permissions over FTP.",
+                                "Restart Playden. Don't change permissions inside /data/playden over FTP: its private folders "
+                                "must stay owner-only. If it stays, send logs/native-startup.log from Playden's app folder.",
           "root access: the body points at /data/playden");
     check(data_view.subtitle.find("kstuff") == std::string::npos, "root access: no kstuff advice after the grant");
     const auto data_detail = std::find_if(data_view.rows.begin(), data_view.rows.end(),
@@ -1187,11 +1145,11 @@ void live_root_access_missing() {
         {"stable launcher source is invalid: assets root is unavailable", true, "Playden's app folder is incomplete",
          "Copy the whole app folder"},
         {"stable launcher source identity does not match", true, "Playden can't start", "restart the PS5"},
-        {"launcher is not installed in /data/homebrew/PPSA97031; helper stage=done status=0 error=0", true,
-         "Install Playden on console storage", "Playden runs only from /data/homebrew/PPSA97031, on the console's"},
-        {"launcher is not installed in /data/homebrew/PPSA97031", false, "Install Playden on console storage",
+        {"launcher is not installed in /data/homebrew/FAKE77031; helper stage=done status=0 error=0", true,
+         "Install Playden on console storage", "Playden runs only from /data/homebrew/FAKE77031, on the console's"},
+        {"launcher is not installed in /data/homebrew/FAKE77031", false, "Install Playden on console storage",
          "set Settings > Install location to /data/homebrew, hold Uninstall"},
-        {"launcher is not installed in /data/homebrew/PPSA97031", false, "Install Playden on console storage",
+        {"launcher is not installed in /data/homebrew/FAKE77031", false, "Install Playden on console storage",
          "move the app folder to /data/homebrew."},
     };
     for (const auto& item : cases) {

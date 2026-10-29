@@ -1,0 +1,65 @@
+"appinfo"
+{
+	"appid"		"6000"
+	"common"
+	{
+		"name"		"Free DLC Test"
+		"type"		"Game"
+	}
+	"extended"
+	{
+		"listofdlc"		"6001,6002,6003,6004,6005"
+	}
+	"depots"
+	{
+		"6000"
+		{
+			"name"		"Content"
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"60"
+					"size"		"1000"
+					"download"		"500"
+				}
+			}
+		}
+		"6031"
+		{
+			"name"		"Bonus (listed by the game)"
+			"dlcappid"		"6003"
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"631"
+					"size"		"30"
+					"download"		"20"
+				}
+			}
+		}
+		"6051"
+		{
+			"name"		"Mac bonus (listed by the game)"
+			"dlcappid"		"6005"
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"651"
+					"size"		"30"
+					"download"		"20"
+				}
+			}
+		}
+	}
+}

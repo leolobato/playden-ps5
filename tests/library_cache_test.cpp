@@ -74,6 +74,18 @@ int main(){
  auto lossy_demos=demos;lossy_demos.schema_version=5;
  Check(!cache.Save("76561198000000006",lossy_demos).ok(),"schema five cannot silently discard demos");
  Check(!dated_restored.value().games[0].demo,"older schemas hold no demos");
+ LibrarySnapshot shared{7,123462,{{SteamId(70),"Synthetic Shared","","",""},{SteamId(71),"Owned Game","","",""},{SteamId(72),"Shared Demo","","",""}}};
+ shared.games[0].family_shared=true;shared.games[0].added_at_unix_seconds=1650000000;
+ shared.games[2].family_shared=true;shared.games[2].demo=true;
+ Check(cache.Save("76561198000000007",shared).ok(),"save schema seven family-shared games");
+ auto shared_restored=cache.Load("76561198000000007");
+ Check(shared_restored.ok()&&shared_restored.value().schema_version==7,"load schema seven");
+ Check(shared_restored.value().games[0].family_shared&&shared_restored.value().games[0].added_at_unix_seconds==1650000000u&&
+     !shared_restored.value().games[0].demo&&!shared_restored.value().games[1].family_shared&&
+     shared_restored.value().games[2].family_shared&&shared_restored.value().games[2].demo,"family mark roundtrip next to demos; owned games stay unmarked");
+ auto lossy_shared=shared;lossy_shared.schema_version=6;
+ Check(!cache.Save("76561198000000007",lossy_shared).ok(),"schema six cannot silently discard family sharing");
+ Check(!demos_restored.value().games[0].family_shared&&!dated_restored.value().games[0].family_shared,"older schemas hold no family sharing");
  auto zero_dated=dated;zero_dated.games[0].added_at_unix_seconds=0;
  Check(!cache.Save("76561198000000005",zero_dated).ok(),"zero acquisition date rejected");
  auto future=partial;future.retrieved_at_unix_seconds=std::uint64_t{1}<<63;

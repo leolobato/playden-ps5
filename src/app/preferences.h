@@ -26,6 +26,15 @@ struct Preferences {
   // The UI language, as the code of a catalog in assets/translations ("en", "es"). An unknown
   // code falls back to English at load.
   std::string language = "en";
+  // The Steam CDN host to try first for new or resumed downloads. Empty uses Steam's server order (Automatic).
+  std::string download_server;
+  // Web access: Playden's logs, redacted, on the local network at port 7031 while Playden is open. On by default,
+  // so a tester can send logs without first finding a switch; version 1 only reads.
+  bool web_access = true;
+  // The language game content is downloaded in, as Steam names its depot languages
+  // ("german", "koreana"). Steam ships localisations as separate depots; a game that has none
+  // in this language is installed in English, as every game was before this could be chosen.
+  std::string content_language = "english";
 };
 
 enum class PreferencesLoadStatus {

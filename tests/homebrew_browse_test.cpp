@@ -90,6 +90,15 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
     state.library.ratings.erase(SteamId(900010));
     state.library.filters.clear();
     demo.demo = false;
+    demo.family_shared = true;
+    check(filtered_games(state).size() == every_game, "family-shared games show with no filter");
+    state.library.filters = {"hide-family"};
+    const auto owned = filtered_games(state);
+    check(owned.size() == every_game - 1 &&
+              std::none_of(owned.begin(), owned.end(), [](const Game* game) { return game->family_shared; }),
+          "hiding family sharing leaves the owned games");
+    state.library.filters.clear();
+    demo.family_shared = false;
     state.account().authentication = AuthState::SignedOut;
     state.account().cache_available = false;
     check(filtered_games(state).empty(), "signed out without cache has no browsable catalog");

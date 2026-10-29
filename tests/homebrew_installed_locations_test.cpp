@@ -2,6 +2,7 @@
 // Task 2.5) and never reaches Steam Cloud (Task 2.6), against a real RuntimeHost.
 #include "homebrew/controller.hpp"
 #include "homebrew/runtime_host.hpp"
+#include "installs/install_record.h"
 #include "runtime_host_fixture.h"
 #include "stores/local/library_source.h"
 #include "fake_library_source.h"
@@ -74,7 +75,8 @@ class RestoringBackend final : public playden::steam::AuthBackend {
 class NoDownloads final : public playden::steam::SessionInstallRunner {
  public:
   using SessionInstallRunner::SessionInstallRunner;
-  Result InstallApp(const playden::StoredSession&, std::uint32_t, const std::string&, const std::atomic<bool>&,
+  Result InstallApp(const playden::StoredSession&, std::uint32_t, const std::string&,
+                    const playden::steam::InstallOptions&, const std::atomic<bool>&,
                     const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>&,
                     const std::function<void(playden::steam::InstallStep)>&) override {
     return {false, false, "no downloads here", 0};
@@ -346,6 +348,16 @@ void ImportedGamePreparesWithoutSteam() {
     const auto line = std::find_if(lines.begin(), lines.end(), [&](const std::string& l) { return l.rfind(named, 0) == 0; });
     CHECK(line != lines.end() && line->rfind(named + "Second import icon=", 0) == 0);
   }
+  // Its files changed (an update's marker): the controller sets it up again without a Play, so a start from Home
+  // runs the new files, and the marker goes.
+  const auto marker = fixture.root / "data/playden-import/Second" / playden::installs::kFilesChangedName;
+  Write(marker, "v1\n", 0644);
+  host.RecheckInstalls();
+  const auto handled = host.Snapshot().prepares_handled;
+  tick_until([&](const RuntimeSnapshot& s) {
+    return s.prepares_handled > handled && !s.preparing_app && !s.installs.empty() && !s.installs[0].files_changed;
+  });
+  CHECK(!fs::exists(marker) && model.state().navigation.route == hb::Route::Settings);
   controller.Shutdown();
   host.Shutdown();
 }
@@ -968,6 +980,144 @@ void ImportedGamePlaysInPlace() {
   });
 }
 
+namespace {
+// Steam's details for the controller: Request and Refresh are recorded; answers are queued by the test.
+class ScriptedDetails final : public playden::stores::DetailsSource {
+ public:
+  std::mutex mutex;
+  std::vector<std::pair<playden::GameId, bool>> asked;  // (game, refresh)
+  std::vector<playden::steam::AppDetails> answers;
+  playden::Store store() const override { return playden::Store::kSteam; }
+  void Request(const playden::GameId& id, std::uint64_t) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    asked.emplace_back(id, false);
+  }
+  void Refresh(const playden::GameId& id, std::uint64_t, bool = false) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    asked.emplace_back(id, true);
+  }
+  void Invalidate(std::uint64_t) override {}
+  std::vector<playden::steam::AppDetails> Pump(std::size_t) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::exchange(answers, {});
+  }
+  void Shutdown() override {}
+  bool Refreshed(const playden::GameId& id) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::find(asked.begin(), asked.end(), std::make_pair(id, true)) != asked.end();
+  }
+};
+// Installs by writing the record the test chooses, once released.
+class RecordDownloads final : public playden::steam::SessionInstallRunner {
+ public:
+  using SessionInstallRunner::SessionInstallRunner;
+  std::atomic<bool> release{false};
+  std::string record = "{\"install_bytes\":4096}";
+  Result InstallApp(const playden::StoredSession&, std::uint32_t, const std::string& root,
+                    const playden::steam::InstallOptions&, const std::atomic<bool>& cancel,
+                    const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
+                    const std::function<void(playden::steam::InstallStep)>&) override {
+    progress(1, 2, 0);
+    while (!release) {
+      if (cancel) return {false, true, {}, 0};
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    fs::create_directories(root);
+    Write(fs::path(root) / ".playden-install.json", record, 0644);
+    return {true, false, {}, 4096};
+  }
+  std::string Remove(const std::string&) override { return {}; }
+};
+}  // namespace
+
+// A download of a version other than public is prepared with that version's launch options: those Steam's
+// details gave before the install were the public branch's, so they are asked for again and the preparation
+// waits for the answer. A public install is prepared at once with what is known.
+void BranchInstallWaitsForItsLaunchOptions() {
+  namespace hb = playden::homebrew;
+  using playden::GameId;
+  for (const bool beta : {true, false}) {
+    Fixture fixture;
+    auto config = fixture.Config();
+    config.host_namespace_prefix = fixture.root;
+    config.package_paths.console_data_root = "/data";
+    config.package_paths.host_data_root = fixture.root / "data";
+    config.package_operations.hash_file = HashArtifactFile;
+    config.package_operations.hash_bytes = HashArtifactBytes;
+    config.package_operations.free_space_unverifiable = true;
+    const auto kit = SyntheticKit(fixture.root / "kit");
+    config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+    unsigned uuids = 0;
+    config.uuid = [&uuids]() -> std::optional<std::string> {
+      ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+    };
+    config.unix_time = [] { return std::int64_t{1760000000}; };
+    const auto steam_games = fixture.root / "steam-games";
+    fs::create_directories(steam_games);
+    const auto game = GameId::Steam(230);
+
+    hb::Simulation model({}, {}, hb::ModelMode::Live);
+    MemorySessions sessions;
+    sessions.value = playden::StoredSession{12345, "Synthetic account", "refresh", "access", {}};
+    RestoringBackend backend;
+    playden::stores::Registry registry;
+    registry.Add(std::make_unique<playden::stores::SteamAccount>(backend, sessions));
+    auto details_owned = std::make_unique<ScriptedDetails>();
+    auto& details = *details_owned;
+    registry.Add(std::move(details_owned));
+    RecordDownloads downloads(sessions);
+    if (beta) downloads.record = "{\"version\":2,\"install_bytes\":4096,\"branch\":\"beta\"}";
+    playden::steam::InstallService installs(downloads, steam_games.string());
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    hb::Controller controller(model, registry, nullptr, &installs, nullptr, &host);
+    const auto tick_until = [&](const std::function<bool()>& done, int seconds) {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+      while (!done()) {
+        controller.Tick();
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    };
+    tick_until([&] {
+      return model.state().account().authentication == hb::AuthState::SignedIn && model.state().runtime == hb::RuntimeState::Ready;
+    }, 30);
+    // The details the player saw before installing: the public branch's launch options.
+    const auto answer = [&](const char* program) {
+      playden::steam::AppDetails answered;
+      answered.id = game;
+      answered.account_generation = model.state().account_generation;
+      answered.available = true;
+      answered.windows_installable = true;
+      answered.launches = {{program, "", "", ""}};
+      std::lock_guard<std::mutex> lock(details.mutex);
+      details.answers.push_back(answered);
+    };
+    answer("public.exe");
+    for (int i = 0; i < 10; ++i) controller.Tick();
+    installs.Install(game);
+    tick_until([&] { return !model.state().jobs.empty(); }, 10);
+    downloads.release = true;
+    const auto prepares = [&] { return host.Snapshot().prepares_handled; };
+    if (beta) {
+      // Finished: Steam is asked again for the installed version, and nothing is prepared until it answers.
+      tick_until([&] { return details.Refreshed(game); }, 10);
+      const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+      while (std::chrono::steady_clock::now() < until) {
+        controller.Tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      CHECK(prepares() == 0 && host.Snapshot().queued_prepares.empty() && !host.Snapshot().preparing_app);
+      answer("beta.exe");
+    }
+    tick_until([&] { return prepares() > 0; }, 30);
+    CHECK(details.Refreshed(game) == beta);
+    controller.Shutdown();
+    host.Shutdown();
+    installs.Shutdown();
+  }
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
@@ -975,6 +1125,7 @@ int main(int argc, char** argv) {
   ImportedGamePreparesWithoutSteam();
   FirstPrepareOfAnImportedGameNeverWaitsForTheWorker();
   ImportedGamePlaysInPlace();
+  BranchInstallWaitsForItsLaunchOptions();
   std::puts("installed locations tests passed");
   return 0;
 }

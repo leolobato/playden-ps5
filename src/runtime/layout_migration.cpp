@@ -409,6 +409,20 @@ LayoutResult MigrateLayout(const LayoutPaths& paths, const LayoutOps& ops) {
   if (!loaded && !error.empty()) return hold("the move record " + (paths.state_root / kLayoutJournal).string() +
                                              " can't be read (" + error + ")");
   LayoutJournal journal = loaded.value_or(LayoutJournal{});
+  // A lost move record (runtime-state deleted or replaced by hand) after a move that plainly
+  // happened: the app folder has no user data left and /data/playden/user has it. Written again,
+  // or the user step would hold on Playden's own moved data. Data on both sides is still held.
+  // It resumes at the logs step (moving what the app folder's logs hold now, as every later start
+  // does), so a record lost between the user and logs steps loses no logs. Both folders must list.
+  const auto old_entries = Kind(old_user) == 0 ? std::optional<std::vector<std::string>>(std::vector<std::string>{})
+                                               : Entries(old_user);
+  const auto user_entries = Kind(paths.user_root) == 1 ? Entries(paths.user_root) : std::nullopt;
+  if (!loaded && old_entries && old_entries->empty() && user_entries && !user_entries->empty()) {
+    LayoutJournal rebuilt{"logs", old_logs.string(), paths.log_root.string(), 0};
+    if (!SaveJournal(paths.state_root, rebuilt, &error)) return hold("the move record can't be written (" + error + ")");
+    Log(ops, "move record rebuilt step=logs");
+    journal = rebuilt;
+  }
   // Once the games step is done the games folder exists, shared: a fresh install has
   // none to move. One that came with the moved games keeps its mode.
   const auto ensure_games_root = [&] {

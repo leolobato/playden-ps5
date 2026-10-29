@@ -1,0 +1,47 @@
+"appinfo"
+{
+	"appid"		"5001"
+	"common"
+	{
+		"name"		"DLC Test - Expansion"
+		"type"		"DLC"
+		"parent"		"5000"
+	}
+	"depots"
+	{
+		"5011"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"osarch"		"64"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"511"
+					"size"		"200"
+					"download"		"100"
+				}
+			}
+		}
+		"5012"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"osarch"		"32"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"512"
+					"size"		"190"
+					"download"		"95"
+				}
+			}
+		}
+	}
+}

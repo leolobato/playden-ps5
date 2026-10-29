@@ -15,7 +15,9 @@
 #include "stores/steam.h"
 #include "stores/local/library_source.h"
 #include "steam/download_rate.h"
+#include "steam/download_server_service.h"
 #include "update/update_service.h"
+#include "web/service.h"
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -49,8 +51,13 @@ class Controller {
   void Shutdown();
   // Steam store descriptions, genres and controller support for the games the player opens.
   void SetStoreDetails(steam::StoreDetailsService* store_details) { store_details_ = store_details; }
+  // The server list and measurements run on their own worker; only their public snapshot enters the UI.
+  void SetDownloadServers(steam::DownloadServerService* servers) { download_servers_ = servers; }
   // Playden's own update: the controller passes the player's requests on and shows its state.
   void SetSelfUpdate(update::UpdateService* self_update) { self_update_ = self_update; }
+  // Settings › Web access turns it on and off (once the saved preferences are read); the signed-in account's
+  // name and SteamID go to it for redaction. Shutdown stops it.
+  void SetWebAccess(web::Service* web) { web_ = web; }
   // Receives one line per shutdown step with how long it took, so a quit that hangs names the step.
   void SetShutdownLog(std::function<void(const std::string&)> log) { shutdown_log_ = std::move(log); }
   // Preferences and organization load/save failures (app::PersistenceController::SetLog). The first loads
@@ -107,6 +114,13 @@ class Controller {
   steam::StoreDetailsService* store_details_ = nullptr;
   std::optional<GameId> requested_store_detail_;
   void TickInstalls();
+  void TickDownloadServers();
+  bool DownloadServerTestAllowed() const;
+  steam::DownloadServerService* download_servers_ = nullptr;
+  web::Service* web_ = nullptr;
+  void TickWebAccess();
+  std::string download_servers_account_;
+  std::optional<LiveDownloadServers> shown_download_servers_;
   void TickSelfUpdate();
   void TickLicenseChanges();
   std::function<void(const std::string&)> shutdown_log_;
@@ -224,7 +238,12 @@ class Controller {
   // prepared yet. Play then starts it once it is Ready; the refusal seen when Prepare
   // was queued tells a new refusal from an old one.
   std::set<GameId> downloading_;
+  std::set<GameId> updating_;  // the install jobs that are updates of installed games
+  // Installed games whose update finished: their Steam details (launch options, update state) are asked again.
+  std::set<GameId> refresh_details_;
+  bool library_loading_ = false;  // the library refresh last seen running
   std::vector<GameId> auto_prepare_;  // in the order their downloads (copies, imports) finished
+  std::set<GameId> refresh_asked_;  // updated games whose setup for the new files was asked for (TickRuntime)
   std::optional<GameId> prepare_next_pending_;  // Prepare next on a game not in the runtime's queue yet
   struct PlayAfterPrepare {
     bool queued = false;
@@ -283,6 +302,9 @@ class Controller {
   std::vector<std::pair<GameId, std::string>> uninstall_statuses_;
   std::uint64_t kept_revision_ = 0;
   std::vector<LiveKeptBottle> kept_projected_;
+  std::vector<LiveLeftoverTitle> leftovers_projected_;
+  std::vector<LiveLeftoverDelete> leftover_deletions_projected_;
+  std::map<std::string, std::string> leftover_names_;
   std::map<GameId, std::string> play_notes_;
   std::uint64_t play_notes_revision_ = 0;
   std::uint64_t runtime_notes_revision_ = 0;
@@ -320,7 +342,8 @@ class Controller {
   // How long a Cloud job waits for the console to say which games are stopped.
   static constexpr std::chrono::seconds kJobActivityWait{45};
   std::map<GameId, std::uint64_t> cloud_foreground_;
-  // Games the job gate refuses (sessions Playden knows of), read on the Cloud worker.
+  void TickGate();
+  // Games the gates refuse (sessions Playden knows of), read on the Cloud and install workers.
   std::mutex gate_mutex_;
   std::set<GameId> gate_blocked_;
   LiveSavesJob saves_job_;
@@ -332,6 +355,9 @@ class Controller {
   std::optional<std::chrono::steady_clock::time_point> licenses_notice_at_;  // when a license check starts showing
   std::optional<GameId> requested_detail_;
   std::uint64_t requested_generation_ = 0;
+  // The download language app details were last asked for: sizes follow it, so a change asks again.
+  std::string requested_language_;
+  bool reissue_after_language_ = false;
   stores::SteamAccount* service_ = nullptr;  // Steam's account, in the registry; null once shut down
   std::function<void(const std::string&)> auth_log_;  // sign-in steps and results (auth.log)
   std::unique_ptr<app::LibraryController> library_;

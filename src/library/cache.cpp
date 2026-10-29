@@ -8,7 +8,7 @@ namespace {
 constexpr std::size_t kMaximumCacheBytes = 16 * 1024 * 1024;
 constexpr std::size_t kMaximumGames = 100000;
 // Schema 5 names each game by store and value; 4 and older hold Steam app IDs only. 6 marks demos.
-constexpr unsigned kLatestSchema = 6;
+constexpr unsigned kLatestSchema = 7;
 constexpr std::size_t kMaximumGameValue = 48;
 const Bytes kMagic = {'P','D','L','I','B',0,1,0};
 bool ValidAccount(const std::string& account) {
@@ -70,11 +70,12 @@ Result<void> LibraryCache::Save(const std::string& account,const LibrarySnapshot
         if(snapshot.schema_version==1 && (game.playtime_minutes || game.last_played_unix_seconds))return Invalid("Cache schema cannot preserve game history.");
         if(snapshot.schema_version<4 && game.added_at_unix_seconds)return Invalid("Cache schema cannot preserve acquisition dates.");
         if(snapshot.schema_version<6 && game.demo)return Invalid("Cache schema cannot preserve demos.");
+        if(snapshot.schema_version<7 && game.family_shared)return Invalid("Cache schema cannot preserve family sharing.");
         if(snapshot.schema_version>=5){Number(encoded,static_cast<std::uint8_t>(game.id.store),1);String(encoded,game.id.value);}
         else Number(encoded,*game.id.steam_app(),4);
         String(encoded,game.title);String(encoded,game.artwork_source);String(encoded,game.description);String(encoded,game.developer);
         if(snapshot.schema_version>=2){
-            Number(encoded,(game.playtime_minutes?1u:0u)|(game.last_played_unix_seconds?2u:0u)|(game.added_at_unix_seconds?4u:0u)|(game.demo?8u:0u),1);
+            Number(encoded,(game.playtime_minutes?1u:0u)|(game.last_played_unix_seconds?2u:0u)|(game.added_at_unix_seconds?4u:0u)|(game.demo?8u:0u)|(game.family_shared?16u:0u),1);
             if(game.playtime_minutes)Number(encoded,*game.playtime_minutes,8);
             if(game.last_played_unix_seconds)Number(encoded,*game.last_played_unix_seconds,8);
             if(game.added_at_unix_seconds)Number(encoded,*game.added_at_unix_seconds,8);
@@ -116,11 +117,12 @@ Result<LibrarySnapshot> LibraryCache::Load(const std::string& account) const {
         game.artwork_source=reader.String(8192);game.description=reader.String(65536);game.developer=reader.String(4096);
         if(snapshot.schema_version>=2){
             const auto flags=reader.Number(1);
-            if(flags>(snapshot.schema_version>=6?15u:snapshot.schema_version>=4?7u:3u))return invalid();
+            if(flags>(snapshot.schema_version>=7?31u:snapshot.schema_version>=6?15u:snapshot.schema_version>=4?7u:3u))return invalid();
             if(flags&1)game.playtime_minutes=reader.Number(8);
             if(flags&2)game.last_played_unix_seconds=reader.Number(8);
             if(flags&4)game.added_at_unix_seconds=reader.Number(8);
             game.demo=(flags&8)!=0;
+            game.family_shared=(flags&16)!=0;
         }
         if(!reader.okay||!ValidGame(game,snapshot.schema_version)||!seen.insert(game.id).second)return invalid();
         snapshot.games.push_back(std::move(game));

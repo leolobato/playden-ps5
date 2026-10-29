@@ -109,7 +109,9 @@ class LocalCopyRunner final : public installs::InstallRunner {
   std::string Move(installs::InstallService& service, const ImportEntry& entry, const std::string& source,
                    std::uint32_t runtime_number);
 
-  Result Install(const GameId& id, const std::string& root, const std::atomic<bool>& cancel,
+  // Copies ignore the install options.
+  Result Install(const GameId& id, const std::string& root, const installs::InstallOptions& options,
+                 const std::atomic<bool>& cancel,
                  const std::function<void(std::uint64_t done, std::uint64_t total, std::uint64_t held)>& progress,
                  const std::function<void(installs::InstallStep)>& step) override;
   std::string Remove(const std::string& root) override;

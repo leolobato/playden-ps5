@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
       if (definition.group != SettingGroup::kButtonMapping) ids.push_back(definition.id);
     const std::vector<std::string> expected = {
         "launch_option", "program", "extra_arguments",
-        "resolution", "refresh", "frame_limit", "vsync", "performance_overlay", "overlay_detail", "scaling",
+        "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
         "controller", "controller_preset",
         "pointer_stick", "pointer_speed", "stick_deadzone", "rumble", "invert_stick", "trigger_deadzone", "wheel_stick",
@@ -389,6 +389,17 @@ int main(int argc, char** argv) {
     for (const auto& value : RenderBottleEnvironment(shown))
       if (value.name == "VKD3D_FRAME_RATE") vkd3d_rate = value.data;
     CHECK(vkd3d_rate.empty());
+    // vkd3d-proton reports feature level 12_0 unless Environment variables sets another one; other games get none.
+    const auto feature_level = [](const EffectiveSettings& values) {
+      for (const auto& value : RenderBottleEnvironment(values))
+        if (value.name == "VKD3D_FEATURE_LEVEL") return value.data;
+      return std::string();
+    };
+    CHECK(feature_level(shown) == "\"12_0\"");
+    CHECK(BuildEffectiveSettings(d3d12, nullptr, {{"environment", "VKD3D_FEATURE_LEVEL=11_1"}}, display, &shown, &error));
+    CHECK(feature_level(shown) == "\"11_1\"");
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, display, &shown, &error));
+    CHECK(feature_level(shown).empty());
 
     // One pacer: a Frame limit replaces frame-rate variables the player typed in Environment variables, both
     // vkd3d-proton's (bottle environment) and DXVK's (profile); with Off they apply as before.
@@ -835,6 +846,90 @@ int main(int argc, char** argv) {
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "keyboard"}, {"rumble", "0"}}, tuning_kit, &settings, &error));
   CHECK(!settings.values.at("rumble").available && settings.values.at("rumble").reason == "Only with the Xbox controller.");
   CHECK(!ValidateSettingValue(hl2, "stick_deadzone", "60", &reason) && ValidateSettingValue(hl2, "rumble", "25", &reason));
+  // A kit with rumble alone (input-rumble) applies Rumble but not the dead zones, once the title runs its runtime.
+  {
+    const auto rumble_kit = KitCapabilitiesFromManifest({kKitInputRumble}, false);
+    CHECK(rumble_kit.input_rumble && !rumble_kit.input_tuning);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, tuning, rumble_kit, &settings, &error));
+    CHECK(settings.values.at("rumble").available && !settings.values.at("stick_deadzone").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nrumble = 50\n") != std::string::npos && profile.text.find("stick_deadzone") == std::string::npos);
+    CHECK(!CheckProsperoProfile(profile.text, &reason));
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_rumble = true}));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"rumble", "0"}}, rumble_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nrumble = 0\n") != std::string::npos);
+    // A title on an older runtime keeps the choice for its update and writes nothing until then.
+    const auto stale = KitForTitleRuntime(rumble_kit, false);
+    CHECK(!stale.input_rumble && stale.input_rumble_needs_update);
+    CHECK(KitForTitleRuntime(rumble_kit, true).input_rumble);
+    CHECK(!KitForTitleRuntime(KitCapabilities{}, false).input_rumble_needs_update);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"rumble", "0"}}, stale, &settings, &error));
+    const auto& waiting = settings.values.at("rumble");
+    CHECK(!waiting.available && waiting.waits_for_update && waiting.after_update == "0");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("rumble") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "keyboard"}, {"rumble", "0"}}, rumble_kit, &settings, &error));
+    CHECK(settings.values.at("rumble").reason == "Only with the Xbox controller.");
+  }
+  // Frame generation (display-framegen) on DXVK and OpenGL, once the title runs the kit's runtime. Its pictures fill
+  // every vblank, so it takes over Frame limit and VSync, and the overlay is its own counter.
+  {
+    const auto framegen_kit =
+        KitCapabilitiesFromManifest({kKitDxvk, kKitDxvkPresent, kKitVkd3dProton, kKitDisplay120Hz, kKitDisplayFramegen}, false);
+    CHECK(framegen_kit.display_framegen && !KitCapabilitiesFromManifest({kKitDxvk}, false).display_framegen);
+    auto game = hl2;
+    game.graphics = "dxvk";
+    const std::map<std::string, std::string> chosen = {
+        {"framegen", "2"}, {"frame_limit", "30"}, {"vsync", "off"}, {"performance_overlay", "on"}};
+    CHECK(BuildEffectiveSettings(game, nullptr, chosen, framegen_kit, &settings, &error));
+    CHECK(settings.values.at("framegen").available && Value(settings, "framegen") == "2");
+    CHECK(!settings.values.at("frame_limit").available &&
+          settings.values.at("frame_limit").reason == "Frame generation sets the frame rate.");
+    CHECK(!settings.values.at("vsync").available &&
+          settings.values.at("vsync").reason == "Frame generation always waits for the TV.");
+    CHECK(!settings.values.at("overlay_detail").available && settings.values.at("performance_overlay").available);
+    CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nframegen = 2\n") != std::string::npos);
+    CHECK(profile.text.find("frame_rate") == std::string::npos && profile.text.find("show_fps = true\n") != std::string::npos);
+    const auto dxvk_conf = RenderDxvkConfig(settings);
+    CHECK(dxvk_conf.find("maxFrameRate") == std::string::npos && dxvk_conf.find("syncInterval") == std::string::npos &&
+          dxvk_conf.find("dxvk.hud") == std::string::npos);
+    CHECK(!CheckProsperoProfile(profile.text, &reason));
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.display_framegen = true}));
+    // A Direct3D 12 game gets the counter too: frame generation draws it, not DXVK.
+    auto d3d12 = chosen;
+    d3d12["d3d12"] = "vkd3d-proton";
+    CHECK(BuildEffectiveSettings(game, nullptr, d3d12, framegen_kit, &settings, &error));
+    CHECK(settings.values.at("performance_overlay").available && !settings.values.at("overlay_detail").available);
+    // Off writes nothing and leaves the other rows as they were.
+    CHECK(BuildEffectiveSettings(game, nullptr, {{"frame_limit", "30"}}, framegen_kit, &settings, &error));
+    CHECK(settings.values.at("frame_limit").available && settings.values.at("vsync").available);
+    CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
+    CHECK(profile.text.find("framegen") == std::string::npos);
+    // GDI does not present through Vulkan; a kit without the capability says so.
+    game.graphics = "gdi";
+    CHECK(BuildEffectiveSettings(game, nullptr, chosen, framegen_kit, &settings, &error));
+    CHECK(!settings.values.at("framegen").available &&
+          settings.values.at("framegen").reason == "Only with DXVK or OpenGL.");
+    game.graphics = "opengl";
+    CHECK(BuildEffectiveSettings(game, nullptr, chosen, KitCapabilitiesFromManifest({kKitDxvk}, false), &settings, &error));
+    CHECK(settings.values.at("framegen").reason == "Needs a runtime kit with frame generation.");
+    CHECK(BuildEffectiveSettings(game, nullptr, chosen, framegen_kit, &settings, &error));
+    CHECK(settings.values.at("framegen").available && !settings.values.at("frame_limit").available);
+    // A title on an older runtime keeps the choice for its update; until then the other rows apply as before.
+    const auto stale = KitForTitleRuntime(framegen_kit, false);
+    CHECK(!stale.display_framegen && stale.display_framegen_needs_update);
+    CHECK(KitForTitleRuntime(framegen_kit, true).display_framegen);
+    CHECK(!KitForTitleRuntime(KitCapabilities{}, false).display_framegen_needs_update);
+    game.graphics = "dxvk";
+    CHECK(BuildEffectiveSettings(game, nullptr, chosen, stale, &settings, &error));
+    const auto& waiting = settings.values.at("framegen");
+    CHECK(!waiting.available && waiting.waits_for_update && waiting.after_update == "2");
+    CHECK(settings.values.at("vsync").available);
+    CHECK(RenderProsperoProfile(game, settings, target, &profile, &reason));
+    CHECK(profile.text.find("framegen") == std::string::npos);
+  }
 
   // Trigger dead zone rides with controller tuning; the wheel and volume have their own gates.
   const std::map<std::string, std::string> more_tuning = {
@@ -1098,6 +1193,18 @@ int main(int argc, char** argv) {
     CHECK(!CommunityPresetSupported(needs_display, KitCapabilitiesFromManifest({kKitDxvk}, false)));
     // A title that waits for its update may take the preset as well: its values wait with the rows they set.
     CHECK(CommunityPresetSupported(needs_display, KitForTitleRuntime(display, false)));
+    auto needs_rumble = community;
+    needs_rumble.requires_prospero_win.push_back("input-rumble");
+    const auto rumble = KitCapabilitiesFromManifest({kKitInputRumble}, false);
+    CHECK(CommunityPresetSupported(needs_rumble, rumble) && CommunityPresetSupported(needs_rumble, KitForTitleRuntime(rumble, false)));
+    CHECK(CommunityPresetSupported(needs_rumble, KitCapabilitiesFromManifest({kKitInputTuning}, false)));
+    CHECK(!CommunityPresetSupported(needs_rumble, KitCapabilitiesFromManifest({kKitDxvk}, false)));
+    auto needs_framegen = community;
+    needs_framegen.requires_prospero_win.push_back("display-framegen");
+    const auto framegen = KitCapabilitiesFromManifest({kKitDisplayFramegen}, false);
+    CHECK(CommunityPresetSupported(needs_framegen, framegen) &&
+          CommunityPresetSupported(needs_framegen, KitForTitleRuntime(framegen, false)));
+    CHECK(!CommunityPresetSupported(needs_framegen, KitCapabilitiesFromManifest({kKitDxvk}, false)));
   }
   CHECK(BuildEffectiveSettings(hl2, &community.preset, {}, KitCapabilities{}, &settings, &error));
   CHECK(settings.values.at("controller").value == "keyboard");

@@ -1,7 +1,13 @@
+import http.server
+import io
 import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
+import threading
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -91,6 +97,91 @@ class CollectLogsTests(unittest.TestCase):
         finally:
             collect_logs.folders, collect_logs.fetch = folders, fetch
 
+
+class StubPlayden(http.server.BaseHTTPRequestHandler):
+    """Playden's web access as the --http path sees it: the log index and a report zip."""
+    index = {'games': [{'title': 'FAKE78002', 'app': 40800, 'name': None, 'last_run': 300, 'size': 10, 'files': []},
+                       {'title': 'FAKE78001', 'app': 220, 'name': 'Half-Life 2', 'last_run': 100, 'size': 10, 'files': []}],
+             'playden': [{'name': 'runtime.log', 'changed': 1, 'size': 5}]}
+    requests = []
+
+    def do_GET(self):
+        StubPlayden.requests.append(self.path)
+        if self.path == '/api/logs':
+            body, kind = json.dumps(self.index).encode(), 'application/json'
+        elif self.path.startswith('/api/report.zip'):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as archive:
+                archive.writestr('summary.md', '| Field | Value |\n| --- | --- |\n| asked | ' + self.path + ' |\n')
+                archive.writestr('logs/runtime.log', 'console_firmware=4.03\n')
+            body, kind = buffer.getvalue(), 'application/zip'
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', kind)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class CollectLogsHttpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), StubPlayden)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def run_tool(self, *extra):
+        StubPlayden.requests = []
+        return subprocess.run([sys.executable, '-I', str(ROOT / 'tools' / 'collect_logs.py'), '--http', '--host', '127.0.0.1',
+                               '--port', str(self.server.server_address[1]), *extra],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
+    def report(self, *extra):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'report.zip'
+            result = self.run_tool('--out', str(out), *extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with zipfile.ZipFile(out) as archive:
+                self.assertEqual(archive.namelist(), ['summary.md', 'logs/runtime.log'])
+            return result, StubPlayden.requests
+
+    def test_lists_the_games_from_the_index(self):
+        result = self.run_tool('--list')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('1. unknown game  (FAKE78002, app 40800', result.stdout)
+        self.assertIn('Half-Life 2  (FAKE78001, app 220', result.stdout)
+        self.assertEqual(StubPlayden.requests, ['/api/logs'])
+
+    def test_downloads_the_newest_game_without_a_terminal(self):
+        result, requests = self.report()
+        self.assertEqual(requests, ['/api/logs', '/api/report.zip?title=FAKE78002'])
+        self.assertIn('| asked | /api/report.zip?title=FAKE78002 |', result.stdout)
+        self.assertIn('Wrote ', result.stdout)
+
+    def test_picks_by_title_app_or_all(self):
+        self.assertEqual(self.report('--title', 'FAKE78001')[1][-1], '/api/report.zip?title=FAKE78001')
+        self.assertEqual(self.report('--app', '220')[1][-1], '/api/report.zip?title=FAKE78001')
+        self.assertEqual(self.report('--all-titles')[1][-1], '/api/report.zip?title=all')
+        result, requests = self.report('--app', '1')
+        self.assertEqual(requests[-1], '/api/report.zip?title=none')
+        self.assertIn('no game log found for app 1', result.stderr)
+
+    def test_refuses_no_redact_and_says_when_playden_is_closed(self):
+        result = self.run_tool('--no-redact')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('always redacted', result.stderr)
+        closed = subprocess.run([sys.executable, '-I', str(ROOT / 'tools' / 'collect_logs.py'), '--http', '--host',
+                                 '127.0.0.1', '--port', '9', '--list'], capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(closed.returncode, 0)
+        self.assertIn('Is Playden open on the PS5', closed.stderr)
 
 
 if __name__ == '__main__':

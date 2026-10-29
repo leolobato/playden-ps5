@@ -15,6 +15,54 @@ HttpResponse Body(long status, const std::string& text) {
   return response;
 }
 
+void LabelsAndDisplayNames() {
+  struct Case { const char* host; const char* label; const char* display; };
+  for (const auto& test : std::vector<Case>{
+      {"steampipe.akamaized.net", "akamai", "Akamai"},
+      {"FASTLY.CDN.STEAMPIPE.STEAMCONTENT.COM", "fastly", "Fastly"},
+      {"google2.cdn.steampipe.steamcontent.com", "google", "Google Cloud"},
+      {"google3.cdn.steampipe.steamcontent.com", "google", "Google Cloud"},
+      {"alibaba.cdn.steampipe.steamcontent.com", "alibaba", "Alibaba Cloud"},
+      {"edgenext.cdn.steampipe.steamcontent.com", "edgenext", "EdgeNext"},
+      {"cache1.fra.steamcontent.com", "valve", "Steam (Valve)"},
+      {"isp.example", "cache", "isp.example"},
+      {"fastly.cdn.steampipe.steamcontent.com.evil.example", "cache",
+       "fastly.cdn.steampipe.steamcontent.com.evil.example"}}) {
+    assert(CdnServerLabel(test.host) == test.label);
+    assert(CdnServerDisplayName(test.host) == test.display);
+  }
+}
+
+void PreferredOrderKeepsOthersAndFirstDuplicate() {
+  std::vector<ContentServer> servers{{"a", "a"}, {"b", "first"}, {"c", "c"}, {"b", "second"}};
+  assert(!PreferServer(&servers, "").preferred_found && servers[0].host == "a");
+  assert(!PreferServer(&servers, "missing").preferred_found && servers[0].host == "a");
+  const auto order = PreferServer(&servers, "b");
+  assert(order.preferred_found && order.preferred_index == 1);
+  assert(servers[0].vhost == "first" && servers[1].host == "a" && servers[2].host == "c" && servers[3].vhost == "second");
+  assert(PreferServer(&servers, "b").preferred_index == 0);
+  servers.clear();
+  assert(!PreferServer(&servers, "a").preferred_found);
+}
+
+void PriorityIsBoundedWithoutReordering() {
+  CdnClient client([](const HttpRequest&, const std::atomic<bool>&) {
+    return Body(200, R"({"response":{"servers":[
+      {"type":"CDN","host":"a","load":0,"priority_class":8},
+      {"type":"CDN","host":"b","load":0,"priority_class":1},
+      {"type":"CDN","host":"c","load":0,"priority_class":999},
+      {"type":"CDN","host":"d","load":0,"priority_class":-1},
+      {"type":"CDN","host":"e","load":0,"priority_class":"2"},
+      {"type":"CDN","host":"f","load":0}]}})");
+  });
+  std::atomic<bool> cancel{false};
+  std::vector<ContentServer> servers;
+  assert(client.Servers(0, cancel, &servers) == CdnError::kNone);
+  assert(servers.size() == 6 && servers[0].host == "a" && servers[1].host == "b");
+  assert(servers[0].priority == 8 && servers[1].priority == 1 && servers[2].priority == 9);
+  assert(servers[3].priority == 0 && servers[4].priority == 0 && servers[5].priority == 0);
+}
+
 void TotalsIncludeFailedRequests() {
   int calls = 0;
   CdnClient client([&](const HttpRequest&, const std::atomic<bool>&) {
@@ -134,6 +182,9 @@ void PlainHttpServerUrls() {
 }  // namespace
 
 int main() {
+  LabelsAndDisplayNames();
+  PreferredOrderKeepsOthersAndFirstDuplicate();
+  PriorityIsBoundedWithoutReordering();
   TotalsIncludeFailedRequests();
   ServersFilterAndSortByLoad();
   PlainHttpServersWhenNoHttpsIsListed();

@@ -1,0 +1,29 @@
+"appinfo"
+{
+	"appid"		"6002"
+	"common"
+	{
+		"name"		"Free DLC Test - Mac Extra"
+		"type"		"DLC"
+		"parent"		"6000"
+	}
+	"depots"
+	{
+		"6021"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"621"
+					"size"		"200"
+					"download"		"100"
+				}
+			}
+		}
+	}
+}

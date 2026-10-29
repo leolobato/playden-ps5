@@ -54,13 +54,6 @@ bool IsDescriptorId(const std::string& value) {
          });
 }
 
-bool IsManagedTitle(const std::string& title) {
-  if (title.size() != 9 || title.compare(0, 6, "FAKE78") != 0) return false;
-  return std::all_of(title.begin() + 6, title.end(), [](unsigned char c) {
-    return std::isdigit(c);
-  });
-}
-
 bool IsAbsoluteNormalizedPath(const std::string& path) {
   if (path.empty() || path.size() > kMaxPathBytes || path.front() != '/' ||
       path.find('\0') != std::string::npos) return false;
@@ -346,6 +339,13 @@ void WriteRecord(TextOutput& output, const RuntimeInstall& record) {
 }
 
 }  // namespace
+
+bool IsManagedTitle(const std::string& title) {
+  if (title.size() != 9 || title.compare(0, 6, "FAKE78") != 0) return false;
+  return std::all_of(title.begin() + 6, title.end(), [](unsigned char c) {
+    return std::isdigit(c);
+  });
+}
 
 bool ValidateRuntimeInstallRecord(const RuntimeInstall& record) { return ValidRecord(record); }
 

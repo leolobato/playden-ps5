@@ -30,9 +30,15 @@ struct InstallAssessment {
     std::optional<std::uint64_t> reserved_bytes;
 };
 
+// `version`: the version chosen for this install; its sizes, when known, replace the game's. `language`: the
+// content language chosen for it; that language's sizes on `version`, when known, replace both. `measured`: that
+// choice's size from its manifests, which replaces them all.
 [[nodiscard]] InstallAssessment assess_install(const State& state, GameId game_id,
                                                const std::string& volume_id,
-                                               std::uint64_t safety_margin_bytes = 0) noexcept;
+                                               std::uint64_t safety_margin_bytes = 0,
+                                               const GameVersion* version = nullptr,
+                                               const std::string& language = {},
+                                               const MeasuredInstallSize* measured = nullptr) noexcept;
 
 void reconcile_storage(State& state) noexcept;
 

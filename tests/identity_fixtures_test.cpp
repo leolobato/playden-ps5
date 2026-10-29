@@ -131,7 +131,8 @@ class Runner final : public playden::steam::SessionInstallRunner {
  public:
   explicit Runner(playden::SessionRepository& sessions) : SessionInstallRunner(sessions) {}
   std::atomic<int> installs{0};
-  Result InstallApp(const playden::StoredSession&, std::uint32_t, const std::string&, const std::atomic<bool>&,
+  Result InstallApp(const playden::StoredSession&, std::uint32_t, const std::string&,
+                 const playden::steam::InstallOptions&, const std::atomic<bool>&,
                  const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>&,
                  const std::function<void(playden::steam::InstallStep)>&) override {
     ++installs;

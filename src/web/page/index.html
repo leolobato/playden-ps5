@@ -1,0 +1,304 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark">
+<title>Playden on PS5</title>
+<style>
+/* The builds.playden.club look: same tokens, Barlow, tables and buttons, cards below 720 px. Nothing loads from the internet. */
+@font-face { font-family: "Barlow"; font-weight: 400; font-style: normal; src: url("/assets/barlow-regular.ttf") format("truetype"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-style: normal; src: url("/assets/barlow-semibold.ttf") format("truetype"); }
+:root {
+  --ground: #0e0d0c;
+  --row: #17150f;
+  --row-open: #1f1c17;
+  --line: #2a2620;
+  --ink: #f3efe9;
+  --soft: #a8a29e;
+  --accent: #f0863a;
+  --on-accent: #0e0d0c;
+  --ok: #8fbf7a;
+  --warn: #e0b25c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); color: var(--ink); }
+body { font: 400 16px/1.5 "Barlow", -apple-system, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+main { max-width: 1080px; margin: 0 auto; padding: 32px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { margin: 0; font-size: 20px; font-weight: 600; white-space: nowrap; }
+h1 small { color: var(--soft); font-weight: 400; font-size: 14px; margin-left: 8px; }
+nav { display: flex; gap: 4px 20px; flex-wrap: wrap; font-size: 14px; }
+nav span { color: var(--soft); white-space: nowrap; }
+nav span.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); padding-bottom: 2px; }
+nav span.later { opacity: .55; }
+nav span.later em { font-style: normal; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; margin-left: 4px; }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 0 0 24px; }
+.facts div { background: var(--row); padding: 10px 12px; min-width: 0; }
+.facts dt { color: var(--soft); font-size: 12px; }
+.facts dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.facts dd.ok { color: var(--ok); }
+.actions-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.download { display: inline-block; background: var(--accent); color: var(--on-accent); font-weight: 600; text-decoration: none;
+  padding: 6px 12px; border-radius: 4px; white-space: nowrap; }
+.download:hover { background: #f59a57; }
+.download:active { transform: translateY(1px); }
+.download[aria-disabled="true"] { pointer-events: none; opacity: .5; }
+.ghost { font: 600 14px/1.5 "Barlow", sans-serif; color: var(--ink); background: var(--line); border: 0; border-radius: 4px;
+  padding: 4px 10px; cursor: pointer; white-space: nowrap; text-decoration: none; display: inline-block; }
+.ghost:hover { background: #38332b; }
+.ghost:disabled { cursor: progress; color: var(--soft); }
+.quit { margin-left: auto; }
+.hint { color: var(--soft); font-size: 13px; margin: 0; }
+.note { color: var(--soft); font-size: 14px; margin: 8px 0 0; max-width: 72ch; }
+.sub { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); margin: 28px 0 8px; }
+.problem { background: var(--row); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 6px;
+  padding: 14px 16px; margin: 0 0 24px; }
+.problem p { margin: 0 0 10px; }
+.problem[hidden], [hidden] { display: none !important; }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; color: var(--soft); font-size: 13px; padding: 0 12px 8px; white-space: nowrap; }
+td { padding: 11px 12px; border-top: 1px solid var(--line); vertical-align: middle; }
+th.num, td.num { text-align: right; }
+tbody tr:hover td { background: var(--row); }
+tr.sel td { background: var(--row-open); }
+tr.pick { cursor: pointer; }
+td.name { font-weight: 600; overflow-wrap: anywhere; }
+td.name span { display: block; color: var(--soft); font-size: 13px; font-weight: 400; }
+td.soft { color: var(--soft); white-space: nowrap; }
+td.radio { width: 1%; }
+input[type=radio] { accent-color: var(--accent); margin: 0; }
+td.empty { color: var(--soft); }
+
+@media (max-width: 720px) {
+  .facts .wide { display: none; }
+  thead, td.title, td.when-wide { display: none; }
+  table, tbody { display: block; }
+  tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px; align-items: center;
+    padding: 12px 4px; border-top: 1px solid var(--line); }
+  tbody tr:last-child { border-bottom: 1px solid var(--line); }
+  tbody tr:hover td { background: none; }
+  tr.sel { background: var(--row-open); }
+  tr.sel td { background: none; }
+  td { border: 0; padding: 0; }
+  td.radio { grid-row: 1; }
+  td.name { grid-row: 1; }
+  td.size { grid-row: 1; color: var(--soft); font-size: 13px; }
+  td.card-line { display: block !important; grid-column: 2 / -1; color: var(--soft); font-size: 13px; white-space: normal; }
+  td.view { grid-column: 2 / -1; text-align: left; padding-top: 6px; }
+  #playden-logs tr { grid-template-columns: minmax(0, 1fr) auto; }
+  #playden-logs td.name, #playden-logs td.size { grid-row: 1; }
+  #playden-logs td.card-line, #playden-logs td.view { grid-column: 1 / -1; }
+  td.empty { grid-column: 1 / -1; }
+}
+@media (min-width: 721px) { td.card-line { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Playden<small id="where">on PS5</small></h1>
+    <nav aria-label="Sections"><span class="on">Logs</span><span class="later">Recipes<em>later</em></span><span class="later">Files<em>later</em></span></nav>
+  </header>
+
+  <div class="problem" id="problem" role="alert" hidden>
+    <p id="problem-text">Playden isn't answering. Is it open on the PS5?</p>
+    <button class="ghost" type="button" id="retry">Try again</button>
+  </div>
+
+  <dl class="facts" id="facts">
+    <div><dt>Playden</dt><dd id="fact-version">…</dd></div>
+    <div class="wide"><dt>Package</dt><dd id="fact-package">…</dd></div>
+    <div class="wide"><dt>Firmware</dt><dd id="fact-firmware">…</dd></div>
+    <div><dt>Runtime kit</dt><dd id="fact-kit">…</dd></div>
+    <div class="wide"><dt>Redacted</dt><dd class="ok">Steam name, SteamIDs</dd></div>
+  </dl>
+
+  <div class="actions-row">
+    <a class="download" id="download" href="/api/report.zip" aria-disabled="true">Download report (.zip)</a>
+    <span class="hint" id="download-hint"></span>
+    <button class="ghost quit" type="button" id="quit">Quit Playden</button>
+  </div>
+  <p class="note">Logs can still name your games and file paths. Look through them before you share.</p>
+
+  <div class="sub">Game logs · most recent first</div>
+  <table id="game-logs">
+    <thead><tr><th></th><th>Game</th><th>Title</th><th>Last run</th><th class="num">Size</th><th class="num"></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="note">Playden answers only while it is open. A game's log appears here once Playden starts again after the game.</p>
+
+  <div class="sub">Playden logs</div>
+  <table id="playden-logs">
+    <thead><tr><th>File</th><th>Changed</th><th class="num">Size</th><th class="num"></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const state = { games: [], playden: [], picked: null };
+
+  const element = (tag, attributes = {}, ...children) => {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attributes)) {
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else node.setAttribute(key, value);
+    }
+    for (const child of children) if (child) node.append(child);
+    return node;
+  };
+
+  const size = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  };
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const when = (seconds) => {
+    if (!seconds) return "never";
+    const date = new Date(seconds * 1000), now = new Date();
+    const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+    const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const days = Math.round((day(now) - day(date)) / 86400000);
+    if (days === 0) return `Today ${time}`;
+    if (days === 1) return `Yesterday ${time}`;
+    return `${months[date.getMonth()]} ${date.getDate()}${date.getFullYear() !== now.getFullYear() ? " " + date.getFullYear() : ""} ${time}`;
+  };
+  const view = (name) => element("a", { class: "ghost", href: `/api/logs/${encodeURIComponent(name)}`, target: "_blank", rel: "noopener", text: "View" });
+
+  const fail = (message) => {
+    $("problem-text").textContent = message;
+    $("problem").hidden = false;
+  };
+
+  const updateDownload = () => {
+    const link = $("download");
+    const picked = state.picked;
+    link.href = picked ? `/api/report.zip?title=${encodeURIComponent(picked)}` : "/api/report.zip";
+    link.removeAttribute("aria-disabled");
+    const ownBytes = state.playden.reduce((sum, log) => sum + log.size, 0);
+    let gameBytes = 0, what = "Playden's logs";
+    if (picked === "all") { gameBytes = state.games.reduce((sum, game) => sum + game.size, 0); what += " + every game's log"; }
+    else if (picked) {
+      const game = state.games.find((g) => g.title === picked);
+      if (game) { gameBytes = game.size; what += " + the game picked below"; }
+    }
+    $("download-hint").textContent = `${what} · ${size(ownBytes + gameBytes)}`;
+    for (const row of document.querySelectorAll("#game-logs tbody tr[data-title]"))
+      row.classList.toggle("sel", row.dataset.title === picked);
+  };
+
+  const pick = (title) => {
+    state.picked = title;
+    const radio = document.querySelector(`#game-logs input[value="${CSS.escape(title)}"]`);
+    if (radio) radio.checked = true;
+    updateDownload();
+  };
+
+  const gameRow = (game) => {
+    const label = game.name || "Unknown game";
+    const radio = element("input", { type: "radio", name: "game", value: game.title, "aria-label": `Pick ${label}` });
+    const row = element("tr", { class: "pick", "data-title": game.title },
+      element("td", { class: "radio" }, radio),
+      element("td", { class: "name" }, label, element("span", { text: game.app ? `app ${game.app}` : "app unknown" })),
+      element("td", { class: "soft title", text: game.title }),
+      element("td", { class: "soft when-wide", text: when(game.last_run) }),
+      element("td", { class: "num soft size", text: size(game.size) }),
+      element("td", { class: "soft card-line", text: `${game.title} · ${when(game.last_run).toLowerCase()}` }),
+      element("td", { class: "num view" }, view(`title-${game.title}.log`)));
+    row.addEventListener("click", (event) => { if (!event.target.closest("a")) pick(game.title); });
+    return row;
+  };
+
+  const render = () => {
+    const games = $("game-logs").tBodies[0];
+    games.replaceChildren();
+    if (!state.games.length) {
+      games.append(element("tr", {}, element("td", { class: "empty", colspan: "6",
+        text: "No game logs yet. Start Playden once after running a game: it copies the game's log when it starts." })));
+    } else {
+      for (const game of state.games) games.append(gameRow(game));
+      const total = state.games.reduce((sum, game) => sum + game.size, 0);
+      const all = element("tr", { class: "pick", "data-title": "all" },
+        element("td", { class: "radio" }, element("input", { type: "radio", name: "game", value: "all", "aria-label": "Pick all games" })),
+        element("td", { class: "name" }, "All games", element("span", { text: "every title log" })),
+        element("td", { class: "soft title", text: "—" }),
+        element("td", { class: "soft when-wide", text: "—" }),
+        element("td", { class: "num soft size", text: size(total) }),
+        element("td", { class: "soft card-line", text: `${state.games.length} ${state.games.length === 1 ? "game" : "games"}` }),
+        element("td", { class: "num view" }));
+      all.addEventListener("click", () => pick("all"));
+      games.append(all);
+    }
+    const own = $("playden-logs").tBodies[0];
+    own.replaceChildren();
+    if (!state.playden.length) own.append(element("tr", {}, element("td", { class: "empty", colspan: "4", text: "No Playden logs yet." })));
+    for (const log of state.playden)
+      own.append(element("tr", {},
+        element("td", { class: "name", text: log.name }),
+        element("td", { class: "soft when-wide", text: when(log.changed) }),
+        element("td", { class: "num soft size", text: size(log.size) }),
+        element("td", { class: "soft card-line", text: `changed ${when(log.changed).toLowerCase()}` }),
+        element("td", { class: "num view" }, view(log.name))));
+    const keep = state.picked === "all" || state.games.some((game) => game.title === state.picked);
+    pick(keep ? state.picked : state.games.length ? state.games[0].title : null);
+  };
+
+  const json = async (path) => {
+    const response = await fetch(path, { cache: "no-store" });
+    if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+    return response.json();
+  };
+
+  const load = async () => {
+    $("problem").hidden = true;
+    $("where").textContent = `on PS5 · ${location.hostname}`;
+    try {
+      const [status, logs] = await Promise.all([json("/api/status"), json("/api/logs")]);
+      $("fact-version").textContent = status.version || "unknown";
+      $("fact-package").textContent = status.package || "unknown";
+      $("fact-firmware").textContent = status.firmware || "unknown";
+      $("fact-kit").textContent = status.kit_runtime || "unknown";
+      state.games = logs.games || [];
+      state.playden = logs.playden || [];
+      render();
+    } catch (error) {
+      fail(error instanceof TypeError
+        ? "Playden isn't answering. Is it open on the PS5? It stops answering while a game is in front."
+        : `Playden answered with an error (${error.message}). Try again, or restart Playden.`);
+    }
+  };
+
+  $("game-logs").addEventListener("change", (event) => { if (event.target.name === "game") pick(event.target.value); });
+  $("retry").addEventListener("click", load);
+  // Quit Playden on the PS5. The custom header keeps other web pages from doing it (they'd need a CORS
+  // preflight, which Playden never answers).
+  $("quit").addEventListener("click", async () => {
+    if (!confirm("Quit Playden on the PS5? It waits for a game being prepared first.")) return;
+    const button = $("quit");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/quit", { method: "POST", headers: { "X-Playden-Action": "quit" } });
+      if (!response.ok) throw new Error(`answered ${response.status}`);
+      button.textContent = "Quitting…";
+      fail("Playden is quitting. Open it again on the PS5 to see its logs here.");
+    } catch (error) {
+      button.disabled = false;
+      fail(error instanceof TypeError ? "Playden isn't answering. Is it open on the PS5?" : `Playden didn't quit (${error.message}).`);
+    }
+  });
+  load();
+})();
+</script>
+</body>
+</html>

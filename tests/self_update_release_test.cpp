@@ -9,7 +9,7 @@ static const std::string kSha(64, 'a');
 
 static std::string Manifest(const std::string& app_override = {}, const std::string& kit_override = {}) {
   const std::string app = app_override.empty()
-      ? R"({"version":"0.3.0","title_id":"FAKE77031","min_from":"0.2.0","asset":"playden-ps5-0.3.0.zip","prefix":"playden-ps5-0.3.0/FAKE77031/"})"
+      ? R"({"version":"0.3.0","title_id":"FAKE77031","min_from":"0.2.0","asset":"playden-ps5-0.3.0.zip","prefix":"FAKE77031/"})"
       : app_override;
   const std::string kit = kit_override.empty()
       ? R"({"kit_id":"playden-kit","revision":"0.13","manifest_sha256":")" + kSha +
@@ -38,6 +38,7 @@ int main() {
   CHECK(!release->Find("broken"));
   CHECK(ParseRelease(R"({"tag_name":"v0.3.0","prerelease":true,"assets":[]})", &error)->prerelease);
   CHECK(!ParseRelease(R"({"tag_name":"nightly","assets":[]})", &error));
+  CHECK(!ParseRelease(R"({"tag_name":"v0.8.0-nightly.20261027.1","assets":[]})", &error));  // never a release
   CHECK(!ParseRelease(R"({"tag_name":"v0.3.0"})", &error));
   CHECK(!ParseRelease("[]", &error));
   CHECK(!ParseRelease("not json", &error));
@@ -46,7 +47,7 @@ int main() {
   CHECK(manifest);
   CHECK(manifest->app_version == (Version{0, 3, 0}) && manifest->min_from == (Version{0, 2, 0}));
   CHECK(manifest->title_id == "FAKE77031" && manifest->app_asset == "playden-ps5-0.3.0.zip");
-  CHECK(manifest->app_prefix == "playden-ps5-0.3.0/FAKE77031/");
+  CHECK(manifest->app_prefix == "FAKE77031/");
   CHECK(manifest->kit.kit_id == "playden-kit" && manifest->kit.revision == "0.13" && manifest->kit.manifest_sha256 == kSha);
   CHECK(manifest->kit.prefix == "playden-kit-0.13/playden-kit/" && manifest->notes == "Faster downloads.");
 
@@ -67,6 +68,11 @@ int main() {
 
   // Unsafe or incomplete manifests are refused.
   CHECK(!ParseUpdateManifest(R"({"format":2})", &error));
+  {
+    std::string nightly = Manifest();
+    nightly.replace(nightly.find(R"("version":"0.3.0")"), 17, R"("version":"0.3.0-nightly.20261027.1")");
+    CHECK(!ParseUpdateManifest(nightly, &error));
+  }
   std::string text = Manifest();
   CHECK(!ParseUpdateManifest(text.replace(text.find("\"format\":1"), 10, "\"format\":2"), &error));
   const char* bad_apps[] = {

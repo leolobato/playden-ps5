@@ -18,5 +18,7 @@ struct GameSummary {
     std::optional<std::uint64_t> added_at_unix_seconds;
     // A Steam demo (PICS type "demo"), which the Library can hide.
     bool demo = false;
+    // Shared by another member of the account's Steam family, not owned; the Library marks it.
+    bool family_shared = false;
 };
 } // namespace playden

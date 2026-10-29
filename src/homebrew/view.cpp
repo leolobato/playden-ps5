@@ -219,8 +219,9 @@ std::string byte_count(std::optional<std::uint64_t> bytes)
 {
     if (!bytes)
         return "Unknown";
-    constexpr double mib = 1024.0 * 1024.0;
-    constexpr double gib = 1024.0 * mib;
+    // Decimal units, as the rest of Playden (game pages, sheets, storage) and macOS show sizes.
+    constexpr double mib = 1000.0 * 1000.0;
+    constexpr double gib = 1000.0 * mib;
     std::array<char, 32> value{};
     // Below a gigabyte, megabytes: "0.2 GB" says little about a small game.
     if (*bytes < static_cast<std::uint64_t>(gib))
@@ -1701,7 +1702,7 @@ class Render::Impl
         return game.download_bytes ? "Not installed · " + short_size(*game.download_bytes) : "Not installed";
     }
 
-    // reserve: room kept free at the right for the demo badge.
+    // reserve: room kept free at the right for the corner badges.
     void tile_badge(const gfx::Rect &rect, std::string_view text, gfx::Color dot, float reserve = 0.0F)
     {
         constexpr float size = 16.0F;
@@ -1712,16 +1713,30 @@ class Render::Impl
                  rect.y + 32.0F, size, kText);
     }
 
-    // A Steam demo says so in the tile's top-right corner; returns the width it takes, gap included.
-    float demo_badge(const gfx::Rect &rect)
+    // A word in the tile's top-right corner, `right` px in from the corner's usual spot; returns the
+    // width it takes, gap included.
+    float corner_badge(const gfx::Rect &rect, std::string_view text, float right = 0.0F)
     {
         constexpr float size = 16.0F;
-        const float width = fonts_.semibold.measure("Demo", size) + 20.0F;
-        scene_.rounded_rect({rect.x + rect.w - 10.0F - width, rect.y + 10.0F, width, 32.0F}, 6.0F,
+        const float width = fonts_.semibold.measure(text, size) + 20.0F;
+        scene_.rounded_rect({rect.x + rect.w - 10.0F - right - width, rect.y + 10.0F, width, 32.0F}, 6.0F,
                             kBackground.with_alpha(0.85F));
         draw_text(scene_, fonts_.semibold, "Demo", rect.x + rect.w - 20.0F, rect.y + 32.0F, size, kAccent,
+        ui::text(scene_, fonts_.semibold, text, rect.x + rect.w - 20.0F - right, rect.y + 32.0F, size, kAccent,
                  gfx::Align::right);
         return width + 8.0F;
+    }
+
+    // A Steam demo says "Demo" and a game a Steam family member shares says "Family", right to left;
+    // returns the width they take. Beside a status badge a tile has room for one: Demo.
+    float corner_badges(const Game &game, const gfx::Rect &rect, bool status_badge)
+    {
+        float taken = 0.0F;
+        if (game.demo)
+            taken += corner_badge(rect, "Demo", taken);
+        if (game.family_shared && !(game.demo && status_badge))
+            taken += corner_badge(rect, "Family", taken);
+        return taken;
     }
 
     void download_mark(float cx, float cy, float opacity)
@@ -1803,12 +1818,13 @@ class Render::Impl
             scene_.pop_transform();
             return;
         }
-        const float demo = game.demo ? demo_badge(rect) : 0.0F;
-        if (status.job != nullptr && !downloading)
+        const bool job_badge = status.job != nullptr && !downloading;
+        const float corner = corner_badges(game, rect, job_badge || status.disconnected);
+        if (job_badge)
             tile_badge(rect, JobStateText(*status.job),
-                       status.job->state == JobState::Failed ? kAmber : kSecondary, demo);
+                       status.job->state == JobState::Failed ? kAmber : kSecondary, corner);
         else if (status.disconnected)
-            tile_badge(rect, "Drive disconnected", kAmber, demo);
+            tile_badge(rect, "Drive disconnected", kAmber, corner);
         if (show_download_mark)
             download_mark(rect.x + rect.w - 25.0F, rect.y + rect.h - 25.0F, 1.0F);
         else if (status.installed && status.installation != nullptr && status.installation->installed_bytes > 0 && amount < 1.0F && title_overlay)
@@ -2053,6 +2069,15 @@ class Render::Impl
                         spinner(text_x + 10.0F, top + 92.0F, 8.0F, kBlue);
                         draw_text(scene_, fonts_.regular, "Checking your Steam licenses…", text_x + 30.0F, top + 99.0F, 21.0F, kText);
                     }
+                    else if (job->update && job->state == JobState::Downloading && !job->state_text.empty())
+                    {
+                        // An update's own steps: hashing the installed files, then putting the new ones in place.
+                        spinner(text_x + 10.0F, top + 92.0F, 8.0F, kBlue);
+                        ui::text(scene_, fonts_.regular,
+                                 job->locked ? "Putting the new files in place… The game can be played once this finishes."
+                                             : "Checking which installed files changed…",
+                                 text_x + 30.0F, top + 99.0F, 21.0F, kText);
+                    }
                     else
                     {
                         draw_text(scene_, fonts_.regular, byte_count(job->completed_bytes) + " / " + byte_count(job->total_bytes),
@@ -2060,20 +2085,22 @@ class Render::Impl
                         draw_text(scene_, fonts_.regular,
                                  !job->failure.empty() ? job->failure
                                      : FormatDownloadRate(job->state == JobState::Downloading ? job->bytes_per_second : std::nullopt,
-                                                          job->state == JobState::Downloading ? job->eta_seconds : std::nullopt),
+                                                          job->state == JobState::Downloading ? job->eta_seconds : std::nullopt,
+                                                          job->state == JobState::Downloading ? job->server_name : std::string()),
                                  right, top + 99.0F, 21.0F, job->failure.empty() ? kSecondary : kRed, gfx::Align::right);
                     }
                 }
                 else
                 {
                     // Preparing or uninstalling: the actual step, with a spinner; no percentage or time is made up.
-                    const char *label = entry->uninstall ? "Uninstalling" : "Preparing";
+                    const char *label = entry->leftover ? "Deleting title" : entry->uninstall ? "Uninstalling" : "Preparing";
                     const float status_width = fonts_.semibold.measure(label, 24.0F);
                     spinner(right - status_width - 22.0F, top + 36.0F, 9.0F, kBlue);
                     draw_text(scene_, fonts_.semibold, label, right, top + 44.0F, 24.0F, kBlue, gfx::Align::right);
                     draw_text(scene_, fonts_.regular, fit(fonts_.regular, entry->note.empty() ? "Starting…" : entry->note, 24.0F, 1100.0F),
                              text_x, top + 88.0F, 24.0F, kText);
                     draw_text(scene_, fonts_.regular, entry->uninstall ? "Removing from this PS5" : "Setting up for this PS5", right,
+                    ui::text(scene_, fonts_.regular, entry->leftover || entry->uninstall ? "Removing from this PS5" : "Setting up for this PS5", right,
                              top + 88.0F, 21.0F, kSecondary, gfx::Align::right);
                 }
                 focus_ring(scene_, box, amount, true);
@@ -2095,13 +2122,19 @@ class Render::Impl
             if (const Job *job = entry->job)
             {
                 value = JobStateText(*job);
+                // An update waiting in the queue says so: "Update queued", "Update paused".
+                if (job->update && !entry->completed && job->state_text.empty() && !value.empty())
+                {
+                    value[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(value[0])));
+                    value = "Update " + value;
+                }
                 tone = job->state == JobState::Failed ? "problem"
                      : job->state == JobState::Paused || job->state == JobState::Interrupted ? "attention"
                      : job->state == JobState::Downloading || job->state == JobState::Verifying ? "busy" : "quiet";
                 if (entry->completed)
                 {
                     // The files are here; preparing them is the Preparation section's.
-                    value = job->game_id.store == Store::kLocal ? "Copied" : "Downloaded";
+                    value = job->game_id.store == Store::kLocal ? "Copied" : job->update ? "Updated" : "Downloaded";
                     tone = "good";
                     aside = byte_count(job->total_bytes);
                     if (job->finished_at > 0 && !state.simulation_mode)
@@ -2344,6 +2377,8 @@ class Render::Impl
         }
         const auto drive_row = [&](const ViewRow &row) { return usage != nullptr && row.key == "settings-storage"; };
         const auto height = [&](const ViewRow &row) {
+            if (!row.qr.empty())
+                return 300.0F;
             return drive_row(row) ? (usage->capacity_known ? 186.0F : 160.0F) : row.subtitle.empty() ? 92.0F : 118.0F;
         };
         float offset = 0.0F;
@@ -2384,6 +2419,30 @@ class Render::Impl
             scene_.rounded_rect(card, 8.0F, kText.with_alpha(row.dangerous ? 0.0F : 0.04F));
             if (row.dangerous)
                 scene_.bordered_rect(card, 8.0F, kBackground.with_alpha(0.0F), 2.0F, kRed.with_alpha(0.35F));
+            if (!row.qr.empty())
+            {
+                // The QR code, then what to do, the address and what the page shows (Web access).
+                if (row.qr != row_qr_url_)
+                {
+                    row_qr_url_ = row.qr;
+                    row_qr_ = encode_qr(row.qr);
+                }
+                constexpr int qr_side = 240;
+                if (!draw_qr_matrix(scene_, row_qr_, card.x + 30.0F, card.y + 30.0F, qr_side))
+                    scene_.rounded_rect({card.x + 30.0F, card.y + 30.0F, static_cast<float>(qr_side), static_cast<float>(qr_side)},
+                                        8.0F, kMuted.with_alpha(0.25F));
+                const float text_x = card.x + 30.0F + qr_side + 40.0F;
+                const float text_w = card.w - (text_x - card.x) - 30.0F;
+                ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.title, 24.0F, text_w), text_x, card.y + 96.0F, 24.0F,
+                         kSecondary);
+                ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, row.value, 40.0F, text_w), text_x, card.y + 150.0F,
+                         40.0F, kText);
+                ui::paragraph(scene_, fonts_.regular, row.subtitle, text_x, card.y + 200.0F, 22.0F, text_w, 30.0F,
+                              kSecondary, 2);
+                focus_ring(scene_, card, amount);
+                y += h + 24.0F;
+                continue;
+            }
             const gfx::Color title_ink = !row.enabled ? kMuted : row.dangerous ? kRed : kText;
             const float title_y = row.subtitle.empty() ? head.cy() + 11.0F : card.y + 50.0F;
             draw_text(scene_, fonts_.display, fit(fonts_.display, row.title, 30.0F, 760.0F), card.x + 30.0F, title_y,
@@ -2421,6 +2480,9 @@ class Render::Impl
                 const gfx::Rect button{right - pill, head.cy() - 28.0F, pill, 56.0F};
                 scene_.bordered_rect(button, 8.0F, kBackground.with_alpha(0.0F), 2.0F, kText.with_alpha(0.2F));
                 draw_text(scene_, fonts_.display, label, button.x + 22.0F, button.cy() + 9.0F, 26.0F, kText);
+                const gfx::Color ink = row.dangerous ? kRed : kText;
+                scene_.bordered_rect(button, 8.0F, kBackground.with_alpha(0.0F), 2.0F, ink.with_alpha(0.2F));
+                ui::text(scene_, fonts_.display, label, button.x + 22.0F, button.cy() + 9.0F, 26.0F, ink);
                 const float chevron = button.x + button.w - 26.0F;
                 scene_.line(chevron - 3.0F, button.cy() - 6.0F, chevron + 2.5F, button.cy(), 2.2F, kText);
                 scene_.line(chevron + 2.5F, button.cy(), chevron - 3.0F, button.cy() + 6.0F, 2.2F, kText);
@@ -2948,8 +3010,9 @@ class Render::Impl
         }
         // Non-installed games retain their download, destination and kept-save notes; an imported
         // game says where it plays from (the fixture's too).
-        const bool folder_note = std::any_of(view.rows.begin(), view.rows.end(),
-                                             [](const ViewRow &row) { return row.key == "details-folder"; });
+        const bool folder_note = std::any_of(view.rows.begin(), view.rows.end(), [](const ViewRow &row) {
+            return row.key == "details-folder" || row.key == "details-update-note" || row.key == "details-updating";
+        });
         if (!state.simulation_mode || folder_note)
         {
             std::string note;
@@ -2966,7 +3029,8 @@ class Render::Impl
                         note += " · " + row.value;
                     if (!row.subtitle.empty())
                         note += " · " + row.subtitle;
-                    tone = row.title == "Storage disconnected" ? kAmber : kSecondary;
+                    tone = row.title == "Storage disconnected" ? kAmber
+                         : row.key == "details-update-note" || row.key == "details-updating" ? kAccent : kSecondary;
                     break;
                 }
                 if (row.key == "details-install" && !row.subtitle.empty())
@@ -3118,8 +3182,11 @@ class Render::Impl
         const float facts_top = setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F;
         detail_cell("Playtime", playtime, left, facts_top, 240.0F);
         detail_cell("Size", size, right, facts_top, 240.0F);
-        detail_cell("Store", game->id.store == Store::kLocal ? std::string("Imported") : game->source.empty() ? "Steam" : game->source,
-                    left, facts_top + 76.0F, 240.0F);
+        // A game a Steam family member shares comes from Steam Families, not the account's own library.
+        const std::string store = game->id.store == Store::kLocal ? std::string("Imported") :
+                                  game->family_shared ? std::string("Steam Family") :
+                                  game->source.empty() ? std::string("Steam") : game->source;
+        detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
         detail_cell("Location", location, right, facts_top + 76.0F, 240.0F);
         detail_cell("Compatibility", compat, left, facts_top + 152.0F, 240.0F);
         if (game->last_played && setup == view.rows.end())
@@ -3469,7 +3536,8 @@ class Render::Impl
     {
         static const std::map<std::string, std::string> names = {
             {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-tuning", "Game settings"},
-            {"game-settings", "Playden"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"installed-games", "Settings"},
+            {"game-settings", "Playden"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"}, {"installed-games", "Settings"},
+            {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
             {"import-storage", "Import games"},
             {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
@@ -3517,7 +3585,8 @@ class Render::Impl
                           view.surface == "button-mapping" || view.surface == "controller-tuning" ||
                           view.surface == "game-maintenance" ||
                           view.surface == "controller" || view.surface == "logs" ||
-                          view.surface == "storage" || view.surface == "install" || view.surface == "kept-data" ||
+                          view.surface == "storage" || view.surface == "install" || view.surface == "update" || view.surface == "kept-data" || view.surface == "leftover-titles" ||
+                          view.surface == "download-server" ||
                           view.surface == "installed-games" || view.surface == "import-games" ||
                           view.surface == "import-programs" || view.surface == "steam-programs";
         const float width = overlay_transition_.panel_width(wide ? 960.0F : 640.0F);
@@ -3987,12 +4056,24 @@ class Render::Impl
     void draw_overlay_rows(const ViewData &view, const gfx::Rect &bounds, bool scrolls = true)
     {
         const bool settings_sheet = view.surface == "game-settings" || view.surface == "choice-picker" ||
+                                    view.surface == "download-server" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
                                     view.surface == "controller-tuning" ||
                                     view.surface == "game-maintenance";
         // The Import sheets: each folder's path (or why it can't be added) under its name.
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||
                                   view.surface == "import-choice" || view.surface == "steam-programs";
+        // About: each fact as its name over its value and note, at the row's full width, wrapped and never cut.
+        const bool about_sheet = view.surface == "about";
+        const auto about_lines = [&](const std::string &text, float size) {
+            return text.empty() ? 0.0F
+                                : static_cast<float>(fonts_.regular.font->wrap(text, size, bounds.w - 48.0F).size());
+        };
+        const auto about_height = [&](const ViewRow &row) {
+            // Room for one note line on every fact, so rows with and without one line up.
+            return 58.0F + 30.0F * std::max(1.0F, about_lines(overlay_value(row), 24.0F)) +
+                   26.0F * std::max(1.0F, about_lines(row.subtitle, 19.0F));
+        };
         // The import wizard's hints wrap onto a second line rather than being cut.
         const float hint_width = bounds.w - 48.0F;
         const auto hint_extra = [&](const ViewRow &row) {
@@ -4004,11 +4085,13 @@ class Render::Impl
         // Every row's place in the list; the list scrolls only when it is taller than the sheet,
         // just enough to keep the focused row and a little of its neighbours in view, and eases there.
         const auto pitch = [&](const ViewRow &row) {
+            if (about_sheet && row.kind == RowKind::Status)
+                return about_height(row) + 12.0F;
             if (settings_sheet && row.kind == RowKind::Heading)
                 return 54.0F + 12.0F;
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
                 return 54.0F;
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "installed-games" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || view.surface == "installed-games" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || view.surface == "installed-games" || import_sheet) && !row.subtitle.empty();
             return (described ? 96.0F + hint_extra(row) : 72.0F) + 12.0F;
@@ -4071,6 +4154,25 @@ class Render::Impl
                 y += rect.h + 12.0F;
                 continue;
             }
+            if (about_sheet && row.kind == RowKind::Status)
+            {
+                const gfx::Rect rect{bounds.x, y, bounds.w, about_height(row)};
+                const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
+                focus_glow(overlay_, rect, amount);
+                overlay_.rounded_rect(rect, 8.0F, kPanel);
+                overlay_.rounded_rect(rect, 8.0F, kText.with_alpha(0.04F));
+                const float width = rect.w - 48.0F;
+                ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, overlay_label(row), 19.0F, width),
+                         rect.x + 24.0F, rect.y + 36.0F, 19.0F, kSecondary);
+                // The facts are disabled rows, but they are what this sheet is for: full ink.
+                const float note_y = ui::paragraph(overlay_, fonts_.regular, overlay_value(row), rect.x + 24.0F,
+                                                   rect.y + 70.0F, 24.0F, width, 30.0F, kText);
+                if (!row.subtitle.empty())
+                    ui::paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, note_y + 2.0F, 19.0F, width,
+                                  26.0F, row.tone == "problem" ? kRed : kSecondary);
+                focus_ring(overlay_, rect, amount);
+                continue;
+            }
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
             {
                 draw_text(overlay_, fonts_.display, ui::upper(row.title), bounds.x + 12.0F, y + 28.0F,
@@ -4081,7 +4183,7 @@ class Render::Impl
             // Game settings rows carry an effect line under the name (or the reason a row is
             // disabled), an accent dot when the player changed the value, and a tag.
             // Kept game data: each game is a checkbox row with its kept date under the name.
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "installed-games" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || view.surface == "installed-games" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || view.surface == "installed-games" || import_sheet) && !row.subtitle.empty() && row.kind != RowKind::Heading;
             const gfx::Rect rect{bounds.x, y, bounds.w, described ? 96.0F + hint_extra(row) : 72.0F};
@@ -4230,6 +4332,8 @@ class Render::Impl
     // The open dialog's link (release notes), drawn as a QR code.
     std::string link_qr_url_;
     QrMatrix link_qr_;
+    std::string row_qr_url_;  // Settings › Web access: the page's address
+    QrMatrix row_qr_;
     std::vector<const Game *> visible_grid_games_;
     GameId grid_focused_game_;
     const State *current_state_ = nullptr;

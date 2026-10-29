@@ -29,7 +29,7 @@
 ## Scope
 
 - [ ] This pull request does one thing. Unrelated fixes and features are in their own pull requests.
-- [ ] It targets `main` and is rebased on it.
+- [ ] It targets `develop` and is rebased on it.
 - [ ] It does not change the version, the runtime kit pin (`src/runtime/kit_trust.h`, the kit entry in
       `dependencies.lock.json`) or release files.
 

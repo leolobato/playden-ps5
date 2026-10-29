@@ -77,7 +77,7 @@ target_include_directories(playden_steam_cm_codec PUBLIC "${CMAKE_SOURCE_DIR}/sr
 target_include_directories(playden_steam_cm_codec PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
 target_compile_features(playden_steam_cm_codec PUBLIC cxx_std_17)
 target_link_libraries(playden_steam_cm_codec PUBLIC playden_game_paths playden_steam_protocol playden_managed_directory
-    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library)
+    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library playden_steam_content_language)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_steam_cm_codec PRIVATE -fno-exceptions -fno-rtti)
 endif()
@@ -246,11 +246,11 @@ target_compile_features(playden_homebrew_controller PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_controller PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_homebrew_controller PUBLIC
     playden_homebrew_model playden_steam_core playden_auth_diagnostics playden_library_controller playden_persistence_controller playden_runtime_settings_storage
-    playden_homebrew_runtime_host playden_self_update playden_local_store)
+    playden_homebrew_runtime_host playden_self_update playden_local_store playden_web)
 
 # Worker-owned per-game runtime composition (OWNER records, native inventory, kit layer).
 add_library(playden_homebrew_runtime_host STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/runtime_host.cpp"
-    "${CMAKE_SOURCE_DIR}/src/runtime/writable_folders.cpp")
+    "${CMAKE_SOURCE_DIR}/src/runtime/writable_folders.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
 target_compile_features(playden_homebrew_runtime_host PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_runtime_host PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordinator playden_runtime_settings_publication
@@ -266,7 +266,7 @@ add_library(playden_homebrew_artwork STATIC
 target_compile_features(playden_homebrew_artwork PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_artwork PUBLIC "${CMAKE_SOURCE_DIR}/src"
     PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}" "${CMAKE_SOURCE_DIR}/third_party/ps5-homebrew-ui/third_party/stb")
-target_link_libraries(playden_homebrew_artwork PUBLIC playden_library playden_steam_http)
+target_link_libraries(playden_homebrew_artwork PUBLIC playden_library playden_steam_http playden_managed_directory)
 
 add_library(playden_homebrew_artwork_cache STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/artwork_cache.cpp")
 target_compile_features(playden_homebrew_artwork_cache PUBLIC cxx_std_20)
@@ -450,6 +450,21 @@ if(BUILD_TESTING)
     target_include_directories(runtime_writable_folders_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
     target_compile_definitions(runtime_writable_folders_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
     add_test(NAME runtime_writable_folders_native_policy COMMAND runtime_writable_folders_native_policy_test)
+    add_executable(runtime_self_heal_test "${CMAKE_SOURCE_DIR}/tests/runtime_self_heal_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
+    target_compile_features(runtime_self_heal_test PRIVATE cxx_std_20)
+    target_include_directories(runtime_self_heal_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_link_libraries(runtime_self_heal_test PRIVATE playden_steam_protocol)
+    add_test(NAME runtime_self_heal COMMAND runtime_self_heal_test)
+    add_executable(runtime_self_heal_native_policy_test
+        "${CMAKE_SOURCE_DIR}/tests/runtime_self_heal_test.cpp"
+        "${CMAKE_SOURCE_DIR}/tests/directory_gateway_host.cpp"
+        "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
+    target_compile_features(runtime_self_heal_native_policy_test PRIVATE cxx_std_20)
+    target_include_directories(runtime_self_heal_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_link_libraries(runtime_self_heal_native_policy_test PRIVATE playden_steam_protocol)
+    target_compile_definitions(runtime_self_heal_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    add_test(NAME runtime_self_heal_native_policy COMMAND runtime_self_heal_native_policy_test)
     add_executable(homebrew_title_icon_test "${CMAKE_SOURCE_DIR}/tests/homebrew_title_icon_test.cpp")
     target_compile_features(homebrew_title_icon_test PRIVATE cxx_std_20)
     target_include_directories(homebrew_title_icon_test PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
@@ -550,9 +565,10 @@ if(BUILD_TESTING)
         target_link_libraries(${test_name}_test PRIVATE playden_steam_cm_codec)
         target_compile_features(${test_name}_test PRIVATE cxx_std_20)
     endforeach()
-    foreach(test_name steam_gzip steam_binary_kv steam_vdf steam_app_info)
+    foreach(test_name steam_gzip steam_binary_kv steam_vdf)
         add_test(NAME ${test_name} COMMAND ${test_name}_test)
     endforeach()
+    add_test(NAME steam_app_info COMMAND steam_app_info_test "${CMAKE_SOURCE_DIR}/fixtures/steam/appinfo")
     add_test(NAME prospero_profile COMMAND prospero_profile_test "${CMAKE_SOURCE_DIR}/fixtures/prospero-win-profiles")
     add_test(NAME game_settings COMMAND game_settings_test "${CMAKE_SOURCE_DIR}")
     add_test(NAME game_probe COMMAND game_probe_test)
@@ -622,6 +638,9 @@ if(BUILD_TESTING)
     target_compile_features(homebrew_account_test PRIVATE cxx_std_20)
     target_link_libraries(homebrew_account_test PRIVATE playden_homebrew_controller playden_local_session_repository)
     add_test(NAME homebrew_account COMMAND homebrew_account_test)
+    add_executable(homebrew_download_servers_test "${CMAKE_SOURCE_DIR}/tests/homebrew_download_servers_test.cpp")
+    target_link_libraries(homebrew_download_servers_test PRIVATE playden_homebrew_controller)
+    add_test(NAME homebrew_download_servers COMMAND homebrew_download_servers_test)
 
     add_executable(library_controller_test "${CMAKE_SOURCE_DIR}/tests/library_controller_test.cpp")
     target_link_libraries(library_controller_test PRIVATE playden_library_controller)
@@ -691,6 +710,7 @@ if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME native_startup_order COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_native_startup_order.py")
     add_test(NAME console_kit_upload COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_console_kit_upload.py")
+    add_test(NAME collect_logs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_collect_logs.py")
     add_test(NAME ui_comparison_fixture
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/verify_ui_comparison.py"
             "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison")

@@ -17,6 +17,7 @@ struct ContentServer {
   std::string vhost;  // the name used in URLs and TLS
   int load = 100;
   bool https = true;  // false for a server the directory lists as plain HTTP only
+  int priority = 0;  // directory priority_class, 0..9; does not affect Automatic order
 };
 
 struct CdnStats {
@@ -45,12 +46,14 @@ class CdnClient {
   // list holds no usable server, last_failure() says how many were listed and why none fit.
   CdnError Servers(std::uint32_t cell_id, const std::atomic<bool>& cancel, std::vector<ContentServer>* out);
   CdnError Manifest(const ContentServer& server, std::uint32_t depot_id, std::uint64_t gid,
-                    std::uint64_t request_code, const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out);
+                    std::uint64_t request_code, const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out,
+                    std::size_t max_bytes = kMaxHttpResponseBytes);
   CdnError Chunk(const ContentServer& server, std::uint32_t depot_id, const std::string& sha_hex,
                  std::size_t max_bytes, const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out);
 
   // Bounded by the HTTP client's response cap.
   static constexpr std::size_t kMaxManifestDownloadBytes = kMaxHttpResponseBytes;
+  static constexpr std::size_t kMaxServerListDownloadBytes = 512 * 1024;
   // The last failure as "http=<status>" or "transport=<category>", for sanitized logs.
   const CdnStats& stats() const { return stats_; }
   const std::string& last_failure() const { return last_failure_; }
@@ -65,6 +68,17 @@ class CdnClient {
   std::string last_failure_;
   CdnStats stats_;
 };
+
+// Fixed provider labels for logs; unknown hosts never appear in the returned label.
+std::string CdnServerLabel(const std::string& host);
+std::string CdnServerDisplayName(const std::string& host);
+
+struct ServerOrder {
+  bool preferred_found = false;
+  std::size_t preferred_index = 0;  // original position of the first match
+};
+// Move the first matching host to the front, preserving every other entry's order.
+ServerOrder PreferServer(std::vector<ContentServer>* servers, const std::string& preferred_host);
 
 // A host or vhost from the directory may only contain DNS name characters.
 bool ValidCdnHost(const std::string& host);

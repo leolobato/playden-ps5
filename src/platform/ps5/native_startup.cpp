@@ -2,7 +2,9 @@
 #include "platform/ps5/native_access_posix.h"
 #include "platform/ps5/title_activity.h"
 #include "platform/ps5/title_allow_list.h"
+#include "runtime/kit_trust.h"
 #include "runtime/layout_migration.h"
+#include "runtime/self_heal.h"
 #include "runtime/writable_folders.h"
 #include <EGL/egl.h>
 #include "steam/backend/native_network.h"
@@ -175,6 +177,11 @@ NativeAccessResult PrepareNativeStartup(const std::string& title_id) {
   if (result.runtime_ready && !result.paths.runtime_data_root.empty()) {
     namespace fs = std::filesystem;
     const fs::path data_root = result.paths.runtime_data_root;
+    const auto layout_log = [&layout_lines](const std::string& line) { layout_lines.push_back(line); };
+    // A recursive chmod over FTP leaves the private state and the kit too open to be accepted:
+    // given back their modes before anything reads them.
+    runtime::TightenPrivateModes(data_root, layout_log);
+    runtime::TightenKitModes(runtime::kDevelopmentKitRoot, WithRoot, layout_log);
     // The app folder's empty stubs, before the move writes MOVED.txt into them. A failure is only
     // logged: the move takes a missing one.
     runtime::PrepareAppFolderStubs(result.paths.title_root, WithRoot,

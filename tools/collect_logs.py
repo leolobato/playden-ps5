@@ -10,6 +10,11 @@ replaced in every file unless --no-redact is given.
 It lists the games that have a log, the most recently run first, and asks which one to
 collect (the newest when there is no terminal to ask on). --app, --title or --all-titles
 pick without asking; --list only prints the games.
+
+With --http it asks Playden's web access (Settings > Web access, port 7031) instead of FTP:
+Playden builds the same zip itself, always redacted. Playden must be open on the PS5.
+
+  python3 tools/collect_logs.py --host 192.168.1.50 --http
 """
 import argparse
 from datetime import datetime, timezone
@@ -20,6 +25,9 @@ import os
 from pathlib import Path
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 
 LOGS = "/data/playden/logs"
@@ -198,11 +206,79 @@ def active_kit(ftp):
     return {"kit runtime": None, **others}
 
 
+WEB_PORT = 7031
+
+
+def http_get(base, path, timeout=30):
+    with urllib.request.urlopen(base + path, timeout=timeout) as response:
+        return response.read()
+
+
+def http_games(index):
+    """The rows game_table prints, from the web page's /api/logs."""
+    return [{"title": game["title"], "app": game.get("app"), "name": game.get("name"),
+             "last_run": game.get("last_run") or 0} for game in index.get("games", [])]
+
+
+def collect_over_http(args):
+    """The report from Playden's web access: the same zip, made and redacted by Playden."""
+    base = f"http://{args.host}:{args.port or WEB_PORT}"
+    try:
+        index = json.loads(http_get(base, "/api/logs"))
+    except (OSError, ValueError) as error:
+        sys.exit(f"could not reach Playden at {base}: {error}\n"
+                 "Is Playden open on the PS5, with Settings > Web access on?")
+    rows = http_games(index)
+    if args.list or not (args.all_titles or args.app is not None or args.title):
+        if not rows:
+            print("No game logs yet. Start Playden once after running a game: it copies the game's log when it "
+                  "starts.", file=sys.stderr)
+        else:
+            print(game_table(rows))
+        if args.list:
+            return
+        if rows:
+            args.title = ask(rows)["title"]
+    if args.all_titles:
+        title = "all"
+    else:
+        title = None
+        if args.title:
+            title = args.title if any(row["title"] == args.title for row in rows) else None
+        elif args.app is not None:
+            title = next((row["title"] for row in rows if row["app"] == args.app), None)
+        elif rows:
+            title = rows[0]["title"]
+        if title is None and (args.app is not None or args.title):
+            asked = args.title or f"app {args.app}"
+            print(f"warning: no game log found for {asked}; collecting Playden's logs only.\n"
+                  "Start Playden once after the failed run: it copies the game's log when it starts.",
+                  file=sys.stderr)
+            title = "none"  # names no game: Playden's logs only
+    query = "?" + urllib.parse.urlencode({"title": title}) if title else ""
+    try:
+        report = http_get(base, "/api/report.zip" + query, timeout=120)
+    except OSError as error:
+        sys.exit(f"could not download the report from {base}: {error}")
+    out = args.out or Path(f"playden-logs-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip")
+    out.write_bytes(report)
+    try:
+        with zipfile.ZipFile(out) as archive:
+            names = [name for name in archive.namelist() if name.startswith("logs/")]
+            print(archive.read("summary.md").decode("utf-8", "replace"))
+    except (zipfile.BadZipFile, KeyError) as error:
+        sys.exit(f"Playden sent a report that isn't a valid zip ({error}); it is in {out}")
+    print(f"Wrote {out} ({len(names)} logs). Attach it to your test report.")
+    print("Logs can still name your games and file paths. Look through them before you share.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default=os.environ.get("PLAYDEN_PS5_HOST"),
                         help="the PS5's IP address (or set PLAYDEN_PS5_HOST)")
-    parser.add_argument("--port", type=int, default=2120, help="FTP port (default 2120, zftpd)")
+    parser.add_argument("--port", type=int, help="FTP port (default 2120, zftpd), or with --http the web port (7031)")
+    parser.add_argument("--http", action="store_true",
+                        help="ask Playden's web access instead of FTP (Playden must be open; always redacted)")
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--app", type=int, help="Steam app ID of the game (from its store page URL)")
     which.add_argument("--title", help="PS5 title ID of the game, for example FAKE78003")
@@ -213,6 +289,12 @@ def main():
     args = parser.parse_args()
     if not args.host:
         parser.error("give the PS5's address with --host or PLAYDEN_PS5_HOST")
+    if args.http:
+        if args.no_redact:
+            parser.error("--http reports are always redacted; use FTP (without --http) for --no-redact")
+        collect_over_http(args)
+        return
+    args.port = args.port or 2120
 
     ftp = ftplib.FTP()
     try:

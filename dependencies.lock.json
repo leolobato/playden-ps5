@@ -10,8 +10,7 @@
     "foundation_revision": "9c0b994a048521af6fb84c73ded364504fe250e9",
     "protocol_sha256": "bb02c4aa814eaba7a7a423a31b29ff41f786212c2953678cf29434e85fa0f869",
     "variants": {
-      "FAKE77031": "910f12157ea9ddcb3fd1c84864b02a0eee95d33133bafdf9058426f66d3dd316",
-      "PPSA97031": "2ec5761c36349c53e98b10b78037e7f70916fee9750292e793cbc86ac2b41c31"
+      "FAKE77031": "910f12157ea9ddcb3fd1c84864b02a0eee95d33133bafdf9058426f66d3dd316"
     },
     "payload_sdk": {
       "version": "v0.42",
@@ -21,7 +20,7 @@
     "source": "third_party/PS5-Lapy-JB-Daemon submodule, fork branch main at owned_title_revision; build with scripts/build-lapy-helper.sh"
   },
   "title_remover": {
-    "sha256": "5a452a90476a582b230504a841be863c6966187f998f7c29b4f222b7f2524deb",
+    "sha256": "b39725072337816d4c6d2b159849df5e5a3d86505b7450357d774cc8d8f90ca0",
     "payload_sdk": "ps5_payload_sdk",
     "source": "tools/title-remover/main.c; build with scripts/build-title-remover.sh (reproducible; sent by Playden to the payload loader on 127.0.0.1:9021)"
   },
@@ -35,7 +34,7 @@
     "purpose": "Reads release zips for Playden's self-update; writing APIs left out"
   },
   "self_update_relaunch": {
-    "sha256": "31a4ffb53de58b0bd5e9266a79a8a2f44df33586dffd4fe0fdb0df1510b14265",
+    "sha256": "e32c635cca2d67b0a94b388e17711748c9f4955238a02914135b432d529396e2",
     "payload_sdk": "ps5_payload_sdk",
     "source": "tools/self-update-relaunch/main.c; build with scripts/build-self-update-relaunch.sh (reproducible; sent by Playden to the payload loader on 127.0.0.1:9021 when it quits to finish an update)"
   },
@@ -178,7 +177,7 @@
     }
   },
   "prospero_win": {
-    "revision": "e709a0b72361c6c8e16c80ff93a3705a5e5421b7",
+    "revision": "28ed79594d760a68618fcf50de1ee5a36239cd89",
     "url": "https://github.com/leolobato/prospero-win.git",
     "default_source": "third_party/prospero-win",
     "published": false,
@@ -186,7 +185,7 @@
     "retained_runtime_artifact_revision": "bceed2d-kit-h-r1",
     "upstream_url": "https://github.com/mpereiraesaa/prospero-win.git",
     "branch": "main",
-    "note": "Rebased onto upstream b510eb3 on 2026-10-08. Any-title shell on fixed kit B (25a967d). Firmware 13.60 uses the authorized no-drop fallback; games retain root recovery. Runtime remains bea2be5. Same tree as kit C's shell revision 850e62c (history squashed; the old commits are on backup/playden-ps5-850e62c). 33130a9 adds publication metadata schema 3 (game_root.unowned) for game folders on exFAT drives. a9ce0d0 pins the packager to the kit D runtime built from 8ff88bf (rebased forks, direct-memory heap). Test branch feat/upstream-2026-10-10 (2026-10-10): rebased onto upstream ce890c0 (Mesa WGL/Zink OpenGL, PS5 OpenGL SDK path removed); patch 0663 dropped, ours renumbered 0950-0955; 3f8f559 pins the packager to the kit G runtime f29127a. Rebased again onto upstream 644e32e (kit H): our 0602 and the translator fallback 063f851 dropped for upstream #678/#677, patch 0956 keeps a window's pixel format with Mesa's WGL; 77231eb pins the packager to the kit H runtime bceed2d. 03b6495 (feat/playden-ps5) adds only test, documentation and allowlist fixes on top of ab3b29e. 13fa077 adds Wine patch 0603 (upstream PR #688: Windows memory queries report the title's direct-memory budget) and ea6e6ee pins the packager to the kit H r8 runtime built from 13fa077. c5808b2 pins the packager to the kit 0.10 runtime built from cd3de27 (media backend and Wine patches 0964, 0965, 0970-0972, 0980, 0981). 7961dcb adds only test and documentation fixes on top of c5808b2. d0e60e8 adds Wine patch 0982 (the PS5 high reserved area at 0x1000000000 asks for 512 GiB and halves down to 16 GiB, PW_PS5_HIGH_RESERVE_GB); kit 0.10 and its runtime are unchanged until a kit is built from it. f729534 (feat/120hz-output) adds Wine patch 0983 (the PS5 driver reports 120 Hz when the title asks for it) and the [display] frame_rate key; the title passes PS5_VIDEOOUT_REFRESH and PS5_VIDEOOUT_FRAME_RATE to libvulkan.prx. ee24762 pins the packager to the kit 0.12 runtime built from f729534. ffb3b7a changes only the title shell: the game keeps its XInput controller, neutral, while the PS5 system overlay has the DualSense; the kit 0.12 runtime is unchanged. 031302d adds Wine patch 0984 (the PS5 user driver posts WM_DEVICECHANGE when the title's controller connects or disconnects) and a sink call in ntdll for it; a DualSense that turns off disconnects the game's controller again. A kit with it needs ntdll.prx and win32u.prx from 031302d. ce28942 changes only the title shell: it reads [runtime] version; a profile without it (version 1) keeps wave64 pixel shaders with RADV_PS5_PS_WAVE64=1 unless it asks for pswave32, version 2 takes the driver's default (wave32 with PS5_Mesa 15f78ec). A kit with it lists the capability profile-version-2. e709a0b pins the packager to the kit 0.13 runtime built from 031302d (no NW.js patch 0985)."
+    "note": "Rebased onto upstream b510eb3 on 2026-10-08. Any-title shell on fixed kit B (25a967d). Firmware 13.60 uses the authorized no-drop fallback; games retain root recovery. Runtime remains bea2be5. Same tree as kit C's shell revision 850e62c (history squashed; the old commits are on backup/playden-ps5-850e62c). 33130a9 adds publication metadata schema 3 (game_root.unowned) for game folders on exFAT drives. a9ce0d0 pins the packager to the kit D runtime built from 8ff88bf (rebased forks, direct-memory heap). Test branch feat/upstream-2026-10-10 (2026-10-10): rebased onto upstream ce890c0 (Mesa WGL/Zink OpenGL, PS5 OpenGL SDK path removed); patch 0663 dropped, ours renumbered 0950-0955; 3f8f559 pins the packager to the kit G runtime f29127a. Rebased again onto upstream 644e32e (kit H): our 0602 and the translator fallback 063f851 dropped for upstream #678/#677, patch 0956 keeps a window's pixel format with Mesa's WGL; 77231eb pins the packager to the kit H runtime bceed2d. 03b6495 (feat/playden-ps5) adds only test, documentation and allowlist fixes on top of ab3b29e. 13fa077 adds Wine patch 0603 (upstream PR #688: Windows memory queries report the title's direct-memory budget) and ea6e6ee pins the packager to the kit H r8 runtime built from 13fa077. c5808b2 pins the packager to the kit 0.10 runtime built from cd3de27 (media backend and Wine patches 0964, 0965, 0970-0972, 0980, 0981). 7961dcb adds only test and documentation fixes on top of c5808b2. d0e60e8 adds Wine patch 0982 (the PS5 high reserved area at 0x1000000000 asks for 512 GiB and halves down to 16 GiB, PW_PS5_HIGH_RESERVE_GB); kit 0.10 and its runtime are unchanged until a kit is built from it. f729534 (feat/120hz-output) adds Wine patch 0983 (the PS5 driver reports 120 Hz when the title asks for it) and the [display] frame_rate key; the title passes PS5_VIDEOOUT_REFRESH and PS5_VIDEOOUT_FRAME_RATE to libvulkan.prx. ee24762 pins the packager to the kit 0.12 runtime built from f729534. ffb3b7a changes only the title shell: the game keeps its XInput controller, neutral, while the PS5 system overlay has the DualSense; the kit 0.12 runtime is unchanged. 031302d adds Wine patch 0984 (the PS5 user driver posts WM_DEVICECHANGE when the title's controller connects or disconnects) and a sink call in ntdll for it; a DualSense that turns off disconnects the game's controller again. A kit with it needs ntdll.prx and win32u.prx from 031302d. ce28942 changes only the title shell: it reads [runtime] version; a profile without it (version 1) keeps wave64 pixel shaders with RADV_PS5_PS_WAVE64=1 unless it asks for pswave32, version 2 takes the driver's default (wave32 with PS5_Mesa 15f78ec). A kit with it lists the capability profile-version-2. e709a0b pins the packager to the kit 0.13 runtime built from 031302d (no NW.js patch 0985). 053bdbf (2026-10-28): rebased onto upstream 404cac6 (33 upstream commits: thread and fiber stacks commit as on Windows (0604), Unix heap headroom (#470), protected-page faults (0974), parked directory descriptors (0871), single-program titles, the in-game menu ([display] menu), frame generation ([display] framegen), the PS5 keyboard on a two-finger click, touchpad Back/Guide halves, L2/R2 vibration, compatible vibration mode, the 3 s close hold, [input] player2, TLS roots 2026-10-20); 10 fork commits dropped as upstreamed; the old tip is on backup/rebase-pre-upstream-2026-10-28. 053bdbf adds [input] rumble = 0-100 (kit capability input-rumble); 54d6889 and 4b38aa5 fix two host tests on Linux (the RADV adapter syntax check and make sanitize). 3e306b5 pins the packager to the kit 0.14 runtime built from 053bdbf. 4f6d38e adds Wine patch 0986 (hot accesses beside an inaccessible page keep their host page whole instead of being single-stepped; Unity's Mono games such as Darkwood ran at 5 fps on 0.14) and 2ffeb6c its test. 28ed795 pins the packager to the kit 0.15 runtime built from 4f6d38e."
   },
   "prospero_bottle_preparation": {
     "hl2-fresh-v16": {
@@ -228,17 +227,19 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.13, installed as playden-kit (kit 0.12 and earlier: hl2-fw1360-dev1; Playden retires that folder and points bottles' Wine Mono at playden-kit). Kit 0.12 with ntdll.prx and win32u.prx from prospero-win 031302d (Wine patch 0984: the game keeps its controller under the system overlay and gets WM_DEVICECHANGE when it connects or disconnects), the any-title shell from ce28942 (reads [runtime] version; capability profile-version-2) and libvulkan.prx from PS5_Mesa 15f78ec (pixel shaders in wave32 by default). Mono, Mesa WGL/Zink and template contents unchanged apart from the template's Wine Mono RuntimePath, so bottles need no Recreate. Released unchanged from dev kit 0.13-dev.20261024.4 (renamed). Earlier kits (0.12, 0.11, 0.10, H r1-r9): see this file's git history.",
-    "manifest_sha256": "d1dbc8e1b5b98691950369a89ef87c1dff5b7064a31844ccf20a4bed99b0e55b",
-    "files_sha256": "1e51857d8e19813b33cfaace0260f139b8835770a6ef5fe0d291270c77b446ca",
+    "status": "Kit 0.15, installed as playden-kit. Kit 0.14 with ntdll.prx from prospero-win 4f6d38e (Wine patch 0986: hot accesses beside an inaccessible page keep their host page whole; Unity's Mono games such as Darkwood loaded for minutes and ran at 5 fps on 0.14) and the capability display-framegen (0.14's any-title shell already reads [display] framegen and its libvulkan.prx links MihawkGen). The any-title shell stays 053bdbf; every other module, Mono, DXVK, vkd3d-proton, Mesa WGL/Zink, the Lapy helper and the template are 0.14's, so bottles need no Recreate. Released unchanged from dev kit 0.15-dev.20261029.1 (renamed). Earlier kits (0.14, 0.13, 0.12, 0.11, 0.10, H r1-r9): see this file's git history.",
+    "manifest_sha256": "8b77fb688ebcb174c50d7fe6a4ee2cbd74d89d18e6903445862c78da257bf6f4",
+    "files_sha256": "3640dfc15ad4cc07adf60d54b912f42e537f33f1461a0b4152cf75586b86f290",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
     ],
     "capabilities": [
       "display-120hz",
+      "display-framegen",
       "dxvk",
       "game-root-unowned",
+      "input-rumble",
       "offline_bottle",
       "opengl-zink",
       "per_game_title",
@@ -250,9 +251,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "ce289425bb34acbcc98f77b4e00ac98b3c16e4bc",
-    "runtime_artifact_revision": "031302d-kit-0.13",
-    "runtime_inventory_source": "Kit 0.13: kit 0.12 with ntdll.prx and win32u.prx from the prospero-win 031302d cross build (0984-cross.sh, the 0.12 recipe), the any-title shell built from ce28942 with tools/build_native.sh, and libvulkan.prx from PS5_Mesa 15f78ec. Kit 0.12: kit 0.11 with libvulkan.prx and win32u.prx from the prospero-win 7c81f68 cross build and the any-title shell built from f729534. Earlier kits: see this file's git history.",
+    "wrapper_revision": "053bdbf51e6a32f0a726db40415e71e387315fa3",
+    "runtime_artifact_revision": "4f6d38e-kit-0.15",
+    "runtime_inventory_source": "Kit 0.15: kit 0.14 with ntdll.prx from the prospero-win 4f6d38e cross build (kit-h/wine-ps5-0986, the 0.14 recipe; its other 16 PRX modules came out byte-identical to 0.14's). Kit 0.14: every module of the prospero-win 053bdbf cross build (kit-h/wine-ps5-0.14, RADV from PS5_Mesa 15f78ec) with the cacert-2026-10-20 bundle, modules the build does not make kept from 0.13, and the any-title shell built from 053bdbf with tools/build_native.sh. Kit 0.13: kit 0.12 with ntdll.prx and win32u.prx from the prospero-win 031302d cross build (0984-cross.sh, the 0.12 recipe), the any-title shell built from ce28942 with tools/build_native.sh, and libvulkan.prx from PS5_Mesa 15f78ec. Kit 0.12: kit 0.11 with libvulkan.prx and win32u.prx from the prospero-win 7c81f68 cross build and the any-title shell built from f729534. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",

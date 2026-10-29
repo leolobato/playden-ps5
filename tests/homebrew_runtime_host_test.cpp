@@ -1,4 +1,5 @@
 #include "homebrew/runtime_host.hpp"
+#include "installs/install_record.h"
 #include "runtime_host_fixture.h"
 #include "msi_fixture.h"
 #include "platform/managed_directory.h"
@@ -739,7 +740,7 @@ void PrepareNamesUnfixableFolder() {
   host.Prepare(Hl2());
   const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.preparing_app && s.refusals.count(220); }, 60);
   CHECK(done.refusals.at(220) == "Playden can't write to " + homebrew.string() +
-                                 ". Make the folder writable over FTP (permissions 777), then try again.");
+                                 ". Make that folder writable over FTP (777 on the folder only, not its contents), then try again.");
   CHECK(raises == 1);
   CHECK(done.installs.empty());
   struct stat info{};
@@ -1561,6 +1562,123 @@ void PreparesGameWithoutShippedRecipe() {
   const auto again = WaitFor(legacy, [](const RuntimeSnapshot& s) { return s.refusals.count(4242) != 0; });
   CHECK(again.refusals.at(4242) == "This game is already prepared.");
   legacy.Shutdown();
+}
+
+// An update changed a Ready game's files (its marker in the game's folder): Play refuses until Prepare has
+// made the launch again from the new files and Steam's options, as a fresh preparation would, and published
+// it; then the marker goes. A program that is gone with no other to start keeps the marker and says why.
+void UpdatedFilesSetUpTheLaunchAgain() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4243";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Bin/Game.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  GameSettingsRecord saved;
+  bool has_record = false;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    if (!has_record) return std::nullopt;
+    return saved;
+  };
+  RuntimePrepareRequest request{4243, "/data/homebrew/FAKE77031/games/4243", "internal", "Updated Game"};
+  request.launches = {{"", "", "bin\\game.exe", "", ""}};
+  const auto profile = fixture.root / "data/playden/games/steam-4243/library/profiles/playden-steam-4243.profile";
+  const auto marker = game / playden::installs::kFilesChangedName;
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(request);
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(4243) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(4243)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(4243).c_str());
+  CHECK(ready.installs.size() == 1 && ready.installs[0].state == PreparationState::kReady && !ready.installs[0].files_changed);
+  CHECK(ready.installs[0].launch_path == "Bin/Game.exe" && Read(profile).find("Game.exe\n") != std::string::npos);
+
+  // The update renamed the program and left its marker.
+  fs::remove(game / "Bin/Game.exe");
+  Write(game / "Bin/Game2.exe", pe, 0644);
+  Write(marker, "v1\n", 0644);
+  host.RecheckInstalls();
+  WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && s.installs[0].files_changed; });
+  host.Play(4243);
+  const auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.play_refusals.count(4243) != 0; });
+  CHECK(refused.play_refusals.at(4243).find("was updated") != std::string::npos && !refused.handoff_ready);
+
+  // Prepare with Steam's options for the new version: the launch is made again and published.
+  request.launches = {{"", "", "bin\\game2.exe", "", ""}};
+  const auto prepare = [&] {
+    const auto before = host.Snapshot().prepares_handled;
+    host.Prepare(request);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.prepares_handled > before && !s.preparing_app; }, 60);
+  };
+  auto done = prepare();
+  if (done.refusals.count(4243)) std::fprintf(stderr, "Refresh refused: %s\n", done.refusals.at(4243).c_str());
+  CHECK(!done.refusals.count(4243));
+  CHECK(done.installs[0].launch_path == "Bin/Game2.exe" && !done.installs[0].files_changed && !done.installs[0].recovery_pending);
+  CHECK(done.generated_recipes.size() == 1 && done.generated_recipes[0].launch_entries[0].executable == "Bin/Game2.exe");
+  CHECK(Read(profile).find("Game2.exe\n") != std::string::npos && !fs::exists(marker));
+
+  // The program is gone and Steam names no other: refused as a fresh preparation is, and the marker stays.
+  fs::remove(game / "Bin/Game2.exe");
+  Write(marker, "v1\n", 0644);
+  host.RecheckInstalls();
+  WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && s.installs[0].files_changed; });
+  done = prepare();
+  CHECK(done.refusals.count(4243) && done.installs[0].files_changed && fs::exists(marker));
+  CHECK(done.installs[0].launch_path == "Bin/Game2.exe");
+
+  // It is back: the program stays, and the marker goes.
+  Write(game / "Bin/Game2.exe", pe, 0644);
+  done = prepare();
+  if (done.refusals.count(4243)) std::fprintf(stderr, "Second refresh refused: %s\n", done.refusals.at(4243).c_str());
+  CHECK(!done.installs[0].files_changed && done.installs[0].launch_path == "Bin/Game2.exe" && !fs::exists(marker));
+
+  // A program the player chose in Game settings stays the one that starts while the update kept it, though
+  // Steam's options name another now.
+  Write(game / "Tool.exe", pe, 0644);
+  has_record = true;
+  saved.revision = 1;
+  saved.overrides = {{"program", "Tool.exe"}, {"architecture", "pe64"}};
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto maintained = host.Snapshot().maintenance_handled;
+  host.Maintain(4243, RuntimeMaintenance::kApplySettings);
+  WaitFor(host, [maintained](const RuntimeSnapshot& s) { return s.maintenance_handled > maintained; }, 60);
+  CHECK(host.Snapshot().installs[0].launch_path == "Tool.exe");
+  Write(marker, "v1\n", 0644);
+  host.RecheckInstalls();
+  WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && s.installs[0].files_changed; });
+  done = prepare();
+  if (done.refusals.count(4243)) std::fprintf(stderr, "Program refresh refused: %s\n", done.refusals.at(4243).c_str());
+  CHECK(!done.installs[0].files_changed && !fs::exists(marker));
+  CHECK(done.installs[0].launch_entry_id == kProgramEntryId && done.installs[0].launch_path == "Tool.exe");
+  CHECK(Read(profile).find("Tool.exe\n") != std::string::npos);
+  // Play goes ahead now.
+  host.Play(4243);
+  CHECK(WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30).handoff_ready);
+  CHECK(host.Handoff());
+  host.Shutdown();
 }
 
 // Settings saved while the game is being prepared, after its profile was written, reach the title
@@ -5243,9 +5361,396 @@ void RelocationStopsWaitingWhenPlaydenCloses() {
   host.Shutdown();
 }
 
+namespace {
+constexpr const char* kLeftoverOperation = "00000000-0000-4000-8000-000000000001";
+
+RuntimeHostConfig LeftoverConfig(Fixture& fixture) {
+  auto config = fixture.Config();
+  // Bottles live under the fixture, where Playden looks for them.
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.uuid = [] { return std::optional<std::string>(kLeftoverOperation); };
+  config.removal_confirm_polls = 1;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  // Removing a manual source does not itself register the title.
+  config.registry_transport = [&fixture](const std::string& route, const std::string&) -> std::optional<std::string> {
+    if (route != "/api/v1/games") { ++fixture.registry_mutations; return R"({"status":0})"; }
+    if (!fixture.registered) return R"({"status":0,"games":[]})";
+    return R"({"status":0,"games":[{"title_id":"FAKE78001","installed":true,"managed":true,)"
+           R"("source_available":true,"source_type":"folder","path":"/data/homebrew/FAKE78001"}]})";
+  };
+  return config;
+}
+
+fs::path MakeLeftover(Fixture& fixture) {
+  const auto title = fixture.root / "data/homebrew/FAKE78001";
+  Write(title / "sce_sys/param.json", R"({"localizedParameters":{"en-US":{"titleName":"Left Behind"}}})", 0644);
+  Write(title / "eboot.bin", "title-files", 0755);
+  // The title shell's descriptor names the game's bottle (see pw_title_launch.c).
+  Write(title / "game-launch.json",
+        R"({"schema_version":1,"app_id":220,"title_id":"FAKE78001","install_id":"steam-220",)"
+        R"("data_root":"/data/playden/games/steam-220"})", 0644);
+  CHECK(chmod(title.c_str(), 0755) == 0);
+  return title;
+}
+}  // namespace
+
+void DeletesLeftoverTitleAndResumesFailures() {
+  // Listed, already absent, unavailable build, unavailable remover, refused and silent remover.
+  for (int scenario = 0; scenario < 6; ++scenario) {
+    Fixture fixture;
+    auto config = LeftoverConfig(fixture);
+    const auto title = MakeLeftover(fixture);
+    fixture.registered = scenario != 1;
+    unsigned calls = 0;
+    if (scenario != 1 && scenario != 2)
+      config.unregister_title = [&fixture, &calls, scenario](const std::string& id, const std::string& nonce) {
+        CHECK(id == "FAKE78001" && nonce == kLeftoverOperation);
+        ++calls;
+        if (scenario == 3) return TitleRemoverResult{false, std::nullopt, "unavailable"};
+        if (scenario == 4) return TitleRemoverResult{true, -1, "refused"};
+        if (scenario == 5) return TitleRemoverResult{true, std::nullopt, "silent"};
+        fixture.registered = false;
+        return TitleRemoverResult{true, 0, "removed"};
+      };
+    const auto bottle = fixture.root / "data/playden/games/steam-220/save.dat";
+    const auto files = fixture.root / "data/playden-games/steam-220/game.exe";
+    Write(bottle, "saved-game", 0600);
+    Write(files, "downloaded-game", 0644);
+    {
+      RuntimeHost host(config);
+      CHECK(host.Start());
+      const auto started = WaitFor(host, Started);
+      CHECK(started.leftover_titles.size() == 1);
+      CHECK(started.leftover_titles[0].title_id == "FAKE78001" && started.leftover_titles[0].name == "Left Behind");
+      CHECK(started.leftover_titles[0].bytes > 11 && started.installs.empty());
+      CHECK(host.DeleteLeftoverTitle("FAKE78001"));
+      const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_deletes_handled == 1; });
+      CHECK(!done.deleting_leftover_title && done.queued_leftover_deletes.empty());
+      if (scenario <= 1) {
+        CHECK(done.leftover_titles.empty() && done.leftover_delete_failures.empty());
+        CHECK(!fs::exists(title));
+        CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json"));
+        CHECK(calls == (scenario == 0 ? 1 : 0));
+      } else {
+        CHECK(done.leftover_delete_failures.count("FAKE78001") == 1);
+        CHECK(done.leftover_titles.size() == 1);  // retry remains available after retire
+        if (scenario == 2) {
+          CHECK(fs::is_directory(title));
+          CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json"));
+        } else {
+          CHECK(!fs::exists(title));
+          const auto journal = config.state_root / "leftover-FAKE78001.json";
+          struct stat info{};
+          CHECK(lstat(journal.c_str(), &info) == 0 && (info.st_mode & 07777) == 0600);
+          CHECK(Read(journal).find("\"step\":\"unregister\"") != std::string::npos);
+          CHECK(fs::is_directory(config.state_root / "trash" / (std::string("FAKE78001-") + kLeftoverOperation)));
+          if (scenario == 3) CHECK(done.leftover_delete_failures.at("FAKE78001").find("could not start") != std::string::npos);
+          if (scenario == 4) CHECK(done.leftover_delete_failures.at("FAKE78001").find("0xffffffff") != std::string::npos);
+          if (scenario == 5) CHECK(done.leftover_delete_failures.at("FAKE78001").find("has not confirmed") != std::string::npos);
+        }
+      }
+      if (scenario <= 1) {
+        // The title that named the bottle is gone: its saves are kept, as Uninstall keeps them.
+        const auto kept = fixture.root / "data/playden/games/steam-220.kept";
+        CHECK(!fs::exists(bottle) && Read(kept / "save.dat") == "saved-game");
+        CHECK(done.kept_bottles.size() == 1 && done.kept_bottles[0].install_id == "steam-220");
+      } else {
+        CHECK(Read(bottle) == "saved-game" && done.kept_bottles.empty());
+      }
+      CHECK(Read(files) == "downloaded-game");
+      host.Shutdown();
+    }
+    if (scenario < 3) continue;
+    config.unregister_title = [&fixture, &calls](const std::string&, const std::string&) {
+      ++calls;
+      fixture.registered = false;
+      return TitleRemoverResult{true, 0, "removed"};
+    };
+    RuntimeHost restarted(config);
+    CHECK(restarted.Start());
+    const auto done = WaitFor(restarted, Started);
+    CHECK(done.leftover_deletes_handled == 1 && done.leftover_titles.empty() && done.leftover_delete_failures.empty());
+    CHECK(calls == 2 && !fixture.registered);
+    CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json"));
+    CHECK(fs::is_empty(config.state_root / "trash"));
+    CHECK(!fs::exists(bottle) && Read(fixture.root / "data/playden/games/steam-220.kept/save.dat") == "saved-game");
+    CHECK(done.kept_bottles.size() == 1 && Read(files) == "downloaded-game");
+    restarted.Shutdown();
+  }
+}
+
+void LeftoverRemovalRevalidatesBeforeEffects() {
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    Fixture fixture;
+    auto config = LeftoverConfig(fixture);
+    const auto title = MakeLeftover(fixture);
+    unsigned calls = 0;
+    config.unregister_title = [&calls](const std::string&, const std::string&) { ++calls; return TitleRemoverResult{}; };
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).leftover_titles.size() == 1);
+    const auto original = title.parent_path() / "original";
+    if (scenario == 0) {
+      // Preserve the old inode so the new directory cannot accidentally reuse it.
+      fs::rename(title, original);
+      Write(title / "replacement", "another-title", 0644);
+    } else if (scenario == 1) {
+      fs::rename(title, original);
+      CHECK(symlink(original.c_str(), title.c_str()) == 0);
+    } else {
+      fixture.activity->store(static_cast<int>(scenario == 2 ? NativeActivity::kActive : NativeActivity::kUnknown));
+    }
+    CHECK(host.DeleteLeftoverTitle("FAKE78001"));
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_deletes_handled == 1; });
+    CHECK(done.leftover_delete_failures.count("FAKE78001") == 1 && calls == 0 && fixture.registry_mutations == 0);
+    CHECK(fs::exists(title));
+    CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json"));
+    host.Shutdown();
+  }
+}
+
+void LeftoverRemovalRecoversRetireWriteGap(int scenario) {
+  Fixture fixture;
+  auto config = LeftoverConfig(fixture);
+  const auto title = MakeLeftover(fixture);
+  fixture.registered = true;
+  {
+    RuntimeHost first(config);
+    CHECK(first.Start());
+    CHECK(WaitFor(first, Started).leftover_titles.size() == 1);
+    first.Shutdown();
+  }
+  struct stat info{};
+  CHECK(lstat(title.c_str(), &info) == 0);
+  const auto text = std::string("{\"schema\":1,\"title\":\"FAKE78001\",\"operation_id\":\"") + kLeftoverOperation +
+      "\",\"step\":\"retire\",\"device\":" + std::to_string(info.st_dev) + ",\"inode\":" +
+      std::to_string(info.st_ino) + ",\"name\":\"Left Behind\",\"bytes\":11}\n";
+  playden::Storage storage(config.state_root.string());
+  CHECK(storage.WriteDurable("leftover-FAKE78001.json", playden::Bytes(text.begin(), text.end())).ok());
+  const auto trash = config.state_root / "trash";
+  fs::create_directory(trash);
+  CHECK(chmod(trash.c_str(), 0700) == 0);
+  const auto retired = trash / (std::string("FAKE78001-") + kLeftoverOperation);
+  fs::rename(title, retired);
+  if (scenario == 1) {
+    fs::rename(retired, config.state_root / "protected-original");
+    Write(retired / "replacement", "another-title", 0644);
+  } else if (scenario == 2) {
+    CHECK(chmod((config.state_root / "leftover-FAKE78001.json").c_str(), 0644) == 0);
+  }
+  unsigned calls = 0;
+  config.unregister_title = [&fixture, &calls](const std::string&, const std::string&) {
+    ++calls;
+    fixture.registered = false;
+    return TitleRemoverResult{true, 0, "removed"};
+  };
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  const auto done = WaitFor(restarted, Started);
+  if (scenario == 0) {
+    CHECK(done.leftover_deletes_handled == 1 && done.leftover_titles.empty() && calls == 1);
+    CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json") && fs::is_empty(trash));
+  } else {
+    CHECK(calls == 0 && fixture.registered && fixture.registry_mutations == 0);
+    CHECK(fs::exists(config.state_root / "leftover-FAKE78001.json") && fs::is_directory(retired));
+    if (scenario == 1) {
+      CHECK(done.leftover_deletes_handled == 1);
+      CHECK(done.leftover_delete_failures.at("FAKE78001").find("folder changed") != std::string::npos);
+      CHECK(Read(retired / "replacement") == "another-title");
+      CHECK(Read(config.state_root / "protected-original/eboot.bin") == "title-files");
+    } else {
+      CHECK(done.leftover_deletes_handled == 0);
+      CHECK(Read(retired / "eboot.bin") == "title-files");
+    }
+  }
+  restarted.Shutdown();
+}
+
+void LeftoverScanRequiresLoadedRecordsAndRepeatsAfterUninstall() {
+  for (bool readable : {false, true}) {
+    Fixture fixture;
+    auto config = LeftoverConfig(fixture);
+    if (!readable) {
+      Write(config.state_root / "installs.json", "broken", 0600);
+      CHECK(chmod(config.state_root.c_str(), 0700) == 0);
+      MakeLeftover(fixture);
+    }
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    if (!readable) {
+      CHECK(started.status == RuntimeHostStatus::kUnavailable && started.leftover_titles.empty());
+      CHECK(started.reason.find("Runtime install records are unavailable") != std::string::npos);
+    } else {
+      CHECK(started.leftover_titles.empty());
+      MakeLeftover(fixture);
+      host.Remove(999, false);  // every completed uninstall refreshes the scan, including an absent title
+      const auto refreshed = WaitFor(host, [](const RuntimeSnapshot& s) { return s.removals_handled == 1; });
+      CHECK(refreshed.leftover_titles.size() == 1 && refreshed.leftover_titles[0].title_id == "FAKE78001");
+    }
+    host.Shutdown();
+  }
+}
+
+void LeftoverDeletionSharesThePreparationAndUninstallQueue() {
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    Fixture fixture;
+    auto config = LeftoverConfig(fixture);
+    MakeLeftover(fixture);
+    std::promise<void> scanned, released;
+    auto release = released.get_future().share();
+    std::mutex order_mutex;
+    std::vector<std::string> order;
+    config.log = [&](const std::string& line) {
+      if (line == "startup trash emptied") { scanned.set_value(); release.wait(); }
+      std::lock_guard<std::mutex> lock(order_mutex);
+      if (line.rfind("prepare result app=220", 0) == 0) order.push_back("prepare");
+      if (line.rfind("remove result app=999", 0) == 0) order.push_back("uninstall");
+      if (line == "leftover delete complete title=FAKE78001") order.push_back("leftover");
+    };
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(scanned.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    CHECK(host.Snapshot().leftover_titles.size() == 1);
+    const auto prepare = [&] { host.Prepare(Hl2()); };
+    const auto remove = [&] { host.Remove(999, false); };
+    const auto leftover = [&] { CHECK(host.DeleteLeftoverTitle("FAKE78001")); };
+    std::vector<std::string> expected;
+    if (scenario == 0) { prepare(); leftover(); remove(); expected = {"prepare", "leftover", "uninstall"}; }
+    if (scenario == 1) { leftover(); remove(); prepare(); expected = {"leftover", "uninstall", "prepare"}; }
+    if (scenario == 2) { remove(); prepare(); leftover(); expected = {"uninstall", "prepare", "leftover"}; }
+    CHECK(host.Snapshot().queued_leftover_deletes == std::vector<std::string>{"FAKE78001"});
+    released.set_value();
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.prepares_handled == 1 && s.removals_handled == 1 && s.leftover_deletes_handled == 1;
+    });
+    CHECK(done.leftover_delete_failures.empty() && done.leftover_titles.empty());
+    host.Shutdown();
+    CHECK(order == expected);
+  }
+}
+
+void LeftoverDeletionRefusesANewInstallUsingTheId() {
+  Fixture fixture;
+  auto config = LeftoverConfig(fixture);
+  const auto title = MakeLeftover(fixture);
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned calls = 0;
+  config.unregister_title = [&calls](const std::string&, const std::string&) { ++calls; return TitleRemoverResult{}; };
+  // Preparation needs the fixture's registration hook; its source-removal mutation must never run.
+  config.registry_transport = fixture.Config().registry_transport;
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).leftover_titles.size() == 1);
+  fs::rename(title, title.parent_path() / "original");
+  host.Prepare(Hl2());
+  const auto prepared = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled == 1; });
+  CHECK(prepared.refusals.empty() && prepared.installs.size() == 1 && prepared.installs[0].title_id == "FAKE78001");
+  const auto mutations = fixture.registry_mutations;
+  // The scan is deliberately stale: the worker must recheck its authoritative records.
+  CHECK(host.DeleteLeftoverTitle("FAKE78001"));
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_deletes_handled == 1; });
+  CHECK(done.leftover_delete_failures.at("FAKE78001").find("now belongs to an installed game") != std::string::npos);
+  CHECK(done.installs.size() == 1 && fs::is_regular_file(title / "eboot.bin"));
+  CHECK(fixture.registry_mutations == mutations && calls == 0);
+  CHECK(!fs::exists(config.state_root / "leftover-FAKE78001.json"));
+  host.Shutdown();
+}
+
+// Bottles with no install record are kept as saves (as Uninstall keeps them) once no unrecorded
+// PS5 title names them. Any doubt (unreadable records or descriptor) keeps every bottle as it is.
+void KeepsUnrecordedBottlesAsKeptSaves() {
+  for (int scenario = 0; scenario < 6; ++scenario) {
+    Fixture fixture;
+    auto config = LeftoverConfig(fixture);
+    config.unix_time = [] { return std::int64_t{1760000000}; };
+    const auto games = fixture.root / "data/playden/games";
+    Write(games / "steam-221/save.dat", "lost-record", 0600);
+    Write(games / "steam-221/title-metadata/sce_sys/param.json",
+          R"({"localizedParameters":{"en-US":{"titleName":"Old Save"}}})", 0600);
+    Write(games / "steam-220/save.dat", "named-by-title", 0600);
+    MakeLeftover(fixture);  // FAKE78001's game-launch.json names steam-220
+    Write(games / "steam-225/save.dat", "newer", 0600);
+    Write(games / "steam-225/.playden-saves-restored", "", 0600);
+    Write(games / "steam-225.kept/save.dat", "older", 0600);
+    Write(games / "steam-225.kept/playden-kept.json",
+          R"({"schema":1,"install_id":"steam-225","app_id":225,"name":"Older","kept_at":1,"bytes":5})", 0600);
+    Write(games / "steam-226.saves/1/users/save.dat", "backup", 0600);
+    // A title names its bottle by data_root even when its install_id says otherwise; one with no
+    // descriptor names none.
+    Write(games / "steam-228/save.dat", "named-by-root", 0600);
+    Write(fixture.root / "data/homebrew/FAKE78005/game-launch.json",
+          R"({"schema_version":1,"app_id":229,"title_id":"FAKE78005","install_id":"steam-229",)"
+          R"("data_root":"/data/playden/games/steam-228"})", 0644);
+    Write(fixture.root / "data/homebrew/FAKE78006/eboot.bin", "title-files", 0755);
+    Write(fixture.root / "elsewhere/save.dat", "linked", 0600);
+    fs::create_symlink(fixture.root / "elsewhere", games / "steam-227");
+    if (scenario == 1) {
+      Write(fixture.root / "data/homebrew/FAKE78003/game-launch.json", "{broken", 0644);
+    } else if (scenario == 2) {
+      Write(config.state_root / "installs.json", "broken", 0600);
+      CHECK(chmod(config.state_root.c_str(), 0700) == 0);
+    } else if (scenario == 3) {
+      // An unreadable leftover deletion journal: its retired title may still name a bottle.
+      Write(config.state_root / "leftover-FAKE78004.json", "{broken", 0600);
+      CHECK(chmod(config.state_root.c_str(), 0700) == 0);
+    } else if (scenario == 4) {
+      // A journal entry that is not even a file still reserves its title.
+      fs::create_directories(config.state_root / "leftover-FAKE78004.json");
+      CHECK(chmod(config.state_root.c_str(), 0700) == 0);
+    } else if (scenario == 5) {
+      // A title folder that cannot be inspected might name any bottle (listable, not searchable).
+      CHECK(chmod((fixture.root / "data/homebrew").c_str(), 0644) == 0);
+    }
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(Read(games / "steam-220/save.dat") == "named-by-title");
+    CHECK(Read(games / "steam-228/save.dat") == "named-by-root" && !fs::exists(games / "steam-228.kept"));
+    CHECK(Read(games / "steam-226.saves/1/users/save.dat") == "backup");
+    CHECK(fs::is_symlink(games / "steam-227") && Read(fixture.root / "elsewhere/save.dat") == "linked");
+    if (scenario == 0) {
+      CHECK(!fs::exists(games / "steam-221") && Read(games / "steam-221.kept/save.dat") == "lost-record");
+      const auto marker = Read(games / "steam-221.kept/playden-kept.json");
+      CHECK(marker.find("\"install_id\":\"steam-221\",\"app_id\":221") != std::string::npos);
+      CHECK(marker.find("\"name\":\"Old Save\"") != std::string::npos);
+      // This bottle already has the older kept copy's saves: it replaces that copy.
+      CHECK(!fs::exists(games / "steam-225") && Read(games / "steam-225.kept/save.dat") == "newer");
+      std::set<std::string> kept;
+      for (const auto& view : started.kept_bottles) kept.insert(view.install_id + "=" + view.name);
+      CHECK((kept == std::set<std::string>{"steam-221=Old Save", "steam-225="}));  // steam-225 has no title metadata
+    } else {
+      CHECK(Read(games / "steam-221/save.dat") == "lost-record" && !fs::exists(games / "steam-221.kept"));
+      CHECK(Read(games / "steam-225/save.dat") == "newer" && Read(games / "steam-225.kept/save.dat") == "older");
+    }
+    host.Shutdown();
+    if (scenario == 5) CHECK(chmod((fixture.root / "data/homebrew").c_str(), 0755) == 0);
+  }
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
+  LeftoverDeletionSharesThePreparationAndUninstallQueue();
+  LeftoverDeletionRefusesANewInstallUsingTheId();
+  DeletesLeftoverTitleAndResumesFailures();
+  LeftoverRemovalRevalidatesBeforeEffects();
+  for (int scenario = 0; scenario < 3; ++scenario) LeftoverRemovalRecoversRetireWriteGap(scenario);
+  LeftoverScanRequiresLoadedRecordsAndRepeatsAfterUninstall();
+  KeepsUnrecordedBottlesAsKeptSaves();
   WorkerMovesGamesUnderPublicationLease();
   NoKitRefusesPreparationWithoutDurableEffects();
   ReloadKitAdmitsAKitInstalledWhileRunning();
@@ -5267,6 +5772,7 @@ int main(int argc, char** argv) {
   AnyTitleKitMakesTheGameItsOwnTitle();
   PreparationEndsAwaitingRegistration();
   PreparesGameWithoutShippedRecipe();
+  UpdatedFilesSetUpTheLaunchAgain();
   PreparesProgramChosenInSettings();
   PreparesSteamProgramChosenAfterDownload();
   SteamEntryWithoutFolderStartsInInstallRoot();

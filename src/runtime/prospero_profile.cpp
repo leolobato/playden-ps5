@@ -312,6 +312,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         if (value != "60" && value != "120") return bad("not 60 or 120");
       } else if (features.display_frame_rate && key == "frame_rate") {
         if (!OneOf(value, {"0", "120", "60", "40", "30"})) return bad("not 0, 120, 60, 40 or 30");
+      } else if (features.display_framegen && key == "framegen") {
+        if (!OneOf(value, {"off", "2", "3", "4"})) return bad("not off, 2, 3 or 4");
       } else {
         return fail("unknown [display] key " + key);
       }
@@ -327,7 +329,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         if (speed < 1 || speed > 20000) return bad("not 1-20000");
       } else if (features.input_wheel && key == "wheel") {
         if (!OneOf(value, {"none", "left_stick", "right_stick"})) return bad("unknown wheel stick");
-      } else if (features.input_tuning && (key == "stick_deadzone" || key == "rumble" || key == "trigger_deadzone")) {
+      } else if ((features.input_tuning && (key == "stick_deadzone" || key == "trigger_deadzone")) ||
+                 ((features.input_tuning || features.input_rumble) && key == "rumble")) {
         const long maximum = key == "rumble" ? 100 : 50;
         if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > maximum)
           return bad(key == "rumble" ? "not 0-100" : "not 0-50");

@@ -103,6 +103,27 @@ void Controller::Start(app::PersistenceService* persistence_service) {
       const auto app = RuntimeApp(*runtime_, id, &busy);
       return app && runtime_->ActivityNow(*app, std::chrono::seconds(5)) == runtime::NativeActivity::kStopped;
     });
+  if (installs_)
+    // On the install worker, just before an update puts a game's files in place: never while its title runs
+    // or starts, or when the console doesn't answer (kUnknown). The service has locked the game already, and
+    // Play checks that lock after marking the game as starting (TickRuntime), so neither slips past the other.
+    installs_->SetApplyGate([this](GameId id) {
+      using Answer = installs::ApplyAnswer;
+      {
+        std::lock_guard<std::mutex> lock(gate_mutex_);
+        if (gate_blocked_.count(id)) return Answer::kGameRunning;
+      }
+      if (!runtime_) return Answer::kApply;
+      bool busy = false;
+      const auto app = RuntimeApp(*runtime_, id, &busy);
+      if (!app) return Answer::kUnknown;
+      // A console that doesn't answer may take the whole wait each time: asked again only after a longer one.
+      switch (runtime_->ActivityNow(*app, std::chrono::seconds(5))) {
+        case runtime::NativeActivity::kStopped: return Answer::kApply;
+        case runtime::NativeActivity::kUnknown: return Answer::kUnknown;
+        default: return Answer::kGameRunning;
+      }
+    });
 }
 Controller::~Controller() { Shutdown(); }
 void Controller::Shutdown() {
@@ -128,6 +149,9 @@ void Controller::Shutdown() {
                     std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - started).count()));
   };
+  // The server source may inspect the install snapshot for its fallback payload.
+  if(download_servers_) step("download-servers", [&] { download_servers_->Shutdown(); });
+  if(web_) step("web", [&] { web_->Shutdown(); });
   if(library_) step("library", [&] { library_->Shutdown(); library_->Tick(); AdvanceClear(); });
   if(persistence_) step("persistence", [&] { persistence_->FlushAndShutdown(); AdvanceOrganizationClear(); });
   if(app_details_) step("details", [&] { app_details_->Shutdown(); });
@@ -247,6 +271,7 @@ void Controller::Restore(bool quiet) {
 }
 void Controller::SignOut(bool switch_account) {
   if(phase_==Phase::ClearLibrary || phase_==Phase::ClearOrganization || phase_==Phase::SignOut) return;
+  if (download_servers_) download_servers_->Invalidate();
   retry_saved_session_ = false;
   begin_after_clear_ = switch_account;
   begin_password_after_clear_ = model_.state().sign_in_password;
@@ -364,8 +389,11 @@ void Controller::Tick() {
   lap(4);
   TickImports();
   TickInstalls();
+  TickDownloadServers();
+  TickWebAccess();
   TickSelfUpdate();
   lap(5);
+  TickGate();
   TickCloud();
   lap(6);
   TickRuntime();
@@ -447,20 +475,20 @@ void Controller::QueueSavesJob(steam::CloudJobKind kind) {
   if (runtime_) runtime_->MeasureSaves();
 }
 
+void Controller::TickGate() {
+  // Games whose sessions Playden knows about, for the gates on the Cloud and install workers.
+  std::set<GameId> blocked;
+  for (const auto& [id, root] : game_roots_)
+    if (SessionActive(id)) blocked.insert(id);
+  std::lock_guard<std::mutex> lock(gate_mutex_);
+  gate_blocked_ = std::move(blocked);
+}
 void Controller::TickCloud() {
   if (!cloud_) return;
   if (!cloud_restored_ && !saves_root_.empty()) {
     // The last result of every game, so the Saves tab shows them at once.
     cloud_->Restore(saves_root_);
     cloud_restored_ = true;
-  }
-  {
-    // Games whose sessions Playden knows about, for the job gate on the Cloud worker.
-    std::set<GameId> blocked;
-    for (const auto& [id, root] : game_roots_)
-      if (SessionActive(id)) blocked.insert(id);
-    std::lock_guard<std::mutex> lock(gate_mutex_);
-    gate_blocked_ = std::move(blocked);
   }
   for (const auto id : cloud_->TakeDeferred()) after_play_.insert(id);
   const auto now = std::chrono::steady_clock::now();
@@ -843,6 +871,15 @@ void Controller::TickRuntime() {
   if (model_.TakeRuntimeCleanupRequest()) runtime_->CleanUpRequests();
   for (const auto& id : model_.TakeKeptDeleteRequests())
     WithApp(id, [this](std::uint32_t app) { runtime_->DeleteKeptBottle(app); });
+  for (const auto& id : model_.TakeLeftoverDeleteRequests()) {
+    std::string error;
+    if (!runtime_->DeleteLeftoverTitle(id, &error)) {
+      auto deletions = leftover_deletions_projected_;
+      std::erase_if(deletions, [&](const LiveLeftoverDelete& deletion) { return deletion.title_id == id; });
+      deletions.push_back({id, leftover_names_[id], "", error.empty() ? "The title could not be queued for deletion." : error});
+      model_.UpdateLeftoverDeletions(std::move(deletions));
+    }
+  }
   for (const auto& id : model_.TakeActivityRequests())
     WithApp(id, [this](std::uint32_t app) { runtime_->CheckActivity(app); });
   for (const auto id : model_.TakeProgramScanRequests())
@@ -885,9 +922,33 @@ void Controller::TickRuntime() {
       std::vector<LiveKeptBottle> kept;
       for (const auto& bottle : current.kept_bottles) kept.push_back({bottle.game, bottle.name, bottle.kept_at, bottle.bytes});
       if (kept != kept_projected_) { kept_projected_ = kept; model_.UpdateKeptBottles(std::move(kept)); }
+      std::vector<LiveLeftoverTitle> leftovers;
+      for (const auto& title : current.leftover_titles) {
+        leftovers.push_back({title.title_id, title.name, title.bytes});
+        leftover_names_[title.title_id] = title.name;
+      }
+      if (leftovers != leftovers_projected_) {
+        leftovers_projected_ = leftovers;
+        model_.UpdateLeftoverTitles(std::move(leftovers));
+      }
+      std::vector<LiveLeftoverDelete> deletions;
+      if (current.deleting_leftover_title) {
+        const auto& id = *current.deleting_leftover_title;
+        deletions.push_back({id, leftover_names_[id], current.deleting_leftover_step, ""});
+      }
+      for (const auto& id : current.queued_leftover_deletes)
+        if (current.deleting_leftover_title != id) deletions.push_back({id, leftover_names_[id], "", ""});
+      for (const auto& [id, error] : current.leftover_delete_failures)
+        deletions.push_back({id, leftover_names_[id], "", error});
+      if (deletions != leftover_deletions_projected_) {
+        leftover_deletions_projected_ = deletions;
+        model_.UpdateLeftoverDeletions(std::move(deletions));
+      }
     }
   }
   auto plays = model_.TakeRuntimePlayRequests();
+  // A game whose update is putting its files in place doesn't start (the details page says so).
+  if (installs_) std::erase_if(plays, [this](GameId id) { return installs_->Locked(id); });
   std::erase_if(plays, [this](GameId id) { return HoldForDropFolder(id, DropFolderNext::kPlay); });
   plays.insert(plays.end(), opened_plays.begin(), opened_plays.end());
   {
@@ -900,7 +961,7 @@ void Controller::TickRuntime() {
     };
     const auto ready = [](const RuntimeInstallView* view) {
       return view && view->state == runtime::PreparationState::kReady && !view->recovery_pending &&
-             view->title_current && view->admission == "ok";
+             view->title_current && view->admission == "ok" && !view->files_changed;
     };
     const auto refusal_of = [&prepared](GameId id) {
       const auto found = prepared.refusals.find(NumberIn(prepared, id));
@@ -910,7 +971,7 @@ void Controller::TickRuntime() {
     // Update or a Repair, it updates or repairs it first. Both then start the game.
     const auto needs_work = [](const RuntimeInstallView* view) {
       return view && view->state == runtime::PreparationState::kReady && !view->recovery_pending &&
-             (!view->title_current || view->admission != "ok");
+             (!view->title_current || view->admission != "ok" || view->files_changed);
     };
     // A record left before Ready by an earlier session, with no journal to resume, is what the
     // game page calls "Not prepared": Play prepares it too, instead of asking the launcher.
@@ -937,7 +998,9 @@ void Controller::TickRuntime() {
         if (const auto* view = record_of(id); moved(view))
           pending.words = "Preparing the game on its new drive…";
         else if (needs_work(view))
-          pending.words = !view->title_current ? "Updating runtime…" : "Repairing runtime…";
+          pending.words = !view->title_current ? "Updating runtime…"
+                          : view->admission != "ok" ? "Repairing runtime…"
+                                                    : "Setting up the updated game…";
         std::erase(auto_prepare_, id);
         ++play_notes_revision_;
       } else if (!play_after_prepare_.count(id)) {
@@ -957,6 +1020,22 @@ void Controller::TickRuntime() {
         play_after_prepare_.erase(*it);
         if (!HoldForDropFolder(*it, DropFolderNext::kPrepare)) RequestPrepare(*it);  // a drop-folder game's files open first
         it = auto_prepare_.erase(it);
+      }
+    // An updated game is set up for its new files as soon as nothing uses it, so it also starts the new version from
+    // Home; Play does it only when this couldn't. Asked once per update and per Playden start (a refusal waits for
+    // Play), and signed in, after Steam's details for the new content (TickAppDetails asks for them again).
+    if (usable)
+      for (const auto& view : prepared.installs) {
+        const auto id = view.game;
+        if (!view.files_changed || view.recovery_pending || view.state != runtime::PreparationState::kReady ||
+            !game_roots_.count(id) || refresh_asked_.count(id) || play_after_prepare_.count(id) ||
+            prepare_after_details_.count(id) || PrepareQueued(prepared, NumberIn(prepared, id)) ||
+            IsNumber(prepared, prepared.preparing_app, id) || cloud_busy_.count(id) || SessionActive(id) ||
+            (installs_ && installs_->Locked(id)) ||
+            (refresh_details_.count(id) && model_.state().account().authentication == AuthState::SignedIn))
+          continue;
+        refresh_asked_.insert(id);
+        RequestPrepare(id);
       }
     // A title still waiting for the PS5 when Playden started is checked once: the
     // player left Playden since, so ShadowMountPlus has usually registered it. The
@@ -1126,6 +1205,17 @@ void Controller::TickRuntime() {
     const auto app = RuntimeApp(*runtime_, id, &busy);
     if (busy) { later.push_back(id); continue; }  // the game's first number waits for the runtime worker
     if (!app) continue;
+    // Marked as starting for the install worker's gate first, then the update lock checked: an update that
+    // began putting its files in place since Play was pressed stops the game here, and one that asks the
+    // gate after this sees the game starting and waits.
+    {
+      std::lock_guard<std::mutex> lock(gate_mutex_);
+      gate_blocked_.insert(id);
+    }
+    if (installs_ && installs_->Locked(id)) {
+      model_.NotifyPlayStopped(id, "The game's update is putting its files in place. Play once it finishes.");
+      continue;
+    }
     play_queued_.insert(id);
     ++plays_requested_;
     runtime_->Play(*app);
@@ -1146,6 +1236,9 @@ void Controller::TickRuntime() {
     const std::pair<GameId, runtime::LaunchState> current{snapshot.launch->game, snapshot.launch->state};
     if (current.second == runtime::LaunchState::kExited && last_launch_ != current && CloudCapable(current.first))
       sync_after_session_.insert(current.first);
+    // An update waiting for the game to close tries again now rather than after its wait.
+    if (current.second == runtime::LaunchState::kExited && last_launch_ != current && installs_)
+      installs_->RetryWaiting(current.first.store);
     last_launch_ = current;
   }
   const auto announce_ready = [this] {
@@ -1409,9 +1502,13 @@ void Controller::TickRuntime() {
   model_.UpdateRuntime(state, games);
   model_.SetRuntimeLeftovers(snapshot.leftover_requests);
   LiveKitInfo kit;
-  if (snapshot.kit)
+  if (snapshot.kit) {
     kit = {snapshot.kit->view.kit_id, snapshot.kit->manifest_sha256, snapshot.kit->expected_manifest_sha256,
-           snapshot.kit->prospero_win_revision, snapshot.kit->source_dirty, {}};
+           snapshot.kit->prospero_win_revision, snapshot.kit->source_dirty, {}, {}};
+    // The artifact is "<wine revision>-kit-<version>"; kits before 0.10 name no version.
+    const auto& artifact = snapshot.kit->view.runtime.artifact_revision;
+    if (update::KitVersionFromArtifact(artifact)) kit.version = artifact.substr(artifact.find("-kit-") + 5);
+  }
   else
     kit.unavailable_reason = snapshot.status == RuntimeHostStatus::kReady ? snapshot.kit_reason : std::string{};
   model_.SetKitInfo(std::move(kit));
@@ -1772,19 +1869,125 @@ const installs::InstalledLocation* Controller::LocationOf(GameId id) const {
     if (location.game == id) return &location;
   return nullptr;
 }
+bool Controller::DownloadServerTestAllowed() const {
+  if (model_.state().account(Store::kSteam).authentication != AuthState::SignedIn) return false;
+  if (std::any_of(model_.state().jobs.begin(), model_.state().jobs.end(), [](const Job& job) {
+        return job.state == JobState::Downloading || job.state == JobState::Pausing || job.state == JobState::Verifying;
+      })) return false;
+  // The install worker may have started since the presentation's last snapshot.
+  if (installs_) {
+    const auto snapshot = installs_->Snapshot();
+    if (std::any_of(snapshot.jobs.begin(), snapshot.jobs.end(), [](const steam::InstallJobView& job) {
+          return job.state == steam::InstallJobState::kRunning;
+        })) return false;
+  }
+  return true;
+}
+void Controller::TickWebAccess() {
+  if (!web_) return;
+  // Not before the saved choice is known: a player who turned it off must not get an open port at each start.
+  web_->SetEnabled(model_.state().web_access && (model_.PreferencesLoaded() || !persistence_));
+  const auto snapshot = web_->Snapshot();
+  LiveWebAccess live;
+  switch (snapshot.state) {
+    case web::ServiceSnapshot::State::kOff: live.state = "off"; break;
+    case web::ServiceSnapshot::State::kStarting: live.state = "starting"; break;
+    case web::ServiceSnapshot::State::kOn: live.state = "on"; break;
+    case web::ServiceSnapshot::State::kFailed: live.state = "failed"; break;
+  }
+  live.url = snapshot.url;
+  live.port = snapshot.port;
+  live.error = snapshot.error;
+  model_.ApplyLiveWebAccess(live);
+  // The page's Quit Playden; it waits for a game being prepared.
+  if (web_->TakeQuitRequest()) {
+    if (shutdown_log_) shutdown_log_("quit requested from web access");
+    model_.RequestQuit();
+  }
+}
+void Controller::TickDownloadServers() {
+  const auto requests = model_.TakeDownloadServerRequests();
+  if (!download_servers_) return;
+  const auto& account = model_.state().account(Store::kSteam);
+  if (download_servers_account_ != account.id) {
+    download_servers_->Invalidate();
+    download_servers_account_ = account.id;
+  }
+  const bool allowed = DownloadServerTestAllowed();
+  if (!allowed) download_servers_->CancelTest();
+  for (const auto request : requests) {
+    switch (request) {
+      case DownloadServerRequest::List: download_servers_->List(); break;
+      case DownloadServerRequest::Test:
+        if (allowed) download_servers_->Test();
+        break;
+      case DownloadServerRequest::CancelTest: download_servers_->CancelTest(); break;
+    }
+  }
+  const auto snapshot = download_servers_->Snapshot();
+  LiveDownloadServers live;
+  switch (snapshot.phase) {
+    case steam::DownloadServerSnapshot::Phase::kIdle: live.phase = "idle"; break;
+    case steam::DownloadServerSnapshot::Phase::kListing: live.phase = "listing"; break;
+    case steam::DownloadServerSnapshot::Phase::kListed: live.phase = "listed"; break;
+    case steam::DownloadServerSnapshot::Phase::kListFailed: live.phase = "list-failed"; break;
+    case steam::DownloadServerSnapshot::Phase::kTesting: live.phase = "testing"; break;
+    case steam::DownloadServerSnapshot::Phase::kTested: live.phase = "tested"; break;
+    case steam::DownloadServerSnapshot::Phase::kTestFailed: live.phase = "test-failed"; break;
+  }
+  for (const auto& server : snapshot.servers)
+    live.servers.push_back({server.id, server.name, server.plain_http});
+  for (const auto& rate : snapshot.rates)
+    live.rates.push_back({rate.id, rate.mb_per_s, rate.failed});
+  live.testing_index = snapshot.testing_index;
+  live.needs_sign_in = snapshot.needs_sign_in;
+  live.needs_installed_game = snapshot.needs_installed_game;
+  live.preferred_name = download_servers_->DisplayName(model_.state().download_server);
+  if (snapshot.needs_sign_in) live.message = "Sign in to Steam to test servers.";
+  else if (snapshot.needs_installed_game) live.message = "Install a game to test servers.";
+  if (shown_download_servers_ && requests.empty()) {
+    const auto& shown = *shown_download_servers_;
+    if (shown.phase == live.phase && shown.testing_index == live.testing_index &&
+        shown.needs_sign_in == live.needs_sign_in && shown.needs_installed_game == live.needs_installed_game &&
+        shown.preferred_name == live.preferred_name && shown.message == live.message &&
+        std::equal(shown.servers.begin(), shown.servers.end(), live.servers.begin(), live.servers.end(),
+                   [](const DownloadServerOption& a, const DownloadServerOption& b) {
+                     return a.id == b.id && a.name == b.name && a.plain_http == b.plain_http;
+                   }) &&
+        std::equal(shown.rates.begin(), shown.rates.end(), live.rates.begin(), live.rates.end(),
+                   [](const DownloadServerResult& a, const DownloadServerResult& b) {
+                     return a.id == b.id && a.mb_per_s == b.mb_per_s && a.failed == b.failed;
+                   })) return;
+  }
+  model_.ApplyLiveDownloadServers(live);
+  shown_download_servers_ = std::move(live);
+}
 void Controller::TickInstalls() {
   if (!installs_) {
     ProjectLocations({});
     return;
   }
   for (const auto& request : model_.TakeInstallRequests()) {
+    if (download_servers_ && (request.kind == InstallRequestKind::Install ||
+        request.kind == InstallRequestKind::Resume || request.kind == InstallRequestKind::DownloadNow))
+      download_servers_->CancelTest();
     switch (request.kind) {
       case InstallRequestKind::Install: {
         const auto& games = model_.state().games;
         const auto game = std::find_if(games.begin(), games.end(), [&](const Game& value) {
           return value.id == request.game_id;
         });
-        installs_->Install(request.game_id, game == games.end() ? std::nullopt : game->install_bytes, request.volume_id);
+        // The install sheet's choices; empty ones use the Settings language and the public branch. The chosen
+        // version's estimate is reserved, not the public one.
+        const auto estimate = request.install_bytes ? request.install_bytes
+                              : game == games.end() ? std::nullopt : game->install_bytes;
+        installs_->Install(request.game_id, estimate, request.volume_id, {request.language, request.branch});
+        break;
+      }
+      case InstallRequestKind::Update: {
+        // The record's branch and language select. Nothing is reserved up front: the details' estimate counts
+        // whole depots, and the update checks the room its changed files need before it downloads them.
+        installs_->Update(request.game_id, {});
         break;
       }
       case InstallRequestKind::Pause: installs_->Pause(request.game_id); break;
@@ -1811,13 +2014,40 @@ void Controller::TickInstalls() {
     if (volume.available) drives_present_.insert(volume.id);
   ProjectLocations(snapshot.installed);
   // A download that finished in this session is prepared next, so the game is ready to play.
-  std::set<GameId> downloading;
-  for (const auto& job : snapshot.jobs) downloading.insert(job.id);
-  for (const auto id : downloading_)
-    if (!downloading.count(id) && game_roots_.count(id) &&
-        std::find(auto_prepare_.begin(), auto_prepare_.end(), id) == auto_prepare_.end())
-      auto_prepare_.push_back(id);
+  std::set<GameId> downloading, updating;
+  for (const auto& job : snapshot.jobs) {
+    downloading.insert(job.id);
+    if (job.kind == steam::InstallJobKind::kUpdate) updating.insert(job.id);
+  }
+  for (const auto id : downloading_) {
+    if (downloading.count(id) || !game_roots_.count(id)) continue;
+    // An update that ended (finished or canceled) leaves the game prepared as it was: Play publishes its
+    // settings again and puts Playden's Steam files back over the new ones; one that changed the files first
+    // has its launch made again from them. Steam's details for it (the launch options that uses, whether more
+    // is to download) are asked for again.
+    if (updating_.count(id)) {
+      refresh_details_.insert(id);
+      refresh_asked_.erase(id);
+      // A finished update left its marker: the game is set up again for it next (TickRuntime), or by Play first.
+      if (runtime_) runtime_->RecheckInstalls();
+      continue;
+    }
+    // A version other than public starts as that branch does: the launch options Steam's details gave before the
+    // install were the public branch's. They are asked for again for the installed record, and the preparation
+    // waits for them (RequestPrepare).
+    const auto installed = std::find_if(snapshot.installed.begin(), snapshot.installed.end(),
+                                        [id](const steam::InstalledGame& game) { return game.id == id; });
+    if (installed != snapshot.installed.end() && installed->record && !installed->record->branch.empty() &&
+        installed->record->branch != "public") {
+      launch_options_.erase(id);
+      launch_options_reason_.erase(id);
+      launches_any_branch_.erase(id);
+      refresh_details_.insert(id);
+    }
+    if (std::find(auto_prepare_.begin(), auto_prepare_.end(), id) == auto_prepare_.end()) auto_prepare_.push_back(id);
+  }
   downloading_ = std::move(downloading);
+  updating_ = std::move(updating);
   if (!snapshot.volumes.empty()) saves_root_ = snapshot.volumes.front().games_root + "/.playden-saves";
   // Free space changes outside Playden too, so volumes refresh every few seconds as well.
   const auto now = std::chrono::steady_clock::now();
@@ -1860,14 +2090,19 @@ void Controller::TickInstalls() {
       case steam::InstallJobState::kPaused: state = JobState::Paused; break;
       case steam::InstallJobState::kFailed: state = JobState::Failed; break;
     }
+    const bool update = job.kind == steam::InstallJobKind::kUpdate;
+    const bool running = job.state == steam::InstallJobState::kRunning;
     jobs.push_back({job.id, state, job.done_bytes, job.total_bytes, job.failure, job.volume_id,
-                    job.bytes_per_second, job.eta_seconds, job.held_bytes, checking_licenses});
+                    job.bytes_per_second, job.eta_seconds, job.held_bytes, checking_licenses,
+                    state == JobState::Downloading ? job.server_name : std::string(), update, job.locked,
+                    update && running && job.step == steam::InstallStep::kCheckingFiles,
+                    update && running && (job.step == steam::InstallStep::kApplying || job.locked)});
   }
   std::vector<LiveInstalledGame> installed;
   for (const auto& game : snapshot.installed) installed.push_back({game.id, game.install_bytes, game.volume_id, game.available});
   std::vector<LiveCompletedDownload> completed;
   for (const auto& finished : snapshot.completed)
-    completed.push_back({finished.id, finished.install_bytes, finished.volume_id, finished.finished_at});
+    completed.push_back({finished.id, finished.install_bytes, finished.volume_id, finished.finished_at, finished.update_bytes});
   model_.UpdateInstalls(jobs, installed, completed);
 }
 void Controller::TickStoreDetails() {
@@ -1883,29 +2118,82 @@ void Controller::TickStoreDetails() {
                               std::move(details.controller_support));
 }
 void Controller::TickAppDetails() {
-  if (!app_details_) return;
+  if (!app_details_) {
+    // Nothing measures sizes: Steam's figures stand.
+    for (const auto& check : model_.TakeSizeChecks()) model_.UpdateMeasuredSize(check, false, false, {});
+    return;
+  }
   const auto& state = model_.state();
   const auto generation = state.account_generation;
   if (generation != requested_generation_) {
     app_details_->Invalidate(generation);
+    model_.ResetSizeChecks();
     requested_generation_ = generation;
     requested_detail_.reset();
     launch_options_.clear();
     launch_options_reason_.clear();
     launches_any_branch_.clear();
+    // An updated game's setup that waited for these details was never asked of the runtime: it is asked again.
+    for (const auto& id : prepare_after_details_) refresh_asked_.erase(id);
     prepare_after_details_.clear();
+    requested_language_ = state.content_language;
+    reissue_after_language_ = false;
+  } else if (state.content_language != requested_language_) {
+    // Sizes count the depots of the download language. The details worker reads the language when
+    // a fetch starts and the host passes the new one on after this tick, so ask again next tick.
+    requested_language_ = state.content_language;
+    app_details_->Invalidate(generation);
+    model_.ResetSizeChecks();
+    requested_detail_.reset();
+    reissue_after_language_ = true;
+    return;
+  } else if (reissue_after_language_) {
+    reissue_after_language_ = false;
+    for (const auto& id : prepare_after_details_) app_details_->Request(id, generation);
   }
-  // Fetch Steam app info when the player opens a game's details while signed in.
+  if (state.account().authentication == AuthState::SignedIn) {
+    // A finished update: the game's details are asked again (they were answered for the old content).
+    for (const auto& id : std::exchange(refresh_details_, {})) {
+      launch_options_.erase(id);
+      launch_options_reason_.erase(id);
+      launches_any_branch_.erase(id);
+      if (auto* details = Details(id.store); details && details == app_details_) details->Refresh(id, generation);
+    }
+    // Updates are checked for the game whose page is open, never the whole library. A library refresh reads the
+    // licenses (DLC bought since): that page is checked again.
+    const bool loading = state.library_loading;
+    if (library_loading_ && !loading && state.navigation.detail_id && game_roots_.count(*state.navigation.detail_id))
+      if (auto* details = Details(state.navigation.detail_id->store); details && details == app_details_)
+        details->Refresh(*state.navigation.detail_id, generation, true);
+    library_loading_ = loading;
+  }
+  // Fetch Steam app info when the player opens a game's details while signed in, ahead of anything queued. An
+  // installed game is asked again at each visit: Steam may have a newer version since.
+  // Away from a game's page (or its session), the next visit asks again.
+  if (state.navigation.route != Route::Details && state.navigation.route != Route::Session) requested_detail_.reset();
   if (state.account().authentication == AuthState::SignedIn && state.navigation.detail_id &&
       state.navigation.detail_id != requested_detail_) {
     requested_detail_ = state.navigation.detail_id;
-    if (auto* details = Details(requested_detail_->store); details && details == app_details_)
-      app_details_->Request(*state.navigation.detail_id, generation);
+    if (auto* details = Details(requested_detail_->store); details && details == app_details_) {
+      if (game_roots_.count(*requested_detail_)) details->Refresh(*requested_detail_, generation, true);
+      else details->RequestFirst(*requested_detail_, generation);
+    }
   }
   for (const auto& details : app_details_->Pump(8)) {
     if (details.account_generation != generation) continue;
     if (details.available) {
-      model_.UpdateAppDetails(details.id, details.download_bytes, details.install_bytes, details.windows_installable);
+      std::vector<GameVersion> versions;
+      for (const auto& version : details.versions) {
+        GameVersion game_version{version.name, version.description, version.time_updated, version.build_id,
+                                 version.download_bytes ? std::optional<std::uint64_t>(version.download_bytes) : std::nullopt,
+                                 version.install_bytes ? std::optional<std::uint64_t>(version.install_bytes) : std::nullopt, {}};
+        for (const auto& size : version.languages)
+          game_version.languages.push_back({size.language, size.download_bytes, size.install_bytes});
+        versions.push_back(std::move(game_version));
+      }
+      model_.UpdateAppDetails(details.id, details.download_bytes, details.install_bytes, details.windows_installable,
+                              details.languages, details.dlc_count, std::move(versions),
+                              {details.update.newer, details.update.new_dlc, details.update.download_bytes});
       if (details.launches_any_branch) launches_any_branch_.insert(details.id);
       else launches_any_branch_.erase(details.id);
       launch_options_[details.id] = details.launches;
@@ -1914,6 +2202,18 @@ void Controller::TickAppDetails() {
       launch_options_reason_[details.id] = details.reason.empty() ? "Steam details are unavailable right now." : details.reason;
     }
     if (prepare_after_details_.erase(details.id) && runtime_) SubmitPrepare(details.id);
+  }
+  // The install sheet's exact sizes: the chosen version and language, from their manifests.
+  const bool signed_in = model_.state().account().authentication == AuthState::SignedIn;
+  for (const auto& check : model_.TakeSizeChecks()) {
+    auto* details = Details(check.id.store);
+    if (signed_in && details == app_details_) details->Measure({check.id, check.branch, check.language}, generation);
+    else model_.UpdateMeasuredSize(check, false, !signed_in, {});
+  }
+  for (const auto& size : app_details_->PumpMeasured()) {
+    if (size.account_generation != generation) continue;
+    model_.UpdateMeasuredSize({size.request.id, size.request.branch, size.request.language}, size.measured, size.failed,
+                              {size.install_bytes, size.download_bytes});
   }
 }
 void Controller::RequestPrepare(GameId id) {
@@ -2025,6 +2325,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       model_.UpdateAccount(std::move(update));
       if(persistence_) persistence_->Activate(event.steam_id);
       if(runtime_) runtime_->SetSteamAccount(event.account_name, event.steam_id);
+      if(web_) web_->SetAccount({event.account_name, event.steam_id});
       if(library_) library_->Activate(event.steam_id,offline);
       // Steam downloads that waited for a sign-in start now, not after their wait (up to a minute).
       if(installs_ && !offline) installs_->RetryWaiting(Store::kSteam);
@@ -2036,6 +2337,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       if(library_) library_->Reset();
       if(persistence_) persistence_->Reset();
       if(runtime_) runtime_->SetSteamAccount({}, 0);
+      if(web_) web_->SetAccount({});
       const bool begin = begin_after_clear_; begin_after_clear_ = false;
       Update(AuthState::SignedOut,{},true);
       if (begin) Begin(begin_password_after_clear_);
@@ -2136,7 +2438,6 @@ void Controller::TickSelfUpdate() {
     else if (request == "cancel") self_update_->Cancel();
     else if (request == "restart") self_update_->RequestRestart();
     else if (request == "rollback") self_update_->RequestRollback();
-    else if (request == "open-successor") self_update_->RequestOpenSuccessor();
     else if (request == "acknowledge") self_update_->AcknowledgeFinished();
     else if (request == "kit-check") self_update_->CheckKit();
     else if (request == "kit-install") self_update_->InstallKit();
@@ -2188,6 +2489,7 @@ void Controller::TickSelfUpdate() {
   LiveSelfUpdate live;
   live.phase = update::UpdatePhaseName(snapshot.phase);
   live.current = snapshot.current.ToString();
+  live.commit = update::BuildCommit();
   live.available = snapshot.available.ToString();
   live.notes = snapshot.notes;
   live.part = snapshot.part;
@@ -2200,7 +2502,6 @@ void Controller::TickSelfUpdate() {
   }
   live.download_bytes = snapshot.download_bytes;
   live.kit_needed = snapshot.kit_needed;
-  live.moves = snapshot.moves;
   live.user_check = snapshot.user_check;
   live.error = snapshot.error;
   live.previous = snapshot.previous;
@@ -2209,7 +2510,6 @@ void Controller::TickSelfUpdate() {
   live.current_notes_url = snapshot.current_notes_url;
   live.whats_new = snapshot.whats_new;
   live.quiet = snapshot.quiet;
-  live.moved_to = snapshot.moved_to;
   live.finished_message = snapshot.finished_message;
   live.finished_failed = snapshot.finished_failed;
   live.kit_phase = update::KitInstallPhaseName(snapshot.kit.phase);
