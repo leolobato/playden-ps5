@@ -2,6 +2,7 @@
   "comment": "Languages Playden offers, in the order the Language setting cycles through them. The source language comes first and needs no catalog of its own.",
   "languages": [
     { "code": "en", "name": "English" },
-    { "code": "es", "name": "Español" }
+    { "code": "es", "name": "Español" },
+    { "code": "tr", "name": "Türkçe" }
   ]
 }

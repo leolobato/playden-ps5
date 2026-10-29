@@ -48,7 +48,7 @@ private Windows environment and its own tile on the PS5 Home screen.
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
   account is needed. See [Import Windows games](#import-windows-games).
 - **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC.
-- **Spanish or English.** Pick the language in Settings › Display. Game names, account names and store text stay as
+- **English, Spanish or Turkish.** Pick the language in Settings › Display. Game names, account names and store text stay as
   the store writes them. Adding a language is a JSON file in `assets/translations`; see
   [Translations](#translations).
 

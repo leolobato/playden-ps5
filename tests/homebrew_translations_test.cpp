@@ -191,6 +191,7 @@ int main(int argc, char** argv) {
     catalogs_are_listed_with_the_source_language_first(directory);
     every_listed_catalog_loads(directory);
     a_catalog_is_sound(directory, "es");
+    a_catalog_is_sound(directory, "tr");
     the_template_covers_every_catalog(directory, template_path);
 
     if (failures != 0) {
