@@ -89,6 +89,21 @@ PreferencesLoadResult PreferencesStore::Load() const {
   }
 
   std::string serialized = ToString(read.value());
+  // Version 8 appends language. Peel it off and let the version 7 reader below take over.
+  std::string language = "en";
+  if (serialized.rfind("version=8\n", 0) == 0) {
+    const auto suffix = serialized.rfind("\nlanguage=");
+    if (suffix == std::string::npos || serialized.empty() || serialized.back() != '\n' ||
+        suffix + 11 > serialized.size())
+      return {Preferences{}, PreferencesLoadStatus::kDefaultCorrupt, "Preferences could not be read; defaults restored."};
+    language = serialized.substr(suffix + 10, serialized.size() - suffix - 11);
+    const bool named = !language.empty() && language.size() <= 16 &&
+                       language.find_first_not_of("abcdefghijklmnopqrstuvwxyz-") == std::string::npos;
+    if (!named)
+      return {Preferences{}, PreferencesLoadStatus::kDefaultCorrupt, "Preferences could not be read; defaults restored."};
+    serialized.erase(suffix + 1);
+    serialized.replace(0, 9, "version=7");
+  }
   Preferences keyed;
   if (ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};
@@ -178,6 +193,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
                 preferences.downloads_slow_network = slow == 1;
                 preferences.steam_stay_signed_in = stay == 1;
                 preferences.beta_updates = beta_updates;
+                preferences.language = language;
                 return PreferencesLoadResult{preferences, PreferencesLoadStatus::kLoaded, std::string()};
               }
   }
@@ -198,6 +214,7 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
                            "\ndownloads_slow_network=" + (preferences.downloads_slow_network ? "1" : "0") +
                            "\nsteam_stay_signed_in=" + (preferences.steam_stay_signed_in ? "1" : "0") +
                            "\nbeta_updates=" + (preferences.beta_updates ? "1" : "0") +
+                           "\nlanguage=" + (preferences.language.empty() ? "en" : preferences.language) + "\n";
                            "\ndownload_server=" + server +
                            "\nweb_access=" + (preferences.web_access ? "1" : "0") + "\ncontent_language=" +
                            (steam::IsContentLanguage(preferences.content_language)

@@ -184,6 +184,11 @@ target_include_directories(playden_hui PUBLIC
     "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}"
     "${PLAYDEN_HUI_SOURCE_DIR}/third_party/stb")
 
+# User-facing strings. Every layer that writes text a player reads links this.
+add_library(playden_homebrew_i18n STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/i18n.cpp")
+target_compile_features(playden_homebrew_i18n PUBLIC cxx_std_20)
+target_include_directories(playden_homebrew_i18n PUBLIC "${CMAKE_SOURCE_DIR}/src")
+
 add_library(playden_homebrew_model STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/simulation.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/storage_sim.cpp"
@@ -191,7 +196,8 @@ add_library(playden_homebrew_model STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/browse.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/store_art.cpp")
 target_compile_features(playden_homebrew_model PUBLIC cxx_std_20)
-target_link_libraries(playden_homebrew_model PUBLIC playden_library playden_diagnostic_log playden_steam_cm_codec)
+target_link_libraries(playden_homebrew_model PUBLIC playden_library playden_diagnostic_log playden_steam_cm_codec
+    playden_homebrew_i18n)
 target_include_directories(playden_homebrew_model PUBLIC "${CMAKE_SOURCE_DIR}/src")
 
 foreach(qr_file qrcodegen.c qrcodegen.h LICENSE README.md)
@@ -250,7 +256,8 @@ target_include_directories(playden_homebrew_runtime_host PUBLIC "${CMAKE_SOURCE_
 target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordinator playden_runtime_settings_publication
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
-    playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store)
+    playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
+    playden_homebrew_i18n)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -389,6 +396,8 @@ add_custom_target(playden_homebrew_assets ALL
         "${playden_homebrew_fonts}" "${playden_homebrew_assets}/fonts"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
         "${CMAKE_SOURCE_DIR}/runtime" "${playden_homebrew_assets}/runtime"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${CMAKE_SOURCE_DIR}/assets/translations" "${playden_homebrew_assets}/translations"
     DEPENDS ${playden_barlow_outputs}
     VERBATIM)
 
@@ -485,6 +494,15 @@ if(BUILD_TESTING)
     target_compile_features(homebrew_browse_test PRIVATE cxx_std_20)
     target_link_libraries(homebrew_browse_test PRIVATE playden_homebrew_model)
     add_test(NAME homebrew_browse COMMAND homebrew_browse_test "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison")
+    add_executable(homebrew_i18n_test "${CMAKE_SOURCE_DIR}/tests/homebrew_i18n_test.cpp")
+    target_compile_features(homebrew_i18n_test PRIVATE cxx_std_20)
+    target_link_libraries(homebrew_i18n_test PRIVATE playden_homebrew_i18n)
+    add_test(NAME homebrew_i18n COMMAND homebrew_i18n_test)
+    add_executable(homebrew_translations_test "${CMAKE_SOURCE_DIR}/tests/homebrew_translations_test.cpp")
+    target_compile_features(homebrew_translations_test PRIVATE cxx_std_20)
+    target_link_libraries(homebrew_translations_test PRIVATE playden_homebrew_i18n)
+    add_test(NAME homebrew_translations COMMAND homebrew_translations_test "${CMAKE_SOURCE_DIR}/assets/translations"
+        "${CMAKE_SOURCE_DIR}/docs/translation-template.json")
     add_executable(homebrew_simulation_test
         "${CMAKE_SOURCE_DIR}/tests/homebrew_simulation_test.cpp")
     target_compile_features(homebrew_simulation_test PRIVATE cxx_std_20)

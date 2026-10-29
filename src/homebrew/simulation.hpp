@@ -745,6 +745,7 @@ struct State {
     bool title_store_suffix = false;  // PS5 titles named "<game> (Steam)"
     bool cloud_saves_auto = false;    // Cloud saves move before Play, after sessions and at startup (opt-in)
     bool beta_updates = false;
+    std::string language = "en";  // UI language: a catalog code in assets/translations
     // The language games are downloaded in, as Steam names its depot languages ("german").
     std::string content_language{playden::steam::kDefaultContentLanguage};
     bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Storage)
@@ -1221,6 +1222,9 @@ private:
     bool save_profile();
     void reset_default_state();
     void rebuild_view();
+    // Records `code` as the UI language and makes the catalog answer in it. An unknown code
+    // (a catalog that did not ship) leaves English in place.
+    void apply_language(const std::string& code);
     void activate();
     void cancel();
     void move(int delta_x, int delta_y);

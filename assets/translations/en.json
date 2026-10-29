@@ -1,0 +1,6 @@
+{
+  "comment": "English is the language the strings in the source are written in, so this catalog stays empty: every lookup answers with the string it was given. It is here so the Language setting can name English like any other catalog.",
+  "code": "en",
+  "name": "English",
+  "strings": {}
+}

@@ -6,6 +6,7 @@
 #include "homebrew/simulation.hpp"
 #include "homebrew/store_art.hpp"
 #include "homebrew/controller.hpp"
+#include "homebrew/i18n.hpp"
 #include "steam/install_volumes.h"
 #include "stores/local/copy_runner.h"
 #include "stores/local/library_source.h"
@@ -206,9 +207,11 @@ void show_root_access_missing(hui::ps5::Display& display, const playden::ps5::Na
     playden::app::AppendLogLine("/app0/logs", "launch.log", std::string(what) + ": " + access.error);
     // The pad belongs to a user; the bootstrap may have stopped before UserService started.
     sceUserServiceInitialize(nullptr);
+    const std::string assets_root = access.launcher_ready ? access.paths.assets_root : std::string("/app0/assets");
+    playden::homebrew::i18n::load(assets_root + "/translations");
     playden::homebrew::Simulation simulation({}, {}, playden::homebrew::ModelMode::Live);
     simulation.ShowRootAccessMissing(access.error, access.granted);
-    playden::homebrew::Render renderer(access.launcher_ready ? access.paths.assets_root : std::string("/app0/assets"));
+    playden::homebrew::Render renderer(assets_root);
     hui::ps5::Pad pad;
     pad.open();
     hui::InputTracker tracker;
@@ -263,6 +266,8 @@ int main() {
     if (!native_access.runtime_ready)
         hui::sys::log("Playden native runtime unavailable: %s", native_access.error.c_str());
     {
+        // Catalogs first: the model picks its language up while it loads its stored preferences.
+        playden::homebrew::i18n::load(paths.assets_root + "/translations");
 #if PLAYDEN_UI_SIMULATION
         mkdir((paths.title_root + "/playden-hui-comparison").c_str(), 0777);
         playden::homebrew::Simulation simulation(

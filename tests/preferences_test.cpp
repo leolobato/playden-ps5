@@ -449,6 +449,33 @@ void PreferencesPrepareIndependentRoot() {
   std::remove((root+"/preferences.conf").c_str());rmdir(root.c_str());
 }
 
+void LanguagePersistsAndVersionSevenStaysEnglish() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::PreferencesStore store(storage);
+  Check(store.Load().preferences.language == "en", "a fresh install speaks the source language");
+  const std::string version_seven =
+      "version=7\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\nsteam_sign_in_password=0\n"
+      "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=1\n";
+  Check(storage.WriteAtomic("preferences.conf", playden::Bytes(version_seven.begin(), version_seven.end())).ok(),
+        "version 7 fixture is written");
+  const auto seven = store.Load();
+  Check(seven.status == playden::PreferencesLoadStatus::kLoaded && seven.preferences.beta_updates &&
+            seven.preferences.language == "en",
+        "version 7 preferences load and stay English");
+  playden::Preferences preferences;
+  preferences.language = "es";
+  Check(store.Save(preferences).ok(), "a chosen language saves");
+  const auto spanish = store.Load();
+  Check(spanish.status == playden::PreferencesLoadStatus::kLoaded && spanish.preferences.language == "es",
+        "the chosen language survives restart");
+  const std::string bad =
+      "version=8\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\nsteam_sign_in_password=0\n"
+      "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\nlanguage=../etc\n";
+  Check(storage.WriteAtomic("preferences.conf", playden::Bytes(bad.begin(), bad.end())).ok(), "bad fixture is written");
+  const auto corrupt = store.Load();
+  Check(corrupt.status == playden::PreferencesLoadStatus::kDefaultCorrupt && corrupt.preferences.language == "en",
+        "a language that is not a catalog name is corrupt and restores English");
 void ContentLanguagePersistsAndOlderVersionsStayEnglish() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
@@ -520,6 +547,7 @@ int main() {
   TitleStoreSuffixPersistsAndVersionOneStillLoads();
   SignInMethodPersistsAndVersionThreeOpensQr();
   StaySignedInDefaultsOnAndPersistsOff();
+  LanguagePersistsAndVersionSevenStaysEnglish();
   VersionEightLoadsDownloadServerWithoutResettingOtherFields();
   VersionNineKeepsWebAccessAndVersionEightTurnsItOn();
   OlderPreferencesUseAutomaticDownloadServer();

@@ -6,6 +6,7 @@
 #include "homebrew/artwork_backend.hpp"
 #include "homebrew/simulation.hpp"
 #include "homebrew/controller.hpp"
+#include "homebrew/i18n.hpp"
 #include "steam/install_volumes.h"
 #include "stores/local/copy_runner.h"
 #include "stores/local/library_source.h"
@@ -402,6 +403,8 @@ int main(int argc, char** argv) {
 
     const auto mode = options->simulation ? playden::homebrew::ModelMode::Simulation
                                           : playden::homebrew::ModelMode::Live;
+    // Catalogs first: the model picks its language up while it loads its stored preferences.
+    playden::homebrew::i18n::load(std::string(PLAYDEN_HOMEBREW_ASSETS_DIR) + "/translations");
     playden::homebrew::Simulation simulation(
         options->simulation ? std::filesystem::path(PLAYDEN_HOMEBREW_FIXTURES_DIR)
                             : std::filesystem::path{},

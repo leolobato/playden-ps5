@@ -23,6 +23,9 @@ struct Preferences {
   // saved on the PS5, so every Playden start asks for a sign-in. On (the default) keeps it in session.v1.
   bool steam_stay_signed_in = true;
   bool beta_updates = false;
+  // The UI language, as the code of a catalog in assets/translations ("en", "es"). An unknown
+  // code falls back to English at load.
+  std::string language = "en";
   // The Steam CDN host to try first for new or resumed downloads. Empty uses Steam's server order (Automatic).
   std::string download_server;
   // Web access: Playden's logs, redacted, on the local network at port 7031 while Playden is open. On by default,

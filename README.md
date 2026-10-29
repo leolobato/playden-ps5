@@ -48,6 +48,9 @@ private Windows environment and its own tile on the PS5 Home screen.
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
   account is needed. See [Import Windows games](#import-windows-games).
 - **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC.
+- **English, Spanish or Turkish.** Pick the language in Settings › Display. Game names, account names and store text stay as
+  the store writes them. Adding a language is a JSON file in `assets/translations`; see
+  [Translations](#translations).
 
 See the [compatibility list](COMPATIBILITY.md) for the games we have tested.
 
@@ -309,6 +312,26 @@ scripts/build-homebrew.sh
 cmake --build --preset homebrew-host
 build/homebrew-host/playden-homebrew --simulation --scenario signed-out
 ```
+
+### Translations
+
+Playden's interface is written in English and translated when it is drawn. A language is one JSON file in
+`assets/translations`, listed in `index.json`:
+
+```json
+{ "code": "es", "name": "Español", "strings": { "Sign out": "Cerrar sesión" } }
+```
+
+- Keys are the English strings as they appear in the source. A string the catalog does not mention is shown in
+  English, so a partial catalog is fine; an empty value leaves that string in English on purpose.
+- Legends name a controller button first: `"Cross Select"` must stay `"Cross …"`, because the prefix picks the glyph
+  and is dropped before the words are drawn.
+- Only glyphs the font atlas carries can be drawn: printable ASCII, Latin-1 Supplement and Latin Extended-A, Greek,
+  Cyrillic and a few marks. `ctest --preset homebrew-host -R '^homebrew_translations$'` checks this, along with the
+  prefixes and the shape of every catalog.
+- [docs/translation-template.json](docs/translation-template.json) holds every key with empty values to start from.
+  It is not a catalogue and is never packaged: only the files `index.json` lists are shipped.
+- Add the file, add its `code` and `name` to `index.json`, and it appears in Settings › Display.
 
 ## Known issues
 

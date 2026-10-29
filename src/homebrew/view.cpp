@@ -7,6 +7,7 @@
 
 #include "homebrew/browse.hpp"
 #include "homebrew/focus_motion.hpp"
+#include "homebrew/i18n.hpp"
 #include "homebrew/qr.hpp"
 #include "homebrew/queue_layout.hpp"
 #include "homebrew/simulation.hpp"
@@ -161,10 +162,15 @@ std::filesystem::path first_existing(const std::vector<std::filesystem::path> &p
     return {};
 }
 
+// Playden is written in English and the model compares its text in English, so a string becomes
+// the player's language here, at the edge where it turns into glyphs. A string may pass through
+// more than once (fitted, wrapped, then drawn); a translation is never translated again.
+const std::string &shown(std::string_view text) { return i18n::translate(text); }
+
 // ui::upper, and the accented Latin-1 letters too (a game's name in a sheet's label: "CAFÉ").
 std::string upper_latin(std::string_view text)
 {
-    std::string result = ui::upper(text);
+    std::string result = ui::upper(shown(text));
     for (std::size_t index = 0; index + 1 < result.size(); ++index)
     {
         const auto lead = static_cast<unsigned char>(result[index]);
@@ -178,7 +184,20 @@ std::string upper_latin(std::string_view text)
 
 std::string fit(const ui::FontRef &font, std::string_view text, float size, float width)
 {
-    return font.font->fit(text, size, width);
+    return font.font->fit(shown(text), size, width);
+}
+
+// The drawing calls of ps5-homebrew-ui, with the catalog in front of them.
+template <typename... Rest>
+float draw_text(gfx::DrawList &list, const ui::FontRef &font, std::string_view value, Rest &&...rest)
+{
+    return ui::text(list, font, shown(value), std::forward<Rest>(rest)...);
+}
+
+template <typename... Rest>
+float draw_paragraph(gfx::DrawList &list, const ui::FontRef &font, std::string_view value, Rest &&...rest)
+{
+    return ui::paragraph(list, font, shown(value), std::forward<Rest>(rest)...);
 }
 
 gfx::Color id_color(GameId id)
@@ -663,7 +682,7 @@ class Render::Impl
     {
         const ui::FontRef &preferred = display ? fonts_.display : fonts_.regular;
         const ui::FontRef &face = font_for(value, preferred);
-        ui::text(scene_, face, face.font->fit(value, size, max_width), x, y, size, color, align);
+        draw_text(scene_, face, face.font->fit(shown(value), size, max_width), x, y, size, color, align);
     }
 
     void dynamic_paragraph(std::string_view value, float x, float y, float size, float width,
@@ -671,7 +690,7 @@ class Render::Impl
                            gfx::Align align = gfx::Align::left)
     {
         const ui::FontRef &face = font_for(value, fonts_.regular);
-        ui::paragraph(scene_, face, value, x, y, size, width, line_height, color, lines, align);
+        draw_paragraph(scene_, face, value, x, y, size, width, line_height, color, lines, align);
     }
 
     std::uint32_t load_texture(const std::filesystem::path &path)
@@ -859,14 +878,14 @@ class Render::Impl
                 stats_.focused_control_key = "tab-" + std::to_string(tab);
             const gfx::Color ink = active ? kText : kSecondary;
             tab_icon(tab, x + 22.0F, cy, ink);
-            ui::text(scene_, fonts_.display, names[static_cast<std::size_t>(tab)], x + 58.0F, cy + 11.0F, 30.0F, ink);
+            draw_text(scene_, fonts_.display, names[static_cast<std::size_t>(tab)], x + 58.0F, cy + 11.0F, 30.0F, ink);
             if (tab == 3 && saves_busy)
                 spinner(x + 58.0F + label + 22.0F, cy, 10.0F, kBlue);
             if (!count.empty())
             {
                 const float badge_x = x + 58.0F + label + 10.0F;
                 scene_.rounded_rect({badge_x, cy - 14.0F, badge - 10.0F, 28.0F}, 14.0F, kAccent);
-                ui::text(scene_, fonts_.semibold, count, badge_x + (badge - 10.0F) * 0.5F, cy + 6.0F, 16.0F,
+                draw_text(scene_, fonts_.semibold, count, badge_x + (badge - 10.0F) * 0.5F, cy + 6.0F, 16.0F,
                          kBackground, gfx::Align::center);
             }
             x += width + 8.0F;
@@ -880,22 +899,22 @@ class Render::Impl
             clock_label = local != nullptr && std::strftime(formatted, sizeof(formatted), "%H:%M", local)
                 ? formatted : "--:--";
         }
-        ui::text(scene_, fonts_.regular, clock_label, 1824.0F, 91.0F, 22.0F, kSecondary,
+        draw_text(scene_, fonts_.regular, clock_label, 1824.0F, 91.0F, 22.0F, kSecondary,
                  gfx::Align::right);
     }
 
     void section_label(std::string_view value, float x, float y)
     {
-        ui::text(scene_, fonts_.display, ui::upper(value), x, y, 22.0F, kSecondary,
+        draw_text(scene_, fonts_.display, ui::upper(value), x, y, 22.0F, kSecondary,
                  gfx::Align::left, 2.6F);
     }
 
     void draw_title(const ViewData &view, float x = kSafeX, float y = 212.0F, float width = 760.0F)
     {
-        ui::text(scene_, fonts_.display, fit(fonts_.display, view.title, 68.0F, width), x, y, 68.0F,
+        draw_text(scene_, fonts_.display, fit(fonts_.display, view.title, 68.0F, width), x, y, 68.0F,
                  kText);
         if (!view.subtitle.empty())
-            ui::paragraph(scene_, fonts_.regular, view.subtitle, x, y + 58.0F, 27.0F, width, 37.0F,
+            draw_paragraph(scene_, fonts_.regular, view.subtitle, x, y + 58.0F, 27.0F, width, 37.0F,
                           kSecondary, 4);
     }
 
@@ -990,10 +1009,10 @@ class Render::Impl
         const float content = std::min(rect.w - 32.0F, label_width + detail_width);
         const float x = rect.cx() - content * 0.5F;
         const float baseline = rect.cy() + size * 0.36F;
-        ui::text(list, fonts_.display, fit(fonts_.display, label, size, rect.w - 32.0F - detail_width), x,
+        draw_text(list, fonts_.display, fit(fonts_.display, label, size, rect.w - 32.0F - detail_width), x,
                  baseline, size, ink);
         if (!detail.empty())
-            ui::text(list, fonts_.semibold, detail, x + content, rect.cy() + 8.0F, 22.0F, ink.with_alpha(0.8F),
+            draw_text(list, fonts_.semibold, detail, x + content, rect.cy() + 8.0F, 22.0F, ink.with_alpha(0.8F),
                      gfx::Align::right);
         focus_ring(list, rect, amount);
         if (disabled)
@@ -1060,7 +1079,7 @@ class Render::Impl
                 if (row.kind == RowKind::Status)
                 {
                     // The whole error: it is what the player reports, so it is never cut short.
-                    y = ui::paragraph(scene_, fonts_.regular, row.title, 96.0F, y, 22.0F, 1180.0F, 30.0F, kAmber, 12) + 32.0F;
+                    y = draw_paragraph(scene_, fonts_.regular, row.title, 96.0F, y, 22.0F, 1180.0F, 30.0F, kAmber, 12) + 32.0F;
                 }
             draw_actions(view, 96.0F, y, 560.0F);
             return;
@@ -1071,7 +1090,7 @@ class Render::Impl
             const gfx::Rect loading{96.0F, 520.0F, 560.0F, 112.0F};
             scene_.rounded_rect(loading, 10.0F, kPanel);
             scene_.circle(130.0F, 558.0F, 7.0F, kAccent);
-            ui::text(scene_, fonts_.semibold,
+            draw_text(scene_, fonts_.semibold,
                      state.simulation_mode ? "Loading saved fixture state…" :
                                              "Restoring your accounts…",
                      154.0F, 566.0F,
@@ -1092,8 +1111,8 @@ class Render::Impl
         else
             scene_.gradient_rect({1050.0F, 268.0F, 600.0F, 360.0F}, 12.0F,
                                  kAccent.with_alpha(0.25F), kPanel);
-        ui::text(scene_, fonts_.display, "YOUR GAMES", 1100.0F, 704.0F, 48.0F, kText);
-        ui::text(scene_, fonts_.regular,
+        draw_text(scene_, fonts_.display, "YOUR GAMES", 1100.0F, 704.0F, 48.0F, kText);
+        draw_text(scene_, fonts_.regular,
                  state.startup_loading ?
                      (state.simulation_mode ? "Restoring local fixture…" : "Connecting securely…") :
                  state.persistence_available ? "Ready when you are." : "Browsing can continue without saving.",
@@ -1191,9 +1210,9 @@ class Render::Impl
                              std::string_view detail)
     {
         scene_.rounded_rect({x, y, side, side}, 0.0F, kText);
-        ui::text(scene_, fonts_.display, title, x + side * 0.5F, y + side * 0.48F,
+        draw_text(scene_, fonts_.display, title, x + side * 0.5F, y + side * 0.48F,
                  30.0F, kBackground, gfx::Align::center);
-        ui::text(scene_, fonts_.regular, detail, x + side * 0.5F, y + side * 0.57F,
+        draw_text(scene_, fonts_.regular, detail, x + side * 0.5F, y + side * 0.57F,
                  20.0F, kBackground.with_alpha(0.78F), gfx::Align::center);
     }
 
@@ -1225,13 +1244,13 @@ class Render::Impl
             title = "Steam Guard";
             detail = "Steam asks for a code to confirm that it is you. Codes have five letters or digits.";
         }
-        ui::text(scene_, fonts_.display, title, panel.x + 48.0F, panel.y + 96.0F, 40.0F, kText);
-        ui::paragraph(scene_, fonts_.regular, detail, panel.x + 48.0F, panel.y + 156.0F, 25.0F,
+        draw_text(scene_, fonts_.display, title, panel.x + 48.0F, panel.y + 96.0F, 40.0F, kText);
+        draw_paragraph(scene_, fonts_.regular, detail, panel.x + 48.0F, panel.y + 156.0F, 25.0F,
                       panel.w - 96.0F, 36.0F, kSecondary, 6);
         if (state.simulation_mode)
         {
             scene_.rounded_rect({1185.0F, 678.0F, 292.0F, 42.0F}, 21.0F, kAmber.with_alpha(0.18F));
-            ui::text(scene_, fonts_.semibold, "SIMULATED SIGN-IN", 1331.0F, 706.0F, 18.0F, kAmber,
+            draw_text(scene_, fonts_.semibold, "SIMULATED SIGN-IN", 1331.0F, 706.0F, 18.0F, kAmber,
                      gfx::Align::center);
         }
     }
@@ -1279,7 +1298,7 @@ class Render::Impl
         if (state.simulation_mode) {
             scene_.rounded_rect({1185.0F, 678.0F, 292.0F, 42.0F}, 21.0F,
                                 kAmber.with_alpha(0.18F));
-            ui::text(scene_, fonts_.semibold, "SIMULATED QR — NOT LIVE", 1331.0F, 706.0F,
+            draw_text(scene_, fonts_.semibold, "SIMULATED QR — NOT LIVE", 1331.0F, 706.0F,
                      18.0F, kAmber, gfx::Align::center);
         }
         const char *status = !state.simulation_mode && state.account().challenge_url.empty() ?
@@ -1319,7 +1338,7 @@ class Render::Impl
             status = "Signing out securely";
         }
         scene_.circle(1198.0F, 772.0F, 7.0F, color);
-        ui::text(scene_, fonts_.regular, status, 1220.0F, 780.0F, 25.0F, kText);
+        draw_text(scene_, fonts_.regular, status, 1220.0F, 780.0F, 25.0F, kText);
     }
 
     void draw_home(ui::Canvas &, Simulation &simulation)
@@ -1385,8 +1404,8 @@ class Render::Impl
                     scene_.rounded_rect(art, 8.0F, kBackground);
                     scene_.rounded_rect(art, 8.0F, kText.with_alpha(0.06F));
                     scene_.bordered_rect(art, 8.0F, kBackground.with_alpha(0.0F), 2.0F, kText.with_alpha(0.2F));
-                    ui::text(scene_, fonts_.display, cell.value, art.cx(), art.cy() + 4.0F, 56.0F, kText, gfx::Align::center);
-                    ui::text(scene_, fonts_.display, "Library", art.cx(), art.cy() + 52.0F, 26.0F, kSecondary,
+                    draw_text(scene_, fonts_.display, cell.value, art.cx(), art.cy() + 4.0F, 56.0F, kText, gfx::Align::center);
+                    draw_text(scene_, fonts_.display, "Library", art.cx(), art.cy() + 52.0F, 26.0F, kSecondary,
                              gfx::Align::center);
                     focus_ring(scene_, art, amount);
                     if (amount > 0.0F)
@@ -1409,7 +1428,7 @@ class Render::Impl
                 {
                     scene_.push_opacity(amount);
                     dynamic_text(game->title, art.x, art.y + art.h + 46.0F, 24.0F, kText, 420.0F);
-                    ui::text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(*game, tile_status(game->id)), 18.0F, 420.0F),
+                    draw_text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(*game, tile_status(game->id)), 18.0F, 420.0F),
                              art.x, art.y + art.h + 74.0F, 18.0F, kSecondary);
                     scene_.pop_opacity();
                 }
@@ -1470,9 +1489,9 @@ class Render::Impl
 
         if (games.empty())
         {
-            ui::text(scene_, fonts_.display, view.title.empty() ? "No games here" : view.title,
+            draw_text(scene_, fonts_.display, view.title.empty() ? "No games here" : view.title,
                      1134.0F, 434.0F, 56.0F, kText, gfx::Align::center);
-            ui::paragraph(scene_, fonts_.regular,
+            draw_paragraph(scene_, fonts_.regular,
                           view.subtitle.empty() ? "Clear the search or choose another library view."
                                                 : view.subtitle,
                           784.0F, 486.0F, 26.0F, 700.0F, 36.0F, kSecondary, 3,
@@ -1517,7 +1536,7 @@ class Render::Impl
         {
             scene_.rounded_rect({1398.0F, 86.0F, 426.0F, 48.0F}, 8.0F, kPanel);
             scene_.circle(1424.0F, 110.0F, 6.0F, kAccent);
-            ui::text(scene_, fonts_.regular, "Refreshing library · focus preserved", 1444.0F,
+            draw_text(scene_, fonts_.regular, "Refreshing library · focus preserved", 1444.0F,
                      119.0F, 20.0F, kSecondary);
         }
     }
@@ -1565,7 +1584,7 @@ class Render::Impl
         if (searching)
         {
             scene_.rounded_rect({96.0F, 150.0F, 300.0F, 38.0F}, 6.0F, kPanel);
-            ui::text(scene_, fonts_.regular, fit(fonts_.regular, state.library.query, 22.0F, 260.0F),
+            draw_text(scene_, fonts_.regular, fit(fonts_.regular, state.library.query, 22.0F, 260.0F),
                      118.0F, 177.0F, 22.0F, kText);
         }
         const ShelfWindow window = shelf_window(static_cast<int>(entries.size()), focus_index, searching ? 11 : 12);
@@ -1584,17 +1603,17 @@ class Render::Impl
             focus_ring(scene_, entry, amount, true);
             if (focused)
                 stats_.focused_control_key = entries[static_cast<std::size_t>(index)].key;
-            ui::text(scene_, fonts_.display,
+            draw_text(scene_, fonts_.display,
                      fit(fonts_.display, entries[static_cast<std::size_t>(index)].title, 28.0F, 225.0F),
                      118.0F, y + 40.0F, 28.0F,
                      entries[static_cast<std::size_t>(index)].selected || index == selected ? kText
                                                                                              : kSecondary);
-            ui::text(scene_, fonts_.regular, entries[static_cast<std::size_t>(index)].value,
+            draw_text(scene_, fonts_.regular, entries[static_cast<std::size_t>(index)].value,
                      374.0F, y + 38.0F, 20.0F, kMuted,
                      gfx::Align::right);
         }
         if (!view.subtitle.empty() && entries.size() <= (searching ? 7U : 8U))
-            ui::paragraph(scene_, fonts_.regular, view.subtitle, 96.0F, 722.0F, 22.0F, 300.0F,
+            draw_paragraph(scene_, fonts_.regular, view.subtitle, 96.0F, 722.0F, 22.0F, 300.0F,
                           30.0F, kSecondary, 4);
     }
 
@@ -1690,7 +1709,7 @@ class Render::Impl
         const float width = std::min(rect.w - 20.0F - reserve, fonts_.semibold.measure(text, size) + 44.0F);
         scene_.rounded_rect({rect.x + 10.0F, rect.y + 10.0F, width, 32.0F}, 6.0F, kBackground.with_alpha(0.85F));
         scene_.circle(rect.x + 26.0F, rect.y + 26.0F, 4.0F, dot);
-        ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, text, size, width - 44.0F), rect.x + 38.0F,
+        draw_text(scene_, fonts_.semibold, fit(fonts_.semibold, text, size, width - 44.0F), rect.x + 38.0F,
                  rect.y + 32.0F, size, kText);
     }
 
@@ -1702,6 +1721,7 @@ class Render::Impl
         const float width = fonts_.semibold.measure(text, size) + 20.0F;
         scene_.rounded_rect({rect.x + rect.w - 10.0F - right - width, rect.y + 10.0F, width, 32.0F}, 6.0F,
                             kBackground.with_alpha(0.85F));
+        draw_text(scene_, fonts_.semibold, "Demo", rect.x + rect.w - 20.0F, rect.y + 32.0F, size, kAccent,
         ui::text(scene_, fonts_.semibold, text, rect.x + rect.w - 20.0F - right, rect.y + 32.0F, size, kAccent,
                  gfx::Align::right);
         return width + 8.0F;
@@ -1762,7 +1782,7 @@ class Render::Impl
             const bool words_fit = rect.w >= 120.0F;
             if (words_fit && game.art_pending)
             {
-                ui::text(scene_, fonts_.display, "Artwork loading", rect.cx(), rect.y + rect.h * 0.52F,
+                draw_text(scene_, fonts_.display, "Artwork loading", rect.cx(), rect.y + rect.h * 0.52F,
                          25.0F, kText, gfx::Align::center);
             }
             else if (words_fit)
@@ -1770,7 +1790,7 @@ class Render::Impl
                 // The focus overlay names a focused tile, so the placeholder need not repeat it.
                 const float placeholder = title_overlay ? 1.0F - amount : 1.0F;
                 const ui::FontRef &face = font_for(game.title, fonts_.display);
-                ui::paragraph(scene_, face, game.title, rect.cx(), rect.y + rect.h * 0.42F,
+                draw_paragraph(scene_, face, game.title, rect.cx(), rect.y + rect.h * 0.42F,
                               28.0F, rect.w - 36.0F, 31.0F, kText.with_alpha(placeholder), 4, gfx::Align::center);
             }
         }
@@ -1785,7 +1805,7 @@ class Render::Impl
                                  kBackground.with_alpha(0.0F), kBackground.with_alpha(0.92F));
             const float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F);
             dynamic_text(game.title, rect.x + 14.0F, rect.y + rect.h - 40.0F, 24.0F, kText, text_width);
-            ui::text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(game, status), 15.0F, text_width),
+            draw_text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(game, status), 15.0F, text_width),
                      rect.x + 14.0F, rect.y + rect.h - 17.0F, 15.0F, kSecondary);
             scene_.pop_opacity();
         }
@@ -1814,7 +1834,7 @@ class Render::Impl
             scene_.push_opacity(1.0F - amount);
             scene_.rounded_rect({rect.x + rect.w - 10.0F - width, rect.y + rect.h - 42.0F, width, 32.0F}, 6.0F,
                                 kBackground.with_alpha(0.85F));
-            ui::text(scene_, fonts_.semibold, size, rect.x + rect.w - 20.0F, rect.y + rect.h - 20.0F, 16.0F,
+            draw_text(scene_, fonts_.semibold, size, rect.x + rect.w - 20.0F, rect.y + rect.h - 20.0F, 16.0F,
                      kText, gfx::Align::right);
             scene_.pop_opacity();
         }
@@ -1823,10 +1843,10 @@ class Render::Impl
             const float value = std::clamp(progress, 0.0F, 1.0F);
             scene_.gradient_rect({rect.x, rect.y + rect.h - 64.0F, rect.w, 64.0F}, 8.0F,
                                  kBackground.with_alpha(0.0F), kBackground.with_alpha(0.9F));
-            ui::text(scene_, fonts_.semibold, JobStateText(*status.job), rect.x + 12.0F,
+            draw_text(scene_, fonts_.semibold, JobStateText(*status.job), rect.x + 12.0F,
                      rect.y + rect.h - 30.0F, 16.0F, kText);
             if (status.job->state == JobState::Downloading)
-                ui::text(scene_, fonts_.semibold, std::to_string(static_cast<int>(value * 100.0F)) + "%",
+                draw_text(scene_, fonts_.semibold, std::to_string(static_cast<int>(value * 100.0F)) + "%",
                          rect.x + rect.w - 12.0F, rect.y + rect.h - 30.0F, 16.0F, kText, gfx::Align::right);
             scene_.rounded_rect({rect.x + 12.0F, rect.y + rect.h - 18.0F, rect.w - 24.0F, 6.0F},
                                 3.0F, kText.with_alpha(0.20F));
@@ -1906,7 +1926,7 @@ class Render::Impl
     {
         const QueueLayout layout = BuildQueueLayout(state);
         section_label("Downloads and preparation", kSafeX, 160.0F);
-        ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, view.subtitle, 22.0F, 1000.0F), 1824.0F, 161.0F, 22.0F,
+        draw_text(scene_, fonts_.semibold, fit(fonts_.semibold, view.subtitle, 22.0F, 1000.0F), 1824.0F, 161.0F, 22.0F,
                  kSecondary, gfx::Align::right);
         // While a sheet is open the row it came from stays in view.
         const std::string &list_focus = state.navigation.modals.empty() ? state.navigation.focus_key
@@ -1967,8 +1987,8 @@ class Render::Impl
 
         if (layout.nothing())
         {
-            ui::text(scene_, fonts_.display, "Nothing in the queue", kWidth * 0.5F, 500.0F, 56.0F, kText, gfx::Align::center);
-            ui::paragraph(scene_, fonts_.regular, "Downloads and game preparation show here. Install a game from its details to start.",
+            draw_text(scene_, fonts_.display, "Nothing in the queue", kWidth * 0.5F, 500.0F, 56.0F, kText, gfx::Align::center);
+            draw_paragraph(scene_, fonts_.regular, "Downloads and game preparation show here. Install a game from its details to start.",
                           kWidth * 0.5F, 552.0F, 26.0F, 800.0F, 36.0F, kSecondary, 2, gfx::Align::center);
         }
 
@@ -1987,9 +2007,9 @@ class Render::Impl
             {
                 // The section's name, its counts and a chevron: down while open, right while closed.
                 const gfx::Color ink = row.selected ? kText : kSecondary;
-                ui::text(scene_, fonts_.display, ui::upper(row.title), left + 4.0F, top + 34.0F, 22.0F, ink, gfx::Align::left,
+                draw_text(scene_, fonts_.display, ui::upper(row.title), left + 4.0F, top + 34.0F, 22.0F, ink, gfx::Align::left,
                          2.6F);
-                ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.value, 22.0F, 1100.0F), left + width - 40.0F,
+                draw_text(scene_, fonts_.regular, fit(fonts_.regular, row.value, 22.0F, 1100.0F), left + width - 40.0F,
                          top + 34.0F, 22.0F, kSecondary, gfx::Align::right);
                 const float cx = left + width - 14.0F, cy = top + 26.0F;
                 if (row.selected)
@@ -2030,8 +2050,8 @@ class Render::Impl
                     const float progress = job->total_bytes == 0 ? 0.0F :
                         static_cast<float>(job->completed_bytes) / static_cast<float>(job->total_bytes);
                     const std::string percent = std::to_string(static_cast<int>(std::clamp(progress, 0.0F, 1.0F) * 100.0F)) + "%";
-                    ui::text(scene_, fonts_.regular, percent, right, top + 42.0F, 22.0F, kSecondary, gfx::Align::right);
-                    ui::text(scene_, fonts_.semibold, state_text, right - fonts_.regular.measure(percent, 22.0F) - 20.0F,
+                    draw_text(scene_, fonts_.regular, percent, right, top + 42.0F, 22.0F, kSecondary, gfx::Align::right);
+                    draw_text(scene_, fonts_.semibold, state_text, right - fonts_.regular.measure(percent, 22.0F) - 20.0F,
                              top + 42.0F, 22.0F, tone, gfx::Align::right);
                     ui::ProgressBar bar;
                     bar.style.theme = theme_;
@@ -2047,7 +2067,7 @@ class Render::Impl
                     {
                         // Large accounts take a minute here, before Steam gives the download size (issue #47).
                         spinner(text_x + 10.0F, top + 92.0F, 8.0F, kBlue);
-                        ui::text(scene_, fonts_.regular, "Checking your Steam licenses…", text_x + 30.0F, top + 99.0F, 21.0F, kText);
+                        draw_text(scene_, fonts_.regular, "Checking your Steam licenses…", text_x + 30.0F, top + 99.0F, 21.0F, kText);
                     }
                     else if (job->update && job->state == JobState::Downloading && !job->state_text.empty())
                     {
@@ -2060,9 +2080,9 @@ class Render::Impl
                     }
                     else
                     {
-                        ui::text(scene_, fonts_.regular, byte_count(job->completed_bytes) + " / " + byte_count(job->total_bytes),
+                        draw_text(scene_, fonts_.regular, byte_count(job->completed_bytes) + " / " + byte_count(job->total_bytes),
                                  text_x, top + 99.0F, 21.0F, kText);
-                        ui::text(scene_, fonts_.regular,
+                        draw_text(scene_, fonts_.regular,
                                  !job->failure.empty() ? job->failure
                                      : FormatDownloadRate(job->state == JobState::Downloading ? job->bytes_per_second : std::nullopt,
                                                           job->state == JobState::Downloading ? job->eta_seconds : std::nullopt,
@@ -2076,9 +2096,10 @@ class Render::Impl
                     const char *label = entry->leftover ? "Deleting title" : entry->uninstall ? "Uninstalling" : "Preparing";
                     const float status_width = fonts_.semibold.measure(label, 24.0F);
                     spinner(right - status_width - 22.0F, top + 36.0F, 9.0F, kBlue);
-                    ui::text(scene_, fonts_.semibold, label, right, top + 44.0F, 24.0F, kBlue, gfx::Align::right);
-                    ui::text(scene_, fonts_.regular, fit(fonts_.regular, entry->note.empty() ? "Starting…" : entry->note, 24.0F, 1100.0F),
+                    draw_text(scene_, fonts_.semibold, label, right, top + 44.0F, 24.0F, kBlue, gfx::Align::right);
+                    draw_text(scene_, fonts_.regular, fit(fonts_.regular, entry->note.empty() ? "Starting…" : entry->note, 24.0F, 1100.0F),
                              text_x, top + 88.0F, 24.0F, kText);
+                    draw_text(scene_, fonts_.regular, entry->uninstall ? "Removing from this PS5" : "Setting up for this PS5", right,
                     ui::text(scene_, fonts_.regular, entry->leftover || entry->uninstall ? "Removing from this PS5" : "Setting up for this PS5", right,
                              top + 88.0F, 21.0F, kSecondary, gfx::Align::right);
                 }
@@ -2090,7 +2111,7 @@ class Render::Impl
             float art_x = left + 14.0F;
             if (entry->position > 0)
             {
-                ui::text(scene_, fonts_.display, std::to_string(entry->position), left + 30.0F, top + 55.0F, 30.0F, kSecondary,
+                draw_text(scene_, fonts_.display, std::to_string(entry->position), left + 30.0F, top + 55.0F, 30.0F, kSecondary,
                          gfx::Align::center);
                 art_x = left + 54.0F;
             }
@@ -2134,7 +2155,7 @@ class Render::Impl
             const bool two_lines = !subtitle.empty();
             dynamic_text(entry->title, text_x, top + (two_lines ? 40.0F : 56.0F), 32.0F, kText, 1040.0F - 40.0F - text_x);
             if (two_lines)
-                ui::text(scene_, fonts_.regular, fit(fonts_.regular, subtitle, 21.0F, 1040.0F - 40.0F - text_x), text_x, top + 72.0F,
+                draw_text(scene_, fonts_.regular, fit(fonts_.regular, subtitle, 21.0F, 1040.0F - 40.0F - text_x), text_x, top + 72.0F,
                          21.0F, tone == "problem" ? kRed : kSecondary);
             const float status_x = 1040.0F;
             const bool moving = progress > 0.0F;
@@ -2142,15 +2163,15 @@ class Render::Impl
                 spinner(status_x + 8.0F, top + (moving ? 38.0F : 45.0F), 8.0F, kBlue);
             else
                 scene_.circle(status_x + 8.0F, top + (moving ? 38.0F : 45.0F), 7.0F, save_tone(tone));
-            ui::text(scene_, fonts_.semibold, value, status_x + 28.0F, top + (moving ? 46.0F : 53.0F), 24.0F, kText);
+            draw_text(scene_, fonts_.semibold, value, status_x + 28.0F, top + (moving ? 46.0F : 53.0F), 24.0F, kText);
             if (moving)
             {
                 scene_.rounded_rect({status_x + 28.0F, top + 60.0F, 200.0F, 5.0F}, 2.5F, kText.with_alpha(0.12F));
                 scene_.rounded_rect({status_x + 28.0F, top + 60.0F, 200.0F * std::clamp(progress, 0.0F, 1.0F), 5.0F}, 2.5F,
                                     tone == "problem" ? kRed : kAccent);
             }
-            ui::text(scene_, fonts_.semibold, aside, 1490.0F, top + 53.0F, 24.0F, kText.with_alpha(0.85F), gfx::Align::right);
-            ui::text(scene_, fonts_.regular, badge, box.x + box.w - 24.0F, top + 53.0F, 21.0F, kSecondary, gfx::Align::right);
+            draw_text(scene_, fonts_.semibold, aside, 1490.0F, top + 53.0F, 24.0F, kText.with_alpha(0.85F), gfx::Align::right);
+            draw_text(scene_, fonts_.regular, badge, box.x + box.w - 24.0F, top + 53.0F, 21.0F, kSecondary, gfx::Align::right);
             focus_ring(scene_, box, amount, true);
         }
         scene_.pop_clip();
@@ -2163,7 +2184,7 @@ class Render::Impl
     {
         constexpr float line_y = 902.0F, baseline = 946.0F;
         scene_.rounded_rect({kSafeX, line_y, 1824.0F - kSafeX, 1.5F}, 0.0F, kText.with_alpha(0.12F));
-        ui::text(scene_, fonts_.display, ui::upper("Storage"), kSafeX, baseline, 22.0F, kSecondary, gfx::Align::left, 2.6F);
+        draw_text(scene_, fonts_.display, ui::upper("Storage"), kSafeX, baseline, 22.0F, kSecondary, gfx::Align::left, 2.6F);
         const float first_x = kSafeX + fonts_.display.measure(ui::upper("Storage"), 22.0F) + 2.6F * 7.0F + 36.0F;
         struct Drive { const ViewRow *row; const Volume *volume; std::string free; float width; };
         std::vector<Drive> drives;
@@ -2199,7 +2220,7 @@ class Render::Impl
         if (begin > 0)
         {
             const std::string earlier = "+" + std::to_string(begin);
-            ui::text(scene_, fonts_.regular, earlier, first_x, baseline, 22.0F, kMuted);
+            draw_text(scene_, fonts_.regular, earlier, first_x, baseline, 22.0F, kMuted);
             x += fonts_.regular.measure(earlier, 22.0F) + 28.0F;
         }
         std::size_t index = begin;
@@ -2212,14 +2233,14 @@ class Render::Impl
             const gfx::Rect box{x - 12.0F, baseline - 32.0F, drive.width + 24.0F, 46.0F};
             const float amount = focus_of(drive.row->key);
             focus_glow(scene_, box, amount, true);
-            ui::text(scene_, fonts_.regular, volume->label, x, baseline, 24.0F, volume->available ? kText : kSecondary);
+            draw_text(scene_, fonts_.regular, volume->label, x, baseline, 24.0F, volume->available ? kText : kSecondary);
             float cursor = x + fonts_.regular.measure(volume->label, 24.0F) + 16.0F;
             if (volume->capacity_known)
             {
                 draw_usage_bar(*volume, cursor, baseline - 12.0F, 72.0F, 6.0F);
                 cursor += 88.0F;
             }
-            ui::text(scene_, fonts_.regular, drive.free, cursor, baseline, 22.0F,
+            draw_text(scene_, fonts_.regular, drive.free, cursor, baseline, 22.0F,
                      volume->available && volume->writable ? kSecondary : kAmber);
             cursor += fonts_.regular.measure(drive.free, 22.0F) + 14.0F;
             scene_.line(cursor, baseline - 15.0F, cursor + 6.0F, baseline - 9.0F, 2.0F, kSecondary);
@@ -2228,7 +2249,7 @@ class Render::Impl
             x += drive.width + 40.0F;
         }
         if (index < drives.size())
-            ui::text(scene_, fonts_.regular, "+" + std::to_string(drives.size() - index), 1824.0F, baseline, 22.0F, kMuted,
+            draw_text(scene_, fonts_.regular, "+" + std::to_string(drives.size() - index), 1824.0F, baseline, 22.0F, kMuted,
                      gfx::Align::right);
     }
 
@@ -2276,8 +2297,8 @@ class Render::Impl
     {
         const float right = x + width;
         if (named)
-            ui::text(list, fonts_.display, volume.label, x, y, 30.0F, kText);
-        ui::text(list, fonts_.regular,
+            draw_text(list, fonts_.display, volume.label, x, y, 30.0F, kText);
+        draw_text(list, fonts_.regular,
                  volume.available ? (volume.writable ? (is_default ? "Default · Available" : "Available") : "No write access")
                                   : "Disconnected",
                  named ? right : x, y, 22.0F, volume.available && volume.writable ? kSecondary : kAmber,
@@ -2285,23 +2306,23 @@ class Render::Impl
         if (!volume.capacity_known)
         {
             // A failed space query leaves capacity unknown: show only what Playden knows.
-            ui::text(list, fonts_.regular, "Used by games  " + short_size(volume.games_bytes), x, y + 42.0F, 22.0F,
+            draw_text(list, fonts_.regular, shown("Used by games  ") + short_size(volume.games_bytes), x, y + 42.0F, 22.0F,
                      kSecondary);
             // Space held for queued downloads, only when there is some.
             if (volume.reserved_bytes > 0)
-                ui::text(list, fonts_.regular, "Reserved by queue  " + short_size(volume.reserved_bytes), right,
+                draw_text(list, fonts_.regular, shown("Reserved by queue  ") + short_size(volume.reserved_bytes), right,
                          y + 42.0F, 22.0F, kSecondary, gfx::Align::right);
             return;
         }
         const std::uint64_t unused = volume.capacity_bytes - std::min(volume.used_bytes, volume.capacity_bytes);
         const std::uint64_t free = unused - std::min(volume.reserved_bytes, unused);
         draw_usage_bar(list, volume, x, y + 28.0F, width, 12.0F);
-        ui::text(list, fonts_.regular, "Capacity  " + short_size(volume.capacity_bytes), x, y + 76.0F, 22.0F, kSecondary);
-        ui::text(list, fonts_.regular, "Used  " + short_size(volume.used_bytes), x, y + 106.0F, 22.0F, kSecondary);
+        draw_text(list, fonts_.regular, shown("Capacity  ") + short_size(volume.capacity_bytes), x, y + 76.0F, 22.0F, kSecondary);
+        draw_text(list, fonts_.regular, shown("Used  ") + short_size(volume.used_bytes), x, y + 106.0F, 22.0F, kSecondary);
         if (volume.reserved_bytes > 0)
-            ui::text(list, fonts_.regular, "Reserved  " + short_size(volume.reserved_bytes), right, y + 76.0F, 22.0F,
+            draw_text(list, fonts_.regular, shown("Reserved  ") + short_size(volume.reserved_bytes), right, y + 76.0F, 22.0F,
                      kSecondary, gfx::Align::right);
-        ui::text(list, fonts_.semibold, "Free  " + short_size(free), right, y + 106.0F, 22.0F,
+        draw_text(list, fonts_.semibold, shown("Free  ") + short_size(free), right, y + 106.0F, 22.0F,
                  volume.available ? kText : kMuted, gfx::Align::right);
     }
 
@@ -2328,7 +2349,7 @@ class Render::Impl
             if (active)
                 scene_.rounded_rect(entry, 8.0F, kText.with_alpha(0.10F));
             focus_ring(scene_, entry, amount, true);
-            ui::text(scene_, fonts_.display, sections[index], entry.x + 22.0F, entry.y + 40.0F, 28.0F,
+            draw_text(scene_, fonts_.display, sections[index], entry.x + 22.0F, entry.y + 40.0F, 28.0F,
                      active ? kText : kSecondary);
             if (route_focus_ && rail && active)
                 stats_.focused_control_key = "section-" + sections[index];
@@ -2338,7 +2359,7 @@ class Render::Impl
         constexpr float width = 1380.0F;
         section_label(current, left, 172.0F);
         if (!view.subtitle.empty())
-            ui::text(scene_, fonts_.regular, fit(fonts_.regular, view.subtitle, 22.0F, width), left + 300.0F, 172.0F,
+            draw_text(scene_, fonts_.regular, fit(fonts_.regular, view.subtitle, 22.0F, width), left + 300.0F, 172.0F,
                      22.0F, kAmber);
         // Rows of the section; long sections scroll to keep the focused row in view.
         std::vector<int> rows;
@@ -2424,10 +2445,10 @@ class Render::Impl
             }
             const gfx::Color title_ink = !row.enabled ? kMuted : row.dangerous ? kRed : kText;
             const float title_y = row.subtitle.empty() ? head.cy() + 11.0F : card.y + 50.0F;
-            ui::text(scene_, fonts_.display, fit(fonts_.display, row.title, 30.0F, 760.0F), card.x + 30.0F, title_y,
+            draw_text(scene_, fonts_.display, fit(fonts_.display, row.title, 30.0F, 760.0F), card.x + 30.0F, title_y,
                      30.0F, title_ink);
             if (!row.subtitle.empty())
-                ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.subtitle, 22.0F, 900.0F), card.x + 30.0F,
+                draw_text(scene_, fonts_.regular, fit(fonts_.regular, row.subtitle, 22.0F, 900.0F), card.x + 30.0F,
                          card.y + 88.0F, 22.0F, kSecondary);
             const float right = card.x + card.w - 30.0F;
             if (row.kind == RowKind::Toggle)
@@ -2440,7 +2461,7 @@ class Render::Impl
             else if (!row.enabled || row.kind == RowKind::Status)
             {
                 if (!row.value.empty())
-                    ui::text(scene_, fonts_.display, row.value, right, head.cy() + 9.0F, 26.0F, kMuted,
+                    draw_text(scene_, fonts_.display, row.value, right, head.cy() + 9.0F, 26.0F, kMuted,
                              gfx::Align::right);
             }
             else if (row.value.empty())
@@ -2457,6 +2478,8 @@ class Render::Impl
                 const std::string& label = row.value;
                 const float pill = fonts_.display.measure(label, 26.0F) + 64.0F;
                 const gfx::Rect button{right - pill, head.cy() - 28.0F, pill, 56.0F};
+                scene_.bordered_rect(button, 8.0F, kBackground.with_alpha(0.0F), 2.0F, kText.with_alpha(0.2F));
+                draw_text(scene_, fonts_.display, label, button.x + 22.0F, button.cy() + 9.0F, 26.0F, kText);
                 const gfx::Color ink = row.dangerous ? kRed : kText;
                 scene_.bordered_rect(button, 8.0F, kBackground.with_alpha(0.0F), 2.0F, ink.with_alpha(0.2F));
                 ui::text(scene_, fonts_.display, label, button.x + 22.0F, button.cy() + 9.0F, 26.0F, ink);
@@ -2485,10 +2508,10 @@ class Render::Impl
                     line = short_size(usage->games_bytes) + " used by games" +
                            (usage->reserved_bytes > 0 ? " · " + short_size(usage->reserved_bytes) + " reserved" : std::string());
                 }
-                ui::text(scene_, fonts_.regular, line, bar_x, line_y, 22.0F, kSecondary);
+                draw_text(scene_, fonts_.regular, line, bar_x, line_y, 22.0F, kSecondary);
                 // A drive that is gone or read-only says so, as in Downloads.
                 if (!usage->available || !usage->writable)
-                    ui::text(scene_, fonts_.regular, usage->available ? "No write access" : "Disconnected", bar_x + bar_w,
+                    draw_text(scene_, fonts_.regular, usage->available ? "No write access" : "Disconnected", bar_x + bar_w,
                              line_y, 22.0F, kAmber, gfx::Align::right);
             }
             focus_ring(scene_, card, amount);
@@ -2508,9 +2531,9 @@ class Render::Impl
     void detail_cell(std::string_view label, std::string_view value, float x, float y, float width,
                      gfx::Color tone = kText)
     {
-        ui::text(scene_, fonts_.display, ui::upper(label), x, y + 14.0F, 17.0F, kSecondary, gfx::Align::left, 1.7F);
+        draw_text(scene_, fonts_.display, ui::upper(label), x, y + 14.0F, 17.0F, kSecondary, gfx::Align::left, 1.7F);
         const ui::FontRef &face = font_for(value, fonts_.semibold);
-        ui::text(scene_, face, face.font->fit(value, 26.0F, width), x, y + 50.0F, 26.0F, tone);
+        draw_text(scene_, face, face.font->fit(shown(value), 26.0F, width), x, y + 50.0F, 26.0F, tone);
     }
 
     // The macOS game page: the game's hero across the top with its logo, a row of actions,
@@ -2570,7 +2593,7 @@ class Render::Impl
             const float width = fonts_.semibold.measure(view.subtitle, 22.0F);
             spinner(summary_x - width - 22.0F, 153.0F, 9.0F, kBlue);
         }
-        ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, view.subtitle, 22.0F, 1000.0F), summary_x, 161.0F, 22.0F,
+        draw_text(scene_, fonts_.semibold, fit(fonts_.semibold, view.subtitle, 22.0F, 1000.0F), summary_x, 161.0F, 22.0F,
                  kSecondary, gfx::Align::right);
 
         const auto focused_key = [&]() -> std::string {
@@ -2604,8 +2627,8 @@ class Render::Impl
                 else
                     scene_.bordered_rect(chip, 24.0F, kText.with_alpha(0.0F), 1.5F, kText.with_alpha(0.25F));
                 const gfx::Color ink = row.selected ? kBackground : kText;
-                ui::text(scene_, fonts_.display, row.title, chip.x + 20.0F, chip.cy() + 9.0F, 26.0F, ink);
-                ui::text(scene_, fonts_.semibold, row.value, chip.x + 20.0F + label + 12.0F, chip.cy() + 7.0F, 20.0F,
+                draw_text(scene_, fonts_.display, row.title, chip.x + 20.0F, chip.cy() + 9.0F, 26.0F, ink);
+                draw_text(scene_, fonts_.semibold, row.value, chip.x + 20.0F + label + 12.0F, chip.cy() + 7.0F, 20.0F,
                          row.selected ? kBackground.with_alpha(0.65F) : kSecondary);
                 pill_focus_ring(chip, amount);
                 x += chip.w + 12.0F;
@@ -2619,8 +2642,8 @@ class Render::Impl
                 focus_glow(scene_, button, amount, true);
                 scene_.bordered_rect(button, 8.0F, kText.with_alpha(0.06F), 1.5F, kText.with_alpha(0.5F));
                 upload_icon(button.x + 26.0F, button.cy(), 18.0F, 2.0F, kText);
-                ui::text(scene_, fonts_.display, row.title, button.x + 48.0F, button.cy() + 9.0F, 26.0F, kText);
-                ui::text(scene_, fonts_.semibold, row.value, button.x + 48.0F + label + 12.0F, button.cy() + 7.0F, 20.0F,
+                draw_text(scene_, fonts_.display, row.title, button.x + 48.0F, button.cy() + 9.0F, 26.0F, kText);
+                draw_text(scene_, fonts_.semibold, row.value, button.x + 48.0F + label + 12.0F, button.cy() + 7.0F, 20.0F,
                          kSecondary);
                 focus_ring(scene_, button, amount, true);
             }
@@ -2637,7 +2660,7 @@ class Render::Impl
                     spinner(button.x + 26.0F, button.cy(), 8.0F, kBlue);
                 else
                     sync_icon(button.x + 26.0F, button.cy(), 9.0F, 2.0F, kText);
-                ui::text(scene_, fonts_.display, row.title, button.x + 48.0F, button.cy() + 9.0F, 26.0F,
+                draw_text(scene_, fonts_.display, row.title, button.x + 48.0F, button.cy() + 9.0F, 26.0F,
                          row.selected ? kBlue : kText);
                 if (!row.enabled)
                     scene_.pop_opacity();
@@ -2671,7 +2694,7 @@ class Render::Impl
             const gfx::Rect box{kSafeX, y, 1824.0F - kSafeX, 90.0F};
             if (row.kind == RowKind::Status)
             {
-                ui::text(scene_, fonts_.regular, row.title, kSafeX + 8.0F, y + 50.0F, 26.0F, kSecondary);
+                draw_text(scene_, fonts_.regular, row.title, kSafeX + 8.0F, y + 50.0F, 26.0F, kSecondary);
                 break;
             }
             const float amount = focus_of(row);
@@ -2681,7 +2704,7 @@ class Render::Impl
             const bool two_lines = !row.subtitle.empty();
             dynamic_text(row.title, box.x + 84.0F, y + (two_lines ? 40.0F : 56.0F), 32.0F, kText, 820.0F);
             if (two_lines)
-                ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.subtitle, 21.0F, 820.0F), box.x + 84.0F, y + 72.0F,
+                draw_text(scene_, fonts_.regular, fit(fonts_.regular, row.subtitle, 21.0F, 820.0F), box.x + 84.0F, y + 72.0F,
                          21.0F, kSecondary);
             const float status_x = 1040.0F;
             const gfx::Color tone = save_tone(row.tone);
@@ -2690,14 +2713,14 @@ class Render::Impl
                 spinner(status_x + 8.0F, y + (moving ? 38.0F : 45.0F), 8.0F, kBlue);
             else
                 scene_.circle(status_x + 8.0F, y + (moving ? 38.0F : 45.0F), 7.0F, tone);
-            ui::text(scene_, fonts_.semibold, row.value, status_x + 28.0F, y + (moving ? 46.0F : 53.0F), 24.0F, kText);
+            draw_text(scene_, fonts_.semibold, row.value, status_x + 28.0F, y + (moving ? 46.0F : 53.0F), 24.0F, kText);
             if (moving)
             {
                 scene_.rounded_rect({status_x + 28.0F, y + 60.0F, 200.0F, 5.0F}, 2.5F, kText.with_alpha(0.12F));
                 scene_.rounded_rect({status_x + 28.0F, y + 60.0F, 200.0F * std::clamp(row.progress, 0.0F, 1.0F), 5.0F}, 2.5F, kBlue);
             }
-            ui::text(scene_, fonts_.semibold, row.aside, 1490.0F, y + 53.0F, 24.0F, kText.with_alpha(0.85F), gfx::Align::right);
-            ui::text(scene_, fonts_.regular, row.badge, box.x + box.w - 24.0F, y + 53.0F, 21.0F, kSecondary, gfx::Align::right);
+            draw_text(scene_, fonts_.semibold, row.aside, 1490.0F, y + 53.0F, 24.0F, kText.with_alpha(0.85F), gfx::Align::right);
+            draw_text(scene_, fonts_.regular, row.badge, box.x + box.w - 24.0F, y + 53.0F, 21.0F, kSecondary, gfx::Align::right);
             focus_ring(scene_, box, amount, true);
         }
         scene_.pop_clip();
@@ -2717,12 +2740,12 @@ class Render::Impl
                                            [id](const Installation &item) { return item.game_id == id; });
         scene_.gradient_rect({0.0F, 0.0F, kWidth, 380.0F}, 0.0F, id_color(id), kBackground);
         ui::draw_button(scene_, fonts_, ui::GlyphStyle::mono(kText, kBackground), ui::Button::circle, kSafeX, 74.0F, 36.0F);
-        ui::text(scene_, fonts_.semibold, "Saves", kSafeX + 48.0F, 82.0F, 22.0F, kText);
+        draw_text(scene_, fonts_.semibold, "Saves", kSafeX + 48.0F, 82.0F, 22.0F, kText);
         save_art(state, id, {kSafeX, 170.0F, 120.0F, 180.0F});
         dynamic_text(view.title, kSafeX + 150.0F, 262.0F, 64.0F, kText, 1500.0F);
         // The status, from the same row the Saves list shows.
         scene_.circle(kSafeX + 158.0F, 306.0F, 7.0F, save_tone(view.tone));
-        ui::text(scene_, fonts_.semibold, view.subtitle, kSafeX + 176.0F, 314.0F, 26.0F, kText);
+        draw_text(scene_, fonts_.semibold, view.subtitle, kSafeX + 176.0F, 314.0F, 26.0F, kText);
 
         // The comparison.
         const gfx::Color label = gfx::Color::rgb(0xD9D3CB);
@@ -2730,8 +2753,8 @@ class Render::Impl
         const gfx::Color absent = gfx::Color::rgb(0x9A938B);
         const float left = kSafeX, cloud_x = kSafeX + 300.0F, here_x = kSafeX + 680.0F, right = kSafeX + 1060.0F;
         float y = 420.0F;
-        ui::text(scene_, fonts_.display, ui::upper("Steam Cloud"), cloud_x, y, 22.0F, label, gfx::Align::left, 2.6F);
-        ui::text(scene_, fonts_.display, ui::upper("This console"), here_x, y, 22.0F, label, gfx::Align::left, 2.6F);
+        draw_text(scene_, fonts_.display, ui::upper("Steam Cloud"), cloud_x, y, 22.0F, label, gfx::Align::left, 2.6F);
+        draw_text(scene_, fonts_.display, ui::upper("This console"), here_x, y, 22.0F, label, gfx::Align::left, 2.6F);
         const bool has_cloud = cloud != nullptr && cloud->status != CloudStatus::Unsupported && cloud->status != CloudStatus::None;
         const bool conflict = cloud != nullptr && cloud->status == CloudStatus::Conflict;
         const auto when = [&](std::int64_t time) -> std::string {
@@ -2757,9 +2780,9 @@ class Render::Impl
                               gfx::Color local_ink) {
             y += 58.0F;
             scene_.rounded_rect({left, y - 40.0F, right - left, 1.5F}, 0.0F, kText.with_alpha(0.14F));
-            ui::text(scene_, fonts_.regular, name, left, y, 28.0F, label);
-            ui::text(scene_, fonts_.semibold, remote, cloud_x, y, 28.0F, remote_ink);
-            ui::text(scene_, fonts_.semibold, local, here_x, y, 28.0F, local_ink);
+            draw_text(scene_, fonts_.regular, name, left, y, 28.0F, label);
+            draw_text(scene_, fonts_.semibold, remote, cloud_x, y, 28.0F, remote_ink);
+            draw_text(scene_, fonts_.semibold, local, here_x, y, 28.0F, local_ink);
         };
         const std::uint64_t local_bytes = state.save_sizes.count(id) ? state.save_sizes.at(id) : 0;
         if (has_cloud)
@@ -2809,8 +2832,8 @@ class Render::Impl
             note = "Not checked yet. Opening Saves or Sync now checks it.";
         if (!installed)
             note = "The game was uninstalled; its saves and settings were kept. " + note;
-        ui::text(scene_, fonts_.display, ui::upper("What's going on"), 1240.0F, 420.0F, 22.0F, label, gfx::Align::left, 2.6F);
-        ui::paragraph(scene_, fonts_.regular, note, 1240.0F, 470.0F, 25.0F, 584.0F, 36.0F, kText.with_alpha(0.9F), 6);
+        draw_text(scene_, fonts_.display, ui::upper("What's going on"), 1240.0F, 420.0F, 22.0F, label, gfx::Align::left, 2.6F);
+        draw_paragraph(scene_, fonts_.regular, note, 1240.0F, 470.0F, 25.0F, 584.0F, 36.0F, kText.with_alpha(0.9F), 6);
 
         // Actions in a row.
         float x = kSafeX;
@@ -2838,9 +2861,9 @@ class Render::Impl
                 const float content = fonts_.display.measure(row.title, 26.0F) +
                                       (row.value.empty() ? 0.0F : fonts_.semibold.measure(row.value, 22.0F) + 18.0F);
                 const float text_x = button.cx() - content * 0.5F;
-                ui::text(scene_, fonts_.display, row.title, text_x, button.cy() + 9.0F, 26.0F, gfx::Color::rgb(0xF1B0AA));
+                draw_text(scene_, fonts_.display, row.title, text_x, button.cy() + 9.0F, 26.0F, gfx::Color::rgb(0xF1B0AA));
                 if (!row.value.empty())
-                    ui::text(scene_, fonts_.semibold, row.value, text_x + content, button.cy() + 8.0F, 22.0F, kSecondary,
+                    draw_text(scene_, fonts_.semibold, row.value, text_x + content, button.cy() + 8.0F, 22.0F, kSecondary,
                              gfx::Align::right);
                 if (!row.enabled)
                     scene_.pop_opacity();
@@ -2873,7 +2896,7 @@ class Render::Impl
         const char *back = origin == Route::Home ? "Home" : origin == Route::Downloads ? "Queue" :
                            origin == Route::Settings ? "Settings" : "Library";
         ui::draw_button(scene_, fonts_, ui::GlyphStyle::mono(kText, kBackground), ui::Button::circle, kSafeX, 74.0F, 36.0F);
-        ui::text(scene_, fonts_.semibold, back, kSafeX + 48.0F, 82.0F, 22.0F, kText);
+        draw_text(scene_, fonts_.semibold, back, kSafeX + 48.0F, 82.0F, 22.0F, kText);
 
         const std::string title = game == nullptr ? view.title : game->title;
         std::uint32_t logo_width = 0;
@@ -2895,7 +2918,7 @@ class Render::Impl
             // Without a logo the title stands in, as the macOS artwork fallback does.
             const ui::FontRef &title_face = font_for(title, fonts_.display);
             const bool long_title = title_face.font->measure(title, 72.0F) > 900.0F;
-            ui::paragraph(scene_, title_face, title, kSafeX, long_title ? 520.0F : 586.0F, 72.0F, 900.0F, 70.0F,
+            draw_paragraph(scene_, title_face, title, kSafeX, long_title ? 520.0F : 586.0F, 72.0F, 900.0F, 70.0F,
                           kText, 2);
         }
 
@@ -2948,9 +2971,9 @@ class Render::Impl
                 const float detail_width = widest.empty() ? 0.0F : fonts_.semibold.measure(widest, 22.0F) + 18.0F;
                 const float content = std::min(button.w - 32.0F, fonts_.display.measure(label, 26.0F) + detail_width);
                 const float text_x = button.cx() - content * 0.5F;
-                ui::text(scene_, fonts_.display, label, text_x, button.cy() + 26.0F * 0.36F, 26.0F, kText);
+                draw_text(scene_, fonts_.display, label, text_x, button.cy() + 26.0F * 0.36F, 26.0F, kText);
                 if (!detail.empty())
-                    ui::text(scene_, fonts_.semibold, detail, text_x + content, button.cy() + 8.0F, 22.0F,
+                    draw_text(scene_, fonts_.semibold, detail, text_x + content, button.cy() + 8.0F, 22.0F,
                              kText.with_alpha(0.8F), gfx::Align::right);
                 focus_ring(scene_, button, amount);
                 scene_.pop_transform();
@@ -2980,7 +3003,7 @@ class Render::Impl
                 continue;
             scene_.circle(kSafeX + 6.0F, 752.0F, 6.0F, save_tone(row.tone));
             const ui::FontRef &face = font_for(row.title, fonts_.semibold);
-            ui::text(scene_, face, face.font->fit(row.title, 23.0F, 1100.0F), kSafeX + 26.0F, 760.0F,
+            draw_text(scene_, face, face.font->fit(shown(row.title), 23.0F, 1100.0F), kSafeX + 26.0F, 760.0F,
                      23.0F, kText);
             y += 52.0F;
             break;
@@ -3026,7 +3049,7 @@ class Render::Impl
             }
             if (!note.empty())
             {
-                ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, note, 22.0F, 1128.0F), kSafeX, y + 4.0F, 22.0F,
+                draw_text(scene_, fonts_.semibold, fit(fonts_.semibold, note, 22.0F, 1128.0F), kSafeX, y + 4.0F, 22.0F,
                          tone);
                 y += 42.0F;
             }
@@ -3040,7 +3063,7 @@ class Render::Impl
                     kept_note += " · " + row.value;
                 if (!row.subtitle.empty())
                     kept_note += " · " + row.subtitle;
-                ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, kept_note, 22.0F, 1128.0F), kSafeX, y + 4.0F,
+                draw_text(scene_, fonts_.semibold, fit(fonts_.semibold, kept_note, 22.0F, 1128.0F), kSafeX, y + 4.0F,
                          22.0F, kSecondary);
                 y += 42.0F;
             }
@@ -3065,12 +3088,12 @@ class Render::Impl
         if (offset + page_size < description.size())
             page_text += "…";
         const ui::FontRef &body = font_for(page_text, fonts_.regular);
-        const float text_bottom = ui::paragraph(scene_, body, page_text, kSafeX, y + 20.0F, 26.0F, 1128.0F, 37.0F,
+        const float text_bottom = draw_paragraph(scene_, body, page_text, kSafeX, y + 20.0F, 26.0F, 1128.0F, 37.0F,
                                                 gfx::Color::rgb(0xD6D0C8), description_lines);
         y = std::max(y + 20.0F + 37.0F, text_bottom) + 18.0F;
         if (description.size() > page_size)
         {
-            ui::text(scene_, fonts_.regular, "L2/R2 Read more · page " + std::to_string(page + 1) + " of " +
+            draw_text(scene_, fonts_.regular, shown("L2/R2 Read more · page ") + std::to_string(page + 1) + shown(" of ") +
                          std::to_string(max_page + 1), kSafeX, y + 6.0F, 18.0F, kMuted);
             y += 30.0F;
         }
@@ -3084,7 +3107,7 @@ class Render::Impl
                 if (tag_x + width > kSafeX + 1128.0F)
                     break;
                 scene_.rounded_rect({tag_x, y, width, 42.0F}, 6.0F, kText.with_alpha(0.1F));
-                ui::text(scene_, fonts_.semibold, genre, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
+                draw_text(scene_, fonts_.semibold, genre, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
                 tag_x += width + 12.0F;
             }
         }
@@ -3176,7 +3199,7 @@ class Render::Impl
             detail_cell("Setup", setup_step, left, facts_top + 228.0F, 520.0F, tone);
             if (!setup_detail.empty()) {
                 const ui::FontRef &face = font_for(setup_detail, fonts_.regular);
-                ui::text(scene_, face, face.font->fit(setup_detail, 24.0F, 520.0F), left, facts_top + 228.0F + 84.0F,
+                draw_text(scene_, face, face.font->fit(shown(setup_detail), 24.0F, 520.0F), left, facts_top + 228.0F + 84.0F,
                          24.0F, kSecondary);
             }
         }
@@ -3192,13 +3215,13 @@ class Render::Impl
         section_label("Simulated game session", 96.0F, 82.0F);
         dynamic_text(game == nullptr ? std::string_view(view.title) : std::string_view(game->title),
                      96.0F, 256.0F, 64.0F, kText, 1000.0F);
-        ui::text(scene_, fonts_.display, view.subtitle, 96.0F, 320.0F, 34.0F,
+        draw_text(scene_, fonts_.display, view.subtitle, 96.0F, 320.0F, 34.0F,
                  state.session == SessionState::Failed || state.session == SessionState::Crashed ? kRed : kSecondary);
         draw_actions(view, 96.0F, 428.0F, 540.0F);
 
         scene_.rounded_rect({1210.0F, 226.0F, 614.0F, 540.0F}, 16.0F, kPanel.with_alpha(0.94F));
-        ui::text(scene_, fonts_.display, "Session controls", 1254.0F, 294.0F, 44.0F, kText);
-        ui::paragraph(scene_, fonts_.regular,
+        draw_text(scene_, fonts_.display, "Session controls", 1254.0F, 294.0F, 44.0F, kText);
+        draw_paragraph(scene_, fonts_.regular,
                       state.session_error.empty() ? "This is a deterministic fixture. No game process is launched."
                                                   : state.session_error,
                       1254.0F, 352.0F, 25.0F, 522.0F, 36.0F,
@@ -3216,7 +3239,7 @@ class Render::Impl
             scene_.rounded_rect({kWidth - kSafeX - width, y, width, 54.0F}, 8.0F,
                                 kAmber.with_alpha(0.16F));
             scene_.circle(kWidth - kSafeX - width + 25.0F, y + 27.0F, 6.0F, kAmber);
-            ui::text(scene_, fonts_.regular, fit(fonts_.regular, notice.message, 21.0F, width - 64.0F),
+            draw_text(scene_, fonts_.regular, fit(fonts_.regular, notice.message, 21.0F, width - 64.0F),
                      kWidth - kSafeX - width + 44.0F, y + 35.0F, 21.0F, kText);
             y += 64.0F;
         }
@@ -3229,11 +3252,11 @@ class Render::Impl
         const std::vector<std::string> &labels = view.legends;
         std::vector<ui::Hint> hints;
         hints.reserve(std::max<std::size_t>(labels.size(), 2) + 1);
-        shoulder = "Sections";
+        shoulder = shown("Sections");
         if (labels.empty())
         {
-            hints.push_back({ui::Button::cross, "Select"});
-            hints.push_back({ui::Button::circle, "Back"});
+            hints.push_back({ui::Button::cross, shown("Select").c_str()});
+            hints.push_back({ui::Button::circle, shown("Back").c_str()});
         }
         else
         {
@@ -3243,10 +3266,12 @@ class Render::Impl
                     continue;
                 if (labels[index].rfind("L1/R1 ", 0) == 0)
                 {
-                    shoulder = labels[index].substr(6);
+                    shoulder = shown(labels[index].substr(6));
                     continue;
                 }
-                hints.push_back({legend_button(labels[index], index), legend_text(labels[index])});
+                // The button prefix picks the glyph and is then dropped, so only the words
+                // beside it are looked up.
+                hints.push_back({legend_button(labels[index], index), shown(legend_text(labels[index])).c_str()});
             }
             // Circle is already spoken for by "Circle …" legends ("Circle Clear search") and Back/Cancel ones.
             const bool has_back = std::any_of(labels.begin(), labels.end(), [](const std::string &label) {
@@ -3254,7 +3279,7 @@ class Render::Impl
                        label.find("Cancel") != std::string::npos;
             });
             if (!has_back)
-                hints.push_back({ui::Button::circle, "Back"});
+                hints.push_back({ui::Button::circle, shown("Back").c_str()});
         }
         if (with_shoulder)
             hints.push_back({ui::Button::l1, shoulder.c_str(), ui::Button::r1});
@@ -3280,7 +3305,7 @@ class Render::Impl
         {
             std::vector<ui::Hint> hints;
             for (std::size_t index = 0; index < view.legends.size(); ++index)
-                hints.push_back({legend_button(view.legends[index], index), legend_text(view.legends[index])});
+                hints.push_back({legend_button(view.legends[index], index), shown(legend_text(view.legends[index])).c_str()});
             draw_hint_row(scene_, hints, 96.0F);
             return;
         }
@@ -3293,7 +3318,7 @@ class Render::Impl
         if (view.show_simulation_label)
         {
             scene_.rounded_rect({1652.0F, 989.0F, 172.0F, 34.0F}, 17.0F, kText.with_alpha(0.08F));
-            ui::text(scene_, fonts_.semibold, "UI SIMULATION", 1738.0F, 1012.0F, 16.0F, kSecondary,
+            draw_text(scene_, fonts_.semibold, "UI SIMULATION", 1738.0F, 1012.0F, 16.0F, kSecondary,
                      gfx::Align::center, 1.2F);
         }
     }
@@ -3334,11 +3359,11 @@ class Render::Impl
             overlay_.shadow({1288.0F, y, 536.0F, 84.0F}, 10.0F, 28.0F, gfx::Color::rgb(0x000000, 0.6F));
             overlay_.rounded_rect({1288.0F, y, 536.0F, 84.0F}, 10.0F, kPanel);
             overlay_.circle(1320.0F, y + 42.0F, 7.0F, notice.failure ? kRed : kAccent);
-            ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, notice.message, 22.0F, 440.0F),
+            draw_text(overlay_, fonts_.semibold, fit(fonts_.semibold, notice.message, 22.0F, 440.0F),
                      1342.0F, y + 36.0F, 22.0F, kText);
             const std::string &second = notice.detail.empty() ? notice.action : notice.detail;
             if (!second.empty())
-                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, second, 18.0F, 460.0F), 1342.0F, y + 62.0F,
+                draw_text(overlay_, fonts_.regular, fit(fonts_.regular, second, 18.0F, 460.0F), 1342.0F, y + 62.0F,
                          18.0F, notice.detail.empty() ? kAccent : kSecondary);
             y += 98.0F;
         }
@@ -3371,7 +3396,7 @@ class Render::Impl
     {
         overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, gfx::Color::rgb(0x000000, 0.68F));
         overlay_.rounded_rect({420.0F, 116.0F, 1080.0F, 820.0F}, 16.0F, kPanel);
-        ui::text(overlay_, fonts_.display,
+        draw_text(overlay_, fonts_.display,
                  state.editor.purpose.empty() ? "Enter text" : state.editor.purpose,
                  476.0F, 188.0F, 46.0F, kText);
         ui::Painter painter(overlay_, fonts_, theme_, renderer_.glass_texture());
@@ -3417,11 +3442,11 @@ class Render::Impl
         const gfx::Rect panel{(kWidth - width) * 0.5F, 254.0F, width, 500.0F};
         overlay_.shadow(panel, 16.0F, 40.0F, gfx::Color::rgb(0x000000, 0.65F));
         overlay_.rounded_rect(panel, 16.0F, kPanel);
-        const float heading_bottom = ui::paragraph(
+        const float heading_bottom = draw_paragraph(
             overlay_, fonts_.display, modal.title, panel.x + 48.0F, panel.y + 76.0F,
             48.0F, panel.w - 96.0F, 54.0F, modal.destructive ? kAmber : kText, 3);
         const std::string body = !modal.body.empty() ? modal.body : view.subtitle;
-        ui::paragraph(overlay_, fonts_.regular, body, panel.x + 48.0F, heading_bottom + 24.0F, 25.0F,
+        draw_paragraph(overlay_, fonts_.regular, body, panel.x + 48.0F, heading_bottom + 24.0F, 25.0F,
                       panel.w - 96.0F, 35.0F, kSecondary,
                       std::max(1, static_cast<int>((panel.y + 352.0F - heading_bottom - 24.0F) / 35.0F) + 1));
         const std::size_t count = std::max<std::size_t>(1, view.rows.size());
@@ -3431,6 +3456,7 @@ class Render::Impl
             std::string label = overlay_label(view.rows[index]);
             if (view.rows[index].action == "confirm-destructive")
             {
+                // The dialog's own title is still English here: it is matched, not shown.
                 if (modal.title.find("Uninstall") != std::string::npos)
                     label = "Uninstall";
                 else if (modal.title.find("download") != std::string::npos)
@@ -3462,7 +3488,7 @@ class Render::Impl
         if (address.rfind("https://", 0) == 0) address.erase(0, 8);
 
         const int body_lines = modal.body.empty() ? 0 :
-            std::min(10, static_cast<int>(fonts_.regular.font->wrap(modal.body, body_size, inner).size()));
+            std::min(10, static_cast<int>(fonts_.regular.font->wrap(shown(modal.body), body_size, inner).size()));
         const int address_lines =
             std::min(3, std::max(1, static_cast<int>(fonts_.regular.font->wrap(address, address_size, address_w).size())));
         constexpr float title_h = 60.0F;
@@ -3473,12 +3499,12 @@ class Render::Impl
         overlay_.rounded_rect(panel, 16.0F, kPanel);
 
         float y = panel.y + pad;
-        ui::text(overlay_, fonts_.display, fit(fonts_.display, modal.title, 48.0F, inner), panel.x + pad, y + 46.0F,
+        draw_text(overlay_, fonts_.display, fit(fonts_.display, modal.title, 48.0F, inner), panel.x + pad, y + 46.0F,
                  48.0F, kText);
         y += title_h;
         if (body_lines)
         {
-            ui::paragraph(overlay_, fonts_.regular, modal.body, panel.x + pad, y + 28.0F + 26.0F, body_size, inner,
+            draw_paragraph(overlay_, fonts_.regular, modal.body, panel.x + pad, y + 28.0F + 26.0F, body_size, inner,
                           body_line, kSecondary, 10);
             y += 28.0F + body_h;
         }
@@ -3489,8 +3515,8 @@ class Render::Impl
         const float text_x = panel.x + pad + qr_side + strip_gap;
         const float block_h = 30.0F + 14.0F + address_lines * address_line;
         const float block_y = y + (qr_side - block_h) * 0.5F;
-        ui::text(overlay_, fonts_.semibold, "Scan for the full release notes", text_x, block_y + 24.0F, 26.0F, kText);
-        ui::paragraph(overlay_, fonts_.regular, address, text_x, block_y + 30.0F + 14.0F + 21.0F, address_size,
+        draw_text(overlay_, fonts_.semibold, "Scan for the full release notes", text_x, block_y + 24.0F, 26.0F, kText);
+        draw_paragraph(overlay_, fonts_.regular, address, text_x, block_y + 30.0F + 14.0F + 21.0F, address_size,
                       address_w, address_line, kSecondary, 3);
         y += qr_side + 40.0F;
 
@@ -3540,7 +3566,7 @@ class Render::Impl
             y += 150.0F;
             if (volume->reserved_bytes > 0)
             {
-                ui::paragraph(overlay_, fonts_.regular, "Reserved space is part of the free space, set aside for the downloads still queued.",
+                draw_paragraph(overlay_, fonts_.regular, "Reserved space is part of the free space, set aside for the downloads still queued.",
                               panel.x + 48.0F, y, 22.0F, panel.w - 96.0F, 32.0F, kSecondary, 3);
                 y += 90.0F;
             }
@@ -3574,14 +3600,14 @@ class Render::Impl
         float drop = 0.0F;
         if (fonts_.display.measure(view.title, 48.0F) > panel.w - 96.0F)
         {
-            ui::paragraph(overlay_, fonts_.display, view.title, panel.x + 48.0F, 142.0F, 48.0F, panel.w - 96.0F, 54.0F,
+            draw_paragraph(overlay_, fonts_.display, view.title, panel.x + 48.0F, 142.0F, 48.0F, panel.w - 96.0F, 54.0F,
                           kText, 2);
             drop = 54.0F;
         }
         else
-            ui::text(overlay_, fonts_.display, view.title, panel.x + 48.0F, 142.0F, 48.0F, kText);
+            draw_text(overlay_, fonts_.display, view.title, panel.x + 48.0F, 142.0F, 48.0F, kText);
         if (!view.subtitle.empty())
-            ui::paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F, 190.0F + drop, 23.0F,
+            draw_paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F, 190.0F + drop, 23.0F,
                           panel.w - 96.0F, 32.0F, kSecondary, view.surface == "install" ? 6 : 3);
         if (view.surface == "storage")
             draw_storage_overlay_rows(view, {panel.x + 40.0F, 246.0F, panel.w - 80.0F, 710.0F});
@@ -3613,11 +3639,11 @@ class Render::Impl
         overlay_.shadow(card, 14.0F, 32.0F, gfx::Color::rgb(0x000000, 0.55F * ease));
         overlay_.rounded_rect(card, 14.0F, kPanel.with_alpha(0.96F * ease));
         float y = card.y + 64.0F;
-        ui::text(overlay_, fonts_.display, fit(fonts_.display, comparison.title, 40.0F, card.w - 96.0F), card.x + 48.0F, y,
+        draw_text(overlay_, fonts_.display, fit(fonts_.display, comparison.title, 40.0F, card.w - 96.0F), card.x + 48.0F, y,
                  40.0F, kText);
         y += 18.0F;
         if (!comparison.hint.empty())
-            y = ui::paragraph(overlay_, fonts_.regular, comparison.hint, card.x + 48.0F, y + 24.0F, 21.0F,
+            y = draw_paragraph(overlay_, fonts_.regular, comparison.hint, card.x + 48.0F, y + 24.0F, 21.0F,
                               card.w - 96.0F, 29.0F, kSecondary, 3);
         y += 36.0F;
         const float name_w = card.w * 0.34F;
@@ -3625,9 +3651,9 @@ class Render::Impl
         const float current_x = card.x + 48.0F + name_w;
         const float arrow_x = current_x + column_w + 20.0F;
         const float preset_x = arrow_x + 20.0F;
-        ui::text(overlay_, fonts_.semibold, "SETTING", card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
-        ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
-        ui::text(overlay_, fonts_.semibold, "THIS PRESET", preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        draw_text(overlay_, fonts_.semibold, "SETTING", card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        draw_text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        draw_text(overlay_, fonts_.semibold, "THIS PRESET", preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         y += 16.0F;
         for (const auto &row : comparison.rows)
         {
@@ -3635,9 +3661,9 @@ class Render::Impl
                 break;
             overlay_.rounded_rect({card.x + 40.0F, y + 6.0F, card.w - 80.0F, 1.0F}, 0.0F, kText.with_alpha(0.10F));
             const bool changes = row[1] != row[2];
-            ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, row[0], 21.0F, name_w - 16.0F), card.x + 48.0F,
+            draw_text(overlay_, fonts_.semibold, fit(fonts_.semibold, row[0], 21.0F, name_w - 16.0F), card.x + 48.0F,
                      y + 40.0F, 21.0F, kText);
-            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[1], 20.0F, column_w), current_x, y + 40.0F, 20.0F,
+            draw_text(overlay_, fonts_.regular, fit(fonts_.regular, row[1], 20.0F, column_w), current_x, y + 40.0F, 20.0F,
                      kSecondary);
             if (changes)
             {
@@ -3647,11 +3673,11 @@ class Render::Impl
                 overlay_.line(arrow_x + 2.0F, cy - 5.0F, arrow_x + 8.0F, cy, 2.0F, kAccent);
                 overlay_.line(arrow_x + 2.0F, cy + 5.0F, arrow_x + 8.0F, cy, 2.0F, kAccent);
             }
-            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[2], 20.0F, column_w), preset_x, y + 40.0F, 20.0F,
+            draw_text(overlay_, fonts_.regular, fit(fonts_.regular, row[2], 20.0F, column_w), preset_x, y + 40.0F, 20.0F,
                      changes ? kAccent : kSecondary);
             y += 56.0F;
         }
-        ui::paragraph(overlay_, fonts_.regular, comparison.note, card.x + 48.0F, card.y + card.h - 56.0F, 19.0F,
+        draw_paragraph(overlay_, fonts_.regular, comparison.note, card.x + 48.0F, card.y + card.h - 56.0F, 19.0F,
                       card.w - 96.0F, 26.0F, kSecondary, 2);
     }
 
@@ -3684,24 +3710,24 @@ class Render::Impl
             overlay_.rounded_rect(card, 8.0F, kPanel);
             overlay_.rounded_rect(card, 8.0F, kText.with_alpha(row.selected ? 0.10F : 0.04F));
             focus_ring(overlay_, card, amount);
-            ui::text(overlay_, fonts_.display, volume.label, card.x + 22.0F, card.y + 38.0F,
+            draw_text(overlay_, fonts_.display, volume.label, card.x + 22.0F, card.y + 38.0F,
                      27.0F, row.enabled ? kText : kMuted);
             // The import wizard's rows say all of their state (its default drive included); a
             // disabled one is amber only for a problem with the drive (tone "warn").
             const bool wizard = view.surface == "import-storage";
             const bool is_default = !wizard && !current_state_->simulation_mode && volume.id == current_state_->default_volume_id;
             const bool warn = wizard ? row.tone == "warn" : !row.enabled;
-            ui::text(overlay_, fonts_.regular, is_default && row.enabled ? "Default · " + row.subtitle : row.subtitle,
+            draw_text(overlay_, fonts_.regular, is_default && row.enabled ? shown("Default · ") + shown(row.subtitle) : row.subtitle,
                      card.x + card.w - 22.0F, card.y + 38.0F, 18.0F, warn ? kAmber : row.enabled ? kSecondary : kMuted,
                      gfx::Align::right);
             if (!volume.capacity_known)
             {
-                ui::text(overlay_, fonts_.regular, "Used by games  " + short_size(volume.games_bytes),
+                draw_text(overlay_, fonts_.regular, shown("Used by games  ") + short_size(volume.games_bytes),
                          card.x + 22.0F, card.y + 98.0F, 17.0F, kSecondary);
                 if (volume.reserved_bytes > 0)
-                    ui::text(overlay_, fonts_.regular, "Reserved by queue  " + short_size(volume.reserved_bytes),
+                    draw_text(overlay_, fonts_.regular, shown("Reserved by queue  ") + short_size(volume.reserved_bytes),
                              card.x + card.w - 22.0F, card.y + 98.0F, 17.0F, kSecondary, gfx::Align::right);
-                ui::text(overlay_, fonts_.regular, "Free space unavailable",
+                draw_text(overlay_, fonts_.regular, "Free space unavailable",
                          card.x + 22.0F, card.y + 128.0F, 17.0F, kMuted);
                 if (dimmed)
                     overlay_.pop_opacity();
@@ -3715,15 +3741,15 @@ class Render::Impl
             overlay_.rounded_rect({card.x + 22.0F, card.y + 58.0F,
                                    (card.w - 44.0F) * std::clamp(fraction, 0.0F, 1.0F), 8.0F},
                                   4.0F, volume.available ? kAccent : kMuted);
-            ui::text(overlay_, fonts_.regular, "Capacity  " + short_size(volume.capacity_bytes),
+            draw_text(overlay_, fonts_.regular, shown("Capacity  ") + short_size(volume.capacity_bytes),
                      card.x + 22.0F, card.y + 98.0F, 17.0F, kSecondary);
-            ui::text(overlay_, fonts_.regular, "Used  " + short_size(volume.used_bytes),
+            draw_text(overlay_, fonts_.regular, shown("Used  ") + short_size(volume.used_bytes),
                      card.x + 22.0F, card.y + 128.0F, 17.0F, kSecondary);
             if (volume.reserved_bytes > 0)
-                ui::text(overlay_, fonts_.regular, "Reserved  " + short_size(volume.reserved_bytes),
+                draw_text(overlay_, fonts_.regular, shown("Reserved  ") + short_size(volume.reserved_bytes),
                          card.x + card.w - 22.0F, card.y + 98.0F, 17.0F, kSecondary,
                          gfx::Align::right);
-            ui::text(overlay_, fonts_.semibold, "Free  " + short_size(free),
+            draw_text(overlay_, fonts_.semibold, shown("Free  ") + short_size(free),
                      card.x + card.w - 22.0F, card.y + 128.0F, 17.0F, kText,
                      gfx::Align::right);
             if (dimmed)
@@ -3754,7 +3780,7 @@ class Render::Impl
         if (state.log_state == LogState::Loading)
         {
             overlay_.circle(viewport.x + 34.0F, viewport.y + 44.0F, 7.0F, kAccent);
-            ui::text(overlay_, fonts_.semibold, "Loading fixture logs…", viewport.x + 58.0F,
+            draw_text(overlay_, fonts_.semibold, "Loading fixture logs…", viewport.x + 58.0F,
                      viewport.y + 52.0F, 22.0F, kText);
             overlay_.rounded_rect({viewport.x + 24.0F, viewport.y + 78.0F,
                                    viewport.w - 48.0F, 5.0F}, 2.5F, kText.with_alpha(0.12F));
@@ -3764,7 +3790,7 @@ class Render::Impl
         }
         else if (state.log_state == LogState::Failed)
         {
-            ui::text(overlay_, fonts_.display, "Logs unavailable", viewport.x + 24.0F,
+            draw_text(overlay_, fonts_.display, "Logs unavailable", viewport.x + 24.0F,
                      viewport.y + 54.0F, 30.0F, kRed);
             const auto error = std::find_if(view.rows.begin(), view.rows.end(), [](const ViewRow &row) {
                 return row.key == "logs-error";
@@ -3778,9 +3804,9 @@ class Render::Impl
         }
         else if (state.log_lines.empty())
         {
-            ui::text(overlay_, fonts_.display, "No log entries", viewport.cx(),
+            draw_text(overlay_, fonts_.display, "No log entries", viewport.cx(),
                      viewport.y + viewport.h * 0.48F, 34.0F, kSecondary, gfx::Align::center);
-            ui::text(overlay_, fonts_.regular,
+            draw_text(overlay_, fonts_.regular,
                      state.simulation_mode ? "This fixture has no lines for the current context."
                                            : "Nothing has been logged here yet.",
                      viewport.cx(), viewport.y + viewport.h * 0.48F + 38.0F, 19.0F, kMuted,
@@ -3797,7 +3823,7 @@ class Render::Impl
             {
                 std::array<char, 12> number{};
                 std::snprintf(number.data(), number.size(), "%03d", index + 1);
-                ui::text(overlay_, fonts_.regular, number.data(), viewport.x + 22.0F, y,
+                draw_text(overlay_, fonts_.regular, number.data(), viewport.x + 22.0F, y,
                          16.0F, kMuted);
                 dynamic_overlay_text(state.log_lines[static_cast<std::size_t>(index)],
                                      viewport.x + 72.0F, y, 18.0F, kText, viewport.w - 106.0F);
@@ -3805,7 +3831,7 @@ class Render::Impl
             }
             const std::string range = std::to_string(begin + 1) + "–" + std::to_string(end) +
                                       " of " + std::to_string(state.log_lines.size());
-            ui::text(overlay_, fonts_.regular, range, viewport.x + viewport.w - 24.0F,
+            draw_text(overlay_, fonts_.regular, range, viewport.x + viewport.w - 24.0F,
                      viewport.y + viewport.h - 18.0F, 16.0F, kMuted, gfx::Align::right);
             if (state.log_lines.size() > visible_lines)
             {
@@ -3845,7 +3871,7 @@ class Render::Impl
         const ControllerState input = current_state_ == nullptr ? ControllerState{} :
                                                                   current_state_->controller;
         overlay_.rounded_rect(bounds, 12.0F, kBackground.with_alpha(0.52F));
-        ui::text(overlay_, fonts_.display, connected ? "Controller connected" : "Controller disconnected",
+        draw_text(overlay_, fonts_.display, connected ? "Controller connected" : "Controller disconnected",
                  bounds.x + bounds.w * 0.5F, bounds.y + 54.0F, 31.0F,
                  connected ? kGreen : kAmber, gfx::Align::center);
         const gfx::Color shell = connected ? kText.with_alpha(0.12F) : kMuted.with_alpha(0.10F);
@@ -3858,9 +3884,9 @@ class Render::Impl
                               input.l2 > 0.5F ? kAccent : kText.with_alpha(0.16F));
         overlay_.rounded_rect({cx + 84.0F, cy - 164.0F, 158.0F, 24.0F}, 8.0F,
                               input.r2 > 0.5F ? kAccent : kText.with_alpha(0.16F));
-        ui::text(overlay_, fonts_.semibold, "L2", cx - 163.0F, cy - 146.0F, 16.0F, kText,
+        draw_text(overlay_, fonts_.semibold, "L2", cx - 163.0F, cy - 146.0F, 16.0F, kText,
                  gfx::Align::center);
-        ui::text(overlay_, fonts_.semibold, "R2", cx + 163.0F, cy - 146.0F, 16.0F, kText,
+        draw_text(overlay_, fonts_.semibold, "R2", cx + 163.0F, cy - 146.0F, 16.0F, kText,
                  gfx::Align::center);
 
         const auto stick = [this](float x, float y, float axis_x, float axis_y) {
@@ -3887,11 +3913,11 @@ class Render::Impl
         overlay_.rounded_rect({cx - 200.0F, cy - 36.0F, 28.0F, 92.0F}, 5.0F, dpad);
         overlay_.rounded_rect({cx - 34.0F, cy - 18.0F, 68.0F, 30.0F}, 8.0F,
                               input.options ? kAccent : kBackground.with_alpha(0.72F));
-        ui::text(overlay_, fonts_.semibold, "OPTIONS", cx, cy + 3.0F, 12.0F, kText,
+        draw_text(overlay_, fonts_.semibold, "OPTIONS", cx, cy + 3.0F, 12.0F, kText,
                  gfx::Align::center, 0.8F);
-        ui::text(overlay_, fonts_.regular, "Left stick", cx - 112.0F, cy + 122.0F, 16.0F,
+        draw_text(overlay_, fonts_.regular, "Left stick", cx - 112.0F, cy + 122.0F, 16.0F,
                  kSecondary, gfx::Align::center);
-        ui::text(overlay_, fonts_.regular, "Right stick", cx + 72.0F, cy + 122.0F, 16.0F,
+        draw_text(overlay_, fonts_.regular, "Right stick", cx + 72.0F, cy + 122.0F, 16.0F,
                  kSecondary, gfx::Align::center);
         draw_overlay_rows(view, {bounds.x + 20.0F, bounds.y + bounds.h - 104.0F,
                                  bounds.w - 40.0F, 84.0F});
@@ -3901,12 +3927,12 @@ class Render::Impl
                               gfx::Color color, float max_width)
     {
         const ui::FontRef &face = font_for(value, fonts_.regular);
-        ui::text(overlay_, face, face.font->fit(value, size, max_width), x, y, size, color);
+        draw_text(overlay_, face, face.font->fit(shown(value), size, max_width), x, y, size, color);
     }
 
     void section_overlay(std::string_view value, float x, float y)
     {
-        ui::text(overlay_, fonts_.display, upper_latin(value), x, y, 20.0F, kSecondary,
+        draw_text(overlay_, fonts_.display, upper_latin(value), x, y, 20.0F, kSecondary,
                  gfx::Align::left, 2.4F);
     }
 
@@ -4006,7 +4032,7 @@ class Render::Impl
             right -= button_w + 16.0F;
         }
         if (!view.footer.empty())
-            ui::text(overlay_, fonts_.regular, fit(fonts_.regular, view.footer, 23.0F, right - x - 16.0F), x + 8.0F,
+            draw_text(overlay_, fonts_.regular, fit(fonts_.regular, view.footer, 23.0F, right - x - 16.0F), x + 8.0F,
                      footer_top + 52.0F, 23.0F, kSecondary);
         for (std::size_t index = 0; index < footer.size(); ++index)
         {
@@ -4017,7 +4043,7 @@ class Render::Impl
             overlay_.rounded_rect(rect, 8.0F, kPanel);
             overlay_.bordered_rect(rect, 8.0F, kText.with_alpha(0.04F), 2.0F,
                                    (row.dangerous && row.enabled ? kRed : kText).with_alpha(row.enabled ? 0.35F : 0.12F));
-            ui::text(overlay_, fonts_.display, row.title, rect.cx(), rect.cy() + 10.0F, 26.0F,
+            draw_text(overlay_, fonts_.display, row.title, rect.cx(), rect.cy() + 10.0F, 26.0F,
                      !row.enabled ? kMuted : row.dangerous ? kRed : kText, gfx::Align::center);
             focus_ring(overlay_, rect, amount);
         }
@@ -4120,9 +4146,9 @@ class Render::Impl
                 const gfx::Rect rect{bounds.x, y, bounds.w, 54.0F};
                 const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
                 focus_glow(overlay_, rect, amount);
-                ui::text(overlay_, fonts_.display, ui::upper(row.title), rect.x + 24.0F, rect.y + 35.0F,
+                draw_text(overlay_, fonts_.display, ui::upper(row.title), rect.x + 24.0F, rect.y + 35.0F,
                          20.0F, kSecondary, gfx::Align::left, 2.4F);
-                ui::text(overlay_, fonts_.regular, row.value, rect.x + rect.w - 24.0F, rect.y + 35.0F, 18.0F,
+                draw_text(overlay_, fonts_.regular, row.value, rect.x + rect.w - 24.0F, rect.y + 35.0F, 18.0F,
                          kMuted, gfx::Align::right);
                 focus_ring(overlay_, rect, amount);
                 y += rect.h + 12.0F;
@@ -4149,7 +4175,7 @@ class Render::Impl
             }
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
             {
-                ui::text(overlay_, fonts_.display, ui::upper(row.title), bounds.x + 12.0F, y + 28.0F,
+                draw_text(overlay_, fonts_.display, ui::upper(row.title), bounds.x + 12.0F, y + 28.0F,
                          18.0F, kMuted, gfx::Align::left, 1.8F);
                 y += 54.0F;
                 continue;
@@ -4194,7 +4220,7 @@ class Render::Impl
             // Game names may need a fallback face (Greek, CJK, Arabic).
             const ui::FontRef &face = font_for(overlay_label(row), fonts_.display);
             const std::string label = fit(face, overlay_label(row), 28.0F, rect.w - 64.0F - value_width);
-            ui::text(overlay_, face, label, name_x, name_y, 28.0F, ink);
+            draw_text(overlay_, face, label, name_x, name_y, 28.0F, ink);
             if (settings_sheet && !row.badge.empty() && row.kind != RowKind::Heading)
             {
                 const float tag_x = name_x + face.measure(label, 28.0F) + 14.0F;
@@ -4202,19 +4228,19 @@ class Render::Impl
                 if (tag_x + tag_w < rect.x + rect.w - 40.0F - value_width)
                 {
                     overlay_.rounded_rect({tag_x, name_y - 21.0F, tag_w, 24.0F}, 4.0F, kText.with_alpha(0.08F));
-                    ui::text(overlay_, fonts_.semibold, ui::upper(row.badge), tag_x + 8.0F, name_y - 4.0F, 13.0F, kSecondary);
+                    draw_text(overlay_, fonts_.semibold, ui::upper(row.badge), tag_x + 8.0F, name_y - 4.0F, 13.0F, kSecondary);
                 }
             }
             if (described && view.surface == "import-choice")
                 // Under the value's line: the whole width, on two lines when it needs them.
-                ui::paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 74.0F, 19.0F, hint_width,
+                draw_paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 74.0F, 19.0F, hint_width,
                               26.0F, row.enabled ? kSecondary : kMuted, 2);
             else if (described)
-                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row.subtitle, 19.0F, rect.w - 72.0F - value_width),
+                draw_text(overlay_, fonts_.regular, fit(fonts_.regular, row.subtitle, 19.0F, rect.w - 72.0F - value_width),
                          checkbox ? name_x : rect.x + 24.0F, rect.y + 74.0F, 19.0F,
                          row.tone == "problem" ? kRed : row.tone == "good" ? kGreen : row.enabled ? kSecondary : kMuted);
             if (!value.empty())
-                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, value, 22.0F, value_width), rect.x + rect.w - 24.0F,
+                draw_text(overlay_, fonts_.regular, fit(fonts_.regular, value, 22.0F, value_width), rect.x + rect.w - 24.0F,
                          described ? rect.y + 52.0F : rect.cy() + 8.0F, 22.0F,
                          row.modified || row.selected ? kAccent : row.enabled ? kSecondary : kMuted, gfx::Align::right);
             if (row.progress > 0.0F)
