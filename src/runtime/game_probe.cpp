@@ -282,6 +282,38 @@ std::string FindShipping(const fs::path& root, const std::string& relative, int 
   return {};
 }
 
+// Prefer an inner executable with the root program's name. Otherwise use a non-installer
+// program only when the bounded Unreal scan finds exactly one candidate.
+void FindUnrealExecutables(const fs::path& root, const std::string& relative, int depth,
+                           const std::string& root_program, std::vector<std::string>* out,
+                           std::string* same_name) {
+  if (depth > 4 || !same_name->empty()) return;
+  const auto entries = Entries(root / relative);
+  if (Lower(relative).find("binaries/win64") != std::string::npos) {
+    for (const auto& [name, directory] : entries) {
+      if (directory || !EndsWith(Lower(name), ".exe")) continue;
+      const auto lower_name = Lower(name);
+      if (std::any_of(std::begin(kInstallerWords), std::end(kInstallerWords),
+                      [&](const char* word) { return lower_name.find(word) != std::string::npos; }))
+        continue;
+      const auto path = relative.empty() ? name : relative + "/" + name;
+      if (lower_name == root_program) {
+        *same_name = path;
+        return;
+      }
+      if (out->size() < 2) out->push_back(path);
+    }
+  }
+  for (const auto& [name, directory] : entries) {
+    if (!directory) continue;
+    const auto lower = Lower(name);
+    if (lower == "engine" || lower == "content" || lower == "saved" || lower == "plugins") continue;
+    FindUnrealExecutables(root, relative.empty() ? name : relative + "/" + name, depth + 1, root_program,
+                          out, same_name);
+    if (!same_name->empty()) return;
+  }
+}
+
 // Microsoft's MFC library, which Wine doesn't provide: mfc140.dll, mfc140u.dll, mfcm140.dll, mfcm140u.dll (and
 // whatever later 140 builds add).
 bool MfcLibrary(const std::string& lower) {
@@ -371,6 +403,16 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.engine = "unreal";
     if (!EndsWith(lower_file, "-shipping.exe")) {
       probe.unreal_program = FindShipping(root, folder, 0);
+      if (probe.unreal_program.empty()) {
+        std::vector<std::string> candidates;
+        std::string same_name;
+        FindUnrealExecutables(root, folder, 0, lower_file, &candidates, &same_name);
+        if (!same_name.empty()) {
+          if (same_name != executable) probe.unreal_program = same_name;
+        } else if (candidates.size() == 1 && candidates.front() != executable) {
+          probe.unreal_program = candidates.front();
+        }
+      }
       // The root program is only a launcher: the engine version is in the Shipping program.
       std::set<std::string> shipping_apis;
       if (!probe.unreal_program.empty())

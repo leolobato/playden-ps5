@@ -26,7 +26,7 @@ struct GameProbe {
   bool shared_section = false;
   bool anticheat = false;   // an EasyAntiCheat or BattlEye folder in the game
   // For an Unreal game started through its root program (which starts the real one as a
-  // child process, which the console cannot do): the *-Shipping.exe to start instead,
+  // child process, which the console cannot do): the selected inner executable to start instead,
   // relative to the install root, as spelled on disk.
   std::string unreal_program;
   bool unreal5 = false;  // Unreal Engine 5 (its Shipping program names Nanite's settings)
