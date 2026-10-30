@@ -41,6 +41,8 @@ class LiveArtworkCache {
   [[nodiscard]] std::uint32_t TextureFor(GameId, std::string_view source,
                                          std::uint32_t* width = nullptr,
                                          std::uint32_t* height = nullptr);
+  // Its load failed (it may still be retried): the caller can show something else meanwhile.
+  [[nodiscard]] bool Failed(GameId, std::string_view source) const;
   void EndFrame();
   [[nodiscard]] ArtworkCacheStats Stats() const noexcept;
 

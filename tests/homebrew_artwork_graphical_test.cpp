@@ -1,4 +1,5 @@
 #include "homebrew/artwork.hpp"
+#include "homebrew/program_icon.hpp"
 #include "homebrew/render.hpp"
 #include "homebrew/simulation.hpp"
 #include "gfx/gl_program.hpp"
@@ -17,7 +18,17 @@ struct Backend final : ArtworkBackend {
     std::atomic<bool> release{false};
     std::optional<ArtworkImage> Load(const ArtworkKey& key, const std::atomic<bool>& cancel) override {
         while (!release && !cancel) std::this_thread::sleep_for(1ms);
-        if (cancel || key.game_id == SteamId(44)) return std::nullopt;
+        if (cancel) return std::nullopt;
+        // The program's icon: a 32x32 orange disc on a transparent ground.
+        if (ProgramIconPath(key.source)) {
+            ArtworkImage icon{32,32,std::vector<std::uint8_t>(32*32*4,0)};
+            for (int y=0;y<32;++y) for (int x=0;x<32;++x)
+                if ((x-16)*(x-16)+(y-16)*(y-16)<15*15) {
+                    auto* p=&icon.rgba[(y*32+x)*4]; p[0]=240; p[1]=140; p[2]=30; p[3]=255;
+                }
+            return icon;
+        }
+        if (key.game_id == SteamId(44)) return std::nullopt;
         ArtworkImage result{64,96,{}};
         result.rgba.resize(64*96*4);
         for (std::size_t i=0;i<result.rgba.size();i+=4) {
@@ -69,6 +80,20 @@ int main(int argc,char** argv) {
         assert(renderer.diagnostics().live_artwork_gpu_bytes==2*64*96*4);
         for(int i=0;i<16;++i) renderer.draw(model,1920,1080);
         assert(renderer.capture_png(output/"ready.png",1920,1080));
+        // A game whose cover failed shows the icon inside its program once it is prepared (#213).
+        LiveRuntimeGame prepared;
+        prepared.game_id=SteamId(44);
+        prepared.status="Ready";
+        prepared.program_icon=ProgramIconSource("/data/playden-games/44/Game.exe");
+        model.UpdateRuntime(RuntimeState::Ready,{prepared});
+        const auto icon_deadline=std::chrono::steady_clock::now()+3s;
+        while(renderer.diagnostics().live_artwork_texture_count<3 && std::chrono::steady_clock::now()<icon_deadline) {
+            renderer.draw(model,1920,1080);
+            std::this_thread::sleep_for(1ms);
+        }
+        assert(renderer.diagnostics().live_artwork_texture_count==3);
+        for(int i=0;i<16;++i) renderer.draw(model,1920,1080);
+        assert(renderer.capture_png(output/"program-icon.png",1920,1080));
         const auto generation=model.state().account_generation;
         model.UpdateAccount({AuthState::SignedOut,{},{},{},{},true});
         // Same-account replacement in one render interval must still invalidate resources.

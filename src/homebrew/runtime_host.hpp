@@ -110,10 +110,11 @@ struct RuntimeHostConfig {
   // startup. The wrapper writes it inside the private bottle tree, which only
   // the app user can read.
   std::function<void(const std::string& title_id, const std::string& text)> title_log;
-  // The game's PS5 title icon: a 512x512 PNG made from its store artwork, or
-  // nothing (the kit's icon stays). Runs on the worker; may use the network.
-  // Named by the game, so a runtime number never reaches a store's artwork.
-  std::function<std::optional<std::string>(const GameId& game)> title_icon;
+  // The game's PS5 title icon: a 512x512 PNG made from its store artwork, else from
+  // the icon of `program` (the program the title starts, a host path; empty when
+  // unknown), or nothing (the kit's icon stays). Runs on the worker; may use the
+  // network. Named by the game, so a runtime number never reaches a store's artwork.
+  std::function<std::optional<std::string>(const GameId& game, const std::filesystem::path& program)> title_icon;
   // The DLC of a Steam game this account owns, from the Library's license read and app lookups
   // (EntitledLibraryBackend::DlcOf). Each prepare adds them to what the download recorded, so DLC past
   // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator. Empty: none.

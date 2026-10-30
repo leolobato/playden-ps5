@@ -2678,7 +2678,12 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   const std::string name = title_name.empty() ? "Steam game " + std::to_string(record.runtime_number) : title_name;
   if (!replace_value("titleName", JsonEscaped(name)))
     Log("title metadata app=" + std::to_string(record.runtime_number) + " keeps the kit's name: unexpected layout");
-  const auto icon = config_.title_icon ? config_.title_icon(GameOf(record)) : std::nullopt;
+  std::filesystem::path program;
+  if (auto launch = record.launch_path; !launch.empty() && !record.install_path.empty()) {
+    std::replace(launch.begin(), launch.end(), '\\', '/');
+    program = HostPath(record.install_path) / launch;
+  }
+  const auto icon = config_.title_icon ? config_.title_icon(GameOf(record), program) : std::nullopt;
   Log("title metadata app=" + std::to_string(record.runtime_number) + " name=" + name + " icon=" +
       (icon ? std::to_string(icon->size()) + "B" : std::string("kit")));
   return c.installer->WriteTitleMetadata(record, param, icon);

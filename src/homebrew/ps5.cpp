@@ -19,6 +19,7 @@
 #include "runtime/settings_storage.h"
 #include "runtime/writable_folders.h"
 #include "homebrew/runtime_host.hpp"
+#include "homebrew/program_icon.hpp"
 #include "homebrew/title_icon.hpp"
 #include "platform/ps5/title_allow_list.h"
 #include "platform/ps5/console_address.h"
@@ -559,8 +560,8 @@ int main() {
                     std::fclose(file);
                 }
             };
-            // The game's PS5 title icon, from its Steam cover; without one, the packaged
-            // generic icon. Only a missing generic icon leaves the kit's.
+            // The game's PS5 title icon, from its Steam cover; without one, its program's own
+            // icon, then the packaged generic icon. Only a missing generic icon leaves the kit's.
             std::optional<std::string> generic_icon;
             if (FILE* file = std::fopen((paths.assets_root + "/generic-title-icon.png").c_str(), "rb")) {
                 std::string bytes;
@@ -579,7 +580,8 @@ int main() {
                     if (grant->apps.count(dlc)) owned.push_back(dlc);
                 return owned;
             };
-            config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon](const playden::GameId& game) -> std::optional<std::string> {
+            config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon](
+                                    const playden::GameId& game, const std::filesystem::path& program) -> std::optional<std::string> {
                 // A store with no cover for the game (an imported one) gets the generic icon.
                 const auto source = playden::homebrew::CoverUrl(game);
                 std::optional<playden::homebrew::ArtworkImage> cover;
@@ -589,8 +591,16 @@ int main() {
                     cover = backend.Load({1, game, source}, cancel);
                 }
                 if (auto icon = cover ? playden::homebrew::MakeTitleIcon(*cover) : std::nullopt) return icon;
+                // An imported game, or a Steam game without a cover: the icon inside its program.
+                const auto own = program.empty() ? std::nullopt : playden::homebrew::ReadProgramIcon(program.string());
+                if (auto icon = own ? playden::homebrew::MakeProgramTitleIcon(*own) : std::nullopt) {
+                    playden::app::AppendLogLine(log_root, "runtime.log", "title icon app=" + playden::ToKey(game) +
+                                                " uses the program's icon: no cover program=" + program.filename().string());
+                    return icon;
+                }
                 playden::app::AppendLogLine(log_root, "runtime.log", "title icon app=" + playden::ToKey(game) +
-                                            (generic_icon ? " uses the generic icon: no cover" : " has no cover or generic icon"));
+                                            (generic_icon ? " uses the generic icon: no cover or program icon"
+                                                          : " has no cover, program icon or generic icon"));
                 return generic_icon;
             };
             // What Playden downloads for a game's bottle (Microsoft's Visual C++ redistributable, for games that need
@@ -901,7 +911,9 @@ int main() {
         playden::homebrew::Render renderer(paths.assets_root);
 #else
         playden::homebrew::HttpArtworkBackend artwork_backend(paths.trust_store, art_cache_dir);
-        playden::homebrew::ArtworkService artwork(artwork_backend);
+        // Games without store art show the icon inside their program, read from the game's files.
+        playden::homebrew::ProgramIconArtworkBackend program_icons(artwork_backend);
+        playden::homebrew::ArtworkService artwork(program_icons);
         playden::homebrew::Render renderer(paths.assets_root, &artwork);
 #endif
         hui::ps5::Pad pad;

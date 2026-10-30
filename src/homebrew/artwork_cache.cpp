@@ -148,6 +148,15 @@ std::uint32_t LiveArtworkCache::TextureFor(GameId game_id, std::string_view sour
   return entry->texture;
 }
 
+bool LiveArtworkCache::Failed(GameId game_id, std::string_view source) const {
+  const auto& state = *state_;
+  if (state.generation == 0) return false;
+  for (const auto& entry : state.entries)
+    if (entry.key.account_generation == state.generation && entry.key.game_id == game_id && entry.key.source == source)
+      return entry.failed && entry.texture == 0;
+  return false;
+}
+
 void LiveArtworkCache::EndFrame() {
   auto& state = *state_;
   state.entries.erase(std::remove_if(state.entries.begin(), state.entries.end(), [&state](const auto& entry) {

@@ -262,6 +262,9 @@ struct LiveRuntimeGame {
     // came from the game's own steam_appid.txt (which wins over the one in Game settings).
     std::uint32_t steam_app_id = 0;
     bool steam_app_from_game_file = false;
+    // The artwork source of the icon inside the program its title starts (homebrew/program_icon.hpp), shown
+    // where the game has no cover art; empty before it is prepared.
+    std::string program_icon;
 };
 // A preparation that ended Ready, listed in Queue after the waiting games.
 struct LiveCompletedPreparation {

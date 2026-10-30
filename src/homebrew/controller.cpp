@@ -1,4 +1,5 @@
 #include "homebrew/controller.hpp"
+#include "homebrew/program_icon.hpp"
 #include "diagnostics/redaction.h"
 #include "steam/install_volumes.h"
 #include "steam/secret.h"
@@ -1452,6 +1453,10 @@ void Controller::TickRuntime() {
       game.runtime_current = record->runtime_current;
       game.save_backups = record->save_backups;
       game.latest_save_backup = record->latest_save_backup;
+      if (auto program = record->launch_path; !program.empty() && !record->install_path.empty()) {
+        std::replace(program.begin(), program.end(), '\\', '/');
+        game.program_icon = ProgramIconSource(record->install_path + "/" + program);
+      }
     }
     if (const auto answer = snapshot.activity.find(NumberIn(snapshot, id)); answer != snapshot.activity.end())
       game.activity = answer->second.first == runtime::NativeActivity::kStopped ? TitleActivity::Stopped

@@ -4,6 +4,7 @@
 
 #include "homebrew/render.hpp"
 #include "homebrew/artwork_backend.hpp"
+#include "homebrew/program_icon.hpp"
 #include "homebrew/simulation.hpp"
 #include "homebrew/controller.hpp"
 #include "steam/install_volumes.h"
@@ -475,6 +476,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::stores::Registry> stores;  // declared first: the controller uses it
     std::unique_ptr<playden::homebrew::Controller> services;
     std::unique_ptr<playden::homebrew::HttpArtworkBackend> artwork_backend;
+    std::unique_ptr<playden::homebrew::ProgramIconArtworkBackend> program_icons;
     std::unique_ptr<playden::homebrew::ArtworkService> artwork;
     if (!options->scenario.empty() && !simulation.scenario(options->scenario)) {
         std::fprintf(stderr, "%s\n", simulation.last_error().c_str());
@@ -759,7 +761,8 @@ int main(int argc, char** argv) {
     if (!options->simulation) {
         const std::string art_cache_dir = (options->data_directory / "art").string();
         artwork_backend = std::make_unique<playden::homebrew::HttpArtworkBackend>(PLAYDEN_HOMEBREW_CA_BUNDLE, art_cache_dir);
-        artwork = std::make_unique<playden::homebrew::ArtworkService>(*artwork_backend);
+        program_icons = std::make_unique<playden::homebrew::ProgramIconArtworkBackend>(*artwork_backend);
+        artwork = std::make_unique<playden::homebrew::ArtworkService>(*program_icons);
     }
     auto render = std::make_unique<playden::homebrew::Render>(PLAYDEN_HOMEBREW_ASSETS_DIR, artwork.get());
     if (!options->capture.empty() && options->recording.empty()) {

@@ -571,7 +571,7 @@ void PreparesExistingDownloadToReady() {
     ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
   };
   config.unix_time = [] { return std::int64_t{1760000000}; };
-  config.title_icon = [](const playden::GameId& game) -> std::optional<std::string> {
+  config.title_icon = [](const playden::GameId& game, const fs::path&) -> std::optional<std::string> {
     return game == playden::GameId::Steam(220) ? std::optional<std::string>("game-icon-png") : std::nullopt;
   };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
@@ -1174,7 +1174,7 @@ void RepairsBottleRegistryModes() {
   CHECK(chmod(title_param.c_str(), 0644) == 0);
   Write(title_param, Read(fixture.root / "kit/titles/variant/sce_sys/param.json"), 0644);
   auto named = config;
-  named.title_icon = [](const playden::GameId&) -> std::optional<std::string> { return std::string("game-icon-png"); };
+  named.title_icon = [](const playden::GameId&, const fs::path&) -> std::optional<std::string> { return std::string("game-icon-png"); };
   RuntimeHost upgraded(named);
   CHECK(upgraded.Start());
   CHECK(!WaitFor(upgraded, Started).installs[0].title_current);
@@ -3034,8 +3034,10 @@ void LocalGameKeepsItsBottle() {
   config.removal_confirm_polls = 3;
   config.removal_poll_interval = std::chrono::milliseconds(1);
   std::vector<playden::GameId> icons;
-  config.title_icon = [&icons](const playden::GameId& game) -> std::optional<std::string> {
+  std::vector<fs::path> icon_programs;
+  config.title_icon = [&icons, &icon_programs](const playden::GameId& game, const fs::path& program) -> std::optional<std::string> {
     icons.push_back(game);
+    icon_programs.push_back(program);
     return std::nullopt;
   };
   config.unregister_title = [&fixture](const std::string&, const std::string&) {
@@ -3076,6 +3078,8 @@ void LocalGameKeepsItsBottle() {
     CHECK(!ready.refusals.count(number) && ready.installs.size() == 1 && ready.installs[0].game == local);
     CHECK(ready.installs[0].install_id == "local-0f8fad5b-d9cb-469f-a165-70867728950e");
     CHECK(std::find(icons.begin(), icons.end(), local) != icons.end());  // named by game, not by number
+    // With the program the title starts, on the host, for a game without cover art.
+    CHECK(!icon_programs.empty() && icon_programs.back() == fixture.root / "data/playden-import/Imported/Bin/Game.exe");
     CHECK(ready.generated_recipes.size() == 1 && ready.generated_recipes[0].id == playden::GeneratedRecipeId(local) &&
           playden::runtime::RecipeGame(ready.generated_recipes[0]) == local);
     // A store's name in the title name (any store's) is not the game's: the kept bottle names the game.

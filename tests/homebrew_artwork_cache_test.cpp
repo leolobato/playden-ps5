@@ -251,7 +251,37 @@ void TextureCountEvictsLeastRecentlySeenUnusedEntry() {
 
 }  // namespace
 
+// A cover that failed to load says so, so a tile can show the program's icon meanwhile (#213).
+void FailedLoadIsReported() {
+  ControlledArtwork backend;
+  backend.failed.insert(SteamId(30));
+  ArtworkService service(backend, 1h);
+  FakeTextures textures;
+  LiveArtworkCache cache(service, textures);
+  cache.BeginFrame(1);
+  assert(!cache.Failed(SteamId(30), "cover") && cache.TextureFor(SteamId(30), "cover") == 0);
+  assert(cache.TextureFor(SteamId(31), "cover") == 0);
+  cache.EndFrame();
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  bool failed = false;
+  while (!failed && std::chrono::steady_clock::now() < deadline) {
+    cache.BeginFrame(1);
+    (void)cache.TextureFor(SteamId(30), "cover");
+    (void)cache.TextureFor(SteamId(31), "cover");
+    cache.EndFrame();
+    failed = cache.Failed(SteamId(30), "cover");
+    std::this_thread::sleep_for(1ms);
+  }
+  assert(failed && !cache.Failed(SteamId(30), "other") && !cache.Failed(SteamId(32), "cover"));
+  assert(AwaitTexture(cache, 1, SteamId(31), "cover") != 0 && !cache.Failed(SteamId(31), "cover"));
+  // Another account's cache knows nothing of it.
+  cache.BeginFrame(2);
+  assert(!cache.Failed(SteamId(30), "cover"));
+  cache.EndFrame();
+}
+
 int main() {
+  FailedLoadIsReported();
   DeduplicatesAndUploadsOnlyOnUiThread();
   UploadCountIsBoundedPerFrame();
   LateSourceAndGenerationCannotPopulateCurrentIdentity();

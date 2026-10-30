@@ -1757,6 +1757,8 @@ class Render::Impl
             ? (game.art_failed || game.art_pending || !game.id.steam_app() ? 0 : art_[texture_index])
             : (live_artwork_ && current_state_ && !current_state_->account().id.empty()
                 ? store_texture(game.id, CoverUrl(game)) : 0);
+        // No cover from the store: the icon inside the game's program, over its colour (#213).
+        const std::uint32_t icon = simulated || texture != 0 ? 0 : program_icon_texture(game.id, CoverUrl(game));
         const TileStatus status = tile_status(game.id);
         // Glow first: it is a filled soft shape, and the art must cover its middle so only the
         // light outside the tile shows, as on macOS. The art itself is never tinted.
@@ -1770,6 +1772,13 @@ class Render::Impl
             scene_.gradient_rect(rect, 8.0F, id_color(game.id), gfx::Color::rgb(0x24201D));
             // A thumbnail (the Queue's) is too narrow for words: its row names the game.
             const bool words_fit = rect.w >= 120.0F;
+            if (icon != 0)
+            {
+                // Above the title on a tile; alone, and larger, on a thumbnail.
+                const float side = words_fit ? std::min(rect.w * 0.5F, rect.h * 0.36F) : std::min(rect.w, rect.h) * 0.72F;
+                const float centre = words_fit ? rect.y + rect.h * 0.34F : rect.cy();
+                scene_.image(icon, {rect.cx() - side * 0.5F, centre - side * 0.5F, side, side}, gfx::kFullUv, kText, 0.0F);
+            }
             if (words_fit && game.art_pending)
             {
                 ui::text(scene_, fonts_.display, "Artwork loading", rect.cx(), rect.y + rect.h * 0.52F,
@@ -1780,8 +1789,8 @@ class Render::Impl
                 // The focus overlay names a focused tile, so the placeholder need not repeat it.
                 const float placeholder = title_overlay ? 1.0F - amount : 1.0F;
                 const ui::FontRef &face = font_for(game.title, fonts_.display);
-                ui::paragraph(scene_, face, game.title, rect.cx(), rect.y + rect.h * 0.42F,
-                              28.0F, rect.w - 36.0F, 31.0F, kText.with_alpha(placeholder), 4, gfx::Align::center);
+                ui::paragraph(scene_, face, game.title, rect.cx(), rect.y + rect.h * (icon != 0 ? 0.62F : 0.42F),
+                              28.0F, rect.w - 36.0F, 31.0F, kText.with_alpha(placeholder), icon != 0 ? 3 : 4, gfx::Align::center);
             }
         }
         const bool downloading = status.job != nullptr &&
@@ -2514,6 +2523,17 @@ class Render::Impl
         return url.empty() || !live_artwork_ ? 0 : live_artwork_->TextureFor(id, url, width, height);
     }
 
+    // The icon inside a prepared game's program (program_icon.hpp), for a game whose store has no cover
+    // or whose cover failed to load; 0 otherwise, and while the cover may still come.
+    std::uint32_t program_icon_texture(GameId id, const std::string &cover_url)
+    {
+        if (!live_artwork_ || current_state_ == nullptr) return 0;
+        if (!cover_url.empty() && !live_artwork_->Failed(id, cover_url)) return 0;
+        const auto game = current_state_->runtime_games.find(id);
+        if (game == current_state_->runtime_games.end() || game->second.program_icon.empty()) return 0;
+        return live_artwork_->TextureFor(id, game->second.program_icon);
+    }
+
     // A label over its value, as the macOS details metadata.
     void detail_cell(std::string_view label, std::string_view value, float x, float y, float width,
                      gfx::Color tone = kText)
@@ -2565,8 +2585,13 @@ class Render::Impl
                 scene_.image(cover, rect, gfx::kFullUv, kText, 6.0F);
                 return;
             }
-        // No cover: the game's colour alone.
+        // No cover: the game's colour, with its program's icon when there is one.
         scene_.gradient_rect(rect, 6.0F, id_color(id), gfx::Color::rgb(0x24201D));
+        if (const std::uint32_t icon = program_icon_texture(id, CoverUrl(id)))
+        {
+            const float side = std::min(rect.w, rect.h) * 0.72F;
+            scene_.image(icon, {rect.cx() - side * 0.5F, rect.cy() - side * 0.5F, side, side}, gfx::kFullUv, kText, 0.0F);
+        }
     }
 
     // The Saves tab: filter chips and Sync all over one list of games with saves on this console.
