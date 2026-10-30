@@ -42,7 +42,8 @@ private Windows environment and its own tile on the PS5 Home screen.
   [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton) (kit 0.11 and later), OpenGL through Mesa's Zink, and
   Vulkan, all on the PS5 GPU's Vulkan driver.
 - **Gamepad support.** XInput, DirectInput, Raw Input, Windows.Gaming.Input and the Windows multimedia joystick API,
-  with rumble. Games see the DualSense as an Xbox controller.
+  with rumble. Games see the DualSense as an Xbox controller, or, per game, as a PlayStation controller (a DualShock 4)
+  for games that show PlayStation buttons; that choice needs a runtime kit with it.
 - **Local multiplayer.** Each signed-in PS5 user's DualSense is its own controller, up to four, for games with local
   co-op or split screen, through XInput and the HID gamepad APIs (a runtime kit newer than 0.18). Player 2 must sign in to the PS5 as another user (or a guest) with their own DualSense.
 - **Mouse and keyboard.** Plug a USB mouse and keyboard into the PS5, or use a controller preset: the left stick as a

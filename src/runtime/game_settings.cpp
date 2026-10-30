@@ -146,6 +146,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // Controls.
   list.push_back(Choice("controller", "Controller", "How the game sees your DualSense.", "[input] mode", G::kControls,
                         {{"xinput", "Xbox controller", "For games with controller support."},
+                         {"playstation", "PlayStation controller",
+                          "For games that show PlayStation buttons. Games that only read Xbox controllers see none."},
                          {"keyboard", "Keyboard and mouse mapping", "Buttons send keys and mouse clicks."}},
                         "xinput"));
   list.push_back(Choice("controller_preset", "Controller preset", "Ready-made button layout for this kind of game.",
@@ -544,7 +546,10 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if (id == "stick_deadzone" || id == "rumble" || id == "trigger_deadzone") {
     if (!kit.input_tuning && id != "rumble") return "Needs a prospero-win update with controller tuning.";
     const auto controller = values.find("controller");
-    if (controller == values.end() || controller->second.value != "xinput") return "Only with the Xbox controller.";
+    const std::string mode = controller == values.end() ? std::string() : controller->second.value;
+    // The title scales the game's rumble the same way for both controllers; the dead zones are XInput's.
+    if (id == "rumble" && mode != "xinput" && mode != "playstation") return "Only with a controller.";
+    if (id != "rumble" && mode != "xinput") return "Only with the Xbox controller.";
   }
   // Rows whose runtime or Playden side is not built yet: listed so players see what is coming.
   if (id == "invert_stick") return "Needs a prospero-win update that inverts sticks.";
@@ -654,6 +659,10 @@ bool IsUnlockKey(std::string_view key) {
 }
 
 std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::string_view id, std::string_view value) {
+  if (id == "controller") {
+    if (value != "playstation" || settings.input_playstation || settings.input_playstation_needs_update) return {};
+    return "Needs a runtime kit with the PlayStation controller.";
+  }
   if (id != "frame_limit" || value == "off") return {};
   const bool high = value == "120" || value == "40";
   if (!settings.display_120hz && !settings.display_120hz_needs_update) {
@@ -672,6 +681,7 @@ std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::str
 }
 
 bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_view id, std::string_view value) {
+  if (id == "controller") return value == "playstation" && settings.input_playstation_needs_update;
   if (id != "frame_limit" || value == "off" || !settings.display_120hz_needs_update) return false;
   // The older runtime's OpenGL has no cap; with DXVK it caps 60 and 30 now, and only the display paces 120 and 40.
   return settings.graphics != "dxvk" || value == "120" || value == "40";
@@ -813,6 +823,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.profile_version = kit.profile_version_2 ? 2 : 1;
   out.display_120hz = kit.display_120hz;
   out.display_120hz_needs_update = kit.display_120hz_needs_update;
+  out.input_playstation = kit.input_playstation;
+  out.input_playstation_needs_update = kit.input_playstation_needs_update;
 
   // A controller preset (runtime/input/<name>.input) brings its own mode, pointer stick and speed. Rows set less
   // deliberately than the preset show the preset's values, so the sheet tells the truth and Pointer speed can be tuned.
@@ -827,6 +839,27 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
         row.value = preset_value;
         row.source = source;
       }
+    }
+  }
+
+  // The PlayStation controller needs a kit with it, and a title on that kit's runtime: an older runtime refuses the
+  // profile's mode. Until then the controller preset's mode applies, or the Xbox controller, and a choice that waits
+  // for the update is kept for it. This runs before the rows that depend on the controller (Rumble, the dead zones).
+  {
+    auto& value = out.values["controller"];
+    std::string fallback = FindSetting("controller")->playden_default;
+    // A row the recipe locks takes no preset's mode, as above.
+    if (const auto preset = ControllerPresetInputs().find(out.values["controller_preset"].value);
+        preset != ControllerPresetInputs().end() && !(value.locked && !value.unlocked))
+      fallback = preset->second.at("controller");
+    if (auto reason = SettingChoiceUnavailable(out, "controller", value.value); !reason.empty()) {
+      value.value = fallback;
+      value.reason = std::move(reason);
+    } else if (SettingChoiceWaitsForUpdate(out, "controller", value.value)) {
+      value.after_update = value.value;
+      value.value = fallback;
+      value.reason = kAppliesAfterKitUpdate;
+      value.waits_for_update = true;
     }
   }
 
@@ -1124,12 +1157,14 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   text += "\n[input]\n";
   if (value("controller_preset") != "none") text += "preset = " + value("controller_preset") + "\n";
   // A controller preset brings its own mode, pointer stick and speed. A row overrides them only when it was
-  // set at least as deliberately as the preset (player over settings preset over recipe over Playden).
+  // set at least as deliberately as the preset (player over settings preset over recipe over Playden), or when
+  // the recipe locks it: BuildEffectiveSettings keeps a locked row over the preset's value too.
   const bool preset = value("controller_preset") != "none";
   const auto preset_source = settings.values.at("controller_preset").source;
   const auto chosen = [&](const char* id) {
-    const auto source = settings.values.at(id).source;
-    return !preset || (source != ValueSource::kPlayden && source >= preset_source);
+    const auto& row = settings.values.at(id);
+    return !preset || (row.locked && !row.unlocked) ||
+           (row.source != ValueSource::kPlayden && row.source >= preset_source);
   };
   if (chosen("controller")) text += "mode = " + value("controller") + "\n";
   if (chosen("pointer_stick")) text += "mouse = " + value("pointer_stick") + "\n";
@@ -1268,6 +1303,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_frame_rate = frame_rate;
   features.display_framegen = display_framegen;
   features.display_fps_counter = fps_counter;
+  features.input_playstation = value("controller") == "playstation";
   features.runtime_version = settings.profile_version == 2;
   features.launcher_section = launcher_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
@@ -3168,9 +3204,9 @@ namespace playden::runtime {
 const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
   static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFpsCounter, kKitDisplayFramegen,
-                                                 kKitInputRumble,  kKitLauncherMode,      kKitAudioVolume,
-                                                 kKitDxvkConfig,   kKitDxvkPresent,       kKitInputTuning,
-                                                 kKitInputWheel,   kKitEnvironment};
+                                                 kKitInputPlaystation, kKitInputRumble, kKitLauncherMode,
+                                                 kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
+                                                 kKitInputTuning, kKitInputWheel, kKitEnvironment};
   return names;
 }
 
@@ -3200,6 +3236,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.display_framegen = has(kKitDisplayFramegen);
   kit.display_fps_counter = has(kKitDisplayFpsCounter);
   kit.launcher_mode = has(kKitLauncherMode);
+  kit.input_playstation = has(kKitInputPlaystation);
   kit.registry = bottle_access;
   return kit;
 }
@@ -3228,6 +3265,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.launcher_mode) {
     kit.launcher_mode = false;
     kit.launcher_mode_needs_update = true;
+  }
+  if (!title_runtime_current && kit.input_playstation) {
+    kit.input_playstation = false;
+    kit.input_playstation_needs_update = true;
   }
   return kit;
 }
@@ -3499,6 +3540,9 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     }
     else if (feature == "display-fps-counter") {
       if (!kit.display_fps_counter && !kit.display_fps_counter_needs_update) return false;
+    }
+    else if (feature == "input-playstation") {
+      if (!kit.input_playstation && !kit.input_playstation_needs_update) return false;
     }
     // Legacy PR references are informational sidecar provenance. Unknown feature
     // names or version requirements need verified support before a preset is shown.

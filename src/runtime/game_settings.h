@@ -83,6 +83,10 @@ struct KitCapabilities {
   bool launcher_mode = false;  // [launcher]: the game starts through a launcher (kKitLauncherMode)
   bool launcher_mode_needs_update = false;  // the kit has it, but the game's title still runs an older runtime
   bool display_framegen_needs_update = false;
+  // [input] mode = playstation: the game finds the DualSense as a DualShock 4 on its HID bus, and no XInput
+  // controller. Counts only for a title that runs this kit's runtime, like display_120hz.
+  bool input_playstation = false;
+  bool input_playstation_needs_update = false;
 };
 
 struct SettingChoice {
@@ -263,6 +267,9 @@ struct EffectiveSettings {
   // (KitCapabilities::display_120hz); without it Frame limit is DXVK's maxFrameRate, as before.
   bool display_120hz = false;
   bool display_120hz_needs_update = false;
+  // The title's runtime takes [input] mode = playstation (KitCapabilities::input_playstation).
+  bool input_playstation = false;
+  bool input_playstation_needs_update = false;
 };
 
 // The launch entry id of a program the player chose from the game folder.
@@ -286,8 +293,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
                             const std::map<std::string, std::string>& overrides, const KitCapabilities& kit,
                             EffectiveSettings* settings, SettingsError* error);
 
-// Why one choice of a row cannot apply with the other effective values (Frame limit 120 and 40 need 120 Hz output),
-// or empty when it can. BuildEffectiveSettings turns such a saved choice into the Playden default, with this reason.
+// Why one choice of a row cannot apply with the other effective values (Frame limit 120 and 40 need 120 Hz output,
+// Controller PlayStation a kit with input-playstation), or empty when it can. BuildEffectiveSettings turns such a saved choice into the Playden default, with this reason.
 // On a title that still runs an older runtime, a choice that needs the kit's (Frame limit 120 with 120 Hz output
 // chosen) is not unavailable: it waits for the update (SettingChoiceWaitsForUpdate).
 std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::string_view id, std::string_view value);
@@ -519,8 +526,8 @@ bool ParseCommunityRecipe(std::string_view json, CommunityRecipe* community, std
 
 // Whether the kit's runtime has every newer profile feature the sidecar declares in
 // requires.prospero_win: the kit capability names without "settings-" (profile-environment,
-// input-tuning, input-wheel, audio-volume; see prospero-win-profiles SIDECARS.md), and display-120hz, input-rumble and
-// display-framegen, which need the game's own title on such a runtime: pass the kit as KitForTitleRuntime gives it
+// input-tuning, input-wheel, audio-volume; see prospero-win-profiles SIDECARS.md), and display-120hz, input-rumble,
+// display-framegen and input-playstation, which need the game's own title on such a runtime: pass the kit as KitForTitleRuntime gives it
 // for the game. Other entries (pull requests, versions) are not checked.
 bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabilities& kit);
 
@@ -574,6 +581,9 @@ inline constexpr const char* kKitDisplayFpsCounter = "display-fps-counter";
 // The title reads [launcher]: the exec chain only for a game that asks for it, a second input for the first
 // program, and the touchpad hold that swaps them. Runtimes without it refuse a profile with the section.
 inline constexpr const char* kKitLauncherMode = "launcher-mode";
+// The title takes [input] mode = playstation: the game's Wine finds the DualSense as a wired DualShock 4 on its HID
+// bus, with the controller's own reports, and XInput reports no controller. Runtimes without it refuse the value.
+inline constexpr const char* kKitInputPlaystation = "input-playstation";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the
@@ -583,8 +593,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz, profile_version_2, input_rumble, display_framegen and display_fps_counter are off and their
-// _needs_update say why.
+// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter and input_playstation are off
+// and their _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 
 // Everything one game's settings put on disk for its next launch.

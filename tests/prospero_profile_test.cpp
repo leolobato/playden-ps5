@@ -180,6 +180,12 @@ int main(int argc, char** argv) {
     CHECK(CheckProsperoProfile(base + "[display]\nframegen = " + factor + "\n", &reason, {.display_framegen = true}));
   CHECK(!CheckProsperoProfile(base + "[display]\nframegen = 5\n", &reason, {.display_framegen = true}));
   CHECK(CheckProsperoProfile(base + "[display]\nopengl_thread = true\n", &reason));
+  // [input] mode = playstation needs an input-playstation runtime.
+  CHECK(!CheckProsperoProfile(base + "[input]\nmode = playstation\n", &reason));
+  CHECK(CheckProsperoProfile(base + "[input]\nmode = playstation\n", &reason, {.input_playstation = true}));
+  CHECK(CheckProsperoProfile(base + "[input]\nmode = xinput\n", &reason, {.input_playstation = true}));
+  CHECK(CheckProsperoProfile(base + "[input]\nmode = keyboard\n", &reason, {.input_playstation = true}));
+  CHECK(!CheckProsperoProfile(base + "[input]\nmode = dualshock4\n", &reason, {.input_playstation = true}));
   CHECK(!CheckProsperoProfile(base + "[input]\nmouse_speed = 0\n", &reason));
   CHECK(!CheckProsperoProfile(base + "[input]\nrumble = 50\n", &reason));                 // released runtimes refuse it
   CHECK(CheckProsperoProfile(base + "[input]\nstick_deadzone = 50\nrumble = 0\n", &reason, {.input_tuning = true}));

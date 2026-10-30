@@ -342,7 +342,10 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       if (key == "preset") {
         if (!IsIdentifier(value)) return bad("not a preset name");
       } else if (key == "mode") {
-        if (!OneOf(value, {"keyboard", "xinput"})) return bad("not keyboard or xinput");
+        if (features.input_playstation && value == "playstation") {
+        } else if (!OneOf(value, {"keyboard", "xinput"})) {
+          return bad("not keyboard or xinput");
+        }
       } else if (key == "mouse") {
         if (!OneOf(value, {"none", "left_stick", "right_stick"})) return bad("unknown pointer stick");
       } else if (key == "mouse_speed") {

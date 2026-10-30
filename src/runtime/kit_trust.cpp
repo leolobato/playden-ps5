@@ -15,7 +15,8 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
                                 kKitInputWheel, kKitEnvironment, kKitWineMono, kKitVkd3dProton,
                                 kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble,
-                                kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode};
+                                kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode,
+                                kKitInputPlaystation};
   std::sort(config.known_capabilities.begin(), config.known_capabilities.end());
   return config;
 }

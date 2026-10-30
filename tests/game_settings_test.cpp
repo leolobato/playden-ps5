@@ -920,7 +920,7 @@ int main(int argc, char** argv) {
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("stick_deadzone") == std::string::npos && profile.text.find("rumble") == std::string::npos);
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "keyboard"}, {"rumble", "0"}}, tuning_kit, &settings, &error));
-  CHECK(!settings.values.at("rumble").available && settings.values.at("rumble").reason == "Only with the Xbox controller.");
+  CHECK(!settings.values.at("rumble").available && settings.values.at("rumble").reason == "Only with a controller.");
   CHECK(!ValidateSettingValue(hl2, "stick_deadzone", "60", &reason) && ValidateSettingValue(hl2, "rumble", "25", &reason));
   // A kit with rumble alone (input-rumble) applies Rumble but not the dead zones, once the title runs its runtime.
   {
@@ -946,7 +946,100 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("rumble") == std::string::npos);
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "keyboard"}, {"rumble", "0"}}, rumble_kit, &settings, &error));
-    CHECK(settings.values.at("rumble").reason == "Only with the Xbox controller.");
+    CHECK(settings.values.at("rumble").reason == "Only with a controller.");
+  }
+  // The PlayStation controller (input-playstation): offered with the capability, waiting for the title's update on an
+  // older runtime, and Xbox controller (no new mode in the profile) until it counts. Rumble applies to it; the dead
+  // zones stay the Xbox controller's.
+  {
+    const auto playstation_kit = KitCapabilitiesFromManifest({kKitInputPlaystation, kKitInputRumble, kKitInputTuning}, false);
+    CHECK(playstation_kit.input_playstation && !KitCapabilitiesFromManifest({kKitInputRumble}, false).input_playstation);
+    CHECK(FindSetting("controller")->choices.size() == 3 && FindSetting("controller")->choices[1].value == "playstation");
+    CHECK(FindSetting("controller")->choices[1].label == "PlayStation controller");
+    CHECK(ValidateSettingValue(hl2, "controller", "playstation", &reason));
+    const std::map<std::string, std::string> chosen = {
+        {"controller", "playstation"}, {"rumble", "50"}, {"stick_deadzone", "10"}};
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, playstation_kit, &settings, &error));
+    CHECK(Value(settings, "controller") == "playstation" && settings.values.at("controller").available);
+    CHECK(SettingChoiceUnavailable(settings, "controller", "playstation").empty());
+    CHECK(!SettingChoiceWaitsForUpdate(settings, "controller", "playstation"));
+    CHECK(settings.values.at("rumble").available);
+    CHECK(!settings.values.at("stick_deadzone").available &&
+          settings.values.at("stick_deadzone").reason == "Only with the Xbox controller.");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nmode = playstation\n") != std::string::npos);
+    CHECK(profile.text.find("\nrumble = 50\n") != std::string::npos && profile.text.find("stick_deadzone") == std::string::npos);
+    CHECK(!CheckProsperoProfile(profile.text, &reason, {.input_tuning = true}));  // an older runtime refuses the mode
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_tuning = true, .input_playstation = true}));
+    // Without the capability the choice is unavailable: the Xbox controller applies, the record keeps the choice.
+    const auto rumble_kit = KitCapabilitiesFromManifest({kKitInputRumble}, false);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, rumble_kit, &settings, &error));
+    CHECK(Value(settings, "controller") == "xinput");
+    CHECK(settings.values.at("controller").reason == "Needs a runtime kit with the PlayStation controller.");
+    CHECK(SettingChoiceUnavailable(settings, "controller", "playstation") ==
+          "Needs a runtime kit with the PlayStation controller.");
+    CHECK(SettingChoiceUnavailable(settings, "controller", "xinput").empty() &&
+          SettingChoiceUnavailable(settings, "controller", "keyboard").empty());
+    CHECK(settings.values.at("rumble").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nmode = xinput\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_rumble = true}));
+    // With controller tuning, the dead zones follow the Xbox controller that applies.
+    const auto tuning_only = KitCapabilitiesFromManifest({kKitInputTuning}, false);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, chosen, tuning_only, &settings, &error));
+    CHECK(Value(settings, "controller") == "xinput" && settings.values.at("stick_deadzone").available);
+    // A title on an older runtime keeps the choice for its update; until then it is the Xbox controller.
+    const auto stale = KitForTitleRuntime(playstation_kit, false);
+    CHECK(!stale.input_playstation && stale.input_playstation_needs_update);
+    CHECK(KitForTitleRuntime(playstation_kit, true).input_playstation);
+    CHECK(!KitForTitleRuntime(KitCapabilities{}, false).input_playstation_needs_update);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller", "playstation"}}, stale, &settings, &error));
+    const auto& waiting = settings.values.at("controller");
+    CHECK(waiting.value == "xinput" && waiting.waits_for_update && waiting.after_update == "playstation");
+    CHECK(waiting.reason == kAppliesAfterKitUpdate && ChosenValue(waiting) == "playstation");
+    CHECK(SettingChoiceUnavailable(settings, "controller", "playstation").empty());
+    CHECK(SettingChoiceWaitsForUpdate(settings, "controller", "playstation"));
+    CHECK(!SettingChoiceWaitsForUpdate(settings, "controller", "keyboard"));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\nmode = xinput\n") != std::string::npos && profile.text.find("playstation") == std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason));
+    // A controller preset's mode gives way to a player's PlayStation choice.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "gamepad"}, {"controller", "playstation"}},
+                                 playstation_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\npreset = gamepad\nmode = playstation\n") != std::string::npos);
+    // And a keyboard preset's: its keys still apply, the DualSense is also the DualShock 4.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "arrows"}, {"controller", "playstation"}},
+                                 playstation_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\npreset = arrows\nmode = playstation\n") != std::string::npos);
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.input_playstation = true}));
+    // A recipe that locks the controller keeps it over a player's preset, in the sheet and in the profile.
+    {
+      GameRecipe locked = hl2;
+      locked.defaults["controller"] = "playstation";
+      locked.locked.insert("controller");
+      CHECK(BuildEffectiveSettings(locked, nullptr, {{"controller_preset", "arrows"}}, playstation_kit, &settings, &error));
+      CHECK(Value(settings, "controller") == "playstation" && settings.values.at("controller").locked);
+      CHECK(settings.values.at("rumble").available);
+      CHECK(RenderProsperoProfile(locked, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\npreset = arrows\nmode = playstation\n") != std::string::npos);
+      // Without the capability the lock still decides: the Xbox controller, not the preset's keyboard mode.
+      CHECK(BuildEffectiveSettings(locked, nullptr, {{"controller_preset", "arrows"}}, rumble_kit, &settings, &error));
+      CHECK(Value(settings, "controller") == "xinput");
+      CHECK(RenderProsperoProfile(locked, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\npreset = arrows\nmode = xinput\n") != std::string::npos);
+    }
+    // Without the capability, or before the title's update, the keyboard preset's own mode applies.
+    for (const auto& kit : {rumble_kit, stale}) {
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "arrows"}, {"controller", "playstation"}},
+                                   kit, &settings, &error));
+      CHECK(Value(settings, "controller") == "keyboard");
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("playstation") == std::string::npos);
+      CHECK(profile.text.find("\npreset = arrows\n") != std::string::npos &&
+            profile.text.find("mode = xinput") == std::string::npos);
+    }
   }
   // Frame generation (display-framegen) on DXVK and OpenGL, once the title runs the kit's runtime. Its pictures fill
   // every vblank, so it takes over Frame limit and VSync, and the overlay is its own counter.
@@ -1286,6 +1379,12 @@ int main(int argc, char** argv) {
     CHECK(CommunityPresetSupported(needs_framegen, framegen) &&
           CommunityPresetSupported(needs_framegen, KitForTitleRuntime(framegen, false)));
     CHECK(!CommunityPresetSupported(needs_framegen, KitCapabilitiesFromManifest({kKitDxvk}, false)));
+    auto needs_playstation = community;
+    needs_playstation.requires_prospero_win.push_back("input-playstation");
+    const auto playstation = KitCapabilitiesFromManifest({kKitInputPlaystation}, false);
+    CHECK(CommunityPresetSupported(needs_playstation, playstation) &&
+          CommunityPresetSupported(needs_playstation, KitForTitleRuntime(playstation, false)));
+    CHECK(!CommunityPresetSupported(needs_playstation, KitCapabilitiesFromManifest({kKitInputRumble}, false)));
   }
   CHECK(BuildEffectiveSettings(hl2, &community.preset, {}, KitCapabilities{}, &settings, &error));
   CHECK(settings.values.at("controller").value == "keyboard");
