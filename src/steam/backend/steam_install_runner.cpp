@@ -520,6 +520,11 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
         dlc.push_back(depot.owner_app);
     const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language);
     if (!written) log("steamworks_facts", "write-failed", folder.c_str());
+    else
+      log("steamworks_facts", "written",
+          ("depots=" + std::to_string(depots.size()) + " dlc=" + std::to_string(dlc.size()) + " listed=" +
+           std::to_string(app->dlc_app_ids.size()))
+              .c_str());
     return written;
   };
   // An update's facts go in place with its record.
