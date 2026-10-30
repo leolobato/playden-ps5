@@ -101,6 +101,7 @@ struct Fixture {
   int next_id = 0;
   std::atomic<bool> usb_present{true};  // the source drive
   std::vector<InstallVolume> extra_volumes;  // install volumes after the console storage
+  std::function<std::string(const std::string&, const std::string&)> game_program;  // LocalLibraryConfig::game_program
 
   Fixture() {
     char name[] = "/tmp/playden-local-copy-XXXXXX";
@@ -151,6 +152,7 @@ struct Fixture {
       return runner->Move(*service, entry, from, number);
     };
     config.remove_copy_folder = [this](const std::string& folder) { return runner->Remove(folder).empty(); };
+    config.game_program = game_program;
     local = std::make_unique<LocalLibrarySource>(*store, std::move(config));
     runner->SetChanged([source = local.get()] { source->Reload(); });
     WaitFor([&] { return local->Snapshot()->loaded || !local->Snapshot()->load_error.empty(); }, "imports loaded");
@@ -695,6 +697,27 @@ void ProgramMissingIsRefused() {
   CHECK(fixture.State() == ImportState::kInPlace && !fs::exists(fixture.Dest()));
 }
 
+// An Unreal root launcher chosen at Add is replaced by the program it starts (LocalLibraryConfig::game_program),
+// when that one is in the folder; otherwise the chosen program is kept.
+void AddReplacesUnrealLauncher() {
+  for (const bool present : {true, false}) {
+    Fixture fixture;
+    if (present) Write(fixture.source / "Rally/Binaries/Win64/Rally-Win64-Shipping.exe", "x");
+    std::string asked_folder, asked_program;
+    fixture.game_program = [&](const std::string& folder, const std::string& program) {
+      asked_folder = folder;
+      asked_program = program;
+      return std::string("Rally/Binaries/Win64/Rally-Win64-Shipping.exe");
+    };
+    fixture.Start();
+    const auto request = fixture.local->Add("usb0", "playden/import/Rally", "Bin/Rally.exe");
+    CHECK(fixture.Outcome(request).ok);
+    CHECK(asked_folder == fixture.source.string() && asked_program == "Bin/Rally.exe");
+    const auto entry = fixture.store->Find(kId);
+    CHECK(entry && entry->program == (present ? "Rally/Binaries/Win64/Rally-Win64-Shipping.exe" : "Bin/Rally.exe"));
+  }
+}
+
 // The copy lives on Playden's storage: it uninstalls, and its game leaves the library, while the
 // drive it was copied from is unplugged.
 void UninstallWithoutTheSourceDrive() {
@@ -1146,6 +1169,7 @@ int main() {
   CancelLeavesNothing();
   ChangedSourceFails();
   ProgramMissingIsRefused();
+  AddReplacesUnrealLauncher();
   CrashBetweenCommitSteps();
   ReconcileWithoutJob();
   OrphanCopyFoldersRemoved();

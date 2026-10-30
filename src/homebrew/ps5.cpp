@@ -15,6 +15,7 @@
 #include "platform/ps5/title_remover.h"
 #include "platform/ps5/title_runtime.h"
 #include "platform/ps5/native_startup.h"
+#include "runtime/game_probe.h"
 #include "runtime/settings_storage.h"
 #include "runtime/writable_folders.h"
 #include "homebrew/runtime_host.hpp"
@@ -832,6 +833,9 @@ int main() {
                 return runner->Move(installs, entry, source, runtime_number);
             };
             import_config.remove_copy_folder = [runner = copy_runner.get()](const std::string& root) { return runner->Remove(root).empty(); };
+            import_config.game_program = [](const std::string& folder, const std::string& program) {
+                return playden::runtime::UnrealGameProgram(folder, program);
+            };
             auto source = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
             local_library = source.get();
             copy_runner->SetChanged([local_library] { local_library->Reload(); });

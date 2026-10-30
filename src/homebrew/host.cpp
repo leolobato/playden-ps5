@@ -11,6 +11,7 @@
 #include "stores/local/copy_runner.h"
 #include "stores/local/library_source.h"
 #include "app/diagnostic_log.h"
+#include "runtime/game_probe.h"
 #include "runtime/settings_storage.h"
 #include "homebrew/input_adapter.hpp"
 #include "homebrew/json.hpp"
@@ -724,6 +725,9 @@ int main(int argc, char** argv) {
             return runner->Move(*service, entry, source, runtime_number);
         };
         import_config.remove_copy_folder = [runner = copy_runner.get()](const std::string& root) { return runner->Remove(root).empty(); };
+        import_config.game_program = [](const std::string& folder, const std::string& program) {
+            return playden::runtime::UnrealGameProgram(folder, program);
+        };
         auto local_library = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
         auto* local = local_library.get();
         copy_runner->SetChanged([local] { local->Reload(); });

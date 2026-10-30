@@ -392,6 +392,70 @@ int main() {
     const auto launcher = ProbeGame(bare.string(), "Game.exe");
     CHECK(launcher.engine == "unreal" && launcher.unreal_program.empty() && !launcher.unreal5);
   }
+  {  // An Unreal program not named *-Shipping.exe (Thomas & Friends: Wonders of Sodor): the only program in
+     // <Project>/Binaries/Win64 replaces the root launcher, past Unreal's own tools there.
+    const auto root = fresh();
+    WritePe(root / "WindowsNoEditor/WondersOfSodor.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(root / "WindowsNoEditor/Engine/Binaries/Win64");
+    WritePe(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/WondersOfSodor.exe", {true, {"d3d11.dll"}});
+    WritePe(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/CrashReportClient.exe", {true, {"KERNEL32.dll"}});
+    WritePe(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/TS2Prototype-Cmd.exe", {true, {"KERNEL32.dll"}});
+    const auto probe = ProbeGame(root.string(), "WindowsNoEditor/WondersOfSodor.exe");
+    CHECK(probe.engine == "unreal" &&
+          probe.unreal_program == "WindowsNoEditor/TS2Prototype/Binaries/Win64/WondersOfSodor.exe");
+    CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/WondersOfSodor.exe") == probe.unreal_program);
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(9002, "Sodor", {{"", "", "WindowsNoEditor/WondersOfSodor.exe", "", ""}}, root.string(),
+                             &recipe, &reason));
+    CHECK(recipe.launch_entries[0].executable == "WindowsNoEditor/TS2Prototype/Binaries/Win64/WondersOfSodor.exe");
+    CHECK(recipe.launch_entries[0].working_directory == "WindowsNoEditor/TS2Prototype/Binaries/Win64");
+    // Two programs: the one named like the project.
+    WritePe(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/Editor.exe", {true, {"KERNEL32.dll"}});
+    WritePe(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/TS2Prototype.exe", {true, {"KERNEL32.dll"}});
+    fs::remove(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/WondersOfSodor.exe");
+    CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/WondersOfSodor.exe") ==
+          "WindowsNoEditor/TS2Prototype/Binaries/Win64/TS2Prototype.exe");
+    // Two programs named like neither: none is guessed, the launcher stays.
+    fs::remove(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/TS2Prototype.exe");
+    WritePe(root / "WindowsNoEditor/TS2Prototype/Binaries/Win64/Other.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/WondersOfSodor.exe").empty());
+    // A Shipping program anywhere wins over a program named otherwise.
+    WritePe(root / "WindowsNoEditor/Other/Binaries/Win64/Other-Win64-Shipping.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/WondersOfSodor.exe") ==
+          "WindowsNoEditor/Other/Binaries/Win64/Other-Win64-Shipping.exe");
+    // The Shipping program itself and an installer beside Engine are not launchers.
+    CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/Other/Binaries/Win64/Other-Win64-Shipping.exe").empty());
+    WritePe(root / "WindowsNoEditor/UE4PrereqSetup_x64.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/UE4PrereqSetup_x64.exe").empty());
+  }
+  {  // Satisfactory (Epic): the root FactoryGameEGS.exe starts FactoryGame/Binaries/Win64/*-Shipping.exe.
+    const auto root = fresh();
+    WritePe(root / "FactoryGameEGS.exe", {true, {"KERNEL32.dll"}});
+    WritePe(root / "Engine/Binaries/Win64/CrashReportClient.exe", {true, {"KERNEL32.dll"}});
+    WritePe(root / "FactoryGame/Binaries/Win64/FactoryGameEGS-Win64-Shipping.exe", {true, {"d3d11.dll", "d3d12.dll"}});
+    CHECK(UnrealGameProgram(root.string(), "FactoryGameEGS.exe") ==
+          "FactoryGame/Binaries/Win64/FactoryGameEGS-Win64-Shipping.exe");
+    // Unreal 3 keeps its own program in Binaries/Win64 at the root: it is not a project folder.
+    const auto udk = fresh();
+    WritePe(udk / "Launcher.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(udk / "Engine");
+    WritePe(udk / "Binaries/Win64/UDK.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnrealGameProgram(udk.string(), "Launcher.exe").empty());
+    // The same under a folder of its own: that folder is not a project either.
+    const auto wrapped = fresh();
+    WritePe(wrapped / "Package/Launcher.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(wrapped / "Package/Engine");
+    WritePe(wrapped / "Package/Binaries/Win64/UDK.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnrealGameProgram(wrapped.string(), "Package/Launcher.exe").empty());
+    // A Unity game beside an Engine folder is Unity's, as ProbeGame decides.
+    const auto unity = fresh();
+    WritePe(unity / "Game.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(unity / "Game_Data");
+    fs::create_directories(unity / "Engine");
+    WritePe(unity / "Bonus/Binaries/Win64/Bonus-Win64-Shipping.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnrealGameProgram(unity.string(), "Game.exe").empty() && ProbeGame(unity.string(), "Game.exe").engine == "unity");
+  }
   {  // Generated recipes: DXVK through overrides that follow the graphics value; graphics is open.
     const auto root = fresh();
     WritePe(root / "Balls.exe", {true, {"UnityPlayer.dll"}});

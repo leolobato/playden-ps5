@@ -327,19 +327,26 @@ void LocalLibrarySource::Execute(const Job& job) {
       const auto path = Join(volume->mount, folder);
       // Opened first: a root-owned folder FTP made may not even be listable by the app user.
       if (const auto opened = OpenDropFolder(*volume, path); !opened.empty()) return Outcome(job, false, {}, opened);
-      const auto check = CheckProgram(HostPath(path), job.program);
+      auto program = job.program;
+      const auto check = CheckProgram(HostPath(path), program);
       if (check != ProgramCheck::kOk) return Outcome(job, false, {}, ProgramWords(check));
+      if (config_.game_program)
+        if (auto game = config_.game_program(HostPath(path), program);
+            !game.empty() && game != program && CheckProgram(HostPath(path), game) == ProgramCheck::kOk) {
+          Log("import program volume=" + job.volume + " folder=" + folder + " launcher=" + program + " game=" + game);
+          program = std::move(game);
+        }
       std::string title;
       for (const auto& candidate : candidates_)
         if (candidate.volume == job.volume && candidate.folder == folder) title = candidate.title;
       if (title.empty()) title = TitleForFolder(path);
-      const auto added = store_.Add(job.volume, folder, title, job.program);
+      const auto added = store_.Add(job.volume, folder, title, program);
       if (!added.ok()) {
         Log("import add failed volume=" + job.volume + " folder=" + folder + ": " + added.message());
         return Outcome(job, false, {}, ImportWords(added.error()));
       }
       Log("import added id=" + added.value().id + " volume=" + job.volume + " folder=" + folder +
-          " program=" + job.program);
+          " program=" + program);
       for (auto& candidate : candidates_)
         if (candidate.volume == job.volume && candidate.folder == folder) candidate.imported_id = added.value().id;
       // Numbered here, on this worker, before the game is listed: the main thread never waits for it.

@@ -906,6 +906,18 @@ void RuntimeHost::KitMonoStep(Composition& c, const rt::RuntimeInstall& record, 
         (ok ? " pointed at kit " + c.kit->view.kit_id : " failed=" + reason));
 }
 
+// Generic step: the bottle's Visual C++ runtime key says the version of the kit's builtin DLLs, which Unreal's root
+// launcher checks before it starts the game. Logged, never a refusal: most games never read it, and the next Play
+// tries again.
+void RuntimeHost::VcRuntimeStep(const GameFiles& files) {
+  bool changed = false;
+  std::string reason;
+  const auto ok = rt::RaiseVcRuntimeVersion(files.prefix, config_.unix_time(), &changed, &reason);
+  if (changed || !ok)
+    Log("vc runtime app=" + std::to_string(files.record.runtime_number) +
+        (ok ? std::string(" version=") + rt::kVcRuntimeVersion : " failed=" + reason));
+}
+
 // Generic step: vkd3d-proton's variables reach the game through the bottle's Environment key. Some change how
 // it draws, so a bottle that exists but cannot take them stops the start; one not made yet gets them on the
 // next Play.
@@ -1107,9 +1119,10 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
   return dotnet.ok ? std::string() : dotnet.message;
 }
 
-// The steps run in this order for every game, whatever its store: generic ones (media, EULA, Direct3D 12,
-// the bottle's Environment, MFC, the recipe's registry and INI values, the .NET heap) and Steam-file ones, which act
-// only on the Steam files a game has (SteamStub, Steamworks and steam.dll, install scripts and redistributables).
+// The steps run in this order for every game, whatever its store: generic ones (media, EULA, Direct3D 12, Wine
+// Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values, the .NET
+// heap) and Steam-file ones, which act only on the Steam files a game has (SteamStub, Steamworks and steam.dll,
+// install scripts and redistributables).
 std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known) {
   MediaStep(c, record);
   GameFiles files{record};
@@ -1156,6 +1169,8 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   if (auto refused = BottleEnvironmentStep(files); !refused.empty()) return refused;
   if (auto refused = InstallScriptsStep(files); !refused.empty()) return refused;
   MfcStep(files);
+  // After the redistributables (install scripts, MFC): one that writes an older runtime key doesn't stay.
+  VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(files); !refused.empty()) return refused;
   if (auto refused = RecipeIniStep(files); !refused.empty()) return refused;
   return DotnetHeapStep(files);

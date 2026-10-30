@@ -1257,7 +1257,9 @@ void PlaysReadyTitleThroughHandoff() {
   const auto upgraded_hive = Read(hive);
   CHECK(upgraded_hive.find("@=\"winegstreamer.dll\"") != std::string::npos &&
         upgraded_hive.find("Wow6432Node") != std::string::npos);
-  CHECK(Read(hive.string() + ".playden-backup") == "WINE REGISTRY Version 2\n");
+  // The backup is the hive before the merge: the Visual C++ runtime key the preparation wrote, no media values.
+  const auto media_backup = Read(hive.string() + ".playden-backup");
+  CHECK(media_backup.find("winegstreamer") == std::string::npos && media_backup.find("14.50.35719.0") != std::string::npos);
   CHECK(Read(windows / "system32/winegstreamer.dll") == "dll x86_64-windows");
   CHECK(Read(windows / "syswow64/winegstreamer.dll") == "dll i386-windows");
   CHECK(prepared.launch && prepared.launch->runtime_number == 220 && prepared.launch->title_id == "FAKE78001");
@@ -3648,7 +3650,11 @@ void PreparesUdkGameWithEulaAccepted() {
   const auto system_reg = Read(bottle / "system.reg");
   CHECK(system_reg.find("[Software\\\\" + key) != std::string::npos);
   CHECK(system_reg.find("[Software\\\\Wow6432Node\\\\" + key) != std::string::npos);
-  CHECK(Read(bottle / "system.reg.playden-backup") == "WINE REGISTRY Version 2\n");
+  // The Visual C++ runtime key follows (VcRuntimeStep), so the backup is the hive with the EULA already in it.
+  CHECK(system_reg.find("[Software\\\\Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\x64]") != std::string::npos);
+  CHECK(system_reg.find("\"Version\"=\"14.50.35719.0\"") != std::string::npos);
+  CHECK(Read(bottle / "system.reg.playden-backup").find("[Software\\\\" + key) != std::string::npos);
+  CHECK(Read(bottle / "system.reg.playden-backup").find("VisualStudio") == std::string::npos);
   auto logged = eula_lines();
   CHECK(!logged.empty() && logged.front() == "ue3 eula app=219890 guid=dcf140f3-829e-4033-950d-b3be8d76b933 written=1");
 
@@ -4122,7 +4128,10 @@ void PrepareThenMoveGames(Fixture& fixture, const RuntimeHostConfig& config, Gam
   CHECK(chmod((old_games / "220").c_str(), 0755) == 0);
   Write(old_games / "220/installscript.vdf",
         "\"InstallScript\"\n{\n \"Registry\"\n {\n  \"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\Valve\\\\HL2\"\n  {\n"
-        "   \"string\"\n   {\n    \"Installed Path\" \"%INSTALLDIR%\\\\\"\n   }\n  }\n }\n}\n", 0644);
+        "   \"string\"\n   {\n    \"Installed Path\" \"%INSTALLDIR%\\\\\"\n   }\n  }\n"
+        // A redistributable's older Visual C++ runtime key: the runtime key step runs after it and raises it.
+        "  \"HKEY_LOCAL_MACHINE\\\\SOFTWARE\\\\Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\x64\"\n  {\n"
+        "   \"dword\"\n   {\n    \"Minor\" \"20\"\n   }\n  }\n }\n}\n", 0644);
   {
     RuntimeHost host(config);
     CHECK(host.Start());
@@ -4243,6 +4252,9 @@ void CheckRepublishedAtNewRoot(Fixture& fixture) {
   // The install script's path follows the folder (ApplyPreparationSteps runs in the republication).
   const auto system_reg = Read(fixture.root / "data/playden/games/steam-220/library/prefixes/game/system.reg");
   CHECK(system_reg.find("playden-games\\\\220") != std::string::npos && system_reg.find("FAKE77031") == std::string::npos);
+  // The install script's older Visual C++ runtime Minor (20) was raised to the builtin DLLs' 14.50 after it.
+  CHECK(system_reg.find("\"Minor\"=dword:00000032") != std::string::npos &&
+        system_reg.find("\"Minor\"=dword:00000014") == std::string::npos);
 }
 
 void MigrationRewritesInstallPathsAndRepublishes() {

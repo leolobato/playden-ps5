@@ -442,6 +442,17 @@ bool ApplyD3D12Library(const std::string& runtime_dir, const std::string& templa
 bool PointBottleAtKitMono(const std::string& template_dir, const std::string& prefix_dir, std::int64_t unix_time,
                           bool* changed, std::string* reason);
 
+// The Visual C++ runtime the kit's builtin DLLs are (msvcp140.dll, vcruntime140*.dll in system32 and syswow64).
+inline constexpr std::uint32_t kVcRuntimeMajor = 14, kVcRuntimeMinor = 50, kVcRuntimeBuild = 35719, kVcRuntimeRevision = 0;
+inline constexpr const char* kVcRuntimeVersion = "14.50.35719.0";
+// Unreal's root launcher reads HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64 (Major, Minor, Bld,
+// Rbld) and asks for the Visual C++ redistributable when it is older than the one the game was built with; the kit
+// template says 14.42.34433.0 (Wine's wine.inf). This writes the builtin DLLs' version into the stopped bottle's
+// system.reg, for x64 and x86 in both registry views, with a system.reg.playden-backup as ApplyBottleRegistryValues
+// does. A key that already says this version or a later one is kept; a bottle not made yet is left for later.
+// changed tells whether system.reg was written.
+bool RaiseVcRuntimeVersion(const std::string& prefix_dir, std::int64_t unix_time, bool* changed, std::string* reason);
+
 // The <InstallGuidString> of an Unreal Engine 3 (UDK) Binaries/InstallInfo.xml: exactly one,
 // a 36-character 8-4-4-4-12 hex GUID once surrounding whitespace is trimmed.
 bool ParseUe3InstallGuid(std::string_view install_info, std::string* guid);

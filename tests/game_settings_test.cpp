@@ -1592,6 +1592,54 @@ int main(int argc, char** argv) {
     CHECK(PointBottleAtKitMono(mono_template.string(), mono_bottle.string(), 1791600000, &changed, &reason) && !changed);
   }
 
+  // Unreal's root launcher checks the Visual C++ runtime key: it is raised to the kit's builtin DLLs (14.50.35719.0)
+  // in both views, keeping the other values; a key a redistributable raised further is kept, and a bottle not made
+  // yet is left for later.
+  {
+    const auto vc_bottle = root / "vc-bottle";
+    std::filesystem::create_directories(vc_bottle);
+    std::filesystem::permissions(vc_bottle, std::filesystem::perms::owner_all);
+    const std::string head = "WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n\n";
+    const auto runtime = [](const std::string& view, const std::string& arch, const std::string& minor,
+                            const std::string& build, const std::string& version) {
+      return "[Software\\\\" + view + "Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\" + arch +
+             "] 1791500000\n#time=1dc2b\n\"Bld\"=dword:" + build + "\n\"Installed\"=dword:00000001\n" +
+             "\"Major\"=dword:0000000e\n\"Minor\"=dword:" + minor + "\n\"Rbld\"=dword:00000000\n\"Version\"=\"" + version +
+             "\"\n\n";
+    };
+    const auto old_runtime = [&](const std::string& view, const std::string& arch) {
+      return runtime(view, arch, "0000002a", "00008681", "14.42.34433.0");
+    };
+    const auto new_runtime = [&](const std::string& view, const std::string& arch) {
+      return runtime(view, arch, "00000032", "00008b87", "14.50.35719.0");
+    };
+    const std::string wbem = "[Software\\\\Microsoft\\\\WBEM] 1791500000\n\"Installation Directory\"=\"C:\\\\windows\\\\system32\\\\wbem\"\n\n";
+    const auto write_hive = [&](const std::string& text) {
+      std::ofstream(vc_bottle / "system.reg", std::ios::trunc) << text;
+      ::chmod((vc_bottle / "system.reg").c_str(), 0600);
+    };
+    write_hive(head + old_runtime("", "x64") + wbem + old_runtime("Wow6432Node\\\\", "x64") +
+               old_runtime("Wow6432Node\\\\", "x86"));
+    bool changed = false;
+    CHECK(RaiseVcRuntimeVersion(vc_bottle.string(), 1791600000, &changed, &reason) && changed);
+    const auto raised = head + new_runtime("", "x64") + wbem + new_runtime("Wow6432Node\\\\", "x64") +
+                        new_runtime("Wow6432Node\\\\", "x86");
+    CHECK(ReadText(vc_bottle / "system.reg") == raised);
+    CHECK(ReadText(vc_bottle / "system.reg.playden-backup").find("14.42.34433.0") != std::string::npos);
+    CHECK(RaiseVcRuntimeVersion(vc_bottle.string(), 1791600000, &changed, &reason) && !changed);
+    CHECK(ReadText(vc_bottle / "system.reg") == raised);
+    // A later runtime stays; a missing view is added.
+    const auto later = runtime("", "x64", "00000033", "00000001", "14.51.1.0");
+    write_hive(head + later + wbem);
+    CHECK(RaiseVcRuntimeVersion(vc_bottle.string(), 1791600000, &changed, &reason) && changed);
+    const auto partial = ReadText(vc_bottle / "system.reg");
+    CHECK(partial.find(later) == head.size() && partial.find("14.51.1.0") != std::string::npos);
+    CHECK(partial.find("[Software\\\\Wow6432Node\\\\Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\x86]") !=
+          std::string::npos);
+    CHECK(partial.find("\"Version\"=\"14.50.35719.0\"") != std::string::npos);
+    CHECK(RaiseVcRuntimeVersion((root / "vc-no-bottle").string(), 1791600000, &changed, &reason) && !changed);
+  }
+
   // vkd3d-proton's DLLs go into both windows folders of the bottle and come out again, replaced by the template's,
   // without touching a bottle whose files were never vkd3d-proton's.
   {

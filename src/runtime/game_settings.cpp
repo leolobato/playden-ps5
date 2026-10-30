@@ -7,6 +7,7 @@
 #include "steam/backend/json.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <atomic>
 #include <cerrno>
@@ -2957,6 +2958,56 @@ bool PointBottleAtKitMono(const std::string& template_dir, const std::string& pr
   const auto wanted = RegistryData(template_reg, kKey, kName);
   if (!wanted || *wanted == *current) return true;
   if (!ApplyRegistryFileValues({{kKey, kName, *wanted}}, prefix_dir, unix_time, reason)) return false;
+  *changed = true;
+  return true;
+}
+
+bool RaiseVcRuntimeVersion(const std::string& prefix_dir, std::int64_t unix_time, bool* changed, std::string* reason) {
+  const auto fail = [&](std::string why) {
+    if (reason) *reason = std::move(why);
+    return false;
+  };
+  *changed = false;
+  constexpr std::size_t kMaxRegistryBytes = 32u * 1024u * 1024u;
+  auto bottle = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kPrivateTraversable);
+  if (!bottle) return errno == ENOENT ? true : fail("cannot open the bottle");
+  std::string system_reg;
+  const auto state = ReadRegularAt(*bottle, "system.reg", kMaxRegistryBytes, &system_reg, nullptr, true);
+  if (state == RelativeRead::kMissing) return true;  // the bottle comes later
+  if (state != RelativeRead::kPresent) return fail("cannot read the bottle's system.reg");
+  const std::array<std::uint32_t, 4> wanted{kVcRuntimeMajor, kVcRuntimeMinor, kVcRuntimeBuild, kVcRuntimeRevision};
+  const auto dword = [](std::uint32_t value) {
+    char text[16];
+    std::snprintf(text, sizeof(text), "dword:%08x", static_cast<unsigned>(value));
+    return std::string(text);
+  };
+  std::vector<RegistryValue> values;
+  for (const char* key : {"Software\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+                          "Software\\Wow6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+                          "Software\\Wow6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86"}) {
+    // A key a redistributable installer raised past the builtin DLLs stays as it is.
+    std::array<std::uint32_t, 4> current{};
+    bool readable = true;
+    const char* names[] = {"Major", "Minor", "Bld", "Rbld"};
+    for (std::size_t index = 0; index < current.size(); ++index) {
+      const auto data = RegistryData(system_reg, key, names[index]);
+      if (!data || data->size() != 14 || data->compare(0, 6, "dword:") != 0 ||
+          data->find_first_not_of("0123456789abcdefABCDEF", 6) != std::string::npos) {
+        readable = false;
+        break;
+      }
+      current[index] = static_cast<std::uint32_t>(std::strtoul(data->c_str() + 6, nullptr, 16));
+    }
+    if (readable && current >= wanted && RegistryData(system_reg, key, "Installed") == dword(1)) continue;
+    values.push_back({key, "Major", dword(kVcRuntimeMajor)});
+    values.push_back({key, "Minor", dword(kVcRuntimeMinor)});
+    values.push_back({key, "Bld", dword(kVcRuntimeBuild)});
+    values.push_back({key, "Rbld", dword(kVcRuntimeRevision)});
+    values.push_back({key, "Version", std::string("\"") + kVcRuntimeVersion + "\""});
+    values.push_back({key, "Installed", dword(1)});
+  }
+  if (values.empty()) return true;
+  if (!ApplyRegistryFileValues(values, prefix_dir, unix_time, reason, "system.reg")) return false;
   *changed = true;
   return true;
 }

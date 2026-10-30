@@ -613,6 +613,7 @@ class RuntimeHost {
   std::string Ue3EulaStep(const GameFiles& files);
   std::string Direct3D12Step(Composition& composition, const GameFiles& files);
   void KitMonoStep(Composition& composition, const runtime::RuntimeInstall& record, const char* when);  // never stops the start
+  void VcRuntimeStep(const GameFiles& files);  // never stops the start
   std::string BottleEnvironmentStep(const GameFiles& files);
   std::string RecipeRegistryStep(const GameFiles& files);
   std::string RecipeIniStep(const GameFiles& files);

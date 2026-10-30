@@ -264,22 +264,74 @@ std::optional<std::string> Find(const std::vector<std::pair<std::string, bool>>&
   return std::nullopt;
 }
 
-// The Unreal program under root: <Project>/Binaries/Win64/<Project>-Win64-Shipping.exe,
-// searched a few levels deep. Returns the path relative to root, or empty.
-std::string FindShipping(const fs::path& root, const std::string& relative, int depth) {
+// Unreal's own tools beside the game in <Project>/Binaries/Win64: never the game.
+constexpr const char* kUnrealToolWords[] = {"crashreport", "cefsubprocess", "epicwebhelper", "-cmd.exe"};
+
+bool UnrealTool(const std::string& lower) {
+  return std::any_of(std::begin(kInstallerWords), std::end(kInstallerWords),
+                     [&](const char* word) { return lower.find(word) != std::string::npos; }) ||
+         std::any_of(std::begin(kUnrealToolWords), std::end(kUnrealToolWords),
+                     [&](const char* word) { return lower.find(word) != std::string::npos; });
+}
+
+// The Unreal program under root: <Project>/Binaries/Win64/<Project>-Win64-Shipping.exe, searched a few levels
+// deep. With shipping false, a game that ships it under another name (TS2Prototype/Binaries/Win64/WondersOfSodor.exe)
+// is found instead, as the only program in a Binaries/Win64 folder or the one named like the root program
+// (launcher_stem, lower case) or the project. Returns the path relative to root, or empty.
+std::string FindUnrealProgram(const fs::path& root, const std::string& relative, int depth, bool shipping,
+                              const std::string& launcher_stem, std::size_t launcher_folder) {
   if (depth > 4) return {};
   const auto entries = Entries(root / relative);
-  for (const auto& [name, directory] : entries)
-    if (!directory && EndsWith(Lower(name), "-shipping.exe") && Lower(relative).find("binaries/win64") != std::string::npos)
-      return relative.empty() ? name : relative + "/" + name;
+  const auto lower_relative = Lower(relative);
+  const auto path_of = [&](const std::string& name) { return relative.empty() ? name : relative + "/" + name; };
+  if (shipping) {
+    for (const auto& [name, directory] : entries)
+      if (!directory && EndsWith(Lower(name), "-shipping.exe") && lower_relative.find("binaries/win64") != std::string::npos)
+        return path_of(name);
+  } else if (EndsWith(lower_relative, "binaries/win64")) {
+    // The project is the folder above Binaries, below the launcher's folder.
+    std::string project;
+    const fs::path parts(lower_relative.substr(std::min(launcher_folder, lower_relative.size())));
+    for (auto at = parts.begin(); at != parts.end(); ++at)
+      if (std::next(at) != parts.end() && *std::next(at) == "binaries") project = at->string();
+    std::vector<std::string> programs;
+    for (const auto& [name, directory] : entries) {
+      const auto lower = Lower(name);
+      if (!directory && EndsWith(lower, ".exe") && !UnrealTool(lower)) programs.push_back(name);
+    }
+    // Only in a project's folder: Unreal 3 keeps its own program in a Binaries/Win64 at the root.
+    if (!project.empty() && programs.size() == 1) return path_of(programs.front());
+    for (const auto& name : programs) {
+      const auto stem = Lower(name.substr(0, name.size() - 4));
+      if (!project.empty() && (stem == launcher_stem || stem == project)) return path_of(name);
+    }
+  }
   for (const auto& [name, directory] : entries) {
     if (!directory) continue;
     const auto lower = Lower(name);
     if (lower == "engine" || lower == "content" || lower == "saved" || lower == "plugins") continue;
-    const auto found = FindShipping(root, relative.empty() ? name : relative + "/" + name, depth + 1);
+    const auto found = FindUnrealProgram(root, path_of(name), depth + 1, shipping, launcher_stem, launcher_folder);
     if (!found.empty()) return found;
   }
   return {};
+}
+
+// A *-Shipping.exe anywhere first, then a program named otherwise.
+std::string FindShipping(const fs::path& root, const std::string& relative, const std::string& launcher_stem) {
+  const auto launcher_folder = relative.empty() ? 0 : relative.size() + 1;
+  auto found = FindUnrealProgram(root, relative, 0, true, launcher_stem, launcher_folder);
+  return found.empty() ? FindUnrealProgram(root, relative, 0, false, launcher_stem, launcher_folder) : found;
+}
+
+// An Unreal root program: <Game>.exe beside the Engine folder, not an installer the game ships there.
+bool UnrealLauncher(const std::vector<std::pair<std::string, bool>>& here, const std::string& lower_file) {
+  return !EndsWith(lower_file, "-shipping.exe") && Find(here, "engine", true) &&
+         std::none_of(std::begin(kInstallerWords), std::end(kInstallerWords),
+                      [&](const char* word) { return lower_file.find(word) != std::string::npos; });
+}
+
+std::string LowerStem(const std::string& lower_file) {
+  return EndsWith(lower_file, ".exe") ? lower_file.substr(0, lower_file.size() - 4) : lower_file;
 }
 
 // Microsoft's MFC library, which Wine doesn't provide: mfc140.dll, mfc140u.dll, mfcm140.dll, mfcm140u.dll (and
@@ -332,6 +384,19 @@ MfcImports FindMfcImports(const std::string& install_root) {
   return out;
 }
 
+std::string UnrealGameProgram(const std::string& install_root, const std::string& executable) {
+  const fs::path root(install_root);
+  const auto slash = executable.rfind('/');
+  const std::string folder = slash == std::string::npos ? std::string() : executable.substr(0, slash);
+  const auto file = slash == std::string::npos ? executable : executable.substr(slash + 1);
+  const auto lower_file = Lower(file);
+  const auto here = Entries(root / folder);
+  // As ProbeGame decides: a Unity program beside an Engine folder is Unity's.
+  if (Find(here, "unityplayer.dll", false) || Find(here, LowerStem(lower_file) + "_data", true)) return {};
+  if (!UnrealLauncher(here, lower_file)) return {};
+  return FindShipping(root, folder, LowerStem(lower_file));
+}
+
 GameProbe ProbeGame(const std::string& install_root, const std::string& executable) {
   GameProbe probe;
   const fs::path root(install_root);
@@ -363,14 +428,10 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.il2cpp = Find(here, "gameassembly.dll", false).has_value();
     probe.legacy_unity = !unity;
     if (unity) ScanNames((root / folder / *unity).string(), &probe.apis);
-  } else if (EndsWith(lower_file, "-shipping.exe") ||
-             (Find(here, "engine", true) && std::none_of(std::begin(kInstallerWords), std::end(kInstallerWords),
-                                                         [&](const char* word) {
-                                                           return lower_file.find(word) != std::string::npos;
-                                                         }))) {
+  } else if (EndsWith(lower_file, "-shipping.exe") || UnrealLauncher(here, lower_file)) {
     probe.engine = "unreal";
     if (!EndsWith(lower_file, "-shipping.exe")) {
-      probe.unreal_program = FindShipping(root, folder, 0);
+      probe.unreal_program = FindShipping(root, folder, LowerStem(lower_file));
       // The root program is only a launcher: the engine version is in the Shipping program.
       std::set<std::string> shipping_apis;
       if (!probe.unreal_program.empty())

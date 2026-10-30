@@ -26,8 +26,9 @@ struct GameProbe {
   bool shared_section = false;
   bool anticheat = false;   // an EasyAntiCheat or BattlEye folder in the game
   // For an Unreal game started through its root program (which starts the real one as a
-  // child process, which the console cannot do): the *-Shipping.exe to start instead,
-  // relative to the install root, as spelled on disk.
+  // child process, which the console cannot do): the program to start instead (the
+  // *-Shipping.exe, or the one program in <Project>/Binaries/Win64), relative to the install
+  // root, as spelled on disk.
   std::string unreal_program;
   bool unreal5 = false;  // Unreal Engine 5 (its Shipping program names Nanite's settings)
 };
@@ -36,6 +37,11 @@ inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull
 
 // executable is relative to install_root with '/' separators, as spelled on disk.
 GameProbe ProbeGame(const std::string& install_root, const std::string& executable);
+
+// The program that starts an Unreal game when executable (relative to install_root, '/' separators) is its root
+// launcher, which only starts that one as a child process, which the console cannot do; relative to install_root,
+// as spelled on disk. Empty for any other program. GameProbe::unreal_program, without reading the programs.
+std::string UnrealGameProgram(const std::string& install_root, const std::string& executable);
 
 // Which of a game's programs and libraries import Microsoft's MFC library (mfc140*.dll, mfcm140*.dll, directly
 // or delay-loaded), which Wine doesn't provide: Playden installs Microsoft's own into the game's bottle. Every
