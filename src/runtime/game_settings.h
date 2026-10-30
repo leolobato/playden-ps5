@@ -373,6 +373,9 @@ struct GameProgram {
   std::string refusal;       // why the console cannot run it; empty when it may
   bool refusal_soft = false; // "Try anyway" can get past the refusal
   std::string detected;      // GameDefaults::summary
+  bool steam_stub = false;   // SteamStub DRM wraps it
+  bool steam_stub_supported = false;  // ...in a form Playden unpacks
+  std::string steam_stub_detail;  // the SteamStub variant, or why it is not unpacked (runtime/steam_stub.h)
 };
 inline constexpr std::size_t kMaxGamePrograms = 32;
 // The .exe files under install_root, up to six folders deep, without following symbolic links

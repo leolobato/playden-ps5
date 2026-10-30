@@ -414,6 +414,16 @@ std::shared_ptr<const RuntimeSnapshot> RuntimeHost::Shared() const {
   return shared_;
 }
 
+// Every program of the folder wrapped in SteamStub, with the verdict and the form found, so a
+// program the Program list greys out says why (#320).
+void RuntimeHost::LogSteamStubPrograms(std::uint32_t app, const std::vector<rt::GameProgram>& programs) const {
+  for (const auto& program : programs)
+    if (program.steam_stub)
+      Log("steamstub app=" + std::to_string(app) + " program=" + program.path +
+          " supported=" + (program.steam_stub_supported ? "1" : "0") +
+          " detail=" + (program.steam_stub_detail.empty() ? "unknown" : program.steam_stub_detail));
+}
+
 void RuntimeHost::Log(const std::string& line) const {
   if (config_.log) config_.log(line);
 }
@@ -2784,9 +2794,11 @@ const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const Runtim
       rt::GenerateGameRecipe(GameOf(request), request.runtime_number, request.title_name, launches, root.string(),
                              &generated, reason, kit, choices, &soft, &diagnostics);
   // The same line an unpack writes, so a refused SteamStub program is found the same way.
-  if (!made && !diagnostics.steam_stub_program.empty())
+  // A recipe made from another of Steam's programs says which one it skipped and why (The Saboteur, #320).
+  if (!diagnostics.steam_stub_program.empty())
     Log("steamstub app=" + std::to_string(request.runtime_number) + " found=" + diagnostics.steam_stub_program +
-        " changed=- failed=" + *reason + " (" + (diagnostics.steam_stub_detail.empty() ? "unknown" : diagnostics.steam_stub_detail) + ")");
+        " changed=- " + (made ? std::string("skipped") : "failed=" + *reason) + " (" +
+        (diagnostics.steam_stub_detail.empty() ? "unknown" : diagnostics.steam_stub_detail) + ")");
   if (!made && launches.empty() && choices.program.empty())
     *reason = request.launch_reason.empty() ? "Steam lists no Windows program this console can start for this game."
                                             : request.launch_reason;
@@ -2796,6 +2808,7 @@ const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const Runtim
   std::optional<rt::GameRecipe> draft;
   if (!made) {
     programs = rt::ListGamePrograms(root.string(), kit);
+    LogSteamStubPrograms(request.runtime_number, programs);
     auto tried = choices;
     tried.try_anyway = true;
     rt::GameRecipe permissive;
@@ -4683,6 +4696,7 @@ bool RuntimeHost::RunServices() {
           ? rt::KitCapabilitiesFromManifest(composition->kit->capabilities, true) : rt::KitCapabilities{};
       auto programs = rt::ListGamePrograms(HostPath(install_path).string(), kit);
       Log("program scan app=" + std::to_string(app) + " programs=" + std::to_string(programs.size()));
+      LogSteamStubPrograms(app, programs);
       Publish([&](RuntimeSnapshot& s) {
         auto& setup = s.game_setups[app];
         setup.programs = std::move(programs);

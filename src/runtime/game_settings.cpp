@@ -2069,10 +2069,18 @@ std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const
     program.path = relative;
     program.architecture = ExecutableArchitecture(install_root + "/" + relative);
     if (!program.architecture.empty()) {
-      const auto defaults = DefaultsFor(ProbeGame(install_root, relative), abilities);
+      const auto probe = ProbeGame(install_root, relative);
+      const auto defaults = DefaultsFor(probe, abilities);
       program.refusal = defaults.refusal;
       program.refusal_soft = defaults.refusal_soft;
       program.detected = defaults.summary;
+      program.steam_stub = probe.steam_stub;
+      program.steam_stub_supported = probe.steam_stub_supported;
+      program.steam_stub_detail = probe.steam_stub_detail;
+      // The player sees which SteamStub form it is ("3.1 x86 with flags 0x4"), so a report names it.
+      if (probe.steam_stub && !probe.steam_stub_supported && !probe.steam_stub_detail.empty() &&
+          !program.refusal.empty() && program.refusal.back() == '.')
+        program.refusal.insert(program.refusal.size() - 1, " (SteamStub " + probe.steam_stub_detail + ")");
     }
     programs.push_back(std::move(program));
   }

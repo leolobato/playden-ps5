@@ -717,6 +717,7 @@ class RuntimeHost {
   std::size_t LeftoverRequests(Composition& composition, bool remove);
   bool Stopping() const;
   void Log(const std::string& line) const;
+  void LogSteamStubPrograms(std::uint32_t app, const std::vector<runtime::GameProgram>& programs) const;
   // Worker thread: publishes the work fraction when its whole percent changes; ClearWork removes it.
   void ReportWork(std::uint64_t done, std::uint64_t total);
   void ClearWork();

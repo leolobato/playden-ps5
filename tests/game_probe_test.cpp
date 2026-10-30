@@ -570,6 +570,27 @@ int main() {
     CHECK(!GenerateGameRecipe(1, "Stub", {{"", "", "Stub.exe", "", ""}}, root.string(), &recipe, &reason, {}, {}, nullptr, &diagnostics));
     CHECK(diagnostics.steam_stub_program == "Stub.exe" && !diagnostics.steam_stub_detail.empty());
     CHECK(reason.find("Steam DRM") != std::string::npos);
+    // The Program list keeps the SteamStub form of every program and names it in the refusal (#320).
+    bool listed = false;
+    for (const auto& program : ListGamePrograms(root.string())) {
+      if (program.path != "Stub.exe") {
+        CHECK(!program.steam_stub && program.steam_stub_detail.empty());
+        continue;
+      }
+      listed = true;
+      CHECK(program.steam_stub && !program.steam_stub_supported &&
+            program.steam_stub_detail == diagnostics.steam_stub_detail);
+      CHECK(program.refusal == "This game's program has Steam DRM in a form Playden can't unpack yet (SteamStub " +
+                                   diagnostics.steam_stub_detail + ").");
+    }
+    CHECK(listed);
+    // The recipe comes from Steam's other program, and the skipped one is still named (The Saboteur).
+    WritePe(root / "VideoSetup.exe", {false, {"KERNEL32.dll", "d3d9.dll"}});
+    GameRecipeDiagnostics skipped;
+    CHECK(GenerateGameRecipe(24880, "The Saboteur", {{"", "", "Stub.exe", "", ""}, {"", "Video Setup", "VideoSetup.exe", "", ""}},
+                             root.string(), &recipe, &reason, {}, {}, nullptr, &skipped));
+    CHECK(recipe.launch_entries[0].executable == "VideoSetup.exe");
+    CHECK(skipped.steam_stub_program == "Stub.exe" && skipped.steam_stub_detail == diagnostics.steam_stub_detail);
   }
 
   {  // Final Fantasy XIII keeps its program four folders deep; the picker reaches it, but not
