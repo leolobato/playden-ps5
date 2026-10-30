@@ -129,6 +129,25 @@ bool SameRule(const SaveRule& left, const SaveRule& right) {
          left.recursive == right.recursive && left.cloud_prefix == right.cloud_prefix;
 }
 
+// A macOS or Linux save location listed beside the Windows ones without "platforms" (Cat Quest lists one per OS):
+// its root is still the other OS's, or a Windows override sends it to the folder of a Windows entry, whose saves the
+// Windows client keeps under that entry's Cloud names. The Mac or Linux client syncs its files; the sync leaves them
+// alone (they match no rule), so progress kept only under the Mac names stays in the Cloud, not on the console. One a
+// Windows override sends to a folder of its own stays unresolved. Paths and patterns match without case, as files do.
+bool OtherPlatformCopy(const CloudSaveInfo& info, const SaveFilePattern& item) {
+  if (item.upload_root == SavePathRoot::kNone || IsWindowsSavePathRoot(item.upload_root)) return false;
+  if (!IsWindowsSavePathRoot(item.root)) return true;
+  const auto folder = [](const std::string& path) {
+    auto lower = Lower(path);
+    while (!lower.empty() && lower.back() == '/') lower.pop_back();
+    return lower;
+  };
+  return std::any_of(info.patterns.begin(), info.patterns.end(), [&](const SaveFilePattern& other) {
+    return IsWindowsSavePathRoot(other.upload_root) && other.root == item.root && folder(other.path) == folder(item.path) &&
+           Lower(other.pattern) == Lower(item.pattern) && other.recursive == item.recursive;
+  });
+}
+
 }  // namespace
 
 std::string LocalSavePath::key() const { return (root == SaveRoot::kGame ? "game/" : "prefix/") + Lower(path); }
@@ -165,6 +184,7 @@ SaveMapping BuildSaveMapping(const CloudSaveInfo& info, std::uint32_t app_id, st
     const auto upload_path = RelativePath(item.upload_path, steam_id, &needs_account);
     const auto base = item.root == SavePathRoot::kSteamUserData ? std::make_optional(std::make_pair(SaveRoot::kPrefix, remote))
                                                                 : Base(item.root);
+    if (OtherPlatformCopy(info, item)) continue;
     if (needs_account) {
       mapping.unresolved.push_back("Sign in to resolve this game's account save folder.");
       continue;

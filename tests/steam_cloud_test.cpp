@@ -130,6 +130,31 @@ const char kAppInfo[] = R"VDF("appinfo"
 }
 )VDF";
 
+// Cat Quest (593280): one save location per OS, without "platforms", and overrides between them.
+const char kCatQuestAppInfo[] = R"VDF("appinfo"
+{
+	"appid"		"4242"
+	"common" { "name" "Cat Quest" "type" "Game" }
+	"ufs"
+	{
+		"quota"		"1000000"
+		"maxnumfiles"		"100"
+		"savefiles"
+		{
+			"1" { "root" "WinAppDataLocalLow" "path" "The Gentlebros Pte_ Ltd_/Cat Quest" "pattern" "*.dat" }
+			"2" { "root" "MacAppSupport" "path" "com.thegentlebros.catquest" "pattern" "*.dat" }
+		}
+		"rootoverrides"
+		{
+			"1" { "os" "MacOS" "oscompare" "=" "root" "WinAppDataLocalLow" "useinstead" "MacAppSupport"
+			      "pathtransforms" { "0" { "find" "The Gentlebros Pte_ Ltd_/Cat Quest" "replace" "com.thegentlebros.catquest" } } }
+			"3" { "os" "Windows" "oscompare" "=" "root" "MacAppSupport" "useinstead" "WinAppDataLocalLow"
+			      "pathtransforms" { "0" { "find" "com.thegentlebros.catquest" "replace" "The Gentlebros Pte_ Ltd_/Cat Quest" } } }
+		}
+	}
+}
+)VDF";
+
 // ---- An in-memory Steam Cloud behind fake CM and HTTP seams. ----
 struct FakeCloud {
   struct File {
@@ -149,6 +174,8 @@ struct FakeCloud {
   std::vector<std::string> pending_deletes;
   int service_calls = 0;
   std::vector<std::string> methods;
+  const char* app_info = kAppInfo;
+  bool drop_last_location = true;  // kAppInfo's Linux-rooted location is covered by the mapping test
 
   std::vector<std::uint8_t> Changelist() const {
     proto::Writer body(8 * 1024 * 1024);
@@ -286,10 +313,10 @@ struct FakeCloud {
     };
     hooks.app_info = [this](const StoredSession&, std::uint32_t app, const std::atomic<bool>&, CmError* error) -> std::optional<CloudSaveInfo> {
       *error = CmError::kNone;
-      auto info = ParseAppInfo(app, kAppInfo);
+      auto info = ParseAppInfo(app, app_info);
       CHECK(info.has_value());
       if (!declares_ufs) info->cloud = {};
-      else info->cloud.patterns.pop_back();  // the Linux-rooted location is covered by the mapping test
+      else if (drop_last_location) info->cloud.patterns.pop_back();
       return info->cloud;
     };
     hooks.http = [this](const HttpRequest& request, const std::atomic<bool>&) { return Http(request); };
@@ -697,12 +724,67 @@ void MissingGameFolder() {
   std::filesystem::remove_all(base);
 }
 
+// A save location Steam lists for macOS beside the Windows one (Cat Quest) is the Mac client's: the Windows one maps
+// and syncs, and the Mac client's Cloud files are left alone.
+void SkipsOtherPlatformLocations() {
+  const auto info = ParseAppInfo(kApp, kCatQuestAppInfo);
+  CHECK(info && info->cloud.patterns.size() == 2);
+  // The Windows override gives the Mac entry the Windows folder; its Cloud names keep the Mac root.
+  CHECK(info->cloud.patterns[1].root == SavePathRoot::kWinAppDataLocalLow &&
+        info->cloud.patterns[1].upload_root == SavePathRoot::kMacAppSupport);
+  const auto mapping = BuildSaveMapping(info->cloud, kApp, kSteamId);
+  CHECK(mapping.usable() && mapping.unresolved.empty());
+  const SavePaths paths(mapping);
+  const std::string windows = "%WinAppDataLocalLow%The Gentlebros Pte_ Ltd_/Cat Quest/save1.dat";
+  const auto local = paths.LocalFor(windows);
+  CHECK(local && local->path == "drive_c/users/prospero/AppData/LocalLow/The Gentlebros Pte_ Ltd_/Cat Quest/save1.dat");
+  CHECK(!paths.LocalFor("%MacAppSupport%com.thegentlebros.catquest/save1.dat"));
+  CHECK(paths.RemoteFor(*local) == std::optional<std::string>(windows));  // one Cloud name for the local file
+  // Patterns and folders that differ only in case are the same location (GlobMatch ignores case).
+  auto other_case = info->cloud;
+  other_case.patterns[1].pattern = "*.DAT";
+  other_case.patterns[1].path = "the gentlebros pte_ ltd_/cat quest/";
+  CHECK(BuildSaveMapping(other_case, kApp, kSteamId).usable());
+  // A Mac location with no Windows override at all is the Mac client's as well.
+  auto mac_only = info->cloud;
+  mac_only.patterns[1].root = SavePathRoot::kMacAppSupport;
+  mac_only.patterns[1].path = mac_only.patterns[1].upload_path;
+  CHECK(BuildSaveMapping(mac_only, kApp, kSteamId).unresolved.empty());
+  // One a Windows override sends to a folder of its own is not a copy: it stays unsupported, as before.
+  auto own_folder = info->cloud;
+  own_folder.patterns[1].path = "Elsewhere";
+  CHECK(!BuildSaveMapping(own_folder, kApp, kSteamId).usable());
+
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-cat-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(base);
+  GameSaveLocation location{kApp, (base / "game").string(), (base / "prefix").string(), (base / "state").string()};
+  std::filesystem::create_directories(location.game_root);
+  const StoredSession session{kSteamId, "account", "refresh", "access", {}};
+  const std::atomic<bool> cancel{false};
+  FakeCloud cloud;
+  cloud.app_info = kCatQuestAppInfo;
+  cloud.drop_last_location = false;
+  cloud.files[windows] = {Bytes("windows save"), 1'000, false};
+  cloud.files["%MacAppSupport%com.thegentlebros.catquest/save1.dat"] = {Bytes("mac save"), 1'100, false};
+  CloudSync sync(cloud.Hooks());
+  const auto plan = sync.Check(session, location, cancel);
+  if (plan.status != PlanStatus::kReady) std::fprintf(stderr, "cat quest: %d %s\n", static_cast<int>(plan.status), plan.message.c_str());
+  CHECK(plan.status == PlanStatus::kReady && plan.downloads == 1 && plan.uploads == 0);
+  CHECK(plan.message.find("1 Cloud file is outside known save folders") != std::string::npos);
+  const auto outcome = sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel);
+  CHECK(outcome.ok && outcome.downloaded == 1);
+  CHECK(ReadText(base / "prefix" / local->path) == "windows save");
+  CHECK(cloud.files.count("%MacAppSupport%com.thegentlebros.catquest/save1.dat"));  // left alone
+  std::filesystem::remove_all(base);
+}
+
 }  // namespace
 
 int main() {
   ManagedPrefixAndPlanBinding();
   MessagesRoundTrip();
   ParsesUfsAndMaps();
+  SkipsOtherPlatformLocations();
   SyncEndToEnd();
   QuickCheckAndIndex();
   MissingGameFolder();
