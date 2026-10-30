@@ -693,6 +693,23 @@ int main() {
       CHECK(GenerateGameRecipe(219890, "Antichamber", {{"", "", "Binaries/Windows/UE3Redist.exe", "", ""}}, udk.string(), &recipe, &reason));
       CHECK(recipe.launch_entries[0].executable == "Binaries/Win32/UDK.exe");
     }
+    {  // Never a dedicated server or relay, even the largest (Cry of Fear lists only CoFLaunchApp.exe, #318).
+      const auto cof = fresh();
+      WritePe(cof / "CoFLaunchApp.exe", {false, {"KERNEL32.dll", "USER32.dll"}});
+      WritePe(cof / "cof.exe", {false, {"KERNEL32.dll", "DDRAW.dll"}, false, false, "opengl32.dll"});
+      WritePe(cof / "hlds.exe", {false, {"KERNEL32.dll", "DDRAW.dll"}, false, false, "opengl32.dll", 0x40000});
+      WritePe(cof / "hltv.exe", {false, {"KERNEL32.dll", "DDRAW.dll"}, false, false, "opengl32.dll", 0x30000});
+      CHECK(GenerateGameRecipe(223710, "Cry of Fear", {{"", "Launch with Console", "CoFLaunchApp.exe", "", ""}},
+                               cof.string(), &recipe, &reason));
+      CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "cof.exe" &&
+            recipe.launch_entries[0].id == "game" && recipe.launch_entries[1].executable == "CoFLaunchApp.exe");
+      // A server name only ranks last: a game whose own program is named like one is still found.
+      const auto side = fresh();
+      WritePe(side / "Launcher.exe", {false, {"KERNEL32.dll", "USER32.dll"}});
+      WritePe(side / "ServerSide.exe", {false, {"KERNEL32.dll", "d3d9.dll"}});
+      CHECK(GenerateGameRecipe(1, "Server Side", {{"", "", "Launcher.exe", "", ""}}, side.string(), &recipe, &reason));
+      CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "ServerSide.exe");
+    }
     // A program that draws, or the player's choice, is started as listed.
     CHECK(GenerateGameRecipe(1, "Game", {{"", "", "Tools/Viewer.exe", "", ""}}, root.string(), &recipe, &reason));
     CHECK(recipe.launch_entries.size() == 1 && recipe.launch_entries[0].executable == "Tools/Viewer.exe");

@@ -785,6 +785,22 @@ void TestEligibleLaunches() {
   CHECK(EligibleLaunches(with_editor, {kApp, 999}, "", &launches, &reason));
   CHECK((LaunchIds(launches) == Strings{"10"}));
 
+  // An untyped dedicated server or relay is left out while the game is listed too (#318), never when it's all there is.
+  for (const char* name : {"hlds.exe", "HLTV.EXE", "bin\\srcds_win64.exe", "DedicatedServer.exe", "Game_Server.exe",
+                           "MyGameServer.exe", "HLServer.exe", "server.exe"})
+    CHECK(IsDedicatedServerProgram(name));
+  for (const char* name : {"cof.exe", "hl.exe", "Observer.exe", "hl2.exe", "Serverless Quest.exe", "", ".exe"})
+    CHECK(!IsDedicatedServerProgram(name));
+  AppInfo servers = *app;
+  servers.launches[0].executable = "hlds.exe";
+  servers.launches[1].executable = "hltv.exe";
+  servers.launches[3].description = "Start a Dedicated Server";
+  CHECK(EligibleLaunches(servers, {kApp, 999}, "", &launches, &reason));
+  CHECK((LaunchIds(launches) == Strings{"10"}));
+  servers.launches.resize(1);
+  CHECK(EligibleLaunches(servers, {kApp}, "", &launches, &reason));
+  CHECK((LaunchIds(launches) == Strings{"0"}) && launches[0].executable == "hlds.exe");
+
   // Steam's betakey is a comma list of branches.
   AppInfo listed = *app;
   listed.launches[2].beta_key = "build_debug, Public ,latest\t";

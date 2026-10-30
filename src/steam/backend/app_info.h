@@ -203,8 +203,13 @@ bool BetaKeyMatchesPublic(std::string_view beta_key);
 // (case-insensitively); for the public branch also "public" or "default".
 bool BetaKeyMatchesBranch(std::string_view beta_key, std::string_view branch);
 
+// A dedicated server or relay, by its file name: hlds.exe, hltv.exe, srcds.exe, or a name with the
+// word "server" or "dedicated" (DedicatedServer.exe, game_server.exe; not Observer.exe).
+bool IsDedicatedServerProgram(std::string_view executable);
+
 // Windows launch entries usable on `branch` (empty: public), default type first, then by id. When no
-// entry is for that branch, every branch's entries; `any_branch` then says so.
+// entry is for that branch, every branch's entries; `any_branch` then says so. A dedicated server is
+// left out while another entry remains.
 bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_apps, std::string_view branch,
                       std::vector<AppLaunch>* launches, std::string* reason, bool* any_branch = nullptr);
 

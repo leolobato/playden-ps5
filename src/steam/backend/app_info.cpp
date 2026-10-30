@@ -714,6 +714,34 @@ bool BetaKeyMatchesBranch(std::string_view beta_key, std::string_view branch) {
 
 bool BetaKeyMatchesPublic(std::string_view beta_key) { return BetaKeyMatchesBranch(beta_key, "public"); }
 
+bool IsDedicatedServerProgram(std::string_view executable) {
+  const auto slash = executable.find_last_of("/\\");
+  if (slash != std::string_view::npos) executable.remove_prefix(slash + 1);
+  if (executable.size() > 4 && LowerString(executable.substr(executable.size() - 4)) == ".exe")
+    executable.remove_suffix(4);
+  // Words split at punctuation, digits and case changes: GameServer, HLServer, game_server_x64.
+  const auto upper = [&](std::size_t i) { return i < executable.size() && executable[i] >= 'A' && executable[i] <= 'Z'; };
+  const auto lower = [&](std::size_t i) { return i < executable.size() && executable[i] >= 'a' && executable[i] <= 'z'; };
+  std::vector<std::string> words;
+  std::string word;
+  for (std::size_t i = 0; i <= executable.size(); ++i) {
+    const char c = i < executable.size() ? executable[i] : '\0';
+    const bool letter = upper(i) || lower(i);
+    const bool word_start = upper(i) && i > 0 && (lower(i - 1) || (upper(i - 1) && lower(i + 1)));
+    if (!letter || word_start) {
+      if (!word.empty()) words.push_back(std::move(word));
+      word.clear();
+    }
+    if (letter) word.push_back(Lower(c));
+  }
+  if (words.empty()) return false;
+  // GoldSrc and Source servers and the HLTV relay (Cry of Fear lists hlds.exe and hltv.exe).
+  if (words.front() == "hlds" || words.front() == "hltv" || words.front() == "srcds") return true;
+  for (const std::string& part : words)
+    if (part == "server" || part.find("dedicated") != std::string::npos) return true;
+  return false;
+}
+
 bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_apps, std::string_view branch,
                       std::vector<AppLaunch>* launches, std::string* reason, bool* any_branch) {
   const auto eligible_for = [&](bool ignore_branch) {
@@ -735,6 +763,14 @@ bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_a
   const bool fallback = eligible.empty();
   if (fallback) eligible = eligible_for(true);
   if (any_branch != nullptr) *any_branch = fallback && !eligible.empty();
+  // A dedicated server listed without the "server" type is not the game either, unless it is all
+  // Steam lists.
+  const auto server = [](const AppLaunch& launch) {
+    return IsDedicatedServerProgram(launch.executable) ||
+           (launch.description && LowerString(*launch.description).find("dedicated server") != std::string::npos);
+  };
+  if (std::any_of(eligible.begin(), eligible.end(), [&](const AppLaunch& launch) { return !server(launch); }))
+    eligible.erase(std::remove_if(eligible.begin(), eligible.end(), server), eligible.end());
   std::set<std::string> ids;
   for (const AppLaunch& launch : eligible) ids.insert(launch.id);
   if (eligible.empty() || ids.size() != eligible.size()) {

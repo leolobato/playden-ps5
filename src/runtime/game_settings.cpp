@@ -1829,20 +1829,22 @@ bool DrawsGraphics(const std::string& summary) {
 }
 
 // The game program to start instead of a launcher: one that draws and the console may run,
-// in the launcher's folder or below it first, then the largest.
+// in the launcher's folder or below it first, then the largest. A dedicated server or relay comes
+// last (Cry of Fear ships hlds.exe and hltv.exe beside cof.exe).
 std::optional<std::string> GameInsteadOf(const std::string& install_root, const std::string& launcher,
                                          const KitCapabilities& kit) {
   const auto slash = launcher.rfind('/');
   const auto folder = slash == std::string::npos ? std::string() : LowerAscii(launcher.substr(0, slash + 1));
   std::optional<std::string> best;
-  std::pair<bool, std::uintmax_t> best_rank{false, 0};
+  std::tuple<bool, bool, std::uintmax_t> best_rank{false, false, 0};
   for (const auto& program : ListGamePrograms(install_root, kit)) {
     if (program.architecture.empty() || !program.refusal.empty() || !DrawsGraphics(program.detected) ||
         program.path == launcher || StartsTheGameOnly(program.path, GameProbe{}))
       continue;
     std::error_code error;
     const auto size = std::filesystem::file_size(std::filesystem::path(install_root) / program.path, error);
-    const std::pair<bool, std::uintmax_t> rank{LowerAscii(program.path).rfind(folder, 0) == 0, error ? 0 : size};
+    const std::tuple<bool, bool, std::uintmax_t> rank{!steam::IsDedicatedServerProgram(program.path),
+                                                      LowerAscii(program.path).rfind(folder, 0) == 0, error ? 0 : size};
     if (!best || rank > best_rank) best = program.path, best_rank = rank;
   }
   return best;
