@@ -145,7 +145,38 @@ int main() {
     WritePe(base / "elsewhere.dll", {true, {}, false, false, "d3d11.dll"});
     fs::create_symlink(base / "elsewhere.dll", root / "UnityPlayer.dll");
     const auto probe = ProbeGame(root.string(), "Game.exe");
-    CHECK(probe.engine.empty() && probe.apis.empty() && DefaultsFor(probe).graphics == "auto");
+    CHECK(probe.engine.empty() && probe.apis.empty() && DefaultsFor(probe).graphics == "dxvk");
+  }
+  {  // No graphics library named anywhere (Alan Wake loads d3d9 at run time): DXVK, as Wine's own Direct3D can't draw
+     // on the console. The label claims nothing.
+    const auto root = fresh();
+    WritePe(root / "AlanWake.exe", {false, {"KERNEL32.dll", "USER32.dll"}});
+    const auto probe = ProbeGame(root.string(), "AlanWake.exe");
+    CHECK(probe.engine.empty() && probe.apis.empty());
+    const auto defaults = DefaultsFor(probe);
+    CHECK(defaults.graphics == "dxvk" && defaults.summary == "unknown graphics=dxvk" && defaults.refusal.empty());
+    CHECK(DetectedLabel(defaults.summary).empty());
+    CHECK(DetectedLabel("anticheat graphics=dxvk").empty() && DetectedLabel("shared-section graphics=dxvk").empty());
+    // .NET without Wine Mono: still refused softly, with DXVK for a player who tries anyway.
+    auto dotnet = probe;
+    dotnet.dotnet = true;
+    const auto soft = DefaultsFor(dotnet);
+    CHECK(soft.refusal_soft && !soft.refusal.empty() && soft.graphics == "dxvk");
+    // A library beside the program that imports Direct3D 9 says so.
+    WritePe(root / "renderer.dll", {false, {"d3d9.dll", "KERNEL32.dll"}});
+    const auto sibling = DefaultsFor(ProbeGame(root.string(), "AlanWake.exe"));
+    CHECK(sibling.graphics == "dxvk" && sibling.summary == "d3d9 graphics=dxvk");
+    CHECK(DetectedLabel(sibling.summary) == "Direct3D 9");
+    // One that imports OpenGL keeps the game on OpenGL.
+    fs::remove(root / "renderer.dll");
+    WritePe(root / "gl.dll", {false, {"OPENGL32.dll", "KERNEL32.dll"}});
+    const auto opengl = DefaultsFor(ProbeGame(root.string(), "AlanWake.exe"));
+    CHECK(opengl.graphics == "opengl" && opengl.summary == "opengl graphics=opengl");
+    // Vulkan alone needs no translation: Automatic.
+    fs::remove(root / "gl.dll");
+    WritePe(root / "vk.dll", {false, {"vulkan-1.dll", "KERNEL32.dll"}});
+    const auto vulkan = ProbeGame(root.string(), "AlanWake.exe");
+    CHECK(vulkan.apis.count("vulkan") && DefaultsFor(vulkan).graphics == "auto");
   }
   {  // GameMaker names D3D11 in upper case.
     const auto root = fresh();

@@ -1932,7 +1932,8 @@ int main(int argc, char** argv) {
     CHECK(GenerateGameRecipe(4242, "Example", launches, game_root.string(), &generated, &reason));
     CHECK(generated.id == GeneratedRecipeId(4242) && IsGeneratedRecipeId(generated.id) && !IsGeneratedRecipeId(hl2.id));
     CHECK(generated.app_id == 4242 && generated.version == 2 && generated.architecture == "pe64");
-    CHECK(generated.graphics == "auto" && generated.dll_overrides.empty() && generated.locked.empty());
+    // No graphics library named: DXVK (game_probe.cpp, DefaultsFor).
+    CHECK(generated.graphics == "dxvk" && generated.dll_overrides.empty() && generated.locked.empty());
     CHECK(generated.launch_entries.size() == 2);
     CHECK(generated.launch_entries[0].executable == "Bin/Game.exe" && generated.launch_entries[0].label == "Play");
     CHECK(generated.launch_entries[0].working_directory == "Bin");

@@ -540,6 +540,10 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     out.graphics = "opengl";
   } else if (has("d3d12")) {
     out.refusal = "This game needs Direct3D 12, which this runtime kit can't draw yet.";
+  } else if (probe.engine.empty() && probe.apis.empty()) {
+    // Nothing names a graphics library: it is loaded at run time (Alan Wake's d3d9). Automatic means Wine's own
+    // Direct3D, which can't get an OpenGL context on the console, so DXVK covers the likeliest case.
+    out.graphics = "dxvk";
   }
   if (out.refusal.empty() && !soft.empty()) {
     out.refusal = std::move(soft);
@@ -568,6 +572,8 @@ std::string DetectedLabel(const std::string& summary) {
     facts.insert(summary.substr(start, end - start));
     start = end + 1;
   }
+  // Nothing detected: the graphics value is a default, not something the game's files said.
+  if (facts.count("unknown")) return {};
   std::string engine;
   for (const auto& [id, name] : std::initializer_list<std::pair<const char*, const char*>>{
            {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
@@ -588,7 +594,8 @@ std::string DetectedLabel(const std::string& summary) {
               ? "Direct3D 11"
               : facts.count("d3d10") ? "Direct3D 10" : facts.count("d3d9") ? "Direct3D 9"
               : facts.count("d3d8") ? "Direct3D 8" : "Direct3D";
-  if (engine.empty()) return api;
+  // DXVK without an engine or a Direct3D library named (only anticheat or shared-section facts) is the default too.
+  if (engine.empty()) return api == "Direct3D" ? std::string() : api;
   return api.empty() ? engine : engine + " · " + api;
 }
 
