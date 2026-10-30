@@ -724,6 +724,102 @@ void MissingGameFolder() {
   std::filesystem::remove_all(base);
 }
 
+// Save paths that start with a separator, as Steam lists them for many games (shapes from their appinfo): the
+// separator only says "below the root". A second one (UNC), a drive letter or ".." is still refused.
+std::string UfsAppInfo(const std::string& savefiles) {
+  return "\"appinfo\"\n{\n\t\"appid\"\t\t\"4242\"\n\t\"common\" { \"name\" \"Slash Game\" \"type\" \"Game\" }\n\t\"ufs\"\n\t{\n"
+         "\t\t\"quota\"\t\t\"1000000\"\n\t\t\"maxnumfiles\"\t\t\"100\"\n\t\t\"savefiles\"\n\t\t{\n" + savefiles + "\t\t}\n\t}\n}\n";
+}
+
+void MapsLeadingSeparatorPaths() {
+  const auto mapping_of = [](const std::string& savefiles) {
+    const auto info = ParseAppInfo(kApp, UfsAppInfo(savefiles));
+    CHECK(info && info->cloud.declared);
+    return BuildSaveMapping(info->cloud, kApp, kSteamId);
+  };
+  {  // Fallout 4: WinMyDocuments "/My Games/Fallout4/Saves", platforms Windows.
+    const auto mapping = mapping_of(
+        "\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"/My Games/Fallout4/Saves\" \"pattern\" \"*.fos\""
+        " \"platforms\" { \"1\" \"Windows\" } }\n");
+    CHECK(mapping.usable() && mapping.unresolved.empty());
+    const SavePaths paths(mapping);
+    const auto local = paths.LocalFor("%WinMyDocuments%My Games/Fallout4/Saves/Save1.fos");
+    CHECK(local && local->root == SaveRoot::kPrefix &&
+          local->path == "drive_c/users/prospero/Documents/My Games/Fallout4/Saves/Save1.fos");
+    CHECK(paths.LocalFor("%WinMyDocuments%/My Games/Fallout4/Saves/Save1.fos")->key() == local->key());
+    CHECK(paths.RemoteFor(*local) == std::optional<std::string>("%WinMyDocuments%My Games/Fallout4/Saves/Save1.fos"));
+    CHECK(!paths.LocalFor("%WinMyDocuments%My Games/Fallout4/Saves/notes.txt"));
+  }
+  {  // Black Mesa and Hexcells: gameinstall "/bms/save" and "/saves".
+    for (const auto& [folder, name] : {std::pair{"/bms/save", "bms/save/quick.sav"}, std::pair{"/saves", "saves/hex.dat"}}) {
+      const auto mapping = mapping_of(std::string("\t\t\t\"0\" { \"root\" \"gameinstall\" \"path\" \"") + folder +
+                                      "\" \"pattern\" \"*\" }\n");
+      CHECK(mapping.usable() && mapping.unresolved.empty());
+      const auto local = SavePaths(mapping).LocalFor(std::string("%GameInstall%") + name);
+      CHECK(local && local->root == SaveRoot::kGame && local->path == name);
+    }
+  }
+  {  // The Witcher 3: two Documents locations, one ending in a separator too.
+    const auto mapping = mapping_of(
+        "\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"/The Witcher 3/gamesaves/\" \"pattern\" \"*\""
+        " \"platforms\" { \"1\" \"Windows\" } }\n"
+        "\t\t\t\"1\" { \"root\" \"WinMyDocuments\" \"path\" \"/The Witcher 3/\" \"pattern\" \"user.settings\""
+        " \"platforms\" { \"1\" \"Windows\" } }\n");
+    CHECK(mapping.usable() && mapping.unresolved.empty());
+    const SavePaths paths(mapping);
+    CHECK(paths.LocalFor("%WinMyDocuments%The Witcher 3/gamesaves/AutoSave_0001.sav")->path ==
+          "drive_c/users/prospero/Documents/The Witcher 3/gamesaves/AutoSave_0001.sav");
+    CHECK(paths.LocalFor("%WinMyDocuments%The Witcher 3/user.settings")->path ==
+          "drive_c/users/prospero/Documents/The Witcher 3/user.settings");
+    CHECK(!paths.LocalFor("%WinMyDocuments%The Witcher 3/other.ini"));
+  }
+  // Still refused: a UNC path (two separators, either way), a drive letter, a way out of the root.
+  for (const char* path : {"//server/share", "\\\\\\\\server\\\\share", "\\\\/server", "/\\\\server", "C:/Saves", "/C:/Saves",
+                           "/../escape", "/Saves/../..", "/./Saves"}) {
+    const auto mapping = mapping_of(std::string("\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"") + path +
+                                    "\" \"pattern\" \"*\" }\n");
+    if (mapping.usable()) std::fprintf(stderr, "accepted: %s\n", path);
+    CHECK(!mapping.usable() && !mapping.unresolved.empty());
+  }
+
+  {  // One leading backslash is the same as a slash.
+    const auto mapping = mapping_of(
+        "\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"\\\\My Games\\\\Fallout4\\\\Saves\" \"pattern\" \"*.fos\" }\n");
+    CHECK(mapping.usable());
+    CHECK(SavePaths(mapping).LocalFor("%WinMyDocuments%My Games/Fallout4/Saves/Save1.fos"));
+  }
+
+  // Synced end to end: a Fallout 4 save Steam names with or without the separator comes down to Documents.
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-slash-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(base);
+  GameSaveLocation location{kApp, (base / "game").string(), (base / "prefix").string(), (base / "state").string()};
+  std::filesystem::create_directories(location.game_root);
+  const StoredSession session{kSteamId, "account", "refresh", "access", {}};
+  const std::atomic<bool> cancel{false};
+  const auto fallout = UfsAppInfo(
+      "\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"/My Games/Fallout4/Saves\" \"pattern\" \"*.fos\""
+      " \"platforms\" { \"1\" \"Windows\" } }\n");
+  FakeCloud cloud;
+  cloud.app_info = fallout.c_str();
+  cloud.drop_last_location = false;
+  cloud.files["%WinMyDocuments%My Games/Fallout4/Saves/Save1.fos"] = {Bytes("vault 111"), 1'000, false};
+  CloudSync sync(cloud.Hooks());
+  const auto plan = sync.Check(session, location, cancel);
+  if (plan.status != PlanStatus::kReady) std::fprintf(stderr, "fallout: %d %s\n", static_cast<int>(plan.status), plan.message.c_str());
+  CHECK(plan.status == PlanStatus::kReady && plan.downloads == 1);
+  const auto outcome = sync.Apply(session, location, plan, Resolution::kAutomatic, false, cancel);
+  CHECK(outcome.ok && outcome.downloaded == 1);
+  CHECK(ReadText(base / "prefix/drive_c/users/prospero/Documents/My Games/Fallout4/Saves/Save1.fos") == "vault 111");
+  // A new save made here uploads under the name without the separator, the form the other Cloud names here use.
+  WriteText(base / "prefix/drive_c/users/prospero/Documents/My Games/Fallout4/Saves/Save2.fos", "new save");
+  auto upload = sync.Check(session, location, cancel);
+  CHECK(upload.status == PlanStatus::kReady && upload.uploads == 1);
+  CHECK(sync.Apply(session, location, upload, Resolution::kAutomatic, false, cancel).ok);
+  CHECK(cloud.files.count("%WinMyDocuments%My Games/Fallout4/Saves/Save2.fos") &&
+        cloud.files.at("%WinMyDocuments%My Games/Fallout4/Saves/Save2.fos").data == Bytes("new save"));
+  std::filesystem::remove_all(base);
+}
+
 // A save location Steam lists for macOS beside the Windows one (Cat Quest) is the Mac client's: the Windows one maps
 // and syncs, and the Mac client's Cloud files are left alone.
 void SkipsOtherPlatformLocations() {
@@ -785,6 +881,7 @@ int main() {
   MessagesRoundTrip();
   ParsesUfsAndMaps();
   SkipsOtherPlatformLocations();
+  MapsLeadingSeparatorPaths();
   SyncEndToEnd();
   QuickCheckAndIndex();
   MissingGameFolder();

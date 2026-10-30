@@ -44,9 +44,12 @@ bool SafeComponents(std::string_view path) {
   return true;
 }
 
-// A declared path: backslashes become slashes, trailing separators go, absolute paths are refused.
+// A declared path: backslashes become slashes, trailing separators go. One leading separator is how many games write a
+// path below their root ("/My Games/Fallout4/Saves" under WinMyDocuments, as Steam's Cloud names write "%Root%/folder"),
+// so it goes too; a second one (a UNC "\\server" form), a drive letter or ".." is still refused.
 std::optional<std::string> RelativePath(std::string path, std::uint64_t steam_id, bool* needs_account) {
   std::replace(path.begin(), path.end(), '\\', '/');
+  if (!path.empty() && path.front() == '/') path.erase(path.begin());
   if (!path.empty() && path.front() == '/') return std::nullopt;
   while (!path.empty() && path.back() == '/') path.pop_back();
   if (path.find("{64BitSteamID}") != std::string::npos || path.find("{Steam3AccountID}") != std::string::npos) {
@@ -139,6 +142,7 @@ bool OtherPlatformCopy(const CloudSaveInfo& info, const SaveFilePattern& item) {
   if (!IsWindowsSavePathRoot(item.root)) return true;
   const auto folder = [](const std::string& path) {
     auto lower = Lower(path);
+    if (!lower.empty() && lower.front() == '/') lower.erase(lower.begin());
     while (!lower.empty() && lower.back() == '/') lower.pop_back();
     return lower;
   };
