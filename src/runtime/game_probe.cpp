@@ -244,6 +244,34 @@ void ScanNames(const std::string& path, std::set<std::string>* apis, std::string
   }
 }
 
+// The major version of the Unity that built a game, from the start of its data folder's first serialized file
+// (globalgamemanagers from Unity 5, mainData before): the header holds the version as text ("5.6.2f1") at offset
+// 20 from Unity 3.5 on. 0 when it can't be read.
+int UnityMajorVersion(const fs::path& data) {
+  for (const char* name : {"globalgamemanagers", "mainData"}) {
+    Program file((data / name).string());
+    unsigned char head[64] = {};
+    const auto count = file.ReadSome(0, head, sizeof(head));
+    if (count <= 20) continue;
+    // digits '.' digits '.' digits, a release letter, digits and the string's end (5.6.2f1, 4.7.2p3).
+    std::size_t at = 20;
+    int major = 0;
+    while (at < count && head[at] >= '0' && head[at] <= '9' && major < 10000) major = major * 10 + (head[at++] - '0');
+    if (at == 20 || at >= count || head[at++] != '.') continue;
+    const auto digits = [&] {
+      const auto start = at;
+      while (at < count && head[at] >= '0' && head[at] <= '9') ++at;
+      return at > start;
+    };
+    if (!digits() || at >= count || head[at++] != '.' || !digits() || at >= count ||
+        std::string_view("abfpx").find(static_cast<char>(head[at++])) == std::string_view::npos || !digits() ||
+        at >= count || head[at] != '\0')
+      continue;
+    return major;
+  }
+  return 0;
+}
+
 // Entries of a folder, without following links: name as spelled -> is a directory.
 std::vector<std::pair<std::string, bool>> Entries(const fs::path& folder) {
   std::vector<std::pair<std::string, bool>> out;
@@ -427,6 +455,8 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.engine = "unity";
     probe.il2cpp = Find(here, "gameassembly.dll", false).has_value();
     probe.legacy_unity = !unity;
+    if (probe.legacy_unity)
+      if (const auto data = Find(here, Lower(stem) + "_data", true)) probe.unity_major = UnityMajorVersion(root / folder / *data);
     if (unity) ScanNames((root / folder / *unity).string(), &probe.apis);
   } else if (EndsWith(lower_file, "-shipping.exe") || UnrealLauncher(here, lower_file)) {
     probe.engine = "unreal";
@@ -475,6 +505,11 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   return probe;
 }
 
+namespace {
+// A Unity before 2017.2 that starts on Direct3D 9: Unity 4 and earlier, or a version that can't be read.
+bool LegacyDirect3D9(const GameProbe& probe) { return probe.legacy_unity && probe.unity_major < 5; }
+}  // namespace
+
 GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime) {
   GameDefaults out;
   const auto has = [&](const char* api) { return probe.apis.count(api) != 0; };
@@ -494,11 +529,12 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Chromium starts helper processes, and in one process it reserves 64 GB of address space.
     out.refusal = "This game runs on NW.js (a built-in web browser), which Playden can't start on the PS5 yet.";
   } else if (probe.engine == "unity") {
-    // Unity also names d3d12 and Vulkan; D3D11 is the path DXVK covers. Unity before 2017.2
-    // (the player built into the program) still has a Direct3D 9 renderer, which draws on the
-    // console (Hexcells); on D3D11 one (140) stopped before its first frame.
+    // Unity also names d3d12 and Vulkan; D3D11 is the path DXVK covers. Unity 4 and earlier (Hexcells,
+    // Thomas Was Alone) draw with Direct3D 9, where D3D11 was a player option. Unity 5 builds may leave
+    // Direct3D 9 out ("Forced GfxDevice 'Direct3D 9' was not built", I Can't Believe It's Not Gambling, 5.6) and
+    // draw on D3D11 (140, 5.3); a Unity before 2017.2 whose version can't be read keeps Direct3D 9.
     out.graphics = "dxvk";
-    out.arguments = probe.legacy_unity ? "-force-d3d9 {resolution}" : "-force-d3d11 {resolution}";
+    out.arguments = LegacyDirect3D9(probe) ? "-force-d3d9 {resolution}" : "-force-d3d11 {resolution}";
     out.resolution_arguments = "-screen-width {w} -screen-height {h}";
   } else if (probe.engine == "unreal") {
     // Unreal 4 draws on DXVK. Unreal 5 projects are often Direct3D 12 only ("Unable to launch with RHI 'DirectX
@@ -552,7 +588,8 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
   std::string facts = probe.engine;
   if (probe.unreal5) facts += "5";
   if (probe.il2cpp) facts += facts.empty() ? "il2cpp" : "-il2cpp";
-  if (probe.legacy_unity) facts += "-legacy";
+  if (LegacyDirect3D9(probe)) facts += "-legacy";
+  else if (probe.legacy_unity) facts += "-legacy5";
   for (const auto& api : probe.apis) facts += (facts.empty() ? "" : ",") + api;
   // An Unreal 5 game names both renderers; this says which one it starts on.
   if (probe.unreal5) facts += out.d3d12.empty() ? ",dx11" : ",dx12";
@@ -576,7 +613,8 @@ std::string DetectedLabel(const std::string& summary) {
   if (facts.count("unknown")) return {};
   std::string engine;
   for (const auto& [id, name] : std::initializer_list<std::pair<const char*, const char*>>{
-           {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
+           {"unity", "Unity"}, {"unity-il2cpp", "Unity"}, {"unity-legacy", "Unity"}, {"unity-legacy5", "Unity"},
+           {"unreal", "Unreal Engine"}, {"unreal5", "Unreal Engine 5"}, {"source", "Source"},
            {"gamemaker", "GameMaker"}, {"godot", "Godot"}, {"love", "L\xC3\x96VE"}, {"nwjs", "NW.js"}, {"sil", "SIL"},
            {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}})
     if (facts.count(id)) engine = name;

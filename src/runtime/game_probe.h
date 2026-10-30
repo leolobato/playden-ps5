@@ -14,6 +14,7 @@ struct GameProbe {
                        // "hashlink", "xna", or empty
   bool il2cpp = false;  // Unity with GameAssembly.dll
   bool legacy_unity = false;  // Unity before 2017.2: the player is built into the program
+  int unity_major = 0;  // for legacy_unity, the Unity version from the data folder (4, 5); 0 when unknown
   // Graphics libraries the program or its engine imports or names: "d3d8", "d3d9", "d3d10",
   // "d3d11", "dxgi", "d3d12", "opengl", "vulkan", "ddraw".
   std::set<std::string> apis;

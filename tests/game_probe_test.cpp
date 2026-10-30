@@ -93,6 +93,11 @@ std::string Wide(const std::string& text) {
   return out;
 }
 
+void Write(const fs::path& path, const std::string& bytes) {
+  fs::create_directories(path.parent_path());
+  std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+}
+
 void Touch(const fs::path& path) {
   fs::create_directories(path.parent_path());
   std::ofstream(path) << "x";
@@ -128,16 +133,49 @@ int main() {
     CHECK(defaults.resolution_arguments == "-screen-width {w} -screen-height {h}");
     CHECK(defaults.summary == "unity-il2cpp,d3d11,d3d12 graphics=dxvk");
   }
-  {  // Unity before 2017.2 (140): the player is in the program; Direct3D 9 is forced.
+  {  // Unity before 2017.2: the player is in the program. Without a version to read, Direct3D 9 is forced.
     const auto root = fresh();
-    WritePe(root / "140.exe", {false, {"KERNEL32.dll", "d3d9.dll"}, false, false, "d3d11.dll"});
-    fs::create_directories(root / "140_Data/Managed");
-    const auto probe = ProbeGame(root.string(), "140.exe");
-    CHECK(probe.engine == "unity" && probe.legacy_unity && !probe.il2cpp);
+    WritePe(root / "Old.exe", {false, {"KERNEL32.dll", "d3d9.dll"}, false, false, "d3d11.dll"});
+    fs::create_directories(root / "Old_Data/Managed");
+    const auto probe = ProbeGame(root.string(), "Old.exe");
+    CHECK(probe.engine == "unity" && probe.legacy_unity && !probe.il2cpp && probe.unity_major == 0);
     const auto defaults = DefaultsFor(probe);
     CHECK(defaults.graphics == "dxvk" && defaults.arguments == "-force-d3d9 {resolution}");
     CHECK(defaults.summary == "unity-legacy,d3d11,d3d9 graphics=dxvk");
     CHECK(DetectedLabel(defaults.summary) == "Unity \xC2\xB7 Direct3D 9");
+    // The data folder's first serialized file names the Unity version 20 bytes in (big-endian header first).
+    const auto serialized = [](const std::string& version) {
+      std::string bytes(20, '\0');
+      bytes[11] = 15;  // format version
+      return bytes + version + std::string(1, '\0') + std::string(40, '\x05');
+    };
+    // Unity 4 (Hexcells, Thomas Was Alone): Direct3D 9.
+    Write(root / "Old_Data/mainData", serialized("4.6.1f1"));
+    const auto unity4 = ProbeGame(root.string(), "Old.exe");
+    CHECK(unity4.unity_major == 4 && DefaultsFor(unity4).arguments == "-force-d3d9 {resolution}");
+    // Unity 5 (I Can't Believe It's Not Gambling, 5.6.2f1, built without Direct3D 9; 140, 5.3): Direct3D 11.
+    Write(root / "Old_Data/globalgamemanagers", serialized("5.6.2f1"));
+    const auto unity5 = ProbeGame(root.string(), "Old.exe");
+    CHECK(unity5.unity_major == 5);
+    const auto unity5_defaults = DefaultsFor(unity5);
+    CHECK(unity5_defaults.arguments == "-force-d3d11 {resolution}");
+    CHECK(unity5_defaults.summary == "unity-legacy5,d3d11,d3d9 graphics=dxvk");
+    CHECK(DetectedLabel(unity5_defaults.summary) == "Unity \xC2\xB7 Direct3D 11");
+    // Text that isn't a version is no version; mainData is read next (Unity 5.0 has no globalgamemanagers).
+    Write(root / "Old_Data/globalgamemanagers", serialized("5.6.x"));
+    Write(root / "Old_Data/mainData", serialized("5.0.4f1"));
+    CHECK(ProbeGame(root.string(), "Old.exe").unity_major == 5);
+    fs::remove(root / "Old_Data/mainData");
+    CHECK(ProbeGame(root.string(), "Old.exe").unity_major == 0);
+    Write(root / "Old_Data/globalgamemanagers", serialized("5.6.2f1garbage"));
+    CHECK(ProbeGame(root.string(), "Old.exe").unity_major == 0);
+    Write(root / "Old_Data/globalgamemanagers", serialized("5.6.2f1").substr(0, 26));  // cut short
+    CHECK(ProbeGame(root.string(), "Old.exe").unity_major == 0);
+    // A linked data file is not followed.
+    fs::remove(root / "Old_Data/globalgamemanagers");
+    Write(base / "unity5-elsewhere", serialized("5.6.2f1"));
+    fs::create_symlink(base / "unity5-elsewhere", root / "Old_Data/globalgamemanagers");
+    CHECK(ProbeGame(root.string(), "Old.exe").unity_major == 0);
   }
   {  // A linked UnityPlayer.dll is not followed.
     const auto root = fresh();
