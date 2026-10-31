@@ -34,7 +34,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [ANIMAL WELL](https://store.steampowered.com/app/813230) | ✅ Works | 0.11 | — · D3D12 · vkd3d-proton · 64-bit | Default settings. Title screen, a Cloud save and play with the controller. |
 | [Arco Demo](https://store.steampowered.com/app/2736970) | ✅ Works | 0.13 | — | Default settings. |
 | [Arctic Eggs](https://store.steampowered.com/app/2763670) | ✅ Works | 0.11 | Godot · 64-bit | Default settings. |
-| Arkham Asylum | ✅ Works | 0.16 | — | Default settings, DualSense. If the game starts in 4:3, run it once and change the resolution with the bmlauncher; note subtitles stay small even at 150% scaling. (firmware 12.20) |
+| Arkham Asylum | ✅ Works | 0.16 | — | Default settings, DualSense. If the game starts in 4:3, run it once and change the resolution with the bmlauncher; note subtitles stay small even at 150% scaling. ([#339](https://github.com/leolobato/playden-ps5/pull/339), firmware 12.20) |
 | [Assetto Corsa Rally](https://store.steampowered.com/app/3917090) | ✅ Works | 0.13 | — | Default settings, DualSense. Changing the in-game anti-aliasing setting makes the game crash at every start until its save is deleted. ([#257](https://github.com/leolobato/playden-ps5/issues/257), firmware 13.00) |
 | [Azure Striker GUNVOLT](https://store.steampowered.com/app/388800) | ✅ Works | 0.10 | Inti Creates · D3D9 · 32-bit | In the settings window at start, Circle confirms and Cross cancels. Then title screen and menu with the controller. |
 | [BALL x PIT](https://store.steampowered.com/app/2062430) | ✅ Works | 0.10 | Unity · D3D11 · 64-bit | Intro and the first cutscene. |
