@@ -42,7 +42,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [BioShock Remastered](https://store.steampowered.com/app/409710) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#248](https://github.com/leolobato/playden-ps5/issues/248), firmware 13.60) |
 | [Blades of Time](https://store.steampowered.com/app/208670) | ✅ Works | 0.10 | Dagor · D3D9 · 32-bit | Intro, main menu and Story with the controller. Playden removes its old Steam DRM (SteamStub 2.1). |
 | [BLUE REVOLVER](https://store.steampowered.com/app/439490) | ✅ Works | 0.10 | LÖVE · OpenGL · 64-bit | Default settings. The intro, the language menu and the story opening work with the controller. The earlier PhysFS start-up failure no longer happens; its cause is unknown. Gameplay not tested on r6. |
-| [Braid Anniversary Edition](https://store.steampowered.com/app/499180) | ✅ Works | 0.16 | — | Default settings. |
+| [Braid Anniversary Edition](https://store.steampowered.com/app/499180) | ✅ Works | 0.16 | — | Default settings. ([#333](https://github.com/leolobato/playden-ps5/pull/333)) |
 | [BRAZILIAN DRUG DEALER BEFORE 4](https://store.steampowered.com/app/4241920) | ✅ Works | 0.13 | — · OpenGL · 64-bit | Default settings. ([#157](https://github.com/leolobato/playden-ps5/pull/157), firmware 13.00) |
 | [Bread & Fred Demo](https://store.steampowered.com/app/1763200) | ✅ Works | 0.13 | — | Default settings. |
 | [Broforce](https://store.steampowered.com/app/274190) | ✅ Works | 0.12 | — | Default settings, DualSense. Menus and play. ([#107](https://github.com/leolobato/playden-ps5/issues/107), firmware 13.42) |
