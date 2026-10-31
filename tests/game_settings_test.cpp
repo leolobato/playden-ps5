@@ -1410,6 +1410,22 @@ int main(int argc, char** argv) {
     CHECK(settings.values.at("steam_features").value == "emulate" && !settings.values.at("graphics").locked);
     CHECK(settings.launch && settings.launch->executable == "Binaries/Win32/BatmanAC.exe" && settings.arguments.empty());
   }
+  // Project Zomboid: its launcher picks ZGC for Windows 10, which can't reserve its heap on the console, and G1 for
+  // Windows 7; LWJGL draws with OpenGL, loaded at run time, so nothing in the files names it; and the launcher quits
+  // when the Steam emulator says nobody is signed in, unless the game runs with -nosteam.
+  {
+    GameRecipe zomboid;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-108600-projectzomboid-v1.json"), &zomboid, &reason));
+    CHECK(zomboid.app_id == 108600 && zomboid.launch_entries.size() == 1 &&
+          zomboid.launch_entries[0].executable == "ProjectZomboid64.exe");
+    KitCapabilities kit;
+    kit.registry = true;
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(zomboid, nullptr, {}, kit, &settings, &error));
+    CHECK(settings.graphics == "opengl" && settings.architecture == "pe64" && settings.arguments == "-nosteam");
+    CHECK(settings.values.at("windows_version").value == "win7" && !settings.values.at("windows_version").locked);
+  }
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"gdi"}}]})", &presets, &reason));
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"extra_arguments":"-a"}}]})", &presets, &reason));
 
@@ -1443,8 +1459,8 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 6 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-4241920-braziliandrugdealer4-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 7 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-108600-projectzomboid-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is

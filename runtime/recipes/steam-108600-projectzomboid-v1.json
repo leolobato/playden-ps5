@@ -1,0 +1,21 @@
+{
+  "recipe_id": "steam-108600-projectzomboid-v1",
+  "recipe_version": 1,
+  "app_id": 108600,
+  "name": "Project Zomboid",
+  "launch_entries": [
+    {"id": "game", "label": "Project Zomboid", "executable": "ProjectZomboid64.exe"}
+  ],
+  "arguments": "-nosteam",
+  "resolution_arguments": "",
+  "dll_overrides": "",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "opengl",
+  "defaults": {
+    "steam_features": "emulate",
+    "windows_version": "win7"
+  },
+  "locked": []
+}
