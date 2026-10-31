@@ -1235,6 +1235,7 @@ private:
     std::string manage_move_volume_id_;
     GameId move_picker_game_;
     std::string manage_move_from_id_;  // Move: only the games on this drive are listed; empty lists every drive
+    std::string manage_uninstall_from_id_;  // Uninstall: only the games on this drive are listed; empty lists every drive
     bool rebuilding_overlay_ = false;  // rebuild_view is building the screen under an open sheet
     struct StoreFacts { std::string description; std::vector<std::string> genres; std::string controller_support; };
     std::map<GameId, StoreFacts> store_facts_;  // live: from the Steam store, applied over library refreshes
@@ -1474,6 +1475,8 @@ private:
     // them after All drives.
     [[nodiscard]] std::vector<const Volume*> move_from_volumes() const;
     void cycle_manage_move_from();
+    [[nodiscard]] std::vector<const Volume*> uninstall_from_volumes() const;
+    void cycle_manage_uninstall_from();
     void open_move_picker(GameId game);
     void choose_move_volume(const std::string& volume_id);
     // Why a game can't move to `volume_id` now (empty when it can).

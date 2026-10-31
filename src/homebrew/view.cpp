@@ -2810,14 +2810,14 @@ class Render::Impl
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, view.subtitle, 23.0F, 1728.0F), kSafeX, 230.0F, 23.0F,
                      kSecondary);
 
-        // The toolbar: Move from and Move to (on Move), Select all and Sort at the left, Check for updates at the right.
+        // The toolbar: Move from and Move to (on Move), Drive (on Uninstall), Select all and Sort at the left, Check for updates at the right.
         float tool_x = kSafeX;
         std::vector<const ViewRow *> games, notes;
         const ViewRow *primary = nullptr;
         for (const ViewRow &row : view.rows)
         {
-            if (row.key == "manage-move-from" || row.key == "manage-move-to" || row.key == "manage-select-all" ||
-                row.key == "manage-sort" || row.key == "manage-check")
+            if (row.key == "manage-move-from" || row.key == "manage-move-to" || row.key == "manage-uninstall-from" ||
+                row.key == "manage-select-all" || row.key == "manage-sort" || row.key == "manage-check")
             {
                 const bool picker = row.key == "manage-move-to";
                 const float label = fonts_.regular.measure(row.title, 22.0F);

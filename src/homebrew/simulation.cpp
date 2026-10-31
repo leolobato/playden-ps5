@@ -1474,6 +1474,8 @@ std::vector<GameId> Simulation::manage_list(ManageTab tab) const {
         // Move: imported games have their own Copy/Move into Playden; Move from lists one drive's games.
         if (tab == ManageTab::Move && id.store == Store::kLocal) continue;
         if (tab == ManageTab::Move && !manage_move_from_id_.empty() && installation.volume_id != manage_move_from_id_) continue;
+        if (tab == ManageTab::Uninstall && !manage_uninstall_from_id_.empty() && installation.volume_id != manage_uninstall_from_id_)
+            continue;
         // Updates: installed Steam games whose update or new DLC Steam told of; their size is the download (an
         // unknown one sorts last).
         if (updates) {
@@ -1535,8 +1537,8 @@ const Volume* volume_of(const State& state, const std::string& id) {
 
 // Where a row of Manage installed games sits: 0 the toolbar, 1 the games, 2 the footer, -1 not a stop.
 int manage_part(const ViewRow& row) {
-    if (row.key == "manage-move-from" || row.key == "manage-move-to" || row.key == "manage-select-all" || row.key == "manage-sort" ||
-        row.key == "manage-check")
+    if (row.key == "manage-move-from" || row.key == "manage-move-to" || row.key == "manage-uninstall-from" ||
+        row.key == "manage-select-all" || row.key == "manage-sort" || row.key == "manage-check")
         return 0;
     if (row.key.rfind("manage-toggle-", 0) == 0) return 1;
     if (row.key == "manage-primary") return 2;
@@ -1558,6 +1560,7 @@ void Simulation::open_manage_games(ManageTab tab) {
     manage_message_.clear();
     manage_move_volume_id_.clear();
     manage_move_from_id_.clear();
+    manage_uninstall_from_id_.clear();
     manage_return_focus_ = state_.navigation.focus_key;
     manage_return_route_ = state_.navigation.route == Route::ManageGames ? manage_return_route_ : state_.navigation.route;
     state_.navigation.route = Route::ManageGames;
@@ -1807,6 +1810,28 @@ void Simulation::cycle_manage_move_from() {
     refresh_manage_games();
 }
 
+// The drives Uninstall can narrow its list to: each connected drive with installed games, when there are two or more.
+std::vector<const Volume*> Simulation::uninstall_from_volumes() const {
+    std::vector<const Volume*> volumes;
+    for (const auto& volume : state_.volumes)
+        if (volume.available && std::any_of(state_.installations.begin(), state_.installations.end(), [&](const Installation& installation) {
+                return installation.volume_id == volume.id;
+            }))
+            volumes.push_back(&volume);
+    if (volumes.size() < 2) volumes.clear();
+    return volumes;
+}
+
+// All drives, then each drive with games, then All drives again.
+void Simulation::cycle_manage_uninstall_from() {
+    const auto volumes = uninstall_from_volumes();
+    const auto at = std::find_if(volumes.begin(), volumes.end(), [this](const Volume* volume) { return volume->id == manage_uninstall_from_id_; });
+    if (manage_uninstall_from_id_.empty() && !volumes.empty()) manage_uninstall_from_id_ = volumes.front()->id;
+    else if (at == volumes.end() || at + 1 == volumes.end()) manage_uninstall_from_id_.clear();
+    else manage_uninstall_from_id_ = (*(at + 1))->id;
+    refresh_manage_games();
+}
+
 // The old copy stays until the new one is checked, so the destination needs room for every checked game,
 // with the margin the install service keeps.
 Simulation::ManageMoves Simulation::manage_moves() const {
@@ -1898,6 +1923,9 @@ void Simulation::refresh_manage_games() {
     if (state_.navigation.route != Route::ManageGames) return;
     // A drive that went or became read-only is no longer the Move tab's destination.
     choose_manage_move_volume();
+    // A drive that went no longer narrows Uninstall's list; one whose games are all gone stays, and says so.
+    if (const auto* chosen = volume_of(state_, manage_uninstall_from_id_); !chosen || !chosen->available)
+        manage_uninstall_from_id_.clear();
     for (const auto tab : kManageTabs) {
         auto& state = manage_tabs_[tab];
         const auto games = manage_list(tab);
@@ -2023,6 +2051,11 @@ void Simulation::build_manage_games_view() {
         auto& move_to = row("manage-move-to", RowKind::Action, "Move to", "manage-move-to");
         move_to.enabled = move_volumes().size() >= 2;
         move_to.value = !move_to.enabled ? "No other drive" : destination ? destination->label : "No drive";
+    } else if (!updates && (!uninstall_from_volumes().empty() || volume_of(state_, manage_uninstall_from_id_))) {
+        // Drive narrows the list to one drive's games, to free room on that drive.
+        auto& drive = row("manage-uninstall-from", RowKind::Action, "Drive", "manage-uninstall-from");
+        const auto* source = volume_of(state_, manage_uninstall_from_id_);
+        drive.value = source ? source->label : "All drives";
     }
     row("manage-select-all", RowKind::Action, select_title, "manage-select-all").enabled = choosable > 0;
     auto& sort = row("manage-sort", RowKind::Action, "Sort", "manage-sort");
@@ -2088,6 +2121,9 @@ void Simulation::build_manage_games_view() {
         } else if (moves) {
             empty.title = "Nothing to move";
             empty.subtitle = "Games installed from Steam can move here. Imported games use Copy or Move into Playden.";
+        } else if (!updates && volume_of(state_, manage_uninstall_from_id_)) {
+            empty.title = "Nothing installed";
+            empty.subtitle = "No games on " + volume_of(state_, manage_uninstall_from_id_)->label + ".";
         } else if (!updates) {
             empty.title = "Nothing installed";
         } else if (check.failed) {
@@ -2124,6 +2160,7 @@ void Simulation::build_manage_games_view() {
             view_.footer += " · " + (*plan.free > plan.bytes ? format_bytes(*plan.free - plan.bytes) : std::string("0 GB")) + " free after";
     } else if (!updates) {
         view_.footer = std::to_string(count) + " selected · frees " + format_bytes(bytes);
+        if (const auto* source = volume_of(state_, manage_uninstall_from_id_)) view_.footer += " on " + source->label;
     } else {
         // Each drive's free space, or the drive that lacks room for its games: Update warns when pressed.
         const auto plan = manage_updates();
@@ -9070,6 +9107,8 @@ void Simulation::activate() {
         if (move_volumes().size() >= 2) open_move_picker({});
     } else if (action_name == "manage-move-from") {
         cycle_manage_move_from();
+    } else if (action_name == "manage-uninstall-from") {
+        cycle_manage_uninstall_from();
     } else if (action_name == "confirm-destructive" && pending_destructive_action_ == "manage-update-anyway") {
         pending_destructive_action_.clear();
         close_modal();

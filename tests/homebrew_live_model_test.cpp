@@ -1895,6 +1895,91 @@ void live_settings_manage_rows(const std::filesystem::path& base) {
 }
 
 
+// Uninstall's Drive narrows the list to one drive's games (imported ones too), to free room on that drive: All
+// drives, then each connected drive with games, then All drives again. Games off the list leave the selection.
+void live_manage_uninstall_drive(const std::filesystem::path& base) {
+    using playden::homebrew::ManageTab;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    auto model = make_live(base);
+    model.SetWallClock(kNow);
+    model.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{{SteamId(10), "Portal", "", "", ""}, {SteamId(20), "Stray", "", "", ""},
+                                {SteamId(30), "Tunic", "", "", ""}},
+                               false, {}, false, true, kNow}),
+          "uninstall drive: library delivered");
+    const auto imported = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 80 * gb},
+                         {"m2", "M.2 SSD", true, 1000 * gb, 100 * gb},
+                         {"usb", "USB Drive", true, 1000 * gb, 0}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(10), 10 * gb, "internal"}, {SteamId(20), 20 * gb, "m2"},
+                              {SteamId(30), 30 * gb, "internal"}, {imported, 5 * gb, "m2"}});
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+    activate(model, "settings-installed");
+    const auto& navigation = model.state().navigation;
+    check(navigation.route == Route::ManageGames && navigation.manage_tab == ManageTab::Uninstall, "uninstall drive: opens on Uninstall");
+    const auto* drive = find_row(model, "manage-uninstall-from");
+    check(drive && drive->enabled && drive->value == "All drives" && find_row(model, "manage-toggle-10") &&
+              find_row(model, "manage-toggle-20"),
+          "uninstall drive: Drive starts on All drives and lists every game");
+    check(!find_row(model, "manage-move-from") && !find_row(model, "manage-move-to"), "uninstall drive: no Move rows");
+
+    // Checked games on another drive leave the selection when Drive narrows the list.
+    activate(model, "manage-toggle-10");
+    activate(model, "manage-toggle-20");
+    activate(model, "manage-uninstall-from");
+    check(find_row(model, "manage-uninstall-from")->value == "Console storage" && find_row(model, "manage-toggle-10") &&
+              find_row(model, "manage-toggle-30") && !find_row(model, "manage-toggle-20"),
+          "uninstall drive: Console storage lists only its games");
+    check(navigation.focus_key == "manage-uninstall-from", "uninstall drive: focus stays on Drive");
+    check(model.view().footer == "1 selected · frees 10.0 GB on Console storage", "uninstall drive: the footer names the drive");
+    activate(model, "manage-uninstall-from");
+    check(find_row(model, "manage-uninstall-from")->value == "M.2 SSD" && find_row(model, "manage-toggle-20") &&
+              find_row(model, "manage-toggle-" + playden::ToKey(imported)) && !find_row(model, "manage-toggle-10") &&
+              !find_row(model, "manage-toggle-20")->selected,
+          "uninstall drive: M.2 SSD lists its games, imported ones too; the earlier choices are gone");
+    activate(model, "manage-uninstall-from");
+    check(find_row(model, "manage-uninstall-from")->value == "All drives" && find_row(model, "manage-toggle-10") &&
+              find_row(model, "manage-toggle-20"),
+          "uninstall drive: an empty drive is skipped and the cycle goes back to All drives");
+
+    // Select all checks only the listed drive's games.
+    activate(model, "manage-uninstall-from");
+    activate(model, "manage-uninstall-from");
+    check(find_row(model, "manage-uninstall-from")->value == "M.2 SSD", "uninstall drive: M.2 SSD again");
+    model.action("square");
+    check(find_row(model, "manage-toggle-20")->selected && find_row(model, "manage-toggle-" + playden::ToKey(imported))->selected &&
+              model.view().footer == "2 selected · frees 25.0 GB on M.2 SSD",
+          "uninstall drive: Select all checks the drive's games only");
+    model.action("square");
+
+    // Another drive going doesn't change the chosen one.
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 80 * gb},
+                         {"m2", "M.2 SSD", true, 1000 * gb, 100 * gb}}, "internal");
+    check(find_row(model, "manage-uninstall-from")->value == "M.2 SSD" && !find_row(model, "manage-toggle-10"),
+          "uninstall drive: another drive going keeps the filter");
+
+    // The drive's last games uninstalled: the filter stays and says the drive is empty.
+    model.UpdateInstalls({}, {{SteamId(10), 10 * gb, "internal"}, {SteamId(30), 30 * gb, "internal"}});
+    check(find_row(model, "manage-uninstall-from") && find_row(model, "manage-uninstall-from")->value == "M.2 SSD" &&
+              find_row(model, "manage-empty") && find_row(model, "manage-empty")->subtitle == "No games on M.2 SSD." &&
+              !find_row(model, "manage-toggle-10"),
+          "uninstall drive: an emptied drive stays chosen and says it has no games");
+    activate(model, "manage-uninstall-from");
+    check(!find_row(model, "manage-uninstall-from") && find_row(model, "manage-toggle-10") && find_row(model, "manage-toggle-30"),
+          "uninstall drive: Drive goes back to All drives, then hides with one drive of games");
+
+    // A chosen drive that goes lists every drive again.
+    model.UpdateInstalls({}, {{SteamId(10), 10 * gb, "internal"}, {SteamId(20), 20 * gb, "m2"}});
+    activate(model, "manage-uninstall-from");
+    activate(model, "manage-uninstall-from");
+    check(find_row(model, "manage-uninstall-from")->value == "M.2 SSD", "uninstall drive: M.2 SSD chosen");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 80 * gb},
+                         {"m2", "M.2 SSD", false, 1000 * gb, 100 * gb}}, "internal");
+    check(!find_row(model, "manage-uninstall-from") && find_row(model, "manage-toggle-10") && find_row(model, "manage-toggle-20"),
+          "uninstall drive: the chosen drive going lists every game again, the disconnected drive's too");
+}
+
 // Move: the checked games go to the chosen drive, each from where it is. Imported games aren't listed, games
 // already there or running can't be picked, a selection the drive hasn't room for is refused, and a game's
 // Maintenance queues the same move for that game.
@@ -2126,6 +2211,7 @@ int main() {
     live_manage_games_tabs(base / "manage-games");
     live_manage_update_selected(base / "update-selected");
     live_manage_move(base / "manage-move");
+    live_manage_uninstall_drive(base / "manage-uninstall-drive");
     live_manage_queue_full(base / "queue-full");
     live_settings_manage_rows(base / "settings-manage-rows");
 
