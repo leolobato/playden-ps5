@@ -305,6 +305,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 
 | Kit | What changed for games |
 | --- | --- |
+| 0.17 | Games that keep hundreds of files open at once no longer stop with "Too many open files": Unreal Engine 3 games, Dead by Daylight, Euro Truck Simulator 2 and others. Bottles need no Recreate; games set up on 0.16 or earlier update their runtime on their next Play. |
 | 0.16 | .NET games such as Slay the Spire 2 no longer close at start, as they did on 0.14 and 0.15. Reading a file into memory beside protected memory no longer fails. Bottles need no Recreate; games set up on 0.14 or 0.15 update their runtime on their next Play. |
 | 0.15 | Unity games that use Mono (Darkwood, for one) no longer take minutes to load and run at a few frames per second, as they did on 0.14. Game settings › Frame generation (2×, 3×, 4×) works. Bottles need no Recreate; games set up on 0.14 update their runtime on their next Play. |
 | 0.14 | Wine and the per-game shell move to the latest prospero-win. A game's rumble also vibrates L2 and R2, and Game settings › Rumble sets its strength. A two-finger touchpad click opens the PS5 keyboard over the game, the touchpad's left half is Back and its right half Guide, and closing a game takes a 3-second Options+Create hold. A USB mouse wheel reaches the game. Thread and fiber stacks use far less memory, and .NET games that scan large folders no longer run out of file handles. Bottles need no Recreate; games set up on 0.13 update their runtime on their next Play. |
