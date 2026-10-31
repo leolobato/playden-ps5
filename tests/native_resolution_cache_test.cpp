@@ -18,6 +18,12 @@ void Check(bool condition, const char* message) {
 NativeResolveError Resolve(CURL* easy, const std::string& url, std::uint32_t,
                            const std::atomic<bool>&, curl_slist** entries) {
   ++calls;
+  if (next_error == NativeResolveError::kUnusableAddress) {
+    // As the console resolver does: the refused answer stays attached for the log, and the caller never performs.
+    *entries = curl_slist_append(nullptr, (NativeResolutionCache::Key(url) + ":0.0.0.0").c_str());
+    curl_easy_setopt(easy, CURLOPT_RESOLVE, *entries);
+    return next_error;
+  }
   if (next_error != NativeResolveError::kNone) return next_error;
   const std::string entry = NativeResolutionCache::Key(url) + ":" + address;
   *entries = curl_slist_append(nullptr, entry.c_str());
@@ -85,6 +91,12 @@ void NoCachedAddress(CURLM* multi, const std::string& url) {
 }  // namespace
 int main() {
   Check(curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK, "curl initializes");
+  Check(UnusableResolvedAddress("0.0.0.0") && UnusableResolvedAddress("127.0.0.1") &&
+            UnusableResolvedAddress("127.255.0.9"),
+        "a blocking DNS server's answers are unusable");
+  Check(!UnusableResolvedAddress("142.250.203.219") && !UnusableResolvedAddress("10.0.1.9") &&
+            !UnusableResolvedAddress("1.27.0.1"),
+        "public and private addresses stay usable");
   std::atomic<bool> cancel{false};
   const auto start = NativeResolutionCache::Clock::time_point{};
   const std::string first = "https://CDN.EXAMPLE/chunk";
@@ -128,9 +140,22 @@ int main() {
       Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kNone && calls == before_failure + 2,
             "native failure, timeout and cancel are never cached");
     }
+    next_error = NativeResolveError::kUnusableAddress;
+    cache.ResetTransport(multi);
+    const auto before_unusable = calls;
+    Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kUnusableAddress &&
+              cache.address() == "0.0.0.0",
+          "an unusable answer is refused and keeps its address for the log");
+    Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kUnusableAddress &&
+              calls == before_unusable + 2,
+          "an unusable answer is never cached");
+    next_error = NativeResolveError::kNone;
+    Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kNone && cache.address() == address,
+          "the address of an attached answer is kept for the log");
     next_error = NativeResolveError::kFailed;
     cache.ResetTransport(multi);
-    Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kFailed, "resolution failure propagates");
+    Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kFailed && cache.address().empty(),
+          "resolution failure propagates");
     next_error = NativeResolveError::kNone;
     const auto before_retry = calls;
     Check(attach(first, start + std::chrono::minutes(5)) == NativeResolveError::kNone && calls == before_retry + 1,
@@ -186,6 +211,28 @@ int main() {
     cache.ResetTransport(multi);
     Check(multi != nullptr, "failed transport recreates bounded multi");
     NoCachedAddress(multi, failed);
+
+    // A refused (sinkhole) answer is attached to an easy handle that is never performed; the caller resets the
+    // transport. The next request resolves again and curl uses only the new address.
+    next_error = NativeResolveError::kUnusableAddress;
+    const std::string blocked = "https://blocked-dns.invalid/";
+    Probe refused;
+    CURL* refused_easy = Easy(blocked, refused);
+    Check(cache.Attach(refused_easy, blocked, 1000, cancel, &entries, start) == NativeResolveError::kUnusableAddress &&
+              cache.address() == "0.0.0.0",
+          "a refused answer is reported with its address");
+    curl_easy_cleanup(refused_easy);
+    cache.ResetTransport(multi);
+    NoCachedAddress(multi, blocked);
+    next_error = NativeResolveError::kNone;
+    Probe retried;
+    CURL* retry_easy = Easy(blocked, retried);
+    Check(cache.Attach(retry_easy, blocked, 1000, cancel, &entries, start) == NativeResolveError::kNone &&
+              cache.address() == address,
+          "the next request resolves again after a refused answer");
+    Perform(multi, retry_easy);
+    Check(retried.socket_attempts == 1, "the retry connects with the newly resolved address");
+    cache.ResetTransport(multi);
 
     // Expiry builds a removal list, but cancellation/deadline before perform never consumes it.
     Probe expired_seed;

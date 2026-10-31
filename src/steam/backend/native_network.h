@@ -25,7 +25,13 @@ enum class NativeResolveError {
   kFailed,
   kTimeout,
   kCanceled,
+  // The DNS server answered an address no server listens on (0.0.0.0 or loopback): a blocking DNS
+  // server's answer. The entries list still holds it, for the log.
+  kUnusableAddress,
 };
+
+// True for a resolved IPv4 address in dotted form that can't reach a server: 0.0.0.0 or 127.0.0.0/8.
+bool UnusableResolvedAddress(const std::string& numeric);
 
 NativeResolveError AttachNativeResolution(CURL* easy, const std::string& url,
                                           std::uint32_t timeout_ms,

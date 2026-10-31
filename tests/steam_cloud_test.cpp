@@ -169,6 +169,7 @@ struct FakeCloud {
   bool corrupt_downloads = false;
   long download_status = 200;  // another status refuses every download
   int download_transport_code = 0;  // nonzero fails every download in transport with this curl code
+  std::string download_blocked_address;  // nonempty: every download's host resolves to this unusable address
   std::uint64_t next_batch = 700;
   std::map<std::string, std::vector<std::uint8_t>> pending;  // uploads in the open batch
   std::vector<std::string> pending_deletes;
@@ -284,6 +285,13 @@ struct FakeCloud {
       if (corrupt_downloads && !response.body.empty()) response.body.back() ^= 0xff;
       if (download_status != 200) {
         response.status_code = download_status;
+        response.body.clear();
+      }
+      if (!download_blocked_address.empty()) {
+        response.error = HttpError::kNameResolutionFailed;
+        response.transport_code = 6;  // CURLE_COULDNT_RESOLVE_HOST
+        response.address = download_blocked_address;
+        response.status_code = 0;
         response.body.clear();
       }
       if (download_transport_code != 0) {
@@ -574,6 +582,15 @@ void SyncEndToEnd() {
   CHECK(!outcome.ok && outcome.message == "A Cloud save could not be downloaded. Try again.");
   CHECK(outcome.detail.find(" http error=protocol_error curl=35 status=0 ") != std::string::npos);
   cloud.download_transport_code = 0;
+
+  // A DNS server that blocks the storage host: the player is pointed at the PS5's DNS settings, and the
+  // log names the address it answered.
+  plan = sync.Check(session, location, cancel);
+  cloud.download_blocked_address = "0.0.0.0";
+  outcome = sync.Apply(session, location, plan, Resolution::kUseCloud, true, cancel);
+  CHECK(!outcome.ok && outcome.message == "The PS5 couldn't reach Steam Cloud's storage. Check its DNS settings, then try again.");
+  CHECK(outcome.detail.find(" http error=name_resolution_failed curl=6 addr=0.0.0.0 status=0 ") != std::string::npos);
+  cloud.download_blocked_address.clear();
 
   // A game without Steam Cloud says so.
   cloud.declares_ufs = false;

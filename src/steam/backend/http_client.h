@@ -70,11 +70,15 @@ struct HttpResponse {
   // The transport library's numeric result code when the transfer failed (0 otherwise), for logs:
   // several codes share one HttpError, such as a TLS handshake failure and kProtocolError.
   int transport_code = 0;
+  // The server's numeric address from the console's resolver, for logs (empty on host builds, where
+  // curl resolves): a DNS server that blocks a host answers one no server listens on.
+  std::string address;
 
   bool ok() const { return error == HttpError::kNone; }
 };
 
-// HttpErrorName plus the transport code when there is one, such as "protocol_error curl=35".
+// HttpErrorName plus the transport code and the server's address when there are, such as
+// "connection_failed curl=7 addr=203.0.113.5".
 std::string HttpFailureName(const HttpResponse& response);
 
 // One worker thread owns each instance and calls Perform synchronously. The cancel flag may be

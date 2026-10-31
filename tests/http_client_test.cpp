@@ -229,6 +229,18 @@ int main(int argc, char** argv) {
   Check(response.transport_code == 60 &&
             playden::steam::HttpFailureName(response) == "tls_verification_failed curl=60",
         "a transport failure should keep curl's code for diagnostics");
+  {
+    // The console's resolver records the address; a failure names it, a success doesn't.
+    playden::steam::HttpResponse blocked;
+    blocked.error = HttpError::kConnectionFailed;
+    blocked.transport_code = 7;
+    blocked.address = "0.0.0.0";
+    Check(playden::steam::HttpFailureName(blocked) == "connection_failed curl=7 addr=0.0.0.0",
+          "a failure should name the server address when it is known");
+    blocked.error = HttpError::kNone;
+    blocked.transport_code = 0;
+    Check(playden::steam::HttpFailureName(blocked) == "none", "a success names no address");
+  }
 
   HttpRequest invalid_header = get;
   invalid_header.headers.emplace_back("Bad\r\nInjected", "value");

@@ -131,6 +131,10 @@ bool InitializeNativeNetwork() {
 #endif
 }
 
+bool UnusableResolvedAddress(const std::string& numeric) {
+  return numeric == "0.0.0.0" || numeric.rfind("127.", 0) == 0;
+}
+
 NativeResolveError AttachNativeResolution(CURL* easy, const std::string& url,
                                           std::uint32_t timeout_ms,
                                           const std::atomic<bool>& cancel,
@@ -175,7 +179,9 @@ NativeResolveError AttachNativeResolution(CURL* easy, const std::string& url,
       ok = false;
     } else {
       ok = native_result == 0 && inet_ntop(AF_INET, &address, numeric, sizeof(numeric));
-      resolve_error = ok ? NativeResolveError::kNone : NativeResolveError::kFailed;
+      resolve_error = !ok ? NativeResolveError::kFailed
+                          : UnusableResolvedAddress(numeric) ? NativeResolveError::kUnusableAddress
+                                                             : NativeResolveError::kNone;
     }
   } else {
     ok = false;
@@ -189,6 +195,8 @@ NativeResolveError AttachNativeResolution(CURL* easy, const std::string& url,
       ok = curl_easy_setopt(easy, CURLOPT_RESOLVE, *entries) == CURLE_OK;
     }
     if (!ok) resolve_error = NativeResolveError::kFailed;
+    // Attached for the log only: the caller refuses the request before curl runs it.
+    if (resolve_error == NativeResolveError::kUnusableAddress) ok = false;
   }
   if (resolver >= 0) sceNetResolverDestroy(resolver);
   if (pool >= 0) sceNetPoolDestroy(pool);

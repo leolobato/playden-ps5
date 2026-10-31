@@ -210,6 +210,7 @@ const char* HttpErrorName(HttpError error) {
 std::string HttpFailureName(const HttpResponse& response) {
   std::string name = HttpErrorName(response.error);
   if (response.transport_code != 0) name += " curl=" + std::to_string(response.transport_code);
+  if (!response.ok() && !response.address.empty()) name += " addr=" + response.address;
   return name;
 }
 
@@ -305,6 +306,7 @@ class HttpClient::Impl {
       const auto start = Clock::now();
       resolve_error = resolution_cache_.Attach(easy, request.url, request.timeout_ms, cancel,
                                                &resolve_entries_, Clock::now());
+      transfer.response.address = resolution_cache_.address();
 #if PLAYDEN_PLATFORM_PS5
       transfer.response.timing.resolve_ms = static_cast<std::uint32_t>(
           std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count());

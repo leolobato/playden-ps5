@@ -65,6 +65,7 @@ class NativeResolutionCache {
   NativeResolveError Attach(CURL* easy, const std::string& url, std::uint32_t timeout_ms,
                             const std::atomic<bool>& cancel, curl_slist** active,
                             Clock::time_point now) {
+    address_.clear();
     if (!easy || !active) return NativeResolveError::kFailed;
     curl_slist_free_all(*active);
     *active = nullptr;
@@ -82,6 +83,11 @@ class NativeResolutionCache {
       replacement = cached->resolution;
     } else {
       const auto error = resolver_(easy, url, timeout_ms, cancel, active);
+      if (error == NativeResolveError::kUnusableAddress && *active) {
+        // Never cached; the next request asks the DNS server again.
+        const std::string refused = (*active)->data;
+        address_ = refused.substr(refused.rfind(':') + 1);
+      }
       if (error != NativeResolveError::kNone) return error;
       // Host builds deliberately leave the list null and use curl's normal resolver.
       if (!*active) return NativeResolveError::kNone;
@@ -118,14 +124,20 @@ class NativeResolutionCache {
       return now >= entry.expires || entry.key == evicted_key;
     }), entries_.end());
     if (cache_miss) entries_.push_back({key, replacement, now + std::chrono::minutes(5)});
+    address_ = replacement.substr(replacement.rfind(':') + 1);
     return NativeResolveError::kNone;
   }
+
+  // The numeric address the last Attach gave curl, or the unusable one it refused; empty when the
+  // resolver left the choice to curl (host builds) or failed.
+  const std::string& address() const { return address_; }
 
  private:
   struct Entry { std::string key, resolution; Clock::time_point expires; };
   static constexpr std::size_t kCapacity = 32;
   Resolver resolver_;
   std::vector<Entry> entries_;
+  std::string address_;
 };
 
 }  // namespace playden::steam::internal
