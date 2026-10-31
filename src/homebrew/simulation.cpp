@@ -511,17 +511,17 @@ std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
         {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"ready-later", "Later"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"note", "Compatibility and note"}, {"verify", "Verify files"},
-        {"uninstall", "Uninstall"}, {"import-remove", "Remove from library"}, {"uninstall-delete-saves", "Delete saves too"}, {"logs", "Open logs"}, {"logs-back", "Back"},
+        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
         {"log-launch", "Launch log"}, {"log-cloud", "Cloud saves log"}, {"logs-refresh", "Refresh"},
         {"cloud-sync", "Cloud saves"}, {"cloud-choose", "Cloud saves"}, {"cloud-use-cloud", "Use Cloud saves"},
         {"cloud-use-local", "Use console saves"}, {"cloud-confirm-account", "Use this account"},
         {"cloud-confirm-account-all", "Upload all"},
         {"saves-delete-confirm", "Delete saves"}, {"manage-saves", "Manage saves"}, {"saves-leftover-confirm", "Remove"}, {"saves-quit-anyway", "Play without syncing"},
-        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "Includes"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage"},
+        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "Includes"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as recipe"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run a program once"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
+        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run a program once…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"},
@@ -539,9 +539,9 @@ std::string action_label(const std::string& key) {
         {"inject-logs-empty", "Inject empty logs"}, {"inject-logs-failure", "Inject log failure"},
         {"inject-logs-ready", "Inject ready logs"}, {"account-auth", "Authentication"},
         {"account-last-sync", "Last library sync"}, {"account-sync", "Sync now"},
-        {"account-recover", "Reconnect account"}, {"account-switch", "Switch account"},
+        {"account-recover", "Reconnect account"}, {"account-switch", "Switch account…"},
         {"account-reauth", "Sign in again"}, {"job-resume-all", "Resume all"}, {"job-clear-completed", "Clear completed"},
-        {"prep-clear-completed", "Clear completed"}, {"storage-close", "Close"}, {"collection-new", "New collection"}, {"collection-manage", "Manage collections"},
+        {"prep-clear-completed", "Clear completed"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
         {"about-version", "Version"}, {"self-update-install", "Download and install"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
         {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
@@ -554,9 +554,9 @@ std::string action_label(const std::string& key) {
     // Per-job actions carry the job id after the verb.
     for (const auto& [prefix, label] : std::initializer_list<std::pair<const char*, const char*>>{
              {"job-pause-", "Pause download"}, {"job-resume-", "Resume download"}, {"job-retry-", "Retry download"},
-             {"job-cancel-", "Cancel download"}, {"job-now-", "Download now"}, {"job-up-", "Move up"}, {"job-down-", "Move down"},
+             {"job-cancel-", "Cancel download…"}, {"job-now-", "Download now"}, {"job-up-", "Move up"}, {"job-down-", "Move down"},
              {"job-open-", "Open game"}, {"job-dismiss-", "Dismiss"}, {"prep-next-", "Prepare next"},
-             {"prep-open-", "Game details"}, {"prep-retry-", "Try again"}, {"prep-recreate-", "Recreate bottle"},
+             {"prep-open-", "Game details"}, {"prep-retry-", "Try again"}, {"prep-recreate-", "Recreate bottle…"},
              {"prep-dismiss-", "Dismiss"},
              {"uninstall-dismiss-", "Dismiss"}})
         if (key.rfind(prefix, 0) == 0) return label;
@@ -570,7 +570,7 @@ std::string action_label(const std::string& key) {
 std::string move_action_label(const std::string& key) {
     for (const auto& [prefix, label] : std::initializer_list<std::pair<const char*, const char*>>{
              {"job-pause-", "Pause move"}, {"job-resume-", "Resume move"}, {"job-retry-", "Retry move"},
-             {"job-cancel-", "Cancel move"}, {"job-now-", "Move now"}})
+             {"job-cancel-", "Cancel move…"}, {"job-now-", "Move now"}})
         if (key.rfind(prefix, 0) == 0) return label;
     return {};
 }
@@ -2103,9 +2103,11 @@ void Simulation::build_manage_games_view() {
     }
 
     const auto count = tab.selected.size();
+    // Uninstall always asks first; Update asks when a drive is short of room.
+    const bool asks = count > 0 && (updates ? !manage_updates().short_drive.empty() : !moves);
     auto& primary = row("manage-primary", RowKind::Action,
                         std::string(updates ? "Update" : moves ? "Move" : "Uninstall") +
-                            (count > 0 ? " " + std::to_string(count) : std::string()),
+                            (count > 0 ? " " + std::to_string(count) : std::string()) + (asks ? "…" : ""),
                         updates ? "manage-update" : moves ? "manage-move" : "manage-uninstall");
     primary.enabled = count > 0;
     primary.dangerous = !updates && !moves;
@@ -5864,7 +5866,7 @@ void Simulation::rebuild_view() {
                 const bool closed = game_closed(settings_game, &closed_reason);
                 const bool busy = runtime && runtime->maintenance_running;
                 if (action_key == "maintenance-reset") {
-                    item.title = "Reset settings";
+                    item.title = "Reset settings…";
                     item.subtitle = "Removes your changes; the preset and the program you chose stay.";
                     item.enabled = settings_record != state_.game_settings.end() && has_resettable(settings_record->second.overrides);
                     if (!item.enabled)
@@ -5874,7 +5876,7 @@ void Simulation::rebuild_view() {
                 } else if (kind == MaintenanceKind::UpdateRuntime) {
                     // What Play does first for a title on an older kit's runtime ("Kit update available"), alone.
                     const bool stale = runtime && (runtime->status == "Kit update available" || runtime->status == "Update available");
-                    item.title = "Update runtime";
+                    item.title = "Update runtime…";
                     item.subtitle = "Moves the game to the installed kit's runtime without starting it.";
                     item.badge = "Game must be closed";
                     item.enabled = stale && runtime->can_prepare && closed && !busy;
@@ -5889,9 +5891,9 @@ void Simulation::rebuild_view() {
                     else if (!updating && !closed) item.subtitle = closed_reason;
                     else if (!updating && !runtime->can_prepare && !busy) item.subtitle = "Wait for the game's setup to finish.";
                 } else {
-                    item.title = kind == MaintenanceKind::Repair ? "Repair"
-                               : kind == MaintenanceKind::ClearShaderCache ? "Clear shader cache"
-                               : kind == MaintenanceKind::BackupSaves ? "Back up saves" : "Recreate bottle";
+                    item.title = kind == MaintenanceKind::Repair ? "Repair…"
+                               : kind == MaintenanceKind::ClearShaderCache ? "Clear shader cache…"
+                               : kind == MaintenanceKind::BackupSaves ? "Back up saves…" : "Recreate bottle…";
                     item.subtitle = kind == MaintenanceKind::Repair ? "Fixes the files the game needs to start and writes its settings again."
                                   : kind == MaintenanceKind::ClearShaderCache ? "Shaders compile again on the next start."
                                   : kind == MaintenanceKind::BackupSaves ? "Copies the Windows user folders aside."
@@ -6018,7 +6020,7 @@ void Simulation::rebuild_view() {
                 item.enabled = import_wizard_subject.ascii_ok;
             }
             else if (modal.id == "import-choice" && action_key == "import-copy") {
-                item.title = "Import into Playden";
+                item.title = "Import into Playden…";
                 item.value = format_bytes(import_wizard_subject.bytes);
                 item.subtitle = import_from_drop ? "Takes the game out of the drop folder. You pick the storage next."
                                                  : "Copies the game. You pick the storage next.";
@@ -6046,7 +6048,7 @@ void Simulation::rebuild_view() {
             else if (action_key == "kept-selection-delete") {
                 std::uint64_t bytes = 0;
                 for (const auto& kept : state_.kept_bottles) if (kept_selected_.contains(kept.game_id)) bytes += kept.bytes;
-                item.title = "Delete selected";
+                item.title = "Delete selected…";
                 item.dangerous = true;
                 item.enabled = !kept_selected_.empty();
                 if (!kept_selected_.empty()) item.value = kept_count(kept_selected_.size()) + " · " + format_bytes(bytes);
@@ -6076,7 +6078,7 @@ void Simulation::rebuild_view() {
             else if (action_key == "leftover-selection-delete") {
                 std::uint64_t bytes = 0;
                 for (const auto& title : state_.leftover_titles) if (leftover_selected_.contains(title.title_id)) bytes += title.bytes;
-                item.title = "Delete selected";
+                item.title = "Delete selected…";
                 item.dangerous = true;
                 item.enabled = !leftover_selected_.empty();
                 if (!leftover_selected_.empty())
@@ -6202,14 +6204,14 @@ void Simulation::rebuild_view() {
                         item.value = games;
                         item.selected = found->members.contains(state_.navigation.selected_game_id);
                     } else if (index == 1) {
-                        item.title = "Rename \u201c" + found->name + "\u201d";
+                        item.title = "Rename \u201c" + found->name + "\u201d\u2026";
                         item.value = games;
                     } else if (index == 2) {
                         item.title = "Pin \u201c" + found->name + "\u201d on Home";
                         item.selected = found->pinned;
                         item.value = found->pinned ? "On" : "Off";
                     } else {
-                        item.title = "Delete \u201c" + found->name + "\u201d";
+                        item.title = "Delete \u201c" + found->name + "\u201d\u2026";
                         item.dangerous = true;
                     }
                 }
@@ -6453,7 +6455,7 @@ void Simulation::rebuild_view() {
             }
             if (!game->update.available()) return;
             const bool dlc = game->update.new_dlc;
-            auto& button = row("details-update", RowKind::Action, dlc ? "DLC available" : "Update", "details-update");
+            auto& button = row("details-update", RowKind::Action, dlc ? "DLC available…" : "Update…", "details-update");
             button.game_id = game->id;
             auto& note = row("details-update-note", RowKind::Status, dlc ? "DLC available" : "Update available", "");
             // What the changed files download, once measured.
@@ -6529,14 +6531,14 @@ void Simulation::rebuild_view() {
                         if (!uninstalling) {
                             if (const auto setup = game_setups_.find(game->id); setup != game_setups_.end() &&
                                 !setup->second.steam_choices.empty() && !value.ready && value.status != "Preparing") {
-                                play.title = "Choose program";
+                                play.title = "Choose program…";
                                 play.action = "steam-programs";
                                 play.value.clear();
                                 play.enabled = true;
                             }
                             // Finish setup would fail as before over a title or bottle an earlier kit made: make it again.
                             if (value.setup_other_kit) {
-                                play.title = "Recreate bottle";
+                                play.title = "Recreate bottle…";
                                 play.action = "prep-recreate-" + ToKey(game->id);
                                 play.value = value.maintenance_running ? "Working…" : std::string{};
                                 play.enabled = !value.maintenance_running;
@@ -6575,7 +6577,7 @@ void Simulation::rebuild_view() {
                         const bool busy = cloud_status == CloudStatus::Checking || cloud_status == CloudStatus::Syncing;
                         const bool choice = cloud_status == CloudStatus::Conflict || cloud_status == CloudStatus::NeedsAccount;
                         // Stays a button while it works, disabled, so it keeps its place in the row.
-                        auto& saves = row("details-cloud", RowKind::Action, "Cloud saves",
+                        auto& saves = row("details-cloud", RowKind::Action, choice ? "Cloud saves…" : "Cloud saves",
                                           busy || uninstalling ? "" : choice ? "cloud-choose" : "cloud-sync");
                         saves.value = cloud_status == CloudStatus::None        ? "Sync"
                                       : busy                                  ? (cloud_status == CloudStatus::Checking ? "Checking…" : "Syncing…")
@@ -6592,7 +6594,7 @@ void Simulation::rebuild_view() {
                 status.value = job_state_value(*job);
                 status.progress = job->total_bytes == 0 ? 0.0F : static_cast<float>(job->completed_bytes) / static_cast<float>(job->total_bytes);
             } else if (game->windows_installable.value_or(false)) {
-                auto& install = row("details-install", RowKind::Action, "Install", "live-install");
+                auto& install = row("details-install", RowKind::Action, "Install…", "live-install");
                 install.value = game->install_bytes ? format_bytes(*game->install_bytes) : "Size unknown";
                 if (const auto* volume = find_volume(state_, selected_volume_id_)) {
                     const auto assessment = assess_install(state_, game->id, selected_volume_id_, steam::kInstallSpaceMargin);
@@ -6616,7 +6618,7 @@ void Simulation::rebuild_view() {
                     saves.value = format_bytes(kept.bytes);
                     saves.subtitle = "Installing the game again brings them back.";
                     saves.enabled = false;
-                    row("details-kept-delete", RowKind::Action, "Delete saves", "kept-delete-" + ToKey(game->id)).dangerous = true;
+                    row("details-kept-delete", RowKind::Action, "Delete saves…", "kept-delete-" + ToKey(game->id)).dangerous = true;
                 }
         }
         if (imported) {
@@ -6636,14 +6638,14 @@ void Simulation::rebuild_view() {
                 status.progress = copying->total_bytes == 0 ? 0.0F
                     : static_cast<float>(copying->completed_bytes) / static_cast<float>(copying->total_bytes);
                 // A copy that failed (or runs too long) can be cancelled here; the game plays in place again.
-                row("details-cancel-copy", RowKind::Action, "Cancel copy", "import-cancel-copy");
+                row("details-cancel-copy", RowKind::Action, "Cancel copy…", "import-cancel-copy");
             } else if (const auto* external = in_place ? external_game(game->id) : nullptr; external && external->available) {
                 // Its drive is there: a folder the PS5 can't play from (its name) can still be copied.
-                row("details-copy", RowKind::Action, "Import into Playden",
+                row("details-copy", RowKind::Action, "Import into Playden…",
                     "import-copy-game");
             }
             if (in_place) {
-                row("details-remove", RowKind::Action, "Remove from library", "import-remove").enabled =
+                row("details-remove", RowKind::Action, "Remove from library…", "import-remove").enabled =
                     !copying && starting == import_transfers_starting_.end();
                 // Where it plays from, under the buttons.
                 for (const auto& candidate : state_.import_candidates)
@@ -6652,7 +6654,7 @@ void Simulation::rebuild_view() {
                         folder.enabled = false;
                     }
             } else if (installed) {
-                row("details-uninstall", RowKind::Action, "Uninstall", "uninstall");
+                row("details-uninstall", RowKind::Action, "Uninstall…", "uninstall");
             }
         }
         if (installed) {
@@ -6817,7 +6819,7 @@ void Simulation::rebuild_view() {
             chip.selected = static_cast<int>(index) == state_.navigation.saves_filter;
         }
         if (const auto awaiting = saves_awaiting_account(); job.kind == SavesJobKind::None && !awaiting.empty())
-            row("saves-upload-all", RowKind::Action, "Upload all", "saves-upload-all").value = std::to_string(awaiting.size());
+            row("saves-upload-all", RowKind::Action, "Upload all…", "saves-upload-all").value = std::to_string(awaiting.size());
         auto& sync_all = row("saves-sync-all", RowKind::Action, job.kind == SavesJobKind::None ? "Sync all" : "Stop", "saves-sync-all");
         sync_all.selected = job.kind != SavesJobKind::None;
         sync_all.enabled = !job.stopping && (job.kind != SavesJobKind::None || counts[0] > counts[3]);
@@ -6892,9 +6894,9 @@ void Simulation::rebuild_view() {
                 status == CloudStatus::Waiting ? (here ? "downloads Cloud saves" : "into the kept data") : "");
         }
         if (!here && kept) {
-            add("saves-leftover", "Remove leftover data", format_bytes(kept->bytes) + " with saves").dangerous = true;
+            add("saves-leftover", "Remove leftover data…", format_bytes(kept->bytes) + " with saves").dangerous = true;
         } else if (here && status != CloudStatus::Unsupported && status != CloudStatus::None) {
-            add("saves-delete", "Delete saves on this console", "Cloud keeps its copy").dangerous = true;
+            add("saves-delete", "Delete saves on this console…", "Cloud keeps its copy").dangerous = true;
         }
         if (view_.rows.empty()) row("saves-nothing", RowKind::Status, "Nothing to do", "").enabled = false;
         view_.legends = {"Cross Select", "Circle Back"};
@@ -6917,7 +6919,7 @@ void Simulation::rebuild_view() {
                 ? (!live() || state_.account().last_sync > 0 ? "Steam connected · Synced" : "Steam connected")
                 : "Connect Steam";
         if (state_.account().authentication != AuthState::SignedOut)
-            add("settings-signout", RowKind::Action, "Sign out", "signout-confirm").dangerous = true;
+            add("settings-signout", RowKind::Action, "Sign out…", "signout-confirm").dangerous = true;
         section = "Library";
         {
             // Windows games in a drive's playden/import or the console drop folder: the Import sheet.
@@ -7132,7 +7134,7 @@ void Simulation::rebuild_view() {
         }
         if (kOfferGoBack && live() && !state_.self_update.previous.empty() &&
             state_.self_update.phase != "downloading" && state_.self_update.phase != "unpacking") {
-            auto& back = add("settings-update-back", RowKind::Action, "Go back to Playden " + state_.self_update.previous,
+            auto& back = add("settings-update-back", RowKind::Action, "Go back to Playden " + state_.self_update.previous + "…",
                              "self-update-back");
             back.subtitle = "Put the previous version and its runtime kit back";
         }
@@ -7184,12 +7186,12 @@ void Simulation::rebuild_view() {
             add("settings-simulation", RowKind::Action, "Simulation controls", "simulation-controls");
             add("settings-scenarios", RowKind::Action, "Fixture scenarios", "scenario-picker");
         }
-        auto& reset = add("settings-reset", RowKind::Action, "Reset UI data", "reset-confirm");
+        auto& reset = add("settings-reset", RowKind::Action, "Reset UI data…", "reset-confirm");
         reset.dangerous = true;
         reset.subtitle = "Forget favorites, collections and view state on this console";
         section = "Quit Playden";
         // As on macOS, the rail entry itself quits: the section has no rows to review.
-        auto& quit = add("settings-quit", RowKind::Action, "Quit Playden", "quit-confirm");
+        auto& quit = add("settings-quit", RowKind::Action, "Quit Playden…", "quit-confirm");
         quit.dangerous = true;
         quit.rail_only = true;
     } else if (state_.navigation.route == Route::Session) {
@@ -8840,21 +8842,12 @@ void Simulation::activate() {
         state_.navigation.focus_key = "details-play";
     } else if (live() && action_name == "live-install") {
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
-        // Install at once when the game fits the default drive (or its size is checked later);
-        // otherwise the sheet says why and offers another drive for this install.
+        // Every install opens the sheet: it says where the game goes and how much room it takes, and its
+        // Storage row (with Language and Version when the game has a choice) sets them for this install.
         install_volume_id_.clear();
         install_language_.clear();
         install_version_.clear();
-        const auto* game = find_game(state_, id);
-        // A game in several languages or versions opens the sheet, where its Language and Version rows
-        // choose them for this install.
-        const bool languages = game && game->content_languages.size() >= 2;
-        const bool versions = game && game->versions.size() >= 2;
-        if (id.valid() && !languages && !versions &&
-            live_install_allowed(assess_install(state_, id, selected_volume_id_, steam::kInstallSpaceMargin).readiness,
-                                 free_space_supported_))
-            pending_install_requests_.push_back({InstallRequestKind::Install, id});
-        else if (id.valid())
+        if (id.valid())
             open_modal({"install", "Install game", "details-install", live_install_sheet_actions(id), 0, false});
     } else if (live() && action_name == "steam-programs") {
         open_steam_programs(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));

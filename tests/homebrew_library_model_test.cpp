@@ -304,8 +304,10 @@ void live_install_requests_and_projection() {
     check(find_row(model, "details-install")->subtitle == "To Console storage · 1.0 GB free",
           "Install names the destination and its free space");
     activate(model, "details-install");
+    check(model.view().surface == "install" && model.TakeInstallRequests().empty(),
+          "Install opens the install sheet first, even when the game fits");
+    activate(model, "install-confirm");
     auto requests = model.TakeInstallRequests();
-    check(model.view().surface != "install", "a game that fits installs without a confirmation sheet");
     check(requests.size() == 1 && requests[0].kind == playden::homebrew::InstallRequestKind::Install && requests[0].game_id == SteamId(42),
           "Install sends one request");
     model.UpdateInstalls({{SteamId(42), playden::homebrew::JobState::Downloading, 50, 200, {}}}, {});
@@ -499,17 +501,19 @@ void live_install_confirmation_checks_space_and_unknowns() {
     check(model.state().volumes[1].reserved_bytes == 0, "completed downloads hold no reservation");
     model.UpdateInstalls({}, {});
 
-    // A game that fits installs at once, to the default drive.
+    // A game that fits still opens the sheet; Install there sends it to the default drive.
     model.UpdateVolumes({{"internal", "Console storage", true, margin + 2'000, margin + 1'000}}, "internal");
     activate(model, "details-install");
+    check(model.view().surface == "install" && model.TakeInstallRequests().empty(), "a game that fits opens the sheet too");
+    activate(model, "install-confirm");
     requests = model.TakeInstallRequests();
-    check(model.view().surface != "install" && requests.size() == 1 && requests[0].volume_id.empty(),
-          "a game that fits installs without the sheet");
+    check(requests.size() == 1 && requests[0].volume_id.empty(), "the sheet installs to the default drive");
 
-    // An unknown size installs at once when the drive has the margin; the downloader checks it.
+    // An unknown size can be installed when the drive has the margin; the downloader checks it.
     model.UpdateAppDetails(SteamId(42), std::nullopt, std::nullopt, true);
     check(find_row(model, "details-install")->value == "Size unknown", "unknown size never displays zero");
     activate(model, "details-install");
+    activate(model, "install-confirm");
     check(model.TakeInstallRequests().size() == 1, "unknown size installs with a pre-download check");
     model.UpdateVolumes({{"internal", "Console storage", true, margin + 2'000, 0}}, "internal");
     activate(model, "details-install");
@@ -528,6 +532,7 @@ void live_install_confirmation_checks_space_and_unknowns() {
     model.SetFreeSpaceSupported(false);
     model.UpdateVolumes({{"internal", "Console storage", true, std::nullopt, std::nullopt}}, "internal");
     activate(model, "details-install");
+    activate(model, "install-confirm");
     check(model.TakeInstallRequests().size() == 1, "a console that cannot read free space still installs, as before");
 }
 
@@ -555,8 +560,9 @@ void live_install_dlc_row() {
     model.UpdateAppDetails(SteamId(42), 100, 600, true, {"german"}, 3);
     check(model.action("details:42"), "details open");
     activate(model, "details-install");
-    check(model.view().surface != "install" && model.TakeInstallRequests().size() == 1,
-          "a game with one language still installs at once");
+    check(model.view().surface == "install" && find_row(model, "install-language") == nullptr &&
+              model.TakeInstallRequests().empty(),
+          "a game with one language opens the sheet without a Language row");
 }
 
 // A game in several languages: the install sheet's Language row chooses one for this install only.
@@ -570,8 +576,10 @@ void live_install_language_row() {
     model.UpdateAppDetails(SteamId(43), 100, 600, true, {"german"});
     check(model.action("details:43"), "details open");
     activate(model, "details-install");
-    check(model.view().surface != "install" && model.TakeInstallRequests().size() == 1,
-          "a game with one language installs at once, as before");
+    check(model.view().surface == "install" && find_row(model, "install-language") == nullptr &&
+              find_row(model, "storage-picker") != nullptr && model.TakeInstallRequests().empty(),
+          "a game with one language opens the sheet with its Storage row, without a Language row");
+    activate(model, "cancel");
 
     model.UpdateAppDetails(SteamId(42), 100, 600, true, {"english", "german", "french"});
     check(model.action("details:42"), "details open");
@@ -621,8 +629,10 @@ void live_install_version_row() {
     model.UpdateAppDetails(SteamId(43), 100, 600, true, {}, 0, {GameVersion{"public", "", 1760000000, 9000, 100, 600}});
     check(model.action("details:43"), "details open");
     activate(model, "details-install");
-    check(model.view().surface != "install" && model.TakeInstallRequests().size() == 1,
-          "a game with one version installs at once");
+    check(model.view().surface == "install" && find_row(model, "install-version") == nullptr &&
+              model.TakeInstallRequests().empty(),
+          "a game with one version opens the sheet without a Version row");
+    activate(model, "cancel");
 
     model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
                            {GameVersion{"public", "", 1760000000, 9000, 100, 600},
@@ -1644,7 +1654,7 @@ void live_storage_section_and_installed_games() {
         check(!find_row(model, key)->selected, "Select all skips blocked games");
     check(find_row(model, "manage-select-all")->title == "Clear selection", "with all checked it clears instead");
     check(model.view().footer == "4 selected · frees 31.0 GB", "the footer names how many and how much");
-    check(find_row(model, "manage-primary")->title == "Uninstall 4", "the footer button counts the selection");
+    check(find_row(model, "manage-primary")->title == "Uninstall 4…", "the footer button counts the selection");
     // A game that starts running leaves the selection.
     running.game_id = SteamId(13);
     model.UpdateRuntime(RuntimeState::Ready, {titled, running, preparing});
@@ -2571,7 +2581,7 @@ void live_move_job_actions_say_move() {
     check(model.state().navigation.route == Route::Downloads, "move job: Queue open");
     activate(model, "job-42");
     check(find_row(model, "job-pause-42") && find_row(model, "job-pause-42")->title == "Pause move" &&
-              find_row(model, "job-cancel-42")->title == "Cancel move",
+              find_row(model, "job-cancel-42")->title == "Cancel move…",
           "move job: its actions say move");
     activate(model, "job-cancel-42");
     const auto& confirmation = model.state().navigation.modals.back();
@@ -2707,7 +2717,7 @@ void game_collections_sheet_adds_and_removes_the_game() {
     check(model.action("details:42") && model.action("focus:details-more") && model.action("cross"), "game actions open");
     activate(model, "collection");
     check(model.state().navigation.modals.back().id == "collections" && has_row(model, "collection-new") &&
-              !has_row(model, "collection-manage") && find_row(model, "collection-new")->title == "New collection",
+              !has_row(model, "collection-manage") && find_row(model, "collection-new")->title == "New collection…",
           "with no collections the sheet offers New collection");
 
     activate(model, "collection-new");
@@ -2729,14 +2739,14 @@ void game_collections_sheet_adds_and_removes_the_game() {
 
     activate(model, "collection-manage");
     const auto id = model.state().library.collections[0].id;
-    check(find_row(model, "collection-rename-" + id)->title == "Rename \u201cTo test\u201d" &&
+    check(find_row(model, "collection-rename-" + id)->title == "Rename \u201cTo test\u201d\u2026" &&
               find_row(model, "collection-pin-" + id) && find_row(model, "collection-delete-" + id)->dangerous,
           "Manage collections renames, pins and deletes each collection");
     activate(model, "collection-rename-" + id);
     model.text(" later");
     check(model.action("done"), "the new name is entered");
     check(model.state().library.collections[0].name == "To test later" &&
-              find_row(model, "collection-rename-" + id)->title == "Rename \u201cTo test later\u201d",
+              find_row(model, "collection-rename-" + id)->title == "Rename \u201cTo test later\u201d\u2026",
           "a rename shows in the open sheet");
 }
 
@@ -3143,7 +3153,7 @@ void live_refused_preparation_offers_uninstall() {
     model.action("r1");
     activate(model, "prep-attn-36");
     check(has_row(model, "prep-retry-36") && has_row(model, "prep-open-36") && has_row(model, "uninstall") &&
-              find_row(model, "uninstall")->title == "Uninstall" && find_row(model, "uninstall")->enabled,
+              find_row(model, "uninstall")->title == "Uninstall…" && find_row(model, "uninstall")->enabled,
           "a refused installed game can be uninstalled from Queue");
     activate(model, "uninstall");
     check(model.state().navigation.modals.size() == 2 && model.state().navigation.modals.back().title == "Uninstall this game?",
@@ -3195,7 +3205,7 @@ void live_setup_from_an_earlier_kit_offers_recreate() {
     activate(model, "prep-attn-34");
     check(has_row(model, "prep-recreate-34") && !has_row(model, "prep-retry-34") && has_row(model, "prep-open-34"),
           "Recreate bottle takes Try again's place");
-    check(find_row(model, "prep-recreate-34")->title == "Recreate bottle", "the action is named");
+    check(find_row(model, "prep-recreate-34")->title == "Recreate bottle…", "the action is named");
     activate(model, "prep-recreate-34");
     check(model.state().navigation.modals.size() == 1 && model.state().navigation.modals.back().title == "Recreate the bottle?",
           "it asks first, as Maintenance does");
@@ -3219,7 +3229,7 @@ void live_setup_from_an_earlier_kit_offers_recreate() {
     model.UpdateRuntime(RuntimeState::Ready, {spire, broke});
     check(model.action("details:34"), "details open");
     const auto* play = find_row(model, "details-play");
-    check(play && play->enabled && play->title == "Recreate bottle" && play->action == "prep-recreate-34",
+    check(play && play->enabled && play->title == "Recreate bottle…" && play->action == "prep-recreate-34",
           "the game page offers Recreate bottle instead of Finish setup");
     check(find_row(model, "details-hint") &&
               find_row(model, "details-hint")->title ==
@@ -3408,7 +3418,7 @@ void live_import_sheet_sends_requests() {
               model.view().subtitle.rfind("Starts with Delores.exe, which you can change in Game settings.", 0) == 0,
           "one program besides an installer skips the program list");
     check(model.view().surface == "import-choice" && find_row(model, "import-play-in-place")->title == "Play from the drop folder" &&
-              find_row(model, "import-copy")->title == "Import into Playden" && !has_row(model, "import-move"),
+              find_row(model, "import-copy")->title == "Import into Playden…" && !has_row(model, "import-move"),
           "a drop-folder game plays from there or is imported into Playden");
     activate(model, "import-play-in-place");
     requests = model.TakeImportRequests();
@@ -3525,7 +3535,7 @@ void live_import_choice_and_details() {
     model.UpdateInstalls({}, {});
 
     // Its page while it plays from the drive, then while it copies.
-    check(find_row(model, "details-copy") && find_row(model, "details-copy")->title == "Import into Playden" &&
+    check(find_row(model, "details-copy") && find_row(model, "details-copy")->title == "Import into Playden…" &&
               find_row(model, "details-remove") && !has_row(model, "details-cloud") && !has_row(model, "details-uninstall"),
           "an imported game on a drive offers Copy into Playden and Remove from library");
     // The page's Import into Playden opens step 2 with the folder's size (from the scan, the game has none).
@@ -3893,7 +3903,7 @@ void live_game_update() {
     const auto& rows = model.view().rows;
     const auto play_at = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-play"; });
     const auto update_at = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-update"; });
-    check(play_at != rows.end() && update_at == play_at + 1 && update_at->title == "Update" && update_at->enabled,
+    check(play_at != rows.end() && update_at == play_at + 1 && update_at->title == "Update…" && update_at->enabled,
           "Update follows Play");
     const auto* note = find_row(model, "details-update-note");
     check(note && note->title == "Update available" && note->value == "1.2 GB", "the note says the update's size");
@@ -3914,7 +3924,7 @@ void live_game_update() {
 
     // DLC bought since wins the label, even when an update downloads with it.
     model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, 0, {}, GameUpdate{true, true, 300'000'000, 300'000'000, 2, true});
-    check(find_row(model, "details-update")->title == "DLC available" &&
+    check(find_row(model, "details-update")->title == "DLC available…" &&
               find_row(model, "details-update-note")->title == "DLC available" &&
               find_row(model, "details-update-note")->value == "300 MB",
           "new DLC says DLC available");

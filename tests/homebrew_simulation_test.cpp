@@ -726,14 +726,14 @@ void game_update_scenarios(const std::filesystem::path& fixtures, const std::fil
         return nullptr;
     };
     check(simulation.scenario("update-available"), "update-available loads");
-    check(row("details-update") && row("details-update")->title == "Update" && row("details-update-note") &&
+    check(row("details-update") && row("details-update")->title == "Update…" && row("details-update-note") &&
               row("details-update-note")->title == "Update available" && row("details-update-note")->value == "1.2 GB",
           "update-available offers Update with its size");
     check(simulation.action("cross") && simulation.view().surface == "update" && row("update-confirm") &&
               row("update-confirm")->enabled && row("update-confirm")->value == "1.2 GB",
           "Update opens the update sheet");
     check(simulation.action("circle"), "the sheet closes");
-    check(simulation.scenario("dlc-available") && row("details-update")->title == "DLC available",
+    check(simulation.scenario("dlc-available") && row("details-update")->title == "DLC available…",
           "dlc-available says DLC available");
     check(simulation.scenario("install-options") && simulation.view().surface == "install" && row("install-version") &&
               row("install-language") && row("install-dlc") && row("install-dlc")->value == "2 DLC",
@@ -1299,7 +1299,7 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
               simulation.view().subtitle == "You can import it into Playden later from the game's page." &&
               row("import-play-in-place")->title == "Play from the USB drive" &&
               row("import-play-in-place")->subtitle == "Nothing is copied. Keep the drive plugged in." &&
-              row("import-copy")->title == "Import into Playden" && row("import-copy")->value == "938 MB" &&
+              row("import-copy")->title == "Import into Playden…" && row("import-copy")->value == "938 MB" &&
               row("import-copy")->subtitle == "Copies the game. You pick the storage next." &&
               simulation.state().navigation.focus_key == "import-copy",
           "T17 choosing the program asks where the game files live, Import focused");
@@ -1334,7 +1334,7 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     };
     check(simulation.scenario("import-details"), "T18 import-details scenario");
     check(simulation.state().navigation.route == Route::Details && row("details-play") && row("details-play")->title == "Play" &&
-              row("details-copy")->title == "Import into Playden" && row("details-remove")->title == "Remove from library" &&
+              row("details-copy")->title == "Import into Playden…" && row("details-remove")->title == "Remove from library…" &&
               row("details-folder")->title == "Plays from /mnt/usb0/playden/import/Night Sky" && !row("details-cloud"),
           "T18 an imported game's page plays in place and offers Import and Remove");
     // Import into Playden: the wizard's drive choice at once; Back closes it.
@@ -1387,7 +1387,7 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     press("import-candidate-internal:playden-import/Hollow Knight");
     check(row("import-play-in-place")->title == "Play from the drop folder" &&
               row("import-play-in-place")->subtitle == "Nothing moves. The files stay in /data/playden-import." &&
-              row("import-copy")->title == "Import into Playden" && row("import-copy")->value == "8.9 GB" &&
+              row("import-copy")->title == "Import into Playden…" && row("import-copy")->value == "8.9 GB" &&
               row("import-copy")->subtitle == "Takes the game out of the drop folder. You pick the storage next." &&
               !row("import-move") && !row("storage-picker"),
           "T18 a drop-folder game plays from there or is imported");

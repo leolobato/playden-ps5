@@ -409,7 +409,7 @@ void live_update_runtime_from_maintenance(const std::filesystem::path& base) {
     model.TakeActivityRequests();
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     const auto* update = find_row(model, "maintenance-update");
-    check(update && update->enabled && update->title == "Update runtime" &&
+    check(update && update->enabled && update->title == "Update runtime…" &&
               update->subtitle == "Moves the game to the installed kit's runtime without starting it." &&
               update->badge == "Game must be closed",
           "Update runtime is offered for a closed game whose title waits for its kit update");
@@ -720,7 +720,7 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
 
     // The folder's programs: the game's own is named, one the console can't start is not offered.
     activate(model, "details-more");
-    check(find_row(model, "run-once")->enabled && find_row(model, "run-once")->title == "Run a program once",
+    check(find_row(model, "run-once")->enabled && find_row(model, "run-once")->title == "Run a program once…",
           "setup program: Game actions offers it");
     activate(model, "run-once");
     check(model.state().navigation.modals.back().id == "setup-programs", "setup program: the picker opens");
@@ -1013,7 +1013,7 @@ void live_self_update(const std::filesystem::path& base) {
     kept.previous = "0.2.0";
     going_back.UpdateSelfUpdate(kept);
     check(find_row(going_back, "settings-update-back") &&
-              find_row(going_back, "settings-update-back")->title == "Go back to Playden 0.2.0",
+              find_row(going_back, "settings-update-back")->title == "Go back to Playden 0.2.0…",
           "update: Settings offers going back");
     activate(going_back, "settings-update-back");
     check(!going_back.state().navigation.modals.empty() &&
@@ -1400,7 +1400,7 @@ void live_setup_asks_for_a_steam_program(const std::filesystem::path& base) {
     check(model.action("details:449610"), "steam program: its page");
     const auto play = std::find_if(model.view().rows.begin(), model.view().rows.end(),
                                    [](const auto& row) { return row.key == "details-play"; });
-    check(play != model.view().rows.end() && play->title == "Choose program" && play->enabled, "steam program: Play asks");
+    check(play != model.view().rows.end() && play->title == "Choose program…" && play->enabled, "steam program: Play asks");
     activate(model, "details-play");
     check(model.view().surface == "steam-programs" && model.state().navigation.modals.back().action_keys.size() == 4,
           "steam program: every program and Cancel");
@@ -1707,6 +1707,7 @@ void live_manage_update_selected(const std::filesystem::path& base) {
     // first, and Cancel queues nothing.
     check(model.view().footer == "3 selected · 6.0 GB to download · needs 1.1 GB more on USB Drive",
           "update selected: the footer names the drive that lacks room");
+    check(find_row(model, "manage-primary")->title == "Update 3…", "update selected: the button says it asks first");
     model.action("triangle");
     check(model.TakeInstallRequests().empty(), "update selected: the warning comes before anything is queued");
     check(!navigation.modals.empty() && navigation.modals.back().title == "Update anyway?" &&
