@@ -399,7 +399,8 @@ void InstallService::Scan() {
     // delete: the folder it names is the game's.
     if (job.view.from_volume_id == job.view.volume_id) return;
     // A destination that isn't there can't show whether the title already names the copy: the move stays
-    // locked until the drive is back and the job has run again.
+    // locked until the drive is back and the job has run again, or until the caller has checked the title
+    // (ReleaseUnreachableMove).
     const auto* to = FindVolume(entry.move_to);
     job.view.locked = entry.volume_id == entry.move_to || !to || !to->available ||
                       Exists(RootOn(entry.move_to, entry.id) + "/" + kMoveSwitchName);
@@ -887,6 +888,22 @@ void InstallService::MoveQueued(GameId id, bool up) {
     wake_.notify_all();
     return;
   }
+}
+
+void InstallService::ReleaseUnreachableMove(GameId id, const std::string& title_folder) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto* job = Find(id);
+  if (!job || job->dropped || job->view.kind != InstallJobKind::kMove || !job->view.locked ||
+      job->view.state != InstallJobState::kFailed)
+    return;
+  const auto* to = FindVolume(job->view.volume_id);
+  if (to && to->available) return;
+  // Still listed where it came from, its folder there: only then does the game play from it.
+  const auto game = std::find_if(installed_.begin(), installed_.end(), [id](const InstalledGame& entry) { return entry.id == id; });
+  if (game == installed_.end() || game->volume_id != job->view.from_volume_id || !game->available) return;
+  if (!title_folder.empty() && title_folder != game->root) return;
+  job->view.locked = false;
+  Publish();
 }
 
 void InstallService::Cancel(GameId id) {

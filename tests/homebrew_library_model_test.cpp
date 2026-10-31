@@ -2590,6 +2590,29 @@ void live_move_job_actions_say_move() {
           "move job: Cancel says the copy goes and the game stays");
     activate(model, "cancel");
     activate(model, "cancel");
+    // A failed move to a drive that isn't connected: Cancel says its part copy stays there.
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000},
+                         {"usb", "USB Drive", false, 2'000'000'000, 1'000'000'000}}, "internal");
+    job.state = JobState::Failed;
+    model.UpdateInstalls({job}, {{SteamId(42), 100, "internal", true}});
+    activate(model, "job-42");
+    activate(model, "job-cancel-42");
+    check(model.state().navigation.modals.back().body ==
+              "USB Drive isn't connected, so the part copied there stays. The game stays on Console storage.",
+          "move job: Cancel to a disconnected drive says the copy stays there");
+    activate(model, "cancel");
+    activate(model, "cancel");
+    // A drive that isn't listed at all starts the sentence with a capital.
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    activate(model, "job-42");
+    activate(model, "job-cancel-42");
+    check(model.state().navigation.modals.back().body ==
+              "The other drive isn't connected, so the part copied there stays. The game stays on Console storage.",
+          "move job: an unlisted drive is named in a full sentence");
+    activate(model, "cancel");
+    activate(model, "cancel");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000},
+                         {"usb", "USB Drive", true, 2'000'000'000, 1'000'000'000}}, "internal");
     job.state = JobState::Paused;
     model.UpdateInstalls({job}, {{SteamId(42), 100, "internal", true}});
     activate(model, "job-42");

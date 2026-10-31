@@ -703,23 +703,74 @@ void AMovedGamePlaysWithoutItsOldDrive() {
   CHECK(f.Installed()->volume_id == "internal" && fs::exists(f.internal / "730/data/level1.pak"));
 }
 
-void AMoveToAnAbsentDriveStaysLocked() {
+void AMoveToAnAbsentDriveCanBeCanceledOnceItsTitleIsChecked() {
   Fixture f;
-  // The title may already name the copy on the USB drive, which isn't there to show its switch marker.
+  // Playden stopped part way through a move to the USB drive, which isn't there at the next start. The copy's
+  // switch marker can't be read, so the move fails locked: the title might name the copy.
+  {
+    std::atomic<bool> cancel{false};
+    f.options.checkpoint = [](MoveCheckpoint point) { return point != MoveCheckpoint::kCopied; };
+    f.CopyUntil(cancel);
+    f.options.checkpoint = nullptr;
+  }
   f.RegistryMoving();
   f.usb_available = false;
   f.Start();
   CHECK(f.WaitFor([&] { const auto job = f.Job(); return job && job->state == InstallJobState::kFailed; }));
   CHECK(f.Job()->locked && f.service->Locked(kGame));
+  CHECK(f.Job()->failure == "The game's storage is not available.");
+  f.service->Cancel(kGame);
+  CHECK(f.Job() && f.Job()->kind == InstallJobKind::kMove);
+  // A title that names the copy keeps it locked.
+  f.service->ReleaseUnreachableMove(kGame, (f.usb / "730").string());
+  CHECK(f.Job()->locked);
+  // One that names the game's folder on console storage lets it go: Cancel drops the move.
+  f.service->ReleaseUnreachableMove(kGame, (f.internal / "730").string());
+  CHECK(!f.Job()->locked && !f.service->Locked(kGame));
+  f.service->Cancel(kGame);
+  CHECK(f.WaitFor([&] { return !f.Job(); }));
+  CHECK(f.Installed()->volume_id == "internal" && fs::exists(f.internal / "730/data/level1.pak"));
+  CHECK(Read(f.internal / ".playden-games").find("move=") == std::string::npos);
+  // The copy on the drive that was away is left as it was; the next start doesn't bring the move back.
+  f.usb_available = true;
+  f.Restart();
+  CHECK(!f.Job() && f.Installed()->volume_id == "internal" && fs::exists(f.usb / "730/data/level1.pak"));
+}
+
+void AMoveToAnAbsentDriveCarriesOnWhenItIsBack() {
+  Fixture f;
+  f.RegistryMoving();
+  f.usb_available = false;
+  f.Start();
+  CHECK(f.WaitFor([&] { const auto job = f.Job(); return job && job->state == InstallJobState::kFailed; }));
+  CHECK(f.Job()->locked && f.Installed()->volume_id == "internal");
   f.service->Cancel(kGame);
   f.service->Pause(kGame);
   CHECK(f.Job() && f.Job()->kind == InstallJobKind::kMove);
-  // With the drive back it can be canceled again, or resumed.
+  // With the drive back the move can be resumed, and finishes.
   f.usb_available = true;
   f.Restart();
   CHECK(f.Job() && !f.Job()->locked);
   f.service->Resume(kGame);
   f.CheckMoved();
+}
+
+void AMoveWhoseCopyIsMarkedStaysLocked() {
+  Fixture f;
+  // The switch marker on a connected destination: the title may name the copy, so the move only finishes.
+  {
+    std::atomic<bool> cancel{false};
+    f.options.checkpoint = [](MoveCheckpoint point) { return point != MoveCheckpoint::kSwitchMarked; };
+    f.CopyUntil(cancel);
+    f.options.checkpoint = nullptr;
+  }
+  CHECK(fs::exists(f.usb / "730" / kMoveSwitchName));
+  f.RegistryMoving();
+  f.gate = ApplyAnswer::kGameRunning;
+  f.Start();
+  CHECK(f.WaitFor([&] { const auto job = f.Job(); return job && job->locked; }));
+  f.service->Cancel(kGame);
+  CHECK(f.Job() && f.Job()->kind == InstallJobKind::kMove);
 }
 
 void AMovedGameIsNotANewDownload() {
@@ -787,7 +838,9 @@ int main() {
   AMovedGameKeepsItsInstallTime();
   CancelWhileTheGateIsAskedDropsTheMove();
   AMovedGamePlaysWithoutItsOldDrive();
-  AMoveToAnAbsentDriveStaysLocked();
+  AMoveToAnAbsentDriveCanBeCanceledOnceItsTitleIsChecked();
+  AMoveToAnAbsentDriveCarriesOnWhenItIsBack();
+  AMoveWhoseCopyIsMarkedStaysLocked();
   std::puts("game_move tests passed");
   return 0;
 }

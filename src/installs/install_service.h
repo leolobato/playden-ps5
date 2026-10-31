@@ -296,6 +296,12 @@ class InstallService {
   // Swaps with the previous/next queued download, preserving the running download.
   void MoveQueued(GameId id, bool up);
   void Cancel(GameId id);
+  // A failed move whose destination isn't connected stays locked: its copy's switch marker can't be read, so
+  // the game's PS5 title may name the copy. The caller has read the title's record: `title_folder` is the game
+  // folder it starts, empty when the title names no folder yet, with no relocation, republish or recovery
+  // pending. When that is the folder the game is listed in on the move's source, the move unlocks
+  // and can be canceled (its partial copy stays on the drive that isn't there). Otherwise nothing changes.
+  void ReleaseUnreachableMove(GameId id, const std::string& title_folder);
   void Uninstall(GameId id);
   // Uninstalls whose files could not be deleted since the last call.
   std::vector<RemovalFailure> TakeRemovalFailures();

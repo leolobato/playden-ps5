@@ -583,7 +583,12 @@ ModalEntry cancel_job_confirmation(const State& state, const Job* job, std::stri
             return found == state.volumes.end() ? std::string("the other drive") : found->label;
         };
         ModalEntry confirmation{"confirmation", "Cancel the move?", std::move(opener), {"cancel", "confirm-destructive"}, 0, true};
-        confirmation.body = "The copy on " + label(job->volume_id) + " is deleted. The game stays on " + label(job->from_volume_id) + ".";
+        // A destination that isn't connected keeps its partial copy: nothing can delete it there.
+        const auto to = std::find_if(state.volumes.begin(), state.volumes.end(), [job](const Volume& volume) { return volume.id == job->volume_id; });
+        confirmation.body = to != state.volumes.end() && to->available
+            ? "The copy on " + label(job->volume_id) + " is deleted. The game stays on " + label(job->from_volume_id) + "."
+            : (to == state.volumes.end() ? std::string("The other drive") : to->label) +
+                  " isn't connected, so the part copied there stays. The game stays on " + label(job->from_volume_id) + ".";
         return confirmation;
     }
     ModalEntry confirmation{"confirmation", "Cancel download?", std::move(opener), {"cancel", "confirm-destructive"}, 0, true};

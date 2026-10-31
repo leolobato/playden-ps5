@@ -2057,6 +2057,20 @@ void Controller::TickInstalls() {
     if (job.kind == steam::InstallJobKind::kUpdate) updating.insert(job.id);
     if (job.kind == steam::InstallJobKind::kMove) moving.insert(job.id);
   }
+  // A move whose destination went away while Playden was closed stays locked until the game's PS5 title record
+  // says it starts the game from the folder it is listed in, with nothing pending that could still name the
+  // copy: then it can be canceled. A game without a record stays locked too, as a lost record can't be told
+  // from no title; connecting the drive again lets the move go on or be canceled.
+  if (runtime_)
+    if (const auto runtime = runtime_->Shared();
+        runtime->status == RuntimeHostStatus::kReady && runtime->installs_known)
+      for (const auto& job : snapshot.jobs) {
+        if (job.kind != steam::InstallJobKind::kMove || !job.locked || job.state != steam::InstallJobState::kFailed) continue;
+        const auto view = std::find_if(runtime->installs.begin(), runtime->installs.end(),
+                                       [&job](const RuntimeInstallView& candidate) { return candidate.game == job.id; });
+        if (view != runtime->installs.end() && !view->moving && !view->recovery_pending && !view->republish_pending)
+          installs_->ReleaseUnreachableMove(job.id, view->install_path);
+      }
   for (const auto id : downloading_) {
     if (downloading.count(id) || !game_roots_.count(id)) continue;
     // A move that ended leaves the game prepared as it was: its title followed the copy (RuntimeHost::Relocate).

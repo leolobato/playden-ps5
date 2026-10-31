@@ -173,6 +173,9 @@ struct RuntimeInstallView {
   std::string install_path;
   // Its title is being removed to follow the game to another drive; Prepare finishes that.
   bool moving = false;
+  // The title moved to another folder and its publication there isn't done yet: what Home starts may still
+  // name the old folder (the record's moved_from).
+  bool republish_pending = false;
   // The game's private bottle (console path); Cloud saves under Windows
   // folders live here.
   std::string prefix_root;

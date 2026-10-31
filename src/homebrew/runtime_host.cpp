@@ -1485,6 +1485,7 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
     view.game = GameOf(record.game, record.runtime_number);
     view.install_path = record.install_path;
     view.moving = record.journal && record.journal->operation == "remove-move";
+    view.republish_pending = !record.moved_from.empty();
     if (!record.data_root.empty()) view.prefix_root = record.data_root + "/library/prefixes/game";
     view.state = record.state;
     if (record.journal) view.step = record.journal->step;
