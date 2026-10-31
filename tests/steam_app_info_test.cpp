@@ -282,6 +282,27 @@ void TestParseDefaultsAndFailures() {
   CHECK(nested && nested->dlc_app_ids == U32s{5});
 }
 
+// A DLC names its game (Iceborne, past Monster Hunter: World's 64-entry listofdlc): extended/dlcforappid,
+// common/extended's, whatever the type says; else a DLC's common/parent.
+void TestDlcForApp() {
+  const auto extended = ParseAppInfo(1118010,
+      "\"appinfo\" { \"common\" { \"type\" \"DLC\" \"parent\" \"9\" } \"extended\" { \"dlcforappid\" \"582010\" } }");
+  CHECK(extended && extended->dlc_for_app_id == 582010);
+  const auto nested = ParseAppInfo(
+      8, "\"appinfo\" { \"common\" { \"type\" \"dlc\" \"extended\" { \"dlcforappid\" \"7\" } } }");
+  CHECK(nested && nested->dlc_for_app_id == 7);
+  const auto parent = ParseAppInfo(
+      8, "\"appinfo\" { \"common\" { \"type\" \"DLC\" \"parent\" \"7\" } \"extended\" { \"dlcforappid\" \"0\" } }");
+  CHECK(parent && parent->dlc_for_app_id == 7);
+  const auto game = ParseAppInfo(8, "\"appinfo\" { \"common\" { \"type\" \"Game\" \"parent\" \"7\" } }");
+  CHECK(game && game->dlc_for_app_id == 0);
+  const auto own = ParseAppInfo(8, "\"appinfo\" { \"common\" { \"type\" \"DLC\" \"parent\" \"8\" } }");
+  CHECK(own && own->dlc_for_app_id == 0);
+  // A hidden DLC whose app info carries no common section still names its game.
+  const auto hidden = ParseAppInfo(8, "\"appinfo\" { \"extended\" { \"dlcforappid\" \"7\" } }");
+  CHECK(hidden && hidden->dlc_for_app_id == 7);
+}
+
 void TestSelect() {
   const auto app = ParseAppInfo(kApp, Buffer());
   CHECK(app);
@@ -922,6 +943,7 @@ int main(int argc, char** argv) {
   g_fixtures = argv[1];
   TestParse();
   TestParseDefaultsAndFailures();
+  TestDlcForApp();
   TestSelect();
   TestDepotLanguage();
   TestMissingBaseDepots();

@@ -114,6 +114,10 @@ struct RuntimeHostConfig {
   // nothing (the kit's icon stays). Runs on the worker; may use the network.
   // Named by the game, so a runtime number never reaches a store's artwork.
   std::function<std::optional<std::string>(const GameId& game)> title_icon;
+  // The DLC of a Steam game this account owns, from the Library's license read and app lookups
+  // (EntitledLibraryBackend::DlcOf). Each prepare adds them to what the download recorded, so DLC past
+  // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator. Empty: none.
+  std::function<std::vector<std::uint32_t>(std::uint64_t steam_id, std::uint32_t app_id)> owned_dlc;
   // One ranged HTTPS GET for what Playden downloads for a game's bottle: Microsoft's Visual C++ redistributable,
   // for a game whose files import MFC (runtime/redist_install.h). Runs on the worker, only for work the player
   // started (Play, Prepare, maintenance), never at start-up; it should give up soon after cancel turns true

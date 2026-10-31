@@ -100,7 +100,9 @@ struct AppInfo {
   std::string install_dir;
   std::vector<DepotInfo> depots;  // Steam listing order (depot mounting order)
   std::vector<AppBranch> branches;
-  std::vector<std::uint32_t> dlc_app_ids;
+  std::vector<std::uint32_t> dlc_app_ids;  // extended/listofdlc, which Steam cuts at 64 entries
+  // A DLC's game: extended/dlcforappid, else a DLC's common/parent. 0 for anything else.
+  std::uint32_t dlc_for_app_id = 0;
   std::vector<AppLaunch> launches;  // sorted by id
   std::string controller_support;
   std::string icon;  // common/icon: the hash of the library icon, as GetOwnedGames img_icon_url

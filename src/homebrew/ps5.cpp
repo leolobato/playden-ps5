@@ -570,6 +570,15 @@ int main() {
                 std::fclose(file);
                 if (!bytes.empty()) generic_icon = std::move(bytes);
             }
+            // Owned DLC: the game's looked-up DLC that the last license read of this account grants.
+            config.owned_dlc = [&library_backend, &licensed_depots](std::uint64_t steam_id, std::uint32_t app_id) {
+                std::vector<std::uint32_t> owned;
+                const auto grant = licensed_depots.Get(steam_id);
+                if (!grant) return owned;
+                for (const auto dlc : library_backend.DlcOf(app_id))
+                    if (grant->apps.count(dlc)) owned.push_back(dlc);
+                return owned;
+            };
             config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon](const playden::GameId& game) -> std::optional<std::string> {
                 // A store with no cover for the game (an imported one) gets the generic icon.
                 const auto source = playden::homebrew::CoverUrl(game);

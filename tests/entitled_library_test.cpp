@@ -75,6 +75,12 @@ std::string AppInfoText(std::uint32_t id, const std::string& name, const std::st
          "\"\n\t\t\"type\"\t\"" + type + "\"\n\t\t\"icon\"\t\"abc123\"\n\t}\n}\n";
 }
 
+// A DLC's app info, naming its game the way Steam does.
+std::string DlcInfoText(std::uint32_t id, std::uint32_t game) {
+  return "\"appinfo\"\n{\n\t\"appid\"\t\"" + std::to_string(id) + "\"\n\t\"common\"\n\t{\n\t\t\"type\"\t\"DLC\"\n\t}\n" +
+         "\t\"extended\"\n\t{\n\t\t\"dlcforappid\"\t\"" + std::to_string(game) + "\"\n\t}\n}\n";
+}
+
 // A load, the background lookup it started, then a load that lists what the lookup named.
 LibraryResult Settled(EntitledLibraryBackend& backend, const StoredSession& session = Session()) {
   std::atomic<bool> cancel{false};
@@ -227,6 +233,7 @@ void LicensedFreeGamesAreAdded() {
                                       {400, {40}}};             // an app Steam doesn't know
   acquisitions.app_info = {{2767030, AppInfoText(2767030, "Synthetic Rivals", "Game")},
                            {30, AppInfoText(30, "Synthetic DLC", "DLC")},
+                           {11, DlcInfoText(11, 10)},
                            {480, AppInfoText(480, "Spacewar", "Game")}};
   acquisitions.unanswered = {{40, "unknown"}};
   EntitledLibraryBackend backend(owned, acquisitions);
@@ -241,7 +248,9 @@ void LicensedFreeGamesAreAdded() {
   const auto& added = late.back();
   assert(added.id == SteamId(2767030) && added.title == "Synthetic Rivals" && added.added_at_unix_seconds == 1700000000u);
   assert(added.artwork_source == "https://media.steampowered.com/steamcommunity/public/images/apps/2767030/abc123.jpg");
-  assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{30, 40, 2767030}}));
+  // The listed game's DLC is looked up after the Library's apps, for the game it names, not for the Library.
+  assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{30, 40, 2767030, 11}}));
+  assert((backend.DlcOf(10) == std::vector<std::uint32_t>{11}) && backend.DlcOf(20).empty() && !Find(result, 11));
   result = backend.Fetch(Session(), cancel);
   assert(result.games.size() == 3 && Find(result, 2767030));
 
@@ -339,21 +348,56 @@ void AppNamesFileRoundTrips() {
   AppNames names;
   names[10] = AppName{AppName::Kind::kGame, "Synthetic Game", "abc", 100};
   names[11] = AppName{AppName::Kind::kDemo, "Synthetic Demo", "", 101};
-  names[12] = AppName{AppName::Kind::kOther, "", "", 102};
+  names[12] = AppName{AppName::Kind::kOther, "", "", 102, 10};
   assert(SaveAppNames(storage, names));
   auto loaded = LoadAppNames(storage);
   assert(loaded.size() == 3 && loaded.at(10).name == "Synthetic Game" && loaded.at(10).icon == "abc" &&
          loaded.at(11).kind == AppName::Kind::kDemo && loaded.at(12).kind == AppName::Kind::kOther &&
-         loaded.at(12).learned_at == 102);
+         loaded.at(12).learned_at == 102 && loaded.at(12).dlc_for == 10 && loaded.at(10).dlc_for == 0);
+  // A file from before DLC kept their game: its games load, its other apps are looked up again.
+  Bytes v1 = {'P', 'D', 'N', 'A', 'M', 'E', 0, 1, 2, 0, 0, 0};
+  const auto entry = [&v1](std::uint32_t id, std::uint8_t kind, const std::string& name) {
+    for (int i = 0; i < 4; ++i) v1.push_back(static_cast<std::uint8_t>(id >> (8 * i)));
+    v1.push_back(kind);
+    for (int i = 0; i < 8; ++i) v1.push_back(i == 0 ? 7 : 0);
+    v1.push_back(static_cast<std::uint8_t>(name.size()));
+    v1.push_back(0);
+    v1.insert(v1.end(), name.begin(), name.end());
+    v1.push_back(0);
+    v1.push_back(0);
+  };
+  entry(10, 1, "Old Game");
+  entry(12, 0, "");
+  std::uint32_t crc = 0xffffffffu;
+  for (const auto byte : v1) {
+    crc ^= byte;
+    for (int bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+  }
+  crc = ~crc;
+  for (int i = 0; i < 4; ++i) v1.push_back(static_cast<std::uint8_t>(crc >> (8 * i)));
+  assert(storage.WriteAtomic("app-names.cache", v1).ok());
+  loaded = LoadAppNames(storage);
+  assert(loaded.size() == 1 && loaded.at(10).name == "Old Game" && loaded.at(10).learned_at == 7);
+  assert(SaveAppNames(storage, names));
   auto bytes = storage.Read("app-names.cache").value();
   bytes[bytes.size() / 2] ^= 1;
   assert(storage.WriteAtomic("app-names.cache", bytes).ok());
   assert(LoadAppNames(storage).empty());
   AppNames many;
-  for (std::uint32_t id = 1; id <= kMaxAppNames + 5; ++id) many[id] = AppName{AppName::Kind::kOther, "", "", id};
+  for (std::uint32_t id = 1; id <= kMaxAppNames + 5; ++id) many[id] = AppName{AppName::Kind::kGame, "G", "", id};
   assert(SaveAppNames(storage, many));
   loaded = LoadAppNames(storage);
   assert(loaded.size() == kMaxAppNames && !loaded.count(5) && loaded.count(6) && loaded.count(kMaxAppNames + 5));
+  // Other apps have a cap of their own: a library's DLC neither pushes games out nor is pushed out by them.
+  constexpr std::uint32_t kOthers = kMaxOtherApps + 5;
+  for (std::uint32_t id = 1; id <= kOthers; ++id)
+    many[1'000'000 + id] = AppName{AppName::Kind::kOther, "", "", 1'000'000 + id, 7};
+  assert(SaveAppNames(storage, many));
+  loaded = LoadAppNames(storage);
+  std::size_t games = 0;
+  for (const auto& [id, name] : loaded) games += name.kind == AppName::Kind::kGame;
+  assert(games == kMaxAppNames && loaded.size() == kMaxAppNames + kMaxOtherApps);
+  assert(!loaded.count(1'000'005) && loaded.count(1'000'006) && loaded.at(1'000'000 + kOthers).dlc_for == 7);
   // Long names: what is saved still fits what Load reads, newest first.
   AppNames long_names;
   for (std::uint32_t id = 1; id <= 5000; ++id)
@@ -419,8 +463,9 @@ void FamilySharedAppsAreMarked() {
     assert(Find(result, 95) && !Find(result, 95)->family_shared);
     assert(!Find(result, 10)->family_shared && !Find(result, 20)->family_shared && !Find(result, 11));
   }
-  // The package with an owned game is passed over; the borrowed bundle only skips the owned game.
-  assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{80, 90, 95}}));
+  // The package with an owned game is passed over; the borrowed bundle only skips the owned game. Its DLC
+  // is looked up last, only for the game it names.
+  assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{80, 90, 95, 11}}));
   // Each shared app is logged once per run; the summary once per load.
   assert(lines.Count("family library added app=80 demo=0 source=saved") == 1);
   assert(lines.Count("family library added app=90 demo=0 source=saved") == 1);
@@ -547,7 +592,8 @@ void StaleFamilyListDoesNotHideNewGames() {
 }
 
 // Steam's family service names the family's games: the load lists them at once, without a lookup. Shared
-// apps it leaves out are not games and are not looked up; a game it lists without a name is.
+// apps it leaves out are not games and are looked up only for the game a DLC names; a game it lists without
+// a name is looked up for the Library.
 void FamilyServiceNamesSharedGames() {
   Owned owned;
   Acquisitions acquisitions;
@@ -576,9 +622,9 @@ void FamilyServiceNamesSharedGames() {
   assert(lines.Count("family library left_out app=81 reason=not_in_family_list") == 1);
   assert(lines.Count("family library left_out app=83 reason=app_type=4") == 1);
   assert(lines.Count("named_family=2 named_saved=0 family_list=y lookups=1") == 1);
-  // Only the game listed without a name is looked up.
+  // The game listed without a name is looked up first; the apps the service didn't name follow, for DlcOf.
   assert(backend.WaitForLookups(5s));
-  assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{84}}));
+  assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{84, 81, 83}}));
   assert(backend.TakeLateGames(123).size() == 1);
 }
 

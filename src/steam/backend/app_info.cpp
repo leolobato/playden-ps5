@@ -368,6 +368,16 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
     if (const VdfNode* extended = common->Find("extended")) dlc_list = extended->String("listofdlc");
   }
   if (dlc_list) app.dlc_app_ids = ParseDlcList(*dlc_list);
+  // listofdlc stops at 64 entries (Monster Hunter: World's leaves out Iceborne): a DLC names its game itself,
+  // in dlcforappid (whatever its type says, as GameNative reads it), else in common/parent when it is a DLC.
+  {
+    std::optional<std::uint32_t> game;
+    if (const VdfNode* extended = root->Find("extended")) game = ChildU32(extended, "dlcforappid");
+    if ((!game || !*game) && common != nullptr)
+      if (const VdfNode* extended = common->Find("extended")) game = ChildU32(extended, "dlcforappid");
+    if ((!game || !*game) && LowerString(app.type) == "dlc") game = ChildU32(common, "parent");
+    if (game && *game != 0 && *game != app_id) app.dlc_for_app_id = *game;
+  }
   app.cloud = ParseCloudSaves(root->Find("ufs"));
 
   if (config != nullptr) {

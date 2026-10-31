@@ -234,6 +234,7 @@ std::optional<AppName> NameFromAppInfo(std::uint32_t app, const std::string& tex
   } else {
     *reason = type != "game" && type != "demo" ? "type=" + (type.empty() ? std::string("none") : type.substr(0, 32))
                                                : "no_name";
+    name.dlc_for = info->dlc_for_app_id;
   }
   name.learned_at = UnixNow();
   return name;
@@ -318,6 +319,7 @@ void EntitledLibraryBackend::AddLicensedGames(const StoredSession& session,
     family_log_(line);
   };
   std::vector<std::uint32_t> unknown;
+  std::vector<std::uint32_t> dlc_lookups;
   {
     std::lock_guard<std::mutex> lock(names_mutex_);
     LoadNamesLocked();
@@ -390,6 +392,14 @@ void EntitledLibraryBackend::AddLicensedGames(const StoredSession& session,
         if (const auto found = family->find(app); found != family->end())
           late_context_.family_acquired[app] = found->second.rt_time_acquired;
     late_games_.clear();
+    // The other licensed apps no lookup has named, a bought game's DLC among them, are looked up too: not for
+    // the Library, but for the game each DLC names (DlcOf).
+    std::set<std::uint32_t> queued(unknown.begin(), unknown.end());
+    for (const auto& [package, apps] : acquisitions.package_apps) {
+      if (package == 0) continue;
+      for (const auto app : apps)
+        if (!listed.count(app) && !names_.count(app) && queued.insert(app).second) dlc_lookups.push_back(app);
+    }
   }
   if (family_log_) {
     if (truncated) family_log_("family library truncated=" + std::to_string(truncated));
@@ -402,13 +412,25 @@ void EntitledLibraryBackend::AddLicensedGames(const StoredSession& session,
                 " in_owned_list=" + std::to_string(in_owned_list) + " named_family=" + std::to_string(named_family) +
                 " named_saved=" + std::to_string(named_saved) +
                 " family_list=" + (!family ? "n" : family_fresh ? "y" : "stale") +
-                " lookups=" + std::to_string(unknown.size()));
+                " lookups=" + std::to_string(unknown.size()) + " dlc_lookups=" + std::to_string(dlc_lookups.size()));
   }
-  if (unknown.empty() || cancel.load()) {
+  if ((unknown.empty() && dlc_lookups.empty()) || cancel.load()) {
     SaveNames();
     return;
   }
+  // The Library's own lookups first: they name games, which it waits for.
+  unknown.insert(unknown.end(), dlc_lookups.begin(), dlc_lookups.end());
   StartLookups(session, std::move(unknown));
+}
+
+std::vector<std::uint32_t> EntitledLibraryBackend::DlcOf(std::uint32_t app) {
+  std::lock_guard<std::mutex> lock(names_mutex_);
+  LoadNamesLocked();
+  std::vector<std::uint32_t> out;
+  for (const auto& [id, name] : names_)
+    if (name.kind == AppName::Kind::kOther && name.dlc_for == app) out.push_back(id);
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 void EntitledLibraryBackend::StopLookups() {

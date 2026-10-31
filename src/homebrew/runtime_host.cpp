@@ -826,8 +826,26 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
       identity.account_name = steam_account_name_;
       identity.steam_id = steam_id_;
     }
-    if (!rt::ReadSteamworksFacts(root.string(), &identity))
+    const bool facts = rt::ReadSteamworksFacts(root.string(), &identity);
+    if (!facts)
       Log("steamworks app=" + std::to_string(record.runtime_number) + " no download facts: no DLC or depots listed");
+    // DLC the account owns that the download didn't record. They stay in the facts, so a start before the
+    // next license read still has them.
+    if (config_.owned_dlc) {
+      const auto listed = [](const std::vector<std::uint32_t>& ids, std::uint32_t id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+      };
+      std::vector<std::uint32_t> added;
+      for (const auto dlc : config_.owned_dlc(identity.steam_id, steam_app.app_id))
+        if (dlc != steam_app.app_id && !listed(identity.owned_dlc, dlc) && !listed(added, dlc)) added.push_back(dlc);
+      if (!added.empty()) {
+        identity.owned_dlc.insert(identity.owned_dlc.end(), added.begin(), added.end());
+        const bool kept = !facts || other_store ||
+                          rt::WriteSteamworksFacts(root.string(), identity.depots, identity.owned_dlc, identity.language);
+        Log("steamworks app=" + std::to_string(record.runtime_number) + " owned dlc added=" + std::to_string(added.size()) +
+            " total=" + std::to_string(identity.owned_dlc.size()) + (kept ? "" : " facts=write-failed"));
+      }
+    }
     const auto emulator = config_.steamworks_dir.empty() ? config_.runtime_dir + "/steamworks" : config_.steamworks_dir;
     // A game from another store keeps its folder as it shipped: no steam_appid.txt of Playden's would hide
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.

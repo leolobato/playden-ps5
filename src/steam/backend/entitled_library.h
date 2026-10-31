@@ -18,6 +18,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace playden::steam {
 
@@ -48,6 +49,9 @@ class EntitledLibraryBackend final : public LibraryBackend {
   void SetFamilyWait(std::chrono::milliseconds wait) { family_wait_ = wait; }
   // Receives each successful license read, for size estimates.
   void SetLicensedDepots(LicensedDepots* licensed) { licensed_ = licensed; }
+  // The licensed DLC apps already looked up that name `app` as their game, sorted, whoever's licenses they
+  // came from (names are public data). Steam's listofdlc stops at 64 entries; this finds the rest.
+  std::vector<std::uint32_t> DlcOf(std::uint32_t app);
 
   // Asks Steam's family service over HTTPS (with this CA bundle; the background lookup's HTTP uses it too)
   // and writes "family" lines: which family-shared apps the Library got or left out, and what the service
