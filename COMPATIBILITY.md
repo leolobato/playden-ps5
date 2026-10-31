@@ -39,7 +39,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [BALL x PIT](https://store.steampowered.com/app/2062430) | ✅ Works | 0.10 | Unity · D3D11 · 64-bit | Intro and the first cutscene. |
 | [Ballionaire](https://store.steampowered.com/app/2667120) | ✅ Works | 0.12 | — | Default settings, DualSense. ([#122](https://github.com/leolobato/playden-ps5/issues/122), firmware 13.60) |
 | [Bastion](https://store.steampowered.com/app/107100) | ✅ Works | 0.12 | XNA (Wine Mono, FNA) · OpenGL · Zink · 32-bit | Default settings; Playden selects OpenGL automatically. Controller menus, a new Normal Mode game, getting out of bed and walking along the opening platforms verified. Combat and sustained performance not tested. |
-| [Batman: Arkham Knight](https://store.steampowered.com/app/208650) | ✅ Works | 0.16 | — | Restart ShadowMount if it doesn't launch; DualSense. (firmware 12.20) |
+| [Batman: Arkham Knight](https://store.steampowered.com/app/208650) | ✅ Works | 0.16 | — | Restart ShadowMount if it doesn't launch; DualSense. ([#344](https://github.com/leolobato/playden-ps5/pull/344), firmware 12.20) |
 | [Beat Weaver Demo](https://store.steampowered.com/app/4265140) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#323](https://github.com/leolobato/playden-ps5/issues/323), firmware 13.00) |
 | [BioShock Remastered](https://store.steampowered.com/app/409710) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#248](https://github.com/leolobato/playden-ps5/issues/248), firmware 13.60) |
 | [Blades of Time](https://store.steampowered.com/app/208670) | ✅ Works | 0.10 | Dagor · D3D9 · 32-bit | Intro, main menu and Story with the controller. Playden removes its old Steam DRM (SteamStub 2.1). |
