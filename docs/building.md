@@ -7,6 +7,7 @@ pull requests, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 - [Get the source](#get-the-source)
 - [Build and test on macOS](#build-and-test-on-macos)
 - [Build the PS5 package](#build-the-ps5-package)
+- [Build with Docker](#build-with-docker)
 - [Run on a console](#run-on-a-console)
 - [Build the kit](#build-the-kit)
 - [Dependencies](#dependencies)
@@ -75,6 +76,33 @@ The build checks the pinned revisions and hashes. If it stops with a mismatch, d
 the input changed. The PS5 build is reproducible, so the same sources give the same `eboot.bin` in any checkout.
 
 `FAKE77031` is allocated to Playden. Do not use it for another application.
+
+## Build with Docker
+
+If you do not have a Mac, a Linux container builds the PS5 package. It needs Docker with Compose and nothing else
+(no Homebrew, LLVM or SDK on the machine), and works on Windows, Linux and macOS.
+
+```sh
+scripts/build-in-docker.sh          # Windows: scriptsuild-in-docker.ps1
+```
+
+The script builds the image from the [Dockerfile](../Dockerfile) (Ubuntu 24.04 with LLVM 18, CMake and Ninja), then
+runs `scripts/fetch-deps.sh`, `scripts/build-lapy-helper.sh` and `scripts/build-homebrew-ps5.sh` in it, the same
+steps as above. The package is copied to `out/FAKE77031`; put it on the console as in
+[Run on a console](#run-on-a-console). The first run downloads the SDKs and builds curl and Mbed TLS, so it takes
+a while.
+
+- Run `git submodule update --init --recursive` on the host first: the container uses your checkout.
+- Downloads and build products live in Docker volumes (`build`, `deps`, `network-deps`, `lapy-build`), not in your
+  checkout, so they do not clash with a macOS build in the same folder. `docker compose down -v` deletes them for
+  a clean build.
+- The pinned revisions and hashes are checked as on macOS. A mismatch means the input changed: do not edit the hash.
+- **Known issue: the build stops at the archive check.** The PS5 archives built in the container (libcurl.a,
+  Mbed TLS) do not yet match the hashes pinned in `dependencies.lock.json`, even with the same LLVM version (18.1.8),
+  so CMake reports `Pinned ps5 archive hash mismatch`. Do not edit the hashes. Until this is resolved, the
+  container build does not produce a package you can trust.
+- **This does not run the tests.** The host build and `ctest --preset homebrew-host` support macOS only
+  (`cmake/HomebrewUI.cmake`), so tests still need a Mac. Neither build is console testing.
 
 ## Run on a console
 
