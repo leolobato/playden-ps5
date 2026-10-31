@@ -1,0 +1,22 @@
+{
+  "recipe_id": "steam-200260-arkhamcity-v1",
+  "recipe_version": 1,
+  "app_id": 200260,
+  "name": "Batman: Arkham City GOTY",
+  "launch_entries": [
+    {"id": "game", "label": "Batman: Arkham City", "executable": "Binaries/Win32/BatmanAC.exe"}
+  ],
+  "arguments": "",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe32",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "defaults": {
+    "steam_features": "emulate"
+  },
+  "ini": {
+    "BmGame/Config/UserEngine.ini": {"Engine.Engine": {"Language": "int"}}
+  },
+  "locked": []
+}
