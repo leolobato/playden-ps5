@@ -223,6 +223,7 @@ class Controller {
   // Save lifecycle around Play: games whose session just ended sync once their
   // folder is known; games syncing now cannot start.
   std::set<GameId> sync_after_session_;
+  std::set<std::uint32_t> launcher_hints_told_;  // each once per Playden start
   std::set<GameId> cloud_busy_;
   // Play requested but not yet visible in the runtime's launch state.
   std::set<GameId> play_queued_;

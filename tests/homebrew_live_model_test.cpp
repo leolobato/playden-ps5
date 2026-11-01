@@ -771,6 +771,26 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     check(model.state().navigation.modals.empty() && model.TakeRuntimePlayRequests() == std::vector<playden::GameId>{SteamId(35140)} &&
               model.TakeRuntimeSetupPrograms() == std::map<GameId, std::string>{{SteamId(35140), "Binaries/BmLauncher.exe"}},
           "launcher mode: with it set, picking a program starts it");
+
+    // A kit without launcher mode offers nothing, and the caller may tell it again later.
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({}, true));
+    check(!model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe") && model.state().navigation.modals.empty(),
+          "launcher hint: not without the kit's launcher mode");
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"launcher-mode"}, true));
+    // A run that couldn't start a program offers launcher mode once, and Turn on and play does both.
+    model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe");
+    check(model.state().navigation.modals.back().title == "This game uses a launcher" &&
+              model.state().navigation.modals.back().body.find("BatmanAC.exe") != std::string::npos,
+          "launcher hint: the dialog names the program");
+    activate(model, "launcher-hint-later");
+    check(model.state().navigation.modals.empty() && model.TakeRuntimePlayRequests().empty(), "launcher hint: Not now does nothing");
+    model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe");
+    activate(model, "launcher-hint-on");
+    check(model.TakeRuntimePlayRequests() == std::vector<playden::GameId>{SteamId(35140)} &&
+              model.state().game_settings.at(SteamId(35140)).overrides.at("start_through_launcher") == "on",
+          "launcher hint: it turns the setting on and plays");
+    model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe");
+    check(model.state().navigation.modals.empty(), "launcher hint: not offered with the setting on");
 }
 
 void live_download_telemetry() {

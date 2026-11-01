@@ -787,6 +787,58 @@ int main() {
     CHECK(!ProgramDrawsWithOpenGLOnly(root.string(), "Missing.exe"));
   }
 
+  {  // A run's note: a program in the game's folder that draws, once; a helper or a path elsewhere is nothing.
+    const auto root = fresh();
+    const auto prefix = root / "prefix";
+    fs::create_directories(prefix);
+    WritePe(root / "game/bin/Game.exe", {false, {"KERNEL32.dll", "d3d11.dll"}});
+    WritePe(root / "game/Reporter.exe", {false, {"KERNEL32.dll"}});
+    const auto note = [&](const std::string& image) {
+      std::ofstream(prefix / ".pw-exec-refused", std::ios::binary) << "pw-exec-refused 1\nimage=" << image << "\n";
+    };
+    const auto take = [&] { return TakeRefusedGameProgram(prefix.string(), "/data/games/1", (root / "game").string()); };
+    CHECK(take().empty());
+    note("Z:\\data\\games\\1\\bin\\Game.exe");
+    CHECK(take() == "bin/Game.exe");
+    // A helper beside the game's libraries is still a helper; a program that names its engine is the game.
+    WritePe(root / "game/d3d.dll", {false, {"d3d11.dll"}});
+    note("Z:\\data\\games\\1\\Reporter.exe");
+    CHECK(take().empty());
+    WritePe(root / "game/UnityGame.exe", {false, {"UnityPlayer.dll"}});
+    note("Z:\\data\\games\\1\\UnityGame.exe");
+    CHECK(take() == "UnityGame.exe");
+    note("Z:\\data\\games\\1\\\\bin\\Game.exe");
+    CHECK(take().empty());
+    // Graphics named inside the program count; a folder's name doesn't make a helper the game.
+    WritePe(root / "game/Risk.exe", {true, {"KERNEL32.dll"}, false, false, "D3D11.DLL"});
+    note("Z:\\data\\games\\1\\Risk.exe");
+    CHECK(take() == "Risk.exe");
+    WritePe(root / "game/Game-Shipping/Reporter.exe", {false, {"KERNEL32.dll"}});
+    note("Z:\\data\\games\\1\\Game-Shipping\\Reporter.exe");
+    CHECK(take().empty());
+    WritePe(root / "game/Game-Win64-Shipping.exe", {false, {"KERNEL32.dll"}});
+    note("Z:\\data\\games\\1\\Game-Win64-Shipping.exe");
+    CHECK(take() == "Game-Win64-Shipping.exe");
+    // A program that can't be read keeps the note for a later start.
+    { std::ofstream(root / "game/Broken.exe", std::ios::binary) << "x"; }
+    note("Z:\\data\\games\\1\\Broken.exe");
+    CHECK(take().empty() && fs::exists(prefix / ".pw-exec-refused"));
+    fs::remove(prefix / ".pw-exec-refused");
+    CHECK(!fs::exists(prefix / ".pw-exec-refused") && take().empty());
+    note("Z:\\data\\games\\1\\Reporter.exe");
+    CHECK(take().empty());
+    note("Z:\\data\\games\\12\\bin\\Game.exe");
+    CHECK(take().empty());
+    note("Z:\\data\\games\\1\\..\\1\\bin\\Game.exe");
+    CHECK(take().empty());
+    note("C:\\data\\games\\1\\bin\\Game.exe");
+    CHECK(take().empty());
+    note("Z:\\data\\games\\1\\bin\\Missing.exe");
+    CHECK(take().empty());
+    std::ofstream(prefix / ".pw-exec-refused", std::ios::binary) << "something else\n";
+    CHECK(take().empty() && !fs::exists(prefix / ".pw-exec-refused"));
+  }
+
   // The player's words for what was found.
   CHECK(DetectedLabel("unity-il2cpp,d3d11,d3d12 graphics=dxvk") == "Unity \xC2\xB7 Direct3D 11");
   CHECK(DetectedLabel("d3d9 graphics=dxvk") == "Direct3D 9");

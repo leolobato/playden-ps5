@@ -514,7 +514,7 @@ std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
         {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"ready-later", "Later"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"note", "Compatibility and note"}, {"verify", "Verify files"},
-        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"logs", "Open logs"}, {"logs-back", "Back"},
+        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
         {"log-launch", "Launch log"}, {"log-cloud", "Cloud saves log"}, {"logs-refresh", "Refresh"},
         {"cloud-sync", "Cloud saves"}, {"cloud-choose", "Cloud saves"}, {"cloud-use-cloud", "Use Cloud saves"},
@@ -2762,6 +2762,32 @@ void Simulation::show_ready_prompt() {
     open_modal(std::move(prompt));
 }
 
+bool Simulation::NotifyLauncherHint(GameId id, const std::string& program) {
+    const auto* game = find_game(state_, id);
+    // Until the game and the kit's abilities are known. A kit without launcher mode has nothing to offer.
+    if (!game || !launcher_mode_kit()) return false;
+    if (!live()) return true;
+    const auto record = state_.game_settings.find(id);
+    if (record != state_.game_settings.end()) {
+        const auto on = record->second.overrides.find("start_through_launcher");
+        if (on != record->second.overrides.end() && on->second == "on") return true;
+    }
+    // A recipe that requires it off has a reason, and the offer couldn't change it.
+    rt::EffectiveSettings values;
+    if (EffectiveSettingsFor(id, &values)) {
+        const auto row = values.values.find("start_through_launcher");
+        if (row != values.values.end() && row->second.locked && !row->second.unlocked) return true;
+    }
+    const auto slash = program.find_last_of('/');
+    const auto name = slash == std::string::npos ? program : program.substr(slash + 1);
+    alert_prompts_.push_back({"This game uses a launcher",
+                              game->title + " tried to start " + name + " and couldn't.\n\nTurn on Start through a launcher for this game?",
+                              id, true});
+    show_alert_prompt();
+    rebuild_view();
+    return true;
+}
+
 void Simulation::show_alert(std::string title, std::string body, GameId settings_game) {
     const bool queued = std::any_of(alert_prompts_.begin(), alert_prompts_.end(), [&](const AlertPrompt& alert) {
         return alert.title == title && alert.body == body;
@@ -2784,7 +2810,8 @@ void Simulation::show_alert_prompt() {
     alert_settings_game_ = alert.settings_game;
     std::vector<std::string> actions = {"alert-ok"};
     if (alert.settings_game.valid()) actions = {"alert-ok", "alert-settings"};
-    ModalEntry prompt{"confirmation", std::move(alert.title), state_.navigation.focus_key, std::move(actions), 0, false};
+    if (alert.launcher_hint) actions = {"launcher-hint-later", "launcher-hint-on"};
+    ModalEntry prompt{"confirmation", std::move(alert.title), state_.navigation.focus_key, std::move(actions), alert.launcher_hint ? 1 : 0, false};
     prompt.body = alert.body.empty() ? std::string(" ") : std::move(alert.body);
     open_modal(std::move(prompt));
 }
@@ -9121,8 +9148,26 @@ void Simulation::activate() {
             wait.body = "Playden quits to the PS5 Home screen once this game's saves are in step with Steam Cloud.";
             open_modal(std::move(wait));
         }
-    } else if (action_name == "ready-later" || action_name == "alert-ok") {
+    } else if (action_name == "ready-later" || action_name == "alert-ok" || action_name == "launcher-hint-later") {
         close_modal();
+    } else if (action_name == "launcher-hint-on") {
+        const auto game = alert_settings_game_;
+        close_modal();
+        if (game.valid() && find_game(state_, game)) {
+            state_.navigation.selected_game_id = game;
+            const auto had = state_.game_settings.find(game);
+            const std::optional<rt::GameSettingsRecord> before = had == state_.game_settings.end() ? std::nullopt : std::make_optional(had->second);
+            set_game_setting("start_through_launcher", "on");
+            // Play reads the settings from disk: without them it would fail the same way.
+            if (save_profile()) {
+                pending_runtime_play_requests_.push_back(game);
+            } else {
+                // As it was, so the sheet doesn't say On and a later save doesn't turn it on unasked.
+                if (before) state_.game_settings[game] = *before;
+                else state_.game_settings.erase(game);
+                show_alert("The setting could not be saved", "Start through a launcher is not on yet. Try again from Game settings.");
+            }
+        }
     } else if (action_name == "alert-settings") {
         const auto game = alert_settings_game_;
         close_modal();

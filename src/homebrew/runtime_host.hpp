@@ -363,6 +363,8 @@ struct RuntimeSnapshot {
   // What the latest Play from Playden went ahead without, per runtime number (Microsoft's MFC that could not be
   // downloaded): Play still starts the game, and the player sees why it may stop.
   std::map<std::uint32_t, std::string> play_notices;
+  // Games whose last run couldn't start a program in their folder: a launcher, without launcher mode. Told once.
+  std::map<std::uint32_t, std::string> launcher_hints;
   // The Steam app ID each game from another store was last prepared with, by runtime number. Steam
   // games are not listed: theirs is their own.
   std::map<std::uint32_t, SteamworksAppView> steamworks_apps;

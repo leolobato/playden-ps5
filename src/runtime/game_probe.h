@@ -43,6 +43,13 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
 // Unlike GameProbe::apis, the libraries beside it don't count, so a launcher next to the game's DLLs is not one.
 bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::string& executable);
 
+// The program a game's last run couldn't start, from the note the title's Wine leaves in the bottle: what a launcher
+// without launcher mode asked for. Relative to host_root, as spelled in the note, when it's a program in the game's
+// folder (console_root on the console, host_root as seen here) that draws or has an engine, so a crash reporter or an
+// updater isn't taken for the game. The note names one run: this removes it.
+std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::string& console_root,
+                                   const std::string& host_root);
+
 // The program that starts an Unreal game when executable (relative to install_root, '/' separators) is its root
 // launcher, which only starts that one as a child process, which the console cannot do; relative to install_root,
 // as spelled on disk. Empty for any other program. GameProbe::unreal_program, without reading the programs.

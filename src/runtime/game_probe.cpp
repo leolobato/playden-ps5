@@ -6,6 +6,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -431,6 +432,73 @@ bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::stri
   std::set<std::string> apis;
   AddImports(facts, &apis);
   return apis == std::set<std::string>{"opengl"};
+}
+
+namespace {
+
+// Whether a program itself looks like a game: what it imports or names, not the libraries beside it (a crash reporter
+// sits next to the game's DLLs). A game may load its graphics at run time, so the names inside it count too.
+bool ProgramLooksLikeGame(const fs::path& path, const PeFacts& facts) {
+  std::set<std::string> apis;
+  AddImports(facts, &apis);
+  for (const auto& name : facts.delay_imports) {
+    for (const auto& [library, api] : Libraries())
+      if (name == library) apis.insert(api);
+    if (name == "ddraw.dll") apis.insert("ddraw");
+  }
+  std::string engine;
+  ScanNames(path.string(), &apis, &engine);
+  if (!apis.empty() || !engine.empty()) return true;
+  const auto has = [](const std::vector<std::string>& list, const char* name) {
+    return std::find(list.begin(), list.end(), name) != list.end();
+  };
+  if (has(facts.imports, "unityplayer.dll") || has(facts.delay_imports, "unityplayer.dll")) return true;
+  const auto stem = LowerStem(Lower(path.filename().string()));
+  return stem == "java" || stem == "javaw" || EndsWith(stem, "-shipping");
+}
+
+}  // namespace
+
+std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::string& console_root,
+                                   const std::string& host_root) {
+  const auto note = fs::path(prefix_dir) / ".pw-exec-refused";
+  std::error_code error;
+  if (!fs::is_regular_file(fs::symlink_status(note, error))) return {};
+  std::FILE* file = std::fopen(note.c_str(), "rb");
+  if (!file) return {};  // stays, for a start that can read it
+  char buffer[2048];
+  std::string text(buffer, std::fread(buffer, 1, sizeof(buffer), file));
+  const bool read_failed = std::ferror(file) != 0;
+  std::fclose(file);
+  if (read_failed) return {};
+  // The program named, in the game's folder; empty for anything else.
+  const auto named = [&]() -> std::string {
+    static constexpr std::string_view kHeader = "pw-exec-refused 1\nimage=";
+    if (text.rfind(kHeader, 0) != 0 || text.back() != '\n') return {};
+    auto image = text.substr(kHeader.size(), text.size() - kHeader.size() - 1);
+    if (image.find('\n') != std::string::npos || image.size() < 3 || Lower(image.substr(0, 3)) != "z:\\") return {};
+    std::replace(image.begin(), image.end(), '\\', '/');
+    image.erase(0, 2);  // Z:
+    auto root = console_root;
+    while (!root.empty() && root.back() == '/') root.pop_back();
+    if (root.empty() || image.size() <= root.size() + 1 || image[root.size()] != '/' ||
+        Lower(image.substr(0, root.size())) != Lower(root))
+      return {};
+    auto relative = image.substr(root.size() + 1);
+    if (relative.empty() || relative.front() == '/' || relative.find("..") != std::string::npos) return {};
+    if (!fs::is_regular_file(fs::symlink_status(fs::path(host_root) / relative, error))) return {};
+    return relative;
+  }();
+  std::string program;
+  if (!named.empty()) {
+    const auto path = fs::path(host_root) / named;
+    const auto facts = ReadPe(path.string(), true);
+    if (!facts.valid) return {};  // stays: the drive may answer at a later start
+    if (ProgramLooksLikeGame(path, facts)) program = named;
+  }
+  // One that can't be removed would say the same at every start, without another failed run.
+  if (!fs::remove(note, error) || error) return {};
+  return program;
 }
 
 GameProbe ProbeGame(const std::string& install_root, const std::string& executable) {

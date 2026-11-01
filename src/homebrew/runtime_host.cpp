@@ -4510,6 +4510,19 @@ bool RuntimeHost::RunServices() {
             Log("admission check title=" + record.title_id + " result=" + c.admission[record.install_id]);
           }
       PublishInstalls(c);
+      // A title's last run ended before this start (a game's start closes Playden).
+      {
+        std::map<std::uint32_t, std::string> hints;
+        for (const auto& record : c.repository.Snapshot()) {
+          if (record.state != rt::PreparationState::kReady || record.install_path.empty()) continue;
+          const auto program = rt::TakeRefusedGameProgram((HostPath(record.data_root) / "library/prefixes/game").string(),
+                                                          record.install_path, HostPath(record.install_path).string());
+          if (program.empty()) continue;
+          Log("launcher hint app=" + std::to_string(record.runtime_number) + " program=" + program);
+          hints[record.runtime_number] = program;
+        }
+        if (!hints.empty()) Publish([&](RuntimeSnapshot& s) { s.launcher_hints = std::move(hints); });
+      }
       if (config_.title_log)
         for (const auto& record : c.repository.Snapshot()) {
           const auto root = config_.host_namespace_prefix.empty()

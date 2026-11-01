@@ -973,6 +973,9 @@ public:
     void NotifyUninstallFinished(GameId id);
     // Play prepared the game first and that ended without a playable title.
     void NotifyPlayStopped(GameId id, const std::string& reason);
+    // The game's last run tried to start this program and couldn't: offers launcher mode.
+    // False until the game is known, so the caller tells it again.
+    bool NotifyLauncherHint(GameId id, const std::string& program);
     // A preparation the player started left the game waiting for the PS5: ask, when
     // nothing else is open, whether to quit to the PS5 Home screen to play it.
     void NotifyReadyToPlay(GameId id);
@@ -1244,7 +1247,7 @@ private:
     std::map<GameId, StoreFacts> store_facts_;  // live: from the Steam store, applied over library refreshes
     std::vector<GameId> ready_prompts_;  // games to announce as ready to play, oldest first
     // settings_game: a game whose refusal Game settings can get past; the dialog offers it.
-    struct AlertPrompt { std::string title; std::string body; GameId settings_game; };
+    struct AlertPrompt { std::string title; std::string body; GameId settings_game; bool launcher_hint = false; };
     GameId alert_settings_game_;  // the game the open failure dialog's "Game settings" opens
     // Games refused at Prepare whose program or "Try anyway" the player changed since: their page
     // no longer shows the old refusal.

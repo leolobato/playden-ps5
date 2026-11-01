@@ -1406,6 +1406,11 @@ void Controller::TickRuntime() {
         case LaunchState::kIdle: break;
       }
     }
+    // What this game's last run asked for and couldn't start, once its name is known.
+    if (const auto hint = snapshot.launcher_hints.find(NumberIn(snapshot, id));
+        hint != snapshot.launcher_hints.end() && !launcher_hints_told_.count(hint->first) &&
+        model_.NotifyLauncherHint(id, hint->second))
+      launcher_hints_told_.insert(hint->first);
     // What the latest Play went ahead without (Microsoft's MFC), unless something newer is said.
     if (const auto notice = snapshot.play_notices.find(NumberIn(snapshot, id));
         notice != snapshot.play_notices.end() && game.play_detail.empty())
