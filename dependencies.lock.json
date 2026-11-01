@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.17, installed as playden-kit. Kit 0.16 with wineserver.prx from prospero-win 3926b27 (Wine patch 0993: read-only files past a budget are parked and opened again by name, so games that keep hundreds of files open no longer fail with \"Too many open files\"). The any-title shell stays 053bdbf; every other module, Mono, DXVK, vkd3d-proton, Mesa WGL/Zink, the Lapy helper and the template are 0.16's, so bottles need no Recreate. Earlier kits (0.16, 0.15, 0.14, 0.13, 0.12, 0.11, 0.10, H r1-r9): see this file's git history.",
-    "manifest_sha256": "7686c13cb4e03b29996f00a2f4fa98aaafd095de8b6f39287693221f1aa1636b",
-    "files_sha256": "222c98a8d2fcbb18b66ef2be5b5efad4f084092265f24721e654efa2f1c9cc73",
+    "status": "Kit 0.18, installed as playden-kit. Kit 0.17 with ntdll.prx and win32u.prx from prospero-win 2b53efa (Wine patches 0994-0997: a launcher's Play starts its game through the title, pointer and window order fixes), the any-title shell from 2b53efa (exec chain, launcher mode, touchpad preset swap), libgallium_wgl.dll and opengl32.dll from PS5_Mesa 4778ff0 (Balatro's swapchain fix), OpenAL Soft 1.25.2 and the capability launcher-mode. Every other module, Mono, DXVK, vkd3d-proton, the Lapy helper and the template are 0.17's, so bottles need no Recreate. Earlier kits (0.17, 0.16, 0.15, 0.14, 0.13, 0.12, 0.11, 0.10, H r1-r9): see this file's git history.",
+    "manifest_sha256": "eec7c415ecc35cb76915941255a534541b4b11c187f5f6005a471ec61898e622",
+    "files_sha256": "328818cae9bb66a287c18405cfecd3fafa79c17c4924fd70a28a43c6cada87e3",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -240,6 +240,7 @@
       "dxvk",
       "game-root-unowned",
       "input-rumble",
+      "launcher-mode",
       "offline_bottle",
       "opengl-zink",
       "per_game_title",
@@ -251,9 +252,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "053bdbf51e6a32f0a726db40415e71e387315fa3",
-    "runtime_artifact_revision": "3926b27-kit-0.17",
-    "runtime_inventory_source": "Kit 0.17: kit 0.16 with wineserver.prx from the prospero-win 3926b27 cross build (kit-h/wine-ps5-0993, the 0.16 recipe; its other 16 PRX modules came out byte-identical to 0.16's). Kit 0.16: kit 0.15 with ntdll.prx from the prospero-win 4d0d97d cross build (kit-h/wine-ps5-0989b, the 0.15 recipe; its other 16 PRX modules came out byte-identical to 0.15's). Kit 0.15: kit 0.14 with ntdll.prx from the prospero-win 4f6d38e cross build (kit-h/wine-ps5-0986, the 0.14 recipe; its other 16 PRX modules came out byte-identical to 0.14's). Kit 0.14: every module of the prospero-win 053bdbf cross build (kit-h/wine-ps5-0.14, RADV from PS5_Mesa 15f78ec) with the cacert-2026-10-20 bundle, modules the build does not make kept from 0.13, and the any-title shell built from 053bdbf with tools/build_native.sh. Kit 0.13: kit 0.12 with ntdll.prx and win32u.prx from the prospero-win 031302d cross build (0984-cross.sh, the 0.12 recipe), the any-title shell built from ce28942 with tools/build_native.sh, and libvulkan.prx from PS5_Mesa 15f78ec. Kit 0.12: kit 0.11 with libvulkan.prx and win32u.prx from the prospero-win 7c81f68 cross build and the any-title shell built from f729534. Earlier kits: see this file's git history.",
+    "wrapper_revision": "2b53efa882f205c6ab386b869d903754dcd0275c",
+    "runtime_artifact_revision": "2b53efa-kit-0.18",
+    "runtime_inventory_source": "Kit 0.18: kit 0.17 with ntdll.prx and win32u.prx from the prospero-win 2b53efa cross build (kit-h/wine-ps5-0.18, the 0.17 recipe; its other PRX modules came out byte-identical to 0.17's) and the any-title shell built from 2b53efa with tools/build_native.sh. Kit 0.17: kit 0.16 with wineserver.prx from the prospero-win 3926b27 cross build (kit-h/wine-ps5-0993, the 0.16 recipe; its other 16 PRX modules came out byte-identical to 0.16's). Kit 0.16: kit 0.15 with ntdll.prx from the prospero-win 4d0d97d cross build (kit-h/wine-ps5-0989b, the 0.15 recipe; its other 16 PRX modules came out byte-identical to 0.15's). Kit 0.15: kit 0.14 with ntdll.prx from the prospero-win 4f6d38e cross build (kit-h/wine-ps5-0986, the 0.14 recipe; its other 16 PRX modules came out byte-identical to 0.14's). Kit 0.14: every module of the prospero-win 053bdbf cross build (kit-h/wine-ps5-0.14, RADV from PS5_Mesa 15f78ec) with the cacert-2026-10-20 bundle, modules the build does not make kept from 0.13, and the any-title shell built from 053bdbf with tools/build_native.sh. Kit 0.13: kit 0.12 with ntdll.prx and win32u.prx from the prospero-win 031302d cross build (0984-cross.sh, the 0.12 recipe), the any-title shell built from ce28942 with tools/build_native.sh, and libvulkan.prx from PS5_Mesa 15f78ec. Kit 0.12: kit 0.11 with libvulkan.prx and win32u.prx from the prospero-win 7c81f68 cross build and the any-title shell built from f729534. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
