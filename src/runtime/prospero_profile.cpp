@@ -238,7 +238,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       const auto name = Lower(line.substr(1, line.size() - 2));
       if ((name != "application" && name != "display" && name != "input" && name != "debug" &&
            !(features.environment_section && name == "environment") &&
-           !(features.audio_section && name == "audio") && !(features.runtime_version && name == "runtime")) ||
+           !(features.audio_section && name == "audio") && !(features.runtime_version && name == "runtime") &&
+           !(features.launcher_section && name == "launcher")) ||
           std::find(sections.begin(), sections.end(), name) != sections.end())
         return fail("section [" + name + "] unknown or repeated");
       if (sections.empty() != (name == "application")) return fail("[application] must come first");
@@ -316,6 +317,24 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         if (!OneOf(value, {"off", "2", "3", "4"})) return bad("not off, 2, 3 or 4");
       } else {
         return fail("unknown [display] key " + key);
+      }
+    } else if (section == "launcher") {
+      // The first program's input, written out: as [input], without a preset file.
+      if (key == "label" || key == "game_label") {
+        if (value.empty() || value.size() >= 32 ||
+            value.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -") != std::string_view::npos)
+          return bad("not a short name");
+      } else if (key == "mode") {
+        if (!OneOf(value, {"keyboard", "xinput"})) return bad("not keyboard or xinput");
+      } else if (key == "mouse") {
+        if (!OneOf(value, {"none", "left_stick", "right_stick"})) return bad("unknown pointer stick");
+      } else if (key == "mouse_speed") {
+        const long speed = IsDigits(value, 9) ? std::atol(std::string(value).c_str()) : 0;
+        if (speed < 1 || speed > 20000) return bad("not 1-20000");
+      } else if (std::find(std::begin(kButtons), std::end(kButtons), key) != std::end(kButtons)) {
+        if (!IsProsperoBinding(value)) return bad("not a key, mouse button or none");
+      } else {
+        return fail("unknown [launcher] key " + key);
       }
     } else if (section == "input") {
       if (key == "preset") {

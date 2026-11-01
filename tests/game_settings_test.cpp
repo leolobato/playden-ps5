@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     for (const auto& definition : SettingsCatalogue())
       if (definition.group != SettingGroup::kButtonMapping) ids.push_back(definition.id);
     const std::vector<std::string> expected = {
-        "launch_option", "program", "extra_arguments",
+        "launch_option", "program", "start_through_launcher", "launcher_controller_preset", "extra_arguments",
         "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
         "controller", "controller_preset",
@@ -227,7 +227,55 @@ int main(int argc, char** argv) {
                                &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("\nmouse_speed = 600\n") != std::string::npos && profile.text.find("\nmouse = ") == std::string::npos);
-  // Playden's table of preset rows matches the shipped input files.
+  // Starting through a launcher: only with the kit, written out, and refused when the kit can't read it.
+  {
+    KitCapabilities launcher_kit;
+    launcher_kit.launcher_mode = true;
+    KitCapabilities needs_update;
+    needs_update.launcher_mode_needs_update = true;
+    CHECK(!SettingShown(*FindSetting("start_through_launcher"), KitCapabilities{}));
+    CHECK(SettingShown(*FindSetting("start_through_launcher"), launcher_kit));
+    CHECK(SettingShown(*FindSetting("launcher_controller_preset"), needs_update));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "gamepad"}}, launcher_kit, &settings, &error));
+    CHECK(settings.values.at("start_through_launcher").value == "off");
+    CHECK(!settings.values.at("launcher_controller_preset").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[launcher]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"controller_preset", "gamepad"}, {"start_through_launcher", "on"}}, launcher_kit,
+                                 &settings, &error));
+    CHECK(settings.values.at("launcher_controller_preset").value == "mouse");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\npreset = gamepad\n") != std::string::npos);
+    CHECK(profile.text.find("\n[launcher]\nlabel = Mouse\ngame_label = Gamepad\nmode = keyboard\nmouse = left_stick\n"
+                            "mouse_speed = 900\ncross = mouse_left\ncircle = mouse_right\nsquare = mouse_middle\n") != std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"start_through_launcher", "on"}, {"launcher_controller_preset", "gamepad"}},
+                                 launcher_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[launcher]\nlabel = Gamepad\ngame_label = Game controls\nmode = xinput\nmouse = none\n") != std::string::npos);
+    // A title on an older runtime gets no section: its parser would refuse the profile.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"start_through_launcher", "on"}}, needs_update, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[launcher]") == std::string::npos);
+    // The section is only accepted when the renderer says so.
+    const std::string with_section = std::string(profile.text) + "\n[launcher]\nmode = keyboard\n";
+    std::string why;
+    CHECK(!CheckProsperoProfile(with_section, &why, {}));
+    ProsperoProfileFeatures launcher_features;
+    launcher_features.launcher_section = true;
+    const std::string bad_label = std::string("[application]\n") + "\n[launcher]\nlabel = a\"b\n";
+    CHECK(!CheckProsperoProfile(bad_label, &why, launcher_features));
+  }
+  // Playden's tables of preset rows and buttons match the shipped input files.
+  for (const auto& [name, buttons] : ControllerPresetButtons()) {
+    const auto file = ReadText(source / ("runtime/input/" + name + ".input"));
+    for (const auto& button : ProsperoButtons()) {
+      const auto line = "\n" + button + " = ";
+      const auto at = file.find(line);
+      const std::string in_file = at == std::string::npos ? "" : file.substr(at + line.size(), file.find('\n', at + line.size()) - at - line.size());
+      const auto row = buttons.find(button);
+      CHECK(in_file == (row == buttons.end() ? std::string() : row->second));
+    }
+  }
   for (const auto& [name, rows] : ControllerPresetInputs()) {
     const auto file = ReadText(source / ("runtime/input/" + name + ".input"));
     const std::map<std::string, std::string> keys = {{"controller", "mode"}, {"pointer_stick", "mouse"}, {"pointer_speed", "mouse_speed"}};

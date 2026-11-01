@@ -1538,7 +1538,7 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   if (!c.kit) return {};
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
-  return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen
+  return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen || kit.launcher_mode
              ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
              : kit;
 }
@@ -1866,17 +1866,24 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // keeps that profile until the next publication without one puts the saved settings back (RuntimeInstall::
   // setup_program), whatever their revision.
   const bool restoring = setup_program.empty() && !record.setup_program.empty();
+  // With launcher mode the game's own controls stay for the game the program starts, and the program gets the
+  // launcher preset.
+  const bool run_launcher_mode = !setup_program.empty() && TitleKit(c, record).launcher_mode;
   if (!setup_program.empty()) {
     auto& overrides = saved.overrides;
-    std::erase_if(overrides, [](const auto& entry) {
+    std::erase_if(overrides, [&](const auto& entry) {
       static const std::set<std::string> program = {"program", "architecture", "program_folder", "program_arguments",
                                                     "start_check"};
-      return program.count(entry.first) || entry.first.rfind("button.", 0) == 0;
+      return program.count(entry.first) || (!run_launcher_mode && entry.first.rfind("button.", 0) == 0);
     });
     overrides["launch_option"] = rt::kProgramEntryId;
     overrides["program"] = setup_program;
-    overrides["controller_preset"] = "mouse";
-    for (const auto& [id, value] : rt::ControllerPresetInputs().at("mouse")) overrides[id] = value;
+    if (run_launcher_mode) {
+      overrides["start_through_launcher"] = "on";
+    } else {
+      overrides["controller_preset"] = "mouse";
+      for (const auto& [id, value] : rt::ControllerPresetInputs().at("mouse")) overrides[id] = value;
+    }
   }
   // A game whose folder moved (RuntimeInstall::moved_from) is published again at its revision, so
   // its descriptor, profile and dxvk.conf name the new folder.
@@ -1912,14 +1919,15 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     if (!saved.overrides.count("graphics") && !recipe->locked.count("graphics") &&
         rt::ProgramDrawsWithOpenGLOnly(HostPath(record.install_path).string(), setup_program))
       run_recipe->graphics = "opengl";
-    std::erase_if(run_recipe->defaults, button);
-    std::erase_if(run_recipe->locked, [](const std::string& id) {
+    if (!run_launcher_mode) std::erase_if(run_recipe->defaults, button);
+    std::erase_if(run_recipe->locked, [&](const std::string& id) {
+      if (run_launcher_mode) return id == "launch_option" || id == "program" || id == "start_through_launcher";
       static const std::set<std::string> controls = {"launch_option", "program", "controller_preset", "controller",
                                                      "pointer_stick", "pointer_speed"};
       return controls.count(id) || id.rfind("button.", 0) == 0;
     });
     recipe = &*run_recipe;
-    if (preset) {
+    if (preset && !run_launcher_mode) {
       run_preset = *preset;
       std::erase_if(run_preset->settings, button);
       preset = &*run_preset;

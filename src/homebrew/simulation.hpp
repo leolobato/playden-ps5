@@ -792,6 +792,8 @@ struct State {
     // Empty: Steam default (Steam's order); kFastestDownloadServer: Fastest (raced at each download); otherwise
     // the chosen provider's stable identifier.
     std::string download_server;
+    bool hide_run_once_help = false;  // "Don't show again" on Run a program once's dialog
+    bool hide_launcher_help = false;  // ...and on the one for turning on Start through a launcher
     bool web_access = true;  // Settings › Web access: the logs page on the local network (on by default)
     bool controller_connected = true;
     ControllerState controller;
@@ -1487,6 +1489,8 @@ private:
     bool move_manage(int delta_x, int delta_y);
     // Asks the controller to uninstall a game; batch: from the Installed games list.
     void request_uninstall(GameId id, bool delete_saves, bool batch);
+    void start_setup_program();  // Run a program once: the program chosen, when the game is closed
+    bool launcher_mode_kit() const { return kit_.launcher_mode || kit_.launcher_mode_needs_update; }
     void end_uninstall(GameId id, const std::string& stopped);
     [[nodiscard]] const EndedUninstall* uninstall_stop(GameId id) const;
     [[nodiscard]] std::vector<std::string> collection_sheet_actions(const std::string& sheet) const;

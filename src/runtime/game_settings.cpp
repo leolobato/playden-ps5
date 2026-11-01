@@ -75,6 +75,16 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "[application] executable", G::kGame);
     list.push_back(std::move(program));
   }
+  list.push_back(Choice("start_through_launcher", "Start through a launcher",
+                        "Turn on if this program opens a launcher that starts the game.", "[launcher]", G::kGame,
+                        {{"off", "Off", ""}, {"on", "On", "Starts in launcher mode. Hold the touchpad in game to switch presets."}},
+                        "off"));
+  list.push_back(Choice("launcher_controller_preset", "Launcher controller preset",
+                        "Used until the game starts. Then the Controller preset takes over.", "[launcher] preset", G::kGame,
+                        {{"mouse", "Mouse", "Left stick moves the pointer; Cross clicks, Circle right-clicks, Options Enter."},
+                         {"gamepad", "Gamepad", "Xbox controller layout; no stick moves the pointer."},
+                         {"arrows", "Arrow keys", "D-pad sends the arrows; Cross Z, Circle X, Triangle C, Options Enter."}},
+                        "mouse"));
   list.push_back(Text("extra_arguments", "Extra arguments", "Added after the arguments the game needs.",
                       "[application] arguments", G::kGame));
   // Display.
@@ -545,6 +555,12 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if (id == "registry_dll_overrides") return "Needs a prospero-win update that lets Playden write more registry values.";
   // Wine reads WINE_CPU_TOPOLOGY from the [environment] section; [debug] env does not take WINE_ names.
   if (id == "cpu_topology" && !kit.environment) return "Needs a prospero-win update that reads [environment].";
+  if (id == "start_through_launcher" || id == "launcher_controller_preset") {
+    if (kit.launcher_mode_needs_update) return kAppliesAfterKitUpdate;
+    if (!kit.launcher_mode) return "Needs a runtime kit with launcher mode.";
+    if (id == "launcher_controller_preset" && values.at("start_through_launcher").value != "on")
+      return "Turn on Start through a launcher first.";
+  }
   if (id == "performance_overlay" && graphics == "gdi") return "Only available with DXVK or OpenGL.";
   // DXVK's overlay is drawn by its Direct3D 9-11 presenter, not by vkd3d-proton's swapchain. The Direct3D 12 row comes
   // later in the catalogue, so its value here is not checked yet: the same test it gets below.
@@ -590,6 +606,18 @@ const std::map<std::string, std::map<std::string, std::string>>& ControllerPrese
   return inputs;
 }
 
+const std::map<std::string, std::map<std::string, std::string>>& ControllerPresetButtons() {
+  // Mirrors the button lines of runtime/input/*.input (a host test compares them).
+  static const std::map<std::string, std::map<std::string, std::string>> buttons = {
+      {"arrows", {{"up", "up"}, {"down", "down"}, {"left", "left"}, {"right", "right"}, {"cross", "z"},
+                  {"circle", "x"}, {"triangle", "c"}, {"square", "shift"}, {"options", "enter"}}},
+      {"gamepad", {}},
+      {"mouse", {{"cross", "mouse_left"}, {"circle", "mouse_right"}, {"square", "mouse_middle"}, {"r2", "mouse_left"},
+                 {"l2", "mouse_right"}, {"options", "enter"}}},
+  };
+  return buttons;
+}
+
 const std::vector<std::string>& ProsperoButtons() {
   static const std::vector<std::string> buttons = {"cross", "circle", "square", "triangle", "l1",    "r1",
                                                    "l2",    "r2",     "l3",     "r3",       "up",    "down",
@@ -608,7 +636,10 @@ const SettingDefinition* FindSetting(std::string_view id) {
   return nullptr;
 }
 
-bool SettingShown(const SettingDefinition& definition, const KitCapabilities&) {
+bool SettingShown(const SettingDefinition& definition, const KitCapabilities& kit) {
+  if ((definition.id == "start_through_launcher" || definition.id == "launcher_controller_preset") &&
+      !kit.launcher_mode && !kit.launcher_mode_needs_update)
+    return false;
   return definition.id.rfind("button.", 0) != 0 && definition.id != "program" && definition.id != "library_overrides";
 }
 
@@ -1111,6 +1142,28 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     if (!binding.empty()) text += button + " = " + binding + "\n";
   }
 
+  // Starting through a launcher: the launcher's preset written out, since a title reads one preset file, and the
+  // names the title's notification shows.
+  const bool launcher_section = settings.values.at("start_through_launcher").available &&
+                                value("start_through_launcher") == "on" && settings.values.at("launcher_controller_preset").available;
+  if (launcher_section) {
+    const auto label = [](const char* id, const std::string& choice) {
+      for (const auto& option : FindSetting(id)->choices)
+        if (option.value == choice) return option.label;
+      return std::string();
+    };
+    const auto& launcher_preset = value("launcher_controller_preset");
+    const auto& rows = ControllerPresetInputs().at(launcher_preset);
+    text += "\n[launcher]\nlabel = " + label("launcher_controller_preset", launcher_preset) + "\n";
+    if (value("controller_preset") != "none") text += "game_label = " + label("controller_preset", value("controller_preset")) + "\n";
+    else text += "game_label = Game controls\n";
+    text += "mode = " + rows.at("controller") + "\nmouse = " + rows.at("pointer_stick") + "\n";
+    if (rows.count("pointer_speed")) text += "mouse_speed = " + rows.at("pointer_speed") + "\n";
+    const auto& buttons = ControllerPresetButtons().at(launcher_preset);
+    for (const auto& button : ProsperoButtons())
+      if (buttons.count(button)) text += button + " = " + buttons.at(button) + "\n";
+  }
+
   const bool audio_section = settings.values.at("volume").available && value("volume") != "100";
   if (audio_section) text += "\n[audio]\nvolume = " + value("volume") + "\n";
 
@@ -1208,6 +1261,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_frame_rate = frame_rate;
   features.display_framegen = display_framegen;
   features.runtime_version = settings.profile_version == 2;
+  features.launcher_section = launcher_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
   return true;
@@ -3105,7 +3159,7 @@ namespace playden::runtime {
 
 const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
-  static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFramegen, kKitInputRumble,
+  static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFramegen, kKitInputRumble, kKitLauncherMode,
                                                  kKitAudioVolume,  kKitDxvkConfig,      kKitDxvkPresent,
                                                  kKitInputTuning,  kKitInputWheel,      kKitEnvironment};
   return names;
@@ -3135,6 +3189,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);
   kit.display_framegen = has(kKitDisplayFramegen);
+  kit.launcher_mode = has(kKitLauncherMode);
   kit.registry = bottle_access;
   return kit;
 }
@@ -3155,6 +3210,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.display_framegen) {
     kit.display_framegen = false;
     kit.display_framegen_needs_update = true;
+  }
+  if (!title_runtime_current && kit.launcher_mode) {
+    kit.launcher_mode = false;
+    kit.launcher_mode_needs_update = true;
   }
   return kit;
 }

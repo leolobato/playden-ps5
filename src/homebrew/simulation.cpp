@@ -514,7 +514,7 @@ std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
         {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"ready-later", "Later"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"note", "Compatibility and note"}, {"verify", "Verify files"},
-        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"logs", "Open logs"}, {"logs-back", "Back"},
+        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
         {"log-launch", "Launch log"}, {"log-cloud", "Cloud saves log"}, {"logs-refresh", "Refresh"},
         {"cloud-sync", "Cloud saves"}, {"cloud-choose", "Cloud saves"}, {"cloud-use-cloud", "Use Cloud saves"},
@@ -2209,6 +2209,22 @@ std::vector<GameId> Simulation::TakeActivityRequests() {
     return requests;
 }
 
+void Simulation::start_setup_program() {
+    const auto id = state_.navigation.selected_game_id;
+    std::string refusal;
+    if (setup_program_choice_.empty() || !game_closed(id, &refusal)) {
+        if (!refusal.empty()) push_notice({"run-once-" + ToKey(id), "The program can't run now", "", false, kLiveNoticeSeconds, false, refusal});
+        return;
+    }
+    // Back to the game's page, where Play shows the start as it does the game's.
+    while (!state_.navigation.modals.empty()) close_modal();
+    if (auto previous = state_.runtime_games.find(id); previous != state_.runtime_games.end())
+        previous->second.play_detail.clear();
+    pending_runtime_play_requests_.push_back(id);
+    pending_runtime_setup_programs_[id] = setup_program_choice_;
+    state_.navigation.focus_key = "details-play";
+}
+
 void Simulation::request_uninstall(GameId id, bool delete_saves, bool batch) {
     pending_install_requests_.push_back({InstallRequestKind::Uninstall, id, {}, delete_saves});
     pending_uninstalls_.insert(id);
@@ -3729,7 +3745,7 @@ void Simulation::ApplyLiveDownloadServers(const LiveDownloadServers& snapshot) {
 playden::Preferences Simulation::ExportPreferences() const {
     return {state_.reduced_motion, state_.title_store_suffix, state_.cloud_saves_auto, state_.sign_in_password,
             state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
-            state_.web_access, state_.content_language};
+            state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -3961,6 +3977,8 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.web_access = loaded.preferences.web_access;
         state_.stay_signed_in = loaded.preferences.steam_stay_signed_in;
         state_.content_language = loaded.preferences.content_language;
+        state_.hide_run_once_help = loaded.preferences.hide_run_once_help;
+        state_.hide_launcher_help = loaded.preferences.hide_launcher_help;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
     }
@@ -4225,6 +4243,8 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.web_access != captured_preferences_.web_access ||
                                       after_preferences.beta_updates != captured_preferences_.beta_updates ||
                                       after_preferences.content_language != captured_preferences_.content_language ||
+                                      after_preferences.hide_run_once_help != captured_preferences_.hide_run_once_help ||
+                                      after_preferences.hide_launcher_help != captured_preferences_.hide_launcher_help ||
                                       after_preferences.steam_stay_signed_in != captured_preferences_.steam_stay_signed_in);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
@@ -4253,6 +4273,8 @@ bool Simulation::record_live_persistence() {
                 state_.web_access = captured_preferences_.web_access;
                 state_.stay_signed_in = captured_preferences_.steam_stay_signed_in;
                 state_.content_language = captured_preferences_.content_language;
+                state_.hide_run_once_help = captured_preferences_.hide_run_once_help;
+                state_.hide_launcher_help = captured_preferences_.hide_launcher_help;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -5393,8 +5415,9 @@ void Simulation::rebuild_view() {
                 inherited = base.values.at(modal.setting_id);
         }
         if (modal.id == "setup-programs")
-            view_.subtitle = "Pick a program from the game folder, such as its settings launcher. It runs one time with the "
-                             "Mouse preset; Play and Game settings stay as they are.";
+            view_.subtitle = launcher_mode_kit()
+                ? "Pick a program from the game folder, such as its launcher. It runs one time in launcher mode; Play and Game settings stay as they are."
+                : "Pick a program from the game folder, such as its settings launcher. It runs one time with the Mouse preset; Play and Game settings stay as they are.";
         if (modal.id == "game-settings" || modal.id == "game-maintenance") {
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
         } else if (!modal.setting_id.empty()) {
@@ -6137,6 +6160,10 @@ void Simulation::rebuild_view() {
                     item.value = std::to_string(leftover_selected_.size()) + (leftover_selected_.size() == 1 ? " title · " : " titles · ") +
                                  format_bytes(bytes);
             }
+            else if (action_key == "run-once-dont-show" || action_key == "launcher-help-dont-show") {
+                item.kind = RowKind::Toggle;
+                item.selected = action_key == "run-once-dont-show" ? state_.hide_run_once_help : state_.hide_launcher_help;
+            }
             else if (action_key == "uninstall-delete-saves") {
                 item.kind = RowKind::Toggle;
                 item.dangerous = false;
@@ -6161,6 +6188,7 @@ void Simulation::rebuild_view() {
                 const auto runtime_game = state_.runtime_games.find(state_.navigation.selected_game_id);
                 const bool checking = runtime_game != state_.runtime_games.end() &&
                                       runtime_game->second.activity == TitleActivity::Unknown;
+                if (launcher_mode_kit()) item.subtitle = "Starts it in launcher mode.";
                 if (live() && !checking && !game_closed(state_.navigation.selected_game_id, &refusal)) {
                     item.enabled = false;
                     item.value = "Game running";
@@ -9460,26 +9488,37 @@ void Simulation::activate() {
         setup_program_choice_ = setup->second.programs[index].path;
         const auto slash = setup_program_choice_.find_last_of('/');
         const auto name = slash == std::string::npos ? setup_program_choice_ : setup_program_choice_.substr(slash + 1);
+        if (launcher_mode_kit() && state_.hide_run_once_help) {
+            start_setup_program();
+            return;
+        }
         ModalEntry confirm{"confirmation", "Run " + name + " once?", state_.navigation.focus_key, {"cancel", "run-once-start"}, 1, false};
         // The dialog shows about five lines.
         confirm.body = setup_program_choice_ + " starts instead of the game, once, with the Mouse preset: the left stick "
                        "moves the pointer and Cross clicks.\n\n"
-                       "Its own Play button can't start the game here. Change the settings, close it, then press Play.";
-        open_modal(std::move(confirm));
-    } else if (live() && action_name == "run-once-start") {
-        const auto id = state_.navigation.selected_game_id;
-        std::string refusal;
-        if (setup_program_choice_.empty() || !game_closed(id, &refusal)) {
-            if (!refusal.empty()) push_notice({"run-once-" + ToKey(id), "The program can't run now", "", false, kLiveNoticeSeconds, false, refusal});
-            return;
+                       "Its own Play button closes it and starts the game. If that does not work, change the settings, close it, then press Play.";
+        if (launcher_mode_kit()) {
+            confirm.action_keys = {"cancel", "run-once-dont-show", "run-once-start"};
+            confirm.focused_action = 2;
+            rt::EffectiveSettings values;
+            const bool settings = EffectiveSettingsFor(state_.navigation.selected_game_id, &values);
+            const std::string preset = settings && values.values["launcher_controller_preset"].value != "mouse" ? "the game's launcher preset"
+                                                                                                                : "the Mouse preset: the left stick moves the pointer and Cross clicks";
+            confirm.body = "It starts in launcher mode, with " + preset + ". Its own Play button closes it and starts the game, "
+                           "which then uses your Controller preset.\n\nHold the touchpad for 2 seconds to switch between the two.";
         }
-        // Back to the game's page, where Play shows the start as it does the game's.
-        while (!state_.navigation.modals.empty()) close_modal();
-        if (auto previous = state_.runtime_games.find(id); previous != state_.runtime_games.end())
-            previous->second.play_detail.clear();
-        pending_runtime_play_requests_.push_back(id);
-        pending_runtime_setup_programs_[id] = setup_program_choice_;
-        state_.navigation.focus_key = "details-play";
+        open_modal(std::move(confirm));
+    } else if (action_name == "run-once-dont-show") {
+        state_.hide_run_once_help = !state_.hide_run_once_help;
+    } else if (action_name == "launcher-help-dont-show") {
+        state_.hide_launcher_help = !state_.hide_launcher_help;
+    } else if (action_name == "launcher-help-on") {
+        close_modal();  // this dialog
+        close_modal();  // the setting's choices
+        set_game_setting("start_through_launcher", "on");
+        refresh_game_settings(); save_profile();
+    } else if (live() && action_name == "run-once-start") {
+        start_setup_program();
     } else if (action_name == "game-move") {
         const auto game = state_.navigation.selected_game_id;
         if (move_blocker(game, {}).empty() && move_volumes().size() >= 2) open_move_picker(game);
@@ -9654,6 +9693,16 @@ void Simulation::activate() {
             // A launch option replaces a program the player picked from the game folder.
             if (launch) {
                 forget_program_choices(&state_.game_settings[state_.navigation.selected_game_id].overrides);
+            }
+            // Turning this on explains it first, over the choices, until the player says not to.
+            if (id == "start_through_launcher" && definition->choices[index].value == "on" && !state_.hide_launcher_help) {
+                ModalEntry help{"confirmation", "Start through a launcher", state_.navigation.focus_key,
+                                {"cancel", "launcher-help-dont-show", "launcher-help-on"}, 2, false};
+                help.body = "For a program that opens a launcher window, which starts the game. The launcher uses the Launcher controller "
+                            "preset, and the game your Controller preset. Hold the touchpad for 2 seconds to switch.\n\n"
+                            "Leave this off for other games: one that starts helper programs could restart or close.";
+                open_modal(std::move(help));
+                return;
             }
             set_game_setting(id, launch ? recipe.launch_entries[index].id : definition->choices[index].value);
         }
@@ -10727,6 +10776,10 @@ std::vector<std::string> Simulation::game_settings_actions() const {
 
 // Whether the sheet lists a setting's row: Known problems only for a game that has one.
 bool Simulation::game_settings_row_shown(const rt::SettingDefinition& definition, GameId game) const {
+    if (definition.id == "launcher_controller_preset") {
+        rt::EffectiveSettings values;
+        if (!EffectiveSettingsFor(game, &values) || values.values["start_through_launcher"].value != "on") return false;
+    }
     return rt::SettingShown(definition, kit_) && (definition.id != "start_check" || known_problem(game));
 }
 

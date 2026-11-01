@@ -749,6 +749,28 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     activate(model, "details-play");
     check(model.TakeRuntimePlayRequests().size() == 2 && model.TakeRuntimeSetupPrograms().empty(),
           "setup program: Play replaces the program's run");
+
+    // With launcher mode: the dialog says so and offers Don't show again, which then starts the program directly.
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"launcher-mode"}, true));
+    activate(model, "details-more");
+    check(find_row(model, "run-once")->subtitle == "Starts it in launcher mode.", "launcher mode: its row says so");
+    activate(model, "run-once");
+    activate(model, "setup-program-0");
+    check(model.state().navigation.modals.back().body.find("launcher mode") != std::string::npos &&
+              find_row(model, "run-once-dont-show") && !find_row(model, "run-once-dont-show")->selected,
+          "launcher mode: the dialog explains it");
+    (void)model.TakeRuntimePlayRequests();
+    (void)model.TakeRuntimeSetupPrograms();
+    activate(model, "run-once-dont-show");
+    check(find_row(model, "run-once-dont-show")->selected && model.ExportPreferences().hide_run_once_help &&
+              !model.ExportPreferences().hide_launcher_help,
+          "launcher mode: Don't show again is this dialog's own");
+    check(model.TakeRuntimePlayRequests().empty(), "launcher mode: the choice starts nothing");
+    activate(model, "cancel");
+    activate(model, "setup-program-0");
+    check(model.state().navigation.modals.empty() && model.TakeRuntimePlayRequests() == std::vector<playden::GameId>{SteamId(35140)} &&
+              model.TakeRuntimeSetupPrograms() == std::map<GameId, std::string>{{SteamId(35140), "Binaries/BmLauncher.exe"}},
+          "launcher mode: with it set, picking a program starts it");
 }
 
 void live_download_telemetry() {

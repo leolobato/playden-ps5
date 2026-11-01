@@ -76,6 +76,8 @@ struct KitCapabilities {
   // [display] framegen = off|2|3|4 (frame generation in libvulkan.prx). Counts only for a title that runs this kit's
   // runtime, like display_120hz.
   bool display_framegen = false;
+  bool launcher_mode = false;  // [launcher]: the game starts through a launcher (kKitLauncherMode)
+  bool launcher_mode_needs_update = false;  // the kit has it, but the game's title still runs an older runtime
   bool display_framegen_needs_update = false;
 };
 
@@ -109,6 +111,7 @@ bool SettingShown(const SettingDefinition& definition, const KitCapabilities& ki
 // The 17 controller buttons prospero-win binds, as setting ids "button.<name>".
 // The rows a controller preset sets, by preset id: setting id → value.
 const std::map<std::string, std::map<std::string, std::string>>& ControllerPresetInputs();
+const std::map<std::string, std::map<std::string, std::string>>& ControllerPresetButtons();
 const std::vector<std::string>& ProsperoButtons();
 
 struct LaunchEntry {
@@ -561,6 +564,9 @@ inline constexpr const char* kKitInputRumble = "input-rumble";
 // The title reads [display] framegen = off|2|3|4: the kit's libvulkan.prx shows that many pictures for each frame a
 // Vulkan-presenting game (DXVK, Zink) draws, made by MihawkGen. Runtimes without it refuse a profile with framegen.
 inline constexpr const char* kKitDisplayFramegen = "display-framegen";
+// The title reads [launcher]: the exec chain only for a game that asks for it, a second input for the first
+// program, and the touchpad hold that swaps them. Runtimes without it refuse a profile with the section.
+inline constexpr const char* kKitLauncherMode = "launcher-mode";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the
