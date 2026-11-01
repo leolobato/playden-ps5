@@ -49,9 +49,13 @@ std::string StoreBrowseItemsUrl(const std::vector<std::uint32_t>& apps);
 
 // Names for tag ids, from IStoreService/GetTagList. Unknown ids are absent.
 std::map<std::uint32_t, std::string> ParseStoreTagList(std::string_view body);
-// Items in response order. Tag names come from `tags`; a missing dictionary leaves tags_known false.
-std::vector<StoreBrowseItem> ParseStoreBrowseItems(std::string_view body,
-                                                   const std::map<std::uint32_t, std::string>& tags);
+// Items in response order, or nothing when the body is not a GetItems response.
+// Tag names come from `tags`; a missing dictionary leaves tags_known false.
+std::optional<std::vector<StoreBrowseItem>> ParseStoreBrowseItems(std::string_view body,
+                                                                  const std::map<std::uint32_t, std::string>& tags);
+
+// A GetItems batch is larger than one appdetails page. The browse fetch may use this many bytes.
+constexpr std::size_t kStoreBrowseResponseBytes = 8u * 1024u * 1024u;
 
 // Fetches store browse data in batches. The game on screen is the next batch's first app.
 // A record younger than kStoreBrowseTtlSeconds is answered from the local file and sends nothing.
@@ -81,10 +85,12 @@ class StoreBrowseService {
   void Shutdown();
 
   static constexpr std::size_t kMaxPending = 256;
-  static constexpr std::size_t kBatch = 50;
+  static constexpr std::size_t kBatch = 20;
 
  private:
   void Run();
+  // Stores a parsed batch. A missing body is split in half and fetched again, down to one app.
+  void FetchItems(const std::vector<std::uint32_t>& batch, const std::map<std::uint32_t, std::string>& tag_names);
   void EnsureLoaded();
   void SaveLocked(std::unique_lock<std::mutex>& lock);
   std::uint64_t Now() const;

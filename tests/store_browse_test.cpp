@@ -4,6 +4,7 @@
 #include "platform/storage.h"
 #include "steam/store_browse_service.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -67,22 +68,25 @@ void ParsedFixtureNamesShotsAndTrailer() {
   const auto tags = ParseStoreTagList(kTags);
   CHECK(tags.at(21) == "Adventure" && tags.at(4182) == "Singleplayer");
   const auto items = ParseStoreBrowseItems(kItems, tags);
-  CHECK(items.size() == 1 && items[0].app == 620 && items[0].tags_known);
-  CHECK(items[0].tags.size() == 2 && items[0].tags[0] == "Adventure" && items[0].tags[1] == "Singleplayer");
-  CHECK(items[0].screenshots.size() == 2);
-  CHECK(items[0].screenshots[0] ==
+  CHECK(items && items->size() == 1 && (*items)[0].app == 620 && (*items)[0].tags_known);
+  CHECK((*items)[0].tags.size() == 2 && (*items)[0].tags[0] == "Adventure" && (*items)[0].tags[1] == "Singleplayer");
+  CHECK((*items)[0].screenshots.size() == 2);
+  CHECK((*items)[0].screenshots[0] ==
         "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/ss_one.jpg?t=1");
-  CHECK(items[0].trailer_thumbnail ==
+  CHECK((*items)[0].trailer_thumbnail ==
         "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/5787/movie.293x165.jpg?t=5");
-  CHECK(items[0].trailer_url ==
+  CHECK((*items)[0].trailer_url ==
         "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/3746/clip.mp4?t=5");
-  CHECK(items[0].description_known && items[0].description == "A puzzle-platformer.");
-  CHECK(items[0].controller_support == "full");
-  CHECK(!items[0].genres_known);
+  CHECK((*items)[0].description_known && (*items)[0].description == "A puzzle-platformer.");
+  CHECK((*items)[0].controller_support == "full");
+  CHECK(!(*items)[0].genres_known);
   const char* partial = R"({"response":{"store_items":[{"appid":1,"categories":{"controller_categoryids":[18]}}]}})";
   const auto partial_items = ParseStoreBrowseItems(partial, tags);
-  CHECK(partial_items.size() == 1 && partial_items[0].controller_support == "partial" && !partial_items[0].description_known);
-  CHECK(ParseStoreBrowseItems(kItems, {}).size() == 1 && !ParseStoreBrowseItems(kItems, {})[0].tags_known);
+  CHECK(partial_items && partial_items->size() == 1 && (*partial_items)[0].controller_support == "partial" &&
+        !(*partial_items)[0].description_known);
+  const auto unnamed = ParseStoreBrowseItems(kItems, {});
+  CHECK(unnamed && unnamed->size() == 1 && !(*unnamed)[0].tags_known);
+  CHECK(!ParseStoreBrowseItems("not json", tags));
 }
 
 struct Script {
@@ -266,7 +270,103 @@ void TwentyTagsAreKept() {
   item += "]}]}}";
   const auto names = ParseStoreTagList(tags);
   const auto items = ParseStoreBrowseItems(item, names);
-  CHECK(items.size() == 1 && items[0].tags.size() == 20 && items[0].tags.back() == "Tag20");
+  CHECK(items && items->size() == 1 && (*items)[0].tags.size() == 20 && (*items)[0].tags.back() == "Tag20");
+}
+
+bool AppInUrl(const std::string& url, const char* id) {
+  return url.find(std::string("appid%22%3A") + id + "%7D") != std::string::npos;
+}
+
+void AFailedBatchSplitsAndAnOmittedAppIsStored() {
+  const auto root = std::filesystem::temp_directory_path() / "playden-store-browse-chunks";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  playden::Storage storage(root.string());
+  CHECK(storage.EnsureRootDirectory().ok());
+  std::mutex mutex;
+  std::vector<std::string> items;
+  std::atomic<int> calls{0};
+  std::atomic<bool> hold_tags{true};
+  std::atomic<bool> tags_seen{false};
+  const auto now = std::make_shared<std::atomic<std::uint64_t>>(1700000000);
+  {
+    StoreBrowseService service(
+        [&](const std::string& url, const std::atomic<bool>& cancel) -> std::optional<std::string> {
+          if (url.find("GetTagList") != std::string::npos) {
+            tags_seen = true;
+            while (hold_tags.load() && !cancel.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return std::string(kTags);
+          }
+          if (url.find("GetItems") == std::string::npos) return std::nullopt;
+          ++calls;
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            items.push_back(url);
+          }
+          if (AppInUrl(url, "31") && AppInUrl(url, "32")) return std::nullopt;
+          if (AppInUrl(url, "41") && AppInUrl(url, "42"))
+            return std::string(R"({"response":{"store_items":[{"appid":41,"tags":[{"tagid":21}]}]}})");
+          if (AppInUrl(url, "31")) return std::string(R"({"response":{"store_items":[{"appid":31,"tags":[{"tagid":21}]}]}})");
+          if (AppInUrl(url, "32")) return std::string(R"({"response":{"store_items":[{"appid":32,"tags":[{"tagid":21}]}]}})");
+          return ItemsFor(url);
+        },
+        std::chrono::milliseconds(0));
+    service.SetStorage(&storage);
+    service.SetNow([now] { return now->load(); });
+    service.Request(GameId::Steam(11));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!tags_seen.load() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(tags_seen.load());
+    service.Request(GameId::Steam(31));
+    service.Request(GameId::Steam(32));
+    service.Request(GameId::Steam(41));
+    service.Request(GameId::Steam(42));
+    hold_tags = false;
+    std::vector<StoreBrowseItem> got;
+    const auto results_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < results_deadline) {
+      for (auto& item : service.Pump(8)) got.push_back(std::move(item));
+      if (std::any_of(got.begin(), got.end(), [](const StoreBrowseItem& item) { return item.app == 42; })) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto find_app = [&](std::uint32_t app) {
+      return std::find_if(got.begin(), got.end(), [app](const StoreBrowseItem& item) { return item.app == app; });
+    };
+    const auto app31 = find_app(31);
+    const auto app32 = find_app(32);
+    const auto app42 = find_app(42);
+    CHECK(app31 != got.end() && app31->tags_known && app31->tags.size() == 1 && app31->tags[0] == "Adventure");
+    CHECK(app32 != got.end() && app32->tags_known && app32->tags.size() == 1);
+    CHECK(app42 != got.end() && app42->tags_known && app42->tags.empty());
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto both = std::find_if(items.begin(), items.end(), [](const std::string& url) {
+      return AppInUrl(url, "31") && AppInUrl(url, "32");
+    });
+    CHECK(both != items.end());
+    const auto alone = std::find_if(both + 1, items.end(), [](const std::string& url) {
+      return AppInUrl(url, "31") && !AppInUrl(url, "32");
+    });
+    CHECK(alone != items.end());
+  }
+  const int before = calls.load();
+  {
+    StoreBrowseService service(
+        [&](const std::string& url, const std::atomic<bool>&) -> std::optional<std::string> {
+          if (url.find("GetTagList") != std::string::npos) return std::string(kTags);
+          if (url.find("GetItems") == std::string::npos) return std::nullopt;
+          ++calls;
+          return ItemsFor(url);
+        },
+        std::chrono::milliseconds(0));
+    service.SetStorage(&storage);
+    service.SetNow([now] { return now->load(); });
+    service.Request(GameId::Steam(42));
+    const auto got = WaitResults(service, 1);
+    CHECK(got[0].app == 42 && got[0].tags_known && got[0].tags.empty());
+    CHECK(calls.load() == before);
+  }
+  std::filesystem::remove_all(root);
 }
 
 int main() {
@@ -274,6 +374,7 @@ int main() {
   OpenGameIsNextAndAFreshFileSendsNothing();
   VersionOneStaysFreshUntilGenresArePatched();
   TwentyTagsAreKept();
+  AFailedBatchSplitsAndAnOmittedAppIsStored();
   std::puts("store browse tests passed");
   return 0;
 }

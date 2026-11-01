@@ -969,7 +969,8 @@ int main() {
         if (!web_probe_on) services.SetWebAccess(&web);
         services.SetLocalLibrary(local_library);
         playden::steam::StoreDetailsService store_details(playden::homebrew::StoreFetch(paths.trust_store));
-        playden::steam::StoreBrowseService store_browse(playden::homebrew::StoreFetch(paths.trust_store));
+        playden::steam::StoreBrowseService store_browse(
+            playden::homebrew::StoreFetch(paths.trust_store, playden::steam::kStoreBrowseResponseBytes));
         store_browse.SetStorage(&library_storage);
         services.SetStoreDetails(&store_details);
         services.SetStoreBrowse(&store_browse);

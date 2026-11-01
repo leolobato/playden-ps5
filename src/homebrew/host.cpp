@@ -816,7 +816,8 @@ int main(int argc, char** argv) {
                                                                        " moved=" + (moved.ok() ? "1" : "0"));
         });
         store_details = std::make_unique<playden::steam::StoreDetailsService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
-        store_browse = std::make_unique<playden::steam::StoreBrowseService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
+        store_browse = std::make_unique<playden::steam::StoreBrowseService>(
+            playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE, playden::steam::kStoreBrowseResponseBytes));
         store_browse->SetStorage(library_storage.get());
         services->SetStoreDetails(store_details.get());
         services->SetStoreBrowse(store_browse.get());

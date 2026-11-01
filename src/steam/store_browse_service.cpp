@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <utility>
 
 namespace playden::steam {
@@ -325,14 +326,14 @@ std::map<std::uint32_t, std::string> ParseStoreTagList(std::string_view body) {
   return names;
 }
 
-std::vector<StoreBrowseItem> ParseStoreBrowseItems(std::string_view body,
-                                                   const std::map<std::uint32_t, std::string>& tags) {
-  const auto root = json::Parse(body, {4 * 1024 * 1024, 12, 200000, 64 * 1024});
-  if (!root || !root->is_object()) return {};
+std::optional<std::vector<StoreBrowseItem>> ParseStoreBrowseItems(std::string_view body,
+                                                                  const std::map<std::uint32_t, std::string>& tags) {
+  const auto root = json::Parse(body, {kStoreBrowseResponseBytes, 12, 200000, 64 * 1024});
+  if (!root || !root->is_object()) return std::nullopt;
   const auto* response = ObjectField(*root, "response");
-  if (!response) return {};
+  if (!response) return std::nullopt;
   const auto* items = ArrayField(*response, "store_items");
-  if (!items) return {};
+  if (!items) return std::nullopt;
   std::vector<StoreBrowseItem> parsed;
   for (const auto& item : items->array()) {
     const auto* app = item.Find("appid");
@@ -558,6 +559,53 @@ void StoreBrowseService::Shutdown() {
   if (worker_.joinable()) worker_.join();
 }
 
+void StoreBrowseService::FetchItems(const std::vector<std::uint32_t>& batch,
+                                    const std::map<std::uint32_t, std::string>& tag_names) {
+  if (batch.empty() || cancel_.load()) return;
+  std::optional<std::vector<StoreBrowseItem>> parsed;
+  if (fetch_) {
+    if (auto body = fetch_(StoreBrowseItemsUrl(batch), cancel_)) parsed = ParseStoreBrowseItems(*body, tag_names);
+  }
+  if (!parsed) {
+    if (batch.size() == 1) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      requested_.erase(GameId::Steam(batch[0]));
+      return;
+    }
+    const auto mid = batch.size() / 2;
+    FetchItems(std::vector<std::uint32_t>(batch.begin(), batch.begin() + static_cast<std::ptrdiff_t>(mid)), tag_names);
+    FetchItems(std::vector<std::uint32_t>(batch.begin() + static_cast<std::ptrdiff_t>(mid), batch.end()), tag_names);
+    return;
+  }
+  const auto now = Now();
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (stopping_) return;
+  std::map<std::uint32_t, StoreBrowseItem> by_app;
+  for (auto& item : *parsed) by_app.emplace(item.app, std::move(item));
+  for (const auto app : batch) {
+    StoreBrowseItem incoming;
+    if (const auto found = by_app.find(app); found != by_app.end()) incoming = std::move(found->second);
+    else {
+      incoming.app = app;
+      incoming.tags_known = true;
+    }
+    incoming.fetched_at = now;
+    if (const auto old = cached_.find(app); old != cached_.end()) {
+      if (!incoming.description_known) {
+        incoming.description = old->second.description;
+        incoming.description_known = old->second.description_known;
+      }
+      if (incoming.controller_support.empty()) incoming.controller_support = old->second.controller_support;
+      if (!incoming.genres_known) {
+        incoming.genres = old->second.genres;
+        incoming.genres_known = old->second.genres_known;
+      }
+    }
+    if (incoming.tags_known) cached_[app] = incoming;
+    results_.push_back(std::move(incoming));
+  }
+}
+
 void StoreBrowseService::Run() {
   for (;;) {
     std::vector<std::uint32_t> batch;
@@ -596,35 +644,10 @@ void StoreBrowseService::Run() {
         }
       }
     }
-    std::vector<StoreBrowseItem> parsed;
-    if (fetch_) {
-      if (auto body = fetch_(StoreBrowseItemsUrl(batch), cancel_)) parsed = ParseStoreBrowseItems(*body, tag_names);
-    }
-    const auto now = Now();
+    FetchItems(batch, tag_names);
     {
       std::unique_lock<std::mutex> lock(mutex_);
       if (stopping_) return;
-      std::map<std::uint32_t, StoreBrowseItem> by_app;
-      for (auto& item : parsed) by_app.emplace(item.app, std::move(item));
-      for (const auto app : batch) {
-        auto found = by_app.find(app);
-        if (found == by_app.end()) continue;
-        auto& incoming = found->second;
-        incoming.fetched_at = now;
-        if (const auto old = cached_.find(app); old != cached_.end()) {
-          if (!incoming.description_known) {
-            incoming.description = old->second.description;
-            incoming.description_known = old->second.description_known;
-          }
-          if (incoming.controller_support.empty()) incoming.controller_support = old->second.controller_support;
-          if (!incoming.genres_known) {
-            incoming.genres = old->second.genres;
-            incoming.genres_known = old->second.genres_known;
-          }
-        }
-        if (incoming.tags_known) cached_[app] = incoming;
-        results_.push_back(incoming);
-      }
       if (tags_fresh) SaveLocked(lock);
     }
     if (pause_.count() > 0 && !stopping_) {
