@@ -92,6 +92,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [DuckTales: Remastered](https://store.steampowered.com/app/237630) | ✅ Works | 0.13 | — · D3D9 · 32-bit | Default settings. ([#183](https://github.com/leolobato/playden-ps5/pull/183), firmware 13.00) |
 | [DUSK](https://store.steampowered.com/app/519860) | ✅ Works | 0.10 | Unity · D3D11 · 64-bit | Menus with the left stick and Cross; the first level plays. |
 | [Dying Light](https://store.steampowered.com/app/239140) | ✅ Works | 0.16 | — | Default settings, offline. ([#336](https://github.com/leolobato/playden-ps5/issues/336), firmware 13.60) |
+| End of Abyss | ✅ Works | 0.17 | — | Default settings, DualSense. (firmware 9.60) |
 | [ENSLAVED: Odyssey to the West Premium Edition](https://store.steampowered.com/app/245280) | ✅ Works | 0.10 | Unreal 3 · D3D9 · 32-bit | Main menu and New Journey with the controller. |
 | [Enter the Gungeon](https://store.steampowered.com/app/311690) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#363](https://github.com/leolobato/playden-ps5/pull/363)) |
 | [Euro Truck Simulator 2](https://store.steampowered.com/app/227300) | ✅ Works | 0.10 | — | Default settings, DualSense. Smooth at 1080p with maximum graphics. ([#66](https://github.com/leolobato/playden-ps5/issues/66), firmware 10.20) |
