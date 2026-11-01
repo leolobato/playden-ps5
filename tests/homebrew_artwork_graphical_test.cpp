@@ -1,5 +1,6 @@
 #include "homebrew/artwork.hpp"
 #include "homebrew/program_icon.hpp"
+#include "homebrew/title_icon.hpp"
 #include "homebrew/render.hpp"
 #include "homebrew/simulation.hpp"
 #include "gfx/gl_program.hpp"
@@ -19,14 +20,14 @@ struct Backend final : ArtworkBackend {
     std::optional<ArtworkImage> Load(const ArtworkKey& key, const std::atomic<bool>& cancel) override {
         while (!release && !cancel) std::this_thread::sleep_for(1ms);
         if (cancel) return std::nullopt;
-        // The program's icon: a 32x32 orange disc on a transparent ground.
+        // The program's icon, a 32x32 orange disc on a transparent ground, as the poster the real backend makes.
         if (ProgramIconPath(key.source)) {
             ArtworkImage icon{32,32,std::vector<std::uint8_t>(32*32*4,0)};
             for (int y=0;y<32;++y) for (int x=0;x<32;++x)
                 if ((x-16)*(x-16)+(y-16)*(y-16)<15*15) {
                     auto* p=&icon.rgba[(y*32+x)*4]; p[0]=240; p[1]=140; p[2]=30; p[3]=255;
                 }
-            return icon;
+            return ProgramIconArt(icon,kProgramIconPosterWidth,kProgramIconPosterHeight);
         }
         if (key.game_id == SteamId(44)) return std::nullopt;
         ArtworkImage result{64,96,{}};

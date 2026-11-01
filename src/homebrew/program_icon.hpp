@@ -30,7 +30,8 @@ inline std::string ProgramIconSource(const std::string& console_path) {
 std::optional<std::string> ProgramIconPath(const std::string& source);
 
 // Loads program-icon sources from the game's files (a console path under `host_prefix` on the desktop
-// build) and passes every other source to `next`. Both outlive it.
+// build), as a 2:3 poster made from the icon (homebrew/title_icon.hpp ProgramIconArt), and passes every
+// other source to `next`. Both outlive it.
 class ProgramIconArtworkBackend final : public ArtworkBackend {
  public:
   ProgramIconArtworkBackend(ArtworkBackend& next, std::string host_prefix = "");

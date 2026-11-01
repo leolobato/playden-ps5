@@ -254,28 +254,86 @@ int main() {
   const std::atomic<bool> cancel{false};
   const playden::GameId game = playden::GameId::Steam(10);
   icon = backend.Load({1, game, ProgramIconSource("/Game/Bands.exe")}, cancel);
-  CHECK(icon && icon->width == 4 && next.asked.empty());
+  CHECK(icon && icon->width == kProgramIconPosterWidth && icon->height == kProgramIconPosterHeight && next.asked.empty());
   CHECK(!backend.Load({1, game, ProgramIconSource("/Game/Missing.exe")}, cancel) && next.asked.empty());
   icon = backend.Load({1, game, "https://cdn.cloudflare.steamstatic.com/steam/apps/10/library_600x900.jpg"}, cancel);
   CHECK(icon && icon->width == 1 && next.asked.size() == 1);
 
-  // The tile: the icon two thirds of the side, centred on the dark ground; transparency shows the ground.
-  ArtworkImage half{2, 2, {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255}};
-  auto tile = ProgramIconTile(half, 300);
-  CHECK(tile && tile->width == 300 && tile->height == 300);
-  CHECK(Pixel(*tile, 0, 0)[0] == 0x24 && Pixel(*tile, 0, 0)[3] == 255);
-  CHECK(Pixel(*tile, 150, 150)[0] == 255 && Pixel(*tile, 150, 150)[1] == 0);
-  CHECK(Pixel(*tile, 40, 150)[0] == 0x24);  // outside the 200-pixel box
+  // Program icon art: a large opaque icon fills the top square; the part below it is darker.
+  const auto solid = [](std::uint32_t side, std::uint8_t alpha) {
+    ArtworkImage image{side, side, {}};
+    for (std::uint32_t i = 0; i < side * side; ++i) image.rgba.insert(image.rgba.end(), {255, 0, 0, alpha});
+    return image;
+  };
+  const ArtworkImage large = solid(kSmallProgramIconSide, 255);
+  CHECK(ProgramIconIsOpaque(large) && !ProgramIconIsOpaque(solid(8, 200)));
+  auto art = ProgramIconArt(large, 320, 480);
+  CHECK(art && art->width == 320 && art->height == 480 && art->rgba.size() == 320u * 480 * 4);
+  CHECK(Pixel(*art, 2, 2)[0] == 255 && Pixel(*art, 160, 160)[0] == 255 && Pixel(*art, 317, 317)[0] == 255);
+  CHECK(Pixel(*art, 160, 330)[0] < 170 && Pixel(*art, 160, 478)[0] < Pixel(*art, 160, 330)[0]);
+  CHECK(Pixel(*art, 160, 400)[1] == 0 && Pixel(*art, 160, 400)[3] == 255);
+  // A small one, or a see-through one, sits in the middle of the square over the darker backdrop.
+  for (const auto& centred : {solid(kSmallProgramIconSide - 1, 255), solid(kSmallProgramIconSide, 100)}) {
+    art = ProgramIconArt(centred, 300, 300);
+    CHECK(art && art->height == 300);
+    CHECK(Pixel(*art, 4, 4)[0] < 200 && Pixel(*art, 150, 150)[0] > Pixel(*art, 4, 4)[0]);
+  }
+  CHECK(Pixel(*ProgramIconArt(solid(kSmallProgramIconSide - 1, 255), 300, 300), 150, 150)[0] == 255);
+  // A stand-in for the generic floppy: plain grey.
+  ArtworkImage floppy{256, 256, std::vector<std::uint8_t>(256u * 256 * 4, 100)};
+  for (std::size_t i = 3; i < floppy.rgba.size(); i += 4) floppy.rgba[i] = 255;
+  // Opaque means at least 99% of the pixels at alpha 224 or more.
+  CHECK(ProgramIconIsOpaque(solid(10, 224)) && !ProgramIconIsOpaque(solid(10, 223)));
+  ArtworkImage gaps = solid(10, 255);
+  gaps.rgba[3] = 0;  // 1 in 100
+  CHECK(ProgramIconIsOpaque(gaps));
+  gaps.rgba[7] = 0;  // 2 in 100
+  CHECK(!ProgramIconIsOpaque(gaps));
+  // 128 pixels fill the square; 127 do not. A wide icon fits its width; a wide image keeps the square centred.
+  CHECK(Pixel(*ProgramIconArt(solid(128, 255), 300, 300), 2, 2)[0] == 255);
+  CHECK(Pixel(*ProgramIconArt(solid(127, 255), 300, 300), 2, 2)[0] < 255);
+  ArtworkImage wide{256, 128, {}};
+  for (std::uint32_t i = 0; i < 256u * 128; ++i) wide.rgba.insert(wide.rgba.end(), {255, 0, 0, 255});
+  art = ProgramIconArt(wide, 320, 480);
+  CHECK(art && Pixel(*art, 2, 160)[0] == 255 && Pixel(*art, 160, 10)[0] < 255);
+  art = ProgramIconArt(solid(128, 255), 480, 320);
+  CHECK(art && Pixel(*art, 240, 160)[0] == 255 && Pixel(*art, 4, 160)[0] < 255);
+  for (const auto& [w, h] : {std::pair<std::uint32_t, std::uint32_t>{1, 1}, {1, 480}, {480, 1}})
+    CHECK(ProgramIconArt(solid(128, 255), w, h) && ProgramIconArt(solid(16, 100), w, h));
+  // A thin opaque icon still gets rounded corners within its own size.
+  for (const auto& [w, h] : {std::pair<std::uint32_t, std::uint32_t>{1, 127}, {127, 1}}) {
+    ArtworkImage thin{w, h, {}};
+    for (std::uint32_t i = 0; i < w * h; ++i) thin.rgba.insert(thin.rgba.end(), {255, 0, 0, 255});
+    CHECK(ProgramIconArt(thin, 320, 480) && ProgramIconArt(thin, 480, 320) && MakeProgramTitleIcon(thin, &floppy));
+  }
   ArtworkImage clear{1, 1, {255, 255, 255, 0}};
-  tile = ProgramIconTile(clear, 30);
-  CHECK(tile && Pixel(*tile, 15, 15)[0] == 0x24);
-  CHECK(!ProgramIconTile(ArtworkImage{}, 30) && !ProgramIconTile(half, 0));
-  const auto png = MakeProgramTitleIcon(half);
-  int width = 0, height = 0, components = 0;
-  auto* pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(png->data()), static_cast<int>(png->size()),
-                                       &width, &height, &components, 3);
-  CHECK(pixels && width == 512 && height == 512 && pixels[0] == 0x24 && pixels[(256 * 512 + 256) * 3] == 255);
-  stbi_image_free(pixels);
+  art = ProgramIconArt(clear, 30, 30);  // nothing but the dark ground
+  CHECK(art && Pixel(*art, 15, 15)[0] < 0x24);
+  CHECK(!ProgramIconArt(ArtworkImage{}, 30, 30) && !ProgramIconArt(large, 0, 30) && !ProgramIconArt(large, 30, kMaxArtworkDimension + 1));
+
+  // The PS5 title icon: the art at 512, or a small icon on the floppy's label.
+  const auto decode = [](const std::optional<std::string>& png, int x, int y) {
+    std::vector<std::uint8_t> rgb;
+    int width = 0, height = 0, components = 0;
+    if (!png) return rgb;
+    auto* pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(png->data()), static_cast<int>(png->size()),
+                                         &width, &height, &components, 3);
+    if (pixels && width == 512 && height == 512) rgb.assign(pixels + (y * 512 + x) * 3, pixels + (y * 512 + x) * 3 + 3);
+    stbi_image_free(pixels);
+    return rgb;
+  };
+  auto at = decode(MakeProgramTitleIcon(large, &floppy), 4, 4);
+  CHECK(at.size() == 3 && at[0] == 255 && at[1] == 0);
+  const ArtworkImage small = solid(16, 255);
+  at = decode(MakeProgramTitleIcon(small, &floppy), 4, 4);
+  CHECK(at.size() == 3 && at[0] == 100 && at[1] == 100);  // the floppy itself
+  at = decode(MakeProgramTitleIcon(small, &floppy), 255, 338);
+  CHECK(at.size() == 3 && at[0] == 255 && at[1] == 0);  // the middle of its label
+  at = decode(MakeProgramTitleIcon(small), 255, 255);  // no floppy: the art
+  CHECK(at.size() == 3 && at[0] == 255);
+  at = decode(MakeProgramTitleIcon(small), 4, 4);
+  CHECK(at.size() == 3 && at[0] < 200);
+  CHECK(!MakeProgramTitleIcon(ArtworkImage{}, &floppy));
 
   fs::remove_all(root);
   std::puts("program icon tests passed");

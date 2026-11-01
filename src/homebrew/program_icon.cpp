@@ -4,6 +4,7 @@
 #include "homebrew/program_icon.hpp"
 
 #include "homebrew/artwork_backend.hpp"
+#include "homebrew/title_icon.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -324,7 +325,9 @@ std::optional<ArtworkImage> ProgramIconArtworkBackend::Load(const ArtworkKey& ke
   const auto path = ProgramIconPath(key.source);
   if (!path) return next_.Load(key, cancel);
   if (cancel.load(std::memory_order_acquire)) return std::nullopt;
-  return ReadProgramIcon(host_prefix_ + *path);
+  // The library shows a poster made from the icon, shaped like the store's covers.
+  const auto icon = ReadProgramIcon(host_prefix_ + *path);
+  return icon ? ProgramIconArt(*icon, kProgramIconPosterWidth, kProgramIconPosterHeight) : std::nullopt;
 }
 
 }  // namespace playden::homebrew
