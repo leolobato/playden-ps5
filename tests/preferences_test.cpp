@@ -186,10 +186,10 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   Check(store.Save(preferences).ok(), "sign-in method preference saves");
   const auto saved = storage.Read("preferences.conf");
   Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()) ==
-                          "version=10\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
+                          "version=11\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
                           "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
-                          "content_language=english\n",
-        "version 10 format includes Automatic download server, web access and English");
+                          "content_language=english\ndefault_kit=latest\n",
+        "version 11 format includes Automatic download server, web access, English and Latest");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
             loaded.preferences.cloud_saves_auto,
@@ -345,8 +345,8 @@ void OlderPreferencesUseAutomaticDownloadServer() {
           "migration retains old fields and defaults later fields");
     Check(store.Save(loaded.preferences).ok(), "migrated preferences save");
     const auto saved = storage.Read("preferences.conf");
-    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=10\n", 0) == 0,
-          "saving a migrated file writes version 10");
+    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=11\n", 0) == 0,
+          "saving a migrated file writes version 11");
     Check(loaded.preferences.web_access, "every older preference version has web access on");
     Check(loaded.preferences.content_language == "english", "every older preference version downloads English");
   }
@@ -491,6 +491,27 @@ void ContentLanguagePersistsAndOlderVersionsStayEnglish() {
   Check(english.status == playden::PreferencesLoadStatus::kLoaded && english.preferences.content_language == "english" &&
             !english.preferences.beta_updates,
         "an unknown game language is saved as English and cannot inject a preference");
+  preferences.default_kit = "0.17";
+  Check(store.Save(preferences).ok() && store.Load().preferences.default_kit == "0.17",
+        "a kit version survives restart");
+  preferences.default_kit = "not-a-kit";
+  Check(store.Save(preferences).ok() && store.Load().preferences.default_kit == "latest",
+        "a kit pin this build does not understand is saved as latest");
+  const std::string version_ten =
+      "version=10\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\nsteam_sign_in_password=0\n"
+      "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
+      "content_language=german\n";
+  Check(storage.WriteAtomic("preferences.conf", playden::Bytes(version_ten.begin(), version_ten.end())).ok(),
+        "version 10 fixture is written");
+  const auto from_ten = store.Load();
+  Check(from_ten.status == playden::PreferencesLoadStatus::kLoaded && from_ten.preferences.content_language == "german" &&
+            from_ten.preferences.default_kit == "latest",
+        "version 10 preferences load with Latest");
+  const std::string version_eleven = version_ten.substr(0, version_ten.size() - 1).replace(0, 10, "version=11") +
+                                      "\ndefault_kit=nope\n";
+  Check(storage.WriteAtomic("preferences.conf", playden::Bytes(version_eleven.begin(), version_eleven.end())).ok(),
+        "version 11 fixture is written");
+  Check(store.Load().preferences.default_kit == "latest", "an unknown kit pin loads as Latest");
   const std::string ten =
       "version=10\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\nsteam_sign_in_password=0\n"
       "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n";

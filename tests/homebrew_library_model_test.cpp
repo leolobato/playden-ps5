@@ -2425,22 +2425,130 @@ void live_store_tag_filter_from_details() {
     check(model.UpdateStoreTags(SteamId(43), {"Adventure"}), "second game tagged");
     check(model.action("r1") && model.action("details:42"), "details open");
     check(has_row(model, "detail-tag-0"), "details lists store tags");
+    check(model.action("down") && model.state().navigation.focus_key == "detail-tag-0",
+          "Down from the actions focuses the first tag chip");
+    check(model.action("right") && model.state().navigation.focus_key == "detail-tag-1",
+          "Right moves to the next tag chip");
+    check(model.action("up") && model.state().navigation.focus_key == "details-favorite",
+          "Up from a tag chip returns to the action that opened them");
     activate(model, "detail-tag-0");
-    check(model.state().library.tag_filter == "Roguelike" && model.state().navigation.route == Route::Library,
+    check(model.state().library.tag_filters == std::set<std::string>{"Roguelike"} &&
+              model.state().navigation.route == Route::Library,
           "choosing a tag filters the library");
     const auto visible = model.visible_games();
     check(visible.size() == 1 && visible.front()->id == SteamId(42), "only matching games remain");
+    check(model.action("details:42") && model.action("focus:detail-tag-1") && model.action("cross"),
+          "a second chip adds its tag");
+    check(model.state().library.tag_filters == std::set<std::string>{"Adventure", "Roguelike"} &&
+              model.visible_games().size() == 1,
+          "a second tag keeps only the game that has both");
+    check(model.view().subtitle.find("Roguelike") == std::string::npos,
+          "the library subtitle leaves the ticked tags to the chips");
+    check(model.action("up") && model.state().navigation.focus_key == "selected-tag-0",
+          "Up from the top posters focuses a ticked tag");
+    check(model.action("down") && model.state().navigation.focus_key.rfind("game-", 0) == 0,
+          "Down from a ticked tag returns to the poster");
     check(model.action("triangle"), "filter modal opens with an active tag");
+    activate(model, "library-tags");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "library-tags",
+          "the tag checklist opens");
+    const auto titled = [](const Simulation& simulation, const char* title) {
+        return std::any_of(simulation.view().rows.begin(), simulation.view().rows.end(),
+                           [&](const playden::homebrew::ViewRow& row) { return row.title == title; });
+    };
+    model.text("g");
+    check(titled(model, "Roguelike") && !titled(model, "Adventure"),
+          "typing on the tag sheet narrows the list");
+    check(model.action("square") && titled(model, "Adventure") && titled(model, "Roguelike"),
+          "Backspace brings the hidden tag back");
+    check(model.action("up") && model.state().navigation.focus_key == "selected-tag-0" && model.action("cross"),
+          "Cross on a ticked-tag chip removes it");
+    check(model.state().navigation.modals.back().id == "library-tags" &&
+              model.state().library.tag_filters == std::set<std::string>{"Roguelike"},
+          "removing a chip leaves the sheet open");
+    check(model.action("circle") && model.action("triangle"), "Sort and filters opens again");
     check(std::find(model.state().navigation.modals.back().action_keys.begin(),
                     model.state().navigation.modals.back().action_keys.end(),
                     "filter-tag-clear") != model.state().navigation.modals.back().action_keys.end(),
           "active tag can be cleared from Sort and filters");
     activate(model, "filter-tag-clear");
-    check(model.state().library.tag_filter.empty() && model.visible_games().size() == 2, "clearing tag filter restores the library");
+    check(model.state().library.tag_filters.empty() && model.visible_games().size() == 2,
+          "clearing tag filter restores the library");
     auto organization = model.ExportOrganization();
-    organization.tag_filter = "Adventure";
+    organization.tag_filters = {"Adventure"};
     check(model.ApplyOrganization(1, model.BeginOrganizationLoad(1), organization), "saved tag filter applies");
     check(model.visible_games().size() == 2, "Adventure tag matches both games");
+}
+
+void r3_opens_the_tag_sheet_from_a_poster() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Alpha"), game(SteamId(43), "Beta")}, false, {}, false, false, {}}),
+          "r3: library loaded");
+    check(model.action("r1") && model.action("r3") && model.state().navigation.modals.empty(),
+          "r3 does nothing before any tag is known");
+    check(model.UpdateStoreTags(SteamId(42), {"Roguelike", "Adventure"}), "r3: first game tagged");
+    check(model.UpdateStoreTags(SteamId(43), {"Adventure"}), "r3: second game tagged");
+    auto organization = model.ExportOrganization();
+    organization.tag_filters = {"Adventure", "Roguelike"};
+    check(model.ApplyOrganization(1, model.BeginOrganizationLoad(1), organization), "r3: both tags are ticked");
+    const auto poster = model.state().navigation.focus_key;
+    check(poster.rfind("game-", 0) == 0, "r3 starts from a poster");
+    check(std::find(model.view().legends.begin(), model.view().legends.end(), "R3 Tags") != model.view().legends.end(),
+          "the library footer names R3");
+    check(model.action("r3") && !model.state().navigation.modals.empty() &&
+              model.state().navigation.modals.back().id == "library-tags" &&
+              model.state().navigation.focus_key == "selected-tag-0",
+          "r3 opens the tag sheet on a selected chip");
+    model.text("g");
+    const auto titled = [](const Simulation& simulation, const char* title) {
+        return std::any_of(simulation.view().rows.begin(), simulation.view().rows.end(),
+                           [&](const playden::homebrew::ViewRow& row) { return row.title == title; });
+    };
+    check(titled(model, "Roguelike") && !titled(model, "Adventure"), "typing on the sheet opened by r3 narrows the list");
+    check(model.action("r3") && model.state().navigation.modals.empty() && model.state().navigation.focus_key == poster,
+          "r3 again returns to the same poster");
+}
+
+void live_detail_genres_open_and_more_tags_list_the_rest() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Alpha"), game(SteamId(43), "Beta")}, false, {}, false, false, {}}),
+          "genre chips: library loaded");
+    model.UpdateStoreDetails(SteamId(42), "A synthetic game.", {"Action", "Adventure"}, {}, "full");
+    check(model.UpdateStoreTags(SteamId(42), {"Roguelike", "Exploration", "Story Rich", "Indie", "Atmospheric",
+                                              "Fantasy", "Open World", "Pixel Graphics"}),
+          "more tags than the page shows");
+    check(model.UpdateStoreTags(SteamId(43), {"Indie"}), "the other game has one tag");
+    check(model.action("r1") && model.action("details:42"), "details open on the tagged game");
+    const auto title_of = [&](const char* key) {
+        for (const auto& row : model.view().rows)
+            if (row.key == key) return row.title;
+        return std::string{};
+    };
+    check(model.action("down") && model.state().navigation.focus_key == "detail-tag-0" &&
+              title_of("detail-tag-0") == "Action",
+          "Action is a tag chip");
+    check(model.action("right") && title_of("detail-tag-1") == "Adventure", "Adventure is the next chip");
+    check(title_of("detail-tags-more") == "+4", "tags that do not fit are a +N chip");
+    check(model.action("left") && model.action("cross") && model.state().navigation.route == Route::Library &&
+              model.state().library.tag_filters == std::set<std::string>{"Action"} &&
+              model.visible_games().size() == 1 && model.visible_games().front()->id == SteamId(42),
+          "Cross on Action filters by that genre");
+    check(model.action("details:42") && model.action("focus:detail-tags-more") && model.action("cross"),
+          "+N opens the full tag list");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "game-tags",
+          "the game's tags stay open");
+    const auto listed = [&](const char* title) {
+        return std::any_of(model.view().rows.begin(), model.view().rows.end(),
+                           [&](const playden::homebrew::ViewRow& row) { return row.title == title; });
+    };
+    check(listed("Action") && listed("Pixel Graphics"), "the list has the genre and a tag that was not on the page");
+    activate(model, "game-tag-6");
+    check(model.state().navigation.route == Route::Library &&
+              model.state().library.tag_filters == std::set<std::string>{"Action", "Atmospheric"} &&
+              model.visible_games().size() == 1,
+          "Cross on a listed tag adds it");
 }
 
 void live_store_details_fill_the_description() {
@@ -4118,6 +4226,8 @@ int main() {
     live_queued_setup_names_the_game_ahead();
     live_store_details_fill_the_description();
     live_store_tag_filter_from_details();
+    r3_opens_the_tag_sheet_from_a_poster();
+    live_detail_genres_open_and_more_tags_list_the_rest();
     live_ready_to_play_quits_to_home();
     live_ready_prompt_matches_the_open_game();
     live_details_focus_moves_to_play_once_enabled();

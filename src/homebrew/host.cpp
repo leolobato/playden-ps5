@@ -38,6 +38,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -272,6 +273,7 @@ const char* keyboard_action(const SDL_KeyboardEvent& event, bool editing) {
     case SDLK_s:
     case SDLK_SLASH: return "search";
     case SDLK_o: return "options";
+    case SDLK_r: return "r3";
     default: return nullptr;
     }
 }
@@ -285,9 +287,11 @@ void text_key_event(playden::homebrew::Simulation& simulation, const SDL_Event& 
         } else if (const char* action = keyboard_action(event.key, simulation.state().editor.active)) {
             const bool was_editing = simulation.state().editor.active;
             simulation.action(action);
-            suppress_initiating_text = !was_editing && simulation.state().editor.active &&
-                                      event.key.keysym.sym >= SDLK_SPACE &&
-                                      event.key.keysym.sym <= SDLK_z;
+            // R is the tag sheet. The letter that follows the key must not land in the find string.
+            suppress_initiating_text = std::strcmp(action, "r3") == 0 ||
+                                      (!was_editing && simulation.state().editor.active &&
+                                       event.key.keysym.sym >= SDLK_SPACE &&
+                                       event.key.keysym.sym <= SDLK_z);
         }
     } else if (event.type == SDL_KEYUP) {
         suppress_initiating_text = false;
@@ -300,6 +304,53 @@ void text_key_event(playden::homebrew::Simulation& simulation, const SDL_Event& 
 std::uint8_t axis_byte(Sint16 value) {
     return static_cast<std::uint8_t>(
         (static_cast<std::int32_t>(value) + 32768) * 255 / 65535);
+}
+
+// GameController.framework reports a pad that was already plugged in only after
+// the Cocoa run loop has turned, which SDL_Init has not done yet.
+void pump_for_game_controllers(bool wait) {
+    for (int attempt = 0; attempt < (wait ? 20 : 1); ++attempt) {
+        SDL_PumpEvents();
+        if (SDL_NumJoysticks() > 0) return;
+        if (wait) SDL_Delay(10);
+    }
+}
+
+SDL_GameController* open_game_controller(int index) {
+    if (index < 0 || index >= SDL_NumJoysticks() || !SDL_IsGameController(index)) return nullptr;
+    SDL_GameController* opened = SDL_GameControllerOpen(index);
+    if (!opened) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            const char* name = SDL_JoystickNameForIndex(index);
+            std::fprintf(stderr, "could not open game controller%s%s: %s\n",
+                         name ? " " : "", name ? name : "", SDL_GetError());
+        }
+    }
+    return opened;
+}
+
+void log_unmapped_joysticks() {
+    static bool logged = false;
+    if (logged) return;
+    const int count = SDL_NumJoysticks();
+    if (count <= 0) return;
+    for (int index = 0; index < count; ++index)
+        if (SDL_IsGameController(index)) return;
+    logged = true;
+    for (int index = 0; index < count; ++index) {
+        const char* name = SDL_JoystickNameForIndex(index);
+        std::fprintf(stderr, "joystick is not a game controller: %s\n", name ? name : "unknown");
+    }
+}
+
+SDL_GameController* open_attached_game_controller() {
+    SDL_GameController* controller = nullptr;
+    for (int index = 0; index < SDL_NumJoysticks() && !controller; ++index)
+        if (SDL_IsGameController(index)) controller = open_game_controller(index);
+    if (!controller) log_unmapped_joysticks();
+    return controller;
 }
 
 hui::PadSample controller_sample(SDL_GameController* controller, std::uint64_t now_us) {
@@ -351,6 +402,7 @@ const char* action_name(hui::Action action) {
     case hui::Action::jump_next: return "r2";
     case hui::Action::menu: return "options";
     case hui::Action::touch: return "search";
+    case hui::Action::r3: return "r3";
     default: return nullptr;
     }
 }
@@ -473,7 +525,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::LocalSessionRepository> cloud_sessions;
     std::unique_ptr<playden::steam::CloudService> cloud;
     std::unique_ptr<playden::steam::StoreDetailsService> store_details;  // declared first: the controller uses it
-    std::unique_ptr<playden::steam::StoreTagsService> store_tags;
+    std::unique_ptr<playden::steam::StoreBrowseService> store_browse;
     std::unique_ptr<playden::stores::Registry> stores;  // declared first: the controller uses it
     std::unique_ptr<playden::homebrew::Controller> services;
     std::unique_ptr<playden::homebrew::HttpArtworkBackend> artwork_backend;
@@ -486,6 +538,12 @@ int main(int argc, char** argv) {
     if (options->recording.empty() && !apply_replay(simulation, options->replay)) return 2;
 
     SDL_SetHint(SDL_HINT_VIDEO_HIGHDPI_DISABLED, "1");
+    // Apple's GameController framework is what sees a DualSense or Xbox pad on
+    // current macOS. HIDAPI alone does not replace it.
+    SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "1");
+    // HIDAPI's Switch driver refuses to open a Pro Controller when it cannot
+    // read stick calibration, and then no other driver gets the pad.
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "0");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL initialization failed: %s\n", SDL_GetError());
         return 1;
@@ -556,6 +614,7 @@ int main(int argc, char** argv) {
         cm_client->SetSharedSession(steam_cm);
         library_backend = std::make_unique<playden::steam::EntitledLibraryBackend>(*owned_library, *cm_client);
         library_backend->SetLicensedDepots(&licensed_depots);
+        playden::steam::RestoreLicensedDepots(*library_storage, licensed_depots);
         library_backend->SetAppNameStorage(library_storage.get());
         // Family sharing diagnostics.
         library_backend->SetFamilyDiagnostics(PLAYDEN_HOMEBREW_CA_BUNDLE, [log_directory](const std::string& line) {
@@ -738,6 +797,7 @@ int main(int argc, char** argv) {
         services = std::make_unique<playden::homebrew::Controller>(simulation, *stores, persistence.get(), installs.get(),
                                                                    cloud.get(), nullptr, auth_log);
         services->SetLocalLibrary(local);
+        services->SetLicensedDepots(&licensed_depots);
         services->SetDownloadServers(servers.get());
         {
             // Web access on the Mac: the same page over the host's logs folder, on 127.0.0.1's network too.
@@ -756,9 +816,10 @@ int main(int argc, char** argv) {
                                                                        " moved=" + (moved.ok() ? "1" : "0"));
         });
         store_details = std::make_unique<playden::steam::StoreDetailsService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
-        store_tags = std::make_unique<playden::steam::StoreTagsService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
+        store_browse = std::make_unique<playden::steam::StoreBrowseService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
+        store_browse->SetStorage(library_storage.get());
         services->SetStoreDetails(store_details.get());
-        services->SetStoreTags(store_tags.get());
+        services->SetStoreBrowse(store_browse.get());
         services->SetLibraryCache(library_cache.get());
     }
 
@@ -801,9 +862,8 @@ int main(int argc, char** argv) {
         }
     }
     SDL_StartTextInput();
-    SDL_GameController* controller = nullptr;
-    for (int index = 0; index < SDL_NumJoysticks() && !controller; ++index)
-        if (SDL_IsGameController(index)) controller = SDL_GameControllerOpen(index);
+    pump_for_game_controllers(!options->headless);
+    SDL_GameController* controller = open_attached_game_controller();
     hui::InputTracker controller_input;
     hui::InputTracker keyboard_input;
     std::uint32_t keyboard_buttons = 0;
@@ -830,7 +890,9 @@ int main(int argc, char** argv) {
                 keyboard_buttons &= ~navigation_bit(event.key.keysym.sym);
                 text_key_event(simulation, event, suppress_initiating_text);
             } else if (event.type == SDL_CONTROLLERDEVICEADDED && !controller) {
-                controller = SDL_GameControllerOpen(event.cdevice.which);
+                controller = open_game_controller(event.cdevice.which);
+            } else if (event.type == SDL_JOYDEVICEADDED && !controller) {
+                log_unmapped_joysticks();
             } else if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller &&
                        SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) ==
                            event.cdevice.which) {

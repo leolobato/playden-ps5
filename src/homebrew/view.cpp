@@ -1473,12 +1473,55 @@ class Render::Impl
         return scroll.step(frame_dt_, reduced_motion);
     }
 
+    // Ticked tags. Returns the height of the chip rows, including none when there are no tags.
+    float draw_tag_chips(gfx::DrawList &list, float x, float y, float max_x, const std::set<std::string> &tags,
+                         const std::string &focus_key, bool show_focus)
+    {
+        if (tags.empty())
+            return 0.0F;
+        float row_y = y;
+        float tag_x = x;
+        float bottom = y;
+        std::size_t index = 0;
+        for (const std::string &tag : tags)
+        {
+            const float width = fonts_.semibold.measure(tag, 20.0F) + 32.0F;
+            if (tag_x > x && tag_x + width > max_x)
+            {
+                tag_x = x;
+                row_y += 54.0F;
+            }
+            const std::string key = SelectedTagKey(index);
+            const bool focused = show_focus && focus_key == key;
+            if (focused)
+                stats_.focused_control_key = key;
+            const float amount = control_focus(key, focused);
+            const gfx::Rect chip{tag_x, row_y, width, 42.0F};
+            focus_glow(list, chip, amount, true);
+            list.rounded_rect(chip, 6.0F, kAccent.with_alpha(0.55F));
+            ui::text(list, fonts_.semibold, tag, tag_x + 16.0F, row_y + 28.0F, 20.0F, kText);
+            focus_ring(list, chip, amount, true);
+            tag_x += width + 16.0F;
+            bottom = row_y + 42.0F;
+            ++index;
+        }
+        return bottom - y;
+    }
+
     void draw_library(ui::Canvas &canvas, Simulation &simulation)
     {
         const State &state = simulation.state();
         const ViewData &view = simulation.route_view();
         const auto games = simulation.visible_games();
         draw_library_rail(view, state);
+        std::size_t chip_index = 0;
+        const bool chip_focused = SelectedTagIndex(state.navigation.focus_key, chip_index);
+        const bool show_chips = route_focus_ && !state.navigation.library_rail_focused;
+        const float chip_band = state.library.tag_filters.empty()
+                                    ? 0.0F
+                                    : draw_tag_chips(scene_, 417.0F, 123.0F, 1851.0F, state.library.tag_filters,
+                                                     state.navigation.focus_key, show_chips) +
+                                          16.0F;
 
         if (games.empty())
         {
@@ -1495,7 +1538,8 @@ class Render::Impl
 
         visible_grid_games_ = games;
         grid_.style.reduced_motion = state.reduced_motion;
-        const bool grid_active = route_focus_ && !state.navigation.library_rail_focused;
+        grid_.set_bounds({417.0F, 123.0F + chip_band, 1434.0F, 903.0F - chip_band});
+        const bool grid_active = route_focus_ && !state.navigation.library_rail_focused && !chip_focused;
         grid_.style.theme.focus = grid_active ? kAccent : kAccent.with_alpha(0.0F);
         grid_.set_count(static_cast<int>(games.size()));
         int grid_focus = std::clamp(state.navigation.selected_index, 0,
@@ -1515,7 +1559,9 @@ class Render::Impl
                               float /*focus*/) {
             ++stats_.grid_drawn_cell_count;
             const Game &game = *visible_grid_games_[static_cast<std::size_t>(index)];
+            std::size_t chip = 0;
             const bool focused = route_focus_ && !current_state_->navigation.library_rail_focused &&
+                                 !SelectedTagIndex(current_state_->navigation.focus_key, chip) &&
                                  game.id == grid_focused_game_;
             draw_poster(game, cell, focused, job_progress(game.id), true,
                         "library-" + ToKey(game.id));
@@ -3182,6 +3228,9 @@ class Render::Impl
         {
             if (row.kind != RowKind::Action && row.kind != RowKind::Toggle)
                 continue;
+            // Store tags are the chips under the description, not buttons beside Play.
+            if (DetailChipKey(row.key))
+                continue;
             const bool primary = row.key == "details-install" || row.key == "details-play" ||
                                  row.key == "details-download";
             const bool favorite = row.key == "details-favorite";
@@ -3352,29 +3401,57 @@ class Render::Impl
         }
         if (game != nullptr && y + 42.0F <= column_bottom)
         {
-            float tag_x = kSafeX;
-            for (std::size_t index = 0; index < game->genres.size() && index < 4; ++index)
-            {
-                const std::string &genre = game->genres[index];
-                const float width = fonts_.semibold.measure(genre, 20.0F) + 32.0F;
-                if (tag_x + width > kSafeX + 1128.0F)
-                    break;
-                scene_.rounded_rect({tag_x, y, width, 42.0F}, 6.0F, kText.with_alpha(0.1F));
-                ui::text(scene_, fonts_.semibold, genre, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
-                tag_x += width + 12.0F;
+            std::vector<std::string> media;
+            if (!game->store_trailer_thumbnail.empty()) media.push_back(game->store_trailer_thumbnail);
+            for (const std::string &shot : game->store_screenshots) {
+                if (media.size() >= 4) break;
+                media.push_back(shot);
             }
-            if (game->store_tags_known)
+            const bool has_chips = std::any_of(view.rows.begin(), view.rows.end(),
+                                                [](const ViewRow &row) { return DetailChipKey(row.key); });
+            // Keep a band for the chips when the shots would push them off the page.
+            if (!media.empty() && y + 128.0F + (has_chips ? 108.0F : 0.0F) <= column_bottom)
             {
-                for (std::size_t index = 0; index < game->store_tags.size() && index < 8; ++index)
+                float media_x = kSafeX;
+                for (const std::string &url : media)
                 {
-                    const std::string &tag = game->store_tags[index];
-                    const float width = fonts_.semibold.measure(tag, 20.0F) + 32.0F;
-                    if (tag_x + width > kSafeX + 1128.0F)
-                        break;
-                    scene_.rounded_rect({tag_x, y, width, 42.0F}, 6.0F, kAccent.with_alpha(0.18F));
-                    ui::text(scene_, fonts_.semibold, tag, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
-                    tag_x += width + 12.0F;
+                    const gfx::Rect frame{media_x, y, 248.0F, 116.0F};
+                    const std::uint32_t texture = store_texture(game->id, url);
+                    if (texture != 0)
+                        scene_.image(texture, frame, gfx::kFullUv, kText, 6.0F);
+                    else
+                        scene_.rounded_rect(frame, 6.0F, kText.with_alpha(0.08F));
+                    media_x += 260.0F;
                 }
+                y += 128.0F;
+            }
+            float tag_x = kSafeX;
+            for (const ViewRow &row : view.rows)
+            {
+                if (!DetailChipKey(row.key))
+                    continue;
+                const float width = fonts_.semibold.measure(row.title, 20.0F) + 32.0F;
+                if (tag_x + width > kSafeX + 1128.0F)
+                {
+                    tag_x = kSafeX;
+                    y += 54.0F;
+                    if (y + 42.0F > column_bottom)
+                        break;
+                }
+                const bool focused = view.focused_row >= 0 &&
+                                     static_cast<std::size_t>(view.focused_row) < view.rows.size() &&
+                                     view.rows[static_cast<std::size_t>(view.focused_row)].key == row.key;
+                if (focused && route_focus_)
+                    stats_.focused_control_key = row.key;
+                const float amount = control_focus(row.key, focused && route_focus_);
+                const gfx::Rect chip{tag_x, y, width, 42.0F};
+                const bool more = row.key == "detail-tags-more";
+                focus_glow(scene_, chip, amount, true);
+                scene_.rounded_rect(chip, 6.0F, more ? kText.with_alpha(0.12F)
+                                                     : row.selected ? kAccent.with_alpha(0.55F) : kAccent.with_alpha(0.18F));
+                ui::text(scene_, fonts_.semibold, row.title, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
+                focus_ring(scene_, chip, amount, true);
+                tag_x += width + 16.0F;
             }
         }
 
@@ -3599,14 +3676,14 @@ class Render::Impl
             if (modal.destructive || modal.id == "confirmation")
                 draw_modal_overlay(modal, view);
             else
-                draw_sheet_overlay(view);
+                draw_sheet_overlay(view, state);
             return;
         }
         if (view.surface != "home" && view.surface != "library" && view.surface != "downloads" &&
             view.surface != "settings" && view.surface != "details" && view.surface != "qr" &&
             view.surface != "startup" && view.surface != "session" && view.surface != "saves" &&
             view.surface != "save-details" && view.surface != "manage-games")
-            draw_sheet_overlay(view);
+            draw_sheet_overlay(view, state);
 
         // Live notifications wait behind dialogs (they also stop counting down there).
         const bool hide_transient = !state.simulation_mode &&
@@ -3837,7 +3914,7 @@ class Render::Impl
         draw_overlay_rows(view, {panel.x + 40.0F, y, panel.w - 80.0F, 120.0F}, false);
     }
 
-    void draw_sheet_overlay(const ViewData &view)
+    void draw_sheet_overlay(const ViewData &view, const State &state)
     {
         const float ease = overlay_transition_.enter();
         overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F,
@@ -3883,9 +3960,17 @@ class Render::Impl
             draw_log_overlay(view, {panel.x + 40.0F, 246.0F, panel.w - 80.0F, 710.0F});
         else if (view.surface == "controller")
             draw_controller_overlay(view, {panel.x + 40.0F, 236.0F, panel.w - 80.0F, 720.0F});
-        else
-            draw_overlay_rows(view, {panel.x + 40.0F, (view.surface == "install" ? 414.0F : 292.0F) + drop,
-                                     panel.w - 80.0F, (view.surface == "install" ? 528.0F : 650.0F) - drop});
+        else {
+            float list_y = (view.surface == "install" ? 414.0F : 292.0F) + drop;
+            float list_h = (view.surface == "install" ? 528.0F : 650.0F) - drop;
+            if (view.surface == "library-tags" && !state.library.tag_filters.empty()) {
+                const float chips = draw_tag_chips(overlay_, panel.x + 48.0F, list_y, panel.x + panel.w - 48.0F,
+                                                   state.library.tag_filters, state.navigation.focus_key, true);
+                list_y += chips + 16.0F;
+                list_h -= chips + 16.0F;
+            }
+            draw_overlay_rows(view, {panel.x + 40.0F, list_y, panel.w - 80.0F, list_h});
+        }
         if (view.comparison)
             draw_preset_comparison(*view.comparison, {72.0F, 150.0F, panel.x - 144.0F, 760.0F}, ease);
         overlay_.pop_opacity();

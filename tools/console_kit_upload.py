@@ -63,6 +63,22 @@ def kit_folder(path):
     return kits[0]
 
 
+def parked_folder(remote_parent, kit_id, manifest):
+    """Where a replaced kit is kept, named by its version, or None when it has none."""
+    runtime = manifest.get("runtime") if isinstance(manifest, dict) else None
+    artifact = runtime.get("artifact_revision") if isinstance(runtime, dict) else None
+    if not isinstance(artifact, str):
+        return None
+    marker = "-kit-"
+    at = artifact.find(marker)
+    if at < 0:
+        return None
+    version = artifact[at + len(marker):]
+    if not version or version.startswith(".") or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._" for c in version):
+        return None
+    return f"{remote_parent}/{kit_id}-{version}"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kit", type=Path, help="the kit folder, or the unzipped playden-kit-<version> folder")
@@ -151,22 +167,32 @@ def main():
             print("  " + problem, file=sys.stderr)
         return 2
     if kit_id in parent:
-        # Named after the kit being moved aside, so the name says which kit it holds.
+        # Named by the kit's version when it has one, so a game pinned to that version can keep it.
+        # A kit with no version, or a copy of that version already parked, moves aside as before.
+        previous = io.BytesIO()
+        parked = None
         try:
-            previous = io.BytesIO()
             ftp.retrbinary(f"RETR {final}/manifest.json", previous.write)
-            tag = json.loads(previous.getvalue())["files_sha256"][:12]
+            parked = parked_folder(args.remote_parent, kit_id, json.loads(previous.getvalue()))
         except (ftplib.Error, ValueError, KeyError, TypeError):
-            tag = "unknown"
-        retired = f"{args.remote_parent}/.{kit_id}.retired-{tag}"
-        if f".{kit_id}.retired-{tag}" in listing(ftp, args.remote_parent):
-            remove_tree(ftp, retired)  # an earlier copy of this same kit
-        ftp.rename(final, retired)
-        print(f"moved previous kit aside to {retired}")
-        for name in listing(ftp, args.remote_parent):
-            if name.startswith(f".{kit_id}.retired-") and f"{args.remote_parent}/{name}" != retired:
-                remove_tree(ftp, f"{args.remote_parent}/{name}")
-                print(f"deleted older copy {name}")
+            parked = None
+        if parked and parked.rpartition("/")[2] not in listing(ftp, args.remote_parent):
+            ftp.rename(final, parked)
+            print(f"moved previous kit aside to {parked}")
+        else:
+            try:
+                tag = json.loads(previous.getvalue())["files_sha256"][:12]
+            except (ValueError, KeyError, TypeError):
+                tag = "unknown"
+            retired = f"{args.remote_parent}/.{kit_id}.retired-{tag}"
+            if f".{kit_id}.retired-{tag}" in listing(ftp, args.remote_parent):
+                remove_tree(ftp, retired)  # an earlier copy of this same kit
+            ftp.rename(final, retired)
+            print(f"moved previous kit aside to {retired}")
+            for name in listing(ftp, args.remote_parent):
+                if name.startswith(f".{kit_id}.retired-") and f"{args.remote_parent}/{name}" != retired:
+                    remove_tree(ftp, f"{args.remote_parent}/{name}")
+                    print(f"deleted older copy {name}")
     ftp.rename(staging, final)
     print(f"verified {len(files)} files and {len(directories)} directories; installed {final}")
     # A kit installed under another id (renamed since): Playden versions that use this id retire it at

@@ -417,6 +417,33 @@ int main() {
     CHECK(Read(test.kits + "/.replaced-kitid-1000/manifest.json") == std::string(64, 'b'));
     service.Shutdown();
   }
+  // A kit whose version can be named is parked beside the Latest slot. A copy of that version already
+  // parked is left alone, and the outgoing kit is the ".replaced-" leftover.
+  {
+    const std::string old = R"({"runtime":{"artifact_revision":"abc-kit-0.16"}})";
+    KitOnly parked("kit-park", old);
+    Publish(parked.fixture.server, "v0.3.0");
+    parked.fixture.server.releases = "[" + parked.fixture.server.latest + "]";
+    UpdateService service(parked.Config());
+    service.InstallKit();
+    Wait(service);
+    CHECK(service.Snapshot().kit.phase == KitInstallPhase::kInstalled);
+    CHECK(Read(parked.kits + "/kitid/manifest.json") == kKitSha);
+    CHECK(Read(parked.kits + "/kitid-0.16/manifest.json") == old);
+    CHECK(!Exists(parked.kits + "/.replaced-kitid-1000"));
+    service.Shutdown();
+    KitOnly kept("kit-park-kept", old);
+    Put(kept.kits + "/kitid-0.16/manifest.json", "kept");
+    Publish(kept.fixture.server, "v0.3.0");
+    kept.fixture.server.releases = "[" + kept.fixture.server.latest + "]";
+    UpdateService again(kept.Config());
+    again.InstallKit();
+    Wait(again);
+    CHECK(again.Snapshot().kit.phase == KitInstallPhase::kInstalled);
+    CHECK(Read(kept.kits + "/kitid-0.16/manifest.json") == "kept");
+    CHECK(Read(kept.kits + "/.replaced-kitid-1000/manifest.json") == old);
+    again.Shutdown();
+  }
   // Only a missing or older kit is replaced: a newer one (a development kit) or the same version built elsewhere
   // stays, and nothing is downloaded. An older one is offered as before.
   {

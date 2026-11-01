@@ -2,6 +2,7 @@
 #include "platform/ps5/native_access_posix.h"
 #include "platform/ps5/title_activity.h"
 #include "platform/ps5/title_allow_list.h"
+#include "runtime/kit_catalog.h"
 #include "runtime/kit_trust.h"
 #include "runtime/layout_migration.h"
 #include "runtime/self_heal.h"
@@ -11,6 +12,7 @@
 #include "app/diagnostic_log.h"
 
 #include <cerrno>
+#include <dirent.h>
 #include <cstdint>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -182,6 +184,14 @@ NativeAccessResult PrepareNativeStartup(const std::string& title_id) {
     // given back their modes before anything reads them.
     runtime::TightenPrivateModes(data_root, layout_log);
     runtime::TightenKitModes(runtime::kDevelopmentKitRoot, WithRoot, layout_log);
+    if (DIR* folder = opendir("/data/playden/kits")) {
+      while (const dirent* entry = readdir(folder)) {
+        std::string version;
+        if (runtime::ParkedKitVersion(runtime::kDevelopmentKitId, entry->d_name, &version))
+          runtime::TightenKitModes(std::string("/data/playden/kits/") + entry->d_name, WithRoot, layout_log);
+      }
+      closedir(folder);
+    }
     // The app folder's empty stubs, before the move writes MOVED.txt into them. A failure is only
     // logged: the move takes a missing one.
     runtime::PrepareAppFolderStubs(result.paths.title_root, WithRoot,

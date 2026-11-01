@@ -1,6 +1,7 @@
 #include "homebrew/controller.hpp"
 #include "homebrew/program_icon.hpp"
 #include "diagnostics/redaction.h"
+#include "steam/backend/cm_client.h"
 #include "steam/install_volumes.h"
 #include "steam/secret.h"
 #include <algorithm>
@@ -363,7 +364,12 @@ void Controller::Tick() {
         if (phase_ == Phase::Idle && !model_.state().account().id.empty()) {
           if(library_) {
             if(established_auth_==AuthState::Offline || library_->NeedsRenewal()) Restore();
-            else library_->Refresh();
+            else {
+              license_read_asked_ = false;
+              update_licenses_asked_ = false;
+              library_->NoteLibraryRefresh();
+              library_->Refresh();
+            }
           } else model_.UpdateLibrary({{},false,"Library sync is unavailable. Try again later.",
                                         model_.state().library_offline,model_.state().account().cache_available,{}});
         }
@@ -1534,6 +1540,12 @@ void Controller::TickRuntime() {
   else
     kit.unavailable_reason = snapshot.status == RuntimeHostStatus::kReady ? snapshot.kit_reason : std::string{};
   model_.SetKitInfo(std::move(kit));
+  {
+    std::vector<AdmittedKit> admitted;
+    admitted.reserve(snapshot.admitted_kits.size());
+    for (const auto& held : snapshot.admitted_kits) admitted.push_back({held.version, held.latest_slot});
+    model_.SetAdmittedKits(std::move(admitted));
+  }
   announce_ready();
 }
 void Controller::BeginUninstall(GameId id, bool delete_saves) {
@@ -2178,32 +2190,80 @@ void Controller::TickInstalls() {
 }
 void Controller::TickStoreDetails() {
   if (!store_details_) return;
-  // The store is public: a game's description is asked for when its details open.
+  // The store is public: a game's description is asked for when its details open,
+  // unless the browse record already has both the description and the genres.
   const auto& detail = model_.state().navigation.detail_id;
   if (detail && detail != requested_store_detail_) {
     requested_store_detail_ = detail;
-    store_details_->Request(*detail);
+    bool stored = false;
+    if (store_browse_) {
+      if (auto cached = store_browse_->Cached(*detail)) {
+        stored = cached->description_known && cached->genres_known;
+        if (cached->description_known || cached->genres_known || !cached->controller_support.empty()) {
+          Simulation::StoreBrowseUpdate update;
+          update.id = *detail;
+          update.description_known = cached->description_known;
+          update.description = std::move(cached->description);
+          update.controller_support = std::move(cached->controller_support);
+          update.genres_known = cached->genres_known;
+          update.genres = std::move(cached->genres);
+          model_.UpdateStoreBrowse({std::move(update)});
+        }
+      }
+    }
+    if (!stored) store_details_->Request(*detail);
   }
-  for (auto& details : store_details_->Pump())
+  for (auto& details : store_details_->Pump()) {
+    if (store_browse_)
+      store_browse_->RememberDetails(details.id, details.description, details.genres, details.controller_support);
     model_.UpdateStoreDetails(details.id, std::move(details.description), std::move(details.genres),
                               std::move(details.tags), std::move(details.controller_support));
+  }
 }
 void Controller::TickStoreTags() {
-  if (!store_tags_ || model_.state().simulation_mode) return;
+  if (!store_browse_ || model_.state().simulation_mode) return;
   const auto& account = model_.state().account(Store::kSteam);
   if (account.authentication != AuthState::SignedIn && account.authentication != AuthState::Offline) return;
   if (account.id.empty()) return;
   steam_account_id_ = std::strtoull(account.id.c_str(), nullptr, 10);
+  const auto& navigation = model_.state().navigation;
+  if ((navigation.route == Route::Details || navigation.route == Route::Session) && navigation.detail_id &&
+      navigation.detail_id->steam_app()) {
+    const auto open = std::find_if(model_.state().games.begin(), model_.state().games.end(),
+                                   [&](const Game& game) { return game.id == *navigation.detail_id; });
+    const bool refresh = !store_browse_->Cached(*navigation.detail_id);
+    if (open == model_.state().games.end() || !open->store_tags_known || !open->store_media_known || refresh)
+      store_browse_->RequestFirst(*navigation.detail_id);
+  }
   for (const auto& game : model_.state().games) {
-    if (game.id.store != Store::kSteam || game.store_tags_known || !game.id.steam_app()) continue;
-    store_tags_->Request(game.id);
+    if (game.id.store != Store::kSteam || !game.id.steam_app()) continue;
+    if (game.store_tags_known && game.store_media_known && store_browse_->Cached(game.id)) continue;
+    store_browse_->Request(game.id);
   }
-  for (auto& tags : store_tags_->Pump()) {
-    const auto saved_tags = tags.tags;
-    if (!model_.UpdateStoreTags(tags.id, std::move(tags.tags))) continue;
-    if (library_cache_ && steam_account_id_ != 0)
-      library_cache_->MergeGameTags(steam_account_id_, tags.id, saved_tags);
+  auto records = store_browse_->Pump();
+  if (records.empty()) return;
+  std::vector<std::pair<GameId, std::vector<std::string>>> merges;
+  std::vector<Simulation::StoreBrowseUpdate> updates;
+  updates.reserve(records.size());
+  for (auto& record : records) {
+    Simulation::StoreBrowseUpdate update;
+    update.id = GameId::Steam(record.app);
+    update.tags_known = record.tags_known;
+    update.tags = std::move(record.tags);
+    update.screenshots = std::move(record.screenshots);
+    update.trailer_thumbnail = std::move(record.trailer_thumbnail);
+    update.include_media = true;
+    update.description_known = record.description_known;
+    update.description = std::move(record.description);
+    update.controller_support = std::move(record.controller_support);
+    update.genres_known = record.genres_known;
+    update.genres = std::move(record.genres);
+    if (update.tags_known) merges.emplace_back(update.id, update.tags);
+    updates.push_back(std::move(update));
   }
+  if (library_cache_ && steam_account_id_ != 0 && !merges.empty())
+    library_cache_->MergeGameTags(steam_account_id_, merges);
+  model_.UpdateStoreBrowse(std::move(updates));
 }
 void Controller::TickAppDetails() {
   if (!app_details_) {
@@ -2258,20 +2318,50 @@ void Controller::TickAppDetails() {
     // Updates are checked for the game whose page is open, never the whole library. A library refresh reads the
     // licenses (DLC bought since): that page is checked again.
     const auto read = library_ ? library_->LicensesRead() : 0;
-    if (read != licenses_read_ && state.navigation.detail_id && game_roots_.count(*state.navigation.detail_id))
+    // A size taken before the licenses arrived is asked again, installed or not. Leaving the page asks
+    // on the next visit instead.
+    if (read != licenses_read_ && state.navigation.detail_id &&
+        (state.navigation.route == Route::Details || state.navigation.route == Route::Session))
       if (auto* details = Details(state.navigation.detail_id->store); details && details == app_details_)
         details->Refresh(*state.navigation.detail_id, generation, true);
     licenses_read_ = read;
   }
   // The installed games' update check, when the model asks (the screen opened a day after the last one, or
-  // Check for updates). It runs behind any page's request and goes on when the screen closes. Signed in, it
-  // waits for the library refresh: before it reads the licenses every game would answer "no update" and the
-  // saved list would be emptied. With no refresh under way (it failed, or Steam refused it) the check can't
-  // run now: it ends as "Couldn't check", and the saved results stay.
-  const bool check_waits = state.account().authentication == AuthState::SignedIn &&
+  // Check for updates). It runs behind any page's request and goes on when the screen closes. Signed in,
+  // it uses the license grant while that grant is under an hour old. An older grant is read first: until
+  // that read finishes, every game would answer "no update" and the saved list would be emptied. With no
+  // grant kept (this build doesn't track one), it waits for a library refresh that read the licenses, and
+  // ends as "Couldn't check" when that refresh isn't coming. The saved results stay.
+  std::uint64_t license_account = steam_account_id_;
+  if (!license_account && !state.account().id.empty())
+    license_account = std::strtoull(state.account().id.c_str(), nullptr, 10);
+  const auto license_now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const bool track_grant = licensed_depots_ != nullptr;
+  const bool grant_fresh = track_grant && licensed_depots_->Current(license_account, license_now);
+  if (grant_fresh && library_) library_->NoteGrantFresh();
+  if (state.navigation.route != Route::Details && state.navigation.route != Route::Session) license_read_asked_ = false;
+  else if (track_grant && !grant_fresh && library_ && state.navigation.detail_id &&
+           Details(state.navigation.detail_id->store) == app_details_ && !license_read_asked_) {
+    library_->EnsureLicenses();
+    license_read_asked_ = true;
+  }
+  const bool check_waits = !track_grant && state.account().authentication == AuthState::SignedIn &&
                            (!library_ || library_->LicensesGeneration() != generation);
+  if (track_grant && state.account().authentication == AuthState::SignedIn && !grant_fresh && library_ &&
+      model_.UpdateCheckRequested() && !update_licenses_asked_) {
+    library_->EnsureLicenses();
+    update_licenses_asked_ = true;
+  }
+  if (grant_fresh) update_licenses_asked_ = false;
   if (check_waits && (!library_ || !library_->Busy()) && model_.TakeUpdateCheckRequest()) model_.FinishUpdateCheck(true);
-  if (!check_waits && model_.TakeUpdateCheckRequest()) {
+  const bool grant_blocks = track_grant && state.account().authentication == AuthState::SignedIn && !grant_fresh;
+  if (grant_blocks && update_licenses_asked_ && library_ && library_->LicenseFailed() && !library_->Busy() &&
+      model_.TakeUpdateCheckRequest()) {
+    update_licenses_asked_ = false;
+    model_.FinishUpdateCheck(true);
+  }
+  if (!check_waits && !grant_blocks && model_.TakeUpdateCheckRequest()) {
     std::vector<GameId> ids;
     for (const auto& [id, root] : game_roots_)
       if (id.steam_app() && Details(id.store) == app_details_) ids.push_back(id);
@@ -2566,6 +2656,9 @@ void Controller::TickLicenseChanges() {
   // A refresh, sign-in or sign-out in progress: wait for it, then refresh with the new licenses.
   if (now < *license_refresh_at_ || phase_ != Phase::Idle || library_->Busy() || library_->NeedsRenewal()) return;
   license_refresh_at_.reset();
+  license_read_asked_ = false;
+  update_licenses_asked_ = false;
+  library_->NoteLibraryRefresh();
   library_->Refresh();
 }
 void Controller::TickSelfUpdate() {

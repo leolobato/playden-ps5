@@ -1,5 +1,6 @@
 #include "runtime/game_settings.h"
 #include "runtime/game_probe.h"
+#include "runtime/kit_catalog.h"
 
 #include "homebrew/json.hpp"
 #include "platform/managed_directory.h"
@@ -1592,6 +1593,10 @@ bool RecordFromValue(const storage_json::Value& root, GameSettingsRecord* out) {
     out->steam_app_id = ParseSteamAppId(app->text()).value_or(0);
   if (const auto* launch = root.Find("steam_launch"); launch && launch->is_string())
     out->steam_launch = steam::RelativeGamePath(launch->text()).value_or(std::string());
+  // A kit pin this build does not understand is dropped: the game follows the default.
+  if (const auto* kit = root.Find("kit"); kit && kit->is_string() &&
+      (kit->text() == kLatestKitPin || IsConcreteKitPin(kit->text())))
+    out->kit = kit->text();
   // Pixel shaders "auto" (Automatic) is gone; such a record takes the default, wave32.
   if (const auto waves = out->overrides.find("pixel_shader_waves");
       waves != out->overrides.end() && waves->second == "auto")
@@ -1634,6 +1639,8 @@ std::string SerializeGameSettingsRecord(const GameSettingsRecord& record) {
   text += "}";
   if (record.steam_app_id) text += ",\"steam_app_id\":\"" + std::to_string(record.steam_app_id) + "\"";
   if (!record.steam_launch.empty()) text += ",\"steam_launch\":\"" + json::escape(record.steam_launch) + "\"";
+  if (record.kit == kLatestKitPin || IsConcreteKitPin(record.kit))
+    text += ",\"kit\":\"" + json::escape(record.kit) + "\"";
   return text + "}";
 }
 
@@ -2266,7 +2273,7 @@ std::string SerializeSettingsFile(
   bool first = true;
   for (const auto& [id, record] : records) {
     if (!id.valid() || (record.preset_id.empty() && record.overrides.empty() && record.revision == 0 &&
-                         !record.steam_app_id && record.steam_launch.empty()))
+                         !record.steam_app_id && record.steam_launch.empty() && record.kit.empty()))
       continue;
     if (!first) text += ",";
     first = false;

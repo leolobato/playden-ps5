@@ -3,6 +3,7 @@
 // account's licenses, ends as "Couldn't check" when no refresh comes, and a game page answered before then
 // leaves the saved list alone.
 #include "homebrew/controller.hpp"
+#include "steam/backend/cm_client.h"
 #include "installs/install_record.h"
 #include "stores/registry.h"
 #include "stores/steam.h"
@@ -81,6 +82,11 @@ class ScriptedLibrary final : public stores::LibrarySource {
   std::uint64_t Clear(std::uint64_t, std::uint64_t) override { return 0; }
   void Invalidate(std::uint64_t) override {}
   void Shutdown() override {}
+  std::atomic<int> license_reads{0};
+  std::uint64_t EnsureLicenses(std::uint64_t, std::uint64_t) override {
+    ++license_reads;
+    return 1;
+  }
   std::vector<LibraryEvent> Pump(std::size_t) override {
     std::lock_guard lock(mutex);
     return std::exchange(events, {});
@@ -101,6 +107,23 @@ class ScriptedLibrary final : public stores::LibrarySource {
     event.games.push_back(game);
     events.push_back(std::move(event));
   }
+  // The license read finished for the library already loaded: the same request, with the dates filled in.
+  void LicensesRead() {
+    std::lock_guard lock(mutex);
+    LibraryEvent event;
+    event.kind = LibraryEventKind::kUpdated;
+    event.license_attempt = true;
+    event.licenses_read = true;
+    event.request_id = request;
+    event.account_id = account;
+    event.account_generation = generation;
+    event.retrieved_at_unix_seconds = 1760000000;
+    GameSummary game;
+    game.id = kGame;
+    game.title = "Stray";
+    event.games.push_back(game);
+    events.push_back(std::move(event));
+  }
 };
 
 // Steam's details: page answers are queued by the test; a check of the installed games is recorded and
@@ -110,9 +133,13 @@ class ScriptedDetails final : public stores::DetailsSource {
   std::mutex mutex;
   std::vector<steam::AppDetails> answers;
   std::vector<std::vector<GameId>> checks;
+  std::vector<GameId> requests;
   steam::InstalledCheck progress;
   Store store() const override { return Store::kSteam; }
-  void Request(const GameId&, std::uint64_t) override {}
+  void Request(const GameId& id, std::uint64_t) override {
+    std::lock_guard lock(mutex);
+    requests.push_back(id);
+  }
   void Invalidate(std::uint64_t) override {}
   std::vector<steam::AppDetails> Pump(std::size_t) override {
     std::lock_guard lock(mutex);
@@ -267,6 +294,102 @@ void UnreadLicensesEndAsCouldntCheck() {
   CHECK(f.Saved());
 }
 
+void AFreshGrantChecksWithoutReadingLicenses() {
+  Fixture f;
+  steam::LicensedDepots depots;
+  steam::AcquisitionResult grant;
+  grant.owned_apps = {230};
+  grant.owned_depots = {231};
+  const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  grant.fetched_at = now;
+  depots.Set(kAccount, grant);
+  f.controller->SetLicensedDepots(&depots);
+  CHECK(f.model.action("update-check"));
+  f.Until([&] { return f.details->Checks() == 1; });
+  CHECK(f.library->license_reads == 0);
+  {
+    std::lock_guard lock(f.details->mutex);
+    f.details->progress.asked = f.details->progress.answered = 1;
+  }
+  f.details->Answer(f.model.state().account_generation, false);
+  f.Until([&] { return !f.model.state().update_check.checking; });
+
+  grant.fetched_at = now - 7200;
+  depots.Set(kAccount, grant);
+  CHECK(f.model.action("update-check"));
+  f.Ticks(8);
+  CHECK(f.library->license_reads == 1 && f.details->Checks() == 1);
+  grant.fetched_at = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  depots.Set(kAccount, grant);
+  f.Until([&] { return f.details->Checks() == 2; });
+  f.Ticks(8);
+  CHECK(f.library->license_reads == 1);
+}
+
+void AStaleCheckSurvivesALibraryRefresh() {
+  Fixture f;
+  steam::LicensedDepots depots;
+  steam::AcquisitionResult grant;
+  grant.owned_apps = {230};
+  grant.owned_depots = {231};
+  const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  grant.fetched_at = now - 7200;
+  depots.Set(kAccount, grant);
+  f.controller->SetLicensedDepots(&depots);
+  CHECK(f.model.action("update-check"));
+  f.Ticks(8);
+  CHECK(f.library->license_reads == 1 && f.model.state().update_check.checking && !f.model.state().update_check.failed);
+  CHECK(f.model.action("refresh-library"));
+  f.Ticks(8);
+  CHECK(f.library->license_reads == 2 && f.model.state().update_check.checking && !f.model.state().update_check.failed);
+}
+
+void AnUninstalledGameIsMeasuredAgainWhenLicensesArrive() {
+  Fixture f(false);
+  f.library->Complete(false);
+  f.Ticks(5);
+  CHECK(f.model.action("details:230"));
+  f.Ticks(3);
+  CHECK(f.details->requests.size() == 1 && f.details->requests.front() == kGame);
+  f.library->LicensesRead();
+  f.Ticks(5);
+  CHECK(f.details->requests.size() == 2 && f.details->requests.back() == kGame);
+}
+
+void OpeningAGameReadsLicensesOncePerVisit() {
+  Fixture f;
+  f.library->Complete();
+  f.Ticks(5);
+  steam::LicensedDepots depots;
+  steam::AcquisitionResult grant;
+  grant.fetched_at = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  depots.Set(kAccount, grant);
+  f.controller->SetLicensedDepots(&depots);
+  CHECK(f.model.action("details:230"));
+  f.Ticks(5);
+  CHECK(f.library->license_reads == 0);
+  CHECK(f.model.action("circle"));
+  f.Ticks(2);
+  grant.fetched_at -= 7200;
+  depots.Set(kAccount, grant);
+  CHECK(f.model.action("details:230"));
+  f.Ticks(5);
+  CHECK(f.library->license_reads == 1);
+  grant.fetched_at = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  depots.Set(kAccount, grant);
+  f.Ticks(3);
+  CHECK(f.model.action("circle"));
+  f.Ticks(2);
+  CHECK(f.model.action("details:230"));
+  f.Ticks(5);
+  CHECK(f.library->license_reads == 1);
+}
+
 void NoSteamGamesIsUpToDate() {
   Fixture f(false);
   f.library->Complete();
@@ -282,6 +405,10 @@ int main() {
   WaitsForTheLibraryRefresh();
   ARefusedRefreshEndsAsCouldntCheck();
   UnreadLicensesEndAsCouldntCheck();
+  AFreshGrantChecksWithoutReadingLicenses();
+  AStaleCheckSurvivesALibraryRefresh();
+  OpeningAGameReadsLicensesOncePerVisit();
+  AnUninstalledGameIsMeasuredAgainWhenLicensesArrive();
   NoSteamGamesIsUpToDate();
   std::puts("update check controller tests passed");
   return 0;

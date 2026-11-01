@@ -79,7 +79,8 @@ target_include_directories(playden_steam_cm_codec PUBLIC "${CMAKE_SOURCE_DIR}/sr
 target_include_directories(playden_steam_cm_codec PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
 target_compile_features(playden_steam_cm_codec PUBLIC cxx_std_17)
 target_link_libraries(playden_steam_cm_codec PUBLIC playden_game_paths playden_steam_protocol playden_managed_directory
-    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library playden_steam_content_language)
+    playden_runtime_steamworks playden_runtime_artifact_hash playden_miniz playden_library playden_steam_content_language
+    playden_self_update)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_steam_cm_codec PRIVATE -fno-exceptions -fno-rtti)
 endif()
@@ -252,7 +253,8 @@ target_include_directories(playden_homebrew_runtime_host PUBLIC "${CMAKE_SOURCE_
 target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordinator playden_runtime_settings_publication
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
-    playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store)
+    playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
+    playden_self_update)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -410,6 +412,15 @@ target_link_libraries(playden-homebrew PRIVATE
 add_dependencies(playden-homebrew playden_homebrew_assets playden_steam_trust)
 set_target_properties(playden-homebrew PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+# GameController.framework lists pads only for a process with a bundle id. The
+# host stays a normal executable; the plist is embedded and also copied beside it.
+set(playden_homebrew_info_plist "${CMAKE_SOURCE_DIR}/src/homebrew/Info.plist")
+target_link_options(playden-homebrew PRIVATE
+    "LINKER:-sectcreate,__TEXT,__info_plist,${playden_homebrew_info_plist}")
+add_custom_command(TARGET playden-homebrew POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${playden_homebrew_info_plist}" "$<TARGET_FILE_DIR:playden-homebrew>/Info.plist"
+    VERBATIM)
 
 if(BUILD_TESTING)
     add_executable(homebrew_focus_motion_test "${CMAKE_SOURCE_DIR}/tests/homebrew_focus_motion_test.cpp")

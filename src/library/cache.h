@@ -1,6 +1,8 @@
 #pragma once
 #include "library/repository.h"
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace playden {
 class LibraryCache final : public LibraryRepository {
@@ -16,6 +18,9 @@ class LibraryCache final : public LibraryRepository {
                              std::vector<std::string> tags) const;
   Result<void> MergeGameTags(std::uint64_t account_id, const GameId& id,
                              std::vector<std::string> tags) const;
+  // One read and one write for several games. A game that is missing or whose tags are not valid is skipped.
+  Result<void> MergeGameTags(std::uint64_t account_id,
+                             const std::vector<std::pair<GameId, std::vector<std::string>>>& updates) const;
 
  private:
   Storage& storage_;

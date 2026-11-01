@@ -381,8 +381,8 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     activate(simulation, "game-settings");
     // Rows by topic: the frame-rate rows sit together in Display, and focus steps over the headings.
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
-    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 23));
-    check(top == std::vector<std::string>{"preset-picker", "heading-game", "setting-launch_option", "setting-extra_arguments",
+    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 24));
+    check(top == std::vector<std::string>{"preset-picker", "game-kit", "heading-game", "setting-launch_option", "setting-extra_arguments",
                                           "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
                                           "setting-framegen", "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
                                           "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
@@ -404,7 +404,7 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(simulation.state().navigation.focus_key == "setting-controller", "T08b Down steps over a heading");
     simulation.action("focus:setting-launch_option");
     simulation.action("up");
-    check(simulation.state().navigation.focus_key == "preset-picker", "T08b Up steps over a heading");
+    check(simulation.state().navigation.focus_key == "game-kit", "T08b Up steps over a heading");
     // Compatibility expands inline; graphics is locked by the recipe and scaling is
     // disabled on DXVK with its reason.
     check(!find_row(simulation, "setting-graphics"), "T08b Compatibility starts collapsed");
@@ -533,9 +533,9 @@ void settings_sheet_details(const std::filesystem::path& fixtures, const std::fi
     simulation.action("circle");
     simulation.action("focus:preset-picker");
     simulation.action("r1");
-    check(simulation.state().navigation.modals.back().focused_action == 5, "R1 jumps five rows");
+    check(simulation.state().navigation.focus_key == "setting-resolution", "R1 jumps five rows");
     simulation.action("l1");
-    check(simulation.state().navigation.modals.back().focused_action == 0, "L1 jumps back");
+    check(simulation.state().navigation.focus_key == "game-kit", "L1 jumps back");
     activate(simulation, "section-advanced");
     const auto* command = find_row(simulation, "effective-command");
     check(command && command->value == "Read only" && !command->subtitle.empty(), "Advanced ends with the effective command");

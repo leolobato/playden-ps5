@@ -42,6 +42,43 @@ State fixture_state(const std::filesystem::path& fixtures)
     return simulation.state();
 }
 
+void tag_chips_filter_the_default_library(const std::filesystem::path& fixtures)
+{
+    Simulation simulation(fixtures, temp_profile());
+    check(simulation.scenario("default"), "default scenario loads for the tag chips");
+    check(simulation.action("details:900001"), "the tagged fixture game opens");
+    check(simulation.action("down") && simulation.state().navigation.focus_key == "detail-tag-0",
+          "Down from the actions focuses the first tag chip");
+    check(simulation.action("right") && simulation.state().navigation.focus_key == "detail-tag-1",
+          "Right moves along the tag chips");
+    check(simulation.action("cross"), "Cross on a chip filters by that tag");
+    check(simulation.state().navigation.route == Route::Library &&
+              simulation.state().library.tag_filters == std::set<std::string>{"Roguelike"} &&
+              simulation.visible_games().size() == 1 &&
+              simulation.visible_games().front()->id == SteamId(900001),
+          "Roguelike leaves the one fixture game that has it");
+    check(simulation.action("details:900001") && simulation.action("focus:detail-tag-0") && simulation.action("cross"),
+          "a second chip adds its tag");
+    check(simulation.state().library.tag_filters == std::set<std::string>{"Adventure", "Roguelike"} &&
+              simulation.visible_games().size() == 1 &&
+              simulation.visible_games().front()->id == SteamId(900001),
+          "Adventure and Roguelike together still leave that game");
+    check(simulation.action("triangle") && simulation.action("focus:library-tags") && simulation.action("cross"),
+          "Sort and filters opens the tag checklist");
+    check(!simulation.state().navigation.modals.empty() &&
+              simulation.state().navigation.modals.back().id == "library-tags",
+          "the tag checklist stays open");
+    check(simulation.action("focus:library-tag-0") && simulation.action("cross") &&
+              simulation.state().navigation.modals.back().id == "library-tags" &&
+              simulation.state().library.tag_filters == std::set<std::string>{"Roguelike"},
+          "ticking the most common tag removes Adventure without closing the sheet");
+    check(simulation.action("circle") && simulation.action("triangle") &&
+              simulation.action("focus:filter-tag-clear") && simulation.action("cross"),
+          "clearing the tags closes the filter sheet");
+    check(simulation.state().library.tag_filters.empty() && simulation.visible_games().size() == 23,
+          "clearing the tag filter restores the library");
+}
+
 void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
 {
     State state = fixture_state(fixtures);
@@ -103,14 +140,22 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
                                  [](const Game& game) { return game.id == SteamId(900001); });
     tagged.store_tags = {"Roguelike", "Adventure"};
     tagged.store_tags_known = true;
-    state.library.tag_filter = "Roguelike";
+    state.library.tag_filters = {"Roguelike"};
     check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900001),
           "tag filter keeps games with a matching store tag");
-    state.library.tag_filter.clear();
+    state.library.tag_filters = {"Roguelike", "Adventure"};
+    check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900001),
+          "every ticked tag is required");
+    state.library.tag_filters.clear();
     tagged.store_tags_known = false;
-    state.library.tag_filter = "Roguelike";
+    state.library.tag_filters = {"Roguelike"};
     check(filtered_games(state).empty(), "unknown tag data is excluded while a tag filter is active");
-    state.library.tag_filter.clear();
+    state.library.tag_filters = {"Adventure"};
+    const auto by_genre = filtered_games(state);
+    check(std::any_of(by_genre.begin(), by_genre.end(),
+                      [](const Game* game) { return game->id == SteamId(900001); }),
+          "a genre matches while store tags are still unknown");
+    state.library.tag_filters.clear();
     tagged.store_tags_known = true;
     state.library.query = "roguelike";
     check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900001),
@@ -455,6 +500,7 @@ int main(int argc, char** argv)
     const std::filesystem::path fixtures(argv[1]);
     live_unicode_query();
     filtering_uses_real_fixture(fixtures);
+    tag_chips_filter_the_default_library(fixtures);
     all_sorts_keep_unknown_values_last(fixtures);
     shelves_are_nonempty_and_restore_children(fixtures);
     continue_playing_ends_in_more(fixtures);

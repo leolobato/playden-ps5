@@ -69,8 +69,17 @@ void LibraryController::Refresh() {
 void LibraryController::Refresh(Store store) {
   for(auto& other:others_) if(other.source->store()==store) RefreshOther(other);
 }
+void LibraryController::EnsureLicenses() {
+  if(!account_ || offline_) return;
+  if(steam_.EnsureLicenses(account_,generation_)) license_busy_=true;
+}
+void LibraryController::NoteGrantFresh() {
+  license_busy_=false;
+  license_failed_=false;
+}
 void LibraryController::Reset() {
   steam_.Invalidate(++generation_);request_=0;completed_request_=0;account_=0;clearing_=false;clear_result_.reset();offline_=false;needs_renewal_=false;
+  license_busy_=false;license_failed_=false;
 }
 void LibraryController::Clear() {
   clear_result_.reset();clearing_=true;
@@ -112,6 +121,10 @@ void LibraryController::TickOther(Other& other,LibraryEvent& event) {
 }
 void LibraryController::TickSteam(LibraryEvent& event) {
   if(event.kind==LibraryEventKind::kUpdated) {
+    if(event.license_attempt) {
+      license_busy_=false;
+      license_failed_=!event.licenses_read;
+    }
     // Games named in the background after the last load completed: the whole library again, status untouched.
     if(request_ || clearing_ || !completed_request_ || event.request_id!=completed_request_ ||
        event.account_id!=account_ || event.account_generation!=generation_) return;
@@ -119,6 +132,8 @@ void LibraryController::TickSteam(LibraryEvent& event) {
     const std::string status=event.cache_error!=StorageError::kNone ? "Library loaded, but saving failed. Retry to save."
         : model_.state().account().error;
     model_.UpdateLibrary({std::move(event.games),false,status,false,event.cache_available,Time(event)});
+    // The owned list is published before licenses are read. This follow-up is what read them.
+    if(event.licenses_read) { licenses_generation_=model_.state().account_generation;++licenses_read_; }
     return;
   }
   if(!request_ || event.request_id!=request_ || event.account_id!=account_ || event.account_generation!=generation_) return;

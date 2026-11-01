@@ -270,4 +270,27 @@ void ManyLateGamesKeepTheCompletion() {
   }
   Wait(controller,[&]{return !model.state().library_loading && model.state().games.size()==101;});
 }
-int main(){OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();}
+// The refreshing pill clears when the owned list arrives. LicensesRead waits for the follow-up.
+void OwnedLibraryClearsThePillBeforeLicenses() {
+  Simulation model({}, {},ModelMode::Live);
+  model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+  Sessions sessions;Cache cache;
+  struct Progress final : LibraryBackend {
+    std::atomic<bool> release{false},progressed{false};
+    LibraryResult Fetch(const StoredSession&,const std::atomic<bool>& cancel) override {
+      ReportFetchProgress({LibraryError::kNone,{{SteamId(42),"Owned title",{},{},{}}},false,false});
+      progressed=true;
+      while(!release && !cancel) std::this_thread::sleep_for(1ms);
+      return {LibraryError::kNone,{{SteamId(42),"Owned title",{},{},{}},{SteamId(7),"Family title",{},{},{}}},false,true};
+    }
+  } backend;
+  LibraryService service(backend,sessions,&cache,[]{return 12345;});
+  app::LibraryController controller(model,service);
+  controller.Activate(123,false);
+  Wait(controller,[&]{return backend.progressed && !model.state().library_loading && model.state().games.size()==1 && controller.LicensesRead()==0;});
+  assert(model.state().games[0].title=="Owned title");
+  backend.release=true;
+  Wait(controller,[&]{return !model.state().library_loading && model.state().games.size()==2 && controller.LicensesRead()==1;});
+  assert(model.state().games[1].title=="Family title");
+}
+int main(){OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();OwnedLibraryClearsThePillBeforeLicenses();}

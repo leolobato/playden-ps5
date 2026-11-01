@@ -140,31 +140,22 @@ void EntitledLibraryBackend::PublishFamilyLicenses(const AcquisitionResult* lice
 
 LibraryResult EntitledLibraryBackend::Fetch(const StoredSession& session,
                                             const std::atomic<bool>& cancel) {
-  // The background lookup shares the CM client: it stops here, and the load starts it again with what is
-  // still unknown.
+  // Owned games only. Licenses are read when a game's page, an install or an update check asks.
+  return owned_.Fetch(session, cancel);
+}
+
+LibraryResult EntitledLibraryBackend::ReadLicenses(const StoredSession& session,
+                                                   std::vector<GameSummary> games,
+                                                   const std::atomic<bool>& cancel) {
+  // The background lookup shares the CM client: it stops here, and a later lookup starts again.
   StopLookups();
   const auto started = std::chrono::steady_clock::now();
-  // The CM side gets its own flag so a failed or canceled owned fetch stops it promptly.
-  std::atomic<bool> stop{false};
-  std::atomic<bool> done{false};
-  AcquisitionResult acquisitions;
-  std::thread worker([&] {
-    acquisitions = acquisitions_.FetchAcquisitionDates(session, stop);
-    done.store(true, std::memory_order_release);
-  });
   const bool probing = StartFamilyProbe(session);
-
-  LibraryResult result = owned_.Fetch(session, cancel);
-  if (result.error != LibraryError::kNone) stop.store(true, std::memory_order_release);
-  while (!done.load(std::memory_order_acquire)) {
-    if (cancel.load(std::memory_order_acquire)) stop.store(true, std::memory_order_release);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-  worker.join();
-
+  const auto acquisitions = acquisitions_.FetchAcquisitionDates(session, cancel);
   last_error_.store(acquisitions.error);
-  if (result.error != LibraryError::kNone || !acquisitions.ok()) {
-    if (family_log_ && result.error == LibraryError::kNone)
+  LibraryResult result{LibraryError::kNone, std::move(games), false, false};
+  if (!acquisitions.ok()) {
+    if (family_log_)
       family_log_(std::string("family library licenses=unavailable cm_error=") + CmErrorName(acquisitions.error));
     if (probing) PublishFamilyLicenses(nullptr);
     return result;
@@ -172,8 +163,10 @@ LibraryResult EntitledLibraryBackend::Fetch(const StoredSession& session,
   if (licensed_) licensed_->Set(session.steam_id, acquisitions);
   result.licenses_read = true;
   for (auto& game : result.games) {
-    const auto found = acquisitions.acquired_at.find(*game.id.steam_app());
-    if (found != acquisitions.acquired_at.end()) game.added_at_unix_seconds = found->second;
+    if (const auto app = game.id.steam_app()) {
+      const auto found = acquisitions.acquired_at.find(*app);
+      if (found != acquisitions.acquired_at.end()) game.added_at_unix_seconds = found->second;
+    }
   }
   if (probing) PublishFamilyLicenses(&acquisitions);
   bool family_fresh = false;

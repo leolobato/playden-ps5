@@ -27,7 +27,9 @@
 #include "platform/ps5/system_keyboard.h"
 #include "runtime/artifact_hash.h"
 #include "runtime/kit_admission.h"
+#include "runtime/kit_catalog.h"
 #include "runtime/kit_trust.h"
+#include <dirent.h>
 #include "update/update_service.h"
 #include "web/address.h"
 #include "web/server.h"
@@ -80,12 +82,13 @@ void dispatch(playden::homebrew::Simulation& simulation, const hui::InputFrame& 
         case hui::Direction::right: simulation.action("right"); break;
         default: break;
     }
-    const std::array<std::pair<hui::Action, const char*>, 10> actions{{
+    const std::array<std::pair<hui::Action, const char*>, 11> actions{{
         {hui::Action::confirm, "cross"}, {hui::Action::back, "circle"},
         {hui::Action::page_prev, "l1"}, {hui::Action::page_next, "r1"},
         {hui::Action::jump_prev, "l2"}, {hui::Action::jump_next, "r2"},
         {hui::Action::menu, "options"}, {hui::Action::north, "triangle"},
-        {hui::Action::west, "square"}, {hui::Action::touch, "search"}
+        {hui::Action::west, "square"}, {hui::Action::touch, "search"},
+        {hui::Action::r3, "r3"}
     }};
     // Dispatch one activation edge per frame so opening a modal cannot also
     // activate its default control through another buffered physical edge.
@@ -171,6 +174,13 @@ std::string content_language{playden::steam::kDefaultContentLanguage};
 std::string selected_content_language() {
     const std::lock_guard<std::mutex> guard(content_language_lock);
     return content_language;
+}
+// Settings › Updates › Default runtime kit. The runtime worker reads it when a game is prepared.
+std::mutex default_kit_lock;
+std::string default_kit{playden::runtime::kLatestKitPin};
+std::string selected_default_kit() {
+    const std::lock_guard<std::mutex> guard(default_kit_lock);
+    return default_kit;
 }
 // Development requests are processed in file order on the first frame.
 std::vector<playden::steam::InstallRequest> take_install_requests(bool runtime_ready) {
@@ -356,6 +366,7 @@ int main() {
         playden::steam::EntitledLibraryBackend library_backend(owned_library, cm_client);
         playden::steam::LicensedDepots licensed_depots;
         library_backend.SetLicensedDepots(&licensed_depots);
+        playden::steam::RestoreLicensedDepots(library_storage, licensed_depots);
         library_backend.SetAppNameStorage(&library_storage);
         // Family sharing diagnostics, with the CM license lines.
         library_backend.SetFamilyDiagnostics(paths.trust_store, [](const std::string& line) {
@@ -374,6 +385,10 @@ int main() {
             }
             const std::lock_guard<std::mutex> guard(content_language_lock);
             content_language = saved.content_language;
+        }
+        {
+            const std::lock_guard<std::mutex> guard(default_kit_lock);
+            default_kit = preferences.Load().preferences.default_kit;
         }
         playden::OrganizationStore organization(library_storage);
         // Each Steam account's last update check, next to its library cache.
@@ -493,6 +508,33 @@ int main() {
         self_update.Check(false);
         // "Export as recipe" writes next to the logs, which are read over FTP already.
         simulation.SetRecipeExportTarget(log_root, playden::ps5::ConsoleFirmwareVersion().value_or(""));
+        // A parked kit nothing is pinned to is removed. The Latest slot and a folder that does not admit stay.
+        {
+            std::vector<std::string> pins;
+            if (playden::runtime::IsConcreteKitPin(preferences.Load().preferences.default_kit))
+                pins.push_back(preferences.Load().preferences.default_kit);
+#if !PLAYDEN_UI_SIMULATION
+            if (settings_file) {
+                std::map<playden::GameId, playden::runtime::GameSettingsRecord> records;
+                std::string reason;
+                if (playden::runtime::LoadGameSettingsFile(settings_file->string(), &records, &reason))
+                    for (const auto& entry : records)
+                        if (playden::runtime::IsConcreteKitPin(entry.second.kit)) pins.push_back(entry.second.kit);
+            }
+#endif
+            std::vector<std::string> removed;
+            playden::ps5::WithRoot([&] {
+                removed = playden::runtime::PruneUnpinnedKits(
+                    "/data/playden/kits", playden::runtime::kDevelopmentKitId, pins,
+                    [](const std::string& path) {
+                        const auto admitted = playden::runtime::VerifyInstalledKit(path, playden::runtime::DevelopmentKitAdmission());
+                        return admitted.status == playden::runtime::KitManifestStatus::kVerified && admitted.view.has_value();
+                    });
+                return true;
+            });
+            for (const auto& path : removed)
+                playden::app::AppendLogLine(log_root, "runtime.log", "unpinned kit removed " + path);
+        }
         // Per-game runtime: private bottles and PS5 titles from the admitted kit.
         // Its worker owns OWNER records, native inventory and publication.
         std::unique_ptr<playden::homebrew::RuntimeHost> runtime_host;
@@ -531,6 +573,31 @@ int main() {
                 }
                 return playden::homebrew::RuntimeKit{*admitted.view, admitted.capabilities, admitted.manifest_sha256,
                                                      admission.expected_manifest_sha256, revision, admitted.source_dirty};
+            };
+            config.default_kit = [] { return selected_default_kit(); };
+            config.admit_parked_kits = [] {
+                std::vector<playden::homebrew::RuntimeKit> found;
+                DIR* folder = opendir("/data/playden/kits");
+                if (!folder) return found;
+                const auto admission = rt::DevelopmentKitAdmission();
+                while (const dirent* entry = readdir(folder)) {
+                    std::string version;
+                    if (!rt::ParkedKitVersion(rt::kDevelopmentKitId, entry->d_name, &version)) continue;
+                    const std::string path = std::string("/data/playden/kits/") + entry->d_name;
+                    auto admitted = rt::VerifyInstalledKit(path, admission);
+                    if (admitted.status != rt::KitManifestStatus::kVerified || !admitted.view) {
+                        playden::app::AppendLogLine(log_root, "runtime.log", "parked kit skipped " + path + " " + admitted.reason);
+                        continue;
+                    }
+                    const auto wrapper = admitted.sources.find("wrapper");
+                    const auto revision = wrapper != admitted.sources.end() && wrapper->second.count("revision")
+                        ? wrapper->second.at("revision") : std::string{};
+                    playden::app::AppendLogLine(log_root, "runtime.log", "parked kit admitted version=" + version + " root=" + path);
+                    found.push_back({*admitted.view, admitted.capabilities, admitted.manifest_sha256,
+                                     admission.expected_manifest_sha256, revision, admitted.source_dirty});
+                }
+                closedir(folder);
+                return found;
             };
             config.package_operations.hash_file = rt::HashArtifactFile;
             config.package_operations.hash_bytes = rt::HashArtifactBytes;
@@ -898,12 +965,14 @@ int main() {
         playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
         services.SetDownloadServers(&servers);
+        services.SetLicensedDepots(&licensed_depots);
         if (!web_probe_on) services.SetWebAccess(&web);
         services.SetLocalLibrary(local_library);
         playden::steam::StoreDetailsService store_details(playden::homebrew::StoreFetch(paths.trust_store));
-        playden::steam::StoreTagsService store_tags(playden::homebrew::StoreFetch(paths.trust_store));
+        playden::steam::StoreBrowseService store_browse(playden::homebrew::StoreFetch(paths.trust_store));
+        store_browse.SetStorage(&library_storage);
         services.SetStoreDetails(&store_details);
-        services.SetStoreTags(&store_tags);
+        services.SetStoreBrowse(&store_browse);
         services.SetLibraryCache(&library_cache);
         services.SetSelfUpdate(&self_update);
         // A game bought or added to the library elsewhere: Steam pushes the new license list.
@@ -1026,8 +1095,14 @@ int main() {
                     std::lock_guard lock(download_server_mutex);
                     download_server = simulation.state().download_server;
                 }
-                const std::lock_guard<std::mutex> guard(content_language_lock);
-                content_language = simulation.state().content_language;
+                {
+                    const std::lock_guard<std::mutex> guard(content_language_lock);
+                    content_language = simulation.state().content_language;
+                }
+                {
+                    const std::lock_guard<std::mutex> guard(default_kit_lock);
+                    default_kit = simulation.state().default_kit;
+                }
             }
 #endif
             const auto ticked = hui::sys::monotonic_us();

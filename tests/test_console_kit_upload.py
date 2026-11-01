@@ -44,5 +44,23 @@ class KitFolderTests(unittest.TestCase):
             console_kit_upload.kit_folder(release)
 
 
+class ParkedFolderTests(unittest.TestCase):
+    def test_names_the_folder_from_the_artifact_version(self):
+        manifest = {"runtime": {"artifact_revision": "abc-kit-0.16"}}
+        self.assertEqual(console_kit_upload.parked_folder("/data/playden/kits", "playden-kit", manifest),
+                         "/data/playden/kits/playden-kit-0.16")
+
+    def test_a_kit_without_a_version_is_not_parked(self):
+        self.assertIsNone(console_kit_upload.parked_folder("/data/playden/kits", "playden-kit", {}))
+        self.assertIsNone(console_kit_upload.parked_folder("/data/playden/kits", "playden-kit",
+                                                           {"runtime": {"artifact_revision": "h-r9"}}))
+
+    def test_an_unsafe_version_is_not_parked(self):
+        self.assertIsNone(console_kit_upload.parked_folder("/data/playden/kits", "playden-kit",
+                                                           {"runtime": {"artifact_revision": "abc-kit-../0.16"}}))
+        self.assertIsNone(console_kit_upload.parked_folder("/data/playden/kits", "playden-kit",
+                                                           {"runtime": {"artifact_revision": "abc-kit-.hidden"}}))
+
+
 if __name__ == '__main__':
     unittest.main()

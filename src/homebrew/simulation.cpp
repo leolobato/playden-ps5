@@ -5,6 +5,7 @@
 
 #include "homebrew/simulation.hpp"
 #include "runtime/game_probe.h"
+#include "runtime/kit_catalog.h"
 
 #include "app/diagnostic_log.h"
 #include "homebrew/browse.hpp"
@@ -16,6 +17,7 @@
 #include "steam/backend/json.h"
 #include "steam/secret.h"
 
+#include <charconv>
 #include <cstring>
 #include <algorithm>
 #include <cctype>
@@ -288,6 +290,32 @@ void clear_profile_customizations(State& state) { state.game_settings.clear(); }
 
 namespace rt = playden::runtime;
 
+std::vector<std::string> AvailableKitVersions(const std::vector<AdmittedKit>& kits) {
+    struct Item { std::string version; playden::update::KitVersion parsed; };
+    std::vector<Item> items;
+    for (const auto& kit : kits) {
+        const auto parsed = playden::update::ParseKitVersion(kit.version);
+        if (!parsed) continue;
+        if (std::none_of(items.begin(), items.end(), [&](const Item& item) { return item.version == kit.version; }))
+            items.push_back({kit.version, *parsed});
+    }
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return b.parsed < a.parsed; });
+    std::vector<std::string> versions;
+    for (const auto& item : items) versions.push_back(item.version);
+    return versions;
+}
+
+rt::ResolvedKit ResolveShownKit(std::string_view pin, const std::vector<AdmittedKit>& kits) {
+    bool latest_admits = false;
+    std::string latest_version;
+    std::vector<std::string> folders;
+    for (const auto& kit : kits) {
+        if (kit.latest_slot) { latest_admits = true; latest_version = kit.version; }
+        else folders.push_back(kit.version);
+    }
+    return rt::ResolveKitPin(pin, latest_admits, latest_version, folders);
+}
+
 std::string choice_label(const rt::SettingDefinition& definition, const std::string& value) {
     for (const auto& choice : definition.choices)
         if (choice.value == value) return choice.label;
@@ -320,8 +348,19 @@ const char* source_label(rt::ValueSource source) {
     }
 }
 
+std::string join_tags(const std::set<std::string>& tags) {
+    std::string joined;
+    for (const auto& tag : tags) {
+        if (!joined.empty()) joined += ", ";
+        joined += tag;
+    }
+    return joined;
+}
+
 void reconcile_library_selection(State& state) {
     if (state.navigation.library_rail_focused) return;
+    std::size_t chip = 0;
+    if (SelectedTagIndex(state.navigation.focus_key, chip) && chip < state.library.tag_filters.size()) return;
     const auto games = filtered_games(state);
     const auto current = std::find_if(games.begin(), games.end(), [&state](const Game* game) {
         return game->id == state.navigation.selected_game_id;
@@ -524,7 +563,7 @@ std::string action_label(const std::string& key) {
         {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "Includes"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as recipe"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run a program once…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
+        {"preset-picker", "Preset"}, {"game-kit", "Runtime kit"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run a program once…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
@@ -532,7 +571,7 @@ std::string action_label(const std::string& key) {
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
         {"sort-playtime", "Playtime"}, {"sort-install-size", "Install size"}, {"filter-installed", "Installed"},
         {"filter-genre-adventure", "Adventure"}, {"filter-controller-full", "Full controller support"},
-        {"filter-compat-playable", "Playable"}, {"filter-hide-demos", "Demos"}, {"filter-hide-family", "Family sharing"}, {"filters-reset", "Reset filters"}, {"refresh-library", "Refresh library"}, {"advance-clock", "Advance fixture clock"},
+        {"filter-compat-playable", "Playable"}, {"filter-hide-demos", "Demos"}, {"filter-hide-family", "Family sharing"}, {"library-tags", "Tags"}, {"filters-reset", "Reset filters"}, {"refresh-library", "Refresh library"}, {"advance-clock", "Advance fixture clock"},
         {"inject-download-failed", "Inject download failure"}, {"inject-verification-failed", "Inject verification failure"},
         {"inject-uninstall-failed", "Inject uninstall failure"},
         {"inject-storage-disconnect", "Disconnect storage"}, {"inject-controller-disconnect", "Disconnect controller"},
@@ -621,7 +660,7 @@ std::size_t snapshot_size(const playden::OrganizationSnapshot& value) {
     bytes += value.ratings.size() * (sizeof(GameId) + sizeof(playden::CompatibilityRating));
     for (const auto& [id, note] : value.notes) bytes += sizeof(id) + note.size();
     for (const auto& filter : value.filters) bytes += filter.size();
-    bytes += value.tag_filter.size();
+    for (const auto& tag : value.tag_filters) bytes += tag.size();
     for (const auto& collection : value.collections)
         bytes += collection.id.size() + collection.name.size() + collection.members.size() * sizeof(GameId);
     return bytes;
@@ -706,7 +745,7 @@ void replay_organization_delta(playden::OrganizationSnapshot& base,
     }
     if (before.query != after.query) base.query = after.query;
     if (before.scope != after.scope) base.scope = after.scope;
-    if (before.tag_filter != after.tag_filter) base.tag_filter = after.tag_filter;
+    replay_set_delta(base.tag_filters, before.tag_filters, after.tag_filters);
     if (before.sort != after.sort) base.sort = after.sort;
     if (selected || before.selected_game_id != after.selected_game_id)
         base.selected_game_id = after.selected_game_id;
@@ -2384,6 +2423,18 @@ void Simulation::SetKitInfo(LiveKitInfo kit) {
     rebuild_view();
 }
 
+void Simulation::SetAdmittedKits(std::vector<AdmittedKit> kits) {
+    if (!live()) return;
+    const auto same = kits.size() == state_.admitted_kits.size() &&
+                      std::equal(kits.begin(), kits.end(), state_.admitted_kits.begin(),
+                                 [](const AdmittedKit& a, const AdmittedKit& b) {
+                                     return a.version == b.version && a.latest_slot == b.latest_slot;
+                                 });
+    if (same) return;
+    state_.admitted_kits = std::move(kits);
+    rebuild_view();
+}
+
 void Simulation::UpdateRuntimeProblem(const std::string& raw) {
     if (!live()) return;
     std::string words;
@@ -3415,7 +3466,10 @@ void Simulation::UpdateStoreDetails(GameId id, std::string description, std::vec
                                     std::vector<std::string> tags, std::string controller_support) {
     if (!live()) return;
     auto& facts = store_facts_[id];
-    facts = {std::move(description), std::move(genres), std::move(tags), std::move(controller_support)};
+    if (!description.empty()) facts.description = std::move(description);
+    facts.genres = std::move(genres);
+    if (!tags.empty()) facts.tags = std::move(tags);
+    if (!controller_support.empty()) facts.controller_support = std::move(controller_support);
     for (auto& game : state_.games) {
         if (game.id != id) continue;
         if (!facts.description.empty()) game.description = facts.description;
@@ -3424,7 +3478,7 @@ void Simulation::UpdateStoreDetails(GameId id, std::string description, std::vec
             game.store_tags = facts.tags;
             game.store_tags_known = true;
         }
-        game.controller_support = facts.controller_support;
+        if (!facts.controller_support.empty()) game.controller_support = facts.controller_support;
     }
     rebuild_view();
 }
@@ -3443,6 +3497,51 @@ bool Simulation::UpdateStoreTags(GameId id, std::vector<std::string> tags) {
     }
     rebuild_view();
     return true;
+}
+
+void Simulation::UpdateStoreBrowse(std::vector<StoreBrowseUpdate> updates) {
+    if (!live() || updates.empty()) return;
+    bool applied = false;
+    for (auto& update : updates) {
+        if (!update.id.valid() || update.tags.size() > 32 || update.screenshots.size() > 4) continue;
+        if (update.trailer_thumbnail.size() > 512 || update.description.size() > 4096 || update.genres.size() > 8) continue;
+        bool valid = true;
+        for (const auto& genre : update.genres)
+            if (genre.empty() || genre.size() > 64) valid = false;
+        for (const auto& tag : update.tags)
+            if (tag.empty() || tag.size() > 64) valid = false;
+        for (const auto& url : update.screenshots)
+            if (url.empty() || url.size() > 512 || url.rfind("https://", 0) != 0) valid = false;
+        if (!update.trailer_thumbnail.empty() && update.trailer_thumbnail.rfind("https://", 0) != 0) valid = false;
+        if (!valid) continue;
+        auto& facts = store_facts_[update.id];
+        if (update.tags_known) facts.tags = update.tags;
+        if (update.include_media) {
+            facts.screenshots = std::move(update.screenshots);
+            facts.trailer_thumbnail = std::move(update.trailer_thumbnail);
+            facts.media_known = true;
+        }
+        if (update.description_known && !update.description.empty()) facts.description = std::move(update.description);
+        if (!update.controller_support.empty()) facts.controller_support = std::move(update.controller_support);
+        if (update.genres_known) facts.genres = std::move(update.genres);
+        for (auto& game : state_.games) {
+            if (game.id != update.id) continue;
+            if (update.tags_known) {
+                game.store_tags = facts.tags;
+                game.store_tags_known = true;
+            }
+            if (update.include_media) {
+                game.store_screenshots = facts.screenshots;
+                game.store_trailer_thumbnail = facts.trailer_thumbnail;
+                game.store_media_known = true;
+            }
+            if (!facts.description.empty()) game.description = facts.description;
+            if (!facts.controller_support.empty()) game.controller_support = facts.controller_support;
+            if (update.genres_known) game.genres = facts.genres;
+            applied = true;
+        }
+    }
+    if (applied) rebuild_view();
 }
 
 bool Simulation::UpdateLibrary(LibraryUpdate update) {
@@ -3506,6 +3605,11 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
                 if (!facts->second.tags.empty()) {
                     game.store_tags = facts->second.tags;
                     game.store_tags_known = true;
+                }
+                if (facts->second.media_known) {
+                    game.store_screenshots = facts->second.screenshots;
+                    game.store_trailer_thumbnail = facts->second.trailer_thumbnail;
+                    game.store_media_known = true;
                 }
             }
             projected.push_back(std::move(game));
@@ -3653,7 +3757,7 @@ playden::OrganizationSnapshot Simulation::ExportOrganization() const {
     result.scope = state_.library.scope;
     result.sort = state_.library.sort;
     result.filters = state_.library.filters;
-    result.tag_filter = state_.library.tag_filter;
+    result.tag_filters = state_.library.tag_filters;
     result.selected_game_id = state_.navigation.selected_game_id;
     result.collections.reserve(state_.library.collections.size());
     for (const auto& value : state_.library.collections)
@@ -3758,7 +3862,7 @@ void Simulation::ApplyLiveDownloadServers(const LiveDownloadServers& snapshot) {
 playden::Preferences Simulation::ExportPreferences() const {
     return {state_.reduced_motion, state_.title_store_suffix, state_.cloud_saves_auto, state_.sign_in_password,
             state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
-            state_.web_access, state_.content_language};
+            state_.web_access, state_.content_language, state_.default_kit};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -3769,7 +3873,7 @@ void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot
     state_.library.scope = snapshot.scope;
     state_.library.sort = snapshot.sort;
     state_.library.filters = snapshot.filters;
-    state_.library.tag_filter = snapshot.tag_filter;
+    state_.library.tag_filters = snapshot.tag_filters;
     state_.library.collections.clear();
     for (const auto& value : snapshot.collections)
         state_.library.collections.push_back({value.id, value.name, value.pinned, value.members});
@@ -3991,6 +4095,7 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.web_access = loaded.preferences.web_access;
         state_.stay_signed_in = loaded.preferences.steam_stay_signed_in;
         state_.content_language = loaded.preferences.content_language;
+        state_.default_kit = loaded.preferences.default_kit;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
     }
@@ -4255,6 +4360,7 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.web_access != captured_preferences_.web_access ||
                                       after_preferences.beta_updates != captured_preferences_.beta_updates ||
                                       after_preferences.content_language != captured_preferences_.content_language ||
+                                      after_preferences.default_kit != captured_preferences_.default_kit ||
                                       after_preferences.steam_stay_signed_in != captured_preferences_.steam_stay_signed_in);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
@@ -4283,6 +4389,7 @@ bool Simulation::record_live_persistence() {
                 state_.web_access = captured_preferences_.web_access;
                 state_.stay_signed_in = captured_preferences_.steam_stay_signed_in;
                 state_.content_language = captured_preferences_.content_language;
+                state_.default_kit = captured_preferences_.default_kit;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -4462,6 +4569,8 @@ void Simulation::load_profile() {
     state_.download_server = string_value(root->get("download_server"));
     if (const auto saved = string_value(root->get("content_language")); playden::steam::IsContentLanguage(saved))
         state_.content_language = saved;
+    if (const auto saved = string_value(root->get("default_kit")); !saved.empty())
+        state_.default_kit = rt::NormalizedKitPin(saved);
     if (saved_auth == "signed-out" || saved_auth == "cancelled" || (saved_auth == "waiting" && saved_account.empty())) {
         state_.account().authentication = AuthState::SignedOut; state_.account().id.clear(); state_.account().display_name.clear();
         state_.account().cache_available = false; state_.account().challenge_expiry = 0; state_.navigation.route = Route::Startup; state_.navigation.focus_key = "startup-connect";
@@ -4492,6 +4601,14 @@ void Simulation::load_profile() {
     if (const auto* filters = root->get("filters"); filters && filters->array()) {
         state_.library.filters.clear();
         for (const auto& filter : *filters->array()) state_.library.filters.insert(string_value(&filter));
+    }
+    if (const auto* tags = root->get("tag_filters"); tags && tags->array()) {
+        state_.library.tag_filters.clear();
+        for (const auto& tag : *tags->array()) {
+            auto value = string_value(&tag);
+            if (!value.empty() && value.size() <= 64 && state_.library.tag_filters.size() < 8)
+                state_.library.tag_filters.insert(std::move(value));
+        }
     }
     if (const auto* collections = root->get("collections"); collections && collections->array()) {
         state_.library.collections.clear();
@@ -4602,6 +4719,7 @@ bool Simulation::save_profile() {
         + ",\"next_job_serial\":" + std::to_string(next_job_serial_) + ",\"reduced_motion\":"
         + (state_.reduced_motion ? "true" : "false") + ",\"download_server\":\"" + json::escape(state_.download_server)
         + "\",\"content_language\":\"" + json::escape(state_.content_language)
+        + "\",\"default_kit\":\"" + json::escape(state_.default_kit)
         + "\",\"query\":\"" + json::escape(state_.library.query)
         + "\",\"scope\":\"" + json::escape(state_.library.scope) + "\",\"favorites\":[";
     bool first = true;
@@ -4616,6 +4734,9 @@ bool Simulation::save_profile() {
     output += "],\"sort\":\"" + json::escape(state_.library.sort) + "\",\"filters\":[";
     first = true;
     for (const auto& filter : state_.library.filters) { if (!first) output += ','; first = false; output += '"' + json::escape(filter) + '"'; }
+    output += "],\"tag_filters\":[";
+    first = true;
+    for (const auto& tag : state_.library.tag_filters) { if (!first) output += ','; first = false; output += '"' + json::escape(tag) + '"'; }
     output += "],\"collections\":[";
     first = true;
     for (const auto& collection : state_.library.collections) {
@@ -5408,7 +5529,8 @@ void Simulation::rebuild_view() {
             }
         }
         const GameId settings_game = state_.navigation.selected_game_id;
-        const bool settings_modal = modal.id == "game-settings" || modal.id == "preset-picker" || modal.id == "button-mapping" ||
+        const bool settings_modal = modal.id == "game-settings" || modal.id == "preset-picker" || modal.id == "game-kit" ||
+                                    modal.id == "button-mapping" ||
                                     modal.id == "controller-tuning" ||
                                     modal.id == "game-maintenance" || !modal.setting_id.empty();
         rt::EffectiveSettings settings_values;
@@ -5554,6 +5676,12 @@ void Simulation::rebuild_view() {
                              "tile; its saves and settings move to Kept game data, and its game files stay in the Library.";
         if (modal.id == "download-server")
             view_.subtitle = "Applies to downloads that start or resume from now.";
+        if (modal.id == "library-tags")
+            view_.subtitle = tag_find_.empty()
+                ? "Type to find a tag. A game must have every ticked tag."
+                : "Matching \"" + tag_find_ + "\". A game must have every ticked tag.";
+        if (modal.id == "game-tags")
+            view_.subtitle = "Every tag on this game. Cross adds one to the library filter.";
         if (modal.id == "content-language")
             view_.subtitle = "New downloads are in this language when the game has it, otherwise in English or the game's "
                              "first language. Games already installed keep the language they were downloaded in.";
@@ -5628,6 +5756,27 @@ void Simulation::rebuild_view() {
                 item.selected = code == state_.content_language;
                 if (item.selected) item.value = "In use";
             }
+            if (modal.id == "default-kit" || modal.id == "game-kit") {
+                const auto record = state_.game_settings.find(settings_game);
+                const std::string game_pin = record == state_.game_settings.end() ? std::string{} : record->second.kit;
+                item.kind = RowKind::Choice;
+                if (action_key == "default-kit-latest" || action_key == "game-kit-latest") {
+                    item.title = "Latest";
+                    item.subtitle = "The kit Playden installs.";
+                    item.selected = modal.id == "default-kit" ? !rt::IsConcreteKitPin(state_.default_kit)
+                                                              : game_pin == rt::kLatestKitPin;
+                } else if (action_key == "game-kit-default") {
+                    item.title = "Default";
+                    const auto resolved = ResolveShownKit(state_.default_kit, state_.admitted_kits);
+                    item.subtitle = resolved.version.empty() ? "The kit from Settings." : "The kit from Settings, " + resolved.version + ".";
+                    item.selected = game_pin.empty();
+                } else if (action_key.rfind("default-kit-", 0) == 0 || action_key.rfind("game-kit-", 0) == 0) {
+                    const auto version = action_key.substr(action_key.rfind("default-kit-", 0) == 0 ? 12 : 9);
+                    item.title = version;
+                    item.selected = modal.id == "default-kit" ? state_.default_kit == version : game_pin == version;
+                }
+                if (item.selected) item.value = "In use";
+            }
             // This install's language: the ones the game carries, with the one it would use ticked.
             if (modal.id == "install-language" && action_key.rfind("install-language-", 0) == 0) {
                 const auto code = action_key.substr(17);
@@ -5687,10 +5836,38 @@ void Simulation::rebuild_view() {
                 item.checked = action_key.substr(5) ==
                     (state_.library.view_sort.empty() ? state_.library.sort : state_.library.view_sort);
             if (action_key == "filter-tag-clear") {
-                item.title = "Tag: " + state_.library.tag_filter;
+                item.title = "Tags: " + join_tags(state_.library.tag_filters);
                 item.kind = RowKind::Toggle;
                 item.selected = true;
                 item.value = "On";
+            }
+            if (modal.id == "library-tags" && action_key.rfind("library-tag-", 0) == 0) {
+                std::size_t index = 0;
+                const auto number = action_key.substr(std::string("library-tag-").size());
+                const auto parsed = std::from_chars(number.data(), number.data() + number.size(), index);
+                if (parsed.ec == std::errc{} && parsed.ptr == number.data() + number.size() && index < tag_sheet_.size()) {
+                    item.title = tag_sheet_[index].name;
+                    item.kind = RowKind::Toggle;
+                    item.selected = tag_selected(item.title);
+                    item.value = std::to_string(tag_sheet_[index].count);
+                }
+            }
+            if (action_key == "library-tags-empty") {
+                item.title = "No tags";
+                item.kind = RowKind::Status;
+                item.enabled = false;
+            }
+            if (modal.id == "game-tags" && action_key.rfind("game-tag-", 0) == 0) {
+                std::size_t index = 0;
+                const auto number = action_key.substr(std::string("game-tag-").size());
+                const auto parsed = std::from_chars(number.data(), number.data() + number.size(), index);
+                if (parsed.ec == std::errc{} && parsed.ptr == number.data() + number.size() &&
+                    index < detail_tag_names_.size()) {
+                    item.title = detail_tag_names_[index];
+                    item.action = "tag-filter";
+                    item.kind = RowKind::Toggle;
+                    item.selected = tag_selected(item.title);
+                }
             }
             // The menu's Favorite says what it will do for this game.
             if (modal.id == "context" && action_key == "favorite")
@@ -5702,6 +5879,28 @@ void Simulation::rebuild_view() {
                 const std::string name = preset ? preset->name : "Playden default";
                 item.value = settings_custom ? "Custom · from " + name : name;
                 item.subtitle = "A ready-made bundle of the settings below.";
+            } else if (settings_ready && action_key == "game-kit") {
+                item.kind = RowKind::Profile;
+                item.title = "Runtime kit";
+                const auto record = state_.game_settings.find(settings_game);
+                const std::string pin = record == state_.game_settings.end() ? std::string{} : record->second.kit;
+                const auto shown = ResolveShownKit(pin.empty() ? std::string_view(state_.default_kit) : std::string_view(pin),
+                                                   state_.admitted_kits);
+                if (pin.empty()) {
+                    item.value = "Default";
+                    item.subtitle = shown.version.empty() ? "Uses the default kit." : "Uses the default, " + shown.version + ".";
+                } else if (!rt::IsConcreteKitPin(pin)) {
+                    item.value = "Latest";
+                    item.subtitle = shown.version.empty() ? "This game uses the kit Playden installs."
+                                                          : "Using " + shown.version + ".";
+                } else if (shown.fell_back || shown.kind == rt::ResolvedKitKind::kUnavailable) {
+                    item.value = "Latest";
+                    item.subtitle = pin + " is not installed. Using " +
+                                    (shown.version.empty() ? std::string("the latest kit") : shown.version) + ".";
+                } else {
+                    item.value = pin;
+                    item.subtitle = "This game uses this kit.";
+                }
             } else if (settings_ready && modal.id == "preset-picker" && action_key.rfind("preset-", 0) == 0 && action_key != "preset-community") {
                 item.kind = RowKind::Profile;
                 const auto id = action_key.substr(7);
@@ -6324,6 +6523,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "import-programs" || modal.id == "import-choice") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "steam-programs") view_.legends = {"Cross Choose", "Circle Cancel"};
         else if (modal.id == "content-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "default-kit" || modal.id == "game-kit") view_.legends = {"Cross Use this kit", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
@@ -6493,15 +6693,17 @@ void Simulation::rebuild_view() {
         // An empty grid offers the way back to the games it hides; Connect a store is only for a missing catalog.
         if (view_.rows.empty()) {
             if (!state_.library.query.empty()) row("clear-search", RowKind::Action, "Clear search", "clear-search");
-            else if (!state_.library.filters.empty() || !state_.library.tag_filter.empty())
+            else if (!state_.library.filters.empty() || !state_.library.tag_filters.empty())
                 row("library-empty", RowKind::Action, "Reset filters", "filters-reset");
             else if (!state_.games.empty() && state_.library.scope != "all") row("library-empty", RowKind::Action, "Show all games", "library-show-all");
             else row("library-empty", RowKind::Action, "Connect a store", "connect");
         }
         // The footer shows five legends; with a search applied, Circle clears it in place of Square Favorite.
+        // R3 takes the Options slot while the library has tags. Options still opens a game's actions.
+        const char* actions_legend = library_has_tags() ? "R3 Tags" : "Options Actions";
         view_.legends = state_.library.query.empty()
-            ? std::vector<std::string>{"Cross Open", "Square Favorite", "Options Actions", "Triangle Filters", "Touchpad Search"}
-            : std::vector<std::string>{"Cross Open", "Options Actions", "Triangle Filters", "Touchpad Search", "Circle Clear search"};
+            ? std::vector<std::string>{"Cross Open", "Square Favorite", actions_legend, "Triangle Filters", "Touchpad Search"}
+            : std::vector<std::string>{"Cross Open", actions_legend, "Triangle Filters", "Touchpad Search", "Circle Clear search"};
     } else if (state_.navigation.route == Route::Details) {
         const auto* game = find_game(state_, state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
         view_.title = game ? game->title : "Game unavailable";
@@ -6824,14 +7026,20 @@ void Simulation::rebuild_view() {
             if (runtime && runtime->queued && runtime->uninstall_status.empty() && position > 1)
                 row("details-prepare-next", RowKind::Action, "Prepare next", "details-prepare-next").game_id = game->id;
         }
-        if (game && game->store_tags_known) {
-            for (std::size_t index = 0; index < game->store_tags.size() && index < 12; ++index)
-                row("detail-tag-" + std::to_string(index), RowKind::Action, game->store_tags[index], "tag-filter");
+        detail_tag_names_ = detail_chip_names(game);
+        const auto shown = std::min(detail_tag_names_.size(), kDetailTagPreview);
+        for (std::size_t index = 0; index < shown; ++index) {
+            auto& tag = row("detail-tag-" + std::to_string(index), RowKind::Action, detail_tag_names_[index], "tag-filter");
+            tag.selected = tag_selected(detail_tag_names_[index]);
         }
+        if (detail_tag_names_.size() > shown)
+            row("detail-tags-more", RowKind::Action, "+" + std::to_string(detail_tag_names_.size() - shown), "detail-tags-more");
         row("details-favorite", RowKind::Toggle, "Favorite", "favorite").selected = game && state_.library.favorites.contains(game->id);
         if (!live()) row("details-simulate-launch", RowKind::Action, "Simulate launch", "launch");
         row("details-more", RowKind::Action, "More", "context");
-        view_.legends = {"Cross Select", "Options Actions", "Circle Back"};
+        view_.legends = detail_tag_names_.empty()
+            ? std::vector<std::string>{"Cross Select", "Options Actions", "Circle Back"}
+            : std::vector<std::string>{"Cross Select", "Down Tags", "Options Actions", "Circle Back"};
     } else if (state_.navigation.route == Route::Downloads) {
         // Queue: Downloads, then Preparation, one expanded at a time, then the drives. Rows come in screen
         // order (heading, card, the expanded section's rows), so Up and Down follow what is on screen.
@@ -7203,6 +7411,21 @@ void Simulation::rebuild_view() {
                 item.value = check.checked_at > 0 ? "Up to date" : "Not checked";
             }
         }
+        if (live()) {
+            auto& kit = add("settings-default-kit", RowKind::Action, "Default runtime kit", "default-kit-picker");
+            const auto resolved = ResolveShownKit(state_.default_kit, state_.admitted_kits);
+            if (!rt::IsConcreteKitPin(state_.default_kit)) {
+                kit.value = "Latest";
+                kit.subtitle = resolved.version.empty() ? "The kit Playden installs." : "Using " + resolved.version + ".";
+            } else if (resolved.fell_back || resolved.kind == rt::ResolvedKitKind::kUnavailable) {
+                kit.value = "Latest";
+                kit.subtitle = state_.default_kit + " is not installed. Using " +
+                               (resolved.version.empty() ? std::string("the latest kit") : resolved.version) + ".";
+            } else {
+                kit.value = state_.default_kit;
+                kit.subtitle = "Games that have not chosen a kit use this one.";
+            }
+        }
         // The kit-only install, while it has something to offer or say.
         if (live()) {
             const auto& update = state_.self_update;
@@ -7313,7 +7536,8 @@ void Simulation::rebuild_view() {
     if (details_primary_pending_ && state_.navigation.route == Route::Details && !has_overlay) {
         // Never a destructive action (Delete saves): a second Cross must not land on it.
         const auto first = std::find_if(view_.rows.begin(), view_.rows.end(), [](const ViewRow& item) {
-            return item.enabled && !item.dangerous && (item.kind == RowKind::Action || item.kind == RowKind::Toggle);
+            return item.enabled && !item.dangerous && !DetailChipKey(item.key) &&
+                   (item.kind == RowKind::Action || item.kind == RowKind::Toggle);
         });
         if (first != view_.rows.end()) state_.navigation.focus_key = first->key;
         const auto has = [this](const char* key) {
@@ -7424,7 +7648,11 @@ void Simulation::rebuild_view() {
             focused = view_.rows.begin() + best;
         }
     }
+    std::size_t selected_chip = 0;
+    const bool chip_focus = SelectedTagIndex(state_.navigation.focus_key, selected_chip) &&
+                            selected_chip < state_.library.tag_filters.size();
     if (focused != view_.rows.end()) view_.focused_row = static_cast<int>(std::distance(view_.rows.begin(), focused));
+    else if (chip_focus) view_.focused_row = -1;
     else if (!view_.rows.empty() && !(state_.navigation.route == Route::Library && state_.navigation.library_rail_focused)
              && !(state_.navigation.route == Route::Home && !view_.shelves.empty())) {
         view_.focused_row = std::clamp(state_.navigation.selected_index, 0, static_cast<int>(view_.rows.size()) - 1);
@@ -7748,6 +7976,13 @@ void Simulation::commit_editor() {
         return;
     }
     if (state_.editor.purpose == "Search") { state_.library.query = state_.editor.value; reconcile_library_selection(state_); }
+    else if (state_.editor.purpose == "Find tag") {
+        tag_find_ = trimmed(state_.editor.value);
+        state_.editor.active = false;
+        state_.navigation.focus_key = state_.editor.opener_focus_key;
+        refresh_tag_sheet();
+        return;
+    }
     else if (state_.editor.purpose == "Steam app ID") {
         // A Steam app ID in plain decimal ("440"), or nothing to clear it.
         if (!can_change_game_settings()) return;
@@ -7934,6 +8169,24 @@ void Simulation::move(int delta_x, int delta_y) {
             return;
         }
         if (modal.id == "import-games") { move_import_sheet(delta_y != 0 ? delta_y : delta_x); return; }
+        if (modal.id == "library-tags" && !state_.library.tag_filters.empty()) {
+            std::size_t chip = 0;
+            if (SelectedTagIndex(state_.navigation.focus_key, chip)) {
+                if (delta_x != 0) {
+                    const int next = std::clamp(static_cast<int>(chip) + (delta_x > 0 ? 1 : -1), 0,
+                                                static_cast<int>(state_.library.tag_filters.size()) - 1);
+                    state_.navigation.focus_key = SelectedTagKey(static_cast<std::size_t>(next));
+                } else if (delta_y > 0 && !modal.action_keys.empty()) {
+                    modal.focused_action = 0;
+                    state_.navigation.focus_key = modal.action_keys.front();
+                }
+                return;
+            }
+            if (delta_y < 0 && modal.focused_action <= 0) {
+                state_.navigation.focus_key = SelectedTagKey(0);
+                return;
+            }
+        }
         const int delta = delta_y != 0 ? delta_y : delta_x;
         const int last = static_cast<int>(modal.action_keys.size()) - 1;
         modal.focused_action = std::clamp(modal.focused_action + delta, 0, last);
@@ -7982,6 +8235,142 @@ bool Simulation::tab_bar_shown() const {
             route == Route::Settings);
 }
 
+std::string Simulation::fold_tag(const std::string& tag) const {
+    if (!state_.simulation_mode) return playden::FoldLibraryText(tag);
+    std::string folded = tag;
+    for (char& character : folded)
+        if (character >= 'A' && character <= 'Z') character = static_cast<char>(character - 'A' + 'a');
+    return folded;
+}
+
+bool Simulation::tag_selected(const std::string& tag) const {
+    const auto folded = fold_tag(tag);
+    return std::any_of(state_.library.tag_filters.begin(), state_.library.tag_filters.end(),
+                       [&](const std::string& selected) { return fold_tag(selected) == folded; });
+}
+
+bool Simulation::toggle_tag(const std::string& tag) {
+    if (tag.empty() || tag.size() > 64) return false;
+    const auto folded = fold_tag(tag);
+    const auto found = std::find_if(state_.library.tag_filters.begin(), state_.library.tag_filters.end(),
+                                    [&](const std::string& selected) { return fold_tag(selected) == folded; });
+    if (found != state_.library.tag_filters.end()) {
+        state_.library.tag_filters.erase(found);
+        return true;
+    }
+    if (state_.library.tag_filters.size() >= 8) {
+        state_.notices.push_back({"tag-limit", "Eight tags is the most", "", false, kLiveNoticeSeconds, false, "", false});
+        return false;
+    }
+    state_.library.tag_filters.insert(tag);
+    return true;
+}
+
+std::vector<std::string> Simulation::tag_sheet_actions() {
+    struct Counted {
+        std::string name;
+        std::string folded;
+        std::size_t count = 0;
+    };
+    std::vector<Counted> tags;
+    const auto add = [&](const std::string& name, std::size_t amount) {
+        if (name.empty() || name.size() > 64) return;
+        const auto folded = fold_tag(name);
+        if (!tag_find_.empty() && folded.find(fold_tag(tag_find_)) == std::string::npos) return;
+        const auto found = std::find_if(tags.begin(), tags.end(),
+                                        [&](const Counted& item) { return item.folded == folded; });
+        if (found == tags.end()) tags.push_back({name, folded, amount});
+        else found->count += amount;
+    };
+    for (const auto& game : state_.games) {
+        std::vector<std::string> seen;
+        const auto once = [&](const std::string& name) {
+            if (name.empty() || name.size() > 64) return;
+            const auto folded = fold_tag(name);
+            if (std::find(seen.begin(), seen.end(), folded) != seen.end()) return;
+            seen.push_back(folded);
+            add(name, 1);
+        };
+        for (const auto& genre : game.genres) once(genre);
+        if (game.store_tags_known)
+            for (const auto& tag : game.store_tags) once(tag);
+    }
+    for (const auto& tag : state_.library.tag_filters) add(tag, 0);
+    std::sort(tags.begin(), tags.end(), [](const Counted& left, const Counted& right) {
+        if (left.count != right.count) return left.count > right.count;
+        return left.name < right.name;
+    });
+    tag_sheet_.clear();
+    tag_sheet_.reserve(tags.size());
+    std::vector<std::string> actions;
+    actions.reserve(tags.size() + 1);
+    for (const auto& tag : tags) {
+        tag_sheet_.push_back({tag.name, tag.count});
+        actions.push_back("library-tag-" + std::to_string(actions.size()));
+    }
+    if (actions.empty()) actions.push_back("library-tags-empty");
+    actions.push_back("cancel");
+    return actions;
+}
+
+bool Simulation::library_has_tags() const {
+    if (!state_.library.tag_filters.empty()) return true;
+    return std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) {
+        return (game.store_tags_known && !game.store_tags.empty()) || !game.genres.empty();
+    });
+}
+
+void Simulation::open_tag_sheet() {
+    tag_find_.clear();
+    open_modal({"library-tags", "Tags", state_.navigation.focus_key, tag_sheet_actions(), 0, false});
+}
+
+std::vector<std::string> Simulation::detail_chip_names(const Game* game) const {
+    std::vector<std::string> names;
+    if (game == nullptr) return names;
+    const auto add = [&](const std::string& name) {
+        if (name.empty() || name.size() > 64) return;
+        const auto folded = fold_tag(name);
+        if (std::any_of(names.begin(), names.end(), [&](const std::string& existing) { return fold_tag(existing) == folded; }))
+            return;
+        names.push_back(name);
+    };
+    for (const auto& genre : game->genres) add(genre);
+    if (game->store_tags_known)
+        for (const auto& tag : game->store_tags) add(tag);
+    return names;
+}
+
+void Simulation::open_game_tags() {
+    std::vector<std::string> actions;
+    actions.reserve(detail_tag_names_.size() + 1);
+    for (std::size_t index = 0; index < detail_tag_names_.size(); ++index)
+        actions.push_back("game-tag-" + std::to_string(index));
+    if (actions.empty()) actions.push_back("library-tags-empty");
+    actions.push_back("cancel");
+    open_modal({"game-tags", "Tags", state_.navigation.focus_key, std::move(actions), 0, false});
+}
+
+void Simulation::refresh_tag_sheet() {
+    if (state_.navigation.modals.empty() || state_.navigation.modals.back().id != "library-tags") return;
+    auto& modal = state_.navigation.modals.back();
+    std::size_t chip = 0;
+    const bool chip_focus = SelectedTagIndex(state_.navigation.focus_key, chip);
+    const auto prior = chip_focus ? state_.navigation.focus_key
+        : modal.action_keys.empty() ? std::string{}
+        : modal.action_keys[static_cast<std::size_t>(std::clamp(modal.focused_action, 0, static_cast<int>(modal.action_keys.size()) - 1))];
+    modal.action_keys = tag_sheet_actions();
+    if (chip_focus && !state_.library.tag_filters.empty()) {
+        chip = std::min(chip, state_.library.tag_filters.size() - 1);
+        state_.navigation.focus_key = SelectedTagKey(chip);
+        modal.focused_action = 0;
+        return;
+    }
+    const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), prior);
+    modal.focused_action = found == modal.action_keys.end() ? 0 : static_cast<int>(found - modal.action_keys.begin());
+    state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+}
+
 void Simulation::move_content(int delta_x, int delta_y) {
     if (move_browser(state_, delta_x, delta_y)) return;
     if (state_.navigation.route == Route::Settings && move_settings(delta_x, delta_y)) return;
@@ -7990,13 +8379,48 @@ void Simulation::move_content(int delta_x, int delta_y) {
     const int columns = state_.navigation.route == Route::Library ? 6 : 1;
     const int delta = delta_y != 0 ? delta_y * columns : delta_x;
     if (view_.rows.empty()) return;
-    // The game page draws only its buttons in a row; status notes between them are not stops.
-    if (state_.navigation.route == Route::Details && delta != 0) {
-        const auto button = [](const ViewRow& item) { return item.kind == RowKind::Action || item.kind == RowKind::Toggle; };
-        int target = view_.focused_row;
-        for (int next = view_.focused_row + delta; next >= 0 && next < static_cast<int>(view_.rows.size()); next += delta)
-            if (button(view_.rows[static_cast<std::size_t>(next)])) { target = next; break; }
-        if (target == view_.focused_row) return;
+    // The game page keeps Play and Favorite on one row. Down from there enters the tag chips;
+    // Left and Right move along the row that has focus, and Up from a chip returns to the action.
+    if (state_.navigation.route == Route::Details && (delta_x != 0 || delta_y != 0)) {
+        const auto tag_row = [](const ViewRow& item) { return DetailChipKey(item.key); };
+        const auto action_row = [&](const ViewRow& item) {
+            return (item.kind == RowKind::Action || item.kind == RowKind::Toggle) && !tag_row(item);
+        };
+        const int last = static_cast<int>(view_.rows.size()) - 1;
+        const int current = std::clamp(view_.focused_row, 0, last);
+        const bool on_tag = tag_row(view_.rows[static_cast<std::size_t>(current)]);
+        const auto step_among = [&](const auto& wanted, int step) {
+            if (step == 0) return current;
+            for (int next = current + step; next >= 0 && next <= last; next += step)
+                if (wanted(view_.rows[static_cast<std::size_t>(next)])) return next;
+            return current;
+        };
+        int target = current;
+        if (!on_tag) {
+            if (delta_x != 0) target = step_among(action_row, delta_x);
+            else if (delta_y > 0)
+                for (int next = 0; next <= last; ++next)
+                    if (tag_row(view_.rows[static_cast<std::size_t>(next)])) {
+                        if (action_row(view_.rows[static_cast<std::size_t>(current)]))
+                            details_action_focus_ = view_.rows[static_cast<std::size_t>(current)].key;
+                        target = next;
+                        break;
+                    }
+        } else if (delta_x != 0) {
+            target = step_among(tag_row, delta_x);
+        } else if (delta_y < 0) {
+            if (!details_action_focus_.empty())
+                for (int next = 0; next <= last; ++next)
+                    if (view_.rows[static_cast<std::size_t>(next)].key == details_action_focus_ &&
+                        action_row(view_.rows[static_cast<std::size_t>(next)])) {
+                        target = next;
+                        break;
+                    }
+            if (target == current)
+                for (int next = 0; next <= last; ++next)
+                    if (action_row(view_.rows[static_cast<std::size_t>(next)])) { target = next; break; }
+        }
+        if (target == current) return;
         state_.navigation.selected_index = target;
         state_.navigation.focus_key = view_.rows[static_cast<std::size_t>(target)].key;
         return;
@@ -8370,6 +8794,24 @@ void Simulation::activate() {
         details_primary_pending_ = live(); state_.navigation.focus_key = live() ? "details-favorite" : (is_installed(state_, state_.navigation.selected_game_id) ? "details-play" : "details-install");
         return;
     }
+    std::size_t selected_chip = 0;
+    if (SelectedTagIndex(state_.navigation.focus_key, selected_chip) &&
+        selected_chip < state_.library.tag_filters.size()) {
+        auto tag = state_.library.tag_filters.begin();
+        std::advance(tag, static_cast<std::ptrdiff_t>(selected_chip));
+        const std::string name = *tag;
+        toggle_tag(name);
+        const bool sheet = !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "library-tags";
+        if (state_.library.tag_filters.empty()) {
+            if (sheet) refresh_tag_sheet();
+            else reconcile_library_selection(state_);
+        } else {
+            state_.navigation.focus_key = SelectedTagKey(std::min(selected_chip, state_.library.tag_filters.size() - 1));
+            if (sheet) refresh_tag_sheet();
+        }
+        save_profile();
+        return;
+    }
     if (view_.rows.empty()) return;
     const auto index = std::clamp(view_.focused_row, 0, static_cast<int>(view_.rows.size()) - 1);
     const ViewRow selected = view_.rows[static_cast<std::size_t>(index)];
@@ -8379,7 +8821,9 @@ void Simulation::activate() {
                                 (action_name.rfind("choice-", 0) == 0 && action_name != "choice-custom") ||
                                 (action_name.rfind("program-", 0) == 0 && action_name != "program-scan") ||
                                 action_name.rfind("override-remove-", 0) == 0 || action_name == "value-reset" ||
-                                action_name == "unlock-setting" || action_name == "reset-settings";
+                                action_name == "unlock-setting" || action_name == "reset-settings" ||
+                                action_name == "game-kit-default" || action_name == "game-kit-latest" ||
+                                (action_name.rfind("game-kit-", 0) == 0);
     if (edits_settings && !can_change_game_settings()) return;
     if (sign_in_action(action_name)) return;
     if (action_name == "connect") open_sign_in();
@@ -8487,6 +8931,27 @@ void Simulation::activate() {
             state_.content_language = code;
             save_profile();
         }
+        close_modal();
+        return;
+    } else if (action_name == "default-kit-picker") {
+        std::vector<std::string> actions = {"default-kit-latest"};
+        for (const auto& version : AvailableKitVersions(state_.admitted_kits))
+            actions.push_back("default-kit-" + version);
+        actions.push_back("cancel");
+        int focus = 0;
+        for (std::size_t index = 0; index < actions.size(); ++index)
+            if (rt::IsConcreteKitPin(state_.default_kit) && actions[index] == "default-kit-" + state_.default_kit)
+                focus = static_cast<int>(index);
+        open_modal({"default-kit", "Default runtime kit", state_.navigation.focus_key, std::move(actions), focus, false});
+    } else if (!state_.navigation.modals.empty() && state_.navigation.modals.back().id == "default-kit" &&
+               (action_name == "default-kit-latest" || action_name.rfind("default-kit-", 0) == 0)) {
+        if (action_name == "default-kit-latest") state_.default_kit = rt::kLatestKitPin;
+        else {
+            const auto version = action_name.substr(std::string("default-kit-").size());
+            if (!rt::IsConcreteKitPin(version)) { close_modal(); return; }
+            state_.default_kit = version;
+        }
+        save_profile();
         close_modal();
         return;
     } else if (live() && action_name == "install-version") {
@@ -9464,9 +9929,12 @@ void Simulation::activate() {
         pending_destructive_action_.clear();
     } else if (action_name.rfind("sort-", 0) == 0) {
         state_.library.sort = action_name.substr(5); state_.library.view_sort.clear(); close_modal(); reconcile_library_selection(state_); save_profile();
+    } else if (action_name == "library-tags") {
+        open_tag_sheet();
+        return;
     } else if (action_name.rfind("filter-", 0) == 0) {
         if (action_name == "filter-tag-clear") {
-            state_.library.tag_filter.clear();
+            state_.library.tag_filters.clear();
         } else {
             const auto filter = action_name.substr(7);
             if (state_.library.filters.contains(filter)) state_.library.filters.erase(filter);
@@ -9475,18 +9943,31 @@ void Simulation::activate() {
         close_modal(); reconcile_library_selection(state_); save_profile();
     } else if (action_name == "filters-reset") {
         state_.library.filters.clear();
-        state_.library.tag_filter.clear();
+        state_.library.tag_filters.clear();
         state_.library.sort = "name";
         state_.library.view_sort.clear();
         close_modal();
         reconcile_library_selection(state_);
         save_profile();
+    } else if (action_name == "detail-tags-more") {
+        open_game_tags();
+        return;
     } else if (action_name == "tag-filter") {
-        state_.library.tag_filter = selected.title;
+        if (!toggle_tag(selected.title)) return;
         state_.navigation.route = Route::Library;
         state_.navigation.detail_id.reset();
         close_modal();
         reconcile_library_selection(state_);
+        save_profile();
+    } else if (action_name.rfind("library-tag-", 0) == 0) {
+        std::size_t index = 0;
+        const auto number = action_name.substr(std::string("library-tag-").size());
+        const auto parsed = std::from_chars(number.data(), number.data() + number.size(), index);
+        if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || index >= tag_sheet_.size()) return;
+        if (!toggle_tag(tag_sheet_[index].name)) return;
+        const auto focus = state_.navigation.focus_key;
+        reconcile_library_selection(state_);
+        state_.navigation.focus_key = focus;
         save_profile();
     } else if (action_name == "game-settings") {
         const auto id = state_.navigation.selected_game_id;
@@ -9610,6 +10091,38 @@ void Simulation::activate() {
         clear_keeping_start_choices(&record.overrides);
         ++record.revision;
         close_modal(); refresh_game_settings(); save_profile();
+    } else if (action_name == "game-kit") {
+        std::vector<std::string> actions = {"game-kit-default", "game-kit-latest"};
+        const auto record = state_.game_settings.find(state_.navigation.selected_game_id);
+        const std::string pin = record == state_.game_settings.end() ? std::string{} : record->second.kit;
+        int focus = pin.empty() ? 0 : pin == rt::kLatestKitPin ? 1 : 0;
+        for (const auto& version : AvailableKitVersions(state_.admitted_kits)) {
+            if (pin == version) focus = static_cast<int>(actions.size());
+            actions.push_back("game-kit-" + version);
+        }
+        actions.push_back("cancel");
+        open_modal({"game-kit", "Runtime kit", "game-kit", std::move(actions), focus, false});
+    } else if (!state_.navigation.modals.empty() && state_.navigation.modals.back().id == "game-kit" &&
+               (action_name == "game-kit-default" || action_name == "game-kit-latest" ||
+                action_name.rfind("game-kit-", 0) == 0)) {
+        std::string pin;
+        if (action_name == "game-kit-latest") pin = rt::kLatestKitPin;
+        else if (action_name != "game-kit-default") {
+            pin = action_name.substr(std::string("game-kit-").size());
+            if (!rt::IsConcreteKitPin(pin)) { close_modal(); return; }
+        }
+        const auto game = state_.navigation.selected_game_id;
+        if (pin.empty()) {
+            const auto found = state_.game_settings.find(game);
+            if (found != state_.game_settings.end()) {
+                found->second.kit.clear();
+                if (found->second == rt::GameSettingsRecord{}) state_.game_settings.erase(found);
+            }
+        } else {
+            state_.game_settings[game].kit = pin;
+        }
+        close_modal();
+        save_profile();
     } else if (action_name.rfind("setting-", 0) == 0) {
         open_setting(action_name.substr(8));
     } else if (action_name == "steam-app-id") {
@@ -10173,6 +10686,7 @@ bool Simulation::action(const std::string& logical_action) {
     else if (logical_action == "r2") move(0, 4);
     else if ((logical_action == "l1" || logical_action == "r1") && !state_.navigation.modals.empty() &&
              (state_.navigation.modals.back().id == "game-settings" || state_.navigation.modals.back().id == "preset-picker" ||
+              state_.navigation.modals.back().id == "game-kit" || state_.navigation.modals.back().id == "default-kit" ||
               state_.navigation.modals.back().id == "game-maintenance" ||
               state_.navigation.modals.back().id == "content-language" ||
               state_.navigation.modals.back().id == "install-language" ||
@@ -10191,7 +10705,25 @@ bool Simulation::action(const std::string& logical_action) {
              state_.navigation.route == Route::Saves)
         pending_cloud_requests_.push_back({state_.saves_job.kind == SavesJobKind::None ? CloudRequestKind::SyncAll
                                                                                      : CloudRequestKind::StopJob, {}});
-    else if (logical_action == "search") { if (!state_.editor.active && state_.navigation.route == Route::Library && state_.navigation.modals.empty()) start_editor("Search", state_.library.query); }
+    else if (logical_action == "r3") {
+        // From any poster, the rail, or an empty library: the tag sheet, and again to leave it.
+        if (!state_.editor.active && state_.navigation.route == Route::Library) {
+            if (!state_.navigation.modals.empty()) {
+                if (state_.navigation.modals.back().id == "library-tags") cancel();
+            } else if (library_has_tags()) {
+                open_tag_sheet();
+                if (!state_.library.tag_filters.empty())
+                    state_.navigation.focus_key = SelectedTagKey(0);
+            }
+        }
+    }
+    else if (logical_action == "search") {
+        if (state_.editor.active) return true;
+        if (state_.navigation.route == Route::Library && state_.navigation.modals.empty())
+            start_editor("Search", state_.library.query);
+        else if (!state_.navigation.modals.empty() && state_.navigation.modals.back().id == "library-tags")
+            start_editor("Find tag", tag_find_);
+    }
     else if (logical_action == "triangle" && !state_.editor.active && state_.navigation.modals.empty() &&
              state_.navigation.route == Route::ManageGames) {
         // Triangle runs the open tab's action from anywhere on the screen; the dialog returns to the row.
@@ -10251,7 +10783,8 @@ bool Simulation::action(const std::string& logical_action) {
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.family_shared; });
             if (demos) filters.push_back("filter-hide-demos");
             if (family) filters.push_back("filter-hide-family");
-            if (!state_.library.tag_filter.empty()) filters.push_back("filter-tag-clear");
+            if (library_has_tags()) filters.push_back("library-tags");
+            if (!state_.library.tag_filters.empty()) filters.push_back("filter-tag-clear");
             std::vector<std::string> actions{"heading-sort"};
             actions.insert(actions.end(), sorts.begin(), sorts.end());
             actions.push_back("heading-filter");
@@ -10278,6 +10811,10 @@ bool Simulation::action(const std::string& logical_action) {
     } else if (logical_action == "square") {
         if (state_.editor.active) {
             if (state_.editor.caret > 0) { const auto prior = previous_caret(state_.editor.value, state_.editor.caret); state_.editor.value.erase(prior, state_.editor.caret - prior); state_.editor.caret = prior; }
+        } else if (!state_.navigation.modals.empty() && state_.navigation.modals.back().id == "library-tags" && !tag_find_.empty()) {
+            const auto prior = previous_caret(tag_find_, tag_find_.size());
+            tag_find_.erase(prior);
+            refresh_tag_sheet();
         } else if (state_.navigation.modals.empty() && (state_.navigation.route == Route::Home || state_.navigation.route == Route::Library || state_.navigation.route == Route::Details) && state_.navigation.selected_game_id.valid()) {
             if (state_.library.favorites.contains(state_.navigation.selected_game_id)) state_.library.favorites.erase(state_.navigation.selected_game_id);
             else state_.library.favorites.insert(state_.navigation.selected_game_id);
@@ -10371,7 +10908,14 @@ bool Simulation::action(const std::string& logical_action) {
 }
 
 void Simulation::text(const std::string& utf8) {
-    if (!state_.editor.active) return;
+    if (!state_.editor.active) {
+        if (utf8.empty() || state_.navigation.modals.empty() || state_.navigation.modals.back().id != "library-tags") return;
+        if (tag_find_.size() + utf8.size() > 64) return;
+        tag_find_ += utf8;
+        refresh_tag_sheet();
+        rebuild_view();
+        return;
+    }
     state_.editor.value.insert(state_.editor.caret, utf8);
     state_.editor.caret += utf8.size();
     normalize_editor();
@@ -10749,7 +11293,7 @@ bool Simulation::EffectiveSettingsFor(GameId id, rt::EffectiveSettings* settings
 std::vector<std::string> Simulation::game_settings_actions() const {
     using G = rt::SettingGroup;
     const auto game = state_.navigation.selected_game_id;
-    std::vector<std::string> actions = {"preset-picker"};
+    std::vector<std::string> actions = {"preset-picker", "game-kit"};
     const auto rows = [&](G group) {
         for (const auto& definition : rt::SettingsCatalogue())
             if (definition.group == group && game_settings_row_shown(definition, game)) actions.push_back("setting-" + definition.id);

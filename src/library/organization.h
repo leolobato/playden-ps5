@@ -42,8 +42,8 @@ struct OrganizationSnapshot {
   std::string scope = "all";
   std::string sort = "name";
   std::set<std::string> filters;
-  // Active Steam user-tag filter (display spelling); empty means no tag filter.
-  std::string tag_filter;
+  // Ticked Steam user tags (display spelling). A game must have every one; empty means no tag filter.
+  std::set<std::string> tag_filters;
   GameId selected_game_id;
 };
 

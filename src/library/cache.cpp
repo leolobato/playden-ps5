@@ -205,4 +205,30 @@ Result<void> LibraryCache::MergeGameTags(std::uint64_t account, const GameId& id
     if (!account) return Invalid("Invalid cache account identifier.");
     return MergeGameTags(std::to_string(account), id, std::move(tags));
 }
+Result<void> LibraryCache::MergeGameTags(
+    std::uint64_t account, const std::vector<std::pair<GameId, std::vector<std::string>>>& updates) const {
+    if (!account) return Invalid("Invalid cache account identifier.");
+    auto loaded = Load(std::to_string(account));
+    if (!loaded.ok()) return Result<void>::Failure(loaded.error(), loaded.message());
+    auto snapshot = std::move(loaded.value());
+    bool changed = false;
+    for (const auto& update : updates) {
+        const GameId id = update.first;
+        const auto& tags = update.second;
+        if (!id.valid() || tags.size() > kMaximumStoreTags) continue;
+        if (std::any_of(tags.begin(), tags.end(), [](const std::string& tag) {
+              return tag.empty() || tag.size() > kMaximumStoreTagBytes;
+            }))
+            continue;
+        const auto found = std::find_if(snapshot.games.begin(), snapshot.games.end(),
+                                        [&id](const GameSummary& game) { return game.id == id; });
+        if (found == snapshot.games.end()) continue;
+        found->store_tags = tags;
+        found->store_tags_known = true;
+        changed = true;
+    }
+    if (!changed) return Result<void>::Success();
+    snapshot.schema_version = kLatestSchema;
+    return Save(std::to_string(account), snapshot);
+}
 } // namespace playden

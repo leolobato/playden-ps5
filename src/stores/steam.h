@@ -61,6 +61,9 @@ class SteamLibrarySource final : public LibrarySource {
   std::uint64_t Clear(std::uint64_t account, std::uint64_t generation) override {
     return service_.Clear(account, generation);
   }
+  std::uint64_t EnsureLicenses(std::uint64_t account, std::uint64_t generation) override {
+    return service_.EnsureLicenses(account, generation);
+  }
   void Invalidate(std::uint64_t generation) override { service_.Invalidate(generation); }
   void Shutdown() override { service_.Shutdown(); }
   std::vector<LibraryEvent> Pump(std::size_t max_events) override { return service_.Pump(max_events); }
