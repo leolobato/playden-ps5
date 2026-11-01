@@ -507,6 +507,9 @@ std::vector<std::string> split_overrides(const std::string& list) {
     return entries;
 }
 
+// A sheet row that only sets the others apart: a section heading ("heading-sort") or an untitled divider.
+bool SheetDecoration(const std::string& key) { return key.rfind("heading-", 0) == 0 || key == "divider"; }
+
 std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
         {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"ready-later", "Later"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
@@ -524,7 +527,8 @@ std::string action_label(const std::string& key) {
         {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run a program once…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
-        {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"},
+        {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
+        {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
         {"sort-playtime", "Playtime"}, {"sort-install-size", "Install size"}, {"filter-installed", "Installed"},
         {"filter-genre-adventure", "Adventure"}, {"filter-controller-full", "Full controller support"},
@@ -5636,12 +5640,18 @@ void Simulation::rebuild_view() {
                 item.value = playden::steam::LanguageName(install_language(id));
                 item.subtitle = install_language_.empty() ? "From Settings › Downloads" : "This game only";
             }
-            // Demos and Family sharing are on unless the player hid them.
-            if (action_key == "filter-hide-demos" || action_key == "filter-hide-family") {
+            // Every library filter is a toggle. Demos and Family sharing are on unless the player hid them;
+            // the others (Playable) narrow the library while on.
+            if (modal.id == "filters" && action_key.rfind("filter-", 0) == 0) {
+                const bool hide = action_key == "filter-hide-demos" || action_key == "filter-hide-family";
                 item.kind = RowKind::Toggle;
-                item.selected = !state_.library.filters.contains(action_key.substr(7));
+                item.selected = state_.library.filters.contains(action_key.substr(7)) != hide;
                 item.value = item.selected ? "On" : "Off";
             }
+            // The sort in use gets a tick.
+            if (modal.id == "filters" && action_key.rfind("sort-", 0) == 0)
+                item.checked = action_key.substr(5) ==
+                    (state_.library.view_sort.empty() ? state_.library.sort : state_.library.view_sort);
             // The menu's Favorite says what it will do for this game.
             if (modal.id == "context" && action_key == "favorite")
                 item.title = state_.library.favorites.contains(state_.navigation.selected_game_id) ? "Remove from Favorites"
@@ -5763,8 +5773,8 @@ void Simulation::rebuild_view() {
                     if (inside && game_settings_row_shown(definition, settings_game)) ++count;
                 }
                 item.value = expanded_settings_sections_.count(action_key) ? "Hide" : "Show " + std::to_string(count);
-            } else if (settings_ready && action_key.rfind("heading-", 0) == 0) {
-                // Names the rows below it; not focusable (move_game_settings skips it).
+            } else if (SheetDecoration(action_key)) {
+                // Names the rows below it, or (a divider) only sets them apart; never focused (move skips it).
                 item.kind = RowKind::Separator;
                 item.action.clear();
                 item.enabled = false;
@@ -7394,7 +7404,12 @@ void Simulation::rebuild_view() {
 void Simulation::open_modal(ModalEntry modal) {
     if (!state_.navigation.modals.empty()) modal.opener_focus_key = state_.navigation.modals.back().action_keys[static_cast<std::size_t>(state_.navigation.modals.back().focused_action)];
     state_.navigation.modals.push_back(std::move(modal));
-    state_.navigation.focus_key = state_.navigation.modals.back().action_keys[static_cast<std::size_t>(state_.navigation.modals.back().focused_action)];
+    // A sheet opens on its first row the focus can take, past a heading.
+    auto& opened = state_.navigation.modals.back();
+    const int last = static_cast<int>(opened.action_keys.size()) - 1;
+    while (opened.focused_action < last && SheetDecoration(opened.action_keys[static_cast<std::size_t>(opened.focused_action)]))
+        ++opened.focused_action;
+    state_.navigation.focus_key = opened.action_keys[static_cast<std::size_t>(opened.focused_action)];
 }
 
 void Simulation::close_modal() {
@@ -7877,9 +7892,9 @@ void Simulation::move(int delta_x, int delta_y) {
         const int delta = delta_y != 0 ? delta_y : delta_x;
         const int last = static_cast<int>(modal.action_keys.size()) - 1;
         modal.focused_action = std::clamp(modal.focused_action + delta, 0, last);
-        // Game settings' topic headings only label the rows below them: focus goes on past them.
-        if (modal.id == "game-settings" && delta != 0) {
-            const auto heading = [&modal](int index) { return modal.action_keys[static_cast<std::size_t>(index)].rfind("heading-", 0) == 0; };
+        // A sheet's headings and dividers only set its rows apart: focus goes on past them.
+        if (delta != 0) {
+            const auto heading = [&modal](int index) { return SheetDecoration(modal.action_keys[static_cast<std::size_t>(index)]); };
             const int step = delta > 0 ? 1 : -1;
             while (heading(modal.focused_action) && modal.focused_action + step >= 0 && modal.focused_action + step <= last)
                 modal.focused_action += step;
@@ -10052,6 +10067,8 @@ bool Simulation::action(const std::string& logical_action) {
         const auto key = logical_action.substr(6);
         const auto found = std::find_if(view_.rows.begin(), view_.rows.end(), [&key](const ViewRow& row) { return row.key == key; });
         if (found == view_.rows.end()) { last_error_ = "Unknown focus key: " + key; return false; }
+        // A sheet's headings and dividers are never focused, however the focus is asked for.
+        if (!state_.navigation.modals.empty() && SheetDecoration(key)) { last_error_ = "Not focusable: " + key; return false; }
         state_.navigation.focus_key = key; state_.navigation.selected_index = static_cast<int>(std::distance(view_.rows.begin(), found));
         if (!state_.navigation.modals.empty()) state_.navigation.modals.back().focused_action = state_.navigation.selected_index;
         save_profile(); rebuild_view(); return true;
@@ -10158,21 +10175,24 @@ bool Simulation::action(const std::string& logical_action) {
             // Demos is listed while there are demos, or while they are hidden so they can be shown again.
             const bool demos = state_.library.filters.contains("hide-demos") ||
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.demo; });
-            std::vector<std::string> actions = live()
-            ? (dated ? std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime",
-                                                "filter-compat-playable", "filters-reset", "refresh-library", "cancel"}
-                     : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-playtime", "filter-compat-playable",
-                                                "filters-reset", "refresh-library", "cancel"})
-            : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime", "sort-install-size",
-                                      "filter-installed", "filter-genre-adventure", "filter-controller-full", "filter-compat-playable",
-                                      "filters-reset", "refresh-library", "cancel"};
+            // Sort, then Filter, then the actions after an untitled divider.
+            std::vector<std::string> sorts = live()
+                ? (dated ? std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime"}
+                         : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-playtime"})
+                : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime", "sort-install-size"};
+            std::vector<std::string> filters = live()
+                ? std::vector<std::string>{"filter-compat-playable"}
+                : std::vector<std::string>{"filter-installed", "filter-genre-adventure", "filter-controller-full", "filter-compat-playable"};
             // Family sharing likewise, for games a Steam family member shares.
             const bool family = state_.library.filters.contains("hide-family") ||
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.family_shared; });
-            if (demos)
-                actions.insert(std::find(actions.begin(), actions.end(), "filters-reset"), "filter-hide-demos");
-            if (family)
-                actions.insert(std::find(actions.begin(), actions.end(), "filters-reset"), "filter-hide-family");
+            if (demos) filters.push_back("filter-hide-demos");
+            if (family) filters.push_back("filter-hide-family");
+            std::vector<std::string> actions{"heading-sort"};
+            actions.insert(actions.end(), sorts.begin(), sorts.end());
+            actions.push_back("heading-filter");
+            actions.insert(actions.end(), filters.begin(), filters.end());
+            actions.insert(actions.end(), {"divider", "filters-reset", "refresh-library", "cancel"});
         open_modal({"filters", "Sort and filters", state_.navigation.focus_key, std::move(actions), 0, false});
         }
     }

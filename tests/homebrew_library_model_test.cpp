@@ -1186,6 +1186,57 @@ void live_demos_filter_defaults_on() {
     check(row!=nullptr && !row->selected,"Demos stays listed while demos are hidden");
 }
 
+// Sort and filters is in sections: Sort, Filter, then the actions after an untitled divider. Headings and the
+// divider never take the focus; the sort in use has a tick and every filter shows On or Off.
+void live_filters_sheet_sections() {
+    auto model=make_live();
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    auto demo=game(SteamId(43),"Synthetic Demo");demo.demo=true;
+    check(model.UpdateLibrary({{game(SteamId(42),"Synthetic"),demo},false,{},false,false,{}}),"library with a demo loaded");
+    check(model.action("r1") && model.action("triangle"),"live filter modal opens");
+    const auto& actions=model.state().navigation.modals.back().action_keys;
+    check(actions==std::vector<std::string>{"heading-sort","sort-name","sort-recent-played","sort-playtime","heading-filter",
+                                           "filter-compat-playable","filter-hide-demos","divider","filters-reset",
+                                           "refresh-library","cancel"},"sorts, filters and actions in their sections");
+    check(model.state().navigation.focus_key=="sort-name","the sheet opens on its first sort, past the heading");
+    const auto* heading=find_row(model,"heading-sort");
+    const auto* divider=find_row(model,"divider");
+    check(heading && heading->kind==RowKind::Separator && heading->title=="Sort" && !heading->enabled &&
+          divider && divider->kind==RowKind::Separator && divider->title.empty() && !divider->enabled,
+          "a titled heading and an untitled divider");
+    const auto* name=find_row(model,"sort-name");
+    const auto* played=find_row(model,"sort-recent-played");
+    check(name && name->checked && played && !played->checked,"the sort in use has a tick");
+    const auto* playable=find_row(model,"filter-compat-playable");
+    check(playable && playable->kind==RowKind::Toggle && !playable->selected && playable->value=="Off","Playable is a toggle, off");
+
+    // Up from the first sort stays there; down goes past the Filter heading and the divider.
+    check(model.action("up") && model.state().navigation.focus_key=="sort-name","no row above the first sort");
+    for(const auto* expected:{"sort-recent-played","sort-playtime","filter-compat-playable","filter-hide-demos","filters-reset"})
+        check(model.action("down") && model.state().navigation.focus_key==expected,"down skips headings and the divider");
+    check(model.action("up") && model.state().navigation.focus_key=="filter-hide-demos","up goes back past the divider");
+
+    // A jump that ends on a heading or the divider goes on past it, and asking for one directly is refused.
+    check(model.action("focus:sort-playtime") && model.action("r2") && model.state().navigation.focus_key=="filters-reset",
+          "a jump down lands past the divider");
+    check(model.action("l2") && model.state().navigation.focus_key=="sort-playtime","a jump up lands past the Filter heading");
+    check(model.action("focus:sort-name") && model.action("l2") && model.state().navigation.focus_key=="sort-name",
+          "a jump up from the first sort stays on it");
+    check(!model.action("focus:heading-sort") && !model.action("focus:divider") && model.state().navigation.focus_key=="sort-name",
+          "a heading or the divider can't be focused directly");
+    // The last action can be reached, past everything else.
+    for(int step=0;step<12;++step) model.action("down");
+    check(model.state().navigation.focus_key=="cancel","down ends on the last action");
+
+    activate(model,"filter-compat-playable");
+    check(model.action("triangle"),"filter modal opens again");
+    playable=find_row(model,"filter-compat-playable");
+    check(playable && playable->selected && playable->value=="On","Playable shows on");
+    activate(model,"sort-recent-played");
+    check(model.action("triangle"),"filter modal opens once more");
+    check(find_row(model,"sort-recent-played")->checked && !find_row(model,"sort-name")->checked,"the tick follows the sort");
+}
+
 // A game a Steam family member shares keeps that mark in the Library; the rest of the library does not.
 void live_family_shared_projected() {
     auto model=make_live();
@@ -1284,6 +1335,8 @@ void continue_playing_more_keeps_the_chosen_sort() {
     check(model.action("l1"),"back to Home");
     for(int step=0;step<30 && model.state().navigation.focus_key!="shelf-continue-more";++step) model.action("right");
     check(model.action("cross") && model.action("triangle"),"sort sheet from the More view");
+    check(find_row(model,"sort-recent-played")->checked && !find_row(model,"sort-playtime")->checked,
+          "the tick shows the More view's order, not the saved sort");
     activate(model,"sort-name");
     check(model.state().library.sort=="name" && model.visible_games().front()->id==SteamId(1),"a chosen sort replaces the More order");
     check(model.action("l1") && model.action("r1") && model.state().library.sort=="name" &&
@@ -4016,6 +4069,7 @@ void live_game_update() {
 }
 
 int main() {
+    live_filters_sheet_sections();
     live_game_update();
     live_install_language_row();
     live_install_version_row();

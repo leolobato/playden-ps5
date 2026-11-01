@@ -22,6 +22,7 @@
 #include "ui/components/keyboard.hpp"
 #include "ui/components/list.hpp"
 #include "ui/components/progress.hpp"
+#include "ui/components/surface.hpp"
 #include "ui/components/tabs.hpp"
 #include "ui/fonts.hpp"
 #include "ui/glyphs.hpp"
@@ -4265,6 +4266,9 @@ class Render::Impl
                 return about_height(row) + 12.0F;
             if (settings_sheet && row.kind == RowKind::Heading)
                 return 54.0F + 12.0F;
+            // An untitled separator is a divider: a line, shorter than a heading.
+            if (row.kind == RowKind::Separator && row.title.empty())
+                return 30.0F;
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
                 return 54.0F;
             const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
@@ -4349,6 +4353,17 @@ class Render::Impl
                 focus_ring(overlay_, rect, amount);
                 continue;
             }
+            if (row.kind == RowKind::Separator && row.title.empty())
+            {
+                // Sets the rows after it apart, with no name: a line inset as a heading's words are.
+                ui::DividerStyle line;
+                line.theme = theme_;
+                line.on_panel = true;
+                line.color = kText.with_alpha(0.12F);
+                ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
+                ui::draw_divider(canvas, line, {bounds.x + 12.0F, y, bounds.w - 24.0F, 18.0F});
+                continue;
+            }
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
             {
                 ui::text(overlay_, fonts_.display, ui::upper(row.title), bounds.x + 12.0F, y + 28.0F,
@@ -4419,6 +4434,13 @@ class Render::Impl
                 ui::text(overlay_, fonts_.regular, fit(fonts_.regular, value, 22.0F, value_width), rect.x + rect.w - 24.0F,
                          described ? rect.y + 52.0F : rect.cy() + 8.0F, 22.0F,
                          row.modified || row.selected ? kAccent : row.enabled ? kSecondary : kMuted, gfx::Align::right);
+            if (row.checked && value.empty())
+            {
+                // The current choice of a pick-one group: a tick drawn as two strokes, where a value would go.
+                const float cx = rect.x + rect.w - 35.0F, cy = rect.cy();
+                overlay_.line(cx - 8.0F, cy + 0.5F, cx - 2.5F, cy + 6.0F, 2.8F, kAccent);
+                overlay_.line(cx - 2.5F, cy + 6.0F, cx + 8.0F, cy - 5.5F, 2.8F, kAccent);
+            }
             if (row.progress > 0.0F)
                 painter.progress({rect.x + 22.0F, rect.y + 60.0F, rect.w - 44.0F, 6.0F}, row.progress);
             focus_ring(overlay_, rect, amount);

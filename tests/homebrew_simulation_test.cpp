@@ -178,6 +178,13 @@ void t03_search_filters_and_focus_reconciliation(const std::filesystem::path& fi
     simulation.action("triangle");
     activate(simulation, "filter-controller-full");
     simulation.action("triangle");
+    const auto filter_row = [&simulation](const std::string& key) {
+        return *std::find_if(simulation.view().rows.begin(), simulation.view().rows.end(),
+                             [&key](const auto& row) { return row.key == key; });
+    };
+    check(filter_row("filter-controller-full").selected && filter_row("filter-controller-full").value == "On" &&
+              filter_row("filter-installed").value == "Off" && filter_row("sort-playtime").checked,
+          "T03 a filter shows On when it applies, and the sort in use has its tick");
     activate(simulation, "filters-reset");
     check(simulation.state().library.filters.empty() && simulation.state().library.sort == "name",
           "T03 reset clears every filter and restores name sort");

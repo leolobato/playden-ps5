@@ -821,6 +821,7 @@ struct ViewRow {
     bool selected = false;
     bool dangerous = false;
     bool modified = false;  // Game settings: the player changed this value
+    bool checked = false;   // a sheet's pick-one row (the sort): the current choice, an accent tick
     std::string section;  // Settings: the rail section the row belongs to
     std::string tone;     // Saves: the status colour (good, busy, attention, problem, quiet)
     std::string aside;    // Saves: the right-hand note (size, last sync)
