@@ -23,6 +23,7 @@ struct StoreDetails {
   GameId id;
   std::string description;
   std::vector<std::string> genres;
+  std::vector<std::string> tags;  // user-defined store tags when appdetails includes them
   std::string controller_support;
 };
 

@@ -18,6 +18,9 @@ target_compile_features(playden_self_update PUBLIC cxx_std_17)
 target_compile_definitions(playden_self_update PRIVATE PLAYDEN_VERSION="${PLAYDEN_FULL_VERSION}"
     PLAYDEN_BUILD_COMMIT="${PLAYDEN_BUILD_COMMIT}")
 target_link_libraries(playden_self_update PUBLIC playden_miniz playden_steam_protocol playden_steam_http Threads::Threads)
+# preferences and the kit catalog call ParseKitVersion. Those libraries are defined earlier.
+target_link_libraries(playden_preferences PUBLIC playden_self_update)
+target_link_libraries(playden_runtime_kit_trust PUBLIC playden_self_update)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_self_update PRIVATE -fno-exceptions -fno-rtti)
 endif()

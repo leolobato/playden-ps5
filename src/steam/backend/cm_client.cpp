@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -429,6 +430,17 @@ class CmClient::Session {
     return PicsBody(cm::EncodePicsPackagesRequest(batch), parts);
   }
 
+  // Package ids that changed since `since`. A failed decode is kProtocol; the caller then fetches every package.
+  CmError ChangesSince(std::uint32_t since, std::uint32_t packages_cached, cm::PicsChanges* changes) {
+    std::vector<std::uint8_t> reply;
+    const auto call = Call(cm::kEMsgClientPICSChangesSinceRequest, {},
+                           cm::EncodePicsChangesSinceRequest(since, packages_cached),
+                           cm::kEMsgClientPICSChangesSinceResponse, &reply);
+    if (call != CmError::kNone) return call;
+    if (!cm::DecodePicsChangesSinceResponse(reply, changes)) return CmError::kProtocol;
+    return CmError::kNone;
+  }
+
   CmError PicsBody(const std::vector<std::uint8_t>& body, std::vector<cm::PicsResponse>* parts) {
     const std::uint64_t jobid = ++job_counter_;
     job_ = Job{jobid, {}, 0, false, CmError::kNone};
@@ -647,7 +659,7 @@ class CmClient::Session {
 };
 
 CmClient::CmClient(std::string ca_bundle, const Storage& device_storage)
-    : ca_bundle_(std::move(ca_bundle)), device_storage_(&device_storage) {}
+    : ca_bundle_(std::move(ca_bundle)), device_storage_(&device_storage), package_cache_(&device_storage) {}
 
 CmClient::CmClient(CmClientHooks hooks, cm::DeviceIdentity device)
     : hooks_(std::move(hooks)), device_(std::move(device)) {}
@@ -1242,9 +1254,190 @@ FreeLicenseResult CmClient::RequestFreeLicenses(const StoredSession& stored, con
   return finish(CmError::kNone);
 }
 
+// Parsed package contents from the last license read, so the next one can skip packages Steam has not changed.
+struct RememberedPackage {
+  std::uint32_t change_number = 0;
+  bool borrowed = false;  // granted by a family member's license, not this account's own
+  std::uint32_t time_created = 0;  // the license date used for this package; 0 when Steam sent none
+  PackageContents contents;
+};
+struct PackageCache {
+  std::uint64_t account_id = 0;
+  std::uint32_t current_change_number = 0;
+  std::uint64_t fetched_at = 0;
+  std::uint64_t license_changes = 0;  // CmLicenseChanges when this was saved; 0 after a restart
+  std::map<std::uint32_t, RememberedPackage> packages;
+};
+
+std::mutex g_package_cache_mutex;
+constexpr const char* kPackageCachePath = "package-contents.cache";
+const Bytes kPackageCacheMagic = {'P', 'D', 'N', 'P', 'K', 'G', 0, 3};
+constexpr std::size_t kMaxPackageCacheBytes = 4 * 1024 * 1024;
+constexpr std::uint32_t kMaxCachedIds = 4096;
+constexpr std::size_t kMaxCachedPackages = 20000;
+
+std::uint32_t PackageCacheChecksum(const Bytes& bytes, std::size_t size) {
+  std::uint32_t crc = 0xffffffffu;
+  for (std::size_t i = 0; i < size; ++i) {
+    crc ^= bytes[i];
+    for (int bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+  }
+  return ~crc;
+}
+
+void AppendPackageNumber(Bytes& out, std::uint64_t value, unsigned count) {
+  for (unsigned i = 0; i < count; ++i) {
+    out.push_back(static_cast<std::uint8_t>(value));
+    value >>= 8;
+  }
+}
+
+struct PackageCacheReader {
+  const Bytes& bytes;
+  std::size_t offset = 0;
+  std::size_t limit = 0;
+  bool okay = true;
+  std::uint64_t Number(unsigned count) {
+    if (!okay || offset > limit || count > limit - offset) {
+      okay = false;
+      return 0;
+    }
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i < count; ++i) value |= std::uint64_t(bytes[offset++]) << (i * 8);
+    return value;
+  }
+};
+
+PackageCache LoadPackageCache(const Storage& storage) {
+  std::lock_guard<std::mutex> lock(g_package_cache_mutex);
+  const auto read = storage.Read(kPackageCachePath, kMaxPackageCacheBytes);
+  if (!read.ok()) return {};
+  const Bytes& bytes = read.value();
+  if (bytes.size() < kPackageCacheMagic.size() + 8 + 4 + 8 + 8 + 4 + 4) return {};
+  if (!std::equal(kPackageCacheMagic.begin(), kPackageCacheMagic.end(), bytes.begin())) return {};
+  const std::size_t body = bytes.size() - 4;
+  PackageCacheReader crc{bytes, body, bytes.size()};
+  if (static_cast<std::uint32_t>(crc.Number(4)) != PackageCacheChecksum(bytes, body)) return {};
+  PackageCacheReader reader{bytes, kPackageCacheMagic.size(), body};
+  PackageCache cache;
+  cache.account_id = reader.Number(8);
+  cache.current_change_number = static_cast<std::uint32_t>(reader.Number(4));
+  cache.fetched_at = reader.Number(8);
+  cache.license_changes = reader.Number(8);
+  const auto count = reader.Number(4);
+  if (!reader.okay || !cache.account_id || !cache.current_change_number || !cache.fetched_at ||
+      count > kMaxCachedPackages)
+    return {};
+  for (std::uint64_t i = 0; i < count; ++i) {
+    const auto id = static_cast<std::uint32_t>(reader.Number(4));
+    RememberedPackage package;
+    package.change_number = static_cast<std::uint32_t>(reader.Number(4));
+    package.borrowed = reader.Number(4) & 1u;
+    package.time_created = static_cast<std::uint32_t>(reader.Number(4));
+    const auto apps = reader.Number(4);
+    if (!reader.okay || !id || apps > kMaxCachedIds) return {};
+    package.contents.app_ids.resize(static_cast<std::size_t>(apps));
+    for (auto& app : package.contents.app_ids) app = static_cast<std::uint32_t>(reader.Number(4));
+    const auto depots = reader.Number(4);
+    if (!reader.okay || depots > kMaxCachedIds) return {};
+    package.contents.depot_ids.resize(static_cast<std::size_t>(depots));
+    for (auto& depot : package.contents.depot_ids) depot = static_cast<std::uint32_t>(reader.Number(4));
+    if (!reader.okay || !cache.packages.emplace(id, std::move(package)).second) return {};
+  }
+  if (!reader.okay || reader.offset != body) return {};
+  return cache;
+}
+
+bool SavePackageCache(const Storage& storage, const PackageCache& cache) {
+  std::lock_guard<std::mutex> lock(g_package_cache_mutex);
+  if (!cache.account_id || !cache.current_change_number || !cache.fetched_at ||
+      cache.packages.size() > kMaxCachedPackages)
+    return false;
+  Bytes out = kPackageCacheMagic;
+  AppendPackageNumber(out, cache.account_id, 8);
+  AppendPackageNumber(out, cache.current_change_number, 4);
+  AppendPackageNumber(out, cache.fetched_at, 8);
+  AppendPackageNumber(out, cache.license_changes, 8);
+  AppendPackageNumber(out, cache.packages.size(), 4);
+  for (const auto& [id, package] : cache.packages) {
+    if (package.contents.app_ids.size() > kMaxCachedIds || package.contents.depot_ids.size() > kMaxCachedIds) return false;
+    const std::size_t entry =
+        4 + 4 + 4 + 4 + 4 + package.contents.app_ids.size() * 4 + 4 + package.contents.depot_ids.size() * 4;
+    if (out.size() + entry + 4 > kMaxPackageCacheBytes) return false;
+    AppendPackageNumber(out, id, 4);
+    AppendPackageNumber(out, package.change_number, 4);
+    AppendPackageNumber(out, package.borrowed ? 1u : 0u, 4);
+    AppendPackageNumber(out, package.time_created, 4);
+    AppendPackageNumber(out, package.contents.app_ids.size(), 4);
+    for (const auto app : package.contents.app_ids) AppendPackageNumber(out, app, 4);
+    AppendPackageNumber(out, package.contents.depot_ids.size(), 4);
+    for (const auto depot : package.contents.depot_ids) AppendPackageNumber(out, depot, 4);
+  }
+  AppendPackageNumber(out, PackageCacheChecksum(out, out.size()), 4);
+  return storage.WriteAtomic(kPackageCachePath, out).ok();
+}
+
+void FillFromPackageCache(const PackageCache& cache, AcquisitionResult* result, std::uint64_t now) {
+  std::set<std::uint32_t> own_apps, borrowed_apps;
+  for (const auto& [id, package] : cache.packages) {
+    result->package_apps[id] = package.contents.app_ids;
+    result->package_depots[id] = package.contents.depot_ids;
+    result->owned_apps.insert(package.contents.app_ids.begin(), package.contents.app_ids.end());
+    result->owned_depots.insert(package.contents.depot_ids.begin(), package.contents.depot_ids.end());
+    result->owned_depots.insert(package.contents.app_ids.begin(), package.contents.app_ids.end());
+    auto& apps = package.borrowed ? borrowed_apps : own_apps;
+    apps.insert(package.contents.app_ids.begin(), package.contents.app_ids.end());
+  }
+  for (const auto app : borrowed_apps)
+    if (!own_apps.count(app)) result->shared_apps.insert(app);
+  // Same rule as a live read: the earliest date, and a borrowed package does not date an app this
+  // account owns itself.
+  for (const auto& [id, package] : cache.packages) {
+    if (!package.time_created || package.time_created > now) continue;
+    for (const auto app : package.contents.app_ids) {
+      if (package.borrowed && own_apps.count(app)) continue;
+      auto [entry, inserted] = result->acquired_at.emplace(app, package.time_created);
+      if (!inserted) entry->second = std::min(entry->second, static_cast<std::uint32_t>(package.time_created));
+    }
+  }
+  result->fetched_at = cache.fetched_at;
+  result->error = CmError::kNone;
+}
+
+// A saved grant stands in for a new read while it is under an hour old and Steam has not pushed a
+// different license list since it was saved. After a restart the push count is 0, so only the age applies.
+bool LicenseCacheFresh(const PackageCache& cache, std::uint64_t account, std::uint64_t now,
+                       std::uint64_t live_changes) {
+  if (cache.account_id != account || !cache.fetched_at || now < cache.fetched_at) return false;
+  if (now - cache.fetched_at >= kLicenseCacheTtlSeconds) return false;
+  return live_changes == 0 || live_changes == cache.license_changes;
+}
+
+bool RestoreLicensedDepots(const Storage& storage, LicensedDepots& depots) {
+  const auto loaded = LoadPackageCache(storage);
+  if (!loaded.account_id || !loaded.fetched_at) return false;
+  AcquisitionResult result;
+  FillFromPackageCache(loaded, &result, std::numeric_limits<std::uint64_t>::max());
+  depots.Set(loaded.account_id, result);
+  return true;
+}
+
 AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
                                                   const std::atomic<bool>& cancel) {
   AcquisitionResult result;
+  const auto now = hooks_.unix_now
+                       ? hooks_.unix_now()
+                       : static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch()).count());
+  if (package_cache_ && !cancel.load(std::memory_order_acquire)) {
+    const auto loaded = LoadPackageCache(*package_cache_);
+    const auto live_changes = shared_ ? CmLicenseChanges(*shared_) : 0;
+    if (LicenseCacheFresh(loaded, stored.steam_id, now, live_changes)) {
+      FillFromPackageCache(loaded, &result, now);
+      Log("step=packages ttl=hit licensed=" + std::to_string(loaded.packages.size()));
+      return result;
+    }
+  }
   const auto deadline = Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms);
   Lease lease;
   auto finish = [&](CmError error) {
@@ -1291,13 +1484,70 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
   // What the borrowed packages did in PICS, for the family log.
   std::vector<std::uint32_t> borrowed_missing_token, borrowed_unparsable, borrowed_absent;
   std::set<std::uint32_t> borrowed_apps, borrowed_depots;
-  for (std::size_t start = 0; start < packages.size(); start += kPicsBatch) {
+
+  // A saved list is reused for packages Steam's change list does not name. No storage, another account,
+  // a full-update flag, or a failed change list fetches every licensed package.
+  PackageCache loaded;
+  bool changes_ok = false;
+  cm::PicsChanges changes;
+  if (package_cache_) {
+    loaded = LoadPackageCache(*package_cache_);
+    session.Rebind(Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms), cancel);
+    const bool same_account = loaded.account_id == stored.steam_id && loaded.current_change_number != 0;
+    const auto since = same_account ? loaded.current_change_number : 0;
+    const auto cached_count = same_account
+                                 ? static_cast<std::uint32_t>(std::min(loaded.packages.size(), kMaxCachedPackages))
+                                 : 0;
+    changes_ok = session.ChangesSince(since, cached_count, &changes) == CmError::kNone;
+  }
+  const bool reusable = package_cache_ && changes_ok && loaded.account_id == stored.steam_id &&
+                        loaded.current_change_number != 0 && !changes.force_full_update &&
+                        !changes.force_full_package_update;
+  std::set<std::uint32_t> changed_ids;
+  if (reusable) changed_ids.insert(changes.package_ids.begin(), changes.package_ids.end());
+  std::vector<cm::PackageRequest> to_fetch;
+  std::map<std::uint32_t, RememberedPackage> remembered;
+  for (const auto& request : packages) {
+    const auto found = reusable ? loaded.packages.find(request.package_id) : loaded.packages.end();
+    if (reusable && found != loaded.packages.end() && !changed_ids.count(request.package_id))
+      remembered.emplace(request.package_id, found->second);
+    else
+      to_fetch.push_back(request);
+  }
+  if (package_cache_) {
+    std::string line = "step=packages licensed=" + std::to_string(packages.size()) +
+                       " fetched=" + std::to_string(to_fetch.size()) +
+                       " cached=" + std::to_string(packages.size() - to_fetch.size());
+    if (!changes_ok) line += " changes=failed";
+    Log(line);
+  }
+
+  auto accept = [&](std::uint32_t package_id, const PackageContents& contents) {
+    auto& apps = package_apps[package_id];
+    apps.insert(apps.end(), contents.app_ids.begin(), contents.app_ids.end());
+    auto& depots = result.package_depots[package_id];
+    depots.insert(depots.end(), contents.depot_ids.begin(), contents.depot_ids.end());
+    result.owned_apps.insert(contents.app_ids.begin(), contents.app_ids.end());
+    result.owned_depots.insert(contents.depot_ids.begin(), contents.depot_ids.end());
+    // Steam2-era packages list their content depots among the apps (Counter-Strike: Source's 241), as
+    // depots were apps then: an ID in either list grants that depot, as DepotDownloader checks. Steam
+    // gives apps and depots IDs from one pool, so an app ID never names another app's depot.
+    result.owned_depots.insert(contents.app_ids.begin(), contents.app_ids.end());
+    if (borrowed_packages.count(package_id)) {
+      borrowed_apps.insert(contents.app_ids.begin(), contents.app_ids.end());
+      borrowed_depots.insert(contents.depot_ids.begin(), contents.depot_ids.end());
+    }
+  };
+  for (const auto& [id, package] : remembered) accept(id, package.contents);
+
+  for (std::size_t start = 0; start < to_fetch.size(); start += kPicsBatch) {
     // Each batch gets its own deadline: an account with thousands of licenses needs hundreds of
     // batches, more than one deadline covers (issue #47). A stalled batch still times out.
-    if (start > 0) session.Rebind(Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms), cancel);
+    // A change-list call has already used the deadline Acquire set, so the first batch is renewed too.
+    if (start > 0 || package_cache_) session.Rebind(Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms), cancel);
     const std::vector<cm::PackageRequest> batch(
-        packages.begin() + static_cast<std::ptrdiff_t>(start),
-        packages.begin() + static_cast<std::ptrdiff_t>(std::min(start + kPicsBatch, packages.size())));
+        to_fetch.begin() + static_cast<std::ptrdiff_t>(start),
+        to_fetch.begin() + static_cast<std::ptrdiff_t>(std::min(start + kPicsBatch, to_fetch.size())));
     std::vector<cm::PicsResponse> parts;
     if (const auto pics = session.Pics(batch, &parts); pics != CmError::kNone) return finish(pics);
     std::set<std::uint32_t> wanted;
@@ -1317,20 +1567,12 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
           if (first_answer) borrowed_unparsable.push_back(package.package_id);
           continue;
         }
-        auto& apps = package_apps[package.package_id];
-        apps.insert(apps.end(), contents.app_ids.begin(), contents.app_ids.end());
-        auto& depots = result.package_depots[package.package_id];
-        depots.insert(depots.end(), contents.depot_ids.begin(), contents.depot_ids.end());
-        result.owned_apps.insert(contents.app_ids.begin(), contents.app_ids.end());
-        result.owned_depots.insert(contents.depot_ids.begin(), contents.depot_ids.end());
-        // Steam2-era packages list their content depots among the apps (Counter-Strike: Source's 241), as
-        // depots were apps then: an ID in either list grants that depot, as DepotDownloader checks. Steam
-        // gives apps and depots IDs from one pool, so an app ID never names another app's depot.
-        result.owned_depots.insert(contents.app_ids.begin(), contents.app_ids.end());
-        if (borrowed) {
-          borrowed_apps.insert(contents.app_ids.begin(), contents.app_ids.end());
-          borrowed_depots.insert(contents.depot_ids.begin(), contents.depot_ids.end());
-        }
+        accept(package.package_id, contents);
+        if (contents.app_ids.size() <= kMaxCachedIds && contents.depot_ids.size() <= kMaxCachedIds)
+          remembered[package.package_id] =
+              RememberedPackage{package.change_number, false, 0, std::move(contents)};
+        else
+          remembered.erase(package.package_id);
         received.insert(package.package_id);
       }
     }
@@ -1362,10 +1604,6 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
   // Nothing usable at all is a reply this client does not understand, not a few odd licenses.
   if (!packages.empty() && result.skipped_packages == packages.size()) return finish(CmError::kProtocol);
 
-  const auto now = hooks_.unix_now
-                       ? hooks_.unix_now()
-                       : static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
-                             std::chrono::system_clock::now().time_since_epoch()).count());
   for (const auto& [id, license] : chosen) {
     if (license->time_created == 0 || license->time_created > now) continue;
     const auto found = package_apps.find(id);
@@ -1379,7 +1617,25 @@ AcquisitionResult CmClient::FetchAcquisitionDates(const StoredSession& stored,
     }
   }
   result.package_apps = std::move(package_apps);
-  return finish(CmError::kNone);
+  result.fetched_at = now;
+  // Release notes the license list first, so the saved count includes a list that arrived during this read.
+  Release(&lease, CmError::kNone);
+  if (package_cache_ && changes_ok && changes.current_change_number != 0) {
+    for (auto& entry : remembered) {
+      entry.second.borrowed = borrowed_packages.count(entry.first) > 0;
+      if (const auto license = chosen.find(entry.first); license != chosen.end())
+        entry.second.time_created = license->second->time_created;
+    }
+    PackageCache fresh;
+    fresh.account_id = stored.steam_id;
+    fresh.current_change_number = changes.current_change_number;
+    fresh.fetched_at = now;
+    fresh.license_changes = shared_ ? CmLicenseChanges(*shared_) : 0;
+    fresh.packages = std::move(remembered);
+    SavePackageCache(*package_cache_, fresh);
+  }
+  result.error = CmError::kNone;
+  return result;
 }
 
 AuthResult RenewThroughCm(CmClient& client, const StoredSession& session,

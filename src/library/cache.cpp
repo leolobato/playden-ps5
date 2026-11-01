@@ -8,8 +8,11 @@ namespace {
 constexpr std::size_t kMaximumCacheBytes = 16 * 1024 * 1024;
 constexpr std::size_t kMaximumGames = 100000;
 // Schema 5 names each game by store and value; 4 and older hold Steam app IDs only. 6 marks demos.
-constexpr unsigned kLatestSchema = 7;
+// 7 family sharing. 8 persists user-defined Steam store tags.
+constexpr unsigned kLatestSchema = 8;
 constexpr std::size_t kMaximumGameValue = 48;
+constexpr std::size_t kMaximumStoreTagBytes = 64;
+constexpr std::size_t kMaximumStoreTags = 32;
 const Bytes kMagic = {'P','D','L','I','B',0,1,0};
 bool ValidAccount(const std::string& account) {
     return !account.empty() && account.size() <= 20 && account[0] != '0' &&
@@ -43,6 +46,13 @@ struct Reader {
         std::string value(bytes.begin()+offset,bytes.begin()+offset+count);offset+=count;return value;
     }
 };
+bool ValidStoreTags(const GameSummary& game) {
+    if (!game.store_tags_known) return game.store_tags.empty();
+    if (game.store_tags.size() > kMaximumStoreTags) return false;
+    for (const auto& tag : game.store_tags)
+        if (tag.empty() || tag.size() > kMaximumStoreTagBytes) return false;
+    return true;
+}
 bool ValidGame(const GameSummary& game,unsigned schema) {
     return (schema>=5?game.id.valid():game.id.steam_app().has_value()) && game.id.value.size()<=kMaximumGameValue &&
         !game.title.empty() && game.title.size()<=4096 &&
@@ -50,7 +60,8 @@ bool ValidGame(const GameSummary& game,unsigned schema) {
             *game.last_played_unix_seconds<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))) &&
         (!game.added_at_unix_seconds || (*game.added_at_unix_seconds>0 &&
             *game.added_at_unix_seconds<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))) &&
-        game.artwork_source.size()<=8192 && game.description.size()<=65536 && game.developer.size()<=4096;
+        game.artwork_source.size()<=8192 && game.description.size()<=65536 && game.developer.size()<=4096 &&
+        (schema < 8 || ValidStoreTags(game));
 }
 Result<void> Invalid(const char* message) {return Result<void>::Failure(StorageError::kInvalidData,message);}
 }
@@ -71,14 +82,21 @@ Result<void> LibraryCache::Save(const std::string& account,const LibrarySnapshot
         if(snapshot.schema_version<4 && game.added_at_unix_seconds)return Invalid("Cache schema cannot preserve acquisition dates.");
         if(snapshot.schema_version<6 && game.demo)return Invalid("Cache schema cannot preserve demos.");
         if(snapshot.schema_version<7 && game.family_shared)return Invalid("Cache schema cannot preserve family sharing.");
+        if(snapshot.schema_version<8 && game.store_tags_known)return Invalid("Cache schema cannot preserve store tags.");
         if(snapshot.schema_version>=5){Number(encoded,static_cast<std::uint8_t>(game.id.store),1);String(encoded,game.id.value);}
         else Number(encoded,*game.id.steam_app(),4);
         String(encoded,game.title);String(encoded,game.artwork_source);String(encoded,game.description);String(encoded,game.developer);
         if(snapshot.schema_version>=2){
-            Number(encoded,(game.playtime_minutes?1u:0u)|(game.last_played_unix_seconds?2u:0u)|(game.added_at_unix_seconds?4u:0u)|(game.demo?8u:0u)|(game.family_shared?16u:0u),1);
+            const auto flags=(game.playtime_minutes?1u:0u)|(game.last_played_unix_seconds?2u:0u)|(game.added_at_unix_seconds?4u:0u)|
+                (game.demo?8u:0u)|(game.family_shared?16u:0u)|(game.store_tags_known?32u:0u);
+            Number(encoded,flags,1);
             if(game.playtime_minutes)Number(encoded,*game.playtime_minutes,8);
             if(game.last_played_unix_seconds)Number(encoded,*game.last_played_unix_seconds,8);
             if(game.added_at_unix_seconds)Number(encoded,*game.added_at_unix_seconds,8);
+            if(game.store_tags_known){
+                Number(encoded,static_cast<std::uint8_t>(game.store_tags.size()),1);
+                for(const auto& tag:game.store_tags)String(encoded,tag);
+            }
         }
         if(encoded.size()>kMaximumCacheBytes-4)return Invalid("Library cache exceeds its storage limit.");
     }
@@ -117,12 +135,23 @@ Result<LibrarySnapshot> LibraryCache::Load(const std::string& account) const {
         game.artwork_source=reader.String(8192);game.description=reader.String(65536);game.developer=reader.String(4096);
         if(snapshot.schema_version>=2){
             const auto flags=reader.Number(1);
-            if(flags>(snapshot.schema_version>=7?31u:snapshot.schema_version>=6?15u:snapshot.schema_version>=4?7u:3u))return invalid();
+            const auto max_flags=snapshot.schema_version>=8?63u:snapshot.schema_version>=7?31u:snapshot.schema_version>=6?15u:snapshot.schema_version>=4?7u:3u;
+            if(flags>max_flags)return invalid();
             if(flags&1)game.playtime_minutes=reader.Number(8);
             if(flags&2)game.last_played_unix_seconds=reader.Number(8);
             if(flags&4)game.added_at_unix_seconds=reader.Number(8);
             game.demo=(flags&8)!=0;
             game.family_shared=(flags&16)!=0;
+            game.store_tags_known=(flags&32)!=0;
+            if(game.store_tags_known){
+                const auto tag_count=reader.Number(1);
+                if(!reader.okay||tag_count>kMaximumStoreTags)return invalid();
+                for(std::uint64_t t=0;t<tag_count;++t){
+                    std::string tag=reader.String(kMaximumStoreTagBytes);
+                    if(!reader.okay)return invalid();
+                    game.store_tags.push_back(std::move(tag));
+                }
+            }
         }
         if(!reader.okay||!ValidGame(game,snapshot.schema_version)||!seen.insert(game.id).second)return invalid();
         snapshot.games.push_back(std::move(game));
@@ -151,5 +180,55 @@ Result<void> LibraryCache::Clear(const std::string& account) const {
 Result<void> LibraryCache::Clear(std::uint64_t account) const {
     if(!account)return Invalid("Invalid cache account identifier.");
     return Clear(std::to_string(account));
+}
+
+Result<void> LibraryCache::MergeGameTags(const std::string& account, const GameId& id,
+                                         std::vector<std::string> tags) const {
+    if (!ValidAccount(account)) return Invalid("Invalid cache account identifier.");
+    if (!id.valid()) return Invalid("Invalid game for tag merge.");
+    if (tags.size() > kMaximumStoreTags) return Invalid("Too many store tags.");
+    for (const auto& tag : tags)
+        if (tag.empty() || tag.size() > kMaximumStoreTagBytes) return Invalid("Invalid store tag.");
+    auto loaded = Load(account);
+    if (!loaded.ok()) return Result<void>::Failure(loaded.error(), loaded.message());
+    auto snapshot = std::move(loaded.value());
+    snapshot.schema_version = kLatestSchema;
+    const auto found = std::find_if(snapshot.games.begin(), snapshot.games.end(),
+                                    [&id](const GameSummary& game) { return game.id == id; });
+    if (found == snapshot.games.end()) return Result<void>::Success();
+    found->store_tags = std::move(tags);
+    found->store_tags_known = true;
+    return Save(account, snapshot);
+}
+Result<void> LibraryCache::MergeGameTags(std::uint64_t account, const GameId& id,
+                                         std::vector<std::string> tags) const {
+    if (!account) return Invalid("Invalid cache account identifier.");
+    return MergeGameTags(std::to_string(account), id, std::move(tags));
+}
+Result<void> LibraryCache::MergeGameTags(
+    std::uint64_t account, const std::vector<std::pair<GameId, std::vector<std::string>>>& updates) const {
+    if (!account) return Invalid("Invalid cache account identifier.");
+    auto loaded = Load(std::to_string(account));
+    if (!loaded.ok()) return Result<void>::Failure(loaded.error(), loaded.message());
+    auto snapshot = std::move(loaded.value());
+    bool changed = false;
+    for (const auto& update : updates) {
+        const GameId id = update.first;
+        const auto& tags = update.second;
+        if (!id.valid() || tags.size() > kMaximumStoreTags) continue;
+        if (std::any_of(tags.begin(), tags.end(), [](const std::string& tag) {
+              return tag.empty() || tag.size() > kMaximumStoreTagBytes;
+            }))
+            continue;
+        const auto found = std::find_if(snapshot.games.begin(), snapshot.games.end(),
+                                        [&id](const GameSummary& game) { return game.id == id; });
+        if (found == snapshot.games.end()) continue;
+        found->store_tags = tags;
+        found->store_tags_known = true;
+        changed = true;
+    }
+    if (!changed) return Result<void>::Success();
+    snapshot.schema_version = kLatestSchema;
+    return Save(std::to_string(account), snapshot);
 }
 } // namespace playden

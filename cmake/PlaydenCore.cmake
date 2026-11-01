@@ -40,6 +40,8 @@ add_library(playden_steam_core STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/app_details_service.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/download_server_service.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/store_details_service.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/store_tags_service.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/store_browse_service.cpp"
     "${CMAKE_SOURCE_DIR}/src/installs/install_service.cpp"
     "${CMAKE_SOURCE_DIR}/src/installs/install_record.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/install_volumes.cpp"

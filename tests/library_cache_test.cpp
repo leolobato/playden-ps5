@@ -86,6 +86,16 @@ int main(){
  auto lossy_shared=shared;lossy_shared.schema_version=6;
  Check(!cache.Save("76561198000000007",lossy_shared).ok(),"schema six cannot silently discard family sharing");
  Check(!demos_restored.value().games[0].family_shared&&!dated_restored.value().games[0].family_shared,"older schemas hold no family sharing");
+ LibrarySnapshot tagged{8,123463,{{SteamId(80),"Tagged Game","","",""},{SteamId(81),"Plain","","",""}}};
+ tagged.games[0].store_tags={"Roguelike","Pixel Graphics"};tagged.games[0].store_tags_known=true;
+ Check(cache.Save("76561198000000008",tagged).ok(),"save schema eight store tags");
+ auto tagged_restored=cache.Load("76561198000000008");
+ Check(tagged_restored.ok()&&tagged_restored.value().schema_version==8,"load schema eight");
+ Check(tagged_restored.value().games[0].store_tags_known&&tagged_restored.value().games[0].store_tags.size()==2&&
+     tagged_restored.value().games[0].store_tags[0]=="Roguelike"&&!tagged_restored.value().games[1].store_tags_known,"store tag roundtrip");
+ auto lossy_tags=tagged;lossy_tags.schema_version=7;
+ Check(!cache.Save("76561198000000008",lossy_tags).ok(),"schema seven cannot silently discard store tags");
+ Check(!shared_restored.value().games[0].store_tags_known,"older schemas hold no store tags");
  auto zero_dated=dated;zero_dated.games[0].added_at_unix_seconds=0;
  Check(!cache.Save("76561198000000005",zero_dated).ok(),"zero acquisition date rejected");
  auto future=partial;future.retrieved_at_unix_seconds=std::uint64_t{1}<<63;

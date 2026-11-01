@@ -113,6 +113,43 @@ void V1RoundTripAndIsolation() {
   Check((info.st_mode & 0777) == 0600, "organization file is owner-only");
 }
 
+void TagFilterRoundTrips() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  auto expected = Example();
+  expected.tag_filters = {"Adventure", "Roguelike"};
+  Check(playden::OrganizationSnapshotIsValid(expected), "tag filter is valid organization");
+  Check(store.Save(kDevice, expected).ok(), "tag filter saves");
+  const auto restored = store.Load(kDevice);
+  Check(restored.ok() && restored.value() && *restored.value() == expected, "several tags round trip");
+}
+
+void Version3TagLoadsAsOne() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  auto expected = Example();
+  expected.tag_filters = {"Roguelike"};
+  Check(store.Save(kDevice, expected).ok(), "version 4 tag filter saves");
+  auto stored = storage.Read(kV2Path);
+  Check(stored.ok(), "version 4 tag filter reads");
+  if (!stored.ok()) return;
+  auto legacy = stored.value();
+  const std::string tag = "Roguelike";
+  const auto text = std::search(legacy.begin(), legacy.end(), tag.begin(), tag.end());
+  Check(text != legacy.end() && text - legacy.begin() >= 8, "saved tag text is present");
+  if (text == legacy.end() || text - legacy.begin() < 8) return;
+  legacy.erase(text - 8, text - 4);
+  legacy[8] = 3;
+  RewriteChecksum(legacy);
+  Check(storage.WriteAtomicPrivate(kV2Path, legacy).ok(), "version 3 tag filter writes");
+  const auto restored = store.Load(kDevice);
+  Check(restored.ok() && restored.value() && restored.value()->schema_version == 2 &&
+            restored.value()->tag_filters == expected.tag_filters,
+        "a version 3 tag loads as one selected tag");
+}
+
 void RejectsInvalidValuesWithoutReplacingGoodData() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
@@ -144,6 +181,10 @@ void RejectsInvalidValuesWithoutReplacingGoodData() {
   invalid = expected; invalid.query.assign(257, 'q'); rejects(invalid, "oversized query rejected");
   invalid = expected; invalid.sort = "invented"; rejects(invalid, "unknown sort rejected");
   invalid = expected; invalid.filters.insert("fixture-only"); rejects(invalid, "unknown filter rejected");
+  invalid = expected; invalid.tag_filters.insert(std::string(65, 't')); rejects(invalid, "oversized tag filter rejected");
+  invalid = expected;
+  for (int index = 0; index < 9; ++index) invalid.tag_filters.insert("tag-" + std::to_string(index));
+  rejects(invalid, "more than eight tags rejected");
   {
     // The Library's Installed rail is a live scope, so choosing it is saved and restored.
     auto installed = expected; installed.scope = "installed";
@@ -315,7 +356,7 @@ void SharedValidationMatchesEncodedBoundary() {
   TemporaryDirectory directory;playden::Storage storage(directory.path());playden::OrganizationStore store(storage);
   playden::OrganizationSnapshot value;
   for(std::uint32_t id=1;id<=255;++id)value.notes[SteamId(id)]=std::string(4096,'x');
-  value.notes[SteamId(256)]=std::string(1327,'x');
+  value.notes[SteamId(256)]=std::string(1323,'x');
   Check(playden::OrganizationSnapshotIsValid(value),"exact one MiB snapshot validates");
   Check(store.Save(kDevice,value).ok(),"exact one MiB snapshot saves");
   const auto bytes=storage.Read(kV2Path);
@@ -324,7 +365,7 @@ void SharedValidationMatchesEncodedBoundary() {
   Check(!playden::OrganizationSnapshotIsValid(value),"one extra encoded byte is rejected before presentation apply");
   Check(!store.Save(kDevice,value).ok(),"oversize snapshot cannot replace previous file");
   const auto restored=store.Load(kDevice);
-  Check(restored.ok() && restored.value() && restored.value()->notes.at(SteamId(256)).size()==1327,"failed replacement preserves prior snapshot");
+  Check(restored.ok() && restored.value() && restored.value()->notes.at(SteamId(256)).size()==1323,"failed replacement preserves prior snapshot");
 }
 
 
@@ -417,7 +458,7 @@ void V2DamagedFailsWithoutMerging() {
   Check(!loaded.ok() && loaded.error() == playden::StorageError::kInvalidData, "truncated organization.v2 is rejected");
 
   auto future = stored.value();
-  future[8] = 3;
+  future[8] = 5;
   RewriteChecksum(future);
   Check(storage.WriteAtomicPrivate(kV2Path, future).ok(), "future-version fixture writes");
   loaded = store.Load(kDevice);
@@ -562,6 +603,8 @@ int main() {
   MergeWithoutLegacyFilesIsMissing();
   MergePastTheLimitsKeepsTheNewestFile();
   RejectsInvalidValuesWithoutReplacingGoodData();
+  TagFilterRoundTrips();
+  Version3TagLoadsAsOne();
   V1RejectsDamagedAndOversizedFiles();
   V1RejectsSemanticCollectionNamesOnLoad();
   V1PreservesOrphanedPersonalState();

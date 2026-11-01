@@ -14,6 +14,9 @@ namespace {
 constexpr std::array<std::uint8_t, 8> kMagic{{'P', 'L', 'D', 'O', 'R', 'G', 0, 0}};
 constexpr std::uint16_t kVersion1 = 1;
 constexpr std::uint16_t kVersion2 = 2;
+constexpr std::uint16_t kVersion3 = 3;
+constexpr std::uint16_t kVersion4 = 4;
+constexpr std::size_t kMaximumSelectedTags = 8;
 constexpr char kPathV2[] = "organization.v2";
 constexpr std::size_t kMaximumSnapshotBytes = 1024 * 1024;
 constexpr std::size_t kMaximumGameIds = 10000;
@@ -25,6 +28,7 @@ constexpr std::size_t kMaximumQueryBytes = 256;
 constexpr std::size_t kMaximumScopeBytes = 128;
 constexpr std::size_t kMaximumSortBytes = 32;
 constexpr std::size_t kMaximumFilterBytes = 32;
+constexpr std::size_t kMaximumTagFilterBytes = 64;
 constexpr std::size_t kMaximumKeyBytes = 64;
 
 std::string PathV1(std::uint64_t account_id) {
@@ -112,6 +116,10 @@ bool ValidSort(const std::string& value) {
          value == "playtime";
 }
 
+bool ValidTagFilter(const std::string& value) {
+  return ValidText(value, kMaximumTagFilterBytes, true);
+}
+
 // Version 1 knows only Playable; version 2 also keeps demos and family-shared games hidden (they show by default).
 bool ValidFilter(const std::string& value, std::uint16_t version) {
   return value == "compat-playable" || (version != kVersion1 && (value == "hide-demos" || value == "hide-family"));
@@ -179,6 +187,9 @@ bool Validate(const OrganizationSnapshot& snapshot, std::uint16_t version) {
   for (const auto& filter : snapshot.filters) {
     if (!ValidText(filter, kMaximumFilterBytes, false) || !ValidFilter(filter, version)) return false;
   }
+  if (snapshot.tag_filters.size() > kMaximumSelectedTags) return false;
+  for (const auto& tag : snapshot.tag_filters)
+    if (tag.empty() || !ValidTagFilter(tag)) return false;
   return true;
 }
 
@@ -437,6 +448,8 @@ std::size_t EncodedBytesV2(const OrganizationSnapshot& snapshot) {
   for (const auto& [id, note] : snapshot.notes) bytes += KeyBytes(id) + 4 + note.size();
   bytes += 12 + snapshot.query.size() + snapshot.scope.size() + snapshot.sort.size() + 4;
   for (const auto& filter : snapshot.filters) bytes += 4 + filter.size();
+  bytes += 4;
+  for (const auto& tag : snapshot.tag_filters) bytes += 4 + tag.size();
   return bytes;
 }
 
@@ -450,9 +463,11 @@ Loaded DecodeV2(const Bytes& bytes) {
   std::uint16_t version = 0;
   std::string selected;
   OrganizationSnapshot snapshot;
-  if (!reader.U16(version) || version != kVersion2 || !reader.String(selected, kMaximumKeyBytes))
+  if (!reader.U16(version) ||
+      (version != kVersion2 && version != kVersion3 && version != kVersion4) ||
+      !reader.String(selected, kMaximumKeyBytes))
     return InvalidLoad("version or selection");
-  snapshot.schema_version = version;
+  snapshot.schema_version = kVersion2;
   if (!selected.empty()) {
     const auto parsed = ParseKey(selected);
     if (!parsed || !parsed->valid()) return InvalidLoad("selection");
@@ -511,6 +526,21 @@ Loaded DecodeV2(const Bytes& bytes) {
     std::string filter;
     if (!reader.String(filter, kMaximumFilterBytes) || !snapshot.filters.insert(std::move(filter)).second)
       return InvalidLoad("filter");
+  }
+  if (version == kVersion3) {
+    std::string tag;
+    if (!reader.String(tag, kMaximumTagFilterBytes)) return InvalidLoad("tag filter");
+    if (!tag.empty() && !snapshot.tag_filters.insert(std::move(tag)).second)
+      return InvalidLoad("tag filter");
+  } else if (version >= kVersion4) {
+    std::uint32_t tag_count = 0;
+    if (!reader.U32(tag_count) || tag_count > kMaximumSelectedTags) return InvalidLoad("tag filter");
+    for (std::uint32_t index = 0; index < tag_count; ++index) {
+      std::string tag;
+      if (!reader.String(tag, kMaximumTagFilterBytes) || tag.empty() ||
+          !snapshot.tag_filters.insert(std::move(tag)).second)
+        return InvalidLoad("tag filter");
+    }
   }
   if (reader.offset() != reader.limit() || !Validate(snapshot, kVersion2))
     return InvalidLoad("trailing or semantic data");
@@ -592,7 +622,7 @@ bool operator==(const OrganizationSnapshot& left,
          left.collections == right.collections && left.ratings == right.ratings &&
          left.notes == right.notes && left.query == right.query &&
          left.scope == right.scope && left.sort == right.sort &&
-         left.filters == right.filters &&
+         left.filters == right.filters && left.tag_filters == right.tag_filters &&
          left.selected_game_id == right.selected_game_id;
 }
 
@@ -608,7 +638,7 @@ Result<void> OrganizationStore::Save(std::uint64_t scope, const OrganizationSnap
 
   Writer writer;
   const GameId& selected = snapshot.selected_game_id;
-  bool okay = writer.Raw(kMagic.data(), kMagic.size()) && writer.U16(kVersion2) &&
+  bool okay = writer.Raw(kMagic.data(), kMagic.size()) && writer.U16(kVersion4) &&
               writer.String(selected.valid() ? ToKey(selected) : std::string()) &&
               WriteKeys(writer, snapshot.favorites) && WriteKeys(writer, snapshot.hidden) &&
               writer.U32(static_cast<std::uint32_t>(snapshot.collections.size()));
@@ -626,6 +656,8 @@ Result<void> OrganizationStore::Save(std::uint64_t scope, const OrganizationSnap
          writer.String(snapshot.sort) &&
          writer.U32(static_cast<std::uint32_t>(snapshot.filters.size()));
   for (const auto& filter : snapshot.filters) okay = okay && writer.String(filter);
+  okay = okay && writer.U32(static_cast<std::uint32_t>(snapshot.tag_filters.size()));
+  for (const auto& tag : snapshot.tag_filters) okay = okay && writer.String(tag);
   if (!okay) return Invalid("snapshot exceeds one MiB limit");
 
   Bytes encoded = writer.Take();

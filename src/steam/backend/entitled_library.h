@@ -22,8 +22,8 @@
 
 namespace playden::steam {
 
-// The owned library from GetOwnedGames, enriched with CM acquisition dates. As in the macOS
-// reference, both run in parallel and a CM failure is never fatal: games then simply lack a date.
+// The owned library from GetOwnedGames. A license read is separate: it adds acquisition dates and the
+// games GetOwnedGames leaves out. A CM failure is never fatal: the owned games stay, without a date.
 // A CM logon rejection never reports revoked credentials.
 // GetOwnedGames leaves out free-to-play games added to the library but never played. The apps of licensed
 // packages none of whose apps are listed are added when they are games or demos (marked). Apps only a Steam
@@ -39,6 +39,9 @@ class EntitledLibraryBackend final : public LibraryBackend {
   ~EntitledLibraryBackend() override;
 
   LibraryResult Fetch(const StoredSession& session, const std::atomic<bool>& cancel) override;
+  // The license read a library refresh no longer does: dates, family-shared games and free games.
+  LibraryResult ReadLicenses(const StoredSession& session, std::vector<GameSummary> games,
+                             const std::atomic<bool>& cancel) override;
   std::vector<GameSummary> TakeLateGames(std::uint64_t steam_id) override;
   void SetLateGamesCallback(std::function<void()> callback) override;
   // Where app names are saved (app-names.cache); without it they last for the run. Set before the first Fetch.

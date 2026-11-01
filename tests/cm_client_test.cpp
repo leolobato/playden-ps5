@@ -68,6 +68,7 @@ struct Script {
   std::chrono::milliseconds pics_delay{0};
   // When set, answers each PICS request instead of on_pics.
   std::function<std::vector<std::uint8_t>(const cm::Frame&)> pics_reply;
+  std::function<std::vector<std::uint8_t>(const cm::Frame&)> changes_reply;
 
   void Queue(std::vector<std::uint8_t> frame, std::chrono::milliseconds delay = 0ms) {
     inbox.emplace_back(std::chrono::steady_clock::now() + delay, std::move(frame));
@@ -91,6 +92,8 @@ class FakeTransport final : public MessageTransport {
     assert(cm::DecodeFrame(message.data(), message.size(), &frame));
     if (frame.emsg == cm::kEMsgClientLogon)
       for (const auto& reply : script_->on_logon) script_->Queue(reply);
+    if (frame.emsg == cm::kEMsgClientPICSChangesSinceRequest && script_->changes_reply)
+      script_->Queue(script_->changes_reply(frame));
     if (frame.emsg == cm::kEMsgClientPICSProductInfoRequest && script_->pics_reply)
       script_->Queue(script_->pics_reply(frame), script_->pics_delay);
     else if (frame.emsg == cm::kEMsgClientPICSProductInfoRequest)
@@ -142,14 +145,14 @@ constexpr const char* kTwoEndpoints =
     R"({"endpoint":"bad/endpoint?x"},{"endpoint":"cm2.example.invalid:443"}],"success":true}})";
 
 CmClient MakeClient(std::shared_ptr<Script> script, std::uint32_t deadline_ms = 3000,
-                    std::string directory = kTwoEndpoints) {
+                    std::string directory = kTwoEndpoints, std::uint64_t now = 1700000000) {
   CmClientHooks hooks;
   hooks.directory = [directory](const HttpRequest& request, const std::atomic<bool>&) {
     assert(request.url.find("ISteamDirectory/GetCMListForConnect") != std::string::npos);
     return Directory(directory);
   };
   hooks.transport = [script] { return std::make_unique<FakeTransport>(script); };
-  hooks.unix_now = [] { return std::uint64_t{1700000000}; };
+  hooks.unix_now = [now] { return now; };
   hooks.deadline_ms = deadline_ms;
   return CmClient(hooks, MakeDeviceIdentity(kSeed));
 }
@@ -167,6 +170,19 @@ std::shared_ptr<Script> HappyScript() {
   script->on_logon = {Fixture("server_multi_logon.bin")};
   script->on_pics = {Fixture("server_pics_part1.bin"), Fixture("server_pics_part2.bin")};
   return script;
+}
+
+std::vector<std::uint8_t> PicsChangesResponse(const cm::Frame& request, std::uint32_t current, bool force_full_package,
+                                                const std::vector<std::uint32_t>& package_ids) {
+  proto::Writer body;
+  body.AddVarint(1, current);
+  if (force_full_package) body.AddVarint(7, 1);
+  for (const auto id : package_ids) {
+    proto::Writer change;
+    change.AddVarint(1, id);
+    body.AddMessage(4, change);
+  }
+  return ServerFrame(cm::kEMsgClientPICSChangesSinceResponse, body.bytes(), std::nullopt, request.header.jobid_source);
 }
 
 void AcquisitionDatesFromGzipMultiLicensesAndMultipartPics() {
@@ -446,6 +462,199 @@ struct LogCapture {
 
 bool HasLine(const std::vector<std::string>& lines, const std::string& line) {
   return std::find(lines.begin(), lines.end(), line) != lines.end();
+}
+
+// A stored change number skips packages Steam does not list. A full-update flag fetches every licensed package.
+void CachedPackagesAreFetchedOnlyWhenChanged() {
+  LogCapture log;
+  const auto root = std::filesystem::temp_directory_path() / "playden-package-cache-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  Storage storage(root.string());
+  assert(storage.EnsureRootDirectory().ok());
+  auto contents = std::make_shared<PackageContentsMap>(PackageContentsMap{
+      {100, {{10}, {11}}}, {200, {{20}, {21}}}, {300, {{30}, {31}}}});
+  auto script_for = [&](const std::vector<TestLicense>& licenses, bool force_full,
+                        const std::vector<std::uint32_t>& changed) {
+    auto script = LicenseScript(licenses, {});
+    script->pics_reply = [contents](const cm::Frame& request) {
+      proto::Writer body;
+      for (const auto& [id, granted] : *contents) {
+        proto::Writer package;
+        package.AddVarint(1, id);
+        package.AddVarint(2, 4);
+        package.AddBytes(5, PackageBuffer(id, granted.first, granted.second));
+        body.AddMessage(3, package);
+      }
+      return ServerFrame(cm::kEMsgClientPICSProductInfoResponse, body.bytes(), std::nullopt, request.header.jobid_source);
+    };
+    script->changes_reply = [=](const cm::Frame& request) {
+      return PicsChangesResponse(request, force_full ? 80 : 90, force_full, changed);
+    };
+    return script;
+  };
+  auto pics_body = [](Script& script) {
+    std::lock_guard<std::mutex> lock(script.mutex);
+    for (const auto& frame : script.sent)
+      if (frame.emsg == cm::kEMsgClientPICSProductInfoRequest) return frame.body;
+    return std::vector<std::uint8_t>{};
+  };
+
+  std::atomic<bool> cancel{false};
+  {
+    auto script = script_for({{100, 1600000000, 0, 4242, 7001}, {200, 1500000000, 0, 4242, 0}}, true, {});
+    auto client = MakeClient(script);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok());
+    assert(result.owned_apps == (std::set<std::uint32_t>{10, 20}));
+    assert(result.acquired_at.at(10) == 1600000000u && result.acquired_at.at(20) == 1500000000u);
+    assert(pics_body(*script) == cm::EncodePicsPackagesRequest({{100, 7001}, {200, 0}}));
+    std::lock_guard<std::mutex> lock(script->mutex);
+    assert(std::any_of(script->sent.begin(), script->sent.end(), [&](const cm::Frame& frame) {
+      return frame.emsg == cm::kEMsgClientPICSChangesSinceRequest &&
+             frame.body == cm::EncodePicsChangesSinceRequest(0, 0);
+    }));
+  }
+  assert(HasLine(log.Take(), "owner=cm step=packages licensed=2 fetched=2 cached=0"));
+
+  (*contents)[200] = {{22}, {21}};
+  {
+    auto script = script_for({{100, 1600000000, 0, 4242, 7001}, {200, 1500000000, 0, 4242, 0}, {300, 1400000000, 0, 4242, 0}},
+                             false, {200, 999});
+    auto client = MakeClient(script, 3000, kTwoEndpoints, 1700000000ull + 3601);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok());
+    // Package 100 stayed cached, including the depot ids saved with it. 200 was in the change list,
+    // 300 is a new license, 999 is not this account's.
+    assert(result.owned_apps == (std::set<std::uint32_t>{10, 22, 30}));
+    assert(result.package_apps.at(100) == (std::vector<std::uint32_t>{10}));
+    assert(result.package_depots.at(100) == (std::vector<std::uint32_t>{11}));
+    assert(result.owned_depots.count(11) == 1);
+    assert(result.acquired_at.at(10) == 1600000000u && result.acquired_at.at(22) == 1500000000u &&
+           result.acquired_at.at(30) == 1400000000u);
+    assert(pics_body(*script) == cm::EncodePicsPackagesRequest({{200, 0}, {300, 0}}));
+    std::lock_guard<std::mutex> lock(script->mutex);
+    assert(std::any_of(script->sent.begin(), script->sent.end(), [&](const cm::Frame& frame) {
+      return frame.emsg == cm::kEMsgClientPICSChangesSinceRequest &&
+             frame.body == cm::EncodePicsChangesSinceRequest(80, 2);
+    }));
+  }
+  assert(HasLine(log.Take(), "owner=cm step=packages licensed=3 fetched=2 cached=1"));
+  std::filesystem::remove_all(root);
+}
+
+// A grant saved under an hour ago is the license read: no logon, no change list. Past the hour, or
+// after Steam pushes a different license list, the change list runs again. Another account's file is not used.
+void SavedLicenseGrantIsReusedForAnHour() {
+  const auto root = std::filesystem::temp_directory_path() / "playden-license-ttl-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  Storage storage(root.string());
+  assert(storage.EnsureRootDirectory().ok());
+  const PackageContentsMap contents{{100, {{10}, {11}}}, {200, {{20}, {21}}}};
+  auto answering = [&](std::uint32_t current, bool force_full) {
+    auto script = LicenseScript({{100, 1600000000, 0, 4242, 0}, {200, 1500000000, 0x4000, 9999, 0}}, contents);
+    script->changes_reply = [=](const cm::Frame& request) {
+      return PicsChangesResponse(request, current, force_full, {});
+    };
+    return script;
+  };
+  std::atomic<bool> cancel{false};
+  {
+    auto script = answering(80, true);
+    auto client = MakeClient(script);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok());
+    assert(result.shared_apps == (std::set<std::uint32_t>{20}));
+    assert(result.owned_depots.count(11) == 1 && result.owned_depots.count(21) == 1);
+    assert(result.fetched_at == 1700000000u);
+  }
+  {
+    auto script = std::make_shared<Script>();
+    auto client = MakeClient(script, 400);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok() && result.fetched_at == 1700000000u);
+    assert(result.owned_apps == (std::set<std::uint32_t>{10, 20}));
+    assert(result.shared_apps == (std::set<std::uint32_t>{20}));
+    assert(result.package_apps.at(100) == (std::vector<std::uint32_t>{10}));
+    assert(result.package_depots.at(100) == (std::vector<std::uint32_t>{11}));
+    assert(result.package_depots.at(200) == (std::vector<std::uint32_t>{21}));
+    assert(result.acquired_at.at(10) == 1600000000u && result.acquired_at.at(20) == 1500000000u);
+    std::lock_guard<std::mutex> lock(script->mutex);
+    assert(script->sent.empty());
+  }
+  {
+    auto other = Session();
+    other.steam_id = kAccountSteamId + 1;
+    auto script = answering(80, true);
+    auto client = MakeClient(script);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(other, cancel);
+    assert(result.ok());
+    std::lock_guard<std::mutex> lock(script->mutex);
+    assert(std::any_of(script->sent.begin(), script->sent.end(), [](const cm::Frame& frame) {
+      return frame.emsg == cm::kEMsgClientPICSChangesSinceRequest;
+    }));
+  }
+  // The other account replaced the file. Save this account's grant again, then let it expire.
+  {
+    auto script = answering(80, true);
+    auto client = MakeClient(script);
+    client.SetPackageCache(&storage);
+    assert(client.FetchAcquisitionDates(Session(), cancel).ok());
+  }
+  {
+    auto script = answering(90, false);
+    auto client = MakeClient(script, 3000, kTwoEndpoints, 1700000000ull + 3601);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok() && result.fetched_at == 1700000000ull + 3601);
+    std::lock_guard<std::mutex> lock(script->mutex);
+    assert(std::any_of(script->sent.begin(), script->sent.end(), [](const cm::Frame& frame) {
+      return frame.emsg == cm::kEMsgClientPICSChangesSinceRequest;
+    }));
+  }
+  std::filesystem::remove_all(root);
+}
+
+// A file hit rebuilds purchase dates: a borrowed app keeps the shared license's date, and an app the
+// account also owns keeps the account's own date.
+void CachedPurchaseDatesPreferTheAccountsOwnLicense() {
+  const auto root = std::filesystem::temp_directory_path() / "playden-license-dates-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  Storage storage(root.string());
+  assert(storage.EnsureRootDirectory().ok());
+  const PackageContentsMap contents{{100, {{10, 20}, {11}}}, {200, {{20, 30}, {21}}}};
+  auto script = LicenseScript({{100, 1600000000, 0, 4242, 0}, {200, 1500000000, 0x4000, 9999, 0}}, contents);
+  script->changes_reply = [](const cm::Frame& request) { return PicsChangesResponse(request, 80, true, {}); };
+  std::atomic<bool> cancel{false};
+  {
+    auto client = MakeClient(script);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok());
+    assert(result.acquired_at.at(10) == 1600000000u && result.acquired_at.at(20) == 1600000000u);
+    assert(result.acquired_at.at(30) == 1500000000u);
+    assert(result.shared_apps == (std::set<std::uint32_t>{30}));
+  }
+  {
+    auto quiet = std::make_shared<Script>();
+    auto client = MakeClient(quiet, 400);
+    client.SetPackageCache(&storage);
+    const auto result = client.FetchAcquisitionDates(Session(), cancel);
+    assert(result.ok() && result.fetched_at == 1700000000u);
+    assert(result.acquired_at.at(10) == 1600000000u && result.acquired_at.at(20) == 1600000000u);
+    assert(result.acquired_at.at(30) == 1500000000u);
+    assert(result.shared_apps == (std::set<std::uint32_t>{30}));
+    std::lock_guard<std::mutex> lock(quiet->mutex);
+    assert(quiet->sent.empty());
+  }
+  std::filesystem::remove_all(root);
 }
 
 std::size_t CountPrefix(const std::vector<std::string>& lines, const std::string& prefix) {
@@ -763,6 +972,50 @@ bool WaitForLicenseChanges(const CmSharedSession& shared, std::uint64_t wanted) 
   while (CmLicenseChanges(shared) != wanted && std::chrono::steady_clock::now() < deadline)
     std::this_thread::sleep_for(5ms);
   return CmLicenseChanges(shared) == wanted;
+}
+
+// A license list pushed on the live session is read on the next check, inside the hour.
+void PushedLicensesBypassTheHour() {
+  const auto root = std::filesystem::temp_directory_path() / "playden-license-push-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  Storage storage(root.string());
+  assert(storage.EnsureRootDirectory().ok());
+  auto script = LicenseScript({{100, 1600000000, 0, 4242, 0}}, {{100, {{10}, {11}}}});
+  script->changes_reply = [](const cm::Frame& request) { return PicsChangesResponse(request, 80, true, {}); };
+  auto shared = MakeCmSharedSession();
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  client.SetPackageCache(&storage);
+  std::atomic<bool> cancel{false};
+  const auto first = client.FetchAcquisitionDates(Session(), cancel);
+  assert(first.ok() && first.owned_apps == (std::set<std::uint32_t>{10}));
+  assert(CmLicenseChanges(*shared) == 0);
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->sent.clear();
+    script->Queue(LicenseListFrame({100, 200}));
+  }
+  assert(WaitForLicenseChanges(*shared, 1));
+  script->pics_reply = [](const cm::Frame& request) {
+    proto::Writer body;
+    for (const auto& [id, apps, depots] :
+         {std::tuple<std::uint32_t, std::vector<std::uint32_t>, std::vector<std::uint32_t>>{100, {10}, {11}},
+          {200, {20}, {21}}}) {
+      proto::Writer package;
+      package.AddVarint(1, id);
+      package.AddBytes(5, PackageBuffer(id, apps, depots));
+      body.AddMessage(3, package);
+    }
+    return ServerFrame(cm::kEMsgClientPICSProductInfoResponse, body.bytes(), std::nullopt, request.header.jobid_source);
+  };
+  const auto again = client.FetchAcquisitionDates(Session(), cancel);
+  assert(again.ok());
+  std::lock_guard<std::mutex> lock(script->mutex);
+  assert(std::any_of(script->sent.begin(), script->sent.end(), [](const cm::Frame& frame) {
+    return frame.emsg == cm::kEMsgClientPICSChangesSinceRequest;
+  }));
+  std::filesystem::remove_all(root);
 }
 
 // Steam pushes the license list again when a license is added (a free game added to the library on
@@ -1334,6 +1587,11 @@ int main(int argc, char** argv) {
   // A token one test refused stays refused for the process, so every test starts clean.
   ResetCmBackoff();
   AcquisitionDatesFromGzipMultiLicensesAndMultipartPics();
+  ResetCmBackoff();
+  CachedPackagesAreFetchedOnlyWhenChanged();
+  SavedLicenseGrantIsReusedForAnHour();
+  CachedPurchaseDatesPreferTheAccountsOwnLicense();
+  PushedLicensesBypassTheHour();
   PackageZeroCounts();
   ResetCmBackoff();
   BorrowedLicensesAreShared();

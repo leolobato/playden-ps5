@@ -62,26 +62,39 @@ struct AcquisitionResult {
   std::set<std::uint32_t> shared_apps;
   // Licensed packages Steam left out, sent without a token, or sent unreadable; their apps are not owned here.
   std::uint32_t skipped_packages = 0;
+  // When this grant was read from Steam, or the saved read it was reused from. Zero when it was not read.
+  std::uint64_t fetched_at = 0;
   bool ok() const { return error == CmError::kNone; }
 };
 
-// What the account's licenses granted at the last library load, shared with size estimates so a
-// game's page counts only the depots an install would download. Safe from any thread.
+// A saved license grant is reused for this long. A newer read replaces it; a license list Steam pushes
+// while Playden is open is read on the next check.
+constexpr std::uint64_t kLicenseCacheTtlSeconds = 60 * 60;
+
+// What the account's licenses granted at the last read, shared with size estimates so a game's page
+// counts only the depots an install would download. Safe from any thread.
 class LicensedDepots {
  public:
   struct Grant {
     std::set<std::uint32_t> apps;
     std::set<std::uint32_t> depots;
+    std::uint64_t fetched_at = 0;
   };
   void Set(std::uint64_t account, const AcquisitionResult& result) {
     std::lock_guard<std::mutex> lock(mutex_);
     account_ = account;
-    grant_ = Grant{result.owned_apps, result.owned_depots};
+    grant_ = Grant{result.owned_apps, result.owned_depots, result.fetched_at};
   }
   // None until a load of this account read its licenses: another account's never stand in for them.
   std::optional<Grant> Get(std::uint64_t account) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return account == account_ ? grant_ : std::nullopt;
+  }
+  // True when this account's grant was read less than an hour ago.
+  bool Current(std::uint64_t account, std::uint64_t now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (account != account_ || !grant_ || !grant_->fetched_at || now < grant_->fetched_at) return false;
+    return now - grant_->fetched_at < kLicenseCacheTtlSeconds;
   }
 
  private:
@@ -196,6 +209,10 @@ std::shared_ptr<CmSharedSession> MakeCmSharedSession();
 // starts at 0, and a new account's first list never counts. Safe from any thread.
 std::uint64_t CmLicenseChanges(const CmSharedSession& shared);
 
+// The saved license grant, when the file names an account, including one older than an hour. A missing
+// or unreadable file leaves `depots` unchanged.
+bool RestoreLicensedDepots(const Storage& storage, LicensedDepots& depots);
+
 // Without a shared session, a CM session per call: directory, connect (first four endpoints), hello,
 // logon with the stored refresh token, the pushed license list, then package PICS in batches of 50.
 // All output is error categories and app dates; no endpoint, address, token or account identity is
@@ -208,6 +225,10 @@ class CmClient final : public AcquisitionSource {
 
   // Names this client in steam-cm.log (cloud, details, library, install, auth).
   void SetOwner(std::string owner) { owner_ = std::move(owner); }
+  // Parsed package contents (app and depot ids) live here, so a later license read asks PICS only for
+  // packages that are new or that Steam reports changed. The production client uses its device storage.
+  // Without one, every read fetches every package.
+  void SetPackageCache(const Storage* storage) { package_cache_ = storage; }
   // Runs every call on `shared` instead of a session of its own. Set before the first call.
   void SetSharedSession(std::shared_ptr<CmSharedSession> shared) { shared_ = std::move(shared); }
 
@@ -285,6 +306,7 @@ class CmClient final : public AcquisitionSource {
   std::shared_ptr<CmSharedSession> shared_;
   std::string ca_bundle_;
   const Storage* device_storage_ = nullptr;
+  const Storage* package_cache_ = nullptr;
   std::optional<cm::DeviceIdentity> device_;
   std::unique_ptr<HttpClient> http_;
 };

@@ -163,6 +163,11 @@ struct LiveKitInfo {
     std::string unavailable_reason;        // why no kit is in use
     std::string version;                   // "0.13", from its runtime's artifact name; empty for older kits
 };
+// A kit that admitted, for the default and per-game pickers. latest_slot is the kit Playden installs.
+struct AdmittedKit {
+    std::string version;
+    bool latest_slot = false;
+};
 // Live: Playden's own update (update/update_service.h), projected for Settings, Downloads and prompts.
 struct LiveSelfUpdate {
     std::string phase = "idle";  // idle, checking, up-to-date, available, downloading, unpacking, staged, failed
@@ -549,6 +554,11 @@ struct Game {
     std::string hero_key;
     std::string logo_key;
     std::vector<std::string> genres;
+    std::vector<std::string> store_tags;
+    bool store_tags_known = false;
+    std::vector<std::string> store_screenshots;
+    std::string store_trailer_thumbnail;
+    bool store_media_known = false;
     std::string controller_support;
     std::optional<std::uint64_t> download_bytes;
     std::optional<std::uint64_t> install_bytes;
@@ -586,6 +596,8 @@ struct UserLibrary {
     // or a game opened from it, is on screen. Never saved: `sort` stays the player's own choice.
     std::string view_sort;
     std::set<std::string> filters;
+    // Ticked Steam user tags; a game must have every one. Persisted with organization.
+    std::set<std::string> tag_filters;
 };
 
 struct Installation {
@@ -750,6 +762,7 @@ struct State {
     std::string queue_expanded;
     std::size_t runtime_leftover_requests = 0;          // live: unused settings requests to clean up
     LiveKitInfo kit;                                    // live: the runtime kit in use
+    std::vector<AdmittedKit> admitted_kits;            // live: kits that admitted, for the kit pickers
     LiveSelfUpdate self_update;                         // live: Playden's own update
     std::vector<LiveLeftoverTitle> leftover_titles;
     std::vector<LiveLeftoverDelete> leftover_deletions;
@@ -788,6 +801,8 @@ struct State {
     bool beta_updates = false;
     // The language games are downloaded in, as Steam names its depot languages ("german").
     std::string content_language{playden::steam::kDefaultContentLanguage};
+    // The runtime kit new games use. "latest" is the kit Playden installs; a version is that kit when it is installed.
+    std::string default_kit{"latest"};
     bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Storage)
     // Empty: Steam default (Steam's order); kFastestDownloadServer: Fastest (raced at each download); otherwise
     // the chosen provider's stable identifier.
@@ -976,6 +991,7 @@ public:
     void NotifyReadyToPlay(GameId id);
     void SetRuntimeLeftovers(std::size_t count);
     void SetKitInfo(LiveKitInfo kit);
+    void SetAdmittedKits(std::vector<AdmittedKit> kits);
     void UpdateRuntime(RuntimeState runtime, const std::vector<LiveRuntimeGame>& games);
     // Live mode: the preparation queue for Queue, and what the player asked of it there: games to
     // prepare next, finished preparations dismissed, and Clear completed.
@@ -1023,7 +1039,24 @@ public:
     // Live mode: the Steam store's description, genres and controller support for one game;
     // kept across library refreshes.
     void UpdateStoreDetails(GameId id, std::string description, std::vector<std::string> genres,
-                            std::string controller_support);
+                            std::vector<std::string> tags, std::string controller_support);
+    // Live mode: user-defined store tags for one game (store page enrichment or Details).
+    bool UpdateStoreTags(GameId id, std::vector<std::string> tags);
+    // Live mode: tags, screenshot URLs and the trailer thumbnail for several games, applied together.
+    struct StoreBrowseUpdate {
+        GameId id;
+        bool tags_known = false;
+        std::vector<std::string> tags;
+        std::vector<std::string> screenshots;
+        std::string trailer_thumbnail;
+        bool include_media = false;
+        bool description_known = false;
+        std::string description;
+        std::string controller_support;
+        bool genres_known = false;
+        std::vector<std::string> genres;
+    };
+    void UpdateStoreBrowse(std::vector<StoreBrowseUpdate> updates);
     PersistenceLoadToken BeginOrganizationLoad(std::uint64_t account);
     bool ApplyOrganization(std::uint64_t account, PersistenceLoadToken token,
                            std::optional<playden::OrganizationSnapshot> loaded);
@@ -1043,6 +1076,7 @@ public:
     [[nodiscard]] playden::SavedUpdateCheck ExportUpdateCheck() const;
     void UpdateCheckSaveResult(std::uint64_t account, std::uint64_t revision, playden::StorageError error);
     // A check the controller should start: the player asked, or the screen opened a day after the last one.
+    [[nodiscard]] bool UpdateCheckRequested() const noexcept { return update_check_requested_; }
     [[nodiscard]] bool TakeUpdateCheckRequest();
     // The running check's progress, in games; Finish ends it. `failed`: Steam gave no answer for some games,
     // so the time of the last full check stays and their saved results stand.
@@ -1238,7 +1272,15 @@ private:
     std::string manage_move_from_id_;  // Move: only the games on this drive are listed; empty lists every drive
     std::string manage_uninstall_from_id_;  // Uninstall: only the games on this drive are listed; empty lists every drive
     bool rebuilding_overlay_ = false;  // rebuild_view is building the screen under an open sheet
-    struct StoreFacts { std::string description; std::vector<std::string> genres; std::string controller_support; };
+    struct StoreFacts {
+        std::string description;
+        std::vector<std::string> genres;
+        std::vector<std::string> tags;
+        std::string controller_support;
+        std::vector<std::string> screenshots;
+        std::string trailer_thumbnail;
+        bool media_known = false;
+    };
     std::map<GameId, StoreFacts> store_facts_;  // live: from the Steam store, applied over library refreshes
     std::vector<GameId> ready_prompts_;  // games to announce as ready to play, oldest first
     // settings_game: a game whose refusal Game settings can get past; the dialog offers it.
@@ -1276,6 +1318,14 @@ private:
     std::set<std::tuple<GameId, std::string, std::string>> size_checks_failed_;  // not asked again until the sheet reopens
     std::map<std::tuple<GameId, std::string, std::string>, MeasuredInstallSize> measured_sizes_;
     std::string settings_focus_section_;
+    std::string details_action_focus_;  // Details action to return to from the tag chips
+    std::string tag_find_;              // Text that narrows the Tags sheet; not the library search
+    struct TagSheetEntry {
+        std::string name;
+        std::size_t count = 0;
+    };
+    std::vector<TagSheetEntry> tag_sheet_;
+    std::vector<std::string> detail_tag_names_;  // genres, then store tags, for the open game's tag sheet
 
     struct OrganizationJournalEntry {
         playden::OrganizationSnapshot before;
@@ -1337,6 +1387,15 @@ private:
     void cancel();
     void move(int delta_x, int delta_y);
     void move_content(int delta_x, int delta_y);
+    [[nodiscard]] std::string fold_tag(const std::string& tag) const;
+    [[nodiscard]] bool tag_selected(const std::string& tag) const;
+    bool toggle_tag(const std::string& tag);
+    [[nodiscard]] bool library_has_tags() const;
+    std::vector<std::string> tag_sheet_actions();
+    void open_tag_sheet();
+    void refresh_tag_sheet();
+    [[nodiscard]] std::vector<std::string> detail_chip_names(const Game* game) const;
+    void open_game_tags();
     [[nodiscard]] bool tab_bar_shown() const;
     bool move_settings(int delta_x, int delta_y);
     bool move_saves(int delta_x, int delta_y);

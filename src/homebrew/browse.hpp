@@ -5,6 +5,7 @@
 
 #include "homebrew/simulation.hpp"
 
+#include <charconv>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -44,6 +45,28 @@ struct ShelfWindow {
 // Moves only Home and Library browse focus. Returning true means the route
 // consumed the direction even when focus was already against an edge.
 bool move_browser(State& state, int delta_x, int delta_y);
+
+// Details shows this many tags, genres first. The rest are a "+N" chip that lists them all.
+inline constexpr std::size_t kDetailTagPreview = 6;
+
+// A focusable chip on a game's page: one tag, or the "+N" that opens the rest.
+[[nodiscard]] inline bool DetailChipKey(std::string_view key) noexcept {
+    constexpr std::string_view kPrefix = "detail-tag-";
+    return key == "detail-tags-more" ||
+           (key.size() > kPrefix.size() && key.compare(0, kPrefix.size(), kPrefix) == 0);
+}
+
+// A ticked library tag, drawn as a chip. The index follows the saved set's order.
+[[nodiscard]] inline std::string SelectedTagKey(std::size_t index) {
+    return "selected-tag-" + std::to_string(index);
+}
+[[nodiscard]] inline bool SelectedTagIndex(std::string_view key, std::size_t& index) noexcept {
+    constexpr std::string_view kPrefix = "selected-tag-";
+    if (key.size() <= kPrefix.size() || key.compare(0, kPrefix.size(), kPrefix) != 0) return false;
+    const char* const begin = key.data() + kPrefix.size();
+    const auto parsed = std::from_chars(begin, key.data() + key.size(), index);
+    return parsed.ec == std::errc{} && parsed.ptr == key.data() + key.size();
+}
 
 [[nodiscard]] std::size_t previous_caret(std::string_view utf8, std::size_t caret) noexcept;
 [[nodiscard]] std::size_t next_caret(std::string_view utf8, std::size_t caret) noexcept;

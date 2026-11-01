@@ -317,6 +317,9 @@ bool DecodePicsResponse(const std::vector<std::uint8_t>& body, PicsResponse* res
       if (entry.number == 1) {
         if (!IsVarint(entry)) return false;
         package.package_id = static_cast<std::uint32_t>(entry.value);
+      } else if (entry.number == 2) {
+        if (!IsVarint(entry)) return false;
+        package.change_number = static_cast<std::uint32_t>(entry.value);
       } else if (entry.number == 3) {
         if (!IsVarint(entry)) return false;
         package.missing_token = entry.value != 0;
@@ -330,6 +333,56 @@ bool DecodePicsResponse(const std::vector<std::uint8_t>& body, PicsResponse* res
   }
   if (!reader.ok()) return false;
   *response = std::move(decoded);
+  return true;
+}
+
+std::vector<std::uint8_t> EncodePicsChangesSinceRequest(std::uint32_t since_change_number,
+                                                             std::uint32_t packages_cached) {
+  proto::Writer body(kMaxFrameBytes);
+  body.AddVarint(1, since_change_number);
+  body.AddVarint(3, 1);  // send_package_info_changes
+  if (packages_cached) body.AddVarint(5, packages_cached);
+  if (!body.ok()) return {};
+  return body.bytes();
+}
+
+bool DecodePicsChangesSinceResponse(const std::vector<std::uint8_t>& body, PicsChanges* changes) {
+  proto::Reader reader(body, kLimits);
+  proto::Field field;
+  PicsChanges decoded;
+  while (reader.Next(&field)) {
+    if (field.number == 1) {
+      if (!IsVarint(field)) return false;
+      decoded.current_change_number = static_cast<std::uint32_t>(field.value);
+    } else if (field.number == 3) {
+      if (!IsVarint(field)) return false;
+      decoded.force_full_update = field.value != 0;
+    } else if (field.number == 7) {
+      if (!IsVarint(field)) return false;
+      decoded.force_full_package_update = field.value != 0;
+    } else if (field.number == 4) {
+      // A list too long to trust as a delta: the caller refetches every licensed package.
+      if (decoded.package_ids.size() >= kMaxRepeatedEntries) {
+        decoded.force_full_package_update = true;
+        continue;
+      }
+      if (!IsBytes(field)) return false;
+      proto::Reader child;
+      if (!reader.Submessage(field, &child)) return false;
+      proto::Field entry;
+      std::uint32_t package_id = 0;
+      while (child.Next(&entry)) {
+        if (entry.number == 1) {
+          if (!IsVarint(entry)) return false;
+          package_id = static_cast<std::uint32_t>(entry.value);
+        }
+      }
+      if (!child.ok() || !package_id) return false;
+      decoded.package_ids.push_back(package_id);
+    }
+  }
+  if (!reader.ok()) return false;
+  *changes = std::move(decoded);
   return true;
 }
 

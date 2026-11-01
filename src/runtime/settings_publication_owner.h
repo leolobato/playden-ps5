@@ -41,6 +41,8 @@ class SettingsPublicationOwner {
       const std::function<bool(PublicationControlStep)>& after_step = {});
   // Lines worth the runtime log (an unreadable journal set aside); nothing by default.
   void SetLog(std::function<void(const std::string&)> log) { log_ = std::move(log); }
+  // The kit this publication is for. Two installed versions can disagree about unowned game folders.
+  void SetUnownedGameRoots(bool unowned) { unowned_game_roots_ = unowned; }
   Result<SettingsPublicationOperation> Prepare(const RuntimeInstall& record, const SettingsLaunchPlan& plan,
       const std::string& kit_id, const std::string& transaction_id, std::int64_t registry_unix_time,
       const std::filesystem::path& host_namespace_prefix = {});

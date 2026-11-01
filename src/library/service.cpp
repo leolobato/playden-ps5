@@ -13,14 +13,16 @@ constexpr std::size_t kMaximumEvents = 64;
 constexpr std::uint64_t kMaximumTimestamp =
     static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
-// Only a library with demos needs schema 6, and one with family-shared games schema 7; one without stays
-// readable by older versions.
+// Only a library with demos needs schema 6, one with family-shared games schema 7, and one with known
+// store tags schema 8; one without stays readable by older versions.
 void SetSchema(LibrarySnapshot* snapshot) {
   const auto& games = snapshot->games;
   if (std::any_of(games.begin(), games.end(), [](const GameSummary& game) { return game.demo; }))
     snapshot->schema_version = 6;
   if (std::any_of(games.begin(), games.end(), [](const GameSummary& game) { return game.family_shared; }))
     snapshot->schema_version = 7;
+  if (std::any_of(games.begin(), games.end(), [](const GameSummary& game) { return game.store_tags_known; }))
+    snapshot->schema_version = 8;
 }
 
 }  // namespace
@@ -62,12 +64,31 @@ std::uint64_t LibraryService::Clear(std::uint64_t account,
   return Submit(Command::kClear, account, generation);
 }
 
+std::uint64_t LibraryService::EnsureLicenses(std::uint64_t account, std::uint64_t generation) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (stopping_ || !account || generation < generation_ || clear_barrier_) return 0;
+  for (const auto& job : pending_)
+    if (job.command == Command::kLicenses) return job.request ? job.request : request_ + 1;
+  if (active_command_ && *active_command_ == Command::kLicenses) return request_ ? request_ : 1;
+  pending_.push_back(Job{Command::kLicenses, request_, account, generation,
+                         std::make_shared<std::atomic<bool>>(false)});
+  wake_.notify_one();
+  return request_ ? request_ : 1;
+}
+
 std::uint64_t LibraryService::Submit(Command command, std::uint64_t account,
                                      std::uint64_t generation) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (stopping_ || !account || generation < generation_) return 0;
   if (clear_barrier_) return 0;
 
+  // A refresh keeps one license read, run after the owned list, so the page and an update check are not
+  // left waiting on a read this refresh cancelled.
+  const bool reread_licenses =
+      command == Command::kRefresh &&
+      ((active_command_ && *active_command_ == Command::kLicenses) ||
+       std::any_of(pending_.begin(), pending_.end(),
+                   [](const Job& job) { return job.command == Command::kLicenses; }));
   events_.erase(std::remove_if(events_.begin(), events_.end(), [this](const LibraryEvent& event) {
                   return !DestructiveRequest(event.request_id);
                 }), events_.end());
@@ -94,6 +115,9 @@ std::uint64_t LibraryService::Submit(Command command, std::uint64_t account,
     loading.account_generation = generation;
     PushEvent(std::move(loading));
   }
+  if (reread_licenses && pending_.size() < kMaximumPending)
+    pending_.push_back(Job{Command::kLicenses, request_, account, generation,
+                           std::make_shared<std::atomic<bool>>(false)});
   wake_.notify_one();
   return request_;
 }
@@ -119,6 +143,12 @@ bool LibraryService::Current(const Job& job) const {
   return !stopping_ && job.command != Command::kClear &&
          job.request == request_ && job.generation == generation_ &&
          !job.cancel->load();
+}
+
+bool LibraryService::LicenseCurrent(const Job& job) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (stopping_ || job.cancel->load()) return false;
+  return generation_ == 0 || job.generation == generation_;
 }
 
 void LibraryService::NotifyLateGames() {
@@ -232,6 +262,7 @@ void LibraryService::Execute(const Job& job) {
   if (job.command == Command::kRefresh) ExecuteRefresh(job);
   else if (job.command == Command::kLoadCached) ExecuteLoadCached(job);
   else if (job.command == Command::kMerge) ExecuteMerge(job);
+  else if (job.command == Command::kLicenses) ExecuteLicenses(job);
   else ExecuteClear(job);
 }
 
@@ -283,13 +314,16 @@ void LibraryService::ExecuteRefresh(const Job& job) {
   StorageError cache_error = StorageError::kNone;
   // Acquisition dates from the previous snapshot, kept when a refresh cannot obtain them.
   std::unordered_map<GameId, std::uint64_t> previous_added_at;
+  std::unordered_map<GameId, GameSummary> previous_by_id;
   if (cache_) {
     auto loaded = cache_->Load(job.account);
     if (!Current(job)) return;
     if (loaded.ok() && loaded.value().retrieved_at_unix_seconds <= kMaximumTimestamp) {
       cache_available = true;
-      for (const auto& game : loaded.value().games)
+      for (const auto& game : loaded.value().games) {
+        previous_by_id.emplace(game.id, game);
         if (game.added_at_unix_seconds) previous_added_at.emplace(game.id, *game.added_at_unix_seconds);
+      }
       LibraryEvent cached;
       cached.kind = LibraryEventKind::kCached;
       cached.request_id = job.request;
@@ -307,58 +341,147 @@ void LibraryService::ExecuteRefresh(const Job& job) {
     }
   }
   if (!Current(job)) return;
+  // The owned list, published while Fetch is still reading licenses. The final result then arrives
+  // as kUpdated so the refreshing pill does not wait for the license scan.
+  bool owned_published = false;
+  const auto publish = [&](steam::LibraryResult result, LibraryEventKind kind) {
+    if (!Current(job)) return false;
+    LibrarySnapshot snapshot;
+    snapshot.retrieved_at_unix_seconds = Now();
+    snapshot.games = std::move(result.games);
+    for (auto& game : snapshot.games) {
+      if (game.added_at_unix_seconds) {
+        /* keep */
+      } else if (const auto previous = previous_added_at.find(game.id); previous != previous_added_at.end()) {
+        game.added_at_unix_seconds = previous->second;
+      }
+      if (const auto cached = previous_by_id.find(game.id); cached != previous_by_id.end() && cached->second.store_tags_known) {
+        game.store_tags = cached->second.store_tags;
+        game.store_tags_known = true;
+      }
+    }
+    snapshot.metadata_partial = result.metadata_partial;
+    SetSchema(&snapshot);
+    if (cache_) {
+      const auto saved = cache_->Save(job.account, snapshot);
+      if (!Current(job)) return false;
+      if (saved.ok()) {
+        cache_available = true;
+        cache_error = StorageError::kNone;
+      } else {
+        cache_error = saved.error();
+      }
+    }
+    completed_ = snapshot;
+    completed_request_ = job.request;
+    completed_account_ = job.account;
+    completed_cache_available_ = cache_available;
+    LibraryEvent event;
+    event.kind = kind;
+    event.request_id = job.request;
+    event.account_id = job.account;
+    event.account_generation = job.generation;
+    event.games = std::move(snapshot.games);
+    event.metadata_partial = completed_->metadata_partial;
+    event.retrieved_at_unix_seconds = completed_->retrieved_at_unix_seconds;
+    event.cache_available = cache_available;
+    event.cache_error = cache_error;
+    event.licenses_read = result.licenses_read;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || job.request != request_ || job.generation != generation_ || job.cancel->load()) return false;
+    PushEvent(std::move(event));
+    return true;
+  };
+  struct ClearProgress {
+    steam::LibraryBackend& backend;
+    ~ClearProgress() { backend.SetFetchProgress({}); }
+  } clear{backend_};
+  backend_.SetFetchProgress([&](steam::LibraryResult partial) {
+    partial.licenses_read = false;
+    if (publish(std::move(partial), LibraryEventKind::kComplete)) owned_published = true;
+  });
   auto result = backend_.Fetch(*session.value(), *job.cancel);
   if (!Current(job)) return;
   if (result.error != steam::LibraryError::kNone) {
-    EmitFailure(job, result.error, cache_error, cache_available);
+    // The owned library is already showing. A later license failure must not replace it with an error.
+    if (!owned_published) EmitFailure(job, result.error, cache_error, cache_available);
     return;
   }
-
-  LibrarySnapshot snapshot;
-  snapshot.retrieved_at_unix_seconds = Now();
-  snapshot.games = std::move(result.games);
-  for (auto& game : snapshot.games) {
-    if (game.added_at_unix_seconds) continue;
-    const auto previous = previous_added_at.find(game.id);
-    if (previous != previous_added_at.end()) game.added_at_unix_seconds = previous->second;
-  }
-  snapshot.metadata_partial = result.metadata_partial;
-  SetSchema(&snapshot);
-  if (cache_) {
-    const auto saved = cache_->Save(job.account, snapshot);
-    if (!Current(job)) return;
-    if (saved.ok()) {
-      cache_available = true;
-      cache_error = StorageError::kNone;
-    } else {
-      cache_error = saved.error();
-    }
-  }
-
-  completed_ = snapshot;
-  completed_request_ = job.request;
-  completed_account_ = job.account;
-  completed_cache_available_ = cache_available;
+  publish(std::move(result), owned_published ? LibraryEventKind::kUpdated : LibraryEventKind::kComplete);
   {
     // Late games named before completed_ was set would otherwise wait for the next load.
     std::lock_guard<std::mutex> lock(mutex_);
     if (job.request == request_ && job.generation == generation_) QueueMergeLocked();
   }
+}
 
-  LibraryEvent event;
-  event.kind = LibraryEventKind::kComplete;
-  event.request_id = job.request;
-  event.account_id = job.account;
-  event.account_generation = job.generation;
-  event.games = std::move(snapshot.games);
-  event.metadata_partial = snapshot.metadata_partial;
-  event.retrieved_at_unix_seconds = snapshot.retrieved_at_unix_seconds;
-  event.cache_available = cache_available;
-  event.cache_error = cache_error;
-  event.licenses_read = result.licenses_read;
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!stopping_ && job.request == request_ && job.generation == generation_ &&
-      !job.cancel->load()) PushEvent(std::move(event));
+void LibraryService::ExecuteLicenses(const Job& job) {
+  auto publish = [&](steam::LibraryResult result) {
+    LibraryEvent event;
+    event.kind = LibraryEventKind::kUpdated;
+    event.license_attempt = true;
+    event.licenses_read = result.licenses_read;
+    event.account_id = job.account;
+    event.account_generation = job.generation;
+    event.error = result.error;
+    if (LicenseCurrent(job) && completed_ && completed_account_ == job.account && result.licenses_read) {
+      LibrarySnapshot snapshot = *completed_;
+      snapshot.retrieved_at_unix_seconds = Now();
+      snapshot.games = std::move(result.games);
+      snapshot.metadata_partial = snapshot.metadata_partial || result.metadata_partial;
+      SetSchema(&snapshot);
+      StorageError cache_error = StorageError::kNone;
+      bool cache_available = completed_cache_available_;
+      if (cache_) {
+        const auto saved = cache_->Save(job.account, snapshot);
+        if (saved.ok()) cache_available = true;
+        else cache_error = saved.error();
+      }
+      completed_ = snapshot;
+      completed_cache_available_ = cache_available;
+      event.games = snapshot.games;
+      event.metadata_partial = snapshot.metadata_partial;
+      event.retrieved_at_unix_seconds = snapshot.retrieved_at_unix_seconds;
+      event.cache_available = cache_available;
+      event.cache_error = cache_error;
+      event.request_id = completed_request_;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    event.request_id = event.request_id ? event.request_id : completed_request_;
+    PushEvent(std::move(event));
+  };
+  // A refresh that cancelled this read has already queued the next one. Publishing a failure here would
+  // end Check for updates before that read runs.
+  auto replaced = [&] {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return std::any_of(pending_.begin(), pending_.end(),
+                       [](const Job& queued) { return queued.command == Command::kLicenses; });
+  };
+  if (!LicenseCurrent(job)) {
+    if (!replaced()) publish({steam::LibraryError::kCanceled, {}, false, false});
+    return;
+  }
+  auto session = sessions_.Load();
+  if (!LicenseCurrent(job)) {
+    if (!replaced()) publish({steam::LibraryError::kCanceled, {}, false, false});
+    return;
+  }
+  if (!session.ok() || !session.value() || session.value()->steam_id != job.account ||
+      session.value()->access_token.empty()) {
+    publish({steam::LibraryError::kNoSession, {}, false, false});
+    return;
+  }
+  std::vector<GameSummary> games;
+  if (completed_ && completed_account_ == job.account) games = completed_->games;
+  auto result = backend_.ReadLicenses(*session.value(), std::move(games), *job.cancel);
+  if (!LicenseCurrent(job)) {
+    if (!replaced()) publish({steam::LibraryError::kCanceled, {}, false, false});
+    return;
+  }
+  const bool read = result.licenses_read;
+  publish(std::move(result));
+  if (read) QueueMergeLocked();
 }
 
 void LibraryService::ExecuteMerge(const Job& job) {
@@ -393,9 +516,15 @@ void LibraryService::ExecuteMerge(const Job& job) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (stopping_ || job.request != request_ || job.generation != generation_ || job.cancel->load()) return;
   // Each update carries the whole library: one waiting is enough, and they can't crowd out the completion.
+  // A license follow-up still waiting in the queue is replaced by this fuller list, and keeps the
+  // fact that the licenses were read.
+  bool licenses_read = false;
   events_.erase(std::remove_if(events_.begin(), events_.end(), [&](const LibraryEvent& queued) {
-                  return queued.kind == LibraryEventKind::kUpdated && queued.request_id == job.request;
+                  if (queued.kind != LibraryEventKind::kUpdated || queued.request_id != job.request) return false;
+                  licenses_read = licenses_read || queued.licenses_read;
+                  return true;
                 }), events_.end());
+  event.licenses_read = licenses_read;
   PushEvent(std::move(event));
 }
 

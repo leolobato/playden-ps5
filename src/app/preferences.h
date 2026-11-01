@@ -32,6 +32,10 @@ struct Preferences {
   // ("german", "koreana"). Steam ships localisations as separate depots; a game that has none
   // in this language is installed in English, as every game was before this could be chosen.
   std::string content_language = "english";
+  // The runtime kit new games use, and games that have not chosen their own. "latest" is the kit
+  // installed at /data/playden/kits/playden-kit. A version ("0.17") is that kit when it is still
+  // installed. Anything else is saved back as "latest".
+  std::string default_kit = "latest";
 };
 
 enum class PreferencesLoadStatus {

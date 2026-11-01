@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "steam/backend/json.h"
+#include "runtime/kit_catalog.h"
 #include "update/app_swap.h"
 #include "update/file_ops.h"
 #include "update/zip_extract.h"
@@ -955,9 +956,15 @@ void UpdateService::DoInstallKit() {
     if (folder.empty()) return FailKit("The new kit did not pass its check.", "not ready after unpacking");
   }
   if (folder != installed) {
-    // No game can use the kit in place (none was admitted), so it is swapped now; the one it
-    // replaces is a ".replaced-" leftover, removed at a later start.
-    const std::string aside = config_.kits_root + "/.replaced-" + kit.kit_id + "-" + std::to_string(config_.now());
+    // A version Playden can name is parked beside the Latest slot so a game pinned to it can keep
+    // using it. One that cannot be named (kits before 0.10), or a copy of that version already
+    // parked, is the ".replaced-" leftover a later start removes.
+    std::string aside = config_.kits_root + "/.replaced-" + kit.kit_id + "-" + std::to_string(config_.now());
+    if (const auto version = InstalledKitVersion(installed)) {
+      const std::string parked =
+          config_.kits_root + "/" + runtime::ParkedKitFolder(kit.kit_id, runtime::FormatKitVersion(*version));
+      if (!Exists(parked)) aside = parked;
+    }
     const bool moved = config_.as_root([&] {
       if (Exists(installed) && rename(installed.c_str(), aside.c_str()) != 0) return false;
       if (rename(folder.c_str(), installed.c_str()) == 0) return true;

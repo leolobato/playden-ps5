@@ -154,7 +154,8 @@ target_include_directories(playden_runtime_kit_admission PUBLIC "${CMAKE_SOURCE_
 target_compile_features(playden_runtime_kit_admission PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_kit_admission PUBLIC
     playden_runtime_kit_manifest playden_runtime_artifact_hash)
-add_library(playden_runtime_kit_trust STATIC "${CMAKE_SOURCE_DIR}/src/runtime/kit_trust.cpp")
+add_library(playden_runtime_kit_trust STATIC "${CMAKE_SOURCE_DIR}/src/runtime/kit_trust.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/kit_catalog.cpp")
 target_include_directories(playden_runtime_kit_trust PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_runtime_kit_trust PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_kit_trust PUBLIC playden_runtime_kit_admission)
@@ -164,6 +165,9 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     # The packaged kit is a local build artifact; admission is checked when it exists.
     add_test(NAME runtime_kit_trust COMMAND runtime_kit_trust_test
         "${CMAKE_SOURCE_DIR}/dependencies.lock.json" "${CMAKE_SOURCE_DIR}/build/kits/playden-kit")
+    add_executable(runtime_kit_catalog_test "${CMAKE_SOURCE_DIR}/tests/runtime_kit_catalog_test.cpp")
+    target_link_libraries(runtime_kit_catalog_test PRIVATE playden_runtime_kit_trust)
+    add_test(NAME runtime_kit_catalog COMMAND runtime_kit_catalog_test)
     add_executable(prospero_kit_consumer_test
         "${CMAKE_SOURCE_DIR}/tests/kit_producer_consumer_test.cpp")
     target_link_libraries(prospero_kit_consumer_test PRIVATE playden_runtime_kit_admission)

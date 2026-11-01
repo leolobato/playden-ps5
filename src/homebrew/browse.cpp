@@ -133,7 +133,37 @@ std::vector<const Game*> filtered_games(const State& state)
             const bool matches=state.simulation_mode
                 ? ascii_lower(game.title).find(query)!=std::string::npos
                 : folded_title(game).find(query)!=std::string::npos;
-            if(!matches) continue;
+            if(!matches) {
+                bool tag_match = false;
+                for (const auto& tag : game.store_tags) {
+                    const std::string folded = state.simulation_mode ? ascii_lower(tag) : FoldLibraryText(tag);
+                    if (folded.find(query) != std::string::npos) {
+                        tag_match = true;
+                        break;
+                    }
+                }
+                if (!tag_match) continue;
+            }
+        }
+        if (!state.library.tag_filters.empty()) {
+            const auto fold = [&](const std::string& value) {
+                return state.simulation_mode ? ascii_lower(value) : FoldLibraryText(value);
+            };
+            const auto labelled = [&](const std::string& folded_filter) {
+                if (game.store_tags_known && std::any_of(game.store_tags.begin(), game.store_tags.end(),
+                        [&](const std::string& tag) { return fold(tag) == folded_filter; }))
+                    return true;
+                return std::any_of(game.genres.begin(), game.genres.end(),
+                    [&](const std::string& genre) { return fold(genre) == folded_filter; });
+            };
+            bool matches_every = true;
+            for (const auto& filter : state.library.tag_filters) {
+                if (!labelled(fold(filter))) {
+                    matches_every = false;
+                    break;
+                }
+            }
+            if (!matches_every) continue;
         }
         if (state.library.filters.contains("installed") && !installed(state, game.id))
             continue;
@@ -351,6 +381,31 @@ bool move_browser(State& state, int delta_x, int delta_y)
         return false;
 
     const std::vector<std::string> scopes = library_rail_scopes(state);
+    std::size_t chip = 0;
+    if (SelectedTagIndex(state.navigation.focus_key, chip) && !state.library.tag_filters.empty()) {
+        const int last = static_cast<int>(state.library.tag_filters.size()) - 1;
+        if (delta_x != 0) {
+            const int next = std::clamp(static_cast<int>(chip) + (delta_x > 0 ? 1 : -1), 0, last);
+            state.navigation.focus_key = SelectedTagKey(static_cast<std::size_t>(next));
+        } else if (delta_y > 0) {
+            const std::vector<const Game*> games = filtered_games(state);
+            if (games.empty()) {
+                state.navigation.selected_index = 0;
+                state.navigation.selected_game_id = {};
+                state.navigation.focus_key = state.library.query.empty() ? "library-empty" : "clear-search";
+            } else {
+                int index = std::clamp(state.navigation.selected_index, 0, static_cast<int>(games.size()) - 1);
+                const auto selected = std::find_if(games.begin(), games.end(), [&state](const Game* game) {
+                    return game->id == state.navigation.selected_game_id;
+                });
+                if (selected != games.end())
+                    index = static_cast<int>(std::distance(games.begin(), selected));
+                state.navigation.library_rail_focused = false;
+                select_game(state, games[static_cast<std::size_t>(index)]->id, index);
+            }
+        }
+        return true;
+    }
     if (state.navigation.library_rail_focused)
     {
         int rail_index = 0;
@@ -388,7 +443,9 @@ bool move_browser(State& state, int delta_x, int delta_y)
     const std::vector<const Game*> games = filtered_games(state);
     if (games.empty())
     {
-        if (delta_x < 0)
+        if (delta_y < 0 && !state.library.tag_filters.empty())
+            state.navigation.focus_key = SelectedTagKey(0);
+        else if (delta_x < 0)
         {
             state.navigation.library_rail_focused = true;
             const auto scope = std::find(scopes.begin(), scopes.end(), state.library.scope);
@@ -422,6 +479,11 @@ bool move_browser(State& state, int delta_x, int delta_y)
         if (candidate >= 0 && candidate < static_cast<int>(games.size()) &&
             candidate / kLibraryColumns == index / kLibraryColumns)
             index = candidate;
+    }
+    if (delta_y < 0 && index / kLibraryColumns == 0 && !state.library.tag_filters.empty()) {
+        state.navigation.focus_key = SelectedTagKey(0);
+        state.navigation.library_rail_focused = false;
+        return true;
     }
     if (delta_y != 0)
     {

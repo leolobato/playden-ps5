@@ -2,10 +2,18 @@
 
 #include "steam/backend/json.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace playden::steam {
 namespace {
+
+constexpr std::size_t kMaximumTags = 32;
+constexpr std::size_t kMaximumTagBytes = 64;
+
+bool ValidTag(std::string_view tag) {
+  return !tag.empty() && tag.size() <= kMaximumTagBytes && tag.find('\0') == std::string_view::npos;
+}
 
 // The store writes HTML: tags go, common entities become their characters, and runs
 // of whitespace collapse, as the macOS app shows it.
@@ -38,6 +46,28 @@ std::string PlainText(std::string_view html) {
   return collapsed;
 }
 
+void AppendTag(std::vector<std::string>& tags, std::string value) {
+  if (!ValidTag(value)) return;
+  value = PlainText(value);
+  if (!ValidTag(value)) return;
+  if (tags.size() >= kMaximumTags) return;
+  if (std::find(tags.begin(), tags.end(), value) != tags.end()) return;
+  tags.push_back(std::move(value));
+}
+
+void ParseTagsField(const json::Value* field, std::vector<std::string>& tags) {
+  if (!field) return;
+  if (field->is_array()) {
+    for (const auto& entry : field->array()) {
+      if (entry.is_string()) AppendTag(tags, entry.text());
+      else if (const auto* name = entry.Find("description"); name && name->is_string()) AppendTag(tags, name->text());
+      else if (const auto* name = entry.Find("localizetag"); name && name->is_string()) AppendTag(tags, name->text());
+    }
+    return;
+  }
+  if (field->is_string()) AppendTag(tags, field->text());
+}
+
 }  // namespace
 
 std::string StoreDetailsUrl(std::uint32_t app) {
@@ -64,6 +94,8 @@ std::optional<StoreDetails> ParseStoreDetails(std::uint32_t id, std::string_view
         details.genres.push_back(PlainText(name->text()));
   if (const auto* support = data->Find("controller_support"); support && support->is_string())
     details.controller_support = support->text();
+  ParseTagsField(data->Find("tags"), details.tags);
+  ParseTagsField(data->Find("tag"), details.tags);
   return details;
 }
 

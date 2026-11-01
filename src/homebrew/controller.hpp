@@ -6,7 +6,9 @@
 #include "app/library_controller.h"
 #include "app/persistence_controller.h"
 #include "steam/app_details_service.h"
+#include "library/cache.h"
 #include "steam/store_details_service.h"
+#include "steam/store_browse_service.h"
 #include "steam/install_service.h"
 #include "installs/installed_location.h"
 #include "steam/cloud_service.h"
@@ -24,6 +26,10 @@
 #include <memory>
 #include <optional>
 #include <set>
+
+namespace playden::steam {
+class LicensedDepots;
+}
 
 namespace playden::homebrew {
 // What the "Store name in PS5 titles" setting adds to a game's title name: " (Steam)"; imported games
@@ -51,6 +57,8 @@ class Controller {
   void Shutdown();
   // Steam store descriptions, genres and controller support for the games the player opens.
   void SetStoreDetails(steam::StoreDetailsService* store_details) { store_details_ = store_details; }
+  void SetStoreBrowse(steam::StoreBrowseService* store_browse) { store_browse_ = store_browse; }
+  void SetLibraryCache(playden::LibraryCache* library_cache) { library_cache_ = library_cache; }
   // The server list and measurements run on their own worker; only their public snapshot enters the UI.
   void SetDownloadServers(steam::DownloadServerService* servers) { download_servers_ = servers; }
   // Playden's own update: the controller passes the player's requests on and shows its state.
@@ -65,6 +73,9 @@ class Controller {
   void SetPersistenceLog(std::function<void(const std::string&)> log);
   // The player turned "Stay signed in" on or off: the host moves the Steam session to disk or memory.
   void SetStaySignedIn(std::function<void(bool)> apply) { stay_signed_in_ = std::move(apply); }
+  // The account's saved license grant. A game's page and an update check read licenses when it is missing
+  // or older than an hour.
+  void SetLicensedDepots(steam::LicensedDepots* licensed) { licensed_depots_ = licensed; }
   // Counts changes to the account's Steam licenses (steam::CmLicenseChanges): the library refreshes
   // once they settle for `delay`, so a game added on another device shows up.
   void SetLicenseChanges(std::function<std::uint64_t()> changes,
@@ -111,7 +122,11 @@ class Controller {
               const steam::SteamEvent* prompt = nullptr, bool storage_full = false, bool restoring = false);
   void TickAppDetails();
   void TickStoreDetails();
+  void TickStoreTags();
   steam::StoreDetailsService* store_details_ = nullptr;
+  steam::StoreBrowseService* store_browse_ = nullptr;
+  playden::LibraryCache* library_cache_ = nullptr;
+  std::uint64_t steam_account_id_ = 0;
   std::optional<GameId> requested_store_detail_;
   void TickInstalls();
   void TickDownloadServers();
@@ -126,6 +141,9 @@ class Controller {
   std::function<void(const std::string&)> shutdown_log_;
   std::function<void(const std::string&)> persistence_log_;
   std::function<void(bool)> stay_signed_in_;
+  steam::LicensedDepots* licensed_depots_ = nullptr;
+  bool license_read_asked_ = false;
+  bool update_licenses_asked_ = false;
   std::function<std::uint64_t()> license_changes_;
   std::chrono::steady_clock::duration license_refresh_delay_{};
   std::optional<std::uint64_t> seen_license_changes_;

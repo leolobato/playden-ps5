@@ -160,6 +160,22 @@ int main(int argc, char** argv) {
     CHECK(ParseGameSettingsRecord("{\"steam_launch\":\"Bin\\\\Game.exe\"}", &parsed, &reason) &&
           parsed.steam_launch == "Bin/Game.exe");
     CHECK(ParseGameSettingsRecord("{\"steam_launch\":\"../x.exe\"}", &parsed, &reason) && parsed.steam_launch.empty());
+    GameSettingsRecord only_kit;
+    only_kit.kit = "0.17";
+    const auto kits = root / "kits.json";
+    CHECK(SaveGameSettingsFile(kits.string(), {{SteamId(220), only_kit}}, &reason));
+    CHECK(Read(kits).find("\"kit\":\"0.17\"") != std::string::npos);
+    std::map<playden::GameId, GameSettingsRecord> kits_loaded;
+    CHECK(LoadGameSettingsFile(kits.string(), &kits_loaded, &reason) && kits_loaded.at(SteamId(220)) == only_kit);
+    only_kit.kit = "latest";
+    CHECK(SaveGameSettingsFile(kits.string(), {{SteamId(220), only_kit}}, &reason));
+    CHECK(LoadGameSettingsFile(kits.string(), &kits_loaded, &reason) && kits_loaded.at(SteamId(220)).kit == "latest");
+    CHECK(ParseGameSettingsRecord("{\"kit\":\"not-a-version\"}", &parsed, &reason) && parsed.kit.empty());
+    CHECK(ParseGameSettingsRecord("{}", &parsed, &reason) && parsed.kit.empty());
+    CHECK(SerializeGameSettingsRecord({}).find("\"kit\"") == std::string::npos);
+    const auto omitted = root / "omitted-kit.json";
+    CHECK(SaveGameSettingsFile(omitted.string(), {{SteamId(220), GameSettingsRecord{}}}, &reason));
+    CHECK(Read(omitted).find("220") == std::string::npos);
   }
 
   const auto public_private_root = root / "public-settings";

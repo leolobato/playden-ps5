@@ -199,11 +199,15 @@ struct GameSettingsRecord {
   // A Steam game whose launch options are all for other branches: the program the player chose at
   // Install. Its option goes first when the game is prepared. Empty: not set. Saved only when set.
   std::string steam_launch;
+  // The runtime kit this game is prepared with. Empty: the default in preferences. "latest": the kit
+  // in the Latest slot. A version ("0.17"): that kit when it is still installed, otherwise Latest.
+  // Saved only when set.
+  std::string kit;
 };
 
 inline bool operator==(const GameSettingsRecord& left, const GameSettingsRecord& right) {
   return left.preset_id == right.preset_id && left.overrides == right.overrides && left.revision == right.revision &&
-         left.steam_app_id == right.steam_app_id && left.steam_launch == right.steam_launch;
+         left.steam_app_id == right.steam_app_id && left.steam_launch == right.steam_launch && left.kit == right.kit;
 }
 inline bool operator!=(const GameSettingsRecord& left, const GameSettingsRecord& right) { return !(left == right); }
 

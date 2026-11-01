@@ -32,8 +32,17 @@ static void choose(Simulation& simulation, const std::string& key) {
         std::exit(1);
     }
     const int index = static_cast<int>(std::distance(rows.begin(), target));
+    const bool details_row = simulation.state().navigation.route == Route::Details &&
+                             simulation.state().navigation.modals.empty();
+    const auto tag = [](const std::string& value) {
+        return value.rfind("detail-tag-", 0) == 0 || value == "detail-tags-more";
+    };
+    if (details_row && tag(key) != tag(simulation.state().navigation.focus_key))
+        press(simulation, tag(key) ? "down" : "up");
     for (int count = 0; count < 100 && simulation.view().focused_row != index; ++count)
-        press(simulation, simulation.view().focused_row < index ? "down" : "up");
+        press(simulation, simulation.view().focused_row < index
+                              ? (details_row ? "right" : "down")
+                              : (details_row ? "left" : "up"));
     if (simulation.state().navigation.focus_key != key)
         std::fprintf(stderr, "focus %s, wanted %s on %s\n", simulation.state().navigation.focus_key.c_str(), key.c_str(),
                      simulation.view().surface.c_str());

@@ -26,6 +26,8 @@ enum EMsg : std::uint32_t {
   kEMsgClientLogon = 5514,
   kEMsgClientRequestFreeLicense = 5572,
   kEMsgClientRequestFreeLicenseResponse = 5573,
+  kEMsgClientPICSChangesSinceRequest = 8901,
+  kEMsgClientPICSChangesSinceResponse = 8902,
   kEMsgClientPICSProductInfoRequest = 8903,
   kEMsgClientPICSProductInfoResponse = 8904,
   kEMsgClientPICSAccessTokenRequest = 8905,
@@ -131,8 +133,20 @@ struct PackageRequest {
 };
 std::vector<std::uint8_t> EncodePicsPackagesRequest(const std::vector<PackageRequest>& packages);
 
+// CMsgClientPICSChangesSince: which packages changed since `since_change_number`. App changes are not asked for.
+struct PicsChanges {
+  std::uint32_t current_change_number = 0;
+  bool force_full_update = false;
+  bool force_full_package_update = false;
+  std::vector<std::uint32_t> package_ids;
+};
+std::vector<std::uint8_t> EncodePicsChangesSinceRequest(std::uint32_t since_change_number,
+                                                       std::uint32_t packages_cached);
+bool DecodePicsChangesSinceResponse(const std::vector<std::uint8_t>& body, PicsChanges* changes);
+
 struct PicsPackage {
   std::uint32_t package_id = 0;
+  std::uint32_t change_number = 0;
   bool missing_token = false;
   std::vector<std::uint8_t> buffer;
 };

@@ -29,6 +29,7 @@ struct Owned final : LibraryBackend {
 struct Acquisitions final : AcquisitionSource {
   AcquisitionResult result{CmError::kNone, {{10, 1500000000u}, {99, 1400000000u}}};
   bool block_until_stopped = false;
+  std::atomic<int> reads{0};
   std::atomic<bool> saw_stop{false};
   std::map<std::uint32_t, std::string> app_info;
   std::map<std::uint32_t, std::string> unanswered;  // why the CM sent no buffer, for apps not in app_info
@@ -57,6 +58,7 @@ struct Acquisitions final : AcquisitionSource {
     return app_info_requests;
   }
   AcquisitionResult FetchAcquisitionDates(const StoredSession&, const std::atomic<bool>& cancel) override {
+    ++reads;
     while (block_until_stopped) {
       if (cancel) {
         saw_stop = true;
@@ -81,12 +83,19 @@ std::string DlcInfoText(std::uint32_t id, std::uint32_t game) {
          "\t\"extended\"\n\t{\n\t\t\"dlcforappid\"\t\"" + std::to_string(game) + "\"\n\t}\n}\n";
 }
 
+// The owned list, then the license read that adds dates and games the owned list leaves out.
+LibraryResult Licensed(EntitledLibraryBackend& backend, const StoredSession& session = Session()) {
+  std::atomic<bool> cancel{false};
+  auto owned = backend.Fetch(session, cancel);
+  if (owned.error != LibraryError::kNone) return owned;
+  return backend.ReadLicenses(session, std::move(owned.games), cancel);
+}
+
 // A load, the background lookup it started, then a load that lists what the lookup named.
 LibraryResult Settled(EntitledLibraryBackend& backend, const StoredSession& session = Session()) {
-  std::atomic<bool> cancel{false};
-  backend.Fetch(session, cancel);
+  Licensed(backend, session);
   assert(backend.WaitForLookups(5s));
-  return backend.Fetch(session, cancel);
+  return Licensed(backend, session);
 }
 
 
@@ -143,12 +152,27 @@ HttpResponse Json(const std::string& body, long status = 200) {
 }
 
 
+// A library refresh is the owned games. It does not read licenses, even while that read would block.
+void RefreshDoesNotReadLicenses() {
+  Owned owned;
+  Acquisitions acquisitions;
+  acquisitions.block_until_stopped = true;
+  EntitledLibraryBackend backend(owned, acquisitions);
+  std::atomic<bool> cancel{false};
+  const auto owned_games = backend.Fetch(Session(), cancel);
+  assert(owned_games.error == LibraryError::kNone && !owned_games.licenses_read && owned_games.games.size() == 2);
+  assert(acquisitions.reads == 0);
+  acquisitions.block_until_stopped = false;
+  const auto result = backend.ReadLicenses(Session(), owned_games.games, cancel);
+  assert(acquisitions.reads == 1 && result.licenses_read && result.games[0].added_at_unix_seconds == 1500000000u);
+}
+
 void DatesMergeIntoOwnedGames() {
   Owned owned;
   Acquisitions acquisitions;
   EntitledLibraryBackend backend(owned, acquisitions);
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.error == LibraryError::kNone && result.games.size() == 2);
   assert(result.games[0].added_at_unix_seconds == 1500000000u);
   // App 99 is licensed but not in the owned list; app 20 has no license date.
@@ -166,13 +190,13 @@ void LicensesBelongToTheirAccount() {
   EntitledLibraryBackend backend(owned, acquisitions);
   backend.SetLicensedDepots(&licensed);
   std::atomic<bool> cancel{false};
-  assert(backend.Fetch(Session(), cancel).licenses_read);
+  assert(Licensed(backend).licenses_read);
   assert(licensed.Get(123) && licensed.Get(123)->depots == std::set<std::uint32_t>{11});
   // Another account whose license read fails has none: the first account's don't stand in.
   acquisitions.result = {CmError::kNetwork, {}};
   auto other = Session();
   other.steam_id = 456;
-  assert(!backend.Fetch(other, cancel).licenses_read);
+  assert(!Licensed(backend, other).licenses_read);
   assert(!licensed.Get(456));
 }
 
@@ -182,7 +206,7 @@ void CmFailureIsNeverFatal() {
   acquisitions.result = {CmError::kRejected, {}};
   EntitledLibraryBackend backend(owned, acquisitions);
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.error == LibraryError::kNone && result.games.size() == 2);
   assert(!result.games[0].added_at_unix_seconds && !result.games[1].added_at_unix_seconds);
   assert(backend.last_acquisition_error() == CmError::kRejected);
@@ -199,7 +223,7 @@ void OwnedFailureStopsTheCmSession() {
   std::atomic<bool> cancel{false};
   const auto start = std::chrono::steady_clock::now();
   const auto result = backend.Fetch(Session(), cancel);
-  assert(result.error == LibraryError::kCredentialsRevoked && acquisitions.saw_stop);
+  assert(result.error == LibraryError::kCredentialsRevoked && acquisitions.reads == 0);
   assert(std::chrono::steady_clock::now() - start < 1s);
 }
 
@@ -209,11 +233,12 @@ void CancelReachesARunningCmSession() {
   acquisitions.block_until_stopped = true;
   EntitledLibraryBackend backend(owned, acquisitions);
   std::atomic<bool> cancel{false};
+  const auto owned_games = backend.Fetch(Session(), cancel);
   std::thread canceler([&cancel] {
     std::this_thread::sleep_for(30ms);
     cancel = true;
   });
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = backend.ReadLicenses(Session(), owned_games.games, cancel);
   canceler.join();
   assert(acquisitions.saw_stop && result.error == LibraryError::kNone);
   assert(!result.games[0].added_at_unix_seconds);
@@ -238,7 +263,7 @@ void LicensedFreeGamesAreAdded() {
   acquisitions.unanswered = {{40, "unknown"}};
   EntitledLibraryBackend backend(owned, acquisitions);
   std::atomic<bool> cancel{false};
-  auto result = backend.Fetch(Session(), cancel);
+  auto result = Licensed(backend);
   assert(result.error == LibraryError::kNone && result.games.size() == 2);
   assert(backend.WaitForLookups(5s));
   // Handed over once, for the load's account only.
@@ -251,7 +276,7 @@ void LicensedFreeGamesAreAdded() {
   // The listed game's DLC is looked up after the Library's apps, for the game it names, not for the Library.
   assert((acquisitions.Requests() == std::vector<std::vector<std::uint32_t>>{{30, 40, 2767030, 11}}));
   assert((backend.DlcOf(10) == std::vector<std::uint32_t>{11}) && backend.DlcOf(20).empty() && !Find(result, 11));
-  result = backend.Fetch(Session(), cancel);
+  result = Licensed(backend);
   assert(result.games.size() == 3 && Find(result, 2767030));
 
   // A refresh asks only about apps it doesn't know.
@@ -260,7 +285,7 @@ void LicensedFreeGamesAreAdded() {
   result = Settled(backend);
   assert(result.games.size() == 4 && Find(result, 50) && Find(result, 50)->title == "Synthetic New");
   assert(acquisitions.Requests().size() == 2 && (acquisitions.Requests()[1] == std::vector<std::uint32_t>{50}));
-  result = backend.Fetch(Session(), cancel);
+  result = Licensed(backend);
   assert(result.games.size() == 4 && acquisitions.Requests().size() == 2);
 }
 
@@ -275,7 +300,7 @@ void LicensedDemosAreAddedAndMarked() {
   EntitledLibraryBackend backend(owned, acquisitions);
   std::atomic<bool> cancel{false};
   for (int pass = 0; pass < 2; ++pass) {
-    const auto result = pass ? backend.Fetch(Session(), cancel) : Settled(backend);
+    const auto result = pass ? Licensed(backend) : Settled(backend);
     assert(result.error == LibraryError::kNone && result.games.size() == 4);
     const auto demo = std::find_if(result.games.begin(), result.games.end(),
                                    [](const auto& game) { return game.id == SteamId(60); });
@@ -334,7 +359,7 @@ void LateGamesReachTheCallback() {
   EntitledLibraryBackend backend(owned, acquisitions);
   backend.SetLateGamesCallback([&calls] { ++calls; });
   std::atomic<bool> cancel{false};
-  assert(backend.Fetch(Session(), cancel).games.size() == 2);
+  assert(Licensed(backend).games.size() == 2);
   assert(backend.WaitForLookups(5s));
   assert(calls >= 1 && backend.TakeLateGames(123).size() == 1);
   backend.SetLateGamesCallback(nullptr);
@@ -431,7 +456,7 @@ void NamesAreSaved() {
   EntitledLibraryBackend backend(owned, next);
   backend.SetAppNameStorage(&storage);
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.games.size() == 3 && Find(result, 70) && Find(result, 70)->title == "Synthetic Free");
   assert(backend.WaitForLookups(5s) && next.Requests().empty());
   std::remove((std::string(root) + "/app-names.cache").c_str());
@@ -456,7 +481,7 @@ void FamilySharedAppsAreMarked() {
   backend.SetFamilyDiagnostics(NoFamilyService(), lines.Log());
   std::atomic<bool> cancel{false};
   for (int pass = 0; pass < 2; ++pass) {
-    const auto result = pass ? backend.Fetch(Session(), cancel) : Settled(backend);
+    const auto result = pass ? Licensed(backend) : Settled(backend);
     assert(result.error == LibraryError::kNone && result.games.size() == 5);
     assert(Find(result, 80) && Find(result, 80)->family_shared && Find(result, 80)->title == "Synthetic Shared");
     assert(Find(result, 90) && Find(result, 90)->family_shared);
@@ -483,7 +508,7 @@ void OwnedAndBorrowedIsNotShared() {
   EntitledLibraryBackend backend(owned, acquisitions);
   backend.SetFamilyDiagnostics(NoFamilyService(), lines.Log());
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.games.size() == 2 && !Find(result, 20)->family_shared);
   assert(acquisitions.Requests().empty());
   assert(lines.Count("family library shared=1 added=0 left_out=0 pending=0 in_owned_list=1") == 1);
@@ -581,7 +606,7 @@ void StaleFamilyListDoesNotHideNewGames() {
       },
       lines.Log());
   std::atomic<bool> cancel{false};
-  assert(Find(backend.Fetch(Session(), cancel), 80));
+  assert(Find(Licensed(backend), 80));
   assert(WaitFor(lines, "family webapi app=80 "));
   fail = true;
   acquisitions.result.package_apps[810] = {81};
@@ -614,7 +639,7 @@ void FamilyServiceNamesSharedGames() {
       },
       lines.Log());
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.games.size() == 4);
   assert(Find(result, 80)->title == "Synthetic Family Game" && Find(result, 80)->family_shared &&
          Find(result, 80)->added_at_unix_seconds == 1600000000u && !Find(result, 80)->demo);
@@ -644,7 +669,7 @@ void CmFailureIsLoggedForFamily() {
       },
       lines.Log());
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.error == LibraryError::kNone && result.games.size() == 2);
   assert(lines.Count("family library licenses=unavailable cm_error=rejected") == 1);
   assert(WaitFor(lines, "family webapi app=80 owners=5 exclude_reason=0 licensed=?"));
@@ -700,7 +725,7 @@ void FamilyWithoutLicensesIsAskedAgain() {
       },
       lines.Log());
   std::atomic<bool> cancel{false};
-  backend.Fetch(Session(), cancel);
+  Licensed(backend);
   assert(WaitFor(lines, "licenses=unknown"));
   while (requests < 2) std::this_thread::sleep_for(1ms);
   std::this_thread::sleep_for(100ms);  // the probe thread finishes after its last line
@@ -709,7 +734,7 @@ void FamilyWithoutLicensesIsAskedAgain() {
   acquisitions.result.owned_apps = {80};
   acquisitions.result.shared_apps = {80};
   acquisitions.app_info = {{80, AppInfoText(80, "Synthetic Shared", "game")}};
-  backend.Fetch(Session(), cancel);
+  Licensed(backend);
   assert(WaitFor(lines, "family webapi app=80 owners=5 exclude_reason=0 licensed=shared"));
   assert(requests == 4 && lines.Count("licenses=known") == 1);
 }
@@ -730,14 +755,14 @@ void FamilyServiceNeverFailsTheLoad() {
       },
       lines.Log());
   std::atomic<bool> cancel{false};
-  auto result = backend.Fetch(Session(), cancel);
+  auto result = Licensed(backend);
   assert(result.error == LibraryError::kNone && result.games.size() == 2);
   assert(WaitFor(lines, "family webapi step=group error=timeout"));
   // A failure is tried again by a later load, never twice by one.
   const auto deadline = std::chrono::steady_clock::now() + 5s;
   int loads = 1;
   while (requests < 2 && std::chrono::steady_clock::now() < deadline) {
-    result = backend.Fetch(Session(), cancel);
+    result = Licensed(backend);
     ++loads;
     assert(result.error == LibraryError::kNone && requests <= loads);
   }
@@ -762,13 +787,12 @@ void StalledFamilyServiceHoldsNothingUp() {
         return response;
       },
       lines.Log());
-  std::atomic<bool> cancel{false};
   auto start = std::chrono::steady_clock::now();
-  auto result = backend->Fetch(Session(), cancel);
+  auto result = Licensed(*backend);
   assert(std::chrono::steady_clock::now() - start < 1s);
   assert(result.error == LibraryError::kNone && result.games.size() == 2);
   while (requests == 0) std::this_thread::sleep_for(1ms);
-  result = backend->Fetch(Session(), cancel);
+  result = Licensed(*backend);
   assert(result.error == LibraryError::kNone && requests == 1);
   start = std::chrono::steady_clock::now();
   backend.reset();
@@ -796,7 +820,7 @@ void LateFamilyAnswerIsLogged() {
       },
       lines.Log());
   std::atomic<bool> cancel{false};
-  const auto result = backend.Fetch(Session(), cancel);
+  const auto result = Licensed(backend);
   assert(result.error == LibraryError::kNone && lines.Count("family webapi") == 0);
   assert(lines.Count("family_list=n") == 1);
   release = true;
@@ -829,7 +853,7 @@ void FamilyAppLinesAreCapped() {
   std::atomic<bool> cancel{false};
   const auto load = [&] {
     const auto before = lines.Count("family library ");
-    assert(backend.Fetch(Session(), cancel).games.size() == 302);
+    assert(Licensed(backend).games.size() == 302);
     return lines.Count("family library ") - before;
   };
   // Each load writes at most 100 per-app lines, a truncated line and the summary; no app repeats.
@@ -868,6 +892,7 @@ int main() {
   NamesAreSaved();
   AppNamesFileRoundTrips();
   DatesMergeIntoOwnedGames();
+  RefreshDoesNotReadLicenses();
   LicensesBelongToTheirAccount();
   CmFailureIsNeverFatal();
   OwnedFailureStopsTheCmSession();

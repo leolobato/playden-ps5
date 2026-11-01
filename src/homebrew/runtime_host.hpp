@@ -74,8 +74,12 @@ struct RuntimeHostConfig {
   // Empty members use the native SQLite inventory and process activity readers.
   ps5::NativeCoordinatorOperations native;
   ps5::TitleRegistry::Transport registry_transport;
-  // Verifies the installed kit on the worker, or returns nothing with a reason.
+  // Verifies the kit in the Latest slot (/data/playden/kits/playden-kit), or returns nothing with a reason.
   std::function<std::optional<RuntimeKit>(std::string* reason)> admit_kit;
+  // Parked copies, playden-kit-<version>, that still admit. Empty when the host has only the Latest slot.
+  std::function<std::vector<RuntimeKit>()> admit_parked_kits;
+  // The default kit pin ("latest" or a version). Empty reads as Latest.
+  std::function<std::string()> default_kit;
   // Package layer paths and base operations (hashing, sync, space, bottle
   // validation). The host adds cancellation.
   runtime::PackageInstallPaths package_paths;
@@ -298,7 +302,15 @@ struct RuntimeSnapshot {
   std::string reason;  // why the runtime services are unavailable
   bool kit_available = false;
   std::string kit_reason;  // why preparation is unavailable
-  std::optional<RuntimeKit> kit;  // the admitted kit, for display
+  std::optional<RuntimeKit> kit;  // the resolved default kit, for display
+  // Every admitted kit, Latest slot first. A game pinned to a version uses that entry.
+  struct AdmittedKitInfo {
+    std::string version;
+    std::string kit_id;
+    std::string manifest_sha256;
+    bool latest_slot = false;
+  };
+  std::vector<AdmittedKitInfo> admitted_kits;
   std::vector<RuntimeInstallView> installs;
   // False while the PS5 title records could not be read (after a failed write): `installs` is then
   // empty, which does not mean that no game has a PS5 title.
@@ -642,6 +654,9 @@ class RuntimeHost {
   runtime::KitCapabilities TitleKit(const Composition& composition, const runtime::RuntimeInstall& record) const;
   // Empty while the kit on disk is the one admitted at startup; otherwise what to tell the player.
   std::string KitReplaced(const Composition& composition) const;
+  // The kit this game is prepared and played with: its saved version when that kit admits, otherwise Latest.
+  const RuntimeKit* KitFor(const Composition& composition, const runtime::RuntimeInstall& record) const;
+  void NoteKitOwnership(Composition& composition, const runtime::RuntimeInstall& record);
   // Makes an owned, world-writable folder from root down to working 0755 (dxvk.conf goes there).
   std::string TightenWorkingFolder(const std::filesystem::path& root, const std::string& working);
   // Checks (and fixes, as root) config.writable_folders, the game's root and its working folder
