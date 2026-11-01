@@ -422,9 +422,8 @@ I keep a fork of each, with Playden's changes on the fork's `main` branch, and s
 - [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton) — turns Direct3D 12 into Vulkan (kit 0.11 and later).
 - [PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa) and [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan) by
   Mihawk — [Mesa](https://mesa3d.org/) for the PS5: RADV, the AMD Vulkan driver, for the PS5 GPU, and Zink with WGL,
-  which runs Windows OpenGL games on top of Vulkan. The kit builds Zink from
-  [mpereiraesaa/PS5_Mesa](https://github.com/mpereiraesaa/PS5_Mesa), and RADV from the fork
-  [leolobato/PS5_Mesa](https://github.com/leolobato/PS5_Mesa) with
+  which runs Windows OpenGL games on top of Vulkan. The kit builds Zink and RADV from the fork
+  [leolobato/PS5_Mesa](https://github.com/leolobato/PS5_Mesa), and RADV with
   [mpereiraesaa/PS5_Vulkan](https://github.com/mpereiraesaa/PS5_Vulkan).
 - [MihawkGen](https://github.com/mihawk-99/PS5_MihawkGen) by Mihawk — frame generation, for Game settings › Frame
   generation (kit 0.15 and later).
