@@ -6,7 +6,9 @@
 #include "app/library_controller.h"
 #include "app/persistence_controller.h"
 #include "steam/app_details_service.h"
+#include "library/cache.h"
 #include "steam/store_details_service.h"
+#include "steam/store_tags_service.h"
 #include "steam/install_service.h"
 #include "installs/installed_location.h"
 #include "steam/cloud_service.h"
@@ -51,6 +53,8 @@ class Controller {
   void Shutdown();
   // Steam store descriptions, genres and controller support for the games the player opens.
   void SetStoreDetails(steam::StoreDetailsService* store_details) { store_details_ = store_details; }
+  void SetStoreTags(steam::StoreTagsService* store_tags) { store_tags_ = store_tags; }
+  void SetLibraryCache(playden::LibraryCache* library_cache) { library_cache_ = library_cache; }
   // The server list and measurements run on their own worker; only their public snapshot enters the UI.
   void SetDownloadServers(steam::DownloadServerService* servers) { download_servers_ = servers; }
   // Playden's own update: the controller passes the player's requests on and shows its state.
@@ -111,7 +115,11 @@ class Controller {
               const steam::SteamEvent* prompt = nullptr, bool storage_full = false, bool restoring = false);
   void TickAppDetails();
   void TickStoreDetails();
+  void TickStoreTags();
   steam::StoreDetailsService* store_details_ = nullptr;
+  steam::StoreTagsService* store_tags_ = nullptr;
+  playden::LibraryCache* library_cache_ = nullptr;
+  std::uint64_t steam_account_id_ = 0;
   std::optional<GameId> requested_store_detail_;
   void TickInstalls();
   void TickDownloadServers();

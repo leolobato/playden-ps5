@@ -17,6 +17,10 @@
       "genres": [
         "Adventure"
       ],
+      "store_tags": [
+        "Roguelike",
+        "Adventure"
+      ],
       "controller_support": "full",
       "download_bytes": 2147483648,
       "installed_bytes": 4294967296,
@@ -37,6 +41,9 @@
       },
       "genres": [
         "Puzzle"
+      ],
+      "store_tags": [
+        "Adventure"
       ],
       "controller_support": "partial",
       "download_bytes": 3221225472,

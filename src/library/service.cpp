@@ -13,14 +13,16 @@ constexpr std::size_t kMaximumEvents = 64;
 constexpr std::uint64_t kMaximumTimestamp =
     static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
-// Only a library with demos needs schema 6, and one with family-shared games schema 7; one without stays
-// readable by older versions.
+// Only a library with demos needs schema 6, one with family-shared games schema 7, and one with known
+// store tags schema 8; one without stays readable by older versions.
 void SetSchema(LibrarySnapshot* snapshot) {
   const auto& games = snapshot->games;
   if (std::any_of(games.begin(), games.end(), [](const GameSummary& game) { return game.demo; }))
     snapshot->schema_version = 6;
   if (std::any_of(games.begin(), games.end(), [](const GameSummary& game) { return game.family_shared; }))
     snapshot->schema_version = 7;
+  if (std::any_of(games.begin(), games.end(), [](const GameSummary& game) { return game.store_tags_known; }))
+    snapshot->schema_version = 8;
 }
 
 }  // namespace
@@ -283,13 +285,16 @@ void LibraryService::ExecuteRefresh(const Job& job) {
   StorageError cache_error = StorageError::kNone;
   // Acquisition dates from the previous snapshot, kept when a refresh cannot obtain them.
   std::unordered_map<GameId, std::uint64_t> previous_added_at;
+  std::unordered_map<GameId, GameSummary> previous_by_id;
   if (cache_) {
     auto loaded = cache_->Load(job.account);
     if (!Current(job)) return;
     if (loaded.ok() && loaded.value().retrieved_at_unix_seconds <= kMaximumTimestamp) {
       cache_available = true;
-      for (const auto& game : loaded.value().games)
+      for (const auto& game : loaded.value().games) {
+        previous_by_id.emplace(game.id, game);
         if (game.added_at_unix_seconds) previous_added_at.emplace(game.id, *game.added_at_unix_seconds);
+      }
       LibraryEvent cached;
       cached.kind = LibraryEventKind::kCached;
       cached.request_id = job.request;
@@ -318,9 +323,15 @@ void LibraryService::ExecuteRefresh(const Job& job) {
   snapshot.retrieved_at_unix_seconds = Now();
   snapshot.games = std::move(result.games);
   for (auto& game : snapshot.games) {
-    if (game.added_at_unix_seconds) continue;
-    const auto previous = previous_added_at.find(game.id);
-    if (previous != previous_added_at.end()) game.added_at_unix_seconds = previous->second;
+    if (game.added_at_unix_seconds) {
+      /* keep */
+    } else if (const auto previous = previous_added_at.find(game.id); previous != previous_added_at.end()) {
+      game.added_at_unix_seconds = previous->second;
+    }
+    if (const auto cached = previous_by_id.find(game.id); cached != previous_by_id.end() && cached->second.store_tags_known) {
+      game.store_tags = cached->second.store_tags;
+      game.store_tags_known = true;
+    }
   }
   snapshot.metadata_partial = result.metadata_partial;
   SetSchema(&snapshot);

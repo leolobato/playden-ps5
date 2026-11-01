@@ -99,6 +99,23 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
           "hiding family sharing leaves the owned games");
     state.library.filters.clear();
     demo.family_shared = false;
+    auto& tagged = *std::find_if(state.games.begin(), state.games.end(),
+                                 [](const Game& game) { return game.id == SteamId(900001); });
+    tagged.store_tags = {"Roguelike", "Adventure"};
+    tagged.store_tags_known = true;
+    state.library.tag_filter = "Roguelike";
+    check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900001),
+          "tag filter keeps games with a matching store tag");
+    state.library.tag_filter.clear();
+    tagged.store_tags_known = false;
+    state.library.tag_filter = "Roguelike";
+    check(filtered_games(state).empty(), "unknown tag data is excluded while a tag filter is active");
+    state.library.tag_filter.clear();
+    tagged.store_tags_known = true;
+    state.library.query = "roguelike";
+    check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900001),
+          "library query matches cached store tags");
+    state.library.query.clear();
     state.account().authentication = AuthState::SignedOut;
     state.account().cache_available = false;
     check(filtered_games(state).empty(), "signed out without cache has no browsable catalog");

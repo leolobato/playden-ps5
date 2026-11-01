@@ -3363,6 +3363,19 @@ class Render::Impl
                 ui::text(scene_, fonts_.semibold, genre, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
                 tag_x += width + 12.0F;
             }
+            if (game->store_tags_known)
+            {
+                for (std::size_t index = 0; index < game->store_tags.size() && index < 8; ++index)
+                {
+                    const std::string &tag = game->store_tags[index];
+                    const float width = fonts_.semibold.measure(tag, 20.0F) + 32.0F;
+                    if (tag_x + width > kSafeX + 1128.0F)
+                        break;
+                    scene_.rounded_rect({tag_x, y, width, 42.0F}, 6.0F, kAccent.with_alpha(0.18F));
+                    ui::text(scene_, fonts_.semibold, tag, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
+                    tag_x += width + 12.0F;
+                }
+            }
         }
 
         // Right column: the facts.

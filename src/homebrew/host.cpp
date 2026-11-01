@@ -473,6 +473,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::LocalSessionRepository> cloud_sessions;
     std::unique_ptr<playden::steam::CloudService> cloud;
     std::unique_ptr<playden::steam::StoreDetailsService> store_details;  // declared first: the controller uses it
+    std::unique_ptr<playden::steam::StoreTagsService> store_tags;
     std::unique_ptr<playden::stores::Registry> stores;  // declared first: the controller uses it
     std::unique_ptr<playden::homebrew::Controller> services;
     std::unique_ptr<playden::homebrew::HttpArtworkBackend> artwork_backend;
@@ -755,7 +756,10 @@ int main(int argc, char** argv) {
                                                                        " moved=" + (moved.ok() ? "1" : "0"));
         });
         store_details = std::make_unique<playden::steam::StoreDetailsService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
+        store_tags = std::make_unique<playden::steam::StoreTagsService>(playden::homebrew::StoreFetch(PLAYDEN_HOMEBREW_CA_BUNDLE));
         services->SetStoreDetails(store_details.get());
+        services->SetStoreTags(store_tags.get());
+        services->SetLibraryCache(library_cache.get());
     }
 
     if (!options->simulation) {

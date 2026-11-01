@@ -549,6 +549,8 @@ struct Game {
     std::string hero_key;
     std::string logo_key;
     std::vector<std::string> genres;
+    std::vector<std::string> store_tags;
+    bool store_tags_known = false;
     std::string controller_support;
     std::optional<std::uint64_t> download_bytes;
     std::optional<std::uint64_t> install_bytes;
@@ -586,6 +588,8 @@ struct UserLibrary {
     // or a game opened from it, is on screen. Never saved: `sort` stays the player's own choice.
     std::string view_sort;
     std::set<std::string> filters;
+    // One active Steam user-tag filter; persisted with organization.
+    std::string tag_filter;
 };
 
 struct Installation {
@@ -1023,7 +1027,9 @@ public:
     // Live mode: the Steam store's description, genres and controller support for one game;
     // kept across library refreshes.
     void UpdateStoreDetails(GameId id, std::string description, std::vector<std::string> genres,
-                            std::string controller_support);
+                            std::vector<std::string> tags, std::string controller_support);
+    // Live mode: user-defined store tags for one game (store page enrichment or Details).
+    bool UpdateStoreTags(GameId id, std::vector<std::string> tags);
     PersistenceLoadToken BeginOrganizationLoad(std::uint64_t account);
     bool ApplyOrganization(std::uint64_t account, PersistenceLoadToken token,
                            std::optional<playden::OrganizationSnapshot> loaded);
@@ -1238,7 +1244,12 @@ private:
     std::string manage_move_from_id_;  // Move: only the games on this drive are listed; empty lists every drive
     std::string manage_uninstall_from_id_;  // Uninstall: only the games on this drive are listed; empty lists every drive
     bool rebuilding_overlay_ = false;  // rebuild_view is building the screen under an open sheet
-    struct StoreFacts { std::string description; std::vector<std::string> genres; std::string controller_support; };
+    struct StoreFacts {
+        std::string description;
+        std::vector<std::string> genres;
+        std::vector<std::string> tags;
+        std::string controller_support;
+    };
     std::map<GameId, StoreFacts> store_facts_;  // live: from the Steam store, applied over library refreshes
     std::vector<GameId> ready_prompts_;  // games to announce as ready to play, oldest first
     // settings_game: a game whose refusal Game settings can get past; the dialog offers it.

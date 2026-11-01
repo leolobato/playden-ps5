@@ -123,6 +123,7 @@ namespace {
 
 constexpr std::uint32_t kArtworkTimeoutMs = 10'000;
 // Cached artwork expires after 14 days so updated Steam covers refresh.
+// Cover JPEG/PNG bytes only; store tags live in the library cache (schema 8), not here.
 constexpr std::time_t kArtworkCacheTtlSeconds = 14 * 24 * 3600;
 
 bool CheckedImageBytes(int width, int height, std::size_t& bytes) {

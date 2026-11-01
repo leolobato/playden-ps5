@@ -16,11 +16,12 @@ using namespace playden::steam;
 int main() {
   const std::string body =
       R"({"220":{"success":true,"data":{"steam_appid":220,"short_description":"<b>Half-Life 2</b> &amp; friends:\n )"
-      R"(the &quot;best&quot;  game.","controller_support":"full","genres":[{"id":"1","description":"Action"}]}}})";
+      R"(the &quot;best&quot;  game.","controller_support":"full","genres":[{"id":"1","description":"Action"}],"tags":[{"description":"FPS"}]}}})";
   const auto details = ParseStoreDetails(220, body);
   CHECK(details && details->id == SteamId(220));
   CHECK(details->description == "Half-Life 2 & friends: the \"best\" game.");
   CHECK(details->genres == std::vector<std::string>{"Action"} && details->controller_support == "full");
+  CHECK(details->tags == std::vector<std::string>{"FPS"});
   CHECK(!ParseStoreDetails(221, body));  // another game's answer
   CHECK(!ParseStoreDetails(220, R"({"220":{"success":false}})"));
   CHECK(!ParseStoreDetails(220, R"({"220":{"success":true,"data":{"steam_appid":221}}})"));

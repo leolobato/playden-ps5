@@ -5,6 +5,7 @@
 #include "steam/secret.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <utility>
 
 namespace playden::homebrew {
@@ -387,6 +388,7 @@ void Controller::Tick() {
   TickAppDetails();
   lap(3);
   TickStoreDetails();
+  TickStoreTags();
   lap(4);
   TickImports();
   TickInstalls();
@@ -2184,7 +2186,24 @@ void Controller::TickStoreDetails() {
   }
   for (auto& details : store_details_->Pump())
     model_.UpdateStoreDetails(details.id, std::move(details.description), std::move(details.genres),
-                              std::move(details.controller_support));
+                              std::move(details.tags), std::move(details.controller_support));
+}
+void Controller::TickStoreTags() {
+  if (!store_tags_ || model_.state().simulation_mode) return;
+  const auto& account = model_.state().account(Store::kSteam);
+  if (account.authentication != AuthState::SignedIn && account.authentication != AuthState::Offline) return;
+  if (account.id.empty()) return;
+  steam_account_id_ = std::strtoull(account.id.c_str(), nullptr, 10);
+  for (const auto& game : model_.state().games) {
+    if (game.id.store != Store::kSteam || game.store_tags_known || !game.id.steam_app()) continue;
+    store_tags_->Request(game.id);
+  }
+  for (auto& tags : store_tags_->Pump()) {
+    const auto saved_tags = tags.tags;
+    if (!model_.UpdateStoreTags(tags.id, std::move(tags.tags))) continue;
+    if (library_cache_ && steam_account_id_ != 0)
+      library_cache_->MergeGameTags(steam_account_id_, tags.id, saved_tags);
+  }
 }
 void Controller::TickAppDetails() {
   if (!app_details_) {

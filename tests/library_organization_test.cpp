@@ -113,6 +113,18 @@ void V1RoundTripAndIsolation() {
   Check((info.st_mode & 0777) == 0600, "organization file is owner-only");
 }
 
+void TagFilterRoundTrips() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  auto expected = Example();
+  expected.tag_filter = "Roguelike";
+  Check(playden::OrganizationSnapshotIsValid(expected), "tag filter is valid organization");
+  Check(store.Save(kDevice, expected).ok(), "tag filter saves");
+  const auto restored = store.Load(kDevice);
+  Check(restored.ok() && restored.value() && *restored.value() == expected, "tag filter round trips");
+}
+
 void RejectsInvalidValuesWithoutReplacingGoodData() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
@@ -144,6 +156,7 @@ void RejectsInvalidValuesWithoutReplacingGoodData() {
   invalid = expected; invalid.query.assign(257, 'q'); rejects(invalid, "oversized query rejected");
   invalid = expected; invalid.sort = "invented"; rejects(invalid, "unknown sort rejected");
   invalid = expected; invalid.filters.insert("fixture-only"); rejects(invalid, "unknown filter rejected");
+  invalid = expected; invalid.tag_filter.assign(65, 't'); rejects(invalid, "oversized tag filter rejected");
   {
     // The Library's Installed rail is a live scope, so choosing it is saved and restored.
     auto installed = expected; installed.scope = "installed";
@@ -417,7 +430,7 @@ void V2DamagedFailsWithoutMerging() {
   Check(!loaded.ok() && loaded.error() == playden::StorageError::kInvalidData, "truncated organization.v2 is rejected");
 
   auto future = stored.value();
-  future[8] = 3;
+  future[8] = 4;
   RewriteChecksum(future);
   Check(storage.WriteAtomicPrivate(kV2Path, future).ok(), "future-version fixture writes");
   loaded = store.Load(kDevice);
@@ -562,6 +575,7 @@ int main() {
   MergeWithoutLegacyFilesIsMissing();
   MergePastTheLimitsKeepsTheNewestFile();
   RejectsInvalidValuesWithoutReplacingGoodData();
+  TagFilterRoundTrips();
   V1RejectsDamagedAndOversizedFiles();
   V1RejectsSemanticCollectionNamesOnLoad();
   V1PreservesOrphanedPersonalState();

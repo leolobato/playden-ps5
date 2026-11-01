@@ -621,6 +621,7 @@ std::size_t snapshot_size(const playden::OrganizationSnapshot& value) {
     bytes += value.ratings.size() * (sizeof(GameId) + sizeof(playden::CompatibilityRating));
     for (const auto& [id, note] : value.notes) bytes += sizeof(id) + note.size();
     for (const auto& filter : value.filters) bytes += filter.size();
+    bytes += value.tag_filter.size();
     for (const auto& collection : value.collections)
         bytes += collection.id.size() + collection.name.size() + collection.members.size() * sizeof(GameId);
     return bytes;
@@ -705,6 +706,7 @@ void replay_organization_delta(playden::OrganizationSnapshot& base,
     }
     if (before.query != after.query) base.query = after.query;
     if (before.scope != after.scope) base.scope = after.scope;
+    if (before.tag_filter != after.tag_filter) base.tag_filter = after.tag_filter;
     if (before.sort != after.sort) base.sort = after.sort;
     if (selected || before.selected_game_id != after.selected_game_id)
         base.selected_game_id = after.selected_game_id;
@@ -3410,17 +3412,37 @@ bool Simulation::UpdateAppDetails(GameId id, std::optional<std::uint64_t> downlo
 }
 
 void Simulation::UpdateStoreDetails(GameId id, std::string description, std::vector<std::string> genres,
-                                    std::string controller_support) {
+                                    std::vector<std::string> tags, std::string controller_support) {
     if (!live()) return;
     auto& facts = store_facts_[id];
-    facts = {std::move(description), std::move(genres), std::move(controller_support)};
+    facts = {std::move(description), std::move(genres), std::move(tags), std::move(controller_support)};
     for (auto& game : state_.games) {
         if (game.id != id) continue;
         if (!facts.description.empty()) game.description = facts.description;
         game.genres = facts.genres;
+        if (!facts.tags.empty()) {
+            game.store_tags = facts.tags;
+            game.store_tags_known = true;
+        }
         game.controller_support = facts.controller_support;
     }
     rebuild_view();
+}
+
+bool Simulation::UpdateStoreTags(GameId id, std::vector<std::string> tags) {
+    if (!live() || !id.valid()) return false;
+    if (tags.size() > 32) return false;
+    for (const auto& tag : tags)
+        if (tag.empty() || tag.size() > 64) return false;
+    auto& facts = store_facts_[id];
+    facts.tags = tags;
+    for (auto& game : state_.games) {
+        if (game.id != id) continue;
+        game.store_tags = tags;
+        game.store_tags_known = true;
+    }
+    rebuild_view();
+    return true;
 }
 
 bool Simulation::UpdateLibrary(LibraryUpdate update) {
@@ -3475,10 +3497,16 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
                 game.added_at = static_cast<std::int64_t>(*summary.added_at_unix_seconds);
             game.demo = summary.demo;
             game.family_shared = summary.family_shared;
+            game.store_tags = summary.store_tags;
+            game.store_tags_known = summary.store_tags_known;
             if (const auto facts = store_facts_.find(game.id); facts != store_facts_.end()) {
                 if (!facts->second.description.empty()) game.description = facts->second.description;
                 game.genres = facts->second.genres;
                 game.controller_support = facts->second.controller_support;
+                if (!facts->second.tags.empty()) {
+                    game.store_tags = facts->second.tags;
+                    game.store_tags_known = true;
+                }
             }
             projected.push_back(std::move(game));
         }
@@ -3625,6 +3653,7 @@ playden::OrganizationSnapshot Simulation::ExportOrganization() const {
     result.scope = state_.library.scope;
     result.sort = state_.library.sort;
     result.filters = state_.library.filters;
+    result.tag_filter = state_.library.tag_filter;
     result.selected_game_id = state_.navigation.selected_game_id;
     result.collections.reserve(state_.library.collections.size());
     for (const auto& value : state_.library.collections)
@@ -3740,6 +3769,7 @@ void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot
     state_.library.scope = snapshot.scope;
     state_.library.sort = snapshot.sort;
     state_.library.filters = snapshot.filters;
+    state_.library.tag_filter = snapshot.tag_filter;
     state_.library.collections.clear();
     for (const auto& value : snapshot.collections)
         state_.library.collections.push_back({value.id, value.name, value.pinned, value.members});
@@ -4304,6 +4334,10 @@ void Simulation::load_fixtures() {
             }
             if (const auto* genres = item.get("genres"); genres && genres->array())
                 for (const auto& genre : *genres->array()) game.genres.push_back(string_value(&genre));
+            if (const auto* tags = item.get("store_tags"); tags && tags->array()) {
+                for (const auto& tag : *tags->array()) game.store_tags.push_back(string_value(&tag));
+                game.store_tags_known = !game.store_tags.empty();
+            }
             game.controller_support = string_value(item.get("controller_support"), "unknown");
             game.download_bytes = optional_uint(item.get("download_bytes"));
             game.install_bytes = optional_uint(item.get("installed_bytes"));
@@ -5652,6 +5686,12 @@ void Simulation::rebuild_view() {
             if (modal.id == "filters" && action_key.rfind("sort-", 0) == 0)
                 item.checked = action_key.substr(5) ==
                     (state_.library.view_sort.empty() ? state_.library.sort : state_.library.view_sort);
+            if (action_key == "filter-tag-clear") {
+                item.title = "Tag: " + state_.library.tag_filter;
+                item.kind = RowKind::Toggle;
+                item.selected = true;
+                item.value = "On";
+            }
             // The menu's Favorite says what it will do for this game.
             if (modal.id == "context" && action_key == "favorite")
                 item.title = state_.library.favorites.contains(state_.navigation.selected_game_id) ? "Remove from Favorites"
@@ -6453,7 +6493,8 @@ void Simulation::rebuild_view() {
         // An empty grid offers the way back to the games it hides; Connect a store is only for a missing catalog.
         if (view_.rows.empty()) {
             if (!state_.library.query.empty()) row("clear-search", RowKind::Action, "Clear search", "clear-search");
-            else if (!state_.library.filters.empty()) row("library-empty", RowKind::Action, "Reset filters", "filters-reset");
+            else if (!state_.library.filters.empty() || !state_.library.tag_filter.empty())
+                row("library-empty", RowKind::Action, "Reset filters", "filters-reset");
             else if (!state_.games.empty() && state_.library.scope != "all") row("library-empty", RowKind::Action, "Show all games", "library-show-all");
             else row("library-empty", RowKind::Action, "Connect a store", "connect");
         }
@@ -6782,6 +6823,10 @@ void Simulation::rebuild_view() {
             // Waiting behind other games: move it to the front; the game being set up now finishes first.
             if (runtime && runtime->queued && runtime->uninstall_status.empty() && position > 1)
                 row("details-prepare-next", RowKind::Action, "Prepare next", "details-prepare-next").game_id = game->id;
+        }
+        if (game && game->store_tags_known) {
+            for (std::size_t index = 0; index < game->store_tags.size() && index < 12; ++index)
+                row("detail-tag-" + std::to_string(index), RowKind::Action, game->store_tags[index], "tag-filter");
         }
         row("details-favorite", RowKind::Toggle, "Favorite", "favorite").selected = game && state_.library.favorites.contains(game->id);
         if (!live()) row("details-simulate-launch", RowKind::Action, "Simulate launch", "launch");
@@ -9420,11 +9465,29 @@ void Simulation::activate() {
     } else if (action_name.rfind("sort-", 0) == 0) {
         state_.library.sort = action_name.substr(5); state_.library.view_sort.clear(); close_modal(); reconcile_library_selection(state_); save_profile();
     } else if (action_name.rfind("filter-", 0) == 0) {
-        const auto filter = action_name.substr(7);
-        if (state_.library.filters.contains(filter)) state_.library.filters.erase(filter); else state_.library.filters.insert(filter);
+        if (action_name == "filter-tag-clear") {
+            state_.library.tag_filter.clear();
+        } else {
+            const auto filter = action_name.substr(7);
+            if (state_.library.filters.contains(filter)) state_.library.filters.erase(filter);
+            else state_.library.filters.insert(filter);
+        }
         close_modal(); reconcile_library_selection(state_); save_profile();
     } else if (action_name == "filters-reset") {
-        state_.library.filters.clear(); state_.library.sort = "name"; state_.library.view_sort.clear(); close_modal(); reconcile_library_selection(state_); save_profile();
+        state_.library.filters.clear();
+        state_.library.tag_filter.clear();
+        state_.library.sort = "name";
+        state_.library.view_sort.clear();
+        close_modal();
+        reconcile_library_selection(state_);
+        save_profile();
+    } else if (action_name == "tag-filter") {
+        state_.library.tag_filter = selected.title;
+        state_.navigation.route = Route::Library;
+        state_.navigation.detail_id.reset();
+        close_modal();
+        reconcile_library_selection(state_);
+        save_profile();
     } else if (action_name == "game-settings") {
         const auto id = state_.navigation.selected_game_id;
         const auto setup = game_setups_.find(id);
@@ -10188,6 +10251,7 @@ bool Simulation::action(const std::string& logical_action) {
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.family_shared; });
             if (demos) filters.push_back("filter-hide-demos");
             if (family) filters.push_back("filter-hide-family");
+            if (!state_.library.tag_filter.empty()) filters.push_back("filter-tag-clear");
             std::vector<std::string> actions{"heading-sort"};
             actions.insert(actions.end(), sorts.begin(), sorts.end());
             actions.push_back("heading-filter");

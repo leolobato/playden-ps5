@@ -901,7 +901,10 @@ int main() {
         if (!web_probe_on) services.SetWebAccess(&web);
         services.SetLocalLibrary(local_library);
         playden::steam::StoreDetailsService store_details(playden::homebrew::StoreFetch(paths.trust_store));
+        playden::steam::StoreTagsService store_tags(playden::homebrew::StoreFetch(paths.trust_store));
         services.SetStoreDetails(&store_details);
+        services.SetStoreTags(&store_tags);
+        services.SetLibraryCache(&library_cache);
         services.SetSelfUpdate(&self_update);
         // A game bought or added to the library elsewhere: Steam pushes the new license list.
         services.SetLicenseChanges([steam_cm] { return playden::steam::CmLicenseChanges(*steam_cm); });

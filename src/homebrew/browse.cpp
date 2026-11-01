@@ -133,7 +133,34 @@ std::vector<const Game*> filtered_games(const State& state)
             const bool matches=state.simulation_mode
                 ? ascii_lower(game.title).find(query)!=std::string::npos
                 : folded_title(game).find(query)!=std::string::npos;
-            if(!matches) continue;
+            if(!matches) {
+                if (!state.simulation_mode && !query.empty()) {
+                    bool tag_match = false;
+                    for (const auto& tag : game.store_tags) {
+                        if (FoldLibraryText(tag).find(query) != std::string::npos) {
+                            tag_match = true;
+                            break;
+                        }
+                    }
+                    if (!tag_match) continue;
+                } else continue;
+            }
+        }
+        if (!state.library.tag_filter.empty()) {
+            const std::string folded_filter = state.simulation_mode
+                ? ascii_lower(state.library.tag_filter)
+                : FoldLibraryText(state.library.tag_filter);
+            if (!game.store_tags_known) continue;
+            bool tag_match = false;
+            for (const auto& tag : game.store_tags) {
+                const std::string folded_tag =
+                    state.simulation_mode ? ascii_lower(tag) : FoldLibraryText(tag);
+                if (folded_tag == folded_filter) {
+                    tag_match = true;
+                    break;
+                }
+            }
+            if (!tag_match) continue;
         }
         if (state.library.filters.contains("installed") && !installed(state, game.id))
             continue;

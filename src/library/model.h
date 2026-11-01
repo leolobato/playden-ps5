@@ -20,5 +20,8 @@ struct GameSummary {
     bool demo = false;
     // Shared by another member of the account's Steam family, not owned; the Library marks it.
     bool family_shared = false;
+    // User-defined Steam store tags; known only after enrichment or opening Details with store data.
+    std::vector<std::string> store_tags;
+    bool store_tags_known = false;
 };
 } // namespace playden

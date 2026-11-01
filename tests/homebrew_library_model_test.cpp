@@ -2416,11 +2416,38 @@ void live_launch_failure_remains_visible_without_a_details_status_line() {
           "Cloud retry guidance remains reachable after removing the details subtitle");
 }
 
+void live_store_tag_filter_from_details() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Alpha"), game(SteamId(43), "Beta")}, false, {}, false, false, {}}),
+          "tag filter: library loaded");
+    check(model.UpdateStoreTags(SteamId(42), {"Roguelike", "Adventure"}), "first game tagged");
+    check(model.UpdateStoreTags(SteamId(43), {"Adventure"}), "second game tagged");
+    check(model.action("r1") && model.action("details:42"), "details open");
+    check(has_row(model, "detail-tag-0"), "details lists store tags");
+    activate(model, "detail-tag-0");
+    check(model.state().library.tag_filter == "Roguelike" && model.state().navigation.route == Route::Library,
+          "choosing a tag filters the library");
+    const auto visible = model.visible_games();
+    check(visible.size() == 1 && visible.front()->id == SteamId(42), "only matching games remain");
+    check(model.action("triangle"), "filter modal opens with an active tag");
+    check(std::find(model.state().navigation.modals.back().action_keys.begin(),
+                    model.state().navigation.modals.back().action_keys.end(),
+                    "filter-tag-clear") != model.state().navigation.modals.back().action_keys.end(),
+          "active tag can be cleared from Sort and filters");
+    activate(model, "filter-tag-clear");
+    check(model.state().library.tag_filter.empty() && model.visible_games().size() == 2, "clearing tag filter restores the library");
+    auto organization = model.ExportOrganization();
+    organization.tag_filter = "Adventure";
+    check(model.ApplyOrganization(1, model.BeginOrganizationLoad(1), organization), "saved tag filter applies");
+    check(model.visible_games().size() == 2, "Adventure tag matches both games");
+}
+
 void live_store_details_fill_the_description() {
     auto model = make_live();
     model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
     check(model.UpdateLibrary({{game(SteamId(42), "Synthetic")}, false, {}, false, false, {}}), "library loaded");
-    model.UpdateStoreDetails(SteamId(42), "A synthetic game.", {"Action", "Indie"}, "full");
+    model.UpdateStoreDetails(SteamId(42), "A synthetic game.", {"Action", "Indie"}, {"Roguelike"}, "full");
     const auto& games = model.state().games;
     check(games[0].description == "A synthetic game." && games[0].genres.size() == 2 && games[0].controller_support == "full",
           "the store fills the description, genres and controller support");
@@ -4090,6 +4117,7 @@ int main() {
     live_play_does_the_next_useful_thing();
     live_queued_setup_names_the_game_ahead();
     live_store_details_fill_the_description();
+    live_store_tag_filter_from_details();
     live_ready_to_play_quits_to_home();
     live_ready_prompt_matches_the_open_game();
     live_details_focus_moves_to_play_once_enabled();
