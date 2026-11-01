@@ -39,6 +39,10 @@ inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull
 // executable is relative to install_root with '/' separators, as spelled on disk.
 GameProbe ProbeGame(const std::string& install_root, const std::string& executable);
 
+// Whether a program itself draws with OpenGL and nothing else: of the graphics libraries, it imports only OpenGL's.
+// Unlike GameProbe::apis, the libraries beside it don't count, so a launcher next to the game's DLLs is not one.
+bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::string& executable);
+
 // The program that starts an Unreal game when executable (relative to install_root, '/' separators) is its root
 // launcher, which only starts that one as a child process, which the console cannot do; relative to install_root,
 // as spelled on disk. Empty for any other program. GameProbe::unreal_program, without reading the programs.

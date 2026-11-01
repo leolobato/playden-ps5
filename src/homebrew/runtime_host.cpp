@@ -1907,6 +1907,11 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   if (!setup_program.empty()) {
     const auto button = [](const auto& entry) { return entry.first.rfind("button.", 0) == 0; };
     run_recipe = *recipe;
+    // The recipe's graphics came from the program the game was prepared for. An OpenGL program among Direct3D ones
+    // can't draw with those, unless the player chose them or the recipe requires them.
+    if (!saved.overrides.count("graphics") && !recipe->locked.count("graphics") &&
+        rt::ProgramDrawsWithOpenGLOnly(HostPath(record.install_path).string(), setup_program))
+      run_recipe->graphics = "opengl";
     std::erase_if(run_recipe->defaults, button);
     std::erase_if(run_recipe->locked, [](const std::string& id) {
       static const std::set<std::string> controls = {"launch_option", "program", "controller_preset", "controller",

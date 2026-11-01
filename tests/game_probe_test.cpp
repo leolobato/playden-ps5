@@ -775,6 +775,18 @@ int main() {
     CHECK(!found.truncated);
   }
 
+  {  // A program's own imports decide, not the libraries beside it: Hotline Miami's launcher sits next to cgGL.dll.
+    const auto root = fresh();
+    WritePe(root / "GL.exe", {false, {"KERNEL32.dll", "OPENGL32.dll"}});
+    WritePe(root / "Both.exe", {false, {"OPENGL32.dll", "d3d9.dll"}});
+    WritePe(root / "Launcher.exe", {false, {"KERNEL32.dll"}});
+    WritePe(root / "cgGL.dll", {false, {"OPENGL32.dll"}});
+    CHECK(ProgramDrawsWithOpenGLOnly(root.string(), "GL.exe"));
+    CHECK(!ProgramDrawsWithOpenGLOnly(root.string(), "Both.exe"));
+    CHECK(!ProgramDrawsWithOpenGLOnly(root.string(), "Launcher.exe"));
+    CHECK(!ProgramDrawsWithOpenGLOnly(root.string(), "Missing.exe"));
+  }
+
   // The player's words for what was found.
   CHECK(DetectedLabel("unity-il2cpp,d3d11,d3d12 graphics=dxvk") == "Unity \xC2\xB7 Direct3D 11");
   CHECK(DetectedLabel("d3d9 graphics=dxvk") == "Direct3D 9");

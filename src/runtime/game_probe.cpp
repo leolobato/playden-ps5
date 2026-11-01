@@ -425,6 +425,14 @@ std::string UnrealGameProgram(const std::string& install_root, const std::string
   return FindShipping(root, folder, LowerStem(lower_file));
 }
 
+bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::string& executable) {
+  const auto facts = ReadPe((fs::path(install_root) / executable).string());
+  if (!facts.valid) return false;
+  std::set<std::string> apis;
+  AddImports(facts, &apis);
+  return apis == std::set<std::string>{"opengl"};
+}
+
 GameProbe ProbeGame(const std::string& install_root, const std::string& executable) {
   GameProbe probe;
   const fs::path root(install_root);
