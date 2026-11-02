@@ -1904,6 +1904,158 @@ void SettingsSavedDuringPrepareReachReadyTitle() {
   host.Shutdown();
 }
 
+// Settings saved before the game's profile is written are the ones it publishes: the preparation
+// takes them up, a program chosen meanwhile included, and a game that stopped there finishes when
+// it is prepared again. Settings older than the preparation's are refused.
+void SettingsSavedBeforeProfileArePublished() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities = {"dxvk", "offline_bottle", "per_game_title", kKitDxvkConfig, "wow64_i386"};
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  std::int64_t now = 1760000000;
+  config.unix_time = [&now] { return now; };
+  config.session_data_root = fixture.root / "data";
+  std::mutex mutex;
+  GameSettingsRecord saved;
+  std::optional<GameSettingsRecord> before_profile;  // saved as the profile's step comes up, once
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(mutex);
+    return saved;
+  };
+  config.log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (before_profile && line.rfind("prepare step app=220 from=validate-artifacts", 0) == 0) {
+      saved = *before_profile;
+      before_profile.reset();
+    }
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  Write(game / "hl2.exe", "existing-game", 0644);
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Tool.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto profile = fixture.root / "data/playden/games/steam-220/library/profiles/playden-steam-220.profile";
+  const auto set = [&](std::uint64_t revision, std::map<std::string, std::string> overrides) {
+    GameSettingsRecord record;
+    record.revision = revision;
+    record.overrides = std::move(overrides);
+    return record;
+  };
+  const auto save = [&](const GameSettingsRecord& record) {
+    std::lock_guard<std::mutex> lock(mutex);
+    saved = record;
+  };
+  const auto stopped = [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  };
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+
+  // Settings older than the preparation's: refused, and nothing is published from them.
+  save(set(5, {{"resolution", "1280x720"}}));
+  before_profile = set(4, {{"resolution", "1920x1080"}});
+  host.Prepare(Hl2());
+  auto done = WaitFor(host, stopped, 60);
+  CHECK(done.refusals.count(220) && done.refusals.at(220).find("older") != std::string::npos);
+  CHECK(done.installs[0].settings_revision == 5 && !fs::exists(profile));
+
+  // A program that isn't there is refused, and the record stays as it was.
+  save(set(6, {{"program", "Missing.exe"}, {"architecture", "pe64"}}));
+  host.Prepare(Hl2());
+  done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && s.refusals.count(220) && s.refusals.at(220).find("Missing.exe") != std::string::npos;
+  }, 60);
+  CHECK(done.installs[0].settings_revision == 5 && done.installs[0].launch_path == "hl2.exe" && !fs::exists(profile));
+
+  // Newer settings finish the game that stopped: the profile and the record have them.
+  // The program's architecture comes from its file, whatever the settings say.
+  save(set(7, {{"program", "Tool.exe"}, {"architecture", "pe32"}, {"resolution", "1280x720"}}));
+  host.Prepare(Hl2());
+  done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+  }, 60);
+  CHECK(done.installs[0].settings_revision == 7 && done.installs[0].launch_path == "Tool.exe" &&
+        done.installs[0].launch_entry_id == kProgramEntryId);
+  CHECK(Read(profile).find("desktop = 1280x720") != std::string::npos &&
+        Read(profile).find("\\games\\220\\Tool.exe\n") != std::string::npos &&
+        Read(profile).find("\narchitecture = pe64\n") != std::string::npos);
+  host.Shutdown();
+}
+
+// The same change during a first preparation needs no second try.
+void SettingsSavedDuringFirstPrepareFinish() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities = {"dxvk", "offline_bottle", "per_game_title", kKitDxvkConfig, "wow64_i386"};
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  std::int64_t now = 1760000000;
+  config.unix_time = [&now] { return now; };
+  config.session_data_root = fixture.root / "data";
+  std::mutex mutex;
+  GameSettingsRecord saved;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(mutex);
+    return saved;
+  };
+  // The player changes a setting (a Steam app ID, say) while the game's files are being set up.
+  config.log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (line.rfind("prepare step app=220 from=validate-artifacts", 0) == 0) {
+      saved.revision = 1;
+      saved.steam_app_id = 440;
+      saved.overrides = {{"resolution", "1280x720"}};
+    }
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  Write(game / "hl2.exe", "existing-game", 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto profile = fixture.root / "data/playden/games/steam-220/library/profiles/playden-steam-220.profile";
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(220)) std::fprintf(stderr, "Refused: %s\n", done.refusals.at(220).c_str());
+  CHECK(!done.refusals.count(220) && done.installs[0].state == PreparationState::kReady);
+  CHECK(done.installs[0].settings_revision == 1 && Read(profile).find("desktop = 1280x720") != std::string::npos);
+  host.Shutdown();
+}
+
 // Settings saved after preparation reach the Ready title through a journaled update, from
 // maintenance or from Play, only while the title is stopped; maintenance clears the shader
 // cache, backs up the bottle's user folders and repairs the bottle.
@@ -6074,6 +6226,8 @@ int main(int argc, char** argv) {
   KitWithoutUnownedRootsKeepsTightening();
   for (int route = 0; route <= 5; ++route) OwnedPublicationOpenedUpRecovers(route);
   SettingsSavedDuringPrepareReachReadyTitle();
+  SettingsSavedBeforeProfileArePublished();
+  SettingsSavedDuringFirstPrepareFinish();
   KitRespinKeepsWaitingSettingsUpdate();
   StaleTitleWaitsForUpdateBefore120Hz();
   FreshPrepareOn120HzKitPublishesIt();

@@ -1544,6 +1544,70 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
              : kit;
 }
 
+// With no working folder set, the profile runs the program from its own folder
+// (prospero_profile.cpp), so that is where dxvk.conf goes.
+static std::string WorkingFolder(const std::string& working, std::string program, bool in_install_root) {
+  if (!working.empty() && working != ".") return working;
+  if (in_install_root) return {};
+  std::replace(program.begin(), program.end(), '\\', '/');
+  const auto slash = program.rfind('/');
+  return slash == std::string::npos ? std::string() : program.substr(0, slash);
+}
+
+// next starts as the install record: it comes back naming the program and folder the settings choose,
+// checked on disk; the recipe stays the one the game was prepared with. Empty, or why not (for the player).
+std::string RuntimeHost::FollowChosenLaunch(const rt::GameRecipe& recipe, const rt::SettingsPreset* preset,
+                                            const rt::KitCapabilities& kit, const rt::GameSettingsRecord& saved,
+                                            rt::RuntimeInstall* next) {
+  const auto record = *next;
+  rt::EffectiveSettings desired;
+  rt::SettingsError ignored;
+  const auto same = [](std::string left, std::string right) {
+    std::replace(left.begin(), left.end(), '\\', '/');
+    std::replace(right.begin(), right.end(), '\\', '/');
+    return (left == "." ? std::string() : left) == (right == "." ? std::string() : right);
+  };
+  if (rt::BuildEffectiveSettings(recipe, preset, saved.overrides, kit, &desired, &ignored) && desired.launch) {
+    const auto& launch = *desired.launch;
+    if (launch.id != record.launch_entry_id || !same(launch.executable, record.launch_path) ||
+        !same(launch.working_directory, record.launch_working_directory) ||
+        launch.in_install_root != record.launch_in_install_root) {
+      const auto root = HostPath(record.install_path).string();
+      const auto architecture = rt::GameProgramArchitecture(root, launch.executable);
+      if (architecture.empty())
+        return "The program " + launch.executable + " chosen in Game settings is missing or not a Windows program.";
+      if (const auto refusal = rt::GameProgramRefusal(root, launch.executable, kit, rt::RecipeChoicesFrom(saved).try_anyway);
+          !refusal.empty())
+        return refusal;
+      // Checked here, before a publication starts: one that fails part way leaves the title
+      // waiting for recovery.
+      const auto folder = WorkingFolder(launch.working_directory, launch.executable, launch.in_install_root);
+      struct stat folder_info{};
+      if (!folder.empty() && (lstat((HostPath(record.install_path) / folder).c_str(), &folder_info) != 0 ||
+                              !S_ISDIR(folder_info.st_mode)))
+        return "The program folder " + folder + " chosen in Game settings is missing.";
+      // A kit that admits unowned game folders gets them as they are (mods, FTP edits).
+      const auto records_ownership = kit.game_root_unowned ? std::optional<bool>(false)
+                                                           : platform::RecordsOwnership(HostPath(record.install_path));
+      if (records_ownership && *records_ownership)
+        if (const auto refused = TightenWorkingFolder(HostPath(record.install_path),
+                                                      WorkingFolder(launch.working_directory, launch.executable,
+                                                                    launch.in_install_root));
+            !refused.empty())
+          return refused;
+      next->launch_entry_id = launch.id;
+      next->launch_path = launch.executable;
+      next->launch_working_directory = launch.working_directory == "." ? std::string() : launch.working_directory;
+      next->launch_in_install_root = launch.in_install_root && next->launch_working_directory.empty();
+      // The recipe stays the one the game was prepared with: its graphics and engine arguments
+      // came from the first program's files, and only a preparation sees Steam's launch options.
+      Log("program switch app=" + std::to_string(record.runtime_number) + " from=" + record.launch_entry_id + ":" +
+          record.launch_path + " to=" + next->launch_entry_id + ":" + next->launch_path + " recipe kept=" + record.recipe_id);
+    }
+  }
+  return {};
+}
+
 // The complete OWNER protocol for the publish-profile step: persist the exact
 // requested plan, arm OWNER, then capture, publish, register and commit Ready.
 // Recovery journals resume their saved request or frozen operation; nothing is
@@ -1581,20 +1645,45 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
-  if (input.record.revision != record.settings_revision)
-    return failed("settings-changed", "The game's settings changed during preparation; prepare it again.");
+  if (input.record.revision < record.settings_revision)
+    return failed("settings-older", std::string("The game's saved settings are older than the ones its setup started with.") + kRecreateHint);
+  // Settings saved since the title was reserved: nothing is published yet, so this publication takes
+  // them up, the program they choose included. The title and the bottle stay, as for a Ready game.
+  auto current = record;
+  if (input.record.revision > record.settings_revision) {
+    if (const auto refused = FollowChosenLaunch(*recipe, input.preset, input.kit, input.record, &current); !refused.empty())
+      return failed("settings-plan", refused);
+    // Its architecture comes from the file, whatever the sheet says now, as for a Ready game.
+    if (current.launch_entry_id == rt::kProgramEntryId) {
+      const auto architecture = rt::GameProgramArchitecture(HostPath(current.install_path).string(), current.launch_path);
+      if (!architecture.empty()) input.record.overrides["architecture"] = architecture;
+    }
+    current.settings_revision = input.record.revision;
+    if (input.kit.game_root_unowned) {
+      const auto working = WorkingFolder(current.launch_working_directory, current.launch_path, current.launch_in_install_root);
+      if (const auto unwritable = EnsureWritable(current.install_path, working); !unwritable.empty())
+        return failed("settings-plan", unwritable);
+    }
+  }
   // The first start may come from the PS5 Home screen, so the game's Steam files are set up now.
-  if (const auto steamworks = ApplyPreparationSteps(c, record); !steamworks.empty()) return failed("steamworks", steamworks);
+  if (const auto steamworks = ApplyPreparationSteps(c, current); !steamworks.empty()) return failed("steamworks", steamworks);
   if (!rt::BuildSettingsLaunchPlan(input, &plan, &reason)) {
     Log("publication plan refused: " + reason);
     return failed("settings-plan", reason);
+  }
+  // Written only once the settings can be published, so a refusal leaves the record as it was.
+  if (current.settings_revision != record.settings_revision) {
+    if (const auto updated = c.records.Update(current); !updated.ok)
+      return failed("settings-record", updated.message);
+    Log("prepare settings app=" + std::to_string(record.runtime_number) + " revision=" +
+        std::to_string(record.settings_revision) + "->" + std::to_string(current.settings_revision));
   }
   const auto transaction = config_.uuid();
   if (!transaction) return failed("random-unavailable", "No secure random source for the publication transaction.");
   rt::SettingsPublicationRequest request;
   request.transaction_id = *transaction;
   request.kit_id = c.kit->view.kit_id;
-  request.install = record;
+  request.install = current;
   request.plan = std::move(plan);
   request.registry_unix_time = config_.unix_time();
   const auto requested = c.owner->Request(request, c.request_directory);
@@ -1607,16 +1696,6 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   Log("publication resume state=" + std::to_string(static_cast<int>(resumed.state)) + " code=" + resumed.code +
       " message=" + resumed.message);
   return resumed;
-}
-
-// With no working folder set, the profile runs the program from its own folder
-// (prospero_profile.cpp), so that is where dxvk.conf goes.
-static std::string WorkingFolder(const std::string& working, std::string program, bool in_install_root) {
-  if (!working.empty() && working != ".") return working;
-  if (in_install_root) return {};
-  std::replace(program.begin(), program.end(), '\\', '/');
-  const auto slash = program.rfind('/');
-  return slash == std::string::npos ? std::string() : program.substr(0, slash);
 }
 
 // The game root or its working folder when either isn't a folder (a stale record, an unplugged
@@ -1939,53 +2018,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // the install record names the new program when this publication commits (Reconcile), so a
   // crash in between resumes with it. Callers run this only while the game is stopped.
   auto next = record;
-  {
-    rt::EffectiveSettings desired;
-    rt::SettingsError ignored;
-    const auto same = [](std::string left, std::string right) {
-      std::replace(left.begin(), left.end(), '\\', '/');
-      std::replace(right.begin(), right.end(), '\\', '/');
-      return (left == "." ? std::string() : left) == (right == "." ? std::string() : right);
-    };
-    if (rt::BuildEffectiveSettings(*recipe, preset, saved.overrides, kit, &desired, &ignored) && desired.launch) {
-      const auto& launch = *desired.launch;
-      if (launch.id != record.launch_entry_id || !same(launch.executable, record.launch_path) ||
-          !same(launch.working_directory, record.launch_working_directory) ||
-          launch.in_install_root != record.launch_in_install_root) {
-        const auto root = HostPath(record.install_path).string();
-        const auto architecture = rt::GameProgramArchitecture(root, launch.executable);
-        if (architecture.empty())
-          return "The program " + launch.executable + " chosen in Game settings is missing or not a Windows program.";
-        if (const auto refusal = rt::GameProgramRefusal(root, launch.executable, kit, rt::RecipeChoicesFrom(saved).try_anyway);
-            !refusal.empty())
-          return refusal;
-        // Checked here, before a publication starts: one that fails part way leaves the title
-        // waiting for recovery.
-        const auto folder = WorkingFolder(launch.working_directory, launch.executable, launch.in_install_root);
-        struct stat folder_info{};
-        if (!folder.empty() && (lstat((HostPath(record.install_path) / folder).c_str(), &folder_info) != 0 ||
-                                !S_ISDIR(folder_info.st_mode)))
-          return "The program folder " + folder + " chosen in Game settings is missing.";
-        // A kit that admits unowned game folders gets them as they are (mods, FTP edits).
-        const auto records_ownership = kit.game_root_unowned ? std::optional<bool>(false)
-                                                             : platform::RecordsOwnership(HostPath(record.install_path));
-        if (records_ownership && *records_ownership)
-          if (const auto refused = TightenWorkingFolder(HostPath(record.install_path),
-                                                        WorkingFolder(launch.working_directory, launch.executable,
-                                                                      launch.in_install_root));
-              !refused.empty())
-            return refused;
-        next.launch_entry_id = launch.id;
-        next.launch_path = launch.executable;
-        next.launch_working_directory = launch.working_directory == "." ? std::string() : launch.working_directory;
-        next.launch_in_install_root = launch.in_install_root && next.launch_working_directory.empty();
-        // The recipe stays the one the game was prepared with: its graphics and engine arguments
-        // came from the first program's files, and only a preparation sees Steam's launch options.
-        Log("program switch app=" + std::to_string(record.runtime_number) + " from=" + record.launch_entry_id + ":" +
-            record.launch_path + " to=" + next.launch_entry_id + ":" + next.launch_path + " recipe kept=" + record.recipe_id);
-      }
-    }
-  }
+  if (const auto refused = FollowChosenLaunch(*recipe, preset, kit, saved, &next); !refused.empty()) return refused;
   // An unowned folder is published as it is, so one made over FTP (root's, 0755) is opened up
   // before dxvk.conf is written into it, as preparation does.
   if (kit.game_root_unowned) {

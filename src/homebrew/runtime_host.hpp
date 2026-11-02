@@ -546,6 +546,11 @@ class RuntimeHost {
   void LoadGeneratedRecipes(Composition& composition);
   void PublishRecipes(const Composition& composition);
   runtime::PackageActionResult DrivePublication(Composition& composition, const runtime::RuntimeInstall& record);
+  // Moves *next (an install record) to the program and folder the saved settings choose, after checking
+  // them on disk. Empty on success, otherwise why not (for the player). Call only while the game is stopped.
+  std::string FollowChosenLaunch(const runtime::GameRecipe& recipe, const runtime::SettingsPreset* preset,
+                                 const runtime::KitCapabilities& kit, const runtime::GameSettingsRecord& saved,
+                                 runtime::RuntimeInstall* next);
   // Puts the saved settings into a Ready title when they are newer than its publication:
   // Steam files, then a journaled settings update (profile, dxvk.conf, registry). Call only
   // while the title is stopped. Empty on success or when nothing changed; *published says
