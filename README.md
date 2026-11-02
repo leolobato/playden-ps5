@@ -58,6 +58,8 @@ See the [compatibility list](COMPATIBILITY.md) for the games we have tested.
 - Support for game launches (Rockstar, EA, Ubisoft)
 - Community recipes in the preset chooser
 
+See the [roadmap](https://github.com/users/leolobato/projects/1) for what's coming next.
+
 ## Before you use it
 
 Playden is alpha software. It is not affiliated with, endorsed by, or supported by Valve. Know these points before
