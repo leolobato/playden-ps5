@@ -1538,7 +1538,8 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   if (!c.kit) return {};
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
-  return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen || kit.launcher_mode
+  return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen || kit.display_fps_counter ||
+                 kit.launcher_mode
              ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
              : kit;
 }

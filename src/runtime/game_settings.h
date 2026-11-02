@@ -76,6 +76,10 @@ struct KitCapabilities {
   // [display] framegen = off|2|3|4 (frame generation in libvulkan.prx). Counts only for a title that runs this kit's
   // runtime, like display_120hz.
   bool display_framegen = false;
+  // [display] fps_counter = true (the frame rate drawn by libvulkan.prx, for Direct3D 12 on vkd3d-proton). Counts only
+  // for a title that runs this kit's runtime, like display_120hz.
+  bool display_fps_counter = false;
+  bool display_fps_counter_needs_update = false;
   bool launcher_mode = false;  // [launcher]: the game starts through a launcher (kKitLauncherMode)
   bool launcher_mode_needs_update = false;  // the kit has it, but the game's title still runs an older runtime
   bool display_framegen_needs_update = false;
@@ -564,6 +568,9 @@ inline constexpr const char* kKitInputRumble = "input-rumble";
 // The title reads [display] framegen = off|2|3|4: the kit's libvulkan.prx shows that many pictures for each frame a
 // Vulkan-presenting game (DXVK, Zink) draws, made by MihawkGen. Runtimes without it refuse a profile with framegen.
 inline constexpr const char* kKitDisplayFramegen = "display-framegen";
+// The title reads [display] fps_counter = true: the kit's libvulkan.prx draws the game's frame rate on each frame, for
+// vkd3d-proton, which has no overlay of its own. Runtimes without it refuse a profile with fps_counter.
+inline constexpr const char* kKitDisplayFpsCounter = "display-fps-counter";
 // The title reads [launcher]: the exec chain only for a game that asks for it, a second input for the first
 // program, and the touchpad hold that swaps them. Runtimes without it refuse a profile with the section.
 inline constexpr const char* kKitLauncherMode = "launcher-mode";
@@ -576,7 +583,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz, profile_version_2, input_rumble and display_framegen are off and their _needs_update say why.
+// display_120hz, profile_version_2, input_rumble, display_framegen and display_fps_counter are off and their
+// _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 
 // Everything one game's settings put on disk for its next launch.

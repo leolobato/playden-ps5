@@ -562,14 +562,17 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
       return "Turn on Start through a launcher first.";
   }
   if (id == "performance_overlay" && graphics == "gdi") return "Only available with DXVK or OpenGL.";
-  // DXVK's overlay is drawn by its Direct3D 9-11 presenter, not by vkd3d-proton's swapchain. The Direct3D 12 row comes
+  // DXVK's overlay is drawn by its Direct3D 9-11 presenter, not by vkd3d-proton's swapchain, so a Direct3D 12 game gets
+  // the driver's counter, which is only the frame rate, from a runtime that has it. The Direct3D 12 row comes
   // later in the catalogue, so its value here is not checked yet: the same test it gets below.
   const auto d3d12 = values.find("d3d12");
   const bool vkd3d_proton = kit.vkd3d_proton && dxvk && d3d12 != values.end() && d3d12->second.value == "vkd3d-proton";
   // With frame generation the overlay is its own counter (the game's frames and the pictures shown), on every path.
   if (id == "overlay_detail" && framegen) return "Frame generation shows its own counter.";
-  if (id == "performance_overlay" && vkd3d_proton && !framegen) return "Not shown for Direct3D 12 games.";
-  if (id == "overlay_detail" && vkd3d_proton) return "Not shown for Direct3D 12 games.";
+  if (id == "performance_overlay" && vkd3d_proton && !framegen && !kit.display_fps_counter)
+    return kit.display_fps_counter_needs_update ? kAppliesAfterKitUpdate : "Not shown for Direct3D 12 games.";
+  if (id == "overlay_detail" && vkd3d_proton)
+    return kit.display_fps_counter ? "Direct3D 12 games show only the frame rate." : "Not shown for Direct3D 12 games.";
   if (id == "overlay_detail") {
     if (!dxvk) return "Only available with DXVK.";
     if (!kit.dxvk_config) return "Needs a runtime that reads dxvk.conf.";
@@ -1097,7 +1100,12 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   // With a kit that reads dxvk.conf, a DXVK game's overlay is dxvk.hud there; the title's
   // own DXVK_HUD=fps would override it, so show_fps stays false.
   const bool hud_in_config = settings.values.at("overlay_detail").available;
-  text += std::string("show_fps = ") + (hud_in_config ? "false" : on("performance_overlay")) + "\n";
+  // A Direct3D 12 game's overlay is the driver's counter instead, unless frame generation draws its own.
+  const auto& framegen = OptionalValue(settings, "framegen");
+  const bool display_framegen = framegen.available && framegen.value != "off";
+  const auto& overlay = settings.values.at("performance_overlay");
+  const bool fps_counter = settings.vkd3d_proton && !display_framegen && overlay.available && overlay.value == "on";
+  text += std::string("show_fps = ") + (hud_in_config || fps_counter ? "false" : on("performance_overlay")) + "\n";
   // An OpenGL game always names its rate, as before (60 unless the runtime takes 120 Hz). opengl_thread is no longer
   // written: it was the PS5 OpenGL SDK's, and runtimes default it to off.
   if (settings.values.at("refresh").available || settings.graphics == "opengl")
@@ -1110,9 +1118,8 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
       settings.display_120hz && limit.available && limit.value != "off" && SoftwareFrameLimit(settings).empty();
   if (frame_rate) text += "frame_rate = " + limit.value + "\n";
   // Only for a title whose runtime takes it: an older runtime refuses the whole profile for this key.
-  const auto& framegen = OptionalValue(settings, "framegen");
-  const bool display_framegen = framegen.available && framegen.value != "off";
   if (display_framegen) text += "framegen = " + framegen.value + "\n";
+  if (fps_counter) text += "fps_counter = true\n";
 
   text += "\n[input]\n";
   if (value("controller_preset") != "none") text += "preset = " + value("controller_preset") + "\n";
@@ -1260,6 +1267,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.audio_section = audio_section;
   features.display_frame_rate = frame_rate;
   features.display_framegen = display_framegen;
+  features.display_fps_counter = fps_counter;
   features.runtime_version = settings.profile_version == 2;
   features.launcher_section = launcher_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
@@ -3159,9 +3167,10 @@ namespace playden::runtime {
 
 const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
-  static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFramegen, kKitInputRumble, kKitLauncherMode,
-                                                 kKitAudioVolume,  kKitDxvkConfig,      kKitDxvkPresent,
-                                                 kKitInputTuning,  kKitInputWheel,      kKitEnvironment};
+  static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFpsCounter, kKitDisplayFramegen,
+                                                 kKitInputRumble,  kKitLauncherMode,      kKitAudioVolume,
+                                                 kKitDxvkConfig,   kKitDxvkPresent,       kKitInputTuning,
+                                                 kKitInputWheel,   kKitEnvironment};
   return names;
 }
 
@@ -3189,6 +3198,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);
   kit.display_framegen = has(kKitDisplayFramegen);
+  kit.display_fps_counter = has(kKitDisplayFpsCounter);
   kit.launcher_mode = has(kKitLauncherMode);
   kit.registry = bottle_access;
   return kit;
@@ -3210,6 +3220,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.display_framegen) {
     kit.display_framegen = false;
     kit.display_framegen_needs_update = true;
+  }
+  if (!title_runtime_current && kit.display_fps_counter) {
+    kit.display_fps_counter = false;
+    kit.display_fps_counter_needs_update = true;
   }
   if (!title_runtime_current && kit.launcher_mode) {
     kit.launcher_mode = false;
@@ -3482,6 +3496,9 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     }
     else if (feature == "display-framegen") {
       if (!kit.display_framegen && !kit.display_framegen_needs_update) return false;
+    }
+    else if (feature == "display-fps-counter") {
+      if (!kit.display_fps_counter && !kit.display_fps_counter_needs_update) return false;
     }
     // Legacy PR references are informational sidecar provenance. Unknown feature
     // names or version requirements need verified support before a preset is shown.

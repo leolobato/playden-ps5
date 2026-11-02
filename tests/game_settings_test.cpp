@@ -425,6 +425,34 @@ int main(int argc, char** argv) {
     CHECK(!shown.values.at("performance_overlay").available &&
           shown.values.at("performance_overlay").reason == "Not shown for Direct3D 12 games.");
     CHECK(!shown.values.at("overlay_detail").available);
+    // A runtime with the driver's counter shows the frame rate instead of DXVK's overlay.
+    auto counter_kit = display;
+    counter_kit.display_fps_counter = true;
+    KitCapabilities counter_stale = display;
+    counter_stale.display_fps_counter_needs_update = true;
+    EffectiveSettings counted;
+    CHECK(BuildEffectiveSettings(d3d12, nullptr, {{"performance_overlay", "on"}}, counter_kit, &counted, &error));
+    CHECK(counted.values.at("performance_overlay").available && !counted.values.at("overlay_detail").available);
+    CHECK(counted.values.at("overlay_detail").reason == "Direct3D 12 games show only the frame rate.");
+    ProsperoProfile counted_profile;
+    CHECK(RenderProsperoProfile(d3d12, counted, target, &counted_profile, &reason));
+    CHECK(counted_profile.text.find("\nfps_counter = true\n") != std::string::npos);
+    CHECK(counted_profile.text.find("show_fps = false\n") != std::string::npos);
+    CHECK(!CheckProsperoProfile(counted_profile.text, &reason, {.debug_env = true}));
+    CHECK(CheckProsperoProfile(counted_profile.text, &reason, {.debug_env = true, .display_fps_counter = true}));
+    // Off writes nothing an older runtime would refuse, and neither does a game on Direct3D 9-11.
+    CHECK(BuildEffectiveSettings(d3d12, nullptr, {}, counter_kit, &counted, &error));
+    CHECK(RenderProsperoProfile(d3d12, counted, target, &counted_profile, &reason));
+    CHECK(counted_profile.text.find("fps_counter") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"performance_overlay", "on"}}, counter_kit, &counted, &error));
+    CHECK(RenderProsperoProfile(hl2, counted, target, &counted_profile, &reason));
+    CHECK(counted_profile.text.find("fps_counter") == std::string::npos);
+    // A title on an older runtime keeps the choice for its update, and its profile stays readable there.
+    CHECK(BuildEffectiveSettings(d3d12, nullptr, {{"performance_overlay", "on"}}, counter_stale, &counted, &error));
+    CHECK(!counted.values.at("performance_overlay").available &&
+          counted.values.at("performance_overlay").reason == kAppliesAfterKitUpdate);
+    CHECK(RenderProsperoProfile(d3d12, counted, target, &counted_profile, &reason));
+    CHECK(counted_profile.text.find("fps_counter") == std::string::npos);
     std::string vkd3d_rate;
     for (const auto& value : RenderBottleEnvironment(shown))
       if (value.name == "VKD3D_FRAME_RATE") vkd3d_rate = value.data;
@@ -970,6 +998,11 @@ int main(int argc, char** argv) {
     CHECK(!stale.display_framegen && stale.display_framegen_needs_update);
     CHECK(KitForTitleRuntime(framegen_kit, true).display_framegen);
     CHECK(!KitForTitleRuntime(KitCapabilities{}, false).display_framegen_needs_update);
+    KitCapabilities with_counter;
+    with_counter.display_fps_counter = true;
+    CHECK(KitForTitleRuntime(with_counter, false).display_fps_counter_needs_update);
+    CHECK(!KitForTitleRuntime(with_counter, false).display_fps_counter);
+    CHECK(KitForTitleRuntime(with_counter, true).display_fps_counter);
     game.graphics = "dxvk";
     CHECK(BuildEffectiveSettings(game, nullptr, chosen, stale, &settings, &error));
     const auto& waiting = settings.values.at("framegen");
