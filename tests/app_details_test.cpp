@@ -314,8 +314,11 @@ void SizeChecksAreAnsweredOncePerChoice() {
   Sessions sessions;
   Source source;
   AppDetailsService service(source, sessions);
+  // Held, so the first is still in flight when the second comes: an answered one could be asked again.
+  source.hold = true;
   service.Measure({SteamId(400), "public", "english"}, 1);
   service.Measure({SteamId(400), "public", "english"}, 1);
+  source.hold = false;
   const auto first = AwaitMeasured(service, 1);
   assert(first.size() == 1 && first[0].measured && first[0].install_bytes == 2800u && first[0].account_generation == 1);
   assert(first[0].request == (SizeRequest{SteamId(400), "public", "english"}));
