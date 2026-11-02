@@ -43,6 +43,8 @@ private Windows environment and its own tile on the PS5 Home screen.
   Vulkan, all on the PS5 GPU's Vulkan driver.
 - **Gamepad support.** XInput, DirectInput, Raw Input, Windows.Gaming.Input and the Windows multimedia joystick API,
   with rumble. Games see the DualSense as an Xbox controller.
+- **Local multiplayer.** Each signed-in PS5 user's DualSense is its own controller, up to four, for games with local
+  co-op or split screen, through XInput and the HID gamepad APIs (a runtime kit newer than 0.18). Player 2 must sign in to the PS5 as another user (or a guest) with their own DualSense.
 - **Mouse and keyboard.** Plug a USB mouse and keyboard into the PS5, or use a controller preset: the left stick as a
   mouse, or the D-pad as the arrow keys.
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
