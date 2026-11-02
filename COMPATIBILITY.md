@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-01.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-02.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -131,6 +131,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Keylocker](https://store.steampowered.com/app/1325040) | ✅ Works | 0.12 | — | Default settings, DualSense. The first 20 minutes. ([#125](https://github.com/leolobato/playden-ps5/issues/125), firmware 13.60) |
 | [Left 4 Dead](https://store.steampowered.com/app/500) | ✅ Works | 0.13 | Source · D3D9 · 32-bit | Turn on the gamepad in the game's options. To start a single-player game, set Controller tuning › Pointer stick = Right stick and map the touchpad to left click in Button mapping. ([#147](https://github.com/leolobato/playden-ps5/issues/147), firmware 13.60) |
 | [Left 4 Dead 2](https://store.steampowered.com/app/550) | ✅ Works | 0.13 | Source · D3D9 · 32-bit | Default settings; turn on the gamepad in the game's options. Played a whole campaign (Dark Carnival) with the DualSense. ([#69](https://github.com/leolobato/playden-ps5/issues/69), [#146](https://github.com/leolobato/playden-ps5/issues/146), firmware 13.60) |
+| [LEGO Marvel Super Heroes](https://store.steampowered.com/app/249130) | ✅ Works | 0.16 | — | Default settings, DualSense, default (Xbox controller). (firmware 13.60) |
 | [Lethal Company](https://store.steampowered.com/app/1966720) | ✅ Works | 0.13 | — | Default settings, DualSense. Play with LAN: Online shows an error. ([#141](https://github.com/leolobato/playden-ps5/issues/141), firmware 13.60) |
 | [Little Nightmares Enhanced Edition](https://store.steampowered.com/app/2149010) | ✅ Works | 0.15 | — | Default settings, DualSense. ([#298](https://github.com/leolobato/playden-ps5/issues/298), firmware 11.60) |
 | [Loop Hero](https://store.steampowered.com/app/1282730) | ✅ Works | 0.10 | GameMaker · D3D11 · 64-bit | The controller drives the menus. |
