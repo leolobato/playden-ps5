@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-01.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-02.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -73,6 +73,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [DAEMON X MACHINA](https://store.steampowered.com/app/1167450) | ✅ Works | 0.10 | — | Plays with the DualSense. The game's Select/Back is on the Share button, and pressing Share or PS makes the game stop responding: rebind Select/Back (for example to the touchpad) or play with a USB mouse and keyboard. ([#55](https://github.com/leolobato/playden-ps5/issues/55), firmware 12.40) |
 | [Danganronpa 2: Goodbye Despair](https://store.steampowered.com/app/413420) | ✅ Works | 0.16 | — | Default settings, DualSense. ([#346](https://github.com/leolobato/playden-ps5/pull/346)) |
 | [Danganronpa Trigger Happy Havoc](https://store.steampowered.com/app/413410) | ✅ Works | 0.17 | — | Default settings. ([#382](https://github.com/leolobato/playden-ps5/pull/382)) |
+| Danganronpa V3 | ✅ Works | 0.17 | — | Default settings, DualSense. ([#391](https://github.com/leolobato/playden-ps5/pull/391), firmware 13.20) |
 | [Dark Souls II: Scholar of the First Sin](https://store.steampowered.com/app/335300) | ✅ Works | 0.13 | — | Default settings, DualSense. Online play does not work. ([#243](https://github.com/leolobato/playden-ps5/issues/243), firmware 13.42) |
 | [Darkenstein 3D](https://store.steampowered.com/app/2195910) | ✅ Works | 0.13 | Unity (IL2CPP) · D3D11 · 64-bit | Default settings. |
 | [Darkwood](https://store.steampowered.com/app/274520) | ✅ Works | 0.12 | Unity · D3D11 · DXVK · 64-bit | Plays at 4K with Game settings › Refresh rate = 120 Hz. For 120 Hz, turn off the PS5's Screen and Video › Video Output › VRR › Apply to Unsupported Games, or the game stays at 60 Hz. The game opens the map and journal with Create, which also opens the PS5's capture menu: the tester mapped the touchpad to M and L3 to J, and the left stick to the mouse at full speed for the map ([recipe](https://github.com/leolobato/playden-ps5/issues/93#issuecomment-6346281720)). DualSense, PS5 Pro. ([#93](https://github.com/leolobato/playden-ps5/issues/93), firmware 13.60) |
@@ -92,6 +93,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [DuckTales: Remastered](https://store.steampowered.com/app/237630) | ✅ Works | 0.13 | — · D3D9 · 32-bit | Default settings. ([#183](https://github.com/leolobato/playden-ps5/pull/183), firmware 13.00) |
 | [DUSK](https://store.steampowered.com/app/519860) | ✅ Works | 0.10 | Unity · D3D11 · 64-bit | Menus with the left stick and Cross; the first level plays. |
 | [Dying Light](https://store.steampowered.com/app/239140) | ✅ Works | 0.16 | — | Default settings, offline. ([#336](https://github.com/leolobato/playden-ps5/issues/336), firmware 13.60) |
+| End of Abyss | ✅ Works | 0.17 | — | Default settings, DualSense. ([#403](https://github.com/leolobato/playden-ps5/pull/403), firmware 9.60) |
 | [ENSLAVED: Odyssey to the West Premium Edition](https://store.steampowered.com/app/245280) | ✅ Works | 0.10 | Unreal 3 · D3D9 · 32-bit | Main menu and New Journey with the controller. |
 | [Enter the Gungeon](https://store.steampowered.com/app/311690) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#363](https://github.com/leolobato/playden-ps5/pull/363)) |
 | [Euro Truck Simulator 2](https://store.steampowered.com/app/227300) | ✅ Works | 0.10 | — | Default settings, DualSense. Smooth at 1080p with maximum graphics. ([#66](https://github.com/leolobato/playden-ps5/issues/66), firmware 10.20) |
@@ -120,6 +122,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Hades](https://store.steampowered.com/app/1145360) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#249](https://github.com/leolobato/playden-ps5/issues/249), firmware 13.60) |
 | [Half-Life](https://store.steampowered.com/app/70) | ✅ Works | 0.13 | — | Map buttons to keys in Game settings › Button mapping (Cross = Space, R2 = left click, L2 = right click) and set Controller tuning › Pointer stick = Right stick. ([#139](https://github.com/leolobato/playden-ps5/issues/139), firmware 13.60) |
 | [Half-Life 2](https://store.steampowered.com/app/220) | ✅ Works | 0.13 | Source · D3D9 · 64-bit | For the menus, set Controller tuning › Pointer stick = Right stick and map the touchpad to left click in Button mapping. `-gamepadui` doesn't take the controller yet ([#271](https://github.com/leolobato/playden-ps5/issues/271)). ([#142](https://github.com/leolobato/playden-ps5/issues/142), firmware 13.60) |
+| [Halloween The Game](https://store.steampowered.com/app/3219630) | ✅ Works | 0.16 | — | Default settings, DualSense. ([#399](https://github.com/leolobato/playden-ps5/pull/399), firmware 13.60) |
 | [Hexcells](https://store.steampowered.com/app/265890) | ✅ Works | 0.10 | Unity · D3D11 · 32-bit | Reaches the main menu with the Unity `-force-d3d9` option. |
 | [Hollow Knight](https://store.steampowered.com/app/367520) | ✅ Works | 0.11 | Unity · D3D11 · DXVK · 64-bit | Default settings. Menus, a new game and King's Pass with the controller. Menu buttons need a slightly longer press. |
 | [Hollow Knight: Silksong](https://store.steampowered.com/app/1030300) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#138](https://github.com/leolobato/playden-ps5/issues/138), firmware 13.60) |
@@ -131,6 +134,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Keylocker](https://store.steampowered.com/app/1325040) | ✅ Works | 0.12 | — | Default settings, DualSense. The first 20 minutes. ([#125](https://github.com/leolobato/playden-ps5/issues/125), firmware 13.60) |
 | [Left 4 Dead](https://store.steampowered.com/app/500) | ✅ Works | 0.13 | Source · D3D9 · 32-bit | Turn on the gamepad in the game's options. To start a single-player game, set Controller tuning › Pointer stick = Right stick and map the touchpad to left click in Button mapping. ([#147](https://github.com/leolobato/playden-ps5/issues/147), firmware 13.60) |
 | [Left 4 Dead 2](https://store.steampowered.com/app/550) | ✅ Works | 0.13 | Source · D3D9 · 32-bit | Default settings; turn on the gamepad in the game's options. Played a whole campaign (Dark Carnival) with the DualSense. ([#69](https://github.com/leolobato/playden-ps5/issues/69), [#146](https://github.com/leolobato/playden-ps5/issues/146), firmware 13.60) |
+| [LEGO Marvel Super Heroes](https://store.steampowered.com/app/249130) | ✅ Works | 0.16 | — | Default settings, DualSense, default (Xbox controller). ([#405](https://github.com/leolobato/playden-ps5/pull/405), firmware 13.60) |
 | [Lethal Company](https://store.steampowered.com/app/1966720) | ✅ Works | 0.13 | — | Default settings, DualSense. Play with LAN: Online shows an error. ([#141](https://github.com/leolobato/playden-ps5/issues/141), firmware 13.60) |
 | [Little Nightmares Enhanced Edition](https://store.steampowered.com/app/2149010) | ✅ Works | 0.15 | — | Default settings, DualSense. ([#298](https://github.com/leolobato/playden-ps5/issues/298), firmware 11.60) |
 | [Loop Hero](https://store.steampowered.com/app/1282730) | ✅ Works | 0.10 | GameMaker · D3D11 · 64-bit | The controller drives the menus. |
