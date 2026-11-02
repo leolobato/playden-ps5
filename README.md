@@ -45,7 +45,7 @@ private Windows environment and its own tile on the PS5 Home screen.
   with rumble. Games see the DualSense as an Xbox controller, or, per game, as a PlayStation controller (a DualShock 4)
   for games that show PlayStation buttons; that choice needs a runtime kit with it.
 - **Local multiplayer.** Each signed-in PS5 user's DualSense is its own controller, up to four, for games with local
-  co-op or split screen, through XInput and the HID gamepad APIs (a runtime kit newer than 0.18). Player 2 must sign in to the PS5 as another user (or a guest) with their own DualSense.
+  co-op or split screen, through XInput and the HID gamepad APIs (runtime kit 0.18 or newer). Player 2 must sign in to the PS5 as another user (or a guest) with their own DualSense.
 - **Mouse and keyboard.** Plug a USB mouse and keyboard into the PS5, or use a controller preset: the left stick as a
   mouse, or the D-pad as the arrow keys.
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam

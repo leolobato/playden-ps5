@@ -48,7 +48,7 @@ revisions it was built from and includes their license texts in `LICENSES/`, and
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
 | Wine | upstream with the prospero-win patch series | LGPL-2.1-or-later | [winehq.org](https://www.winehq.org/), patches in prospero-win `wine/patches/` |
-| prospero-win (Wine's PS5 side, the 32-bit translator, the per-game app shell) | kit 0.18: Wine, runtime and app shell `e7582e9` | LGPL-2.1 | [mpereiraesaa/prospero-win](https://github.com/mpereiraesaa/prospero-win), my fork [leolobato/prospero-win](https://github.com/leolobato/prospero-win) |
+| prospero-win (Wine's PS5 side, the 32-bit translator, the per-game app shell) | kit 0.18: Wine, runtime and app shell `3f1da26` | LGPL-2.1 | [mpereiraesaa/prospero-win](https://github.com/mpereiraesaa/prospero-win), my fork [leolobato/prospero-win](https://github.com/leolobato/prospero-win) |
 | prospero-foundation (native app tools for the per-game app shell) | kit 0.18: `9c0b994` | GPL-3.0 | Fork of [mpereiraesaa/ps5-native-app-boilerplate](https://github.com/mpereiraesaa/ps5-native-app-boilerplate) |
 | DXVK | 2.6.2 | Zlib | [doitsujin/dxvk](https://github.com/doitsujin/dxvk) |
 | vkd3d-proton (Direct3D 12 for games set to it), with dxil-spirv and dxbc-spirv | 3.0.1 (`3b10bd7`), unmodified | LGPL-2.1-or-later; MIT (dxil-spirv, dxbc-spirv); Apache-2.0 and MIT (Khronos SPIR-V and Vulkan headers and tools) | [HansKristian-Work/vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton) |
