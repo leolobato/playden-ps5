@@ -42,7 +42,7 @@ To build Playden, run its tests or put it on a console, see [docs/building.md](d
    The script lists the games that have a log, the most recently run first, and asks which one to collect. It
    writes `playden-logs-<time>.zip` and prints a table with your firmware, Playden package and kit. It reads only
    Playden's `logs/` folder, the games' names and the kit manifest, never your Steam sign-in, and it replaces your
-   Steam account name and SteamIDs in the logs. Use `--all-titles` to collect every game.
+   Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses in the logs. Use `--all-titles` to collect every game.
 5. [Open a test report](../../issues/new?template=test-report.yml), paste the table and attach the zip. The
    [sample report](docs/sample-test-report.md) shows what to fill in.
 

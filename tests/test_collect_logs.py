@@ -85,6 +85,29 @@ class CollectLogsTests(unittest.TestCase):
                      'owners=none flags=none', 'owners=family-1:1,family-2:2', 'co_owner=123', 'owner=123x'):
             self.assertEqual(collect_logs.redact(kept, set()), kept)
 
+    def test_redacts_the_family_group_ps5_user_and_home_addresses(self):
+        # The same cases as web_logs_source_test.cpp.
+        for text, expected in (
+            ('family webapi group=y family_groupid=48224 role=2',
+             'family webapi group=y family_groupid=<family-group> role=2'),
+            ('keyboard module=3 init=0x00000000 open=0x00000001 user=307640721',
+             'keyboard module=3 init=0x00000000 open=0x00000001 user=<ps5-user>'),
+            ('REC seq=9 t=1.5 PW_WINEN hid mouse module=0xd init=0 open=0x1 merged=1 user=307640721\n',
+             'REC seq=9 t=1.5 PW_WINEN hid mouse module=0xd init=0 open=0x1 merged=1 user=<ps5-user>\n'),
+            ('pad users initial=307640721 rc=0x00000000 foreground=307640721 rc=0x00000000\nforeground=7',
+             'pad users initial=<ps5-user> rc=0x00000000 foreground=<ps5-user> rc=0x00000000\nforeground=7'),
+            ('pad users initial=-1 rc=0x80000000 foreground=0 rc=0x80000000',
+             'pad users initial=-1 rc=0x80000000 foreground=0 rc=0x80000000'),
+            ('started port=7031 address=192.168.2.83', 'started port=7031 address=<home-ip>'),
+            ('GET /report 200 12 192.168.2.25', 'GET /report 200 12 <home-ip>'),
+            ('10.1.2.3:27015 (172.16.0.1) 172.31.255.254,', '<home-ip>:27015 (<home-ip>) <home-ip>,'),
+        ):
+            self.assertEqual(collect_logs.redact(text, set()), expected)
+        for kept in ('family_groupid=0', 'user=0 user=-1 user=alice steamuser=12 user=12x', 'foreground=7',
+                     'cm 155.133.248.39:27017 dns 1.1.1.1 local 127.0.0.1', '172.15.0.1 172.32.0.1 192.169.0.1',
+                     'Version=10.0.0.0', '10.0.22621.1 10.0.1.256 1.10.0.1.5 10.0.1.2.3 x10.0.1.2 10.0.1.2x'):
+            self.assertEqual(collect_logs.redact(kept, set()), kept)
+
     def test_finds_the_account_name_in_any_log(self):
         stopped_early = '== session-1.log\nPW_REPORT/1 profile=playden-steam-220\nopen C:/users/Alice failed\n'
         names = collect_logs.account_names([stopped_early, title_log(40800)])

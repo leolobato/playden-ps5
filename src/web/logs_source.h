@@ -64,8 +64,9 @@ std::string TitleNameFromParam(std::string_view json);
 // Steam account names a log shows in Wine's L"SteamUser" L"<name>" and L"SteamAppUser" L"<name>".
 void AddAccountNames(std::string_view text, std::set<std::string>* names);
 // SteamIDs (7656119 and ten more digits) become <steam-id>, the signed-in account's ID too, and so do the
-// 32-bit account IDs older versions wrote as owner=<id> and owners=<id>:<count>,...; every
-// name (the signed-in one and the found ones, longest first, ignoring ASCII case) becomes <steam-user>.
+// 32-bit account IDs older versions wrote as owner=<id> and owners=<id>:<count>,...; family_groupid=<id> becomes
+// <family-group>, the PS5 user ID (user=<id> and the pad users line) <ps5-user>, and a private IPv4 address <home-ip>;
+// every name (the signed-in one and the found ones, longest first, ignoring ASCII case) becomes <steam-user>.
 std::string Redact(std::string_view text, const std::set<std::string>& names, const Redaction& account);
 // The last console_firmware= value in the texts, in order; empty if none.
 std::string Firmware(const std::vector<std::string_view>& texts);

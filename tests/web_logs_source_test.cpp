@@ -82,6 +82,24 @@ int main() {
   CHECK(Redact("owners=1043647817:1,1541563032", {}, {}) == "owners=<steam-id>:1,<steam-id>");
   CHECK(Redact("family webapi app=730 owners=76561198000000002,76561198000000003 exclude_reason=0", {}, {}) ==
         "family webapi app=730 owners=<steam-id>,<steam-id> exclude_reason=0");
+  // The family group, the PS5 user and home network addresses, the same cases as test_collect_logs.py.
+  CHECK(Redact("family webapi group=y family_groupid=48224 role=2", {}, {}) ==
+        "family webapi group=y family_groupid=<family-group> role=2");
+  CHECK(Redact("keyboard module=3 init=0x00000000 open=0x00000001 user=307640721", {}, {}) ==
+        "keyboard module=3 init=0x00000000 open=0x00000001 user=<ps5-user>");
+  CHECK(Redact("REC seq=9 t=1.5 PW_WINEN hid mouse module=0xd init=0 open=0x1 merged=1 user=307640721\n", {}, {}) ==
+        "REC seq=9 t=1.5 PW_WINEN hid mouse module=0xd init=0 open=0x1 merged=1 user=<ps5-user>\n");
+  CHECK(Redact("pad users initial=307640721 rc=0x00000000 foreground=307640721 rc=0x00000000\nforeground=7", {}, {}) ==
+        "pad users initial=<ps5-user> rc=0x00000000 foreground=<ps5-user> rc=0x00000000\nforeground=7");
+  CHECK(Redact("pad users initial=-1 rc=0x80000000 foreground=0 rc=0x80000000", {}, {}) ==
+        "pad users initial=-1 rc=0x80000000 foreground=0 rc=0x80000000");
+  CHECK(Redact("started port=7031 address=192.168.2.83", {}, {}) == "started port=7031 address=<home-ip>");
+  CHECK(Redact("GET /report 200 12 192.168.2.25", {}, {}) == "GET /report 200 12 <home-ip>");
+  CHECK(Redact("10.1.2.3:27015 (172.16.0.1) 172.31.255.254,", {}, {}) == "<home-ip>:27015 (<home-ip>) <home-ip>,");
+  for (const char* kept : {"family_groupid=0", "user=0 user=-1 user=alice steamuser=12 user=12x", "foreground=7",
+                           "cm 155.133.248.39:27017 dns 1.1.1.1 local 127.0.0.1", "172.15.0.1 172.32.0.1 192.169.0.1",
+                           "Version=10.0.0.0", "10.0.22621.1 10.0.1.256 1.10.0.1.5 10.0.1.2.3 x10.0.1.2 10.0.1.2x"})
+    CHECK(Redact(kept, {}, {}) == kept);
   for (const char* kept : {"owner=cm step=x", "owner=shared x", "owner=0 flags=0x1", "owner=family-1 flags=0x1",
                            "owner=self flags=0x1", "family webapi shared_apps=3 owners=2 unlicensed=1",
                            "owners=none flags=none", "owners=family-1:1,family-2:2", "co_owner=123", "owner=123x"})
@@ -196,7 +214,7 @@ def names(path):
 playden = ['logs/install.log', 'logs/runtime.log', 'logs/runtime.log.1', 'logs/steam.log']
 listed, summary = names(sys.argv[1] + '/newest.zip')
 assert listed == ['summary.md'] + sorted(playden + ['logs/title-FAKE78002.log', 'logs/title-FAKE78002.registry.txt']), listed
-assert '| game titles | FAKE78002 (app 40800) |' in summary and '| redacted | Steam account name and SteamIDs |' in summary
+assert '| game titles | FAKE78002 (app 40800) |' in summary and '| redacted | Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses |' in summary
 assert summary.startswith('| Field | Value |\n| --- | --- |\n| collected | 2026-10-10 03:12 UTC |\n| Playden package | 917f7b2a81c4 |')
 listed, summary = names(sys.argv[1] + '/all.zip')
 assert '| game titles | FAKE78001 (app 220), FAKE78002 (app 40800), FAKE78003 (app ?) |' in summary, summary

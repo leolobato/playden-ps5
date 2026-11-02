@@ -385,8 +385,8 @@ Every test helps, including games that work. To report one:
    ```
 
    It lists the games that have a log, the most recently run first, and asks which one to collect. The script
-   reads only Playden's logs (`/data/playden/logs`), never your Steam sign-in. It hides your Steam account name and
-   SteamIDs, and writes a zip with a summary of your firmware and kit versions.
+   reads only Playden's logs (`/data/playden/logs`), never your Steam sign-in. It hides your Steam account name,
+   SteamIDs, family group ID, PS5 user ID and home network addresses, and writes a zip with a summary of your firmware and kit versions.
 3. [Open a game test report](../../issues/new?template=test-report.yml) and attach the zip. See a
    [sample report](docs/sample-test-report.md) for what to fill in.
 

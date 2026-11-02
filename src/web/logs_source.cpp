@@ -21,6 +21,7 @@ namespace json = steam::json;
 constexpr std::string_view kTitlePrefix = "title-";
 constexpr std::string_view kSteamIdPrefix = "7656119";
 constexpr std::string_view kKitId = "playden-kit";
+constexpr std::string_view kRedacted = "Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses";
 // What Playden's "Store name in PS5 titles" setting adds to a title name; imported games get none.
 constexpr std::string_view kStoreSuffixes[] = {" (Steam)", " (GOG)", " (Epic)"};
 
@@ -278,6 +279,66 @@ std::string RedactOwnerIds(std::string_view text) {
   return out;
 }
 
+// A number other than 0 after key=, as \bkey=[1-9][0-9]*\b. With a line_marker, only on the lines that have it.
+std::string RedactKeyedNumber(std::string_view text, std::string_view key, std::string_view placeholder,
+                              std::string_view line_marker = {}) {
+  std::string out;
+  out.reserve(text.size());
+  std::size_t copied = 0;
+  for (std::size_t at = text.find(key); at != std::string_view::npos; at = text.find(key, at + 1)) {
+    if (at != 0 && WordChar(text[at - 1])) continue;
+    const auto start = at + key.size();
+    auto end = start;
+    while (end < text.size() && Digit(text[end])) ++end;
+    if (end == start || text[start] == '0' || (end != text.size() && WordChar(text[end]))) continue;
+    if (!line_marker.empty()) {
+      const auto newline = text.rfind('\n', at);
+      const auto line = newline == std::string_view::npos ? 0 : newline + 1;
+      if (text.substr(line, at - line).find(line_marker) == std::string_view::npos) continue;
+    }
+    out.append(text.substr(copied, start - copied));
+    out += placeholder;
+    copied = end;
+  }
+  out.append(text.substr(copied));
+  return out;
+}
+
+// Private IPv4 addresses (10/8, 172.16/12, 192.168/16) as in tools/collect_logs.py. Public ones stay: they are Steam's
+// servers. A last part of 0 stays too: that is no device, but a version such as .NET's 10.0.0.0.
+std::string RedactHomeAddresses(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (std::size_t i = 0; i < text.size();) {
+    if (Digit(text[i]) && (i == 0 || (!WordChar(text[i - 1]) && text[i - 1] != '.'))) {
+      int parts[4] = {};
+      int count = 0;
+      auto at = i;
+      while (count < 4) {
+        const auto start = at;
+        int value = 0;
+        while (at < text.size() && Digit(text[at]) && at - start < 4) value = value * 10 + (text[at++] - '0');
+        if (at == start || at - start > 3 || value > 255) break;
+        parts[count++] = value;
+        if (count == 4) break;
+        if (at == text.size() || text[at] != '.') break;
+        ++at;
+      }
+      const bool whole = count == 4 && (at == text.size() || (!WordChar(text[at]) &&
+                                        !(text[at] == '.' && at + 1 < text.size() && Digit(text[at + 1]))));
+      const bool home = parts[0] == 10 || (parts[0] == 192 && parts[1] == 168) ||
+                        (parts[0] == 172 && parts[1] >= 16 && parts[1] <= 31);
+      if (whole && home && parts[3] != 0) {
+        out += "<home-ip>";
+        i = at;
+        continue;
+      }
+    }
+    out.push_back(text[i++]);
+  }
+  return out;
+}
+
 std::string Redact(std::string_view text, const std::set<std::string>& found, const Redaction& account) {
   std::string out;
   out.reserve(text.size());
@@ -296,6 +357,12 @@ std::string Redact(std::string_view text, const std::set<std::string>& found, co
     out.push_back(text[i++]);
   }
   out = RedactOwnerIds(out);
+  out = RedactKeyedNumber(out, "family_groupid=", "<family-group>");
+  // The PS5 user: Playden's launch.log and the kit's hid lines in title logs.
+  out = RedactKeyedNumber(out, "user=", "<ps5-user>");
+  out = RedactKeyedNumber(out, "pad users initial=", "<ps5-user>");
+  out = RedactKeyedNumber(out, "foreground=", "<ps5-user>", "pad users initial=");
+  out = RedactHomeAddresses(out);
   if (account.steam_id != 0) ReplaceAll(out, std::to_string(account.steam_id), "<steam-id>");
   std::vector<std::string> names(found.begin(), found.end());
   if (!account.account_name.empty()) names.push_back(account.account_name);
@@ -497,7 +564,7 @@ std::string LogsSource::StatusJson(std::int64_t now) const {
   return "{\"version\":" + fact("Playden version") + ",\"package\":" + fact("Playden package") +
          ",\"firmware\":" + fact("firmware") + ",\"kit_runtime\":" + fact("kit runtime") +
          ",\"kit_capabilities\":" + fact("kit capabilities") + ",\"other_kit_folders\":" + fact("other kit folders") +
-         ",\"redacted\":\"Steam account name and SteamIDs\",\"collected\":" + fact("collected") + "}";
+         ",\"redacted\":" + JsonString(kRedacted) + ",\"collected\":" + fact("collected") + "}";
 }
 
 std::string LogsSource::IndexJson(const LogsIndex& index) const {
@@ -556,7 +623,7 @@ bool LogsSource::WriteReport(const LogsIndex& index, std::string_view title, con
   for (const auto* game : chosen)
     titles += (titles.empty() ? "" : ", ") + game->title + " (app " + (game->app ? std::to_string(game->app) : "?") + ")";
   fields.emplace_back("game titles", titles.empty() ? "none" : titles);
-  fields.emplace_back("redacted", "Steam account name and SteamIDs");
+  fields.emplace_back("redacted", std::string(kRedacted));
 
   std::vector<std::string> files;
   for (const auto& log : index.playden) files.push_back(log.name);

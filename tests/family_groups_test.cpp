@@ -123,7 +123,7 @@ void LogsTheGroupAndTheUnlicensedApps() {
   assert(fake.requests[1].url.find("include_own=false") != std::string::npos);
   assert(fake.requests[1].url.find("include_excluded=true") != std::string::npos);
   assert(fake.requests[0].timeout_ms <= 10000 && fake.requests[1].timeout_ms <= 10000);
-  assert(fake.Has("family webapi group=y family_groupid=9876543210 role=1 members=2 member=76561198000000001:1 "
+  assert(fake.Has("family webapi group=y role=1 members=2 member=76561198000000001:1 "
                   "member=76561198000000002:2"));
   assert(fake.Has("family webapi shared_apps=3 excluded=1 owners=2 unlicensed=1 licenses=known license_shared_apps=1"));
   assert(fake.Has("family webapi app=620 owners=76561198000000002 exclude_reason=0 licensed=shared"));

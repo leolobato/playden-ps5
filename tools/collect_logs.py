@@ -2,8 +2,8 @@
 """Collect Playden's logs from a PS5 over FTP into a zip for a test report.
 
 Reads only /data/playden/logs (or the app's logs folder on 0.4.x and older) and the active kit's manifest. It never reads
-playden-data, which holds the Steam sign-in. The Steam account name and SteamIDs are
-replaced in every file unless --no-redact is given.
+playden-data, which holds the Steam sign-in. The Steam account name, SteamIDs, family group ID,
+PS5 user ID and home network addresses are replaced in every file unless --no-redact is given.
 
   python3 tools/collect_logs.py --host 192.168.1.50
 
@@ -44,6 +44,13 @@ STEAM_ID = re.compile(r"\b7656119\d{10}\b")
 OWNER_ID = re.compile(r"\bowner=(?!0\b)[0-9]+\b")
 OWNER_IDS = re.compile(r"\bowners=[0-9]+:[0-9]+(?:,[0-9]+(?::[0-9]+)?)*")
 OWNER_LIST_ID = re.compile(r"(?<=[=,])[0-9]+")
+FAMILY_GROUP = re.compile(r"\bfamily_groupid=[1-9][0-9]*\b")
+# The PS5 user: Playden's launch.log and the kit's hid lines in title logs.
+PS5_USER = re.compile(r"\buser=[1-9][0-9]*\b")
+PAD_INITIAL = re.compile(r"\bpad users initial=[1-9][0-9]*\b")
+PAD_FOREGROUND = re.compile(r"(\bpad users initial=[^\n]*?\bforeground=)[1-9][0-9]*\b")
+QUAD = re.compile(r"(?<![\w.])([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(?!\w|\.[0-9])")
+REDACTED = "Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses"
 FIRMWARE = re.compile(r"console_firmware=(\S+)")
 SKIP_SUFFIXES = (".ppm",)
 
@@ -169,10 +176,23 @@ def account_names(texts):
     return names
 
 
+def home_address(match):
+    """<home-ip> for a private IPv4 address. Public ones stay: they are Steam's servers. A last part of 0 stays too: that
+    is no device, but a version such as .NET's 10.0.0.0."""
+    a, b, c, d = (int(part) for part in match.groups())
+    home = a == 10 or (a, b) == (192, 168) or (a == 172 and 16 <= b <= 31)
+    return "<home-ip>" if home and max(a, b, c, d) <= 255 and d != 0 else match.group(0)
+
+
 def redact(text, names):
     text = STEAM_ID.sub("<steam-id>", text)
     text = OWNER_ID.sub("owner=<steam-id>", text)
     text = OWNER_IDS.sub(lambda match: OWNER_LIST_ID.sub("<steam-id>", match.group(0)), text)
+    text = FAMILY_GROUP.sub("family_groupid=<family-group>", text)
+    text = PS5_USER.sub("user=<ps5-user>", text)
+    text = PAD_INITIAL.sub("pad users initial=<ps5-user>", text)
+    text = PAD_FOREGROUND.sub(r"\g<1><ps5-user>", text)
+    text = QUAD.sub(home_address, text)
     for name in sorted(names, key=len, reverse=True):
         text = re.sub(re.escape(name), "<steam-user>", text, flags=re.IGNORECASE)
     return text
@@ -291,7 +311,7 @@ def main():
     which.add_argument("--all-titles", action="store_true", help="include every game's log")
     which.add_argument("--list", action="store_true", help="only list the games that have a log")
     parser.add_argument("--out", type=Path, help="zip to write (default: playden-logs-<time>.zip here)")
-    parser.add_argument("--no-redact", action="store_true", help="keep the Steam account name and SteamIDs")
+    parser.add_argument("--no-redact", action="store_true", help="keep the Steam account name, IDs and home network addresses")
     args = parser.parse_args()
     if not args.host:
         parser.error("give the PS5's address with --host or PLAYDEN_PS5_HOST")
@@ -371,7 +391,7 @@ def main():
     names = set() if args.no_redact else account_names([*title_logs.values(), *playden_logs.values()])
     if not args.no_redact:
         files = {name: redact(text, names) for name, text in files.items()}
-    info["redacted"] = "no" if args.no_redact else "Steam account name and SteamIDs"
+    info["redacted"] = "no" if args.no_redact else REDACTED
     report = summary(info)
 
     out = args.out or Path(f"playden-logs-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip")

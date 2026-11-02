@@ -193,8 +193,7 @@ FamilyProbe ProbeFamily(const StoredSession& session, const FamilyPerform& perfo
     log(std::string("family webapi group=n not_member=") + (group->not_member ? "1" : "0"));
     return probe;
   }
-  std::string line = "family webapi group=y family_groupid=" + std::to_string(group->family_groupid) +
-                     " role=" + (group->role ? std::to_string(*group->role) : std::string("?")) +
+  std::string line = "family webapi group=y role=" + (group->role ? std::to_string(*group->role) : std::string("?")) +
                      " members=" + std::to_string(group->members.size());
   for (const auto& member : group->members)
     line += " member=" + std::to_string(member.steamid) + ":" +

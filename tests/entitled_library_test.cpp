@@ -675,7 +675,7 @@ void FamilyServiceIsAskedByEveryLoad() {
   assert(result.error == LibraryError::kNone && result.games.size() == 3);
   assert(WaitFor(lines, "family webapi app=81 "));
   assert(requests == 4);
-  assert(lines.Count("family webapi group=y family_groupid=42 role=2 members=1 member=5:1") == 2);
+  assert(lines.Count("family webapi group=y role=2 members=1 member=5:1") == 2);
   assert(lines.Count("family webapi shared_apps=2 excluded=0 owners=1 unlicensed=1 licenses=known") == 1);
   assert(lines.Count("family webapi app=80 owners=5 exclude_reason=0 licensed=shared") == 1);
   assert(lines.Count("family webapi app=81 owners=5 exclude_reason=0 licensed=n") == 1);

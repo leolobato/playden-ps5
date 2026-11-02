@@ -28,7 +28,7 @@ Pasted from `python3 tools/collect_logs.py --host 192.168.1.50` (game 2 in its l
 | kit runtime | f29127a-kit-g-r2 |
 | kit capabilities | dxvk, game-root-unowned, offline_bottle, per_game_title, title-any-id, wine-shared-sections, wow64_i386 |
 | game titles | FAKE78011 (app 1055540) |
-| redacted | Steam account name and SteamIDs |
+| redacted | Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses |
 
 ### Where the game is installed
 
@@ -76,5 +76,5 @@ Crash!!!
 - **One game per report.** If two games fail the same way, open two reports and mention each other.
 - **Say how far the game got:** black screen, spinner, logos, menu, in game. This narrows the cause a lot.
 - **Copy error lines** from the log into the report if you see them. The full zip is still needed.
-- **Check the logs before you post.** The script hides your Steam account name and SteamIDs, but logs can still
+- **Check the logs before you post.** The script hides your Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses, but logs can still
   show the names of your games and folders.
