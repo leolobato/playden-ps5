@@ -8,8 +8,9 @@ same way. Game downloads, logs and user data under the title are never touched.
 
 deploy --install also creates the package's folders, for a first install on a
 console that has none (after a system reinstall, for example). Folders are
-0755, except the ones Playden writes to as the app's user, which must be 0777
-whoever created them; every deploy checks those.
+0777: Playden writes to some as the app's user, and its self-update moves the
+others aside, which root can't do to a folder it doesn't own unless everyone can
+write to it. Every deploy checks the ones Playden writes to.
 """
 import argparse
 import ftplib
@@ -132,7 +133,7 @@ def main():
         ensure_directory(ftp, TITLE, "777")
         for local in sorted(path for path in args.package.rglob("*") if path.is_dir()):
             relative = local.relative_to(args.package).as_posix()
-            ensure_directory(ftp, f"{TITLE}/{relative}", "777" if relative in WRITABLE_DIRS else "755")
+            ensure_directory(ftp, f"{TITLE}/{relative}", "777")
     elif listing(ftp, TITLE) is None:
         print(f"refusing: {TITLE} is missing; use --install for a first install", file=sys.stderr)
         return 1

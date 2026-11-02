@@ -181,6 +181,26 @@ int main() {
     CHECK(!PrepareAppFolderStubs(root / "data/homebrew/PPSA97031", runs, log, root).empty());
     CHECK(!fs::exists(root / "data/homebrew/PPSA97031"));
   }
+  // The app's own folders go to 0777; missing ones, links and refused paths are left.
+  {
+    const auto app = root / "data/homebrew/FAKE77031";
+    fs::create_directories(app / "assets");
+    fs::create_directories(app / "sce_sys");
+    CHECK(chmod((app / "assets").c_str(), 0755) == 0 && chmod((app / "sce_sys").c_str(), 0777) == 0);
+    const auto link_target = root / "app-folder-link-target";
+    fs::create_directories(link_target);
+    CHECK(chmod(link_target.c_str(), 0755) == 0 && symlink(link_target.c_str(), (app / "trust").c_str()) == 0);
+    const auto before = calls;
+    lines.clear();
+    CHECK(OpenAppFolders(app, runs, log, root).empty());
+    CHECK(Mode(app / "assets") == 0777 && Mode(app / "sce_sys") == 0777 && Mode(link_target) == 0755);
+    CHECK(!fs::exists(app / "runtime") && calls == before);
+    CHECK(lines.size() == 1 && lines[0].find("/assets") != std::string::npos);
+    CHECK(OpenAppFolders(app, nullptr, log, root).empty());
+    CHECK(!OpenAppFolders(root / "data/FAKE77031", runs, log, root).empty());
+    CHECK(!OpenAppFolders(root / "data/homebrew", runs, log, root).empty());
+    CHECK(unlink((app / "trust").c_str()) == 0);
+  }
   // /data swapped for a link to an outside folder: neither repair follows it as root.
   {
     const auto outside = root / "outside-data";

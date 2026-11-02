@@ -45,4 +45,13 @@ std::string PrepareAppFolderStubs(const std::filesystem::path& app_root, const W
                                   const std::function<void(const std::string&)>& log,
                                   const std::filesystem::path& namespace_root = "/");
 
+// The app's own folders (assets, runtime, sce_module, sce_sys, trust) to 0777: a self-update moves them aside as
+// root, and root can't move a folder it doesn't own unless everyone can write to it. A deploy tool or a chmod can
+// leave them 0755. Tried as the app user, who owns them after a self-update, then as root, who owns them after an
+// FTP copy. Missing folders are skipped, and a link or a file in the place of one is left alone. Only a folder
+// directly in /data/homebrew is accepted. Failing doesn't stop Playden: the message is for the log.
+std::string OpenAppFolders(const std::filesystem::path& app_root, const WritableFoldersAsRoot& as_root,
+                           const std::function<void(const std::string&)>& log,
+                           const std::filesystem::path& namespace_root = "/");
+
 }  // namespace playden::runtime

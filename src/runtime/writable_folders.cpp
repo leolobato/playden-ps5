@@ -182,6 +182,51 @@ std::string PrepareDropFolder(const std::filesystem::path& folder, const Writabl
   return "Playden can't make " + folder.string() + " (" + detail + "). Games can still be imported from a drive.";
 }
 
+std::string OpenAppFolders(const std::filesystem::path& app_root, const WritableFoldersAsRoot& as_root,
+                           const std::function<void(const std::string&)>& log,
+                           const std::filesystem::path& namespace_root) {
+  const auto name = app_root.filename().string();
+  if (app_root.parent_path() != namespace_root / "data/homebrew" || name.empty() || name == "." || name == "..") {
+    if (log) log("app folders refused path=" + app_root.string());
+    return "Playden can't repair this app folder.";
+  }
+  // Opens one folder and makes it 0777 if it isn't. True when it needs nothing more: done, missing or not a folder.
+  const auto open_up = [&](const char* child, int* error) {
+    // The app folder is opened again for each one: see PrepareAppFolderStubs.
+    const int parent = platform::OpenDirectoryWalk(app_root);
+    if (parent < 0) {
+      *error = errno;
+      return false;
+    }
+    const int fd = platform::OpenWalkChild(parent, child, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    const int open_error = errno;
+    ::close(parent);
+    if (fd < 0) {
+      *error = open_error;
+      return open_error == ENOENT || open_error == ENOTDIR || open_error == ELOOP;
+    }
+    struct stat info{};
+    bool done = ::fstat(fd, &info) == 0 && (info.st_mode & 07777) == 0777;
+    if (!done) {
+      done = ::fchmod(fd, 0777) == 0;
+      if (done && log) log("app folder opened path=" + (app_root / child).string());
+    }
+    *error = errno;
+    ::close(fd);
+    return done;
+  };
+  std::string failed;
+  for (const char* child : {"assets", "runtime", "sce_module", "sce_sys", "trust"}) {
+    int error = 0;
+    if (open_up(child, &error)) continue;
+    const bool repaired_as_root = as_root && as_root([&] { return open_up(child, &error); });
+    if (repaired_as_root) continue;
+    if (log) log("app folder failed path=" + (app_root / child).string() + " error=" + Error(error));
+    if (failed.empty()) failed = "Playden can't open " + (app_root / child).string() + ".";
+  }
+  return failed;
+}
+
 std::string PrepareAppFolderStubs(const std::filesystem::path& app_root, const WritableFoldersAsRoot& as_root,
                                   const std::function<void(const std::string&)>& log,
                                   const std::filesystem::path& namespace_root) {

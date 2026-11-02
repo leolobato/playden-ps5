@@ -186,6 +186,9 @@ NativeAccessResult PrepareNativeStartup(const std::string& title_id) {
     // logged: the move takes a missing one.
     runtime::PrepareAppFolderStubs(result.paths.title_root, WithRoot,
                                    [&layout_lines](const std::string& line) { layout_lines.push_back(line); });
+    // Before an update's swap, which can't move a folder of the app user's at 0755.
+    runtime::OpenAppFolders(result.paths.title_root, WithRoot,
+                            [&layout_lines](const std::string& line) { layout_lines.push_back(line); });
     runtime::LayoutPaths layout;
     layout.app_root = result.paths.title_root;
     layout.user_root = data_root / "user";
