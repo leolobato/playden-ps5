@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Moves an issue on the Playden roadmap to "Ready for build" when a commit that says
+# `Fixes #N` reaches develop. GitHub closes the issue when that commit reaches main, and the
+# project's "Item closed" workflow then moves it to Done.
+name: Ready for build
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  update-roadmap:
+    if: github.repository == 'leolobato/playden-ps5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The script comes from the pushed commit, and only commits on develop reach this job.
+      # persist-credentials is off because the job needs no git access after this step.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Update the roadmap
+        run: .github/scripts/ready-for-build.sh
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          REPO: ${{ github.repository }}
+          COMPARE_TOKEN: ${{ github.token }}
+          # A classic token with only the `project` scope. GITHUB_TOKEN can't reach a project
+          # owned by a user account.
+          PROJECT_TOKEN: ${{ secrets.ROADMAP_PROJECT_TOKEN }}
