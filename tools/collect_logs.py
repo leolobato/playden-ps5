@@ -40,6 +40,10 @@ PROFILE = re.compile(r"profile=playden-steam-(\d+)")
 REPORT_TIME = re.compile(r"^PW_REPORT/1 .*?\btime=(\d+)", re.MULTILINE)
 ACCOUNT = re.compile(r'L"Steam(?:App)?User" L"([^"]+)"')
 STEAM_ID = re.compile(r"\b7656119\d{10}\b")
+# 32-bit account IDs from older versions. owner=0 is no account, and owners=<n> without a colon is a count.
+OWNER_ID = re.compile(r"\bowner=(?!0\b)[0-9]+\b")
+OWNER_IDS = re.compile(r"\bowners=[0-9]+:[0-9]+(?:,[0-9]+(?::[0-9]+)?)*")
+OWNER_LIST_ID = re.compile(r"(?<=[=,])[0-9]+")
 FIRMWARE = re.compile(r"console_firmware=(\S+)")
 SKIP_SUFFIXES = (".ppm",)
 
@@ -167,6 +171,8 @@ def account_names(texts):
 
 def redact(text, names):
     text = STEAM_ID.sub("<steam-id>", text)
+    text = OWNER_ID.sub("owner=<steam-id>", text)
+    text = OWNER_IDS.sub(lambda match: OWNER_LIST_ID.sub("<steam-id>", match.group(0)), text)
     for name in sorted(names, key=len, reverse=True):
         text = re.sub(re.escape(name), "<steam-user>", text, flags=re.IGNORECASE)
     return text

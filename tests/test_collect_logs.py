@@ -68,6 +68,23 @@ class CollectLogsTests(unittest.TestCase):
         self.assertIn('<steam-user>', redacted)
         self.assertIn('<steam-id>', redacted)
 
+    def test_redacts_owner_account_ids(self):
+        # The same cases as web_logs_source_test.cpp.
+        for text, expected in (
+            ('family step=license package=600 owner=157084330 flags=0x4000',
+             'family step=license package=600 owner=<steam-id> flags=0x4000'),
+            ('family step=licenses owners=1043647817:1,1541563032:22,+3 flags=none',
+             'family step=licenses owners=<steam-id>:1,<steam-id>:22,+3 flags=none'),
+            ('owners=1043647817:1,1541563032', 'owners=<steam-id>:1,<steam-id>'),
+            ('family webapi app=730 owners=76561198000000002,76561198000000003 exclude_reason=0',
+             'family webapi app=730 owners=<steam-id>,<steam-id> exclude_reason=0'),
+        ):
+            self.assertEqual(collect_logs.redact(text, set()), expected)
+        for kept in ('owner=cm step=x', 'owner=shared x', 'owner=0 flags=0x1', 'owner=family-1 flags=0x1',
+                     'owner=self flags=0x1', 'family webapi shared_apps=3 owners=2 unlicensed=1',
+                     'owners=none flags=none', 'owners=family-1:1,family-2:2', 'co_owner=123', 'owner=123x'):
+            self.assertEqual(collect_logs.redact(kept, set()), kept)
+
     def test_finds_the_account_name_in_any_log(self):
         stopped_early = '== session-1.log\nPW_REPORT/1 profile=playden-steam-220\nopen C:/users/Alice failed\n'
         names = collect_logs.account_names([stopped_early, title_log(40800)])

@@ -228,6 +228,56 @@ void AddAccountNames(std::string_view text, std::set<std::string>* names) {
   }
 }
 
+// owner=<id> and owners=<id>:<count>,... as in tools/collect_logs.py. owner=0 is no account, and owners=<n>
+// without a colon is a count.
+std::string RedactOwnerIds(std::string_view text) {
+  constexpr std::string_view kOwner = "owner=", kOwners = "owners=", kStem = "owner";
+  const auto digits_end = [&](std::size_t at) {
+    while (at < text.size() && Digit(text[at])) ++at;
+    return at;
+  };
+  std::string out;
+  out.reserve(text.size());
+  std::size_t copied = 0;
+  const auto replace = [&](std::size_t start, std::size_t end) {
+    out.append(text.substr(copied, start - copied));
+    out += "<steam-id>";
+    copied = end;
+  };
+  for (std::size_t at = text.find(kStem); at != std::string_view::npos; at = text.find(kStem, at)) {
+    const bool boundary = at == 0 || !WordChar(text[at - 1]);
+    const auto rest = text.substr(at);
+    if (boundary && rest.substr(0, kOwner.size()) == kOwner) {
+      const auto start = at + kOwner.size();
+      const auto end = digits_end(start);
+      if (end > start && text.substr(start, end - start) != "0" && (end == text.size() || !WordChar(text[end]))) {
+        replace(start, end);
+        at = end;
+        continue;
+      }
+    } else if (boundary && rest.substr(0, kOwners.size()) == kOwners) {
+      auto item = at + kOwners.size();
+      const auto first = digits_end(item);
+      if (first > item && first + 1 < text.size() && text[first] == ':' && Digit(text[first + 1])) {
+        for (;;) {
+          const auto id_end = digits_end(item);
+          if (id_end == item) break;
+          replace(item, id_end);
+          item = id_end;
+          if (item < text.size() && text[item] == ':') item = digits_end(item + 1);
+          if (item == text.size() || text[item] != ',') break;
+          ++item;
+        }
+        at = item;
+        continue;
+      }
+    }
+    at += kStem.size();
+  }
+  out.append(text.substr(copied));
+  return out;
+}
+
 std::string Redact(std::string_view text, const std::set<std::string>& found, const Redaction& account) {
   std::string out;
   out.reserve(text.size());
@@ -245,6 +295,7 @@ std::string Redact(std::string_view text, const std::set<std::string>& found, co
     }
     out.push_back(text[i++]);
   }
+  out = RedactOwnerIds(out);
   if (account.steam_id != 0) ReplaceAll(out, std::to_string(account.steam_id), "<steam-id>");
   std::vector<std::string> names(found.begin(), found.end());
   if (!account.account_name.empty()) names.push_back(account.account_name);

@@ -74,6 +74,18 @@ int main() {
   CHECK(Redact("\xe2\x80\x9c" "76561198000000001\xe2\x80\x9d", {}, {}) == "\xe2\x80\x9c<steam-id>\xe2\x80\x9d");
   // The signed-in account, exactly, even where no Wine line names it; the longest name first.
   CHECK(Redact("steam user Bob 123 bobby", {"Bobby"}, {"bob", 123}) == "steam user <steam-user> <steam-id> <steam-user>");
+  // Account IDs from older logs, the same cases as test_collect_logs.py.
+  CHECK(Redact("family step=license package=600 owner=157084330 flags=0x4000", {}, {}) ==
+        "family step=license package=600 owner=<steam-id> flags=0x4000");
+  CHECK(Redact("family step=licenses owners=1043647817:1,1541563032:22,+3 flags=none", {}, {}) ==
+        "family step=licenses owners=<steam-id>:1,<steam-id>:22,+3 flags=none");
+  CHECK(Redact("owners=1043647817:1,1541563032", {}, {}) == "owners=<steam-id>:1,<steam-id>");
+  CHECK(Redact("family webapi app=730 owners=76561198000000002,76561198000000003 exclude_reason=0", {}, {}) ==
+        "family webapi app=730 owners=<steam-id>,<steam-id> exclude_reason=0");
+  for (const char* kept : {"owner=cm step=x", "owner=shared x", "owner=0 flags=0x1", "owner=family-1 flags=0x1",
+                           "owner=self flags=0x1", "family webapi shared_apps=3 owners=2 unlicensed=1",
+                           "owners=none flags=none", "owners=family-1:1,family-2:2", "co_owner=123", "owner=123x"})
+    CHECK(Redact(kept, {}, {}) == kept);
   // A game that stopped before Wine named the user is still covered by another log's name.
   names.clear();
   const std::string stopped = "== session-1.log\nPW_REPORT/1 profile=playden-steam-220\nopen C:/users/Alice failed\n";

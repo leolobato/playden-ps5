@@ -480,19 +480,30 @@ void BorrowedLicensesAreShared() {
   assert(result.package_apps.at(600) == (std::vector<std::uint32_t>{20, 40}));
 
   const auto lines = log.Take();
-  assert(HasLine(lines, "owner=cm family step=licenses total=5 own=1 borrowed=1 dropped=3 owners=8888:1,9999:2 "
+  assert(HasLine(lines, "owner=cm family step=licenses total=5 own=1 borrowed=1 dropped=3 owners=family-1:1,family-2:2 "
                         "flags=0x8:1,0x2000:1,0x4000:3 changed=y"));
-  assert(HasLine(lines, "owner=cm family step=license package=600 owner=9999 flags=0x4000 type=0 created=1550000000 "
+  assert(HasLine(lines, "owner=cm family step=license package=600 owner=family-2 flags=0x4000 type=0 created=1550000000 "
                         "token=y result=kept reason=borrowed"));
-  assert(HasLine(lines, "owner=cm family step=license package=700 owner=9999 flags=0x4008 type=0 created=1500000000 "
+  assert(HasLine(lines, "owner=cm family step=license package=700 owner=family-2 flags=0x4008 type=0 created=1500000000 "
                         "token=y result=dropped reason=flags:0x8"));
-  assert(HasLine(lines, "owner=cm family step=license package=800 owner=8888 flags=0x4000 type=0 created=1500000000 "
+  assert(HasLine(lines, "owner=cm family step=license package=800 owner=family-1 flags=0x4000 type=0 created=1500000000 "
                         "token=y result=dropped reason=minutes"));
-  assert(HasLine(lines, "owner=cm family step=license package=900 owner=4242 flags=0x2000 type=0 created=1450000000 "
+  assert(HasLine(lines, "owner=cm family step=license package=900 owner=self flags=0x2000 type=0 created=1450000000 "
                         "token=n result=dropped reason=flags:0x2000"));
   assert(CountPrefix(lines, "owner=cm family step=license ") == 4);  // package 100 is plainly the account's own
   assert(HasLine(lines, "owner=cm family step=pics borrowed_packages=1 received=1 missing_token=0 unparsable=0 "
                         "absent=0 apps=2 depots=2 shared_apps=1"));
+}
+
+// A license with no owner has no account to hide, and the log says so.
+void LicenseWithoutOwnerIsLogged() {
+  LogCapture log;
+  auto script = LicenseScript({{100, 1600000000, 0x80, 0, 7001}}, {{100, {{10}, {101}}}});
+  auto client = MakeClient(script);
+  std::atomic<bool> cancel{false};
+  assert(client.FetchAcquisitionDates(Session(), cancel).ok());
+  assert(HasLine(log.Take(), "owner=cm family step=license package=100 owner=0 flags=0x80 type=0 created=1600000000 "
+                             "token=y result=kept reason=own"));
 }
 
 // The same package through the account's own license and a borrowed one: the own license's token and date
@@ -513,7 +524,7 @@ void OwnLicenseWinsOverBorrowedInEitherOrder() {
     assert(result.owned_apps == (std::set<std::uint32_t>{10}) && result.shared_apps.empty());
     assert(result.acquired_at.at(10) == 1600000000u);
     const auto lines = log.Take();
-    assert(HasLine(lines, "owner=cm family step=license package=100 owner=9999 flags=0x4000 type=0 created=" +
+    assert(HasLine(lines, "owner=cm family step=license package=100 owner=family-1 flags=0x4000 type=0 created=" +
                               std::to_string(borrowed.created) + " token=y result=superseded reason=own"));
     assert(HasLine(lines, "owner=cm family step=pics borrowed_packages=0 received=0 missing_token=0 unparsable=0 "
                           "absent=0 apps=0 depots=0 shared_apps=0"));
@@ -592,7 +603,7 @@ void FamilyLicenseLinesAreCappedAndOnlyOnChange() {
   }
   lines = log.Take();
   assert(CountPrefix(lines, "owner=cm family step=license package=") == 300);
-  assert(HasLine(lines, "owner=cm family step=license package=5400 owner=9999 flags=0x4000 type=0 created=1500000000 "
+  assert(HasLine(lines, "owner=cm family step=license package=5400 owner=family-1 flags=0x4000 type=0 created=1500000000 "
                         "token=y result=kept reason=borrowed"));
   assert(HasLine(lines, "owner=cm family step=license truncated=6"));
 }
@@ -1337,6 +1348,7 @@ int main(int argc, char** argv) {
   PackageZeroCounts();
   ResetCmBackoff();
   BorrowedLicensesAreShared();
+  LicenseWithoutOwnerIsLogged();
   ResetCmBackoff();
   OwnLicenseWinsOverBorrowedInEitherOrder();
   ResetCmBackoff();

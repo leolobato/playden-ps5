@@ -134,7 +134,8 @@ bool ShouldDumpLicenses(std::uint64_t hash) {
 }
 
 // The family summary of one license-list load and, when the list changed, a line per license that isn't
-// plainly the account's own.
+// plainly the account's own. Account IDs stay out of the log: an owner is "self", "0" (none) or "family-<n>",
+// numbered by ascending ID, which is enough to tell owners apart.
 void LogLicenses(const std::function<void(const std::string&)>& log, const std::vector<cm::License>& licenses,
                  const std::map<std::uint32_t, const cm::License*>& chosen, std::uint32_t account_id) {
   std::size_t own = 0, borrowed = 0, dropped = 0;
@@ -149,6 +150,13 @@ void LogLicenses(const std::function<void(const std::string&)>& log, const std::
   }
   const auto hash = LicenseListHash(licenses, account_id);
   const bool dump = ShouldDumpLicenses(hash);
+  std::map<std::uint32_t, std::string> owner_labels;
+  for (const auto& [owner, count] : owners)
+    owner_labels.emplace(owner, "family-" + std::to_string(owner_labels.size() + 1));
+  const auto owner_label = [&](std::uint32_t owner) -> std::string {
+    if (owner == 0) return "0";
+    return owner == account_id ? "self" : owner_labels.at(owner);
+  };
   std::string owner_text, flag_text;
   std::size_t listed = 0;
   for (const auto& [owner, count] : owners) {
@@ -156,7 +164,7 @@ void LogLicenses(const std::function<void(const std::string&)>& log, const std::
       owner_text += ",+" + std::to_string(owners.size() - 16);
       break;
     }
-    owner_text += (owner_text.empty() ? "" : ",") + std::to_string(owner) + ":" + std::to_string(count);
+    owner_text += (owner_text.empty() ? "" : ",") + owner_labels.at(owner) + ":" + std::to_string(count);
   }
   for (int bit = 0; bit < 32; ++bit)
     if (bits[bit])
@@ -186,7 +194,7 @@ void LogLicenses(const std::function<void(const std::string&)>& log, const std::
       verdict = std::string("result=kept reason=") + (OwnLicense(license, account_id) ? "own" : "borrowed");
     }
     log("family step=license package=" + std::to_string(license.package_id) +
-        " owner=" + std::to_string(license.owner_id) + " flags=" + HexFlags(license.flags) +
+        " owner=" + owner_label(license.owner_id) + " flags=" + HexFlags(license.flags) +
         " type=" + std::to_string(license.license_type) + " created=" + std::to_string(license.time_created) +
         " token=" + (license.access_token ? "y" : "n") + " " + verdict);
   };
