@@ -27,6 +27,7 @@ using platform::ManagedDirectory;
 constexpr std::size_t kMaxPackageBytes = 256u * 1024u * 1024u;
 constexpr std::size_t kMaxScripts = 32;
 constexpr int kMaxDepth = 4;
+constexpr std::size_t kMaxPhysxPackages = 8;
 constexpr const char* kStateFile = ".playden-redist";
 constexpr const char* kMfcScanFile = ".playden-mfc";
 constexpr const char* kEnvironmentKey = "System\\CurrentControlSet\\Control\\Session Manager\\Environment";
@@ -109,6 +110,34 @@ void FindScripts(const std::filesystem::path& folder, const std::string& relativ
     if (!directory && ScriptName(name) && depth > 0) scripts->push_back(path);
     else if (directory && depth < kMaxDepth && (depth > 0 || RedistFolder(name)))
       FindScripts(folder / name, path, depth + 1, scripts);
+  }
+}
+
+bool PhysxPackageName(const std::string& name) {
+  const auto lower = Lower(name);
+  if (lower.rfind("physx", 0) != 0 || lower.size() <= 4) return false;
+  const auto extension = lower.substr(lower.size() - 4);
+  return extension == ".msi" || extension == ".exe";
+}
+
+// PhysX's installers in the game's redistributable folders, top-level ones or ones a level down (a game whose
+// files sit in one folder of what was imported), by name.
+void FindPhysxPackages(const std::filesystem::path& folder, const std::string& relative, int depth, bool in_redist,
+                       std::vector<std::string>* packages) {
+  std::error_code error;
+  std::vector<std::pair<std::string, bool>> children;
+  for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+    std::error_code type_error;
+    if (it->is_symlink(type_error)) continue;
+    children.emplace_back(it->path().filename().string(), it->is_directory(type_error));
+  }
+  std::sort(children.begin(), children.end());
+  for (const auto& [name, directory] : children) {
+    if (packages->size() >= kMaxPhysxPackages) return;
+    const auto path = relative.empty() ? name : relative + "/" + name;
+    if (!directory && in_redist && PhysxPackageName(name)) packages->push_back(path);
+    else if (directory && depth < kMaxDepth && (in_redist || depth == 0 || RedistFolder(name)))
+      FindPhysxPackages(folder / name, path, depth + 1, in_redist || RedistFolder(name), packages);
   }
 }
 
@@ -703,7 +732,7 @@ std::string ExtendPath(const std::string& current, const std::vector<std::string
 }
 
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,
-                                            const std::string& prefix_dir, std::int64_t unix_time) {
+                                            const std::string& prefix_dir, std::int64_t unix_time, bool find_physx) {
   RedistInstallResult result;
   std::vector<std::string> scripts;
   {
@@ -729,98 +758,116 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
   const auto failure_key = [](const std::string& hash, const std::filesystem::path& path) {
     return hash + '\n' + path.parent_path().string();
   };
+  const auto run = [&](const std::string& script, const RedistEntry& entry) {
+    RedistOutcome outcome;
+    outcome.script = script;
+    outcome.name = entry.name;
+    std::string package;
+    const auto action = ClassifyRedist(entry, install_dir, &package);
+    if (action == RedistAction::kNotRun && InsideGame(entry.process, install_dir, &package) && package.size() > 4 &&
+        Lower(package).compare(package.size() - 4, 4, ".exe") == 0) {
+      // A setup program the console can't start may carry its package as is (PhysX's). One
+      // installed before is known by the program's hash, without reading its package again.
+      const auto path = std::filesystem::path(game_root) / package;
+      const auto hash = HashArtifactFile(path);
+      std::string embedded;
+      const bool already = hash && installed.count(*hash);
+      const auto earlier = hash ? failed.find(failure_key(*hash, path)) : failed.end();
+      bool carries = false;
+      if (hash && !already && earlier == failed.end() && !without_package.count(*hash)) {
+        carries = FindEmbeddedMsiFile(path, &embedded);
+        if (!carries) without_package.insert(*hash);
+      }
+      if (already || earlier != failed.end() || carries) {
+        outcome.detail = package + " (its package)";
+        if (already) {
+          outcome.result = "already";
+        } else if (earlier != failed.end()) {
+          outcome.result = "failed";
+          outcome.detail = package + ": " + earlier->second;
+        } else {
+          std::string failure;
+          if (!InstallPackageBytes(embedded, path, prefix, entry, unix_time, &outcome.files, &failure)) {
+            outcome.result = "failed";
+          } else if (!RecordPackage(prefix, *hash, package)) {
+            outcome.result = "failed";
+            failure = "installed, but could not be recorded";
+          } else {
+            outcome.result = "installed";
+            installed[*hash] = package;
+          }
+          if (outcome.result == "failed") {
+            outcome.detail = package + ": " + failure;
+            failed[failure_key(*hash, path)] = failure;
+          }
+        }
+        result.outcomes.push_back(std::move(outcome));
+        return;
+      }
+    }
+    if (action != RedistAction::kMsi) {
+      outcome.result = action == RedistAction::kCovered ? "covered" : "not-run";
+      outcome.detail = FileName(entry.process);
+      result.outcomes.push_back(std::move(outcome));
+      return;
+    }
+    outcome.detail = package;
+    const auto path = std::filesystem::path(game_root) / package;
+    const auto hash = HashArtifactFile(path);
+    if (!hash) {
+      outcome.result = "failed";
+      outcome.detail = package + ": the package could not be read";
+      result.outcomes.push_back(std::move(outcome));
+      return;
+    }
+    if (installed.count(*hash)) {
+      outcome.result = "already";
+      result.outcomes.push_back(std::move(outcome));
+      return;
+    }
+    std::string failure;
+    if (const auto earlier = failed.find(failure_key(*hash, path)); earlier != failed.end()) {
+      outcome.result = "failed";
+      failure = earlier->second;
+    } else if (!InstallPackage(path, prefix, entry, unix_time, &outcome.files, &failure)) {
+      outcome.result = "failed";
+    } else if (!RecordPackage(prefix, *hash, package)) {
+      outcome.result = "failed";
+      failure = "installed, but could not be recorded";
+    } else {
+      outcome.result = "installed";
+      installed[*hash] = package;
+    }
+    if (outcome.result == "failed") {
+      outcome.detail = package + ": " + failure;
+      failed[failure_key(*hash, path)] = failure;
+    }
+    result.outcomes.push_back(std::move(outcome));
+  };
   for (const auto& script : scripts) {
     std::string text, reason;
     std::vector<RedistEntry> entries;
     if (!ReadInstallScript((std::filesystem::path(game_root) / script).string(), &text) ||
         !ParseRunProcess(text, install_dir, &entries, &reason))
       continue;
-    for (const auto& entry : entries) {
-      RedistOutcome outcome;
-      outcome.script = script;
-      outcome.name = entry.name;
-      std::string package;
-      const auto action = ClassifyRedist(entry, install_dir, &package);
-      if (action == RedistAction::kNotRun && InsideGame(entry.process, install_dir, &package) && package.size() > 4 &&
-          Lower(package).compare(package.size() - 4, 4, ".exe") == 0) {
-        // A setup program the console can't start may carry its package as is (PhysX's). One
-        // installed before is known by the program's hash, without reading its package again.
-        const auto path = std::filesystem::path(game_root) / package;
-        const auto hash = HashArtifactFile(path);
-        std::string embedded;
-        const bool already = hash && installed.count(*hash);
-        const auto earlier = hash ? failed.find(failure_key(*hash, path)) : failed.end();
-        bool carries = false;
-        if (hash && !already && earlier == failed.end() && !without_package.count(*hash)) {
-          carries = FindEmbeddedMsiFile(path, &embedded);
-          if (!carries) without_package.insert(*hash);
-        }
-        if (already || earlier != failed.end() || carries) {
-          outcome.detail = package + " (its package)";
-          if (already) {
-            outcome.result = "already";
-          } else if (earlier != failed.end()) {
-            outcome.result = "failed";
-            outcome.detail = package + ": " + earlier->second;
-          } else {
-            std::string failure;
-            if (!InstallPackageBytes(embedded, path, prefix, entry, unix_time, &outcome.files, &failure)) {
-              outcome.result = "failed";
-            } else if (!RecordPackage(prefix, *hash, package)) {
-              outcome.result = "failed";
-              failure = "installed, but could not be recorded";
-            } else {
-              outcome.result = "installed";
-              installed[*hash] = package;
-            }
-            if (outcome.result == "failed") {
-              outcome.detail = package + ": " + failure;
-              failed[failure_key(*hash, path)] = failure;
-            }
-          }
-          result.outcomes.push_back(std::move(outcome));
-          continue;
-        }
-      }
-      if (action != RedistAction::kMsi) {
-        outcome.result = action == RedistAction::kCovered ? "covered" : "not-run";
-        outcome.detail = FileName(entry.process);
-        result.outcomes.push_back(std::move(outcome));
-        continue;
-      }
-      outcome.detail = package;
-      const auto path = std::filesystem::path(game_root) / package;
-      const auto hash = HashArtifactFile(path);
-      if (!hash) {
-        outcome.result = "failed";
-        outcome.detail = package + ": the package could not be read";
-        result.outcomes.push_back(std::move(outcome));
-        continue;
-      }
-      if (installed.count(*hash)) {
-        outcome.result = "already";
-        result.outcomes.push_back(std::move(outcome));
-        continue;
-      }
-      std::string failure;
-      if (const auto earlier = failed.find(failure_key(*hash, path)); earlier != failed.end()) {
-        outcome.result = "failed";
-        failure = earlier->second;
-      } else if (!InstallPackage(path, prefix, entry, unix_time, &outcome.files, &failure)) {
-        outcome.result = "failed";
-      } else if (!RecordPackage(prefix, *hash, package)) {
-        outcome.result = "failed";
-        failure = "installed, but could not be recorded";
-      } else {
-        outcome.result = "installed";
-        installed[*hash] = package;
-      }
-      if (outcome.result == "failed") {
-        outcome.detail = package + ": " + failure;
-        failed[failure_key(*hash, path)] = failure;
-      }
-      result.outcomes.push_back(std::move(outcome));
+    for (const auto& entry : entries) run(script, entry);
+  }
+  // A game that needs PhysX and has no script to install it (an imported folder): the package it ships. A script
+  // that names PhysX has said which one the game wants.
+  const auto names_physx = [](const RedistOutcome& outcome) {
+    return Lower(outcome.name).find("physx") != std::string::npos || Lower(outcome.detail).find("physx") != std::string::npos;
+  };
+  if (find_physx && std::none_of(result.outcomes.begin(), result.outcomes.end(), names_physx)) {
+    std::vector<std::string> packages;
+    FindPhysxPackages(game_root, std::string(), 0, false, &packages);
+    auto base = install_dir;
+    while (!base.empty() && base.back() == '\\') base.pop_back();
+    for (const auto& package : packages) {
+      auto windows = package;
+      std::replace(windows.begin(), windows.end(), '/', '\\');
+      run("(no script)", RedistEntry{"PhysX", base + "\\" + windows, "", ""});
     }
+    result.physx_missing = packages.empty();
   }
   return result;
 }

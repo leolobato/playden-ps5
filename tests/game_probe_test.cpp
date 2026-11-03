@@ -753,6 +753,12 @@ int main() {
     WritePe(root / "Tools/Other.dll", {false, {"mfc42.dll", "mfc140x.lib", "msvcp140.dll"}});
     found = FindMfcImports(root.string());
     CHECK(found.x86_program == "Tools/Editor.exe" && !found.x64_program.empty());
+    // PhysX's loader, imported or delay-loaded (a game may not load it until it needs it); a bare engine DLL doesn't count.
+    WritePe(root / "Physx/Direct.exe", {false, {"KERNEL32.dll", "PhysXLoader.dll"}});
+    WritePe(root / "Physx/Delayed.exe", {false, {"KERNEL32.dll"}, false, false, "", 0x1400, false, {"PhysXLoader.dll"}});
+    WritePe(root / "Physx/None.exe", {false, {"KERNEL32.dll", "PhysXDevice.dll"}});
+    CHECK(ProgramUsesPhysx(root.string(), "Physx/Direct.exe") && ProgramUsesPhysx(root.string(), "Physx/Delayed.exe"));
+    CHECK(!ProgramUsesPhysx(root.string(), "Physx/None.exe") && !ProgramUsesPhysx(root.string(), "Physx/Missing.exe"));
     // Neither: a game without MFC.
     const auto plain = fresh();
     WritePe(plain / "Game.exe", {true, {"KERNEL32.dll", "VCRUNTIME140.dll", "d3d11.dll"}});

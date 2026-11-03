@@ -408,6 +408,73 @@ void TestInstall() {
   std::filesystem::remove_all(base);
 }
 
+// A game with no install script: PhysX's package is found by name, only when the game needs it.
+void TestFoundPhysx() {
+  char pattern[] = "/tmp/playden-redist-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);  // /tmp is a symlink on macOS
+  const auto fresh_prefix = [&](const char* name) {
+    const auto prefix = base / name;
+    WriteText(prefix / "system.reg",
+              "WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n");
+    WriteText(prefix / "user.reg", "WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000\n\n#arch=win64\n");
+    std::filesystem::create_directories(prefix / "drive_c/program files (x86)");
+    std::filesystem::permissions(prefix, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    for (const auto* hive : {"system.reg", "user.reg"})
+      std::filesystem::permissions(prefix / hive, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                   std::filesystem::perm_options::replace);
+    return prefix;
+  };
+  const auto game = base / "game";
+  WriteText(game / "_Redist/Nvidia PhysX Legacy Driver/PhysX-9.13.0604-SystemSoftware-Legacy.msi", SamplePackage());
+  WriteText(game / "_Redist/Other/OtherRuntime.msi", SamplePackage());  // named otherwise: left alone
+  WriteText(game / "Binaries/PhysX-Tool.msi", SamplePackage());         // not a redistributable folder
+
+  // Not needed: nothing happens.
+  auto prefix = fresh_prefix("unneeded");
+  auto result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000100);
+  CHECK(result.outcomes.empty() && !result.physx_missing && !std::filesystem::exists(prefix / ".playden-redist"));
+
+  // Needed: only PhysX's package, once.
+  prefix = fresh_prefix("needed");
+  result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000100, true);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "installed" && result.outcomes[0].name == "PhysX" &&
+        result.outcomes[0].detail == "_Redist/Nvidia PhysX Legacy Driver/PhysX-9.13.0604-SystemSoftware-Legacy.msi");
+  CHECK(!result.physx_missing);
+  CHECK(ReadText(prefix / "drive_c/program files (x86)/Vendor Runtime/Common/Loader.dll") == "0123456789");
+  result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000200, true);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "already");
+
+  // The game's files in one folder of what was imported: its redistributables are a level down.
+  const auto wrapped = base / "wrapped";
+  WriteText(wrapped / "My Game/_Redist/PhysX.msi", SamplePackage());
+  WriteText(wrapped / "My Game/Data/Deep/_Redist/PhysX.msi", "broken");  // too far down to be the game's
+  prefix = fresh_prefix("wrapped-prefix");
+  result = InstallRedistributables(wrapped.string(), "Z:\\games\\2", prefix.string(), 1700000100, true);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].detail == "My Game/_Redist/PhysX.msi" &&
+        result.outcomes[0].result == "installed");
+
+  // A script that names PhysX has said which package the game wants.
+  const auto scripted = base / "scripted";
+  WriteText(scripted / "_CommonRedist/installscript.vdf",
+            "\"InstallScript\" { \"Run Process\" { \"PhysX\" { \"process 1\" \"msiexec\" "
+            "\"command 1\" \"/i \\\"%INSTALLDIR%\\\\_CommonRedist\\\\Chosen.msi\\\" /quiet\" } } } "
+            "\"kvsignatures\" { \"InstallScript\" \"00\" }");
+  WriteText(scripted / "_CommonRedist/Chosen.msi", SamplePackage());
+  WriteText(scripted / "_CommonRedist/PhysX-Other.msi", "broken");
+  prefix = fresh_prefix("scripted-prefix");
+  result = InstallRedistributables(scripted.string(), "Z:\\games\\3", prefix.string(), 1700000100, true);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].detail == "_CommonRedist/Chosen.msi");
+
+  // Needed, and nothing to install.
+  const auto bare = base / "bare";
+  std::filesystem::create_directories(bare / "Binaries");
+  prefix = fresh_prefix("bare-prefix");
+  result = InstallRedistributables(bare.string(), "Z:\\games\\4", prefix.string(), 1700000100, true);
+  CHECK(result.outcomes.empty() && result.physx_missing);
+  std::filesystem::remove_all(base);
+}
+
 // A bottle as Wine makes it: hives and the system folders, private to Playden.
 std::filesystem::path MakeBottle(const std::filesystem::path& prefix) {
   WriteText(prefix / "system.reg", "WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n");
@@ -786,6 +853,7 @@ int main() {
   TestScripts();
   TestInstall();
   TestEmbeddedPackage();
+  TestFoundPhysx();
   TestPhysxPackage();
   TestPhysxSetupProgram();
   TestMfcFilter();

@@ -980,7 +980,12 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
   if (!script.ok) return "The game's install script could not be applied: " + script.message + ".";
   // The redistributables those scripts run (PhysX and the like): packages Playden can install
   // go into the bottle once; a package that fails is logged and the game still starts.
-  const auto redist = rt::InstallRedistributables(files.root.string(), *install_dir, files.prefix, config_.unix_time());
+  // A game that needs PhysX may ship it with no script to say so (an imported folder).
+  const auto uses_physx = std::any_of(files.programs.begin(), files.programs.end(), [&files](const std::string& program) {
+    return rt::ProgramUsesPhysx(files.root.string(), program);
+  });
+  const auto redist = rt::InstallRedistributables(files.root.string(), *install_dir, files.prefix, config_.unix_time(), uses_physx);
+  if (redist.physx_missing) Log("redist app=" + std::to_string(record.runtime_number) + " physx needed, no package in the game folder");
   // Names and reasons come from the game's files: one line each, whatever they hold.
   const auto field = [](std::string text) {
     if (text.size() > 240) text.resize(240);

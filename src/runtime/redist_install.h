@@ -38,6 +38,7 @@ struct RedistOutcome {
 
 struct RedistInstallResult {
   std::vector<RedistOutcome> outcomes;
+  bool physx_missing = false;  // find_physx, and the game folder has no PhysX package
 };
 
 // Finds install scripts at the top of game_root and in its redistributable folders
@@ -46,8 +47,10 @@ struct RedistInstallResult {
 // program in the game folder carries (FindEmbeddedMsi). A package installed before (the same
 // SHA-256, listed in <prefix>/.playden-redist; a setup program's own) is not installed again. A
 // package that fails is reported and left out; the others still install.
+// With find_physx (the game's program uses PhysX, ProgramUsesPhysx) and no script that names PhysX, PhysX's
+// packages in those folders are installed the same way, found by name: a game imported from a folder has no script.
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,
-                                            const std::string& prefix_dir, std::int64_t unix_time);
+                                            const std::string& prefix_dir, std::int64_t unix_time, bool find_physx = false);
 
 // Microsoft's MFC library, which Wine doesn't provide, for the games that import it (runtime/game_probe.h
 // FindMfcImports): Playden downloads Microsoft's Visual C++ 2015-2022 redistributable once per console, keeps the

@@ -43,6 +43,10 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
 // Unlike GameProbe::apis, the libraries beside it don't count, so a launcher next to the game's DLLs is not one.
 bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::string& executable);
 
+// Whether a program loads PhysX through NVIDIA's loader (PhysXLoader.dll, imported directly or delay-loaded), which
+// finds the engine the PhysX System Software installs. executable is relative to install_root, '/' separators.
+bool ProgramUsesPhysx(const std::string& install_root, const std::string& executable);
+
 // The program a game's last run couldn't start, from the note the title's Wine leaves in the bottle: what a launcher
 // without launcher mode asked for. Relative to host_root, as spelled in the note, when it's a program in the game's
 // folder (console_root on the console, host_root as seen here) that draws or has an engine, so a crash reporter or an

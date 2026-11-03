@@ -426,6 +426,14 @@ std::string UnrealGameProgram(const std::string& install_root, const std::string
   return FindShipping(root, folder, LowerStem(lower_file));
 }
 
+bool ProgramUsesPhysx(const std::string& install_root, const std::string& executable) {
+  const auto facts = ReadPe((fs::path(install_root) / executable).string(), true);
+  if (!facts.valid) return false;
+  for (const auto* list : {&facts.imports, &facts.delay_imports})
+    if (std::find(list->begin(), list->end(), "physxloader.dll") != list->end()) return true;
+  return false;
+}
+
 bool ProgramDrawsWithOpenGLOnly(const std::string& install_root, const std::string& executable) {
   const auto facts = ReadPe((fs::path(install_root) / executable).string());
   if (!facts.valid) return false;
