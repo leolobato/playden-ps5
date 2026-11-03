@@ -40,7 +40,8 @@ bool SameOrigin(const Request& request) {
 }
 }  // namespace
 
-Service::Service(ServiceConfig config) : config_(std::move(config)), logs_(config_.paths) {
+Service::Service(ServiceConfig config) : config_(std::move(config)), logs_(config_.paths), files_(config_.files) {
+  files_.Register(router_);
   router_.Exact("/", [](const Request&, const std::string&, Response& response) {
     const auto* page = FindEmbeddedAsset("/");
     if (!page) return SendError(response, 404, "Not found.");
@@ -142,9 +143,16 @@ void Service::SetAccount(Redaction account) {
 }
 
 ServiceSnapshot Service::Snapshot() const {
+  auto code = files_.PairingCode();
   std::lock_guard<std::mutex> lock(mutex_);
-  return snapshot_;
+  auto snapshot = snapshot_;
+  snapshot.pairing_code = std::move(code);
+  return snapshot;
 }
+
+void Service::SetFileCatalog(FileCatalog catalog) { files_.SetCatalog(std::move(catalog)); }
+
+void Service::CancelPairing() { files_.CancelPairing(); }
 
 void Service::Shutdown() {
   {

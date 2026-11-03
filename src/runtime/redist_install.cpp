@@ -1,5 +1,7 @@
 #include "runtime/redist_install.h"
 
+#include "runtime/redist_names.h"
+
 #include "platform/managed_directory.h"
 #include "runtime/artifact_hash.h"
 #include "runtime/burn_bundle.h"
@@ -26,8 +28,7 @@ using platform::ManagedDirectory;
 
 constexpr std::size_t kMaxPackageBytes = 256u * 1024u * 1024u;
 constexpr std::size_t kMaxScripts = 32;
-constexpr int kMaxDepth = 4;
-constexpr std::size_t kMaxPhysxPackages = 8;
+constexpr int kMaxDepth = kRedistMaxDepth;
 constexpr const char* kStateFile = ".playden-redist";
 constexpr const char* kPhysxNeededFile = ".playden-physx-needed";
 constexpr const char* kMfcScanFile = ".playden-mfc";
@@ -81,15 +82,6 @@ bool ReadFile(const std::filesystem::path& path, std::size_t maximum, std::strin
   return ok;
 }
 
-// Folders where Steam games keep their redistributables, looked into below the game's top level.
-bool RedistFolder(const std::string& name) {
-  static const std::set<std::string> kNames = {
-      "_commonredist", "commonredist", "redist", "redists", "_redist", "redistributables", "redistributable",
-      "support", "__installer", "_installer", "installer", "installers", "prerequisites", "prereqs", "physx",
-      "directx", "vcredist", "dotnet"};
-  return kNames.count(Lower(name)) != 0;
-}
-
 bool ScriptName(const std::string& name) {
   const auto lower = Lower(name);
   return lower.rfind("installscript", 0) == 0 && lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".vdf") == 0;
@@ -111,34 +103,6 @@ void FindScripts(const std::filesystem::path& folder, const std::string& relativ
     if (!directory && ScriptName(name) && depth > 0) scripts->push_back(path);
     else if (directory && depth < kMaxDepth && (depth > 0 || RedistFolder(name)))
       FindScripts(folder / name, path, depth + 1, scripts);
-  }
-}
-
-bool PhysxPackageName(const std::string& name) {
-  const auto lower = Lower(name);
-  if (lower.rfind("physx", 0) != 0 || lower.size() <= 4) return false;
-  const auto extension = lower.substr(lower.size() - 4);
-  return extension == ".msi" || extension == ".exe";
-}
-
-// PhysX's installers in the game's redistributable folders, top-level ones or ones a level down (a game whose
-// files sit in one folder of what was imported), by name.
-void FindPhysxPackages(const std::filesystem::path& folder, const std::string& relative, int depth, bool in_redist,
-                       std::vector<std::string>* packages) {
-  std::error_code error;
-  std::vector<std::pair<std::string, bool>> children;
-  for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
-    std::error_code type_error;
-    if (it->is_symlink(type_error)) continue;
-    children.emplace_back(it->path().filename().string(), it->is_directory(type_error));
-  }
-  std::sort(children.begin(), children.end());
-  for (const auto& [name, directory] : children) {
-    if (packages->size() >= kMaxPhysxPackages) return;
-    const auto path = relative.empty() ? name : relative + "/" + name;
-    if (!directory && in_redist && PhysxPackageName(name)) packages->push_back(path);
-    else if (directory && depth < kMaxDepth && (in_redist || depth == 0 || RedistFolder(name)))
-      FindPhysxPackages(folder / name, path, depth + 1, in_redist || RedistFolder(name), packages);
   }
 }
 

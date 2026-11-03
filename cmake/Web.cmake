@@ -44,11 +44,19 @@ add_custom_command(OUTPUT "${playden_web_assets_cpp}"
     DEPENDS ${playden_web_asset_files} "${CMAKE_SOURCE_DIR}/cmake/EmbedWebAssets.cmake"
     VERBATIM)
 
-add_library(playden_web STATIC "${CMAKE_SOURCE_DIR}/src/web/service.cpp" "${playden_web_assets_cpp}")
+add_library(playden_web STATIC
+    "${CMAKE_SOURCE_DIR}/src/web/service.cpp"
+    "${CMAKE_SOURCE_DIR}/src/web/files_api.cpp"
+    "${CMAKE_SOURCE_DIR}/src/web/file_policy.cpp"
+    "${CMAKE_SOURCE_DIR}/src/web/file_store.cpp"
+    "${CMAKE_SOURCE_DIR}/src/web/pairing.cpp"
+    "${playden_web_assets_cpp}")
 target_include_directories(playden_web PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_web PUBLIC cxx_std_17)
-target_link_libraries(playden_web PUBLIC playden_web_logs playden_web_http)
+target_link_libraries(playden_web PUBLIC playden_web_logs playden_web_http playden_managed_directory
+    playden_runtime_artifact_hash playden_storage)
 if(PLAYDEN_PLATFORM_PS5)
+    target_compile_definitions(playden_web PRIVATE PLAYDEN_PLATFORM_PS5=1)
     target_compile_options(playden_web PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
@@ -71,4 +79,28 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(web_service_test "${CMAKE_SOURCE_DIR}/tests/web_service_test.cpp")
     target_link_libraries(web_service_test PRIVATE playden_web)
     add_test(NAME web_service COMMAND web_service_test)
+    add_executable(web_pairing_test "${CMAKE_SOURCE_DIR}/tests/web_pairing_test.cpp")
+    target_link_libraries(web_pairing_test PRIVATE playden_web)
+    add_test(NAME web_pairing COMMAND web_pairing_test)
+    add_executable(web_file_policy_test "${CMAKE_SOURCE_DIR}/tests/web_file_policy_test.cpp")
+    target_link_libraries(web_file_policy_test PRIVATE playden_web)
+    add_test(NAME web_file_policy COMMAND web_file_policy_test)
+    add_executable(web_file_store_test "${CMAKE_SOURCE_DIR}/tests/web_file_store_test.cpp")
+    target_link_libraries(web_file_store_test PRIVATE playden_web)
+    add_test(NAME web_file_store COMMAND web_file_store_test)
+    add_executable(web_files_api_test "${CMAKE_SOURCE_DIR}/tests/web_files_api_test.cpp")
+    target_link_libraries(web_files_api_test PRIVATE playden_web)
+    add_test(NAME web_files_api COMMAND web_files_api_test)
+    # The console's path handling (no descriptor-relative opens), run on the host.
+    add_executable(web_file_store_native_policy_test
+        "${CMAKE_SOURCE_DIR}/tests/web_file_store_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/file_store.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/file_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/zip.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_include_directories(web_file_store_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_compile_features(web_file_store_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(web_file_store_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1 PLAYDEN_TEST_AT_UNAVAILABLE=1)
+    target_link_libraries(web_file_store_native_policy_test PRIVATE playden_runtime_artifact_hash playden_storage playden_curl_8_22 Threads::Threads)
+    add_test(NAME web_file_store_native_policy COMMAND web_file_store_native_policy_test)
 endif()

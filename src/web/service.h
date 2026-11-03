@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "web/files_api.h"
 #include "web/logs_source.h"
 #include "web/router.h"
 #include "web/server.h"
@@ -24,6 +25,8 @@ struct ServiceConfig {
   std::function<std::int64_t()> now;
   // How often the address is looked up again while the server runs: the network can change.
   std::chrono::milliseconds address_refresh{30'000};
+  // The Files tab: path lock, free space, and pairing's clock and random source.
+  FilesConfig files;
 };
 
 struct ServiceSnapshot {
@@ -33,11 +36,12 @@ struct ServiceSnapshot {
   std::string address;      // empty: unknown
   std::string url;          // http://<address>:<port>/ or empty
   std::string error;        // kFailed: why
+  std::string pairing_code;  // a browser asked to pair: the code the TV shows now; empty when none
 };
 
-// Web access, version 1: the page, the log index, single logs and the report, always redacted, and one
-// action: POST /api/quit asks Playden to quit. A worker starts and stops the server, so the caller never
-// waits on a socket.
+// Web access: the page, the log index, single logs and the report, always redacted; the action POST /api/quit asks
+// Playden to quit; and, for a paired browser, a game's files (files_api.h). A worker starts and stops the server, so
+// the caller never waits on a socket.
 class Service {
  public:
   explicit Service(ServiceConfig config);
@@ -50,6 +54,10 @@ class Service {
   // The signed-in account to redact exactly; empty when signed out (the patterns still apply).
   void SetAccount(Redaction account);
   ServiceSnapshot Snapshot() const;
+  // What the Files tab offers; the controller keeps it current.
+  void SetFileCatalog(FileCatalog catalog);
+  // The player dismissed the pairing code on the TV.
+  void CancelPairing();
   // True once after the page asked Playden to quit; the caller quits.
   bool TakeQuitRequest();
   // Stops the server and the worker. Safe to call twice.
@@ -65,6 +73,7 @@ class Service {
   std::string LookUpAddress() const;
   ServiceConfig config_;
   LogsSource logs_;
+  FilesApi files_;
   Router router_;
   Server server_;
   mutable std::mutex mutex_;

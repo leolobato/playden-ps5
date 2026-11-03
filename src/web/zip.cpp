@@ -76,8 +76,9 @@ bool StoredZip::Put(const std::string& bytes) {
 
 bool StoredZip::Add(std::string_view name, std::string_view data) {
   if (failed_ || finished_ || name.empty() || name.size() > 0xffff || entries_.size() >= 0xffff) return false;
+  if (entry_open_) return false;
   // The entry and the central directory record that follows must still fit.
-  if (offset_ + 30 + name.size() + data.size() + 46 + name.size() + 22 > kMaxArchiveBytes) {
+  if (!Fits(30 + name.size() + data.size() + 46 + name.size())) {
     failed_ = true;
     return false;
   }
@@ -102,12 +103,70 @@ bool StoredZip::Add(std::string_view name, std::string_view data) {
     offset_ += data.size();
   }
   if (failed_) return false;
+  directory_bytes_ += 46 + name.size();
   entries_.push_back(std::move(entry));
   return true;
 }
 
+bool StoredZip::Fits(std::uint64_t more) const { return offset_ + directory_bytes_ + more <= kMaxArchiveBytes; }
+
+std::uint64_t StoredZip::EntryOverhead(std::size_t name_size) { return 30 + name_size + 16 + 46 + name_size; }
+
+bool StoredZip::BeginEntry(std::string_view name) {
+  if (failed_ || finished_ || entry_open_ || name.empty() || name.size() > 0xffff || entries_.size() >= 0xffff) return false;
+  if (!Fits(EntryOverhead(name.size()))) {
+    failed_ = true;
+    return false;
+  }
+  open_ = Entry{std::string(name), 0, 0, static_cast<std::uint32_t>(offset_), true};
+  std::string header;
+  Put32(header, 0x04034b50);
+  Put16(header, 20);
+  Put16(header, (1u << 11) | (1u << 3));  // UTF-8 names; sizes and CRC in a data descriptor
+  Put16(header, 0);
+  Put16(header, dos_time_);
+  Put16(header, dos_date_);
+  Put32(header, 0);
+  Put32(header, 0);
+  Put32(header, 0);
+  Put16(header, static_cast<std::uint32_t>(name.size()));
+  Put16(header, 0);
+  header.append(name.data(), name.size());
+  if (!Put(header)) return false;
+  entry_open_ = true;
+  return true;
+}
+
+bool StoredZip::EntryData(const char* data, std::size_t size) {
+  if (failed_ || !entry_open_) return false;
+  if (!Fits(16 + 46 + open_.name.size() + size)) {
+    failed_ = true;
+    return false;
+  }
+  if (size == 0) return true;
+  open_.crc = Crc32(open_.crc, data, size);
+  open_.size += static_cast<std::uint32_t>(size);
+  if (!write_(data, size)) failed_ = true;
+  offset_ += size;
+  return !failed_;
+}
+
+bool StoredZip::EndEntry() {
+  if (failed_ || !entry_open_) return false;
+  std::string descriptor;
+  Put32(descriptor, 0x08074b50);
+  Put32(descriptor, open_.crc);
+  Put32(descriptor, open_.size);
+  Put32(descriptor, open_.size);
+  if (!Put(descriptor)) return false;
+  directory_bytes_ += 46 + open_.name.size();
+  entries_.push_back(std::move(open_));
+  entry_open_ = false;
+  return true;
+}
+
 bool StoredZip::Finish() {
-  if (failed_ || finished_) return false;
+  if (failed_ || finished_ || entry_open_) return false;
   finished_ = true;
   const auto directory_offset = static_cast<std::uint32_t>(offset_);
   std::string directory;
@@ -115,7 +174,7 @@ bool StoredZip::Finish() {
     Put32(directory, 0x02014b50);
     Put16(directory, 20);  // made by: 2.0, MS-DOS attributes
     Put16(directory, 20);
-    Put16(directory, 1u << 11);
+    Put16(directory, entry.descriptor ? (1u << 11) | (1u << 3) : 1u << 11);
     Put16(directory, 0);
     Put16(directory, dos_time_);
     Put16(directory, dos_date_);
