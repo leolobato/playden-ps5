@@ -50,9 +50,10 @@ struct InstallTarget {
   // everything is there they replace the game's files, files the new version dropped are deleted, and
   // the file tree, file list and record are written for the new version (see FinishUpdate).
   bool update = false;
-  // Update only, optional: called once every changed file is downloaded, before any of the game's files
-  // change, with the folder whose files go in place with the record (a ".playden-steam" there replaces
-  // the game's) and the depots the account was refused. False fails the update.
+  // Optional: called once every file is downloaded, with the folder whose files go in place with the record (a
+  // ".playden-steam" there replaces the game's) and the depots the account was refused: an install's own folder, right
+  // before its record marks it complete, or for an update its work folder, before any of the game's files change.
+  // False fails the install or update.
   std::function<bool(const std::string& folder, const std::vector<std::uint32_t>& skipped)> before_apply;
   // Update only, optional: asked right before the game's files start to change (also before an update
   // that stopped while putting them in place carries on). False (the game runs): the update stops with

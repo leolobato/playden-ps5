@@ -1787,8 +1787,10 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     outcome.progress = progress;
     return outcome;
   }
-  // The merged tree, then the install record; then drop the journal: the record marks a complete,
-  // verified install.
+  // What goes with the record, the merged tree, then the install record; then drop the journal: the record marks a
+  // complete, verified install, so everything else must be there first.
+  if (target.before_apply && !target.before_apply(target.install_root, outcome.skipped_depots))
+    return fail(InstallError::kStorage, "cannot finish install");
   if (!WriteText(target.install_root + "/" + kFileTree, tree_text())) return fail(InstallError::kStorage, "cannot write file tree");
   if (!WriteText(target.install_root + "/" + kInstallRecord, record_text()))
     return fail(InstallError::kStorage, "cannot write install record");

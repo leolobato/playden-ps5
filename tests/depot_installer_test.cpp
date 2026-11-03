@@ -1014,6 +1014,32 @@ void RunStats(const std::filesystem::path& base) {
   }
 }
 
+// What goes with the record is there before the record says the install is complete; if it can't be, neither is.
+void FactsGoInBeforeTheRecord(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  DepotInstaller installer(world.Hooks());
+  installer.SetTuning({1, 256});
+  std::atomic<bool> cancel{false};
+  auto target = Target(root);
+  int calls = 0;
+  target.before_apply = [&](const std::string& folder, const std::vector<std::uint32_t>&) {
+    ++calls;
+    CHECK(folder == root.string());
+    CHECK(!std::filesystem::exists(root / DepotInstaller::kInstallRecord));
+    return false;
+  };
+  CHECK(installer.Run({}, target, cancel).error == InstallError::kStorage);
+  CHECK(calls == 1 && !std::filesystem::exists(root / DepotInstaller::kInstallRecord));
+  target.before_apply = [&](const std::string& folder, const std::vector<std::uint32_t>&) {
+    ++calls;
+    std::ofstream(std::filesystem::path(folder) / ".playden-steam") << "nodlc=900\n";
+    return true;
+  };
+  CHECK(installer.Run({}, target, cancel).error == InstallError::kNone);
+  CHECK(calls == 2 && std::filesystem::exists(root / DepotInstaller::kInstallRecord));
+  CHECK(Read(root / ".playden-steam") == "nodlc=900\n");
+}
+
 void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
   auto world = MakeWorld();
   for (std::uint8_t index = 0; index < 20; ++index) world.manifests[441].files[0].sha_content[index] = static_cast<std::uint8_t>(index * 13);
@@ -2738,6 +2764,7 @@ int main(int argc, char** argv) {
   StorageFailureEndsStats(base / "storage-stats");
   StatsAndRemovalLogs(base / "removal");
   RunStats(base / "stats");
+  FactsGoInBeforeTheRecord(base / "facts-before-record");
   InstallsMergedDepotsAndWritesRecord(base / "install");
   MeasureMatchesTheMergedInstall(base / "measure");
   LocalRecordNamesItsGame(base / "install-local");

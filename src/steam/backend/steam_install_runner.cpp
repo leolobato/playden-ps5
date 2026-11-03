@@ -527,9 +527,10 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
               .c_str());
     return written;
   };
-  // An update's facts go in place with its record.
+  // The facts go in place with the record: a game with a record has them.
   target.update = update;
-  if (update) target.before_apply = write_facts, target.may_apply = may_apply;
+  target.before_apply = write_facts;
+  if (update) target.may_apply = may_apply;
   if (step) step(InstallStep::kDownloading);
   InstallPhase phase = InstallPhase::kDownloading;
   const auto outcome = installer_.Run(session, target, cancel, [&](const InstallProgress& state) {
@@ -549,7 +550,6 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
   }
   log("install", InstallErrorName(outcome.error), outcome.detail.c_str());
   result.ok = outcome.error == InstallError::kNone;
-  if (result.ok && !update) write_facts(root, outcome.skipped_depots);
   result.canceled = outcome.error == InstallError::kCanceled;
   // A running game holds the update back: it waits, its downloads kept, and tries again.
   result.retry_later = outcome.error == InstallError::kNetwork || outcome.error == InstallError::kGameRunning;
