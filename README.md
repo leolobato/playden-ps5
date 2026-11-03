@@ -224,10 +224,22 @@ Each game's Windows user folder holds its saves and most of its `.ini` configs:
 
 For Half-Life 2 that is `steam-220`. Look in `AppData/Roaming`, `AppData/Local`, `Documents` and `Saved Games`.
 
-This needs the next runtime kit (it has the `bottle-profile-shared` capability); kit 0.10 keeps the whole folder
-private. With it, you can read and write everything in `prospero`. The folders above it can be entered but not
-listed, so type the full path in your FTP client instead of browsing to it. New saves a game writes are private
-at first. Playden opens them to FTP when it starts, when a game it started ends, and before it starts a game.
+This needs a runtime kit with the `bottle-profile-shared` capability. Kit 0.18 doesn't have it and keeps the whole
+folder private, so FTP answers with a permission error. With the capability, you can read and write everything in
+`prospero`. The folders above it can be entered but not listed, so type the full path in your FTP client instead of
+browsing to it. New saves a game writes are private at first. Playden opens them to FTP when it starts, when a game
+it started ends, and before it starts a game.
+
+Without the capability, set `/data/playden/games/steam-<Steam app ID>` to `777`, recursive, to reach the folder.
+
+- **Never undo this with a recursive `chmod 700`.** FTP loses access to everything below the first folder it changes,
+  so the folders stay open, and files it already changed can become unreadable. Playden takes back the modes it needs
+  on its own.
+- **Files you upload belong to root**, so the game may not be able to use them. Run the recursive `777` again after
+  you upload saves. Otherwise the game can fail to load them, and Recreate bottle can't bring them back
+  ([#569](https://github.com/leolobato/playden-ps5/issues/569)).
+- **If Play fails afterwards**, use Maintenance › Repair, which may also fail, then press Play again
+  ([#568](https://github.com/leolobato/playden-ps5/issues/568)).
 
 ## Import Windows games
 
