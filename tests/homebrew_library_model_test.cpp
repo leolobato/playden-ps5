@@ -2622,6 +2622,11 @@ void live_play_does_the_next_useful_thing() {
     check(find_row(model, "details-play") && !find_row(model, "details-play")->enabled, "preparing cannot start again");
     check(find_row(model, "details-setup") && find_row(model, "details-setup")->value == preparing.detail,
           "setup fact uses the existing preparation progress words");
+    check(find_row(model, "details-play")->value == "Step 3 of 6", "Play counts the steps; Setup names them");
+    preparing.detail = "Removing the PS5 title made for the game's old drive";
+    model.UpdateRuntime(RuntimeState::Ready, {preparing});
+    check(find_row(model, "details-play")->value.empty() && find_row(model, "details-setup")->value == preparing.detail,
+          "work without a step number is only named in Setup");
     for (const auto& [runtime_state, status] : std::vector<std::pair<RuntimeState, std::string>>{
              {RuntimeState::Checking, "Checking"}, {RuntimeState::Unavailable, "Unavailable"}}) {
         LiveRuntimeGame transient; transient.game_id = SteamId(42); transient.status = status;

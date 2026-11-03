@@ -6805,7 +6805,9 @@ void Simulation::rebuild_view() {
                             : value.awaiting_registration ? "Quits to Home"
                             : !value.play_status.empty() ? value.play_status
                             : prepares_first ? (kit_update ? "Kit update first" : value.status == "Needs repair" ? "Repairs first" : "Sets up first")
-                            : value.status == "Preparing" ? value.detail
+                            // Only the step's number, if it has one: Setup says what it does, and the button keeps its width.
+                            : value.status == "Preparing" ? (value.detail.find(" · ") == std::string::npos
+                                  ? std::string{} : value.detail.substr(0, value.detail.find(" · ")))
                             : value.status == "Checking" || value.status == "Removing" || value.status == "Unavailable" ? value.status
                             : std::string{};
                         play.enabled = enabled && !uninstalling;
