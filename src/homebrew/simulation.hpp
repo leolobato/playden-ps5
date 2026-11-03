@@ -235,6 +235,7 @@ struct LiveRuntimeGame {
     std::string uninstall_status;  // e.g. "Syncing saves…", "Removing PS5 title…"; empty when idle
     // How far the current copy or deletion is (0–1); absent when it cannot be measured.
     std::optional<float> progress;
+    std::string play_work;  // Play's own work before the launch, for Setup ("Installing PhysX…")
     // Prepared and waiting for the PS5 to register its title, which it does once Playden
     // quits: the game is ready to play from Home, and Play quits there.
     bool awaiting_registration = false;

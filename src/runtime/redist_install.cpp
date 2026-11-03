@@ -311,7 +311,7 @@ using CabinetSource = std::function<bool(const std::string& name, std::string* b
 // Counts the files written in *files, or gives a reason in *reason.
 bool InstallPlan(std::string_view package, const CabinetSource& beside, const std::filesystem::path& prefix,
                  const RedistEntry& entry, std::int64_t unix_time, const std::function<bool(const MsiFile&)>& keep,
-                 std::size_t* files, std::string* reason) {
+                 std::size_t* files, std::string* reason, const std::function<void(std::size_t, std::size_t)>& progress = {}) {
   MsiInstallPlan plan;
   if (!ReadMsiPackage(package, &plan, reason)) return false;
   if (plan.unsupported_files) {
@@ -334,6 +334,7 @@ bool InstallPlan(std::string_view package, const CabinetSource& beside, const st
   }
   std::set<const MsiFile*> delivered;
   const auto drive = prefix / "drive_c";
+  if (progress) progress(0, plan.files.size());
   for (std::size_t index = 0; index < plan.cabinets.size(); ++index) {
     if (!used.count(index)) continue;
     const auto& cabinet = plan.cabinets[index];
@@ -373,6 +374,7 @@ bool InstallPlan(std::string_view package, const CabinetSource& beside, const st
           return false;
         }
         ++*files;
+        if (progress) progress(*files, plan.files.size());
       }
       return true;
     }, reason);
@@ -412,21 +414,22 @@ bool InstallPlan(std::string_view package, const CabinetSource& beside, const st
 // package_path), its external cabinets beside that file.
 bool InstallPackageBytes(std::string_view package, const std::filesystem::path& package_path,
                          const std::filesystem::path& prefix, const RedistEntry& entry, std::int64_t unix_time,
-                         std::size_t* files, std::string* reason) {
+                         std::size_t* files, std::string* reason, const std::function<void(std::size_t, std::size_t)>& progress) {
   const auto beside = [&](const std::string& name, std::string* bytes) {
     return ReadFile(package_path.parent_path() / name, kMaxPackageBytes, bytes);
   };
-  return InstallPlan(package, beside, prefix, entry, unix_time, {}, files, reason);
+  return InstallPlan(package, beside, prefix, entry, unix_time, {}, files, reason, progress);
 }
 
 bool InstallPackage(const std::filesystem::path& package_path, const std::filesystem::path& prefix,
-                    const RedistEntry& entry, std::int64_t unix_time, std::size_t* files, std::string* reason) {
+                    const RedistEntry& entry, std::int64_t unix_time, std::size_t* files, std::string* reason,
+                    const std::function<void(std::size_t, std::size_t)>& progress) {
   std::string package;
   if (!ReadFile(package_path, kMaxPackageBytes, &package)) {
     *reason = "the package could not be read";
     return false;
   }
-  return InstallPackageBytes(package, package_path, prefix, entry, unix_time, files, reason);
+  return InstallPackageBytes(package, package_path, prefix, entry, unix_time, files, reason, progress);
 }
 
 // A package that reads as one and has files.
@@ -731,8 +734,11 @@ std::string ExtendPath(const std::string& current, const std::vector<std::string
   return out;
 }
 
+bool RedistIsPhysx(const std::string& name) { return Lower(name).find("physx") != std::string::npos; }
+
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,
-                                            const std::string& prefix_dir, std::int64_t unix_time, bool find_physx) {
+                                            const std::string& prefix_dir, std::int64_t unix_time, bool find_physx,
+                                            const RedistProgress& progress) {
   RedistInstallResult result;
   std::vector<std::string> scripts;
   {
@@ -759,6 +765,9 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
     return hash + '\n' + path.parent_path().string();
   };
   const auto run = [&](const std::string& script, const RedistEntry& entry) {
+    const auto files_done = [&](std::size_t done, std::size_t total) {
+      if (progress) progress(entry.name, done, total);
+    };
     RedistOutcome outcome;
     outcome.script = script;
     outcome.name = entry.name;
@@ -787,7 +796,8 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
           outcome.detail = package + ": " + earlier->second;
         } else {
           std::string failure;
-          if (!InstallPackageBytes(embedded, path, prefix, entry, unix_time, &outcome.files, &failure)) {
+            files_done(0, 1);
+          if (!InstallPackageBytes(embedded, path, prefix, entry, unix_time, &outcome.files, &failure, files_done)) {
             outcome.result = "failed";
           } else if (!RecordPackage(prefix, *hash, package)) {
             outcome.result = "failed";
@@ -829,7 +839,7 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
     if (const auto earlier = failed.find(failure_key(*hash, path)); earlier != failed.end()) {
       outcome.result = "failed";
       failure = earlier->second;
-    } else if (!InstallPackage(path, prefix, entry, unix_time, &outcome.files, &failure)) {
+    } else if (files_done(0, 1); !InstallPackage(path, prefix, entry, unix_time, &outcome.files, &failure, files_done)) {
       outcome.result = "failed";
     } else if (!RecordPackage(prefix, *hash, package)) {
       outcome.result = "failed";

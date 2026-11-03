@@ -1435,6 +1435,7 @@ void Controller::TickRuntime() {
     // Play's own work before the launch (a game moved in 0.6 is republished first).
     if (const auto progress = snapshot.play_progress.find(NumberIn(snapshot, id)); progress != snapshot.play_progress.end()) {
       game.play_status = progress->second; game.can_play = false; game.can_prepare = false;
+      game.play_work = progress->second;
     }
     if (const auto pending = play_after_prepare_.find(id); pending != play_after_prepare_.end()) {
       game.play_status = pending->second.words; game.can_prepare = false;
@@ -1446,7 +1447,8 @@ void Controller::TickRuntime() {
     // A retry is in flight: do not republish its previous refusal as a new outcome.
     if (play_queued_.count(id) || sync_before_play_.count(id)) game.play_detail.clear();
     if (game.ready && cloud_busy_.count(id) && game.play_detail.empty()) game.play_detail = "Waiting for Cloud saves to finish.";
-    if (snapshot.work_progress && (IsNumber(snapshot, snapshot.preparing_app, id) || IsNumber(snapshot, snapshot.removing_app, id)))
+    if (snapshot.work_progress && (IsNumber(snapshot, snapshot.preparing_app, id) || IsNumber(snapshot, snapshot.removing_app, id) ||
+                                   !game.play_work.empty()))
       game.progress = snapshot.work_progress;
     // Game settings and maintenance: the prepared title's state, the console's answer on
     // whether it runs, and the newest maintenance outcome.

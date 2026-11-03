@@ -6994,6 +6994,11 @@ void Simulation::rebuild_view() {
                 : status == "Registration pending" ? "Not confirmed" : status == "Removal incomplete" ? "Removing"
                 : status == "Preparing" && runtime && !runtime->detail.empty() ? runtime->detail : status;
             setup.tone = tone;
+            // Play's own work before the game starts: what it is doing, not the state it leaves behind.
+            if (runtime && !runtime->play_work.empty()) {
+                setup.value = runtime->play_work.substr(0, runtime->play_work.rfind("…"));
+                setup.tone = "busy";
+            }
             setup.enabled = false;
             if (runtime && runtime->queued && runtime->uninstall_status.empty()) {
                 setup.value = ahead.empty() ? "Queued" : "Waiting for " + ahead;

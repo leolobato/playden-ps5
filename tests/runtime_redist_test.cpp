@@ -437,13 +437,26 @@ void TestFoundPhysx() {
 
   // Needed: only PhysX's package, once.
   prefix = fresh_prefix("needed");
-  result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000100, true);
+  std::vector<std::pair<std::size_t, std::size_t>> reported;
+  std::string reported_name;
+  result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000100, true,
+                                   [&](const std::string& name, std::size_t done, std::size_t total) {
+                                     reported_name = name;
+                                     reported.emplace_back(done, total);
+                                   });
+  // It says it started before reading the package, then counts its files.
+  CHECK(reported_name == "PhysX" && reported.size() == 5);
+  CHECK(reported.front() == std::make_pair(std::size_t{0}, std::size_t{1}) &&
+        reported[1] == std::make_pair(std::size_t{0}, std::size_t{3}) && reported.back() == std::make_pair(std::size_t{3}, std::size_t{3}));
+  CHECK(RedistIsPhysx("PhysX") && RedistIsPhysx("PhysX Version") && !RedistIsPhysx("Sample"));
   CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "installed" && result.outcomes[0].name == "PhysX" &&
         result.outcomes[0].detail == "_Redist/Nvidia PhysX Legacy Driver/PhysX-9.13.0604-SystemSoftware-Legacy.msi");
   CHECK(!result.physx_missing);
   CHECK(ReadText(prefix / "drive_c/program files (x86)/Vendor Runtime/Common/Loader.dll") == "0123456789");
-  result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000200, true);
-  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "already");
+  reported.clear();
+  result = InstallRedistributables(game.string(), "Z:\\games\\1", prefix.string(), 1700000200, true,
+                                   [&](const std::string&, std::size_t done, std::size_t total) { reported.emplace_back(done, total); });
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "already" && reported.empty());
 
   // The game's files in one folder of what was imported: its redistributables are a level down.
   const auto wrapped = base / "wrapped";

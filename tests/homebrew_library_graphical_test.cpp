@@ -233,6 +233,11 @@ int main(int argc,char** argv) {
       live.UpdateRuntime(RuntimeState::Ready, {ready});
       capture_live("details-play-disabled.png");
       {
+        LiveRuntimeGame installing=ready; installing.can_play=false; installing.play_status=installing.play_work="Installing PhysX…"; installing.progress=0.27F;
+        live.UpdateRuntime(RuntimeState::Ready, {installing});
+        capture_live("details-installing-physx.png");
+      }
+      {
         LiveRuntimeGame copying; copying.game_id= SteamId(42); copying.status="Preparing"; copying.has_title=true;
         copying.detail="Copying the Windows environment"; copying.progress=0.42F;
         live.UpdateRuntime(RuntimeState::Ready, {copying});

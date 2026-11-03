@@ -984,7 +984,23 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
   const auto uses_physx = std::any_of(files.programs.begin(), files.programs.end(), [&files](const std::string& program) {
     return rt::ProgramUsesPhysx(files.root.string(), program);
   });
-  const auto redist = rt::InstallRedistributables(files.root.string(), *install_dir, files.prefix, config_.unix_time(), uses_physx);
+  // A package being installed shows on the game's page as the rest of its setup does: words and a percentage.
+  const auto number = record.runtime_number;
+  bool shown = false;
+  const auto redist = rt::InstallRedistributables(
+      files.root.string(), *install_dir, files.prefix, config_.unix_time(), uses_physx,
+      [&](const std::string& name, std::size_t done, std::size_t total) {
+        if (!shown) {
+          shown = true;
+          const bool physx = rt::RedistIsPhysx(name);
+          Publish([&](RuntimeSnapshot& s) { s.play_progress[number] = physx ? kPlayInstallingPhysx : kPlayInstallingComponent; });
+        }
+        ReportWork(done, total);
+      });
+  if (shown) {
+    ClearWork();
+    Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(number); });
+  }
   if (redist.physx_missing) Log("redist app=" + std::to_string(record.runtime_number) + " physx needed, no package in the game folder");
   // Names and reasons come from the game's files: one line each, whatever they hold.
   const auto field = [](std::string text) {

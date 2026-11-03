@@ -378,6 +378,8 @@ inline bool PrepareQueued(const RuntimeSnapshot& snapshot, std::uint32_t runtime
 }
 
 inline constexpr const char* kPlayUpdatingForLayout = "Updating this game for Playden 0.6…";
+inline constexpr const char* kPlayInstallingPhysx = "Installing PhysX…";
+inline constexpr const char* kPlayInstallingComponent = "Installing a component…";
 inline constexpr const char* kPlayDownloadingMfc = "Downloading Microsoft's MFC for this game…";
 inline constexpr const char* kPlayMfcNotDownloaded = "Microsoft's MFC could not be downloaded. Play again to retry.";
 inline constexpr const char* kPlayMfcNotInstalled = "Microsoft's MFC could not be installed for this game.";

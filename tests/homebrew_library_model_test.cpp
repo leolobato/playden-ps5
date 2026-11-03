@@ -2627,6 +2627,17 @@ void live_play_does_the_next_useful_thing() {
     model.UpdateRuntime(RuntimeState::Ready, {preparing});
     check(find_row(model, "details-play")->value.empty() && find_row(model, "details-setup")->value == preparing.detail,
           "work without a step number is only named in Setup");
+    {
+        // Play installing a component first: the button counts, Setup says what it installs.
+        LiveRuntimeGame installing; installing.game_id = SteamId(42); installing.status = "Ready"; installing.ready = true;
+        installing.can_prepare = true; installing.play_status = installing.play_work = "Installing PhysX…";
+        installing.progress = 0.27F;
+        model.UpdateRuntime(RuntimeState::Ready, {installing});
+        const auto* play = find_row(model, "details-play");
+        check(play && !play->enabled && play->progress > 0.26F, "Play fills while it installs");
+        check(find_row(model, "details-setup")->value == "Installing PhysX" && find_row(model, "details-setup")->tone == "busy",
+              "Setup names what is being installed");
+    }
     for (const auto& [runtime_state, status] : std::vector<std::pair<RuntimeState, std::string>>{
              {RuntimeState::Checking, "Checking"}, {RuntimeState::Unavailable, "Unavailable"}}) {
         LiveRuntimeGame transient; transient.game_id = SteamId(42); transient.status = status;
