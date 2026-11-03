@@ -236,6 +236,7 @@ struct LiveRuntimeGame {
     // How far the current copy or deletion is (0–1); absent when it cannot be measured.
     std::optional<float> progress;
     std::string play_work;  // Play's own work before the launch, for Setup ("Installing PhysX…")
+    std::optional<std::string> physx_needed;  // the PhysX engine the bottle lacks: its version, empty when unknown
     // Prepared and waiting for the PS5 to register its title, which it does once Playden
     // quits: the game is ready to play from Home, and Play quits there.
     bool awaiting_registration = false;

@@ -361,6 +361,8 @@ struct RuntimeSnapshot {
   // What Play does before the launch is requested, per runtime number, while it runs: a game whose
   // folder moved in Playden 0.6 is republished first (kPlayUpdatingForLayout).
   std::map<std::uint32_t, std::string> play_progress;
+  // Games without the PhysX engine they need, by runtime number: the version, empty when it isn't known.
+  std::map<std::uint32_t, std::string> physx_needed;
   // What the latest Play from Playden went ahead without, per runtime number (Microsoft's MFC that could not be
   // downloaded): Play still starts the game, and the player sees why it may stop.
   std::map<std::uint32_t, std::string> play_notices;

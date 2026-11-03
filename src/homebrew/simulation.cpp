@@ -6998,6 +6998,9 @@ void Simulation::rebuild_view() {
             if (runtime && !runtime->play_work.empty()) {
                 setup.value = runtime->play_work.substr(0, runtime->play_work.rfind("…"));
                 setup.tone = "busy";
+            } else if (runtime && runtime->physx_needed && status == "Ready") {
+                setup.value = "Needs PhysX";
+                setup.tone = "attention";
             }
             setup.enabled = false;
             if (runtime && runtime->queued && runtime->uninstall_status.empty()) {
@@ -7017,6 +7020,11 @@ void Simulation::rebuild_view() {
             else if (status == "Removal incomplete") hint = "Removing " + game->title + " from the PS5 Home screen stopped partway.";
             else if (status == "Needs repair") hint = "Some of " + game->title + "'s setup files changed.";
             else if (status == "No kit") hint = "Playden needs its runtime kit to set up games.";
+            else if (runtime && runtime->physx_needed) {
+                const auto& version = *runtime->physx_needed;
+                hint = version.empty() ? "This game needs PhysX. Add its installer to the game's _Redist folder, then press Play."
+                                       : "This game needs PhysX " + version + ". Add its installer to the game's _Redist folder, then press Play.";
+            }
             else if (runtime && runtime->setup_other_kit)
                 hint = "Setup started with an earlier kit. Recreate bottle makes it again; saves and settings are kept.";
             else if (runtime && (status == "Needs recovery" || status == "Failed")) {
@@ -7031,7 +7039,7 @@ void Simulation::rebuild_view() {
             }
             if (!hint.empty()) {
                 auto& note = row("details-hint", RowKind::Status, hint, "");
-                note.tone = setup.tone;
+                note.tone = runtime && runtime->physx_needed && setup.tone != "busy" ? "attention" : setup.tone;
                 note.enabled = false;
             }
             // Waiting behind other games: move it to the front; the game being set up now finishes first.

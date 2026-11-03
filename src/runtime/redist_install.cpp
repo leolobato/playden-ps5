@@ -734,6 +734,81 @@ std::string ExtendPath(const std::string& current, const std::vector<std::string
   return out;
 }
 
+namespace {
+
+// The name in folder that matches without regard to case, as Windows does; empty when there is none.
+std::string NameIn(const std::filesystem::path& folder, const std::string& lower) {
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
+    if (Lower(it->path().filename().string()) == lower) return it->path().filename().string();
+  return {};
+}
+
+// a.b.c of a file's version resource, read from the file's bytes; empty when it has none.
+std::string FileVersion(const std::filesystem::path& path) {
+  std::string data;
+  if (!ReadFile(path, 32u * 1024u * 1024u, &data)) return {};
+  static constexpr char kKey[] = "V\0S\0_\0V\0E\0R\0S\0I\0O\0N\0_\0I\0N\0F\0O\0";
+  const auto key = data.find(std::string_view(kKey, sizeof(kKey) - 1));
+  if (key == std::string::npos) return {};
+  static constexpr char kSignature[] = "\xBD\x04\xEF\xFE";
+  const auto signature = data.find(std::string_view(kSignature, 4), key);
+  if (signature == std::string::npos || signature > key + 256 || data.size() < signature + 16) return {};
+  const auto word = [&](std::size_t at) {
+    return static_cast<unsigned>(static_cast<unsigned char>(data[at])) | static_cast<unsigned>(static_cast<unsigned char>(data[at + 1])) << 8;
+  };
+  // VS_FIXEDFILEINFO: signature, struct version, then the file version's two parts, each low word first.
+  return std::to_string(word(signature + 10)) + "." + std::to_string(word(signature + 8)) + "." + std::to_string(word(signature + 14));
+}
+
+std::filesystem::path ProgramFolder(const std::string& game_root, const std::string& program) {
+  return (std::filesystem::path(game_root) / program).parent_path();
+}
+
+}  // namespace
+
+std::string PhysxVersionBeside(const std::string& game_root, const std::string& program) {
+  const auto folder = ProgramFolder(game_root, program);
+  for (const auto* library : {"nxcooking.dll", "physxcooking.dll", "physxextensions.dll"}) {
+    const auto name = NameIn(folder, library);
+    if (name.empty()) continue;
+    const auto version = FileVersion(folder / name);
+    if (version.rfind("2.", 0) == 0) return version;
+  }
+  return {};
+}
+
+bool PhysxEngineBeside(const std::string& game_root, const std::string& program) {
+  const auto folder = ProgramFolder(game_root, program);
+  return !NameIn(folder, "physxcore.dll").empty() || !NameIn(folder, "physxlocal").empty();
+}
+
+bool BottleHasPhysxEngine(const std::string& prefix_dir, const std::string& version) {
+  const auto drive = std::filesystem::path(prefix_dir) / "drive_c";
+  const auto files = NameIn(drive, "program files (x86)");
+  if (files.empty()) return false;
+  // Walks down names without regard to case; empty when a part is missing.
+  const auto below = [](std::filesystem::path at, std::initializer_list<const char*> parts) {
+    for (const auto* part : parts) {
+      const auto name = NameIn(at, part);
+      if (name.empty()) return std::filesystem::path();
+      at /= name;
+    }
+    return at;
+  };
+  for (const auto& engines : {below(drive / files, {"nvidia corporation", "physx", "engine"}), below(drive / files, {"ageia technologies"})}) {
+    if (engines.empty()) continue;
+    if (!version.empty()) {
+      if (!below(engines, {("v" + version).c_str(), "physxcore.dll"}).empty()) return true;
+      continue;
+    }
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(engines, error), end; !error && it != end; it.increment(error))
+      if (!NameIn(it->path(), "physxcore.dll").empty()) return true;
+  }
+  return false;
+}
+
 bool RedistIsPhysx(const std::string& name) { return Lower(name).find("physx") != std::string::npos; }
 
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,
@@ -878,6 +953,7 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
       run("(no script)", RedistEntry{"PhysX", base + "\\" + windows, "", ""});
     }
     result.physx_missing = packages.empty();
+    result.physx_searched = true;
   }
   return result;
 }

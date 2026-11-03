@@ -233,6 +233,9 @@ int main(int argc,char** argv) {
       live.UpdateRuntime(RuntimeState::Ready, {ready});
       capture_live("details-play-disabled.png");
       {
+        LiveRuntimeGame physx=ready; physx.can_play=true; physx.play_status.clear(); physx.physx_needed="2.8.1";
+        live.UpdateRuntime(RuntimeState::Ready, {physx});
+        capture_live("details-physx-needed.png");
         LiveRuntimeGame installing=ready; installing.can_play=false; installing.play_status=installing.play_work="Installing PhysX…"; installing.progress=0.27F;
         live.UpdateRuntime(RuntimeState::Ready, {installing});
         capture_live("details-installing-physx.png");

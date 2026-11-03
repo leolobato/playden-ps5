@@ -2628,6 +2628,25 @@ void live_play_does_the_next_useful_thing() {
     check(find_row(model, "details-play")->value.empty() && find_row(model, "details-setup")->value == preparing.detail,
           "work without a step number is only named in Setup");
     {
+        // Without the PhysX engine the game needs: one message, whatever the folder holds, and Play stays.
+        LiveRuntimeGame physx; physx.game_id = SteamId(42); physx.status = "Ready"; physx.ready = physx.can_play = true;
+        physx.physx_needed = "2.8.1";
+        model.UpdateRuntime(RuntimeState::Ready, {physx});
+        check(find_row(model, "details-hint") &&
+                  find_row(model, "details-hint")->title == "This game needs PhysX 2.8.1. Add its installer to the game's _Redist folder, then press Play.",
+              "the hint names the PhysX version and how to add it");
+        check(find_row(model, "details-play")->enabled, "the hint doesn't stop Play");
+        check(find_row(model, "details-setup")->value == "Needs PhysX" && find_row(model, "details-setup")->tone == "attention",
+              "Setup doesn't say Ready while the engine is missing");
+        physx.physx_needed = "";
+        model.UpdateRuntime(RuntimeState::Ready, {physx});
+        check(find_row(model, "details-hint")->title == "This game needs PhysX. Add its installer to the game's _Redist folder, then press Play.",
+              "without a known version the hint still says what to add");
+        physx.physx_needed.reset();
+        model.UpdateRuntime(RuntimeState::Ready, {physx});
+        check(!has_row(model, "details-hint"), "with the engine there is no hint");
+    }
+    {
         // Play installing a component first: the button counts, Setup says what it installs.
         LiveRuntimeGame installing; installing.game_id = SteamId(42); installing.status = "Ready"; installing.ready = true;
         installing.can_prepare = true; installing.play_status = installing.play_work = "Installing PhysX…";

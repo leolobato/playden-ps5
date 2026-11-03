@@ -477,14 +477,39 @@ void TestFoundPhysx() {
   WriteText(scripted / "_CommonRedist/PhysX-Other.msi", "broken");
   prefix = fresh_prefix("scripted-prefix");
   result = InstallRedistributables(scripted.string(), "Z:\\games\\3", prefix.string(), 1700000100, true);
-  CHECK(result.outcomes.size() == 1 && result.outcomes[0].detail == "_CommonRedist/Chosen.msi");
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].detail == "_CommonRedist/Chosen.msi" && !result.physx_searched);
+
+  // Which version a game was built for, and whether a bottle has it.
+  {
+    const auto versioned = base / "versioned";
+    std::string resource("MZ", 2);
+    for (const char value : std::string("VS_VERSION_INFO")) { resource += value; resource += '\0'; }
+    resource += std::string(6, '\0');
+    resource += std::string("\xBD\x04\xEF\xFE\x00\x00\x01\x00", 8);       // signature, struct version
+    resource += std::string("\x08\x00\x02\x00\x0F\x00\x01\x00", 8);       // 2.8 and 1.15, low words first
+    WriteText(versioned / "Binaries/NxCooking.dll", resource);
+    WriteText(versioned / "Binaries/Game.exe", "MZ");
+    CHECK(PhysxVersionBeside(versioned.string(), "Binaries/Game.exe") == "2.8.1");
+    CHECK(!PhysxEngineBeside(versioned.string(), "Binaries/Game.exe"));
+    WriteText(versioned / "Other/NxCooking.dll", "no version");
+    CHECK(PhysxVersionBeside(versioned.string(), "Other/Game.exe").empty());
+    std::filesystem::create_directories(versioned / "Local/PhysXLocal");
+    CHECK(PhysxEngineBeside(versioned.string(), "Local/Game.exe"));
+    const auto bottle = base / "engines";
+    CHECK(!BottleHasPhysxEngine(bottle.string(), "2.8.1") && !BottleHasPhysxEngine(bottle.string(), ""));
+    WriteText(bottle / "drive_c/Program Files (x86)/NVIDIA Corporation/PhysX/Engine/v2.7.2/PhysXCore.dll", "core");
+    CHECK(!BottleHasPhysxEngine(bottle.string(), "2.8.1") && BottleHasPhysxEngine(bottle.string(), "2.7.2") &&
+          BottleHasPhysxEngine(bottle.string(), ""));
+    WriteText(bottle / "drive_c/Program Files (x86)/AGEIA Technologies/v2.8.1/PhysXCore.dll", "core");
+    CHECK(BottleHasPhysxEngine(bottle.string(), "2.8.1"));
+  }
 
   // Needed, and nothing to install.
   const auto bare = base / "bare";
   std::filesystem::create_directories(bare / "Binaries");
   prefix = fresh_prefix("bare-prefix");
   result = InstallRedistributables(bare.string(), "Z:\\games\\4", prefix.string(), 1700000100, true);
-  CHECK(result.outcomes.empty() && result.physx_missing);
+  CHECK(result.outcomes.empty() && result.physx_missing && result.physx_searched);
   std::filesystem::remove_all(base);
 }
 

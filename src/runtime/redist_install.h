@@ -39,7 +39,19 @@ struct RedistOutcome {
 struct RedistInstallResult {
   std::vector<RedistOutcome> outcomes;
   bool physx_missing = false;  // find_physx, and the game folder has no PhysX package
+  bool physx_searched = false;  // find_physx, and no script names PhysX: a package added to the folder would be found
 };
+
+// The PhysX version ("2.8.1") a program was built for, from the file version of the SDK libraries beside it
+// (NxCooking.dll, PhysXCooking.dll, PhysXExtensions.dll). Empty when none says. program is relative to game_root.
+std::string PhysxVersionBeside(const std::string& game_root, const std::string& program);
+
+// Whether the program can run on its own PhysX engine: PhysXCore.dll or a PhysXLocal folder beside it.
+bool PhysxEngineBeside(const std::string& game_root, const std::string& program);
+
+// Whether the bottle has that version's PhysX engine, where PhysX's packages install it (NVIDIA's or AGEIA's folder).
+// With an empty version, any engine.
+bool BottleHasPhysxEngine(const std::string& prefix_dir, const std::string& version);
 
 // Whether a redistributable's name (an install script's entry) is PhysX's.
 bool RedistIsPhysx(const std::string& name);
