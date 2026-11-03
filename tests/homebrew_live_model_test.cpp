@@ -795,6 +795,52 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
           "launcher hint: it turns the setting on and plays");
     model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe");
     check(model.state().navigation.modals.empty(), "launcher hint: not offered with the setting on");
+
+    // Play with detailed logs: Verbose for this start, Normal again as the game starts, even if it crashes right
+    // away or Playden quits before seeing the session end.
+    {
+        auto idle = runtime;
+        idle.activity = TitleActivity::Stopped;
+        idle.can_play = true;
+        idle.prepared = true;
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {idle});
+        activate(model, "details-more");
+        check(find_row(model, "play-detailed-logs") && find_row(model, "play-detailed-logs")->enabled, "detailed logs: offered");
+        (void)model.TakeRuntimePlayRequests();
+        activate(model, "play-detailed-logs");
+        const auto plays = model.TakeRuntimePlayRequests();
+        check(std::count(plays.begin(), plays.end(), SteamId(35140)) == 1 && model.state().navigation.modals.empty(), "detailed logs: it plays");
+        const auto& logged = model.state().game_settings.at(SteamId(35140));
+        check(logged.overrides.at("logging") == "verbose", "detailed logs: Verbose for this start");
+        const auto revision = logged.revision;
+        auto starting = idle;
+        starting.play_status = "Starting…";
+        starting.can_play = false;
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {starting});
+        check(!model.state().game_settings.at(SteamId(35140)).overrides.count("logging") &&
+                  model.state().game_settings.at(SteamId(35140)).revision > revision,
+              "detailed logs: Normal again as the game starts");
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {idle});
+        activate(model, "details-more");
+        auto busy = idle;
+        busy.can_play = false;
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {busy});
+        check(!find_row(model, "play-detailed-logs")->enabled, "detailed logs: only when Play could start it");
+        model.action("circle");
+        // Ended before the handoff, as the Controller does it: the game's next start is Normal even if Playden stops here.
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {idle});
+        activate(model, "details-more");
+        activate(model, "play-detailed-logs");
+        (void)model.TakeRuntimePlayRequests();
+        model.EndOneSessionLogging(SteamId(35140));
+        check(!model.state().game_settings.at(SteamId(35140)).overrides.count("logging"), "detailed logs: over before the handoff");
+        // Settings that can't be saved: Play would read the old ones, so it doesn't start.
+        model.SetGameSettingsFile(base / "missing-folder" / "settings.json");
+        activate(model, "details-more");
+        activate(model, "play-detailed-logs");
+        check(model.TakeRuntimePlayRequests().empty(), "detailed logs: doesn't start without saved settings");
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    }
 }
 
 void live_download_telemetry() {

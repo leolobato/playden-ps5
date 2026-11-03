@@ -1014,6 +1014,8 @@ public:
     // Queues Prepare without a button press: after a download, or before Play.
     void RequestRuntimePrepare(GameId id);
     [[nodiscard]] std::vector<GameId> TakeRuntimePlayRequests();
+    // Verbose or input logging lasts one session: back to Normal for the game's next start, as this one starts.
+    void EndOneSessionLogging(GameId id);
     // The Play requests above that run a program from the game folder once instead of the game (Run a program
     // once…): the program, relative to the game folder. A plain Play request of the same game replaces its entry.
     [[nodiscard]] std::map<GameId, std::string> TakeRuntimeSetupPrograms();

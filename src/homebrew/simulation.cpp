@@ -548,7 +548,7 @@ std::string action_label(const std::string& key) {
         {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "DLC"}, {"install-dlc-all", "All DLC"}, {"install-dlc-done", "Done"}, {"heading-dlc-included", "Included"}, {"heading-dlc-optional", "Optional"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as recipe"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
+        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
@@ -2705,18 +2705,12 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
                 push_notice({"maintenance-" + ToKey(id), game.maintenance_ok ? title + ": done" : title + ": not done", "",
                              false, kLiveNoticeSeconds * (game.maintenance_ok ? 1 : 2), !game.maintenance_ok, game.maintenance_message});
         }
-        // A Playden session ended: verbose or input logging lasts one session and goes back to Normal,
-        // and settings saved while the game ran are applied now, so a start from Home uses them.
+        // A session that didn't come through the handoff (the Controller ends the logging there first).
+        const auto started = [](const LiveRuntimeGame& value) { return value.play_status == "Starting…" || value.play_status == "Playing"; };
+        if (started(game) && !started(before->second)) EndOneSessionLogging(id);
+        // A Playden session ended: settings saved while the game ran are applied now, so a start from Home uses them.
         if (before->second.play_status == "Playing" && game.play_status != "Playing") {
             const auto record = state_.game_settings.find(id);
-            if (record != state_.game_settings.end() && record->second.overrides.count("logging") &&
-                record->second.overrides.at("logging") != "normal" && can_change_game_settings()) {
-                record->second.overrides.erase("logging");
-                ++record->second.revision;
-                save_profile();
-                push_notice({"verbose-logging-" + ToKey(id), "Detailed logging is off again", "", false,
-                             kLiveNoticeSeconds, false, title + " logs at the Normal level from its next start"});
-            }
             if (game.prepared && record != state_.game_settings.end() && record->second.revision > game.settings_revision)
                 pending_maintenance_requests_.push_back({id, MaintenanceKind::ApplySettings});
         }
@@ -6396,6 +6390,10 @@ void Simulation::rebuild_view() {
                         record->second.revision > runtime_game->second.settings_revision)
                         item.subtitle = "Changes apply on next launch";
                 }
+            } else if (action_key == "play-detailed-logs") {
+                const auto runtime_game = state_.runtime_games.find(state_.navigation.selected_game_id);
+                item.enabled = runtime_game != state_.runtime_games.end() && runtime_game->second.can_play;
+                item.subtitle = "For this start only";
             } else if (action_key == "run-once") {
                 // Only a game known to run waits: opening the list asks whether it runs, and Run once checks again.
                 std::string refusal;
@@ -9170,8 +9168,17 @@ void Simulation::activate() {
         pending_runtime_cleanup_ = true;
         close_modal();
         push_notice({"runtime-cleanup", "Unused game settings data cleaned up", "", false, kLiveNoticeSeconds, false, ""});
-    } else if (live() && action_name == "runtime-play") {
+    } else if (live() && (action_name == "runtime-play" || action_name == "play-detailed-logs")) {
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        if (action_name == "play-detailed-logs") {
+            // Verbose for this one start; Normal again as it starts.
+            state_.navigation.selected_game_id = id;
+            set_game_setting("logging", "verbose");
+            close_modal();
+            state_.navigation.focus_key = "details-play";
+            // Play reads the settings from disk: without them it would log nothing more.
+            if (!save_profile()) return;
+        }
         if (id.valid() && !update_locked(id)) {
             // A new attempt may fail for the same reason; only background refreshes
             // should be deduplicated against the previous outcome.
@@ -11121,7 +11128,8 @@ std::vector<std::string> Simulation::details_context_actions() const {
     // A program from the game folder (its settings launcher) for one run, after Maintenance.
     if (live() && game_prepared(selected)) {
         const auto maintenance = std::find(actions.begin(), actions.end(), "game-maintenance");
-        actions.insert(maintenance == actions.end() ? actions.begin() : maintenance + 1, "run-once");
+        const auto run_once = actions.insert(maintenance == actions.end() ? actions.begin() : maintenance + 1, "run-once");
+        actions.insert(run_once + 1, "play-detailed-logs");
     }
     return actions;
 }
@@ -11450,6 +11458,19 @@ void Simulation::announce_settings_saved() {
     // A prepared title gets the new settings now when it is stopped, a new program or folder
     // included (RuntimeHost::RepublishSettings); otherwise Play applies them.
     if (live() && game_prepared(game)) pending_maintenance_requests_.push_back({game, MaintenanceKind::ApplySettings});
+}
+
+void Simulation::EndOneSessionLogging(GameId id) {
+    const auto record = state_.game_settings.find(id);
+    if (record == state_.game_settings.end() || !record->second.overrides.count("logging") ||
+        record->second.overrides.at("logging") == "normal" || !can_change_game_settings())
+        return;
+    record->second.overrides.erase("logging");
+    ++record->second.revision;
+    save_profile();
+    const auto* known = find_game(state_, id);
+    push_notice({"verbose-logging-" + ToKey(id), "Detailed logging is off again", "", false, kLiveNoticeSeconds, false,
+                 (known ? known->title : std::string("The game")) + " logs at the Normal level from its next start"});
 }
 
 bool Simulation::can_change_game_settings() {

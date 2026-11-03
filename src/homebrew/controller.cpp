@@ -1240,8 +1240,11 @@ void Controller::TickRuntime() {
   {
     const auto current_shared = runtime_->Shared();
     const auto& current = *current_shared;
-    if (current.handoff_ready && current.launch && !cloud_busy_.count(current.launch->game))
+    if (current.handoff_ready && current.launch && !cloud_busy_.count(current.launch->game)) {
+      // This start's settings are published; Playden may not get to run again once the game takes over.
+      model_.EndOneSessionLogging(current.launch->game);
       runtime_->Handoff();
+    }
   }
   const auto snapshot_shared = runtime_->Shared();
   const auto& snapshot = *snapshot_shared;
