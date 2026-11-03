@@ -592,6 +592,7 @@ int main(int argc, char** argv) {
             playden::app::AppendLogLine(log_directory, "install.log", "app=" + std::to_string(app) + " step=" + step + " result=" + result + " detail=" + detail);
         });
         details_source->SetLicensedDepots(&licensed_depots);
+        details_source->SetFreeDlcMemory(library_storage.get());
         details_source->SetContentLanguage([] { return selected_content_language(); });
         // Installed games' records, for their updates; the install service is made below and joined after the
         // details worker (Controller::Shutdown).

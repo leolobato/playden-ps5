@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include "homebrew/details_ask.hpp"
 #include "homebrew/simulation.hpp"
 #include "homebrew/uninstall_flow.hpp"
 #include "steam/service.h"
@@ -359,6 +360,7 @@ class Controller {
   std::chrono::steady_clock::time_point volume_refreshed_at_{};
   std::optional<std::chrono::steady_clock::time_point> licenses_notice_at_;  // when a license check starts showing
   std::optional<GameId> requested_detail_;
+  std::map<GameId, DetailsAsked> details_asked_;  // what each visited page's details were last asked with
   std::uint64_t requested_generation_ = 0;
   bool update_check_running_ = false;  // an installed-games update check the details service runs
   std::vector<GameId> update_check_ids_;  // its games, to start it again after a language change

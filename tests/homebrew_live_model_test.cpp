@@ -1517,8 +1517,8 @@ void live_update_check(const std::filesystem::path& base) {
     model.UpdateCheckProgress(8, 2, 2);
     check(check_state.asked == 8 && check_state.answered == 2 && check_state.total == 2, "update check: progress shows");
     // Answers replace what was saved: Portal is up to date now, Stray has new DLC.
-    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, 0, {}, {});
-    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, 0, {}, GameUpdate{false, true, 70});
+    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, {}, {}, {});
+    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, {}, {}, GameUpdate{false, true, 70});
     model.FinishUpdateCheck(false);
     check(!check_state.checking && !check_state.failed && check_state.checked_at == kNow + 2 * 60 * 60 &&
               check_state.games.size() == 1 && check_state.games.at(SteamId(20)).new_dlc,
@@ -1541,7 +1541,7 @@ void live_update_check(const std::filesystem::path& base) {
     check(!model.TakeUpdateCheckRequest(), "update check: the last full check is still recent");
 
     // A finished update and an uninstall take games off the list.
-    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, 0, {}, GameUpdate{true, false, 5});
+    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, {}, {}, GameUpdate{true, false, 5});
     check(check_state.games.size() == 2, "update check: a game's page refreshes its entry");
     playden::homebrew::LiveInstallJob job;
     job.game_id = SteamId(10);
@@ -1662,17 +1662,17 @@ void live_manage_games_tabs(const std::filesystem::path& base) {
               find_row(model, "manage-check")->title == "Checking…" && find_row(model, "manage-more"),
           "manage: a running check shows its progress");
     check(navigation.focus_key == "manage-sort", "manage: the focus leaves the button the check turned off");
-    model.UpdateAppDetails(SteamId(30), 1, 1, true, {}, 0, {}, GameUpdate{true, false, 500'000'000});
+    model.UpdateAppDetails(SteamId(30), 1, 1, true, {}, {}, {}, GameUpdate{true, false, 500'000'000});
     check(find_row(model, "manage-toggle-30") && find_row(model, "manage-toggle-30")->selected,
           "manage: a game found while checking shows up checked");
     check(navigation.focus_key == "manage-sort", "manage: a game found meanwhile doesn't take the focus");
-    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, 0, {}, {});
-    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, 0, {}, {});
+    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, {}, {}, {});
+    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, {}, {}, {});
     model.FinishUpdateCheck(false);
     check(!find_row(model, "manage-toggle-10") && find_row(model, "manage-toggle-30") &&
               model.view().subtitle == "Checked just now · only games with an update or new DLC",
           "manage: games without an update leave the list");
-    model.UpdateAppDetails(SteamId(30), 1, 1, true, {}, 0, {}, {});
+    model.UpdateAppDetails(SteamId(30), 1, 1, true, {}, {}, {}, {});
     const auto* empty = find_row(model, "manage-empty");
     check(empty && empty->title == "Up to date" && navigation.focus_key == "manage-sort", "manage: nothing to update says so");
     activate(model, "manage-check");
@@ -1878,8 +1878,8 @@ void live_settings_manage_rows(const std::filesystem::path& base) {
     check(value("settings-game-updates") == "Checking 24 of 40…", "settings rows: checking with progress");
 
     // Found: two updates, their sizes not measured yet.
-    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, 0, {}, playden::homebrew::GameUpdate{true, false, 0, 0, 11});
-    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, 0, {}, playden::homebrew::GameUpdate{false, true, 0, 0, 21});
+    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, {}, {}, playden::homebrew::GameUpdate{true, false, 0, 0, 11});
+    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, {}, {}, playden::homebrew::GameUpdate{false, true, 0, 0, 21});
     model.FinishUpdateCheck(false);
     check(value("settings-game-updates") == "2 updates" && subtitle("settings-game-updates") == "Checked just now",
           "settings rows: updates found");
@@ -1893,8 +1893,8 @@ void live_settings_manage_rows(const std::filesystem::path& base) {
     check(value("settings-game-updates") == "2 updates" && model.TakeUpdateSizeChecks().empty(),
           "settings rows: a size for another update isn't used or asked again");
     // Steam answers for the game again (the same update): its size is asked again, and a size stays with its update.
-    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, 0, {}, playden::homebrew::GameUpdate{false, true, 0, 0, 21});
-    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, 0, {}, playden::homebrew::GameUpdate{true, false, 0, 0, 11});
+    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, {}, {}, playden::homebrew::GameUpdate{false, true, 0, 0, 21});
+    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, {}, {}, playden::homebrew::GameUpdate{true, false, 0, 0, 11});
     sizes = model.TakeUpdateSizeChecks();
     check(sizes == std::vector<playden::GameId>{SteamId(20)}, "settings rows: Steam's answer asks an unmeasured size again");
     model.UpdateMeasuredUpdate(SteamId(20), true, 21, 200'000'000, 200'000'000);
@@ -1924,14 +1924,14 @@ void live_settings_manage_rows(const std::filesystem::path& base) {
     // Nothing new: Up to date, and Storage shows no update part.
     model.action("update-check");
     check(model.TakeUpdateCheckRequest(), "settings rows: checked again");
-    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, 0, {}, {});
-    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, 0, {}, {});
+    model.UpdateAppDetails(SteamId(10), 1, 1, true, {}, {}, {}, {});
+    model.UpdateAppDetails(SteamId(20), 1, 1, true, {}, {}, {}, {});
     model.FinishUpdateCheck(false);
     check(value("settings-game-updates") == "Up to date" && value("settings-installed") == "3 games · 60.0 GB",
           "settings rows: up to date");
 
     // One update is singular.
-    model.UpdateAppDetails(SteamId(30), 1, 1, true, {}, 0, {}, playden::homebrew::GameUpdate{true, false, 48'000'000, 48'000'000, 5, true});
+    model.UpdateAppDetails(SteamId(30), 1, 1, true, {}, {}, {}, playden::homebrew::GameUpdate{true, false, 48'000'000, 48'000'000, 5, true});
     check(value("settings-game-updates") == "1 update · 48 MB" && value("settings-installed") == "3 games · 60.0 GB · 1 update",
           "settings rows: one update");
 }

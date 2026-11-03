@@ -18,6 +18,7 @@
 #include "gfx/font.hpp"
 #include "gfx/gl.hpp"
 #include "gfx/renderer.hpp"
+#include "ui/components/detail_list.hpp"
 #include "ui/components/grid.hpp"
 #include "ui/components/keyboard.hpp"
 #include "ui/components/list.hpp"
@@ -1692,7 +1693,8 @@ class Render::Impl
             return size + (game.playtime_minutes && *game.playtime_minutes > 0 ?
                                playtime_label(game.playtime_minutes) + " played" : std::string("Installed"));
         }
-        return game.download_bytes ? "Not installed · " + short_size(*game.download_bytes) : "Not installed";
+        const auto download = default_download_bytes(game);
+        return download ? "Not installed · " + short_size(*download) : "Not installed";
     }
 
     // reserve: room kept free at the right for the corner badges.
@@ -3408,8 +3410,12 @@ class Render::Impl
         for (const auto &candidate : state.import_candidates)
             if (candidate.imported == game->id && candidate.total_bytes > 0)
                 scanned_bytes = candidate.total_bytes;
+        // Not installed: as the Install button says it, what the install sheet will say.
+        const auto install_row = std::find_if(view.rows.begin(), view.rows.end(), [](const ViewRow &row) { return row.key == "details-install"; });
+        const auto bare_bytes = uninstalled_size(*game, state.jobs);
         const std::string size = installed ? short_size(installation->installed_bytes) :
-            game->install_bytes ? short_size(*game->install_bytes) :
+            install_row != view.rows.end() && !install_row->value.empty() && install_row->value != "Size unknown" ? install_row->value :
+            bare_bytes ? short_size(*bare_bytes) :
             scanned_bytes ? short_size(*scanned_bytes) : std::string("Unknown");
         const std::string playtime = game->playtime_minutes && *game->playtime_minutes > 0 ?
             playtime_label(game->playtime_minutes) : std::string("Never played");
@@ -3856,9 +3862,12 @@ class Render::Impl
         }
         else
             ui::text(overlay_, fonts_.display, view.title, panel.x + 48.0F, 142.0F, 48.0F, kText);
+        // Read-only facts sit above the rows, which are all things to press.
+        const float facts_height = draw_sheet_facts(view.facts, {panel.x + 32.0F, 160.0F + drop, panel.w - 64.0F});
         if (!view.subtitle.empty())
-            ui::paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F, 190.0F + drop, 23.0F,
-                          panel.w - 96.0F, 32.0F, kSecondary, view.surface == "install" ? 6 : 3);
+            ui::paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F,
+                          (view.facts.empty() ? 190.0F : 160.0F + facts_height + 32.0F) + drop, 23.0F,
+                          panel.w - 96.0F, 32.0F, kSecondary, view.surface == "install" ? (view.facts.empty() ? 6 : 2) : 3);
         if (view.surface == "storage")
             draw_storage_overlay_rows(view, {panel.x + 40.0F, 246.0F, panel.w - 80.0F, 710.0F});
         else if (view.surface == "import-storage" || view.surface == "move-storage")
@@ -3871,11 +3880,52 @@ class Render::Impl
         else if (view.surface == "controller")
             draw_controller_overlay(view, {panel.x + 40.0F, 236.0F, panel.w - 80.0F, 720.0F});
         else
-            draw_overlay_rows(view, {panel.x + 40.0F, (view.surface == "install" ? 414.0F : 292.0F) + drop,
-                                     panel.w - 80.0F, (view.surface == "install" ? 528.0F : 650.0F) - drop});
+        {
+            // Below the facts and a two-line message; six rows, the most an install sheet has, still fit.
+            const float rows_top = view.surface != "install" ? 292.0F : view.facts.empty() ? 414.0F : 444.0F;
+            draw_overlay_rows(view, {panel.x + 40.0F, rows_top + drop, panel.w - 80.0F, 942.0F - rows_top - drop});
+        }
         if (view.comparison)
             draw_preset_comparison(*view.comparison, {72.0F, 150.0F, panel.x - 144.0F, 760.0F}, ease);
         overlay_.pop_opacity();
+    }
+
+    struct FactsBounds { float x, y, w; };
+    // A sheet's read-only labels and values, as the design system's DetailList. Returns the height they take.
+    float draw_sheet_facts(const std::vector<ViewFact> &facts, const FactsBounds &bounds)
+    {
+        if (facts.empty())
+            return 0.0F;
+        sheet_facts_.style.theme = theme_;
+        sheet_facts_.style.panel = false;
+        sheet_facts_.style.scroll_thumb = false;
+        sheet_facts_.style.max_lines = 1;
+        if (facts != sheet_facts_shown_)
+        {
+            // Only a different set of facts plays the list's entrance; a size that changes just changes.
+            const bool same_rows = facts.size() == sheet_facts_shown_.size();
+            if (!same_rows)
+            {
+                std::vector<ui::DetailItem> items;
+                for (const ViewFact &fact : facts)
+                    items.push_back({fact.label, fact.value});
+                sheet_facts_.set_items(std::move(items));
+            }
+            for (std::size_t index = 0; index < facts.size(); ++index)
+            {
+                auto &item = sheet_facts_.item(static_cast<int>(index));
+                item.label = facts[index].label;
+                item.value = facts[index].value;
+                item.color = facts[index].warn ? kRed : gfx::Color{0.0F, 0.0F, 0.0F, 0.0F};
+            }
+            sheet_facts_shown_ = facts;
+        }
+        const float height = static_cast<float>(facts.size()) * (sheet_facts_.style.row_height + sheet_facts_.style.gap);
+        sheet_facts_.set_bounds({bounds.x, bounds.y, bounds.w, height});
+        sheet_facts_.update(frame_dt_);
+        ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
+        sheet_facts_.draw(canvas);
+        return height;
     }
 
     // Preset chooser: what the focused preset changes, beside the sheet (Current → This preset).
@@ -4271,7 +4321,7 @@ class Render::Impl
                 return 30.0F;
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
                 return 54.0F;
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc") &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || import_sheet) && !row.subtitle.empty();
             return (described ? 96.0F + hint_extra(row) : 72.0F) + 12.0F;
@@ -4374,7 +4424,7 @@ class Render::Impl
             // Game settings rows carry an effect line under the name (or the reason a row is
             // disabled), an accent dot when the player changed the value, and a tag.
             // Kept game data: each game is a checkbox row with its kept date under the name.
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0)) &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc") &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || import_sheet) && !row.subtitle.empty() && row.kind != RowKind::Heading;
             const gfx::Rect rect{bounds.x, y, bounds.w, described ? 96.0F + hint_extra(row) : 72.0F};
@@ -4410,7 +4460,7 @@ class Render::Impl
             }
             // Game names may need a fallback face (Greek, CJK, Arabic).
             const ui::FontRef &face = font_for(overlay_label(row), fonts_.display);
-            const std::string label = fit(face, overlay_label(row), 28.0F, rect.w - 64.0F - value_width);
+            const std::string label = fit(face, overlay_label(row), 28.0F, rect.w - (name_x - rect.x) - 40.0F - value_width);
             ui::text(overlay_, face, label, name_x, name_y, 28.0F, ink);
             if (settings_sheet && !row.badge.empty() && row.kind != RowKind::Heading)
             {
@@ -4545,6 +4595,8 @@ class Render::Impl
     OverlayTransition overlay_transition_;
     std::string sheet_scroll_key_;  // the sheet the scroll belongs to
     float sheet_scroll_ = 0.0F;
+    ui::DetailList sheet_facts_;
+    std::vector<ViewFact> sheet_facts_shown_;
     float sheet_scroll_target_ = 0.0F;
     int last_width_ = 0;
     int last_height_ = 0;

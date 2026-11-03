@@ -394,6 +394,7 @@ int main() {
             playden::app::AppendLogLine(log_root, "install.log", "app=" + std::to_string(app) + " step=" + step + " result=" + result + " detail=" + detail);
         });
         details_source.SetLicensedDepots(&licensed_depots);
+        details_source.SetFreeDlcMemory(&library_storage);
         details_source.SetContentLanguage([] { return selected_content_language(); });
         playden::LocalSessionRepository details_sessions(user_root, {}, &session_vault);
         playden::steam::AppDetailsService app_details(details_source, details_sessions);

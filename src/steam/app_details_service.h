@@ -44,6 +44,25 @@ struct AppVersion {
   std::vector<LanguageSize> languages;
 };
 
+// A DLC an install can include or leave out. Its sizes are for the public branch in the Settings language.
+struct DlcChoice {
+  std::uint32_t app_id = 0;
+  std::string name;  // empty: Steam doesn't describe it
+  std::uint64_t download_bytes = 0;
+  std::uint64_t install_bytes = 0;
+  bool free = false;  // not owned yet: an install claims it
+  // Where another version or language differs. No install bytes: this choice doesn't have the DLC.
+  struct OtherSize {
+    std::string branch;
+    std::string language;
+    std::uint64_t download_bytes = 0;
+    std::uint64_t install_bytes = 0;
+    bool optional = false;  // Steam doesn't download it by itself on this choice
+  };
+  std::vector<OtherSize> other_sizes;
+  bool optional = false;  // Steam doesn't download it by itself: an install starts with it off, if it is owned
+};
+
 // What a game's Steam app info says about installing it on this console.
 struct AppDetails {
   GameId id;
@@ -60,9 +79,8 @@ struct AppDetails {
   // The content languages the game's Windows depots carry, as Steam names them ("german"), in
   // listing order; empty when nothing is localised. An install can pick one of them.
   std::vector<std::string> languages;
-  // Owned DLC with Windows content an install includes. Counted from the depots the game itself lists
-  // for its DLC (dlcappid): depots only a DLC app lists, and DLC an install claims for free, are not counted.
-  std::uint32_t dlc_count = 0;
+  // A game that isn't installed: the DLC with files an install can leave out, owned or free to claim (OfferedDlc).
+  std::vector<DlcChoice> dlc;
   // The versions an install can choose: the public branch first, then branches with no password
   // that carry the game's own content, the most recently updated first. One entry: nothing to choose.
   std::vector<AppVersion> versions;
@@ -102,13 +120,16 @@ struct SizeRequest {
   std::string branch;
   std::string language;
   bool update = false;
+  std::vector<std::uint32_t> excluded_dlc;  // DLC turned off for this install, sorted
   bool operator==(const SizeRequest& other) const {
-    return id == other.id && branch == other.branch && language == other.language && update == other.update;
+    return id == other.id && branch == other.branch && language == other.language && update == other.update &&
+           excluded_dlc == other.excluded_dlc;
   }
   bool operator<(const SizeRequest& other) const {
     if (!(id == other.id)) return id < other.id;
     if (update != other.update) return other.update;
-    return branch != other.branch ? branch < other.branch : language < other.language;
+    if (branch != other.branch) return branch < other.branch;
+    return language != other.language ? language < other.language : excluded_dlc < other.excluded_dlc;
   }
 };
 

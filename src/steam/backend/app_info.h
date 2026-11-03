@@ -30,6 +30,8 @@ struct DepotInfo {
   std::optional<std::uint32_t> depot_from_app;
   bool is_dlc = false;
   std::optional<std::uint32_t> dlc_app_id;
+  // config/optionaldlc: the DLC this depot belongs to doesn't download by itself (tools, language packs).
+  bool optional_dlc = false;
   // The public branch's manifest; in SelectDepots' result, the selected branch's.
   std::optional<std::uint64_t> manifest_gid;
   std::uint64_t size = 0;
@@ -193,6 +195,7 @@ struct DlcOffer {
   std::uint64_t install_bytes = 0;
   std::uint64_t download_bytes = 0;
   bool free = false;  // not owned yet: an install claims it, unless it is turned off
+  bool optional = false;  // every depot of it is marked optional: Steam doesn't download it by itself
 };
 
 // The DLC an install of the game could hold, as SelectDepots selects them: owned DLC and free DLC this account can

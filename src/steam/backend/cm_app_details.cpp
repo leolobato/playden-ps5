@@ -1,6 +1,7 @@
 #include "steam/backend/cm_app_details.h"
 
 #include "steam/backend/app_info.h"
+#include "steam/backend/steam_install_runner.h"
 
 #include <algorithm>
 #include <chrono>
@@ -71,7 +72,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
                               const std::optional<LicensedDepots::Grant>& licensed,
                               std::string_view language,
                               const std::optional<installs::InstalledRecord>& installed,
-                              const std::vector<AppInfo>& dlc_apps) {
+                              const std::vector<AppInfo>& dlc_apps, const std::set<std::uint32_t>* free_dlc_refused) {
   AppDetails details;
   details.id = GameId::Steam(id);
   const auto app = ParseAppInfo(id, buffer);
@@ -116,10 +117,6 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
   }
   details.languages = selected.languages;
   const auto& depots = selected.depots;
-  std::set<std::uint32_t> dlc;
-  for (const auto& depot : depots)
-    if (depot.owner_app != 0 && depot.owner_app != id) dlc.insert(depot.owner_app);
-  details.dlc_count = static_cast<std::uint32_t>(dlc.size());
   std::uint64_t install = 0;
   std::uint64_t download = 0;
   DepotBytes(depots, &install, &download);
@@ -132,6 +129,52 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
     for (const auto& bytes : offer.languages)
       version.languages.push_back({bytes.language, bytes.download_bytes, bytes.install_bytes});
     details.versions.push_back(std::move(version));
+  }
+  // Only licenses say which DLC is owned or still free to claim. Without them the sheet has nothing to offer.
+  if (!installed && any) {
+    const std::set<std::uint32_t> refused_dlc = free_dlc_refused ? *free_dlc_refused : std::set<std::uint32_t>{};
+    auto offers = OfferedDlc(*app, dlc_apps, apps, depots_owned, selection, refused_dlc);
+    std::map<std::uint32_t, std::vector<DlcChoice::OtherSize>> other_sizes;
+    // Each version in each language the sheet can choose: what differs from the sizes above. A DLC only another
+    // version has joins the list, with no size here.
+    const auto base = offers;
+    const auto compare = [&](const std::string& branch, const std::string& language) {
+      DepotSelection other = selection;
+      other.branch = branch;
+      other.language = language;
+      const auto found = OfferedDlc(*app, dlc_apps, apps, depots_owned, other, refused_dlc);
+      for (const auto& offer : found) {
+        const auto known = std::find_if(offers.begin(), offers.end(), [&](const DlcOffer& seen) { return seen.app_id == offer.app_id; });
+        if (known == offers.end()) {
+          offers.push_back(offer);
+          offers.back().install_bytes = offers.back().download_bytes = 0;
+        }
+        const auto listed = std::find_if(base.begin(), base.end(), [&](const DlcOffer& seen) { return seen.app_id == offer.app_id; });
+        if (listed == base.end() || listed->install_bytes != offer.install_bytes || listed->download_bytes != offer.download_bytes ||
+            listed->optional != offer.optional)
+          other_sizes[offer.app_id].push_back({branch, language, offer.download_bytes, offer.install_bytes, offer.optional});
+      }
+      for (const auto& offer : base)
+        if (std::none_of(found.begin(), found.end(), [&](const DlcOffer& seen) { return seen.app_id == offer.app_id; }))
+          other_sizes[offer.app_id].push_back({branch, language, 0, 0, false});
+    };
+    // The sheet's language list doesn't change with its version: a version can be asked for one it doesn't carry,
+    // and each part of the game then falls back on its own.
+    std::set<std::string> languages{selection.language};
+    languages.insert(details.languages.begin(), details.languages.end());
+    std::vector<std::string> branches;
+    for (const auto& version : details.versions) {
+      branches.push_back(version.name);
+      for (const auto& size : version.languages) languages.insert(size.language);
+    }
+    if (branches.empty()) branches.push_back("public");
+    for (const auto& branch : branches)
+      for (const auto& choice : languages)
+        if (branch != "public" || choice != selection.language) compare(branch, choice);
+    SortDlcOffers(&offers);
+    for (auto& offer : offers)
+      details.dlc.push_back({offer.app_id, std::move(offer.name), offer.download_bytes, offer.install_bytes, offer.free,
+                             std::move(other_sizes[offer.app_id]), offer.optional});
   }
   std::vector<AppLaunch> launches;
   // An installed game starts as its branch does.
@@ -197,25 +240,29 @@ std::vector<AppDetails> CmAppDetailsSource::Fetch(const StoredSession& session,
       continue;
     }
     const auto record = installed_ ? installed_(id) : std::nullopt;
-    // An installed game's DLC apps list depots of their own: an update selects them too. A batch Steam
-    // doesn't answer only leaves those DLC out of the comparison.
+    // DLC apps list depots of their own: an update selects them too, and the install sheet offers them. A batch
+    // Steam doesn't answer only leaves those DLC out. An imported copy's record names no depots: nothing to compare.
     std::vector<AppInfo> dlc_apps;
-    if (record && !record->depots.empty()) dlc_apps = FetchDlcApps(client_, session, id, found->second, cancel);
+    if (!record || !record->depots.empty()) dlc_apps = FetchDlcApps(client_, session, id, found->second, cancel);
     if (cancel.load()) return {};
+    std::set<std::uint32_t> refused;
+    if (!record && free_dlc_memory_) refused = LoadFreeDlcMemory(*free_dlc_memory_, session.steam_id);
     result.push_back(DetailsFromAppInfo(id, found->second, licensed_ ? licensed_->Get(session.steam_id) : std::nullopt, language, record,
-                                        dlc_apps));
+                                        dlc_apps, &refused));
   }
   return result;
 }
 
 std::vector<DepotInfo> DepotsToMeasure(std::uint32_t id, const std::string& buffer,
                                        const std::optional<LicensedDepots::Grant>& licensed, const std::string& branch,
-                                       std::string_view language, const std::vector<AppInfo>& dlc_apps) {
+                                       std::string_view language, const std::vector<AppInfo>& dlc_apps,
+                                       const std::vector<std::uint32_t>& excluded_dlc) {
   const auto app = ParseAppInfo(id, buffer);
   if (!app) return {};
   DepotSelection selection;
   selection.language = std::string(language);
   if (!branch.empty()) selection.branch = branch;
+  selection.excluded_dlc.insert(excluded_dlc.begin(), excluded_dlc.end());
   const std::set<std::uint32_t> owned{id};
   SelectionResult selected;
   bool any = false;
@@ -271,7 +318,7 @@ MeasuredSize CmAppDetailsSource::Measure(const StoredSession& session, const Siz
     return result;
   }
   const auto depots = DepotsToMeasure(*app, buffer->second, licensed_ ? licensed_->Get(session.steam_id) : std::nullopt,
-                                      request.branch, language, dlc_apps);
+                                      request.branch, language, dlc_apps, request.excluded_dlc);
   depot_count = depots.size();
   if (depots.empty()) {
     log("skipped", {});

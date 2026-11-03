@@ -96,13 +96,11 @@ bool AppDetailsService::Measure(SizeRequest request, std::uint64_t account_gener
                                        [&](const SizeRequest& queued) { return queued.update == request.update; });
   if (static_cast<std::size_t>(same_kind) >= kMaxPending) return false;
   measure_requested_.insert(request);
-  // The install sheet's choice is waited for on screen: ahead of the updates' sizes.
+  // The install sheet's choice is waited for on screen: ahead of the updates' sizes, and the page opened last first.
   if (request.update) {
     measure_pending_.push_back(std::move(request));
   } else {
-    const auto first_update = std::find_if(measure_pending_.begin(), measure_pending_.end(),
-                                           [](const SizeRequest& queued) { return queued.update; });
-    measure_pending_.insert(first_update, std::move(request));
+    measure_pending_.insert(measure_pending_.begin(), std::move(request));
   }
   wake_.notify_all();
   return true;

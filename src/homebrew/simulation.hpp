@@ -10,6 +10,7 @@
 #include "runtime/game_settings.h"
 #include "steam/backend/content_language.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -91,6 +92,8 @@ struct InstallRequest {
     // Install: the install-size estimate of the chosen version (the game's when Steam gives none for it),
     // which the install service reserves on the drive; empty: unknown.
     std::optional<std::uint64_t> install_bytes;
+    // Install: the DLC turned off in the install sheet, sorted.
+    std::vector<std::uint32_t> excluded_dlc;
 };
 // Game maintenance the details page offers (simulated in fixture mode).
 enum class MaintenanceKind { ApplySettings, ClearShaderCache, Repair, BackupSaves, RecreateBottle, UpdateRuntime };
@@ -128,6 +131,7 @@ struct LiveInstallJob {
     // While the move checks its copy: the files checked so far, of how many (0 of 0: no count).
     std::uint64_t checked_files = 0;
     std::uint64_t check_files = 0;
+    std::optional<std::uint64_t> estimated_bytes;  // what the job was asked with, DLC choice included
 };
 struct LiveInstalledGame {
     GameId game_id;
@@ -504,11 +508,41 @@ struct MeasuredInstallSize {
     std::uint64_t download_bytes = 0;
 };
 
-// A size check the install sheet asks for: a version (Steam branch) and a content language.
+// A size check the install sheet asks for: a version (Steam branch), a content language, and the owned DLC turned off.
 struct SizeCheckRequest {
     GameId id;
     std::string branch;
     std::string language;
+    std::vector<std::uint32_t> excluded_dlc;
+};
+
+// A DLC with files that an install can leave out.
+struct GameDlc {
+    std::uint32_t app_id = 0;
+    std::string name;  // empty: Steam doesn't describe it
+    std::uint64_t download_bytes = 0;
+    std::uint64_t install_bytes = 0;
+    bool free = false;  // not owned yet: the install claims it
+    // Where another version or language differs from the sizes above (public, the Settings language). No install
+    // bytes: that choice doesn't have the DLC.
+    struct OtherSize {
+        std::string branch;
+        std::string language;
+        std::uint64_t download_bytes = 0;
+        std::uint64_t install_bytes = 0;
+        bool optional = false;
+    };
+    std::vector<OtherSize> other_sizes;
+    bool optional = false;  // Steam doesn't download it by itself
+};
+
+// What the DLC choice does to an install's size. Off: owned DLC turned off, which Steam's figures for the game count.
+// Free: free DLC left on, which they don't count, as the account doesn't own it yet.
+struct InstallDlcSizes {
+    std::uint64_t off_install_bytes = 0;
+    std::uint64_t off_download_bytes = 0;
+    std::uint64_t free_install_bytes = 0;
+    std::uint64_t free_download_bytes = 0;
 };
 
 // An installed game's update, from Steam app info compared with its install record.
@@ -557,7 +591,7 @@ struct Game {
     std::optional<std::uint64_t> playtime_minutes;
     std::optional<bool> windows_installable;  // from Steam app info; absent until fetched
     std::vector<std::string> content_languages;  // from Steam app info: the languages an install can choose
-    std::uint32_t dlc_count = 0;  // from Steam app info: owned DLC an install includes
+    std::vector<GameDlc> dlc;  // from Steam app info: what an install's DLC list offers
     std::vector<GameVersion> versions;  // from Steam app info: public first; two or more offer a choice
     GameUpdate update;  // from Steam app info, for an installed game
     bool demo = false;  // a Steam demo; Sort and filters › Demos hides it
@@ -565,6 +599,28 @@ struct Game {
     bool art_pending = false;
     bool art_failed = false;
 };
+
+// What a game that isn't installed takes with the install sheet's defaults: Steam's figures count the owned DLC, so
+// optional DLC (which starts off) comes off them and free DLC (which starts on, not owned yet) goes on. Nothing when
+// Steam gave no figure.
+[[nodiscard]] inline std::optional<std::uint64_t> default_install_bytes(const Game& game) {
+    if (!game.install_bytes) return std::nullopt;
+    std::uint64_t off = 0, free = 0;
+    for (const auto& choice : game.dlc) {
+        if (choice.free) free += choice.install_bytes;
+        else if (choice.optional) off += choice.install_bytes;
+    }
+    return *game.install_bytes - std::min(*game.install_bytes, off) + free;
+}
+[[nodiscard]] inline std::optional<std::uint64_t> default_download_bytes(const Game& game) {
+    if (!game.download_bytes) return std::nullopt;
+    std::uint64_t off = 0, free = 0;
+    for (const auto& choice : game.dlc) {
+        if (choice.free) free += choice.download_bytes;
+        else if (choice.optional) off += choice.download_bytes;
+    }
+    return *game.download_bytes - std::min(*game.download_bytes, off) + free;
+}
 
 struct Collection {
     std::string id;
@@ -617,6 +673,7 @@ struct Job {
     bool reservation_held = false;
     bool completion_applied = false;
     std::uint64_t held_bytes = 0;  // live: installed bytes already on the drive
+    std::optional<std::uint64_t> estimated_bytes;  // live: what the job was asked with
     std::int64_t finished_at = 0;  // live: when a Downloaded job finished (Unix seconds), 0 unknown
     bool checking_licenses = false;  // live: a slow Steam license check before the download starts
     std::string server_name;  // live, while downloading: the download server's display name
@@ -629,6 +686,14 @@ struct Job {
     std::string stage_text;
     std::string state_text;
 };
+
+// The size to show for a game that isn't installed: what its running install was asked with, else the sheet's defaults.
+[[nodiscard]] inline std::optional<std::uint64_t> uninstalled_size(const Game& game, const std::vector<Job>& jobs) {
+    for (const auto& job : jobs)
+        if (job.game_id == game.id && job.estimated_bytes && job.state != JobState::Failed && job.state != JobState::Cancelled)
+            return job.estimated_bytes;
+    return default_install_bytes(game);
+}
 
 struct Volume {
     std::string id;
@@ -831,7 +896,16 @@ struct ViewRow {
     std::string qr;          // Settings: a link drawn as a QR code beside the row's text (Web access)
 };
 
+// A read-only label and value above a sheet's rows; the focus never goes there.
+struct ViewFact {
+    std::string label;
+    std::string value;
+    bool warn = false;
+    bool operator==(const ViewFact& other) const { return label == other.label && value == other.value && warn == other.warn; }
+};
+
 struct ViewData {
+    std::vector<ViewFact> facts;
     std::string surface;
     std::string title;
     std::string subtitle;
@@ -1017,13 +1091,13 @@ public:
     // False on a console that cannot read free space at all: installs are then allowed without it.
     void SetFreeSpaceSupported(bool supported) noexcept { free_space_supported_ = supported; }
     // Live mode: Steam app-info estimates for one game (download/install size, installability).
-    // `languages`: the content languages the game carries, as Steam names them. `dlc_count`: owned
-    // DLC with content an install includes, shown on the install sheet. `versions`: the versions an
+    // `languages`: the content languages the game carries, as Steam names them. `dlc`: the DLC with
+    // files an install can leave out, which the install sheet lists. `versions`: the versions an
     // install can choose, public first. `update`: an installed game's update or new DLC, which the account's
     // saved update list takes only when `updates_known` (the library refresh has read the licenses).
     bool UpdateAppDetails(GameId id, std::optional<std::uint64_t> download_bytes,
                           std::optional<std::uint64_t> install_bytes, std::optional<bool> windows_installable,
-                          std::vector<std::string> languages = {}, std::uint32_t dlc_count = 0,
+                          std::vector<std::string> languages = {}, std::vector<GameDlc> dlc = {},
                           std::vector<GameVersion> versions = {}, GameUpdate update = {}, bool updates_known = true);
     // Live mode: the Steam store's description, genres and controller support for one game;
     // kept across library refreshes.
@@ -1150,6 +1224,8 @@ private:
     // Live: the content language chosen in the install sheet for this one install (empty: the one the
     // Settings download language resolves to for the game).
     std::string install_language_;
+    std::map<std::uint32_t, bool> install_dlc_choice_;  // what the install sheet's player changed (on?), for this install only
+    bool page_under_install_sheet_ = false;  // while the page behind the install sheet is built
     // Live: the version (branch) chosen in the install sheet for this one install (empty: public).
     std::string install_version_;
     bool free_space_supported_ = true;
@@ -1275,11 +1351,12 @@ private:
     bool queue_shown_ = false;   // Queue was on screen at the last rebuild
     std::string queue_return_focus_;  // Queue: the row a game page was opened from, focused again on Back
     // Install sheet size checks by (game, branch, language): asked and not answered, and the answers.
+    using SizeCheckKey = std::tuple<GameId, std::string, std::string, std::vector<std::uint32_t>>;
     std::vector<SizeCheckRequest> size_checks_;
-    std::set<std::tuple<GameId, std::string, std::string>> size_checks_running_;
-    std::set<std::tuple<GameId, std::string, std::string>> size_checks_answered_;
-    std::set<std::tuple<GameId, std::string, std::string>> size_checks_failed_;  // not asked again until the sheet reopens
-    std::map<std::tuple<GameId, std::string, std::string>, MeasuredInstallSize> measured_sizes_;
+    std::set<SizeCheckKey> size_checks_running_;
+    std::set<SizeCheckKey> size_checks_answered_;
+    std::set<SizeCheckKey> size_checks_failed_;  // not asked again until the sheet reopens
+    std::map<SizeCheckKey, MeasuredInstallSize> measured_sizes_;
     std::string settings_focus_section_;
 
     struct OrganizationJournalEntry {
@@ -1547,6 +1624,25 @@ private:
     [[nodiscard]] std::string next_job_id();
     // The language the install sheet would install `id` in, and the sheet's rows for it.
     [[nodiscard]] std::string install_language(GameId id) const;
+    // Every DLC as the install sheet's version and language have it (no install bytes: that choice doesn't).
+    [[nodiscard]] std::vector<GameDlc> install_dlc_for_choice(GameId id) const;
+    // The DLC the install sheet's version and language offer, with their sizes for that choice.
+    [[nodiscard]] std::vector<GameDlc> install_dlc(GameId id) const;
+    // Off when the player turned it off; else optional DLC the account owns starts off and the rest on. Free DLC stays
+    // on: some games need it, and the list shows its size.
+    [[nodiscard]] bool install_dlc_off(const GameDlc& dlc) const;
+    [[nodiscard]] std::vector<std::uint32_t> install_excluded_dlc(GameId id) const;
+    // A size check of an install choice, unless it is under way, answered or has failed.
+    void request_size_check(const SizeCheckRequest& check);
+    // The check of the choice an install sheet opens with, and what that choice takes: a game's page says the same.
+    [[nodiscard]] SizeCheckRequest default_size_check(const Game& game) const;
+    [[nodiscard]] std::optional<std::uint64_t> default_install_size(const Game& game) const;
+    // The install sheet's choice in figures: "About" until its exact size is known.
+    [[nodiscard]] std::string install_size_text(GameId id, const std::optional<std::uint64_t>& bytes, const char* unknown) const;
+    [[nodiscard]] InstallDlcSizes install_dlc_sizes(GameId id) const;
+    [[nodiscard]] std::uint64_t install_dlc_on_bytes(GameId id) const;
+    // A sheet's rows depend on the game's details and on the version and language chosen.
+    void refresh_install_sheet(GameId id);
     // The version chosen in the install sheet for `id`, when it is not the public one.
     [[nodiscard]] const GameVersion* install_version(GameId id) const;
     [[nodiscard]] const GameVersion* install_sized_version(GameId id) const;

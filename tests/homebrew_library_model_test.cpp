@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "homebrew/queue_layout.hpp"
+#include "homebrew/details_ask.hpp"
 #include "homebrew/simulation.hpp"
 #include "homebrew/store_art.hpp"
 
@@ -21,6 +22,7 @@ namespace {
 
 using playden::GameSummary;
 using playden::homebrew::AuthState;
+using playden::homebrew::GameDlc;
 using playden::homebrew::CloudRequestKind;
 using playden::homebrew::CloudStatus;
 using playden::homebrew::LibraryUpdate;
@@ -35,6 +37,13 @@ void check(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
         std::exit(1);
     }
+}
+
+// A read-only fact above a sheet's rows.
+std::string fact(const playden::homebrew::Simulation& model, const std::string& label) {
+    for (const auto& item : model.view().facts)
+        if (item.label == label) return item.value;
+    return "(no " + label + ")";
 }
 
 Simulation make_live() {
@@ -476,7 +485,7 @@ void live_install_confirmation_checks_space_and_unknowns() {
               model.state().navigation.focus_key == "storage-picker" && model.action("up") &&
               model.state().navigation.focus_key == "install-confirm",
           "the focus moves on from Install");
-    check(model.view().subtitle.find("To M.2 SSD (this game only)") == 0 &&
+    check(fact(model, "Install to") == "M.2 SSD (this game only)" &&
               model.view().subtitle.find("Other games still install to Console storage") != std::string::npos,
           "the sheet names the one-off drive and the unchanged default");
     check(model.TakeInstallRequests().empty() && model.state().default_volume_id == "internal",
@@ -536,33 +545,305 @@ void live_install_confirmation_checks_space_and_unknowns() {
     check(model.TakeInstallRequests().size() == 1, "a console that cannot read free space still installs, as before");
 }
 
-// Owned DLC the download includes: an "Includes" status row on the install sheet, only when there is some.
+// DLC with files: a DLC row on the install sheet, only when there is some, opens the list of which to install.
 void live_install_dlc_row() {
+    using playden::homebrew::InstallRequestKind;
     auto model = make_live();
     model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
     check(model.UpdateLibrary({{game(SteamId(42), "With DLC"), game(SteamId(43), "Without DLC")}, false, {}, false, false, {}}),
           "library loaded");
     model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
-    model.UpdateAppDetails(SteamId(42), 100, 600, true, {"english", "german"}, 3);
+    const std::vector<GameDlc> dlc{{501, "Art Book", 40, 50, false}, {502, "Campaign", 200'000'000, 300'000'000, false},
+                                   {503, "Texture Pack", 100'000'000, 1'200'000'000, true}, {504, "", 10, 20, false}};
+    // The game's figures count owned DLC, not the free pack, which the account doesn't own yet.
+    model.UpdateAppDetails(SteamId(42), 300'000'000, 500'000'000, true, {"english", "german"}, dlc);
     check(model.action("details:42"), "details open");
+    // The page says what Install will: everything starts on here, so 500 MB plus the free pack's 1.2 GB.
+    check(find_row(model, "details-install")->value == "1.7 GB", "the page says what Install will");
+    const auto page_install = [&model] {
+        for (const auto& item : model.route_view().rows)
+            if (item.key == "details-install") return item.value;
+        return std::string();
+    };
     activate(model, "details-install");
     const auto* row = find_row(model, "install-dlc");
-    check(model.view().surface == "install" && row && row->title == "Includes" && row->value == "3 DLC" &&
-              row->kind == RowKind::Status && !row->enabled,
-          "the sheet says how many DLC the download includes");
+    check(page_install() == "1.7 GB", "behind the sheet it follows the choice");
+    check(model.view().surface == "install" && row && row->title == "DLC" && row->value == "4 of 4 · 1.5 GB" && row->enabled,
+          "the sheet says how much DLC the install holds");
+    // Everything on: the free pack counts, and it doesn't fit.
+    check(fact(model, "Needs") == "About 1.7 GB", "free DLC that is on counts");
+    check(!find_row(model, "install-confirm")->enabled, "it doesn't fit with the pack on");
+    auto size_check = model.TakeSizeChecks();
+    check(size_check.size() == 1 && size_check[0].excluded_dlc.empty(), "the size check has no DLC off");
+    model.UpdateMeasuredSize(size_check[0], false, false, {});
+
+    activate(model, "install-dlc");
+    check(model.view().surface == "install-dlc" && model.view().title == "DLC", "the row opens the list");
+    check(fact(model, "Total") == "About 1.7 GB · 1.0 GB free", "the list says the total");
+    row = find_row(model, "install-dlc-503");
+    check(row && row->title == "Texture Pack" && row->kind == RowKind::Toggle && row->selected &&
+              row->value == "Free · 1.2 GB",
+          "a free DLC says so, with its size and state");
+    row = find_row(model, "install-dlc-504");
+    check(row && row->title == "DLC 504", "a DLC without a name goes by its app ID");
+    check(!find_row(model, "heading-dlc-included") && find_row(model, "divider") && find_row(model, "install-dlc-done"),
+          "the list has its sections");
+    check(find_row(model, "install-dlc-all")->value == "4 of 4" && find_row(model, "install-dlc-all")->selected, "all DLC is on");
+    check(model.TakeSizeChecks().empty(), "the list asks for no size check");
+
+    // Toggling keeps the list open and changes the sizes.
+    activate(model, "install-dlc-503");
+    check(model.view().surface == "install-dlc", "a toggle keeps the list open");
+    row = find_row(model, "install-dlc-503");
+    check(row && !row->selected && row->value == "Free · 1.2 GB", "it turns off");
+    check(find_row(model, "install-dlc-all")->value == "3 of 4", "the all row counts");
+    activate(model, "install-dlc-502");
+    check(model.TakeSizeChecks().empty(), "toggling asks for no size check");
+    // Only "Art Book" (50 B) and the unnamed one are left; 500 MB less the 300 MB DLC.
+    check(fact(model, "Total") == "About 200 MB", "owned DLC that is off comes off Steam's figures");
+
+    activate(model, "install-dlc-done");
+    check(model.view().surface == "install", "Done returns to the sheet");
+    row = find_row(model, "install-dlc");
+    check(row && row->value.rfind("2 of 4", 0) == 0, "the sheet shows the choice");
+    size_check = model.TakeSizeChecks();
+    check(size_check.size() == 1 && (size_check[0].excluded_dlc == std::vector<std::uint32_t>{502}),
+          "the size check leaves out owned DLC only");
+    // A measured size has left the owned DLC out already; free DLC that is on is added to it.
+    model.UpdateMeasuredSize(size_check[0], true, false, {150'000'000, 100'000'000});
+    check(fact(model, "Download") == "100 MB", "the exact size has no \"About\"");
+    check(fact(model, "Needs") == "150 MB", "the exact size stands");
+    check(page_install() == "150 MB", "and the page behind it says the same");
+
+    activate(model, "install-confirm");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install && requests[0].install_bytes == 150'000'000u &&
+              (requests[0].excluded_dlc == std::vector<std::uint32_t>{502, 503}),
+          "the install carries the choice and the size it reserves");
+    // The drive reserves that size while it runs, not the game's figure with its DLC.
+    playden::homebrew::LiveInstallJob running;
+    running.game_id = SteamId(42);
+    running.state = playden::homebrew::JobState::Downloading;
+    running.volume_id = "internal";
+    running.held_bytes = 50'000'000;
+    running.estimated_bytes = requests[0].install_bytes;
+    model.UpdateInstalls({running}, {});
+    check(model.state().volumes[0].reserved_bytes == 100'000'000, "a running install reserves what was chosen");
+    model.UpdateInstalls({}, {{SteamId(42), 150'000'000}});
+    check(model.state().volumes[0].reserved_bytes == 0, "a finished one reserves nothing");
+    model.UpdateInstalls({}, {});  // uninstalled again, for what follows
+
+    // All off from everything on; all on from some off.
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {}, dlc);
+    check(model.action("details:43"), "details open");
+    activate(model, "details-install");
+    check(find_row(model, "install-dlc")->value == "4 of 4 · 1.5 GB", "a new sheet starts with everything on");
+    activate(model, "install-dlc");
+    activate(model, "install-dlc-all");
+    check(find_row(model, "install-dlc-all")->value == "0 of 4" && !find_row(model, "install-dlc-501")->selected, "all off");
+    activate(model, "install-dlc-501");
+    activate(model, "install-dlc-all");
+    check(find_row(model, "install-dlc-all")->value == "4 of 4" && find_row(model, "install-dlc-501")->selected, "all on");
+    activate(model, "install-dlc-all");
+    activate(model, "install-dlc-done");
+    check(find_row(model, "install-dlc")->value == "None", "the sheet says none");
     activate(model, "cancel");
-    // DLC alone doesn't open the sheet; without DLC there is no row.
-    model.UpdateAppDetails(SteamId(43), 100, 600, true, {"english", "german"}, 0);
+    // Another version: its sizes, and only the DLC it has. A sheet opened with none gets the row when they arrive.
+    std::vector<GameDlc> versioned{{601, "Pack", 40, 50'000'000, false, {{"beta", "english", 20, 10'000'000}}},
+                                   {602, "Only public", 40, 70'000'000, false, {{"beta", "english", 0, 0}}},
+                                   {603, "Only beta", 0, 0, false, {{"beta", "english", 30, 30'000'000}}}};
+    const std::vector<playden::homebrew::GameVersion> versions{{"public", "", 1760000000, 9000, 100, 200'000'000, {}},
+                                                               {"beta", "", 1760000000, 9001, 100, 100'000'000, {}}};
+    model.UpdateAppDetails(SteamId(43), 100, 200'000'000, true, {}, versioned, versions);
+    check(model.action("details:43"), "details open");
+    activate(model, "details-install");
+    check(find_row(model, "install-dlc")->value == "2 of 2 · 120 MB", "public: its two DLC");
+    activate(model, "install-version");
+    activate(model, "install-version-beta");
+    check(find_row(model, "install-dlc")->value == "2 of 2 · 40 MB", "beta: its two DLC, its sizes");
+    activate(model, "install-dlc");
+    check(find_row(model, "install-dlc-603") && !find_row(model, "install-dlc-602"), "beta lists what it has");
+    activate(model, "install-dlc-601");
+    // 100 MB for the version, less this version's 10 MB, not the public one's 50 MB.
+    check(fact(model, "Total") == "About 90 MB", "the sizes taken off are this version's");
+    activate(model, "install-dlc-done");
+    activate(model, "cancel");
+    // No DLC on the chosen version: no row, and it comes back with the version.
+    versioned = {{701, "Public DLC", 40, 70'000'000, false, {{"beta", "english", 0, 0}}}};
+    model.UpdateAppDetails(SteamId(43), 100, 200'000'000, true, {}, versioned, versions);
+    check(model.action("details:43"), "details open");
+    activate(model, "details-install");
+    activate(model, "install-version");
+    activate(model, "install-version-beta");
+    check(!find_row(model, "install-dlc"), "the row leaves with the DLC");
+    activate(model, "install-version");
+    activate(model, "install-version-public");
+    check(find_row(model, "install-dlc") != nullptr, "and comes back");
+    activate(model, "cancel");
+    // Without DLC there is no row; details arriving while the sheet is open bring it.
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {"english", "german"});
     check(model.action("details:43"), "details open");
     activate(model, "details-install");
     check(model.view().surface == "install" && find_row(model, "install-dlc") == nullptr, "no DLC, no row");
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {"english", "german"}, dlc);
+    check(find_row(model, "install-dlc") != nullptr, "the open sheet gets the row");
     activate(model, "cancel");
-    model.UpdateAppDetails(SteamId(42), 100, 600, true, {"german"}, 3);
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {"german"}, dlc);
     check(model.action("details:42"), "details open");
     activate(model, "details-install");
     check(model.view().surface == "install" && find_row(model, "install-language") == nullptr &&
               model.TakeInstallRequests().empty(),
           "a game with one language opens the sheet without a Language row");
+}
+
+// Optional DLC the account owns starts off; other DLC and free DLC start on; the player's choice wins.
+void live_install_optional_dlc() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "With DLC"), game(SteamId(44), "By language")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 20'000'000'000, 10'000'000'000}}, "internal");
+    std::vector<GameDlc> dlc{{501, "Expansion", 100'000'000, 100'000'000}, {502, "Tools", 200'000'000, 200'000'000},
+                             {503, "Free tools", 300'000'000, 300'000'000, true}};
+    dlc[1].optional = true;
+    dlc[2].optional = true;
+    model.UpdateAppDetails(SteamId(42), 400'000'000, 500'000'000, true, {}, dlc);
+    check(model.action("details:42"), "details open");
+    check(find_row(model, "details-install")->value == "600 MB", "the page counts the defaults: less optional, plus free");
+    activate(model, "details-install");
+    check(find_row(model, "install-dlc")->value == "2 of 3 · 400 MB", "optional owned DLC starts off");
+    // What it downloads: 400 MB less the off 200 MB plus the free 300 MB.
+    check(fact(model, "Download") == "About 500 MB",
+          "the sheet says what the choice downloads");
+    check(model.action("down") && model.state().navigation.focus_key == "install-dlc", "only rows take the focus");
+    check(model.action("up") && model.state().navigation.focus_key == "install-confirm", "both ways");
+    auto checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && (checks[0].excluded_dlc == std::vector<std::uint32_t>{502}), "the size check leaves it out");
+    model.UpdateMeasuredSize(checks[0], false, false, {});
+    check(fact(model, "Needs") == "About 600 MB", "the sheet's total leaves it out");
+    activate(model, "install-dlc");
+    check(find_row(model, "install-dlc-502")->value == "200 MB" && !find_row(model, "install-dlc-502")->selected, "the list shows it off");
+    check(find_row(model, "install-dlc-503")->value == "Free · 300 MB" && find_row(model, "install-dlc-503")->selected, "free DLC starts on even when optional");
+    check(find_row(model, "install-dlc-all")->value == "2 of 3", "the all row counts it");
+    check(fact(model, "Download") == "About 500 MB", "the list says the same");
+    // By how each starts: Included, then Optional, and a toggle doesn't move a row.
+    check(find_row(model, "heading-dlc-included") && find_row(model, "heading-dlc-optional"), "the list has both sections");
+    check(find_row(model, "install-dlc-503")->kind == RowKind::Toggle && find_row(model, "install-dlc-all")->kind == RowKind::Toggle, "rows are toggles");
+    check(model.action("down") && model.state().navigation.focus_key == "install-dlc-501", "focus goes past the heading");
+    check(model.action("up"), "back");
+    activate(model, "install-dlc-502");
+    check(find_row(model, "install-dlc-502")->selected, "the player can turn it on");
+    check(fact(model, "Download") == "About 700 MB", "the row follows the toggles");
+    activate(model, "install-dlc-501");
+    activate(model, "install-dlc-done");
+    activate(model, "install-confirm");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && (requests[0].excluded_dlc == std::vector<std::uint32_t>{501}), "the choice wins over the default");
+    // Optional on one language only: the default follows the language chosen, same size or not.
+    model.UpdateInstalls({}, {});
+    std::vector<GameDlc> by_language{{601, "Voices", 10'000'000, 10'000'000}, {602, "Tools", 10'000'000, 10'000'000}};
+    by_language[0].other_sizes.push_back({"public", "german", 10'000'000, 10'000'000, true});
+    by_language[1].optional = true;
+    by_language[1].other_sizes.push_back({"public", "german", 10'000'000, 10'000'000, false});
+    model.UpdateAppDetails(SteamId(44), 400'000'000, 500'000'000, true, {"english", "german"}, by_language);
+    check(model.action("details:44"), "details open");
+    activate(model, "details-install");
+    (void)model.TakeSizeChecks();
+    check(find_row(model, "install-dlc")->value.rfind("1 of 2", 0) == 0, "one is optional in English");
+    activate(model, "install-language");
+    activate(model, "install-language-german");
+    (void)model.TakeSizeChecks();
+    activate(model, "install-confirm");
+    auto german = model.TakeInstallRequests();
+    check(german.size() == 1 && (german[0].excluded_dlc == std::vector<std::uint32_t>{601}), "German turns off German's optional DLC");
+    // Installing without opening the list leaves optional DLC out.
+    model.UpdateInstalls({}, {});
+    check(model.action("details:42"), "details open");
+    activate(model, "details-install");
+    (void)model.TakeSizeChecks();
+    activate(model, "install-confirm");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && (requests[0].excluded_dlc == std::vector<std::uint32_t>{502}), "the default goes with the install");
+}
+
+// A game's page says what the install sheet will, before and after the exact check (DUSK flipped from 9.3 to 11.7 GB).
+void live_page_matches_install_sheet() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "Like DUSK"), game(SteamId(43), "Check fails")}, false, {}, false, false, {}}), "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 40'000'000'000, 30'000'000'000}}, "internal");
+    // Owned: HD, which starts on, and optional Goodies, which starts off. Steam's figures count both.
+    std::vector<GameDlc> dlc{{601, "HD", 2'000'000'000, 2'400'000'000}, {602, "The Goodies", 3'000'000'000, 4'100'000'000}};
+    dlc[1].optional = true;
+    model.UpdateAppDetails(SteamId(42), 9'000'000'000, 15'800'000'000, true, {}, dlc);
+    check(model.action("details:42"), "details open");
+    check(find_row(model, "details-install")->value == "11.7 GB", "the page counts what starts on");
+    // The check runs with the page, for what the sheet opens with.
+    auto checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && checks[0].id == SteamId(42) && (checks[0].excluded_dlc == std::vector<std::uint32_t>{602}),
+          "opening the page checks the sheet's choice");
+    model.UpdateMeasuredSize(checks[0], true, false, {11'500'000'000, 6'500'000'000});
+    check(find_row(model, "details-install")->value == "11.5 GB", "the page takes the exact size");
+    activate(model, "details-install");
+    check(model.TakeSizeChecks().empty(), "the sheet doesn't check it again");
+    check(fact(model, "Needs") == "11.5 GB" && fact(model, "Download") == "6.5 GB", "the sheet opens exact, the same as the page");
+    activate(model, "cancel");
+    // A choice changed and then canceled doesn't stay on the page.
+    activate(model, "details-install");
+    activate(model, "install-dlc");
+    activate(model, "install-dlc-602");
+    activate(model, "install-dlc-done");
+    (void)model.TakeSizeChecks();
+    activate(model, "cancel");
+    check(find_row(model, "details-install")->value == "11.5 GB", "the page goes back to the defaults");
+    // Optional DLC with no files on this version isn't in the sheet's list, so it isn't in the page's check either.
+    auto beta_only = dlc;
+    beta_only.push_back({603, "Beta extras", 0, 0});
+    beta_only.back().optional = true;
+    model.UpdateAppDetails(SteamId(42), 9'000'000'000, 15'800'000'000, true, {}, beta_only);
+    checks = model.TakeSizeChecks();
+    check(checks.size() == 1 && (checks[0].excluded_dlc == std::vector<std::uint32_t>{602}), "DLC without files isn't in the page's check");
+    model.UpdateMeasuredSize(checks[0], true, false, {11'500'000'000, 6'500'000'000});
+    activate(model, "details-install");
+    check(model.TakeSizeChecks().empty() && fact(model, "Needs") == "11.5 GB", "the sheet still has the page's answer");
+    activate(model, "cancel");
+    // During an install, the size is what that install was asked with.
+    playden::homebrew::Game installing;
+    installing.id = SteamId(44);
+    installing.install_bytes = 5'000'000'000;
+    check(playden::homebrew::uninstalled_size(installing, {}) == std::optional<std::uint64_t>(5'000'000'000), "no job: the defaults");
+    playden::homebrew::Job job;
+    job.game_id = installing.id;
+    job.estimated_bytes = 1'000'000'000;
+    check(playden::homebrew::uninstalled_size(installing, {job}) == std::optional<std::uint64_t>(1'000'000'000), "a job: what it was asked with");
+    job.state = playden::homebrew::JobState::Failed;
+    check(playden::homebrew::uninstalled_size(installing, {job}) == std::optional<std::uint64_t>(5'000'000'000), "a failed job: the defaults");
+    // A check that fails isn't asked again by redraws, only when the sheet opens.
+    model.UpdateAppDetails(SteamId(43), 100, 600, true);
+    check(model.action("details:43"), "details open");
+    checks = model.TakeSizeChecks();
+    check(checks.size() == 1, "the other page checks too");
+    model.UpdateMeasuredSize(checks[0], false, true, {});
+    model.UpdateVolumes({{"internal", "Console storage", true, 40'000'000'000, 29'000'000'000}}, "internal");
+    check(model.TakeSizeChecks().empty(), "a failed check isn't repeated on redraw");
+    activate(model, "details-install");
+    check(model.TakeSizeChecks().size() == 1, "opening the sheet asks again");
+}
+
+// When a page's details are asked (again): the DLC list must not come from before the licenses or an uninstall.
+void details_ask_follows_licenses_and_install_state() {
+    using playden::homebrew::DetailsAsk;
+    using playden::homebrew::DetailsAsked;
+    using playden::homebrew::NextDetailsAsk;
+    const DetailsAsked before{0, false};
+    check(NextDetailsAsk(std::nullopt, before, true) == DetailsAsk::kAgain, "a first visit asks, whatever an update check answered");
+    check(NextDetailsAsk(before, before, false) == DetailsAsk::kNothing, "an open page with its answer waits");
+    check(NextDetailsAsk(before, before, true) == DetailsAsk::kOnce, "an uninstalled game's answer lasts the session");
+    check(NextDetailsAsk(before, {1, false}, false) == DetailsAsk::kAgain, "licenses read while the page is open: asked again");
+    check(NextDetailsAsk(before, {1, false}, true) == DetailsAsk::kAgain, "licenses read since the last visit: asked again");
+    check(NextDetailsAsk(DetailsAsked{1, true}, {1, false}, true) == DetailsAsk::kAgain, "uninstalled since: asked again");
+    check(NextDetailsAsk(DetailsAsked{1, true}, {1, false}, false) == DetailsAsk::kAgain, "uninstalled on its page: asked again");
+    check(NextDetailsAsk(DetailsAsked{1, true}, {1, true}, true) == DetailsAsk::kAgain, "an installed game is asked at each visit");
+    check(NextDetailsAsk(DetailsAsked{1, true}, {1, true}, false) == DetailsAsk::kNothing, "but not all the time");
 }
 
 // A game in several languages: the install sheet's Language row chooses one for this install only.
@@ -626,7 +907,7 @@ void live_install_version_row() {
     check(model.UpdateLibrary({{game(SteamId(42), "Versions"), game(SteamId(43), "Single")}, false, {}, false, false, {}}),
           "library loaded");
     model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
-    model.UpdateAppDetails(SteamId(43), 100, 600, true, {}, 0, {GameVersion{"public", "", 1760000000, 9000, 100, 600}});
+    model.UpdateAppDetails(SteamId(43), 100, 600, true, {}, {}, {GameVersion{"public", "", 1760000000, 9000, 100, 600}});
     check(model.action("details:43"), "details open");
     activate(model, "details-install");
     check(model.view().surface == "install" && find_row(model, "install-version") == nullptr &&
@@ -634,7 +915,7 @@ void live_install_version_row() {
           "a game with one version opens the sheet without a Version row");
     activate(model, "cancel");
 
-    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, {},
                            {GameVersion{"public", "", 1760000000, 9000, 100, 600},
                             GameVersion{"4.04", "Patch 4.04 (pre next-gen)", 1670000000, 4040, 200, 1'500'000'000}});
     check(model.action("details:42"), "details open");
@@ -673,7 +954,7 @@ void live_install_version_row() {
     check(requests[0].install_bytes == std::optional<std::uint64_t>(600), "Public's estimate goes with it");
 
     // A branch that fits is sent with the install, and doesn't stay for the next one.
-    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, {},
                            {GameVersion{"public", "", 1760000000, 9000, 100, 600},
                             GameVersion{"4.04", "Patch 4.04 (pre next-gen)", 1670000000, 4040, 200, 700}});
     check(model.action("details:42"), "details open");
@@ -698,15 +979,15 @@ void live_install_language_size() {
     model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
     GameVersion version{"public", "", 1760000000, 9000, 300'000'000, 600'000'000, {}};
     version.languages = {{"english", 300'000'000, 600'000'000}, {"russian", 900'000'000, 1'500'000'000}};
-    model.UpdateAppDetails(SteamId(42), 300'000'000, 600'000'000, true, {"english", "russian"}, 0, {version});
+    model.UpdateAppDetails(SteamId(42), 300'000'000, 600'000'000, true, {"english", "russian"}, {}, {version});
     check(model.action("details:42"), "details open");
     activate(model, "details-install");
-    check(model.view().surface == "install" && model.view().subtitle.find("Needs about 600 MB") != std::string::npos &&
+    check(model.view().surface == "install" && fact(model, "Needs") == "About 600 MB" &&
               find_row(model, "install-confirm")->enabled,
           "English: the Settings language's size");
     activate(model, "install-language");
     activate(model, "install-language-russian");
-    check(model.view().surface == "install" && model.view().subtitle.find("Needs about 1.5 GB") != std::string::npos,
+    check(model.view().surface == "install" && fact(model, "Needs") == "About 1.5 GB",
           "Russian: its own size");
     check(!find_row(model, "install-confirm")->enabled, "and that size is the one checked");
 }
@@ -722,19 +1003,19 @@ void live_install_exact_size() {
     model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
     GameVersion version{"public", "", 1760000000, 9000, 900'000'000, 1'500'000'000, {}};
     version.languages = {{"english", 900'000'000, 1'500'000'000}, {"russian", 1'000'000'000, 1'600'000'000}};
-    model.UpdateAppDetails(SteamId(400), 900'000'000, 1'500'000'000, true, {"english", "russian"}, 0, {version});
+    model.UpdateAppDetails(SteamId(400), 900'000'000, 1'500'000'000, true, {"english", "russian"}, {}, {version});
     check(model.action("details:400"), "details open");
     activate(model, "details-install");
     auto checks = model.TakeSizeChecks();
     check(checks.size() == 1 && checks[0].id == SteamId(400) && checks[0].branch == "public" && checks[0].language == "english",
           "the sheet asks for its choice's exact size");
-    check(model.view().subtitle.find("Needs about 1.5 GB") != std::string::npos &&
+    check(fact(model, "Needs") == "About 1.5 GB" &&
               model.view().subtitle.find("Checking its exact size") != std::string::npos &&
               !find_row(model, "install-confirm")->enabled && find_row(model, "install-confirm")->subtitle == "Checking size",
           "Steam's sum doesn't fit: the sheet waits for the exact size");
     check(model.TakeSizeChecks().empty(), "asked once");
     model.UpdateMeasuredSize(checks[0], true, false, {600'000'000, 400'000'000});
-    check(model.view().subtitle.find("Needs 600 MB") != std::string::npos && find_row(model, "install-confirm")->enabled,
+    check(fact(model, "Needs") == "600 MB" && find_row(model, "install-confirm")->enabled,
           "the exact size fits");
     // Another language is another check; one that fails keeps Steam's sum and isn't asked again while the sheet is open.
     activate(model, "install-language");
@@ -742,7 +1023,7 @@ void live_install_exact_size() {
     checks = model.TakeSizeChecks();
     check(checks.size() == 1 && checks[0].language == "russian", "Russian is checked too");
     model.UpdateMeasuredSize(checks[0], false, true, {});
-    check(model.view().subtitle.find("Needs about 1.6 GB") != std::string::npos &&
+    check(fact(model, "Needs") == "About 1.6 GB" &&
               model.view().subtitle.find("Not enough space") != std::string::npos && !find_row(model, "install-confirm")->enabled,
           "a failed check keeps Steam's sum");
     check(model.TakeSizeChecks().empty(), "not asked again while the sheet is open");
@@ -761,13 +1042,13 @@ void live_install_exact_size() {
     check(model.view().subtitle.find("Not enough space") != std::string::npos, "a choice with nothing to check keeps Steam's sum");
     check(model.TakeSizeChecks().empty(), "answered: not asked again");
     // New details (a newer build) forget the game's exact sizes: the sheet checks again.
-    model.UpdateAppDetails(SteamId(400), 900'000'000, 1'500'000'000, true, {"english", "russian"}, 0, {version});
+    model.UpdateAppDetails(SteamId(400), 900'000'000, 1'500'000'000, true, {"english", "russian"}, {}, {version});
     checks = model.TakeSizeChecks();
     check(checks.size() == 1 && checks[0].language == "russian", "new details are checked again");
     activate(model, "install-language");
     activate(model, "install-language-english");
     model.TakeSizeChecks();
-    check(model.view().subtitle.find("Needs about 1.5 GB") != std::string::npos, "the old exact size is gone");
+    check(fact(model, "Needs") == "About 1.5 GB", "the old exact size is gone");
 }
 
 // A branch named in lower case shows as the picker shows it.
@@ -777,7 +1058,7 @@ void live_install_version_title() {
     model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
     check(model.UpdateLibrary({{game(SteamId(42), "Beta")}, false, {}, false, false, {}}), "library loaded");
     model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
-    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, 0,
+    model.UpdateAppDetails(SteamId(42), 100, 600, true, {}, {},
                            {GameVersion{"public", "", 1760000000, 9000, 100, 600}, GameVersion{"beta", "", 1750000000, 9001, 100, 600}});
     check(model.action("details:42"), "details open");
     activate(model, "details-install");
@@ -3975,7 +4256,7 @@ void live_game_update() {
     check(model.action("details:42"), "details open");
     check(!has_row(model, "details-update") && !has_row(model, "details-update-note"), "nothing to update, no button");
 
-    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, 0, {}, GameUpdate{true, false, 1'200'000'000, 1'400'000'000, 1, true});
+    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, {}, {}, GameUpdate{true, false, 1'200'000'000, 1'400'000'000, 1, true});
     const auto& rows = model.view().rows;
     const auto play_at = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-play"; });
     const auto update_at = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-update"; });
@@ -3999,7 +4280,7 @@ void live_game_update() {
     check(model.view().surface != "update", "the sheet closes");
 
     // DLC bought since wins the label, even when an update downloads with it.
-    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, 0, {}, GameUpdate{true, true, 300'000'000, 300'000'000, 2, true});
+    model.UpdateAppDetails(SteamId(42), 100, 6'000'000'000, true, {}, {}, {}, GameUpdate{true, true, 300'000'000, 300'000'000, 2, true});
     check(find_row(model, "details-update")->title == "DLC available…" &&
               find_row(model, "details-update-note")->title == "DLC available" &&
               find_row(model, "details-update-note")->value == "300 MB",
@@ -4077,6 +4358,9 @@ int main() {
     live_install_exact_size();
     live_install_version_title();
     live_install_dlc_row();
+    live_install_optional_dlc();
+    details_ask_follows_licenses_and_install_state();
+    live_page_matches_install_sheet();
     leftover_titles_require_confirmation_and_follow_the_queue();
     live_download_server_picker();
     live_import_sheet_sends_requests();

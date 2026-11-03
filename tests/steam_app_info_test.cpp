@@ -972,6 +972,25 @@ void TestDlcChoice() {
   };
   CHECK(reason(5012) == "dlc-off" && reason(5013) == "dlc-off" && reason(5011) == "licence");
 
+  // Optional when every depot of the DLC is marked so; a DLC with an unmarked depot downloads by itself.
+  const auto marked = ParseAppInfo(5100, R"("appinfo"
+{
+  "common" { "name" "Marked" "type" "Game" }
+  "extended" { "listofdlc" "5101,5102,5103" }
+  "depots"
+  {
+    "5100" { "manifests" { "public" { "gid" "1" "size" "10" "download" "5" } } }
+    "5111" { "dlcappid" "5101" "config" { "optionaldlc" "5101" } "manifests" { "public" { "gid" "2" "size" "10" "download" "5" } } }
+    "5112" { "dlcappid" "5102" "config" { "optionaldlc" "5102" } "manifests" { "public" { "gid" "3" "size" "10" "download" "5" } } }
+    "5113" { "dlcappid" "5102" "manifests" { "public" { "gid" "4" "size" "10" "download" "5" } } }
+    "5114" { "dlcappid" "5103" "manifests" { "public" { "gid" "5" "size" "10" "download" "5" } } }
+  }
+})");
+  CHECK(marked.has_value());
+  const auto marked_offers = OfferedDlc(*marked, {}, {5100, 5101, 5102, 5103}, std::nullopt, DepotSelection{});
+  CHECK(marked_offers.size() == 3);
+  for (const auto& offer : marked_offers) CHECK(offer.optional == (offer.app_id == 5101));
+
   // A name that only starts like the game's stays whole.
   const auto similar = dlc(5002, R"("common" { "name" "Big Gamers Pack" "type" "DLC" })");
   offers = OfferedDlc(*game, {similar}, owned, depots, DepotSelection{});

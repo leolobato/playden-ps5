@@ -743,8 +743,13 @@ void game_update_scenarios(const std::filesystem::path& fixtures, const std::fil
     check(simulation.scenario("dlc-available") && row("details-update")->title == "DLC available…",
           "dlc-available says DLC available");
     check(simulation.scenario("install-options") && simulation.view().surface == "install" && row("install-version") &&
-              row("install-language") && row("install-dlc") && row("install-dlc")->value == "2 DLC",
-          "install-options shows Version, Language and Includes");
+              row("install-language") && row("install-dlc") && row("install-dlc")->value == "2 of 2 · 4.3 GB",
+          "install-options shows Version, Language and DLC");
+    check(simulation.action("focus:install-dlc") && simulation.action("cross") && simulation.view().surface == "install-dlc" &&
+              row("install-dlc-900102") && row("install-dlc-900102")->title == "Texture Pack" &&
+              row("install-dlc-900102")->value == "Free · 4.2 GB",
+          "the DLC row opens the list");
+    check(simulation.action("circle") && simulation.view().surface == "install", "Back returns to the sheet");
     check(simulation.scenario("updating") && simulation.state().navigation.route == playden::homebrew::Route::Downloads,
           "updating opens the queue");
     check(simulation.action("details:900001") && row("details-play") && !row("details-play")->enabled &&

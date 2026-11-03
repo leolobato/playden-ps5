@@ -649,13 +649,106 @@ void IncludedDlcIsCounted() {
   }
 })";
   // Without licenses no DLC counts as owned.
-  assert(DetailsFromAppInfo(6000, buffer).dlc_count == 0);
+  assert(DetailsFromAppInfo(6000, buffer).dlc.empty());
   LicensedDepots::Grant grant;
   grant.apps = {6000, 6001, 6003};
   grant.depots = {6000, 6011, 6012, 6021, 6031};
   const auto details = DetailsFromAppInfo(6000, buffer, grant);
   // 6001 counts once for its two depots; 6002 isn't owned and 6003 is Mac only.
-  assert(details.dlc_count == 1 && details.install_bytes == 1020u);
+  assert(details.install_bytes == 1020u);
+  assert(details.dlc.size() == 1 && details.dlc[0].app_id == 6001 && details.dlc[0].install_bytes == 20 &&
+         details.dlc[0].download_bytes == 10 && !details.dlc[0].free);
+  // An installed game offers no choice.
+  installs::InstalledRecord record;
+  record.version = 2;
+  record.app_id = 6000;
+  record.depots = {{6000, 1, 6000, 6000}};
+  assert(DetailsFromAppInfo(6000, buffer, grant, "english", record).dlc.empty());
+  // A free pack on the game's own list, as Space Marine 2's: offered and sized, unless Steam refused it.
+  const std::string pack_game = R"("appinfo"
+{
+  "common" { "name" "Big Game" "type" "Game" }
+  "extended" { "listofdlc" "6101" }
+  "config" { "launch" { "0" { "executable" "game.exe" "config" { "oslist" "windows" } } } }
+  "depots"
+  {
+    "6100" { "manifests" { "public" { "gid" "1" "size" "100000000" "download" "1000" } } }
+    "6111" { "dlcappid" "6101" "manifests" { "public" { "gid" "2" "size" "300000000" "download" "2000" } } }
+  }
+})";
+  const auto pack = ParseAppInfo(6101, R"("appinfo" { "common" { "name" "Big Game - Pack" "type" "DLC" } "extended" { "isfreeapp" "1" } })");
+  assert(pack.has_value());
+  const LicensedDepots::Grant game_only{{6100}, {6100}};
+  auto offered = DetailsFromAppInfo(6100, pack_game, game_only, "english", std::nullopt, {*pack});
+  assert(offered.dlc.size() == 1 && offered.dlc[0].free && offered.dlc[0].name == "Pack" && offered.dlc[0].install_bytes == 300000000u);
+  assert(offered.install_bytes == 100000000u);  // not owned: the game's own figure leaves it out
+  assert(!offered.dlc[0].optional);
+  const std::set<std::uint32_t> refused{6101};
+  assert(DetailsFromAppInfo(6100, pack_game, game_only, "english", std::nullopt, {*pack}, &refused).dlc.empty());
+  // Each version and language says where it differs: another size, no DLC at all, or a DLC only it has.
+  const std::string branched = R"("appinfo"
+{
+  "common" { "name" "Big Game" "type" "Game" }
+  "extended" { "listofdlc" "6201,6202,6203" }
+  "config" { "launch" { "0" { "executable" "game.exe" "config" { "oslist" "windows" } } } }
+  "depots"
+  {
+    "6200" { "manifests" { "public" { "gid" "1" "size" "100" "download" "50" } "beta" { "gid" "2" "size" "100" "download" "50" } } }
+    "6211" { "dlcappid" "6201" "manifests" { "public" { "gid" "3" "size" "20" "download" "10" } "beta" { "gid" "4" "size" "5" "download" "2" } } }
+    "6212" { "dlcappid" "6202" "manifests" { "public" { "gid" "5" "size" "30" "download" "20" } } }
+    "6213" { "dlcappid" "6203" "manifests" { "beta" { "gid" "6" "size" "40" "download" "30" } } }
+    "6221" { "dlcappid" "6201" "config" { "language" "german" } "manifests" { "public" { "gid" "7" "size" "60" "download" "45" } } }
+    "6222" { "config" { "language" "german" } "manifests" { "public" { "gid" "8" "size" "10" "download" "5" } } }
+    "branches" { "public" { "buildid" "1" } "beta" { "buildid" "2" } }
+  }
+})";
+  const LicensedDepots::Grant all{{6200, 6201, 6202, 6203}, {6200, 6211, 6212, 6213, 6221, 6222}};
+  const auto choices = DetailsFromAppInfo(6200, branched, all).dlc;
+  const auto choice = [&](std::uint32_t app) {
+    const auto found = std::find_if(choices.begin(), choices.end(), [&](const DlcChoice& dlc) { return dlc.app_id == app; });
+    assert(found != choices.end());
+    return *found;
+  };
+  const auto other = [](const DlcChoice& dlc, const std::string& branch, const std::string& language) -> const DlcChoice::OtherSize* {
+    for (const auto& size : dlc.other_sizes)
+      if (size.branch == branch && size.language == language) return &size;
+    return nullptr;
+  };
+  assert(choices.size() == 3);
+  assert(choice(6201).install_bytes == 20 && other(choice(6201), "beta", "english") && other(choice(6201), "beta", "english")->install_bytes == 5);
+  assert(choice(6202).install_bytes == 30 && other(choice(6202), "beta", "english") && other(choice(6202), "beta", "english")->install_bytes == 0);
+  assert(choice(6203).install_bytes == 0 && other(choice(6203), "beta", "english")->install_bytes == 40);
+  // A language only the public version carries, chosen with beta: beta's DLC, not the public list.
+  assert(other(choice(6201), "public", "german") && other(choice(6201), "public", "german")->install_bytes == 80);
+  assert(other(choice(6202), "beta", "german") && other(choice(6202), "beta", "german")->install_bytes == 0);
+  assert(other(choice(6203), "beta", "german") && other(choice(6203), "beta", "german")->install_bytes == 40);
+  // The same on another choice: nothing to say.
+  assert(!other(choice(6202), "public", "english"));
+  // Optional in one language only: that choice says so, even at the same size.
+  const std::string voiced = R"("appinfo"
+{
+  "extended" { "listofdlc" "6301" }
+  "config" { "launch" { "0" { "executable" "game.exe" "config" { "oslist" "windows" } } } }
+  "depots"
+  {
+    "6300" { "manifests" { "public" { "gid" "1" "size" "100" "download" "50" } } }
+    "6305" { "config" { "language" "german" } "manifests" { "public" { "gid" "2" "size" "10" "download" "5" } } }
+    "6311" { "dlcappid" "6301" "config" { "language" "english" } "manifests" { "public" { "gid" "3" "size" "20" "download" "10" } } }
+    "6312" { "dlcappid" "6301" "config" { "language" "german" "optionaldlc" "6301" } "manifests" { "public" { "gid" "4" "size" "20" "download" "10" } } }
+    "branches" { "public" { "buildid" "1" } }
+  }
+})";
+  const LicensedDepots::Grant voiced_grant{{6300, 6301}, {6300, 6305, 6311, 6312}};
+  const auto voiced_dlc = DetailsFromAppInfo(6300, voiced, voiced_grant).dlc;
+  assert(voiced_dlc.size() == 1 && !voiced_dlc[0].optional);
+  bool german_optional = false;
+  for (const auto& size : voiced_dlc[0].other_sizes)
+    if (size.branch == "public" && size.language == "german") german_optional = size.optional;
+  assert(german_optional);
+  // The exact size check measures what is left once DLC is turned off.
+  const LicensedDepots::Grant both{{6100, 6101}, {6100, 6111}};
+  assert(DepotsToMeasure(6100, pack_game, both, "public", "english", {*pack}).size() == 2);
+  assert(DepotsToMeasure(6100, pack_game, both, "public", "english", {*pack}, {6101}).empty());
 }
 
 // The versions an install can choose, with each one's own size; the licenses filter them as they do the sizes.

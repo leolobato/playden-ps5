@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <utility>
 
 namespace playden::steam {
@@ -31,6 +32,9 @@ class CmAppDetailsSource final : public AppDetailsSource {
   void SetInstalled(std::function<std::optional<installs::InstalledRecord>(std::uint32_t app)> installed) {
     installed_ = std::move(installed);
   }
+  // Where installs remember the free DLC Steam refused this account (SteamInstallRunner::SetFreeDlcMemory): the
+  // install sheet doesn't offer those.
+  void SetFreeDlcMemory(const Storage* storage) { free_dlc_memory_ = storage; }
   // An installed game's folder, for an update's size (its tree says which files change). Called on the size worker.
   void SetInstallRoot(std::function<std::optional<std::string>(std::uint32_t app)> root) { install_root_ = std::move(root); }
   // What measures an install choice from its manifests (MeasuredSize), and the connection its size checks read
@@ -59,6 +63,7 @@ class CmAppDetailsSource final : public AppDetailsSource {
                                     const std::string& buffer, const std::atomic<bool>& cancel);
   CmClient& client_;
   const LicensedDepots* licensed_ = nullptr;
+  const Storage* free_dlc_memory_ = nullptr;
   std::function<std::string()> language_;
   std::function<std::optional<installs::InstalledRecord>(std::uint32_t)> installed_;
   std::function<std::optional<std::string>(std::uint32_t)> install_root_;
@@ -77,9 +82,11 @@ class CmAppDetailsSource final : public AppDetailsSource {
 // hold kMeasureDepotBytes or more. Empty: Steam's figures stand.
 inline constexpr std::uint64_t kMeasureDepotBytes = 64ull * 1000 * 1000;
 // `dlc_apps`: the game's DLC apps' appinfo, for the depots only they list, as an install reads them.
+// `excluded_dlc`: DLC turned off for this install.
 std::vector<DepotInfo> DepotsToMeasure(std::uint32_t id, const std::string& buffer,
                                        const std::optional<LicensedDepots::Grant>& licensed, const std::string& branch,
-                                       std::string_view language, const std::vector<AppInfo>& dlc_apps = {});
+                                       std::string_view language, const std::vector<AppInfo>& dlc_apps = {},
+                                       const std::vector<std::uint32_t>& excluded_dlc = {});
 
 // Pure part, for tests: turns one parsed app buffer into details. With `licensed`, sizes count
 // only the depots those licenses grant, as an install selects them. With `installed` (the game's
@@ -89,7 +96,8 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
                               const std::optional<LicensedDepots::Grant>& licensed = std::nullopt,
                               std::string_view language = kDefaultContentLanguage,
                               const std::optional<installs::InstalledRecord>& installed = std::nullopt,
-                              const std::vector<AppInfo>& dlc_apps = {});
+                              const std::vector<AppInfo>& dlc_apps = {},
+                              const std::set<std::uint32_t>* free_dlc_refused = nullptr);
 
 // The selection an update installs (depots and manifests, in order), as a number: an update's size is measured
 // for one. Never 0.

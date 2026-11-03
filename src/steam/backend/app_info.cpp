@@ -131,6 +131,7 @@ DepotInfo ParseDepot(std::uint32_t id, const VdfNode& value) {
   depot.depot_from_app = ChildU32(&value, "depotfromapp");
   depot.dlc_app_id = ChildU32(&value, "dlcappid");
   depot.is_dlc = depot.dlc_app_id.has_value();
+  depot.optional_dlc = ChildU32(config, "optionaldlc").value_or(0) != 0;
   // Every branch's manifest. Old appinfo format: the gid directly as a string; new: a dict {gid, size, download}.
   if (const VdfNode* manifests = value.Find("manifests"); manifests != nullptr && manifests->is_dict) {
     for (const auto& [branch, entry] : manifests->children) {
@@ -647,6 +648,7 @@ std::vector<DlcOffer> OfferedDlc(const AppInfo& app, const std::vector<AppInfo>&
     DlcOffer offer;
     offer.app_id = owner;
     offer.free = free.count(owner) > 0;
+    offer.optional = std::all_of(owned.begin(), owned.end(), [](const DepotInfo& depot) { return depot.optional_dlc; });
     DepotBytes(owned, &offer.install_bytes, &offer.download_bytes);
     if (offer.install_bytes == 0) continue;
     for (const AppInfo& dlc : dlc_apps)

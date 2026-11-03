@@ -2018,7 +2018,7 @@ void Controller::TickInstalls() {
         // version's estimate is reserved, not the public one.
         const auto estimate = request.install_bytes ? request.install_bytes
                               : game == games.end() ? std::nullopt : game->install_bytes;
-        installs_->Install(request.game_id, estimate, request.volume_id, {request.language, request.branch});
+        installs_->Install(request.game_id, estimate, request.volume_id, {request.language, request.branch, request.excluded_dlc});
         break;
       }
       case InstallRequestKind::Update: {
@@ -2158,6 +2158,7 @@ void Controller::TickInstalls() {
                         state == JobState::Downloading ? job.server_name : std::string(), update, job.locked,
                         update && running && job.step == steam::InstallStep::kCheckingFiles,
                         update && running && (job.step == steam::InstallStep::kApplying || job.locked)};
+    live.estimated_bytes = job.estimated_bytes;
     if (move) {
       using Step = LiveInstallJob::MoveStep;
       live.move = true;
@@ -2205,6 +2206,7 @@ void Controller::TickAppDetails() {
     model_.ResetSizeChecks();
     requested_generation_ = generation;
     requested_detail_.reset();
+    details_asked_.clear();
     launch_options_.clear();
     launch_options_reason_.clear();
     launches_any_branch_.clear();
@@ -2277,12 +2279,19 @@ void Controller::TickAppDetails() {
   // installed game is asked again at each visit: Steam may have a newer version since.
   // Away from a game's page (or its session), the next visit asks again.
   if (state.navigation.route != Route::Details && state.navigation.route != Route::Session) requested_detail_.reset();
-  if (state.account().authentication == AuthState::SignedIn && state.navigation.detail_id &&
-      state.navigation.detail_id != requested_detail_) {
-    requested_detail_ = state.navigation.detail_id;
-    if (auto* details = Details(requested_detail_->store); details && details == app_details_) {
-      if (game_roots_.count(*requested_detail_)) details->Refresh(*requested_detail_, generation, true);
-      else details->RequestFirst(*requested_detail_, generation);
+  if (state.account().authentication == AuthState::SignedIn && state.navigation.detail_id) {
+    const auto id = *state.navigation.detail_id;
+    const DetailsAsked now{licenses_read_, game_roots_.count(id) > 0};
+    const auto asked = details_asked_.find(id);
+    const auto ask = NextDetailsAsk(asked == details_asked_.end() ? std::nullopt : std::optional<DetailsAsked>(asked->second), now,
+                                    state.navigation.detail_id != requested_detail_);
+    if (ask != DetailsAsk::kNothing) {
+      requested_detail_ = id;
+      details_asked_[id] = now;
+      if (auto* details = Details(id.store); details && details == app_details_) {
+        if (ask == DetailsAsk::kAgain) details->Refresh(id, generation, true);
+        else details->RequestFirst(id, generation);
+      }
     }
   }
   for (const auto& details : app_details_->Pump(8)) {
@@ -2297,8 +2306,16 @@ void Controller::TickAppDetails() {
           game_version.languages.push_back({size.language, size.download_bytes, size.install_bytes});
         versions.push_back(std::move(game_version));
       }
+      std::vector<GameDlc> dlc;
+      for (const auto& choice : details.dlc)
+      {
+        dlc.push_back({choice.app_id, choice.name, choice.download_bytes, choice.install_bytes, choice.free, {}});
+        for (const auto& other : choice.other_sizes)
+          dlc.back().other_sizes.push_back({other.branch, other.language, other.download_bytes, other.install_bytes, other.optional});
+        dlc.back().optional = choice.optional;
+      }
       model_.UpdateAppDetails(details.id, details.download_bytes, details.install_bytes, details.windows_installable,
-                              details.languages, details.dlc_count, std::move(versions),
+                              details.languages, std::move(dlc), std::move(versions),
                               {details.update.newer, details.update.new_dlc, 0, 0, details.update.target, false}, !check_waits);
       if (details.launches_any_branch) launches_any_branch_.insert(details.id);
       else launches_any_branch_.erase(details.id);
@@ -2327,7 +2344,7 @@ void Controller::TickAppDetails() {
   for (const auto& check : model_.TakeSizeChecks()) {
     auto* details = Details(check.id.store);
     // Not queued: as a check that failed, asked again when the sheet opens next.
-    if (!signed_in || details != app_details_ || !details->Measure({check.id, check.branch, check.language}, generation))
+    if (!signed_in || details != app_details_ || !details->Measure({check.id, check.branch, check.language, false, check.excluded_dlc}, generation))
       model_.UpdateMeasuredSize(check, false, true, {});
   }
   // Updates' sizes: the files that change, from the new manifests and each install's tree.
@@ -2342,7 +2359,7 @@ void Controller::TickAppDetails() {
         app_details_->Refresh(size.request.id, generation);
       continue;
     }
-    model_.UpdateMeasuredSize({size.request.id, size.request.branch, size.request.language}, size.measured, size.failed,
+    model_.UpdateMeasuredSize({size.request.id, size.request.branch, size.request.language, size.request.excluded_dlc}, size.measured, size.failed,
                               {size.install_bytes, size.download_bytes});
   }
 }

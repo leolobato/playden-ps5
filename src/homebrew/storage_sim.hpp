@@ -32,13 +32,15 @@ struct InstallAssessment {
 
 // `version`: the version chosen for this install; its sizes, when known, replace the game's. `language`: the
 // content language chosen for it; that language's sizes on `version`, when known, replace both. `measured`: that
-// choice's size from its manifests, which replaces them all.
+// choice's size from its manifests, which replaces them all. `dlc`: what the DLC choice takes off Steam's figures
+// (the measured size already leaves that out) and adds to any of them.
 [[nodiscard]] InstallAssessment assess_install(const State& state, GameId game_id,
                                                const std::string& volume_id,
                                                std::uint64_t safety_margin_bytes = 0,
                                                const GameVersion* version = nullptr,
                                                const std::string& language = {},
-                                               const MeasuredInstallSize* measured = nullptr) noexcept;
+                                               const MeasuredInstallSize* measured = nullptr,
+                                               const InstallDlcSizes& dlc = {}) noexcept;
 
 void reconcile_storage(State& state) noexcept;
 
