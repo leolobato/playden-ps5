@@ -2644,6 +2644,18 @@ void live_play_does_the_next_useful_thing() {
         model.UpdateRuntime(RuntimeState::Ready, {physx});
         check(find_row(model, "details-hint")->title == "This game needs PhysX. Add its installer to the game's _Redist folder, then press Play.",
               "without a known version the hint still says what to add");
+        // Not while setup runs, nor while Play installs something: "press Play" isn't true yet.
+        auto preparing_physx = physx;
+        preparing_physx.status = "Preparing"; preparing_physx.ready = preparing_physx.can_play = false;
+        preparing_physx.detail = "Step 6 of 6 · Waiting for the PS5"; preparing_physx.physx_needed = "2.8.1";
+        model.UpdateRuntime(RuntimeState::Ready, {preparing_physx});
+        check(!has_row(model, "details-hint") && find_row(model, "details-setup")->value == preparing_physx.detail,
+              "no PhysX message during setup");
+        auto installing_physx = physx;
+        installing_physx.physx_needed = "2.8.1"; installing_physx.play_work = "Installing PhysX…";
+        model.UpdateRuntime(RuntimeState::Ready, {installing_physx});
+        check(!has_row(model, "details-hint") && find_row(model, "details-setup")->value == "Installing PhysX",
+              "no PhysX message while one installs");
         physx.physx_needed.reset();
         model.UpdateRuntime(RuntimeState::Ready, {physx});
         check(!has_row(model, "details-hint"), "with the engine there is no hint");

@@ -1009,6 +1009,8 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
       return rt::ProgramUsesPhysx(files.root.string(), program);
     });
   if (physx_needed) Log("redist app=" + std::to_string(number) + " physx engine missing version=" + (physx_needed->empty() ? "unknown" : *physx_needed));
+  // Kept in the bottle: the game's page says it again after Playden restarts, before the next Play checks.
+  if (!rt::RecordPhysxNeeded(files.prefix, physx_needed)) Log("redist app=" + std::to_string(number) + " physx note not saved");
   Publish([&](RuntimeSnapshot& s) {
     if (physx_needed) s.physx_needed[number] = *physx_needed;
     else s.physx_needed.erase(number);
@@ -4590,6 +4592,14 @@ bool RuntimeHost::RunServices() {
           hints[record.runtime_number] = program;
         }
         if (!hints.empty()) Publish([&](RuntimeSnapshot& s) { s.launcher_hints = std::move(hints); });
+        // What the last check found: a game missing its PhysX engine says so before its next Play.
+        std::map<std::uint32_t, std::string> physx;
+        for (const auto& record : c.repository.Snapshot()) {
+          if (record.state != rt::PreparationState::kReady) continue;
+          if (auto needed = rt::RecordedPhysxNeeded((HostPath(record.data_root) / "library/prefixes/game").string()))
+            physx[record.runtime_number] = std::move(*needed);
+        }
+        if (!physx.empty()) Publish([&](RuntimeSnapshot& s) { s.physx_needed = std::move(physx); });
       }
       if (config_.title_log)
         for (const auto& record : c.repository.Snapshot()) {

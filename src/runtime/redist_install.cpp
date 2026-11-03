@@ -29,6 +29,7 @@ constexpr std::size_t kMaxScripts = 32;
 constexpr int kMaxDepth = 4;
 constexpr std::size_t kMaxPhysxPackages = 8;
 constexpr const char* kStateFile = ".playden-redist";
+constexpr const char* kPhysxNeededFile = ".playden-physx-needed";
 constexpr const char* kMfcScanFile = ".playden-mfc";
 constexpr const char* kEnvironmentKey = "System\\CurrentControlSet\\Control\\Session Manager\\Environment";
 
@@ -818,6 +819,21 @@ std::optional<std::string> MissingPhysxEngine(const std::string& game_root, cons
     if (!BottleHasPhysxEngine(prefix_dir, version)) return version;
   }
   return std::nullopt;
+}
+
+bool RecordPhysxNeeded(const std::string& prefix_dir, const std::optional<std::string>& needed) {
+  if (RecordedPhysxNeeded(prefix_dir) == needed) return true;
+  auto directory = ManagedDirectory::Open(prefix_dir, DirectoryPolicy::kApprovedTree);
+  if (!directory) return false;
+  return needed ? WriteFileAt(*directory, kPhysxNeededFile, *needed) : directory->RemoveRegularFile(kPhysxNeededFile);
+}
+
+std::optional<std::string> RecordedPhysxNeeded(const std::string& prefix_dir) {
+  std::string text;
+  if (!ReadFile(std::filesystem::path(prefix_dir) / kPhysxNeededFile, 64, &text)) return std::nullopt;
+  if (!std::all_of(text.begin(), text.end(), [](char value) { return value == '.' || (value >= '0' && value <= '9'); }))
+    return std::nullopt;
+  return text;
 }
 
 bool RedistIsPhysx(const std::string& name) { return Lower(name).find("physx") != std::string::npos; }

@@ -59,6 +59,12 @@ std::optional<std::string> MissingPhysxEngine(const std::string& game_root, cons
                                               const std::string& prefix_dir,
                                               const std::function<bool(const std::string&)>& uses_physx);
 
+// What MissingPhysxEngine last found, kept in the bottle so a later Playden start can say it without reading the game's
+// drive (which may not be there). RecordPhysxNeeded replaces it (nullopt: nothing is missing); RecordedPhysxNeeded reads
+// it: the version, empty when it isn't known, or nullopt.
+bool RecordPhysxNeeded(const std::string& prefix_dir, const std::optional<std::string>& needed);
+std::optional<std::string> RecordedPhysxNeeded(const std::string& prefix_dir);
+
 // Whether a redistributable's name (an install script's entry) is PhysX's.
 bool RedistIsPhysx(const std::string& name);
 

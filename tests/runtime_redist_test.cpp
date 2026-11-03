@@ -514,6 +514,20 @@ void TestFoundPhysx() {
     CHECK(!MissingPhysxEngine(versioned.string(), {"Tools/Plain.exe", "Binaries/Game.exe", "Local/Game.exe"}, bottle.string(), uses));
   }
 
+  // What the check found stays in the bottle for the next Playden start.
+  {
+    const auto note = fresh_prefix("note-prefix");
+    CHECK(!RecordedPhysxNeeded(note.string()));
+    CHECK(RecordPhysxNeeded(note.string(), std::string("2.8.1")) && RecordedPhysxNeeded(note.string()) == std::optional<std::string>("2.8.1"));
+    CHECK(RecordPhysxNeeded(note.string(), std::string()) && RecordedPhysxNeeded(note.string()) == std::optional<std::string>(""));
+    CHECK(RecordPhysxNeeded(note.string(), std::nullopt) && !RecordedPhysxNeeded(note.string()));
+    CHECK(RecordPhysxNeeded(note.string(), std::nullopt));  // nothing to remove
+    WriteText(note / ".playden-physx-needed", "not a version");
+    CHECK(!RecordedPhysxNeeded(note.string()));
+    const auto missing = base / "no-such-bottle";
+    CHECK(!RecordedPhysxNeeded(missing.string()));
+  }
+
   // Needed, and nothing to install.
   const auto bare = base / "bare";
   std::filesystem::create_directories(bare / "Binaries");
