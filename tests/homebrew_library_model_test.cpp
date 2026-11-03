@@ -3824,7 +3824,7 @@ void live_import_sheet_sends_requests() {
               model.view().subtitle.rfind("Starts with Delores.exe, which you can change in Game settings.", 0) == 0,
           "one program besides an installer skips the program list");
     check(model.view().surface == "import-choice" && find_row(model, "import-play-in-place")->title == "Play from the drop folder" &&
-              find_row(model, "import-copy")->title == "Import into Playden…" && !has_row(model, "import-move"),
+              find_row(model, "import-copy")->title == "Move to storage…" && !has_row(model, "import-move"),
           "a drop-folder game plays from there or is imported into Playden");
     activate(model, "import-play-in-place");
     requests = model.TakeImportRequests();
@@ -3888,7 +3888,7 @@ void live_import_choice_and_details() {
     check(model.view().surface == "import-choice" && model.TakeImportRequests().empty(), "its Play from the drive does nothing");
     model.action("circle");
 
-    // A drive folder: play in place, or Import into Playden with its size (no estimate), then the drive.
+    // A drive folder: play in place, or Copy to storage with its size (no estimate), then the drive.
     activate(model, "import-candidate-usb0:playden/import/Rally");
     check(find_row(model, "import-play-in-place")->title == "Play from the USB drive" &&
               find_row(model, "import-play-in-place")->value.empty() &&
@@ -3945,7 +3945,9 @@ void live_import_choice_and_details() {
               find_row(model, "details-remove") && !has_row(model, "details-cloud") && !has_row(model, "details-uninstall"),
           "an imported game on a drive offers Copy to storage and Remove from library");
     {
-        // Both wait while the game is set up, and so does Remove in its actions.
+        // Both wait while the game is set up or runs, and so does Remove in its actions. The page asks whether it runs.
+        const auto asked = model.TakeActivityRequests();
+        check(std::count(asked.begin(), asked.end(), id) == 1, "an imported game's page asks whether it runs");
         using playden::homebrew::LiveRuntimeGame;
         using playden::homebrew::RuntimeState;
         check(find_row(model, "details-copy")->enabled && find_row(model, "details-remove")->enabled, "both work when nothing runs");
@@ -3960,8 +3962,29 @@ void live_import_choice_and_details() {
             check(model.state().navigation.modals.empty(), "Remove can't be pressed during setup");
         }
         activate(model, "details-more");
-        check(find_row(model, "import-remove") && !find_row(model, "import-remove")->enabled, "Game actions' Remove waits too");
+        check(find_row(model, "import-remove") && !find_row(model, "import-remove")->enabled &&
+                  find_row(model, "import-remove")->subtitle == "Waits for setup to finish",
+              "Game actions' Remove waits too");
         model.action("circle");
+        for (int state = 0; state < 3; ++state) {
+            LiveRuntimeGame running; running.game_id = id; running.status = "Ready"; running.ready = true;
+            if (state == 0) running.activity = playden::homebrew::TitleActivity::Running;
+            if (state == 1) running.play_status = "Playing";
+            if (state == 2) running.play_status = "Starting…";
+            model.UpdateRuntime(RuntimeState::Ready, {running});
+            check(!find_row(model, "details-copy")->enabled && !find_row(model, "details-remove")->enabled, "both wait for the game to close");
+            if (model.action("focus:details-remove")) model.action("cross");
+            check(model.state().navigation.modals.empty(), "Remove can't be pressed while the game runs");
+        }
+        activate(model, "details-more");
+        check(find_row(model, "import-remove")->subtitle == "Quit the game first", "Game actions says to quit the game");
+        model.action("circle");
+        // Not known to run, or known to be closed: nothing waits.
+        for (const auto activity : {playden::homebrew::TitleActivity::Unknown, playden::homebrew::TitleActivity::Stopped}) {
+            LiveRuntimeGame closed; closed.game_id = id; closed.status = "Ready"; closed.ready = true; closed.activity = activity;
+            model.UpdateRuntime(RuntimeState::Ready, {closed});
+            check(find_row(model, "details-copy")->enabled && find_row(model, "details-remove")->enabled, "a game not known to run doesn't wait");
+        }
         LiveRuntimeGame done; done.game_id = id; done.status = "Ready"; done.ready = done.can_play = true;
         model.UpdateRuntime(RuntimeState::Ready, {done});
         check(find_row(model, "details-copy")->enabled && find_row(model, "details-remove")->enabled, "both are back after setup");

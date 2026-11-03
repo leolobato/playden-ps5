@@ -262,7 +262,7 @@ The drive must be exFAT. The PS5 can't read NTFS, and FAT32 can't hold files ove
 4. Choose where the game files live:
    - **Play from the USB drive** (or the M.2 SSD, or the drop folder): nothing is copied. The drive must stay plugged
      in.
-   - **Import into Playden:** then choose the storage it goes to. Playden copies the game there; the console copies
+   - **Copy to storage** (**Move to storage** for the drop folder): then choose the storage it goes to. Playden copies the game there; the console copies
      about 11 MB/s, so a large game takes a while. A drive without room for the game, and the drive the game is on,
      can't be chosen.
 5. For a game in the drop folder, **Console storage** moves the folder into Playden at once. Another drive gets a

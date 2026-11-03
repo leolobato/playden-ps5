@@ -1417,6 +1417,7 @@ private:
     void load_fixtures();
     void load_profile();
     bool save_profile();
+    GameId import_page_asked_;  // the imported game whose open page has asked whether it runs
     void reset_default_state();
     void rebuild_view();
     void activate();
@@ -1463,7 +1464,7 @@ private:
     void look_for_games();
     std::string import_programs_key_;  // the candidate whose program list is open
     // The import wizard. Step 1 (surface import-choice), for the program picked in the open program
-    // list: play the game from its folder, or Import into Playden. Step 2 (surface import-storage):
+    // list: play the game from its folder, or Copy to storage. Step 2 (surface import-storage):
     // the drive the game goes to, for that program's folder or for a game already added
     // (import_choice_game_ valid: its page's Copy to storage opens step 2 directly).
     void open_import_choice(std::size_t program);

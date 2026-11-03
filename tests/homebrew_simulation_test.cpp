@@ -1311,7 +1311,7 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
               simulation.view().subtitle == "You can import it into Playden later from the game's page." &&
               row("import-play-in-place")->title == "Play from the USB drive" &&
               row("import-play-in-place")->subtitle == "Nothing is copied. Keep the drive plugged in." &&
-              row("import-copy")->title == "Import into Playden…" && row("import-copy")->value == "938 MB" &&
+              row("import-copy")->title == "Copy to storage…" && row("import-copy")->value == "938 MB" &&
               row("import-copy")->subtitle == "Copies the game. You pick the storage next." &&
               simulation.state().navigation.focus_key == "import-copy",
           "T17 choosing the program asks where the game files live, Import focused");
@@ -1399,7 +1399,7 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     press("import-candidate-internal:playden-import/Hollow Knight");
     check(row("import-play-in-place")->title == "Play from the drop folder" &&
               row("import-play-in-place")->subtitle == "Nothing moves. The files stay in /data/playden-import." &&
-              row("import-copy")->title == "Import into Playden…" && row("import-copy")->value == "8.9 GB" &&
+              row("import-copy")->title == "Move to storage…" && row("import-copy")->value == "8.9 GB" &&
               row("import-copy")->subtitle == "Takes the game out of the drop folder. You pick the storage next." &&
               !row("import-move") && !row("storage-picker"),
           "T18 a drop-folder game plays from there or is imported");
