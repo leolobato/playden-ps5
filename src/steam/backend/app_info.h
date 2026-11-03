@@ -103,6 +103,7 @@ struct AppInfo {
   std::vector<std::uint32_t> dlc_app_ids;  // extended/listofdlc, which Steam cuts at 64 entries
   // A DLC's game: extended/dlcforappid, else a DLC's common/parent. 0 for anything else.
   std::uint32_t dlc_for_app_id = 0;
+  bool free_app = false;  // extended/isfreeapp: anyone who owns the game can claim this DLC for free
   std::vector<AppLaunch> launches;  // sorted by id
   std::string controller_support;
   std::string icon;  // common/icon: the hash of the library icon, as GetOwnedGames img_icon_url
@@ -116,14 +117,15 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
 bool OsListMatchesWindows(std::string_view os_list);
 
 // What an install asks for: the content language as Steam names it ("german"; empty: English)
-// and the branch whose manifests are installed.
+// and the branch whose manifests are installed. `excluded_dlc`: DLC the player turned off, whose depots stay out.
 struct DepotSelection {
   std::string language;
   std::string branch = "public";
+  std::set<std::uint32_t> excluded_dlc;
 };
 
 struct SelectionResult {
-  // A depot left out, and why: os, shared, licence, dlc, branch, language, arch or duplicate.
+  // A depot left out, and why: os, shared, licence, dlc, dlc-off, branch, language, arch or duplicate.
   struct Rejected {
     std::uint32_t id = 0;
     std::uint32_t source_app = 0;
@@ -139,7 +141,7 @@ struct SelectionResult {
 // Windows depot selection over the game's depots and those its DLC apps list (`dlc_apps`, the
 // appinfo of DLC from the game's listofdlc). Each depot passes, in order: os, shared install,
 // licence (an owned depot or depotfromapp; every depot when the licenses are unknown), DLC
-// ownership, and a manifest on the branch. A depot listed twice is kept once, from a listing
+// ownership, the player's excluded DLC, and a manifest on the branch. A depot listed twice is kept once, from a listing
 // with a manifest on the branch; two different manifests for one depot fail the selection.
 //
 // Then per owner (the game, or one DLC): the content language, then a usable 64-bit Windows
@@ -183,6 +185,26 @@ std::vector<BranchOffer> OfferedBranches(const AppInfo& app, const std::vector<A
                                          const std::set<std::uint32_t>& owned_apps,
                                          const std::optional<std::set<std::uint32_t>>& owned_depots,
                                          const std::string& language);
+
+// A DLC with files an install can leave out, for the install sheet's DLC list.
+struct DlcOffer {
+  std::uint32_t app_id = 0;
+  std::string name;  // without the game's name in front; empty when Steam doesn't describe the DLC
+  std::uint64_t install_bytes = 0;
+  std::uint64_t download_bytes = 0;
+  bool free = false;  // not owned yet: an install claims it, unless it is turned off
+};
+
+// The DLC an install of the game could hold, as SelectDepots selects them: owned DLC and free DLC this account can
+// still claim (`refused`: free DLC Steam said no to). DLC with no files (most of them only unlock something) isn't
+// listed. Sorted by name, DLC without a name last.
+std::vector<DlcOffer> OfferedDlc(const AppInfo& app, const std::vector<AppInfo>& dlc_apps,
+                                 const std::set<std::uint32_t>& owned_apps,
+                                 const std::optional<std::set<std::uint32_t>>& owned_depots,
+                                 const DepotSelection& selection, const std::set<std::uint32_t>& refused = {});
+
+// `offers` in the list's order: by name, DLC without a name last.
+void SortDlcOffers(std::vector<DlcOffer>* offers);
 
 // What `depots` install and download, in bytes. Some appinfo reports a download larger than the
 // install (FINAL FANTASY XIII, issue #5); compressed chunks never are, so the download is capped.

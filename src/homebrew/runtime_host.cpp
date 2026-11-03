@@ -846,12 +846,14 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
         return std::find(ids.begin(), ids.end(), id) != ids.end();
       };
       std::vector<std::uint32_t> added;
+      // DLC turned off at install stays out: the game would look for files that aren't there.
       for (const auto dlc : config_.owned_dlc(identity.steam_id, steam_app.app_id))
-        if (dlc != steam_app.app_id && !listed(identity.owned_dlc, dlc) && !listed(added, dlc)) added.push_back(dlc);
+        if (dlc != steam_app.app_id && !listed(identity.owned_dlc, dlc) && !listed(added, dlc) && !listed(identity.excluded_dlc, dlc))
+          added.push_back(dlc);
       if (!added.empty()) {
         identity.owned_dlc.insert(identity.owned_dlc.end(), added.begin(), added.end());
         const bool kept = !facts || other_store ||
-                          rt::WriteSteamworksFacts(root.string(), identity.depots, identity.owned_dlc, identity.language);
+                          rt::WriteSteamworksFacts(root.string(), identity.depots, identity.owned_dlc, identity.language, identity.excluded_dlc);
         Log("steamworks app=" + std::to_string(record.runtime_number) + " owned dlc added=" + std::to_string(added.size()) +
             " total=" + std::to_string(identity.owned_dlc.size()) + (kept ? "" : " facts=write-failed"));
       }

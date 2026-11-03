@@ -368,6 +368,9 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
     if (const VdfNode* extended = common->Find("extended")) dlc_list = extended->String("listofdlc");
   }
   if (dlc_list) app.dlc_app_ids = ParseDlcList(*dlc_list);
+  if (const VdfNode* extended = root->Find("extended")) app.free_app = ChildU32(extended, "isfreeapp").value_or(0) != 0;
+  if (!app.free_app && common != nullptr)
+    if (const VdfNode* extended = common->Find("extended")) app.free_app = ChildU32(extended, "isfreeapp").value_or(0) != 0;
   // listofdlc stops at 64 entries (Monster Hunter: World's leaves out Iceborne): a DLC names its game itself,
   // in dlcforappid (whatever its type says, as GameNative reads it), else in common/parent when it is a DLC.
   {
@@ -541,6 +544,7 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
     if (depot.shared_install) { reject(depot, "shared"); continue; }
     if (owned_depots && owned_depots->count(depot.id) == 0 && from_app.count(depot.id) == 0) { reject(depot, "licence"); continue; }
     if (depot.owner_app != app.app_id && owned_apps.count(depot.owner_app) == 0) { reject(depot, "dlc"); continue; }
+    if (depot.owner_app != app.app_id && selection.excluded_dlc.count(depot.owner_app)) { reject(depot, "dlc-off"); continue; }
     eligible = true;
     if (!depot.manifest_gid || *depot.manifest_gid == 0) { reject(depot, "branch"); continue; }
     passed.push_back(&depot);
@@ -597,6 +601,68 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
     return false;
   }
   return true;
+}
+
+namespace {
+// A DLC's name for a list under its game: "Game: Extras" and "Game - Extras" read as "Extras".
+std::string DlcDisplayName(const std::string& game, const std::string& name, std::uint32_t dlc) {
+  // Steam without a name: ParseAppInfo's placeholder.
+  if (name.empty() || name == "app_" + std::to_string(dlc)) return {};
+  if (game.empty() || name.size() <= game.size() || LowerString(name.substr(0, game.size())) != LowerString(game)) return name;
+  const auto rest = name.find_first_not_of(" :-\xE2\x80\x93\x94", game.size());
+  // The game's name must end there: "Portal 2" isn't in front of "Portal 25".
+  if (rest == std::string::npos || rest == game.size()) return name;
+  return name.substr(rest);
+}
+}  // namespace
+
+std::vector<DlcOffer> OfferedDlc(const AppInfo& app, const std::vector<AppInfo>& dlc_apps,
+                                 const std::set<std::uint32_t>& owned_apps,
+                                 const std::optional<std::set<std::uint32_t>>& owned_depots,
+                                 const DepotSelection& selection, const std::set<std::uint32_t>& refused) {
+  // Free DLC an install would claim counts as granted: its depots are what the player decides on.
+  std::set<std::uint32_t> free, apps = owned_apps;
+  auto depots = owned_depots;
+  for (const AppInfo& dlc : dlc_apps) {
+    if (!dlc.free_app || owned_apps.count(dlc.app_id) || refused.count(dlc.app_id) ||
+        std::find(app.dlc_app_ids.begin(), app.dlc_app_ids.end(), dlc.app_id) == app.dlc_app_ids.end())
+      continue;
+    free.insert(dlc.app_id);
+    apps.insert(dlc.app_id);
+    if (!depots) continue;
+    for (const DepotInfo& depot : dlc.depots) depots->insert(depot.id);
+    for (const DepotInfo& depot : app.depots)
+      if (depot.dlc_app_id == dlc.app_id) depots->insert(depot.id);
+  }
+  DepotSelection all = selection;
+  all.excluded_dlc.clear();
+  SelectionResult selected;
+  if (!SelectDepots(app, dlc_apps, apps, depots, all, &selected)) return {};
+
+  std::map<std::uint32_t, std::vector<DepotInfo>> owners;
+  for (const DepotInfo& depot : selected.depots)
+    if (depot.owner_app != 0 && depot.owner_app != app.app_id) owners[depot.owner_app].push_back(depot);
+  std::vector<DlcOffer> offers;
+  for (const auto& [owner, owned] : owners) {
+    DlcOffer offer;
+    offer.app_id = owner;
+    offer.free = free.count(owner) > 0;
+    DepotBytes(owned, &offer.install_bytes, &offer.download_bytes);
+    if (offer.install_bytes == 0) continue;
+    for (const AppInfo& dlc : dlc_apps)
+      if (dlc.app_id == owner) offer.name = DlcDisplayName(app.name, dlc.name, owner);
+    offers.push_back(std::move(offer));
+  }
+  SortDlcOffers(&offers);
+  return offers;
+}
+
+void SortDlcOffers(std::vector<DlcOffer>* offers) {
+  std::sort(offers->begin(), offers->end(), [](const DlcOffer& left, const DlcOffer& right) {
+    if (left.name.empty() != right.name.empty()) return right.name.empty();
+    const auto a = LowerString(left.name), b = LowerString(right.name);
+    return a != b ? a < b : left.app_id < right.app_id;
+  });
 }
 
 void DepotBytes(const std::vector<DepotInfo>& depots, std::uint64_t* install, std::uint64_t* download) {

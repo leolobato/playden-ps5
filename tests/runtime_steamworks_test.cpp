@@ -154,6 +154,11 @@ int main(int argc, char** argv) {
   SteamworksIdentity facts;
   CHECK(ReadSteamworksFacts(root.string(), &facts));
   CHECK((facts.depots == std::vector<std::uint32_t>{10, 20}) && (facts.owned_dlc == std::vector<std::uint32_t>{3000, 3001}));
+  CHECK(facts.excluded_dlc.empty());
+  Write(root / kSteamworksFactsFile, SerializeSteamworksFacts({10}, {3000}, {}, {4001, 4000}));
+  SteamworksIdentity turned_off;
+  CHECK(ReadSteamworksFacts(root.string(), &turned_off));
+  CHECK((turned_off.excluded_dlc == std::vector<std::uint32_t>{4000, 4001}) && (turned_off.owned_dlc == std::vector<std::uint32_t>{3000}));
   // A file from before Playden could choose a language reads as English, which is what it got.
   CHECK(facts.language == "english");
 

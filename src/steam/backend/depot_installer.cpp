@@ -1020,8 +1020,14 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     std::string text = "{\"version\":2,\"app_id\":" + std::to_string(target.app_id) + identity +
                        ",\"install_bytes\":" + std::to_string(progress.install_total) +
                        ",\"files\":" + std::to_string(progress.files_total) + ",\"branch\":\"" +
-                       RecordText(target.branch, "public") + "\",\"language\":\"" + RecordText(target.language, "english") +
-                       "\",\"depots\":[";
+                       RecordText(target.branch, "public") + "\",\"language\":\"" + RecordText(target.language, "english") + "\"";
+    if (!target.excluded_dlc.empty()) {
+      text += ",\"excluded_dlc\":[";
+      for (std::size_t index = 0; index < target.excluded_dlc.size(); ++index)
+        text += (index ? "," : "") + std::to_string(target.excluded_dlc[index]);
+      text += "]";
+    }
+    text += ",\"depots\":[";
     for (std::size_t index = 0; index < access.grants.size(); ++index) {
       // Grants skip refused depots, so the selection is looked up by id.
       const auto& grant = access.grants[index];

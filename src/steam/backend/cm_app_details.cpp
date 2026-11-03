@@ -59,6 +59,7 @@ std::vector<DepotInfo> DepotsToUpdate(std::uint32_t id, const std::string& buffe
   DepotSelection selection;
   if (!record.language.empty()) selection.language = record.language;
   if (!record.branch.empty()) selection.branch = record.branch;
+  selection.excluded_dlc.insert(record.excluded_dlc.begin(), record.excluded_dlc.end());
   std::set<std::uint32_t> apps{id};
   apps.insert(licensed->apps.begin(), licensed->apps.end());
   SelectionResult selected;
@@ -87,6 +88,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
   if (installed) {
     if (!installed->language.empty()) selection.language = installed->language;
     if (!installed->branch.empty()) selection.branch = installed->branch;
+    selection.excluded_dlc.insert(installed->excluded_dlc.begin(), installed->excluded_dlc.end());
   }
   SelectionResult selected;
   // As an install selects them; without licenses, or when they grant none of it, every eligible depot.

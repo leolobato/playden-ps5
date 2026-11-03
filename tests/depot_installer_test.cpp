@@ -1611,6 +1611,7 @@ void UpdateReplacesChangedFiles(const std::filesystem::path& root) {
   auto target = UpdateTarget(root);
   target.depots[0].manifest_gid = 21;
   target.language = "german";
+  target.excluded_dlc = {900, 901};
   std::vector<std::string> folders;
   target.before_apply = [&](const std::string& folder, const std::vector<std::uint32_t>& skipped) {
     folders.push_back(folder);
@@ -1650,6 +1651,7 @@ void UpdateReplacesChangedFiles(const std::filesystem::path& root) {
   CHECK(outcome.progress.install_total == 27 + 13 + 5 && outcome.progress.files_total == 3);
   const auto record = playden::installs::ReadInstallRecord((root / DepotInstaller::kInstallRecord).string());
   CHECK(record && record->language == "german" && record->install_bytes == 45);
+  CHECK((record->excluded_dlc == std::vector<std::uint32_t>{900, 901}));
   CHECK((record->depots == std::vector<playden::installs::RecordedDepot>{{441, 21, 440, 440}, {442, 12, 440, 440}}));
   const auto tree = Read(root / DepotInstaller::kFileTree);
   CHECK(tree.find("\t5\tnew/added.txt\n") != std::string::npos && tree.find("empty.txt") == std::string::npos);

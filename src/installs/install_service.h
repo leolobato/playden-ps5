@@ -53,7 +53,10 @@ std::vector<InstallRequest> ParseInstallRequests(const std::string& text);
 struct InstallOptions {
   std::string language;  // a Steam content language code ("german")
   std::string branch;    // a Steam branch name
-  bool operator==(const InstallOptions& other) const { return language == other.language && branch == other.branch; }
+  std::vector<std::uint32_t> excluded_dlc;  // DLC the player turned off, sorted: not claimed, downloaded or reported
+  bool operator==(const InstallOptions& other) const {
+    return language == other.language && branch == other.branch && excluded_dlc == other.excluded_dlc;
+  }
   bool operator!=(const InstallOptions& other) const { return !(*this == other); }
 };
 
@@ -96,6 +99,7 @@ struct InstallJobView {
   std::uint64_t done_bytes = 0;
   std::uint64_t total_bytes = 0;
   std::uint64_t held_bytes = 0;  // installed bytes already on disk (see PendingInstallBytes)
+  std::optional<std::uint64_t> estimated_bytes;  // what the job was asked with, which its drive reserves
   std::string failure;  // short, user-facing
   std::string volume_id;
   std::optional<std::uint64_t> bytes_per_second;

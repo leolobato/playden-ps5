@@ -1459,13 +1459,15 @@ void PreparesGameWithoutShippedRecipe() {
   // The game's own Steam library (a 64-bit PE that asks for one interface).
   const std::string own_api = pe + std::string("\0SteamUser021\0", 14);
   Write(game / "Bin/steam_api64.dll", own_api, 0644);
-  Write(game / ".playden-steam", "depots=4243\ndlc=4250\n", 0644);
+  // 4270 was turned off at install: the game isn't told about it.
+  Write(game / ".playden-steam", "depots=4243\ndlc=4250\nnodlc=4270\n", 0644);
   // The Library knows one more owned DLC than the download recorded (past listofdlc's 64 entries).
   std::vector<std::pair<std::uint64_t, std::uint32_t>> dlc_asked;
   config.owned_dlc = [&dlc_asked](std::uint64_t steam_id, std::uint32_t app_id) {
     dlc_asked.emplace_back(steam_id, app_id);
-    return std::vector<std::uint32_t>{4260, 4250, 4242};
+    return std::vector<std::uint32_t>{4260, 4250, 4242, 4270};
   };
+
   std::map<std::string, std::string> saved_settings;
   config.settings_record = [&saved_settings](const playden::GameId&) -> std::optional<GameSettingsRecord> {
     if (saved_settings.empty()) return std::nullopt;
@@ -1509,7 +1511,7 @@ void PreparesGameWithoutShippedRecipe() {
   CHECK(Read(game / "Bin/steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n4250=dlc4250\n4260=dlc4260\n");
   CHECK(!dlc_asked.empty() && dlc_asked.back() == std::make_pair(std::uint64_t{76561198000000001ull}, std::uint32_t{4242}));
   // The added DLC stay with the download's facts, for a start before the next license read.
-  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\n");
+  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\n");
   CHECK(Read(game / "Bin/steam_settings/steam_interfaces.txt") == "SteamUser021\n");
   // The bottle's owner marker names the generated recipe, so the game's sessions are read.
   const auto marker = Read(fixture.root / "data/playden/games/steam-4242/library/prefixes/game/.playden-template-owner");

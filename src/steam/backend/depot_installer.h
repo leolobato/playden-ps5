@@ -45,6 +45,8 @@ struct InstallTarget {
   // language they resolved to. Empty: "public" and "english".
   std::string branch;
   std::string language;
+  // Written to the install record: DLC the player turned off, which `depots` leave out.
+  std::vector<std::uint32_t> excluded_dlc;
   // An update of the finished install at install_root: only files whose content changed are downloaded,
   // into <root>/.playden-update/staging/ with their own journal, while the game stays as it was. Once
   // everything is there they replace the game's files, files the new version dropped are deleted, and

@@ -902,6 +902,82 @@ void TestVersions() {
         BetaKeyMatchesBranch("default", "") && BetaKeyMatchesBranch("", "beta") && !BetaKeyMatchesBranch("4.04", "public"));
 }
 
+// The shape of Warhammer 40,000: Space Marine 2: a free pack the game lists, a paid DLC, one only its own appinfo
+// lists, and DLC with no files.
+void TestDlcChoice() {
+  const auto game = ParseAppInfo(5000, R"("appinfo"
+{
+  "common" { "name" "Big Game" "type" "Game" }
+  "extended" { "listofdlc" "5001,5002,5003,5004,5005,5006" }
+  "depots"
+  {
+    "5000" { "manifests" { "public" { "gid" "1" "size" "1000" "download" "800" } } }
+    "5011" { "dlcappid" "5001" "manifests" { "public" { "gid" "2" "size" "3000" "download" "2000" } } }
+    "5012" { "dlcappid" "5002" "manifests" { "public" { "gid" "3" "size" "20" "download" "10" } } }
+    "5015" { "dlcappid" "5005" "manifests" { "public" { "gid" "6" "size" "0" "download" "0" } } }
+    "5016" { "dlcappid" "5006" "manifests" { "public" { "gid" "7" "size" "7" "download" "7" } } }
+  }
+})");
+  CHECK(game.has_value());
+  const auto dlc = [](std::uint32_t id, const std::string& fields) {
+    const auto parsed = ParseAppInfo(id, "\"appinfo\" { " + fields + " }");
+    CHECK(parsed.has_value());
+    return *parsed;
+  };
+  const std::vector<AppInfo> dlc_apps{
+      dlc(5001, R"("common" { "name" "Big Game - Texture Pack" "type" "DLC" } "extended" { "isfreeapp" "1" })"),
+      dlc(5002, R"("common" { "name" "Art Book" "type" "DLC" })"),
+      dlc(5003, R"("common" { "name" "Big Game: Campaign" "type" "DLC" }
+                   "depots" { "5013" { "manifests" { "public" { "gid" "4" "size" "50" "download" "40" } } } })"),
+      dlc(5004, R"("common" { "name" "Skin" "type" "DLC" } "extended" { "isfreeapp" "1" })"),
+      dlc(5005, R"("common" { "name" "Unlock" "type" "DLC" })"),
+  };
+  CHECK(dlc_apps[0].free_app && !dlc_apps[1].free_app);
+  const std::set<std::uint32_t> owned{5000, 5002, 5003, 5005, 5006};
+  const std::set<std::uint32_t> depots{5000, 5012, 5013, 5015, 5016};
+
+  // Sorted by name, without the game's in front; the DLC Steam doesn't describe last; no files, no row.
+  auto offers = OfferedDlc(*game, dlc_apps, owned, depots, DepotSelection{});
+  CHECK(offers.size() == 4);
+  CHECK(offers[0].name == "Art Book" && offers[0].install_bytes == 20 && offers[0].download_bytes == 10 && !offers[0].free);
+  CHECK(offers[1].name == "Campaign" && offers[1].app_id == 5003 && offers[1].install_bytes == 50);
+  CHECK(offers[2].name == "Texture Pack" && offers[2].free && offers[2].install_bytes == 3000);
+  CHECK(offers[3].name.empty() && offers[3].app_id == 5006);
+
+  // Free DLC Steam refused this account, or already owned, isn't offered as free.
+  offers = OfferedDlc(*game, dlc_apps, owned, depots, DepotSelection{}, {5001});
+  CHECK(std::none_of(offers.begin(), offers.end(), [](const DlcOffer& offer) { return offer.app_id == 5001; }));
+  auto claimed = owned;
+  claimed.insert(5001);
+  auto claimed_depots = depots;
+  claimed_depots.insert(5011);
+  offers = OfferedDlc(*game, dlc_apps, claimed, claimed_depots, DepotSelection{});
+  CHECK(offers[2].app_id == 5001 && !offers[2].free);
+
+  // The list doesn't depend on what is turned off.
+  DepotSelection without;
+  without.excluded_dlc = {5002, 5003, 5000};
+  CHECK(OfferedDlc(*game, dlc_apps, owned, depots, without).size() == 4);
+
+  // Excluded DLC stays out with its reason, wherever its depot is listed; the game's own content can't be excluded.
+  SelectionResult result;
+  CHECK(SelectDepots(*game, dlc_apps, owned, depots, without, &result));
+  std::set<std::uint32_t> ids;
+  for (const auto& depot : result.depots) ids.insert(depot.id);
+  CHECK((ids == std::set<std::uint32_t>{5000, 5015, 5016}));
+  const auto reason = [&](std::uint32_t id) {
+    for (const auto& rejected : result.rejected)
+      if (rejected.id == id) return rejected.reason;
+    return std::string();
+  };
+  CHECK(reason(5012) == "dlc-off" && reason(5013) == "dlc-off" && reason(5011) == "licence");
+
+  // A name that only starts like the game's stays whole.
+  const auto similar = dlc(5002, R"("common" { "name" "Big Gamers Pack" "type" "DLC" })");
+  offers = OfferedDlc(*game, {similar}, owned, depots, DepotSelection{});
+  CHECK(offers[0].name == "Big Gamers Pack");
+}
+
 void TestWindowsArguments() {
   using Args = std::vector<std::string>;
   CHECK(ParseWindowsArguments("-a \"b c\"") == Args({"-a", "b c"}));
@@ -970,6 +1046,7 @@ int main(int argc, char** argv) {
   TestSelectionNeedsTheGamesContent();
   TestEligibleLaunches();
   TestVersions();
+  TestDlcChoice();
   TestWindowsArguments();
   TestRelativeGamePath();
   TestOsList();

@@ -361,8 +361,14 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
       result.retry_later = dlc_error == CmError::kNetwork || dlc_error == CmError::kTimeout;
       return result;
     }
+  // What the player turned off: this install's choice, and for an update what its install left out.
+  std::set<std::uint32_t> excluded(options.excluded_dlc.begin(), options.excluded_dlc.end());
+  if (update)
+    if (const auto record = installs::ReadInstallRecord(root + "/" + DepotInstaller::kInstallRecord))
+      excluded.insert(record->excluded_dlc.begin(), record->excluded_dlc.end());
   InstallTarget target;
   target.app_id = id;
+  target.excluded_dlc.assign(excluded.begin(), excluded.end());
   target.install_root = root;
   // Like the reference, only depots this account's licenses grant are installed. Accounts with
   // thousands of licenses take a minute here (issue #47), so the player sees this step.
@@ -379,7 +385,10 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
     if (!grant) {
       log("dlc", "claim", "skipped=no-licenses");
     } else {
-      claimed = FreeDlcCandidates(*app, dlc_apps, grant->apps, refused_before);
+      // Free DLC that is turned off isn't claimed: a claim stays on the account.
+      auto not_asked = refused_before;
+      not_asked.insert(excluded.begin(), excluded.end());
+      claimed = FreeDlcCandidates(*app, dlc_apps, grant->apps, not_asked);
     }
   }
   if (!claimed.empty()) {
@@ -441,6 +450,7 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
   DepotSelection selection;
   selection.language = language;
   if (!options.branch.empty()) selection.branch = options.branch;
+  selection.excluded_dlc = excluded;
   SelectionResult selected;
   const bool any = SelectDepots(*app, dlc_apps, owned_apps, entitlements.owned_depots, selection, &selected);
   // Every depot left out and why, as depot:reason.
@@ -510,15 +520,17 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
     std::vector<std::uint32_t> depots, dlc;
     for (const auto& depot : target.depots)
       if (std::find(skipped.begin(), skipped.end(), depot.id) == skipped.end()) depots.push_back(depot.id);
-    // Owned DLC, claimed ones included, and any DLC whose content is installed.
+    // Owned DLC, claimed ones included, and any DLC whose content is installed. DLC that is turned off isn't there
+    // for the game: it would look for files the install left out.
     for (const auto app_id : app->dlc_app_ids)
-      if (app_id != id && entitlements.owned_apps.count(app_id) && std::find(dlc.begin(), dlc.end(), app_id) == dlc.end())
+      if (app_id != id && entitlements.owned_apps.count(app_id) && !excluded.count(app_id) &&
+          std::find(dlc.begin(), dlc.end(), app_id) == dlc.end())
         dlc.push_back(app_id);
     for (const auto& depot : target.depots)
       if (depot.owner_app != 0 && depot.owner_app != id &&
           std::find(dlc.begin(), dlc.end(), depot.owner_app) == dlc.end())
         dlc.push_back(depot.owner_app);
-    const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language);
+    const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language, target.excluded_dlc);
     if (!written) log("steamworks_facts", "write-failed", folder.c_str());
     else
       log("steamworks_facts", "written",
@@ -527,7 +539,7 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
               .c_str());
     return written;
   };
-  // The facts go in place with the record: a game with a record has them.
+  // The facts go in place with the record: a game with a record has them, with the DLC it left out.
   target.update = update;
   target.before_apply = write_facts;
   if (update) target.may_apply = may_apply;

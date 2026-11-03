@@ -31,9 +31,12 @@ struct InstalledRecord {
   std::string branch = "public";
   std::string language = "english";
   std::vector<RecordedDepot> depots;
+  // DLC the player turned off when installing: its updates leave them out too, and they don't count as new DLC.
+  std::vector<std::uint32_t> excluded_dlc;
   bool operator==(const InstalledRecord& other) const {
     return version == other.version && app_id == other.app_id && install_bytes == other.install_bytes &&
-           branch == other.branch && language == other.language && depots == other.depots;
+           branch == other.branch && language == other.language && depots == other.depots &&
+           excluded_dlc == other.excluded_dlc;
   }
 };
 

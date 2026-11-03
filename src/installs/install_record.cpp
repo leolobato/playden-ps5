@@ -64,6 +64,9 @@ std::optional<InstalledRecord> ParseInstallRecord(std::string_view text) {
       record.depots.push_back(depot);
     }
   }
+  if (const auto* excluded = root->Find("excluded_dlc"); excluded && excluded->is_array())
+    for (const auto& entry : excluded->array())
+      if (const auto dlc = AsUint32(&entry); dlc && *dlc != 0) record.excluded_dlc.push_back(*dlc);
   return record;
 }
 

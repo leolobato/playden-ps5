@@ -828,6 +828,14 @@ void InstallOptionsReachTheRunner(const std::filesystem::path& root) {
     service.Pause(SteamId(902));
     // Values the registry can't hold are dropped: the defaults apply.
     service.Install(SteamId(903), std::nullopt, {}, {"bad value", "a\tb"});
+    // DLC turned off, kept sorted; hundreds of them still fit a registry line.
+    service.Install(SteamId(906), std::nullopt, {}, {{}, {}, {30, 10, 20, 10, 0}});
+    // What the job was asked with, which its drive reserves, also comes back.
+    service.Install(SteamId(909), 4096);
+    service.Pause(SteamId(909));
+    std::vector<std::uint32_t> many;
+    for (std::uint32_t dlc = 0; dlc < 900; ++dlc) many.push_back(4000000000u + dlc);
+    service.Install(SteamId(907), std::nullopt, {}, {{}, {}, many});
   }
   {
     std::ifstream registry(root / ".playden-games");
@@ -840,23 +848,31 @@ void InstallOptionsReachTheRunner(const std::filesystem::path& root) {
     CHECK(line_of("901") == "901\tinternal\t0");
     CHECK(line_of("902") == "902\tinternal\t0\tpaused\tlang=french");
     CHECK(line_of("903") == "903\tinternal\t0");
+    CHECK(line_of("906") == "906\tinternal\t0\tnodlc=10,20,30");
+    CHECK(line_of("909") == "909\tinternal\t0\tpaused\test=4096");
   }
   // Fields after the bytes come in any order, unknown ones are skipped, and bad values are dropped.
   {
     std::ofstream registry(root / ".playden-games", std::ios::app);
     registry << "904\tinternal\t0\tbranch=public\tfuture=1\tlang=spanish\tpaused\n"
-             << "905\tinternal\t0\tlang=\x01x\n";
+             << "905\tinternal\t0\tlang=\x01x\n"
+             << "908\tinternal\t0\tnodlc=7,bad,,9\n";
   }
   runner.block = false;
   InstallService again(runner, root.string());
   AwaitAt(__LINE__, again, [](const InstallSnapshot& s) {
-    return Installed(s, SteamId(900)) && Installed(s, SteamId(901)) && Installed(s, SteamId(903)) && Installed(s, SteamId(905));
+    return Installed(s, SteamId(900)) && Installed(s, SteamId(901)) && Installed(s, SteamId(903)) && Installed(s, SteamId(905)) &&
+           Installed(s, SteamId(906)) && Installed(s, SteamId(907)) && Installed(s, SteamId(908));
   });
+  CHECK(options_at(root / "906") == (InstallOptions{{}, {}, {10, 20, 30}}));
+  CHECK(options_at(root / "907") && options_at(root / "907")->excluded_dlc.size() == 900);
+  CHECK(options_at(root / "908") == (InstallOptions{{}, {}, {7, 9}}));
   CHECK(options_at(root / "900") == (InstallOptions{"german", "beta"}));
   CHECK(options_at(root / "901") == InstallOptions{});
   CHECK(options_at(root / "903") == InstallOptions{});
   CHECK(options_at(root / "905") == InstallOptions{});
   const auto paused = again.Snapshot();
+  CHECK(JobOf(paused, SteamId(909)) && JobOf(paused, SteamId(909))->estimated_bytes == std::optional<std::uint64_t>(4096));
   CHECK(JobOf(paused, SteamId(902)) && JobOf(paused, SteamId(902))->state == InstallJobState::kPaused);
   CHECK(JobOf(paused, SteamId(904)) && JobOf(paused, SteamId(904))->state == InstallJobState::kPaused);
   again.Resume(SteamId(902));

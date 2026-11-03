@@ -736,6 +736,12 @@ void InstalledGamesCompareWithTheirRecord() {
   record.depots.pop_back();
   details = DetailsFromAppInfo(8000, buffer, grant, "english", record);
   assert(details.update.new_dlc && !details.update.newer);
+  // DLC turned off at install stays out of the install: nothing new, and an update doesn't bring it.
+  record.excluded_dlc = {8100};
+  details = DetailsFromAppInfo(8000, buffer, grant, "english", record);
+  assert(!details.update.available());
+  for (const auto& depot : DepotsToUpdate(8000, buffer, grant, record, {})) assert(depot.id != 8011);
+  record.excluded_dlc.clear();
   // A version 1 record names the game as every depot's owner: a held DLC depot is not new DLC.
   record = bought;
   record.version = 1;

@@ -30,7 +30,7 @@ inline constexpr const char* kSteamworksSavePath = "C:\\Program Files (x86)\\Ste
 
 // What the download recorded beside the game (SteamworksFactsFile): installed depots and the
 // DLC this account owns.
-inline constexpr const char* kSteamworksFactsFile = ".playden-steam";  // "depots=1,2\ndlc=3\n"
+inline constexpr const char* kSteamworksFactsFile = ".playden-steam";  // "depots=1,2\ndlc=3\nnodlc=4\n"
 
 struct SteamworksIdentity {
   std::uint32_t app_id = 0;
@@ -38,6 +38,7 @@ struct SteamworksIdentity {
   std::uint64_t steam_id = 0;
   std::string language = "english";
   std::vector<std::uint32_t> owned_dlc;
+  std::vector<std::uint32_t> excluded_dlc;  // turned off at install: never added to owned_dlc
   std::vector<std::uint32_t> depots;  // empty: no depots.txt
   // A steam_appid.txt beside a DLL that has none (Steam games). Off for a game whose app ID came from its
   // own steam_appid.txt or Game settings: the emulator reads steam_settings/steam_appid.txt, and a file
@@ -84,11 +85,13 @@ std::vector<std::string> SteamInterfaces(std::string_view dll_bytes);
 
 // The facts file the download writes, and its reader (missing or unreadable: false). `language`
 // is the content language the depots were installed for; English, and files written before
-// Playden could choose one, leave the line out.
+// Playden could choose one, leave the line out. `excluded_dlc`: DLC the player turned off at install, which each
+// prepare leaves out when it adds the account's owned DLC.
 std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
-                                     const std::string& language = {});
+                                     const std::string& language = {}, const std::vector<std::uint32_t>& excluded_dlc = {});
 bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std::uint32_t>& depots,
-                          const std::vector<std::uint32_t>& owned_dlc, const std::string& language = {});
+                          const std::vector<std::uint32_t>& owned_dlc, const std::string& language = {},
+                          const std::vector<std::uint32_t>& excluded_dlc = {});
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity);
 
 }  // namespace playden::runtime

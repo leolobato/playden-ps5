@@ -204,9 +204,16 @@ bool ValidOptionValue(std::string_view value) {
   return true;
 }
 
+// Past this a job's excluded DLC would not fit a registry line (Scan), and the game would be lost with its line.
+constexpr std::size_t kMaxRegisteredDlc = 1000;
+
 InstallOptions Registrable(InstallOptions options) {
   if (!ValidOptionValue(options.language)) options.language.clear();
   if (!ValidOptionValue(options.branch)) options.branch.clear();
+  std::sort(options.excluded_dlc.begin(), options.excluded_dlc.end());
+  options.excluded_dlc.erase(std::unique(options.excluded_dlc.begin(), options.excluded_dlc.end()), options.excluded_dlc.end());
+  options.excluded_dlc.erase(std::remove(options.excluded_dlc.begin(), options.excluded_dlc.end(), 0u), options.excluded_dlc.end());
+  if (options.excluded_dlc.size() > kMaxRegisteredDlc) options.excluded_dlc.resize(kMaxRegisteredDlc);
   return options;
 }
 
@@ -222,15 +229,16 @@ struct RegistryEntry {
   // <from> to <to>; once <volume> is <to>, only the old folder is left to delete.
   std::string move_to;
   std::string move_from;
-  InstallOptions options;  // a job's "lang=<code>" and "branch=<name>" fields
+  InstallOptions options;  // a job's "lang=<code>", "branch=<name>" and "nodlc=<app>,<app>" fields
+  std::optional<std::uint64_t> estimated_bytes;  // a job's "est=<bytes>": what it reserves on its drive
   std::int64_t finished_at = 0;  // "finished=<unix seconds>": a moved game's install time, older than its record
 };
 
 // One line per game: "<key>" (legacy, primary volume) or "<key>\t<volume id>\t<install bytes>",
 // followed by "\tpaused" for a job that should wait for Resume after a restart, or "\tremoving" for
 // an uninstall whose folder is not deleted yet, or "\tupdate" for an installed game with an update job
-// (then "\tpaused" is the update's), or "\tmove=<volume>\tfrom=<volume>" for one with a move job, then a job's install options as "\tlang=<code>" and
-// "\tbranch=<name>" (none: the defaults), and "\tfinished=<unix seconds>" for a moved game's install time. Fields
+// (then "\tpaused" is the update's), or "\tmove=<volume>\tfrom=<volume>" for one with a move job, then a job's install options as "\tlang=<code>",
+// "\tbranch=<name>" and "\tnodlc=<app>,<app>" (none: the defaults), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
 // after the install bytes may come in any order, and
 // unknown ones are skipped. The key is ToKey: a Steam game's app ID, "local-<uuid>" for an imported game.
 std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
@@ -257,7 +265,7 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
       const auto field = fields.substr(0, tab);
       fields = tab == std::string_view::npos ? std::string_view{} : fields.substr(tab + 1);
       constexpr std::string_view kLanguage = "lang=", kBranch = "branch=", kMove = "move=", kFrom = "from=",
-                                 kFinished = "finished=";
+                                 kFinished = "finished=", kNoDlc = "nodlc=", kEstimate = "est=";
       if (field == "paused") entry.paused = true;
       else if (field.substr(0, kMove.size()) == kMove && ValidVolumeId(field.substr(kMove.size())))
         entry.move_to = std::string(field.substr(kMove.size()));
@@ -267,6 +275,22 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
       else if (field == "update") entry.update = true;
       else if (field.substr(0, kLanguage.size()) == kLanguage) entry.options.language = std::string(field.substr(kLanguage.size()));
       else if (field.substr(0, kBranch.size()) == kBranch) entry.options.branch = std::string(field.substr(kBranch.size()));
+      else if (field.substr(0, kEstimate.size()) == kEstimate) {
+        const auto text = field.substr(kEstimate.size());
+        std::uint64_t bytes = 0;
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), bytes);
+        if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) entry.estimated_bytes = bytes;
+      }
+      else if (field.substr(0, kNoDlc.size()) == kNoDlc) {
+        for (auto list = field.substr(kNoDlc.size()); !list.empty();) {
+          const auto comma = list.find(',');
+          const auto text = list.substr(0, comma);
+          list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+          std::uint32_t dlc = 0;
+          const auto parsed = std::from_chars(text.data(), text.data() + text.size(), dlc);
+          if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) entry.options.excluded_dlc.push_back(dlc);
+        }
+      }
       else if (field.substr(0, kFinished.size()) == kFinished) {
         const auto value = field.substr(kFinished.size());
         std::int64_t time = 0;
@@ -360,11 +384,13 @@ void InstallService::Scan() {
   const auto& primary = volumes_.front().games_root;
   std::vector<RegistryEntry> entries;
   if (FILE* registry = std::fopen((primary + "/" + kRegistry).c_str(), "r")) {
-    char line[512];
-    while (std::fgets(line, sizeof(line), registry) && entries.size() < kMaxJobs * 4) {
+    // A job's excluded DLC makes for long lines: kMaxRegisteredDlc entries fit. Not on the stack: it is small on the console.
+    std::vector<char> buffer(16 * 1024);
+    char* const line = buffer.data();
+    while (std::fgets(line, static_cast<int>(buffer.size()), registry) && entries.size() < kMaxJobs * 4) {
       const auto length = std::strcspn(line, "\r\n");
       // A line longer than the buffer isn't one Playden wrote: it and its remainder are skipped.
-      if (line[length] == '\0' && length == sizeof(line) - 1) {
+      if (line[length] == '\0' && length == buffer.size() - 1) {
         int rest = 0;
         while ((rest = std::fgetc(registry)) != EOF && rest != '\n') {}
         continue;
@@ -460,6 +486,7 @@ void InstallService::Scan() {
         job.view.id = entry.id;
         job.view.kind = InstallJobKind::kUpdate;
         job.view.volume_id = entry.volume_id;
+        job.estimated_bytes = job.view.estimated_bytes = entry.estimated_bytes;
         // The registry keeps what the player chose; what it doesn't say, the update on disk was for.
         job.options = entry.options;
         if (update) {
@@ -491,6 +518,7 @@ void InstallService::Scan() {
         job.view.failure = kInterrupted;
       }
       job.view.volume_id = entry.volume_id;
+      job.estimated_bytes = job.view.estimated_bytes = entry.estimated_bytes;
       job.options = entry.options;
       jobs_.push_back(job);
     } else if (entry.install_bytes > 0) {
@@ -535,6 +563,9 @@ bool InstallService::SaveRegistry(bool sync) {
     std::string fields = waits ? "\tpaused" : "";
     if (!job.options.language.empty()) fields += "\tlang=" + job.options.language;
     if (!job.options.branch.empty()) fields += "\tbranch=" + job.options.branch;
+    for (std::size_t index = 0; index < job.options.excluded_dlc.size(); ++index)
+      fields += (index ? "," : "\tnodlc=") + std::to_string(job.options.excluded_dlc[index]);
+    if (job.view.kind != InstallJobKind::kMove && job.estimated_bytes) fields += "\test=" + std::to_string(*job.estimated_bytes);
     return fields;
   };
   // An update job rides on its game's line, which stays an installed game's line for older versions.
@@ -781,7 +812,7 @@ std::string InstallService::Move(GameId id, const std::string& volume_id) {
   job.view.volume_id = volume_id;
   job.view.from_volume_id = game->volume_id;
   job.view.total_bytes = game->install_bytes;
-  job.estimated_bytes = game->install_bytes;
+  job.estimated_bytes = job.view.estimated_bytes = game->install_bytes;
   jobs_.push_back(job);
   Publish();
   wake_.notify_all();
@@ -791,7 +822,7 @@ std::string InstallService::Move(GameId id, const std::string& volume_id) {
 // Sets the job's volume and estimate; a volume that is absent or short of space fails the job.
 bool InstallService::Admit(Job& job, const std::string& target, std::optional<std::uint64_t> estimated_bytes) {
   job.view.volume_id = target;
-  job.estimated_bytes = estimated_bytes;
+  job.estimated_bytes = job.view.estimated_bytes = estimated_bytes;
   const auto* volume = FindVolume(target);
   const auto space = volume && volume->available ? FreeBytes(volume->games_root) : std::nullopt;
   if (!volume || !volume->available) {

@@ -117,7 +117,8 @@ struct RuntimeHostConfig {
   std::function<std::optional<std::string>(const GameId& game, const std::filesystem::path& program)> title_icon;
   // The DLC of a Steam game this account owns, from the Library's license read and app lookups
   // (EntitledLibraryBackend::DlcOf). Each prepare adds them to what the download recorded, so DLC past
-  // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator. Empty: none.
+  // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator; DLC the download
+  // recorded as turned off doesn't. Empty: none.
   std::function<std::vector<std::uint32_t>(std::uint64_t steam_id, std::uint32_t app_id)> owned_dlc;
   // One ranged HTTPS GET for what Playden downloads for a game's bottle: Microsoft's Visual C++ redistributable,
   // for a game whose files import MFC (runtime/redist_install.h). Runs on the worker, only for work the player
