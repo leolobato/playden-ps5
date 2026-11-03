@@ -761,8 +761,9 @@ void TestEligibleLaunches() {
   std::string reason;
   CHECK(EligibleLaunches(*app, {kApp}, "public", &launches, &reason));
   CHECK((LaunchIds(launches) == Strings{"0", "10"}));
+  // With the DLC its entry joins, after the others: Play's default doesn't change.
   CHECK(EligibleLaunches(*app, {kApp, 999}, "public", &launches, &reason));
-  CHECK((LaunchIds(launches) == Strings{"0", "3", "10"}));
+  CHECK((LaunchIds(launches) == Strings{"0", "10", "3"}));
 
   AppInfo none = *app;
   none.launches.resize(2);  // "0" is not first any more; keep only "3" and "10"-less set
@@ -772,7 +773,12 @@ void TestEligibleLaunches() {
 
   AppInfo reordered = *app;
   reordered.launches[0].type = "";
-  reordered.launches[3].type = "Default";  // launch "3" sorts first despite its id
+  reordered.launches[3].type = "Default";
+  // An entry that needs a DLC stays a choice, even marked as the default...
+  CHECK(EligibleLaunches(reordered, {kApp, 999}, "", &launches, &reason));
+  CHECK((LaunchIds(launches) == Strings{"0", "10", "3"}));
+  // ...and without that, "3" sorts first despite its id.
+  reordered.launches[3].required_dlc.reset();
   CHECK(EligibleLaunches(reordered, {kApp, 999}, "", &launches, &reason));
   CHECK((LaunchIds(launches) == Strings{"3", "0", "10"}));
 
@@ -819,7 +825,19 @@ void TestEligibleLaunches() {
   CHECK(EligibleLaunches(branches, {kApp}, "", &launches, &reason, &any_branch));
   CHECK((LaunchIds(launches) == Strings{"0", "2", "10"}) && any_branch);
   CHECK(EligibleLaunches(branches, {kApp, 999}, "", &launches, &reason, &any_branch));
-  CHECK((LaunchIds(launches) == Strings{"0", "2", "3", "10"}) && any_branch);
+  CHECK((LaunchIds(launches) == Strings{"0", "2", "10", "3"}) && any_branch);
+  // The DLC's option on this branch doesn't hide the game's on another: the game's still come first.
+  for (auto& launch : branches.launches)
+    if (launch.required_dlc) launch.beta_key.reset();
+  CHECK(EligibleLaunches(branches, {kApp, 999}, "", &launches, &reason, &any_branch));
+  CHECK((LaunchIds(launches) == Strings{"0", "2", "10", "3"}) && any_branch);
+  // Only a DLC's option exists: that is no other-branch fallback.
+  AppInfo only_dlc = branches;
+  only_dlc.launches.erase(std::remove_if(only_dlc.launches.begin(), only_dlc.launches.end(),
+                                         [](const AppLaunch& launch) { return !launch.required_dlc; }),
+                          only_dlc.launches.end());
+  CHECK(EligibleLaunches(only_dlc, {kApp, 999}, "", &launches, &reason, &any_branch));
+  CHECK((LaunchIds(launches) == Strings{"3"}) && !any_branch);
 }
 
 // Versions: each branch installs its own manifests, with no fallback to the public ones.

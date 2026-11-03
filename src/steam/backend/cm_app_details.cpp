@@ -179,7 +179,12 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
   std::vector<AppLaunch> launches;
   // An installed game starts as its branch does.
   const std::string branch = installed && !installed->branch.empty() ? installed->branch : std::string("public");
-  details.windows_installable = EligibleLaunches(*app, owned, branch, &launches, &reason, &details.launches_any_branch);
+  // A launch entry that needs a DLC (DUSK HD is a program of its own) is offered once the install holds that DLC.
+  std::set<std::uint32_t> startable = owned;
+  if (installed)
+    for (const auto& depot : installed->depots)
+      if (depot.owner != 0) startable.insert(depot.owner);
+  details.windows_installable = EligibleLaunches(*app, startable, branch, &launches, &reason, &details.launches_any_branch);
   if (!details.windows_installable) details.reason = "No Windows launch configuration.";
   for (const auto& launch : launches)
     details.launches.push_back({launch.executable, launch.arguments, launch.working_directory,

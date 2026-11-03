@@ -751,6 +751,43 @@ void IncludedDlcIsCounted() {
   assert(DepotsToMeasure(6100, pack_game, both, "public", "english", {*pack}, {6101}).empty());
 }
 
+// A launch entry that needs a DLC is offered once the install holds that DLC, after the game's own.
+void LaunchesFollowInstalledDlc() {
+  const std::string buffer = R"("appinfo"
+{
+  "extended" { "listofdlc" "9101" }
+  "config" { "launch" {
+    "0" { "executable" "HD/game.exe" "description" "Game HD" "config" { "oslist" "windows" "ownsdlc" "9101" } }
+    "1" { "executable" "game.exe" "description" "Game" "config" { "oslist" "windows" } }
+  } }
+  "depots"
+  {
+    "9000" { "manifests" { "public" { "gid" "1" "size" "100" "download" "50" } } }
+    "9111" { "dlcappid" "9101" "manifests" { "public" { "gid" "2" "size" "10" "download" "5" } } }
+    "branches" { "public" { "buildid" "1" } }
+  }
+})";
+  const LicensedDepots::Grant grant{{9000, 9101}, {9000, 9111}};
+  // Not installed: only what any install can start, whatever is owned.
+  auto details = DetailsFromAppInfo(9000, buffer, grant);
+  assert(details.launches.size() == 1 && details.launches[0].executable == "game.exe");
+  // Owned but turned off, so not in the install: still not offered.
+  installs::InstalledRecord record;
+  record.version = 2;
+  record.app_id = 9000;
+  record.depots = {{9000, 1, 9000, 9000}};
+  record.excluded_dlc = {9101};
+  details = DetailsFromAppInfo(9000, buffer, grant, "english", record);
+  assert(details.launches.size() == 1 && details.launches[0].executable == "game.exe");
+  assert(!installs::HoldsDlc(record));
+  // In the install: offered, and the game itself stays first, what Play starts.
+  record.excluded_dlc.clear();
+  record.depots.push_back({9111, 2, 9101, 9000});
+  assert(installs::HoldsDlc(record));
+  details = DetailsFromAppInfo(9000, buffer, grant, "english", record);
+  assert(details.launches.size() == 2 && details.launches[0].executable == "game.exe" && details.launches[1].executable == "HD/game.exe");
+}
+
 // The versions an install can choose, with each one's own size; the licenses filter them as they do the sizes.
 void VersionsAreOffered() {
   const std::string buffer = R"("appinfo"
@@ -886,6 +923,7 @@ int main() {
   ImpossibleDownloadSizeFallsBackToInstallSize();
   SizesFollowTheContentLanguage();
   IncludedDlcIsCounted();
+  LaunchesFollowInstalledDlc();
   VersionsAreOffered();
   InstalledGamesCompareWithTheirRecord();
 }

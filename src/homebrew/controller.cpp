@@ -2092,12 +2092,12 @@ void Controller::TickInstalls() {
       continue;
     }
     // A version other than public starts as that branch does: the launch options Steam's details gave before the
-    // install were the public branch's. They are asked for again for the installed record, and the preparation
-    // waits for them (RequestPrepare).
+    // install were the public branch's. A DLC in the install can add options of its own (DUSK HD). They are asked for
+    // again for the installed record, and the preparation waits for them (RequestPrepare).
     const auto installed = std::find_if(snapshot.installed.begin(), snapshot.installed.end(),
                                         [id](const steam::InstalledGame& game) { return game.id == id; });
-    if (installed != snapshot.installed.end() && installed->record && !installed->record->branch.empty() &&
-        installed->record->branch != "public") {
+    if (installed != snapshot.installed.end() && installed->record &&
+        ((!installed->record->branch.empty() && installed->record->branch != "public") || installs::HoldsDlc(*installed->record))) {
       launch_options_.erase(id);
       launch_options_reason_.erase(id);
       launches_any_branch_.erase(id);

@@ -40,6 +40,13 @@ struct InstalledRecord {
   }
 };
 
+// Whether a depot of the install is a DLC's. Steam may then offer launch options that it didn't before the install.
+inline bool HoldsDlc(const InstalledRecord& record) {
+  for (const auto& depot : record.depots)
+    if (depot.owner != 0 && depot.owner != record.app_id) return true;
+  return false;
+}
+
 inline constexpr const char* kInstallRecordName = ".playden-install.json";
 // Left in the game's root by an update that changed its files (written before the update's record): the
 // game's launch, set up from the old files, is made again from the new ones before it starts, and the

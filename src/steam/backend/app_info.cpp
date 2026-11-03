@@ -827,9 +827,13 @@ bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_a
   };
   auto eligible = eligible_for(false);
   // Steam still starts a game whose only options name other branches (GUILTY GEAR -STRIVE- lists
-  // one for "debug"): every branch's options are then candidates.
-  const bool fallback = eligible.empty();
-  if (fallback) eligible = eligible_for(true);
+  // one for "debug"): every branch's options are then candidates. An option that needs a DLC doesn't count: it can't
+  // take the place of the game's own, whichever branch that names.
+  const auto own = [](const AppLaunch& launch) { return !launch.required_dlc || *launch.required_dlc == 0; };
+  const auto any_branch_options = eligible_for(true);
+  const bool fallback = std::none_of(eligible.begin(), eligible.end(), own) &&
+                        (eligible.empty() || std::any_of(any_branch_options.begin(), any_branch_options.end(), own));
+  if (fallback) eligible = any_branch_options;
   if (any_branch != nullptr) *any_branch = fallback && !eligible.empty();
   // A dedicated server listed without the "server" type is not the game either, unless it is all
   // Steam lists.
@@ -845,6 +849,10 @@ bool EligibleLaunches(const AppInfo& app, const std::set<std::uint32_t>& owned_a
     return Fail(reason, "The game has no valid Windows launch configuration.");
   }
   std::stable_sort(eligible.begin(), eligible.end(), [](const AppLaunch& a, const AppLaunch& b) {
+    // What needs a DLC is a choice, never what Play starts by itself, whatever Steam's order says.
+    const bool a_dlc = a.required_dlc && *a.required_dlc != 0;
+    const bool b_dlc = b.required_dlc && *b.required_dlc != 0;
+    if (a_dlc != b_dlc) return b_dlc;
     const bool a_default = LowerString(a.type) == "default";
     const bool b_default = LowerString(b.type) == "default";
     if (a_default != b_default) return a_default;
