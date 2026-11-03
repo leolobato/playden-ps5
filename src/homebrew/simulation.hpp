@@ -857,7 +857,7 @@ struct State {
     // Empty: Steam default (Steam's order); kFastestDownloadServer: Fastest (raced at each download); otherwise
     // the chosen provider's stable identifier.
     std::string download_server;
-    bool hide_run_once_help = false;  // "Don't show again" on Run a program once's dialog
+    bool hide_run_once_help = false;  // "Don't show again" on Run launcher or setup's dialog
     bool hide_launcher_help = false;  // ...and on the one for turning on Start through a launcher
     bool web_access = true;  // Settings › Web access: the logs page on the local network (on by default)
     bool controller_connected = true;
@@ -1270,7 +1270,7 @@ private:
     std::optional<GameId> prepare_next_asked_;
     std::vector<GameId> pending_runtime_play_requests_;
     std::map<GameId, std::string> pending_runtime_setup_programs_;
-    std::string setup_program_choice_;  // Run a program once: the program the confirmation names
+    std::string setup_program_choice_;  // Run launcher or setup: the program the confirmation names
     bool pending_runtime_cleanup_ = false;
     bool library_catalog_received_ = false;
     std::set<Store> catalog_sources_;  // stores whose library arrived at least once
@@ -1497,7 +1497,7 @@ private:
     // A game whose setup waits for its program (LiveGameSetup::steam_choices): the sheet that asks,
     // installers and tools last, and the choice, which sets the game up again.
     void open_steam_programs(GameId id);
-    // Run a program once: the game folder's programs, then a confirmation.
+    // Run launcher or setup: the game folder's programs, then a confirmation.
     void open_setup_programs();
     void choose_steam_launch(GameId id, const std::string& program);
     std::vector<LaunchProgram> steam_programs_shown_;
@@ -1569,7 +1569,7 @@ private:
     bool move_manage(int delta_x, int delta_y);
     // Asks the controller to uninstall a game; batch: from the Installed games list.
     void request_uninstall(GameId id, bool delete_saves, bool batch);
-    void start_setup_program();  // Run a program once: the program chosen, when the game is closed
+    void start_setup_program();  // Run launcher or setup: the program chosen, when the game is closed
     bool launcher_mode_kit() const { return kit_.launcher_mode || kit_.launcher_mode_needs_update; }
     void end_uninstall(GameId id, const std::string& stopped);
     [[nodiscard]] const EndedUninstall* uninstall_stop(GameId id) const;

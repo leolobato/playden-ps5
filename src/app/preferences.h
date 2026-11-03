@@ -32,7 +32,7 @@ struct Preferences {
   // ("german", "koreana"). Steam ships localisations as separate depots; a game that has none
   // in this language is installed in English, as every game was before this could be chosen.
   std::string content_language = "english";
-  // "Don't show this again" on the dialogs that explain launcher mode: Run a program once, and turning on
+  // "Don't show this again" on the dialogs that explain launcher mode: Run launcher or setup, and turning on
   // Start through a launcher. Separate, because the second warns about other games.
   bool hide_run_once_help = false;
   bool hide_launcher_help = false;

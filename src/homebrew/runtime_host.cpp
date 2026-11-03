@@ -1943,7 +1943,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
         " title=" + std::to_string(record.settings_revision));
     return {};
   }
-  // Run a program once: the saved settings with that program and the Mouse controller preset (its rows as the preset
+  // Run launcher or setup: the saved settings with that program and the Mouse controller preset (its rows as the preset
   // sets them, so a recipe's or the player's controller choices don't hide the pointer) in their place. The title
   // keeps that profile until the next publication without one puts the saved settings back (RuntimeInstall::
   // setup_program), whatever their revision.

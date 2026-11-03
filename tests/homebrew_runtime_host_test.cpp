@@ -1694,7 +1694,7 @@ void UpdatedFilesSetUpTheLaunchAgain() {
   host.Shutdown();
 }
 
-// Run a program once: Play with a program from the game folder publishes it, with the Mouse preset, for one start. The
+// Run launcher or setup: Play with a program from the game folder publishes it, with the Mouse preset, for one start. The
 // game's own settings come back with the next publication: when Playden sees the run end, on its next start, or on
 // the next Play.
 void RunsSetupProgramOnce() {

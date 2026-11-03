@@ -662,7 +662,7 @@ void live_program_change_applies_like_other_settings(const std::filesystem::path
           "program: the reset applies the same way");
 }
 
-// Run a program once (Game actions): a program from the game folder, its settings launcher, starts once through
+// Run launcher or setup (Game actions): a program from the game folder, its settings launcher, starts once through
 // Play's own request, which carries the program; Game settings and the next Play stay the game's.
 void live_runs_setup_program_once(const std::filesystem::path& base) {
     using playden::homebrew::GameId;
@@ -720,7 +720,7 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
 
     // The folder's programs: the game's own is named, one the console can't start is not offered.
     activate(model, "details-more");
-    check(find_row(model, "run-once")->enabled && find_row(model, "run-once")->title == "Run a program once…",
+    check(find_row(model, "run-once")->enabled && find_row(model, "run-once")->title == "Run launcher or setup…",
           "setup program: Game actions offers it");
     activate(model, "run-once");
     check(model.state().navigation.modals.back().id == "setup-programs", "setup program: the picker opens");
@@ -753,7 +753,7 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     // With launcher mode: the dialog says so and offers Don't show again, which then starts the program directly.
     model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"launcher-mode"}, true));
     activate(model, "details-more");
-    check(find_row(model, "run-once")->subtitle == "Starts it in launcher mode.", "launcher mode: its row says so");
+    check(find_row(model, "run-once")->subtitle == "For setup and settings", "the row says what it is for");
     activate(model, "run-once");
     activate(model, "setup-program-0");
     check(model.state().navigation.modals.back().body.find("launcher mode") != std::string::npos &&

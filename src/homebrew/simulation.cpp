@@ -535,7 +535,7 @@ std::string action_label(const std::string& key) {
         {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "DLC"}, {"install-dlc-all", "All DLC"}, {"install-dlc-done", "Done"}, {"heading-dlc-included", "Included"}, {"heading-dlc-optional", "Optional"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as recipe"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run a program once…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
+        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
@@ -5576,8 +5576,8 @@ void Simulation::rebuild_view() {
         }
         if (modal.id == "setup-programs")
             view_.subtitle = launcher_mode_kit()
-                ? "Pick a program from the game folder, such as its launcher. It runs one time in launcher mode; Play and Game settings stay as they are."
-                : "Pick a program from the game folder, such as its settings launcher. It runs one time with the Mouse preset; Play and Game settings stay as they are.";
+                ? "For a game's launcher, settings or installer: pick it from the game folder. It runs one time in launcher mode; Play and Game settings stay as they are."
+                : "For a game's launcher, settings or installer: pick it from the game folder. It runs one time with the Mouse preset; Play and Game settings stay as they are.";
         if (modal.id == "game-settings" || modal.id == "game-maintenance") {
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
         } else if (!modal.setting_id.empty()) {
@@ -6389,7 +6389,7 @@ void Simulation::rebuild_view() {
                 const auto runtime_game = state_.runtime_games.find(state_.navigation.selected_game_id);
                 const bool checking = runtime_game != state_.runtime_games.end() &&
                                       runtime_game->second.activity == TitleActivity::Unknown;
-                if (launcher_mode_kit()) item.subtitle = "Starts it in launcher mode.";
+                item.subtitle = "For setup and settings";
                 if (live() && !checking && !game_closed(state_.navigation.selected_game_id, &refusal)) {
                     item.enabled = false;
                     item.value = "Game running";
@@ -11110,7 +11110,7 @@ void Simulation::open_setup_programs() {
         if (setup == game_setups_.end() || !setup->second.scanned) actions.push_back("program-scan");
     }
     actions.push_back("cancel");
-    open_modal({"setup-programs", "Run a program once", state_.navigation.focus_key, std::move(actions), 0, false});
+    open_modal({"setup-programs", "Run launcher or setup", state_.navigation.focus_key, std::move(actions), 0, false});
 }
 
 std::vector<std::string> Simulation::maintenance_actions() const {

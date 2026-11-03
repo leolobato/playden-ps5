@@ -90,7 +90,7 @@ struct RuntimeInstall {
   // when set, so older readers (which ignore unknown keys) are unaffected.
   std::string moved_from;
   // A program from the game folder that the title's published profile starts once in place of the game, with the
-  // Mouse controller preset (Run a program once), relative to the install root. The next publication puts the
+  // Mouse controller preset (Run launcher or setup), relative to the install root. The next publication puts the
   // saved settings back and clears it, whatever their revision. Stored only when set.
   std::string setup_program;
 };

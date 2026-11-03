@@ -529,7 +529,7 @@ void MovedRecordsRewriteTogetherAndKeepTheirMark() {
   RuntimeInstallRepository again(storage, "installs.json", Free);
   CHECK(again.Load().ok() && again.Find("install-a")->moved_from.empty() && !again.Find("install-b")->moved_from.empty());
 
-  // A program's run (Run a program once) is kept the same way, only while set, and only as a path in the game folder.
+  // A program's run (Run launcher or setup) is kept the same way, only while set, and only as a path in the game folder.
   auto setup = *again.Find("install-a"); setup.setup_program = "Binaries/BmLauncher.exe";
   auto outside = setup; outside.setup_program = "../BmLauncher.exe";
   CHECK(!again.Update(outside).ok());
