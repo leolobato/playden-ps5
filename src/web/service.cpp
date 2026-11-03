@@ -7,6 +7,37 @@
 namespace playden::web {
 namespace {
 const std::vector<std::pair<std::string, std::string>> kNoStore = {{"Cache-Control", "no-store"}};
+
+// The host part of a Host or Origin authority: an IPv4 literal or localhost. A DNS rebinding site reaches this
+// server under its own domain name, and is same-site with itself, so a name is refused on every route. A request
+// with no Host at all isn't from a browser.
+bool LocalAuthority(std::string_view authority) {
+  const auto colon = authority.find(':');
+  const auto host = authority.substr(0, colon);
+  if (host == "localhost") return true;
+  int parts = 0, digits = 0, value = 0;
+  for (const char c : host) {
+    if (c == '.') {
+      if (digits == 0) return false;
+      ++parts;
+      digits = value = 0;
+    } else if (c >= '0' && c <= '9') {
+      value = value * 10 + (c - '0');
+      if (++digits > 3 || value > 255) return false;
+    } else {
+      return false;
+    }
+  }
+  return parts == 3 && digits > 0;
+}
+
+// An Origin, when sent, must be this server's own: the page's address, as Host names it.
+bool SameOrigin(const Request& request) {
+  const auto origin = HeaderValue(request, "origin");
+  if (!origin) return true;
+  const auto host = HeaderValue(request, "host");
+  return host && (*origin == "http://" + *host);
+}
 }  // namespace
 
 Service::Service(ServiceConfig config) : config_(std::move(config)), logs_(config_.paths) {
@@ -124,7 +155,13 @@ void Service::Shutdown() {
   if (worker_.joinable()) worker_.join();
 }
 
-void Service::Handle(const Request& request, Response& response) { router_.Handle(request, response); }
+void Service::Handle(const Request& request, Response& response) {
+  if (const auto host = HeaderValue(request, "host"); host && !LocalAuthority(*host))
+    return SendError(response, 403, "Open this page by the PS5's IP address.");
+  if (request.method == Method::kPost && !SameOrigin(request))
+    return SendError(response, 403, "This request came from another site.");
+  router_.Handle(request, response);
+}
 
 void Service::Run() {
   using Clock = std::chrono::steady_clock;

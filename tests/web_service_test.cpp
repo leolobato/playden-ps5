@@ -36,7 +36,7 @@ std::string Get(std::uint16_t port, const std::string& head) {
     if (fd >= 0) ::close(fd);
     return {};
   }
-  const std::string request = head + " HTTP/1.1\r\nHost: x\r\n\r\n";
+  const std::string request = head + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   CHECK(::send(fd, request.data(), request.size(), 0) == static_cast<ssize_t>(request.size()));
   std::string answer;
   char buffer[8192];
@@ -146,6 +146,35 @@ int main() {
   }
 
   // Quit: POST with the header only; the caller takes the request once.
+  // A name in Host (a DNS rebinding site reaching this server) is refused on every route; addresses are not.
+  {
+    const auto raw = [&](const std::string& text) {
+      const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(on.port);
+      address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      CHECK(fd >= 0 && ::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
+      CHECK(::send(fd, text.data(), text.size(), 0) == static_cast<ssize_t>(text.size()));
+      std::string answer;
+      char buffer[1024];
+      ssize_t count;
+      while ((count = ::recv(fd, buffer, sizeof buffer, 0)) > 0) answer.append(buffer, static_cast<std::size_t>(count));
+      ::close(fd);
+      return answer;
+    };
+    for (const char* host : {"evil.example", "evil.example:7031", "1.2.3", "1.2.3.4.5", "1.2.3.999", "1.2.3.x", "ps5.local"})
+      CHECK(raw(std::string("GET /api/status HTTP/1.1\r\nHost: ") + host + "\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);
+    for (const char* host : {"192.168.1.40", "192.168.1.40:7031", "localhost", "localhost:7031"})
+      CHECK(raw(std::string("GET /api/status HTTP/1.1\r\nHost: ") + host + "\r\n\r\n").rfind("HTTP/1.1 200", 0) == 0);
+    CHECK(raw("GET /api/status HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 200", 0) == 0);
+    // A POST from another origin is refused before it reaches its route.
+    const std::string quit = "POST /api/quit HTTP/1.1\r\nHost: 10.0.0.2:7031\r\nX-Playden-Action: quit\r\nContent-Length: 0\r\n";
+    CHECK(raw(quit + "Origin: http://evil.example\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);
+    CHECK(!service.TakeQuitRequest());
+    CHECK(raw(quit + "Origin: http://10.0.0.2:7031\r\n\r\n").rfind("HTTP/1.1 202", 0) == 0);
+    CHECK(service.TakeQuitRequest());
+  }
   CHECK(Get(on.port, "GET /api/quit").rfind("HTTP/1.1 405", 0) == 0);
   CHECK(Get(on.port, "POST /api/quit").rfind("HTTP/1.1 403", 0) == 0 && !service.TakeQuitRequest());
   {

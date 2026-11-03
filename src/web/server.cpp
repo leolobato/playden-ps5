@@ -4,6 +4,7 @@
 #include "web/router.h"
 
 #include <arpa/inet.h>
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -108,24 +109,45 @@ bool Server::Start(const ServerOptions& options, Handler handler, std::string* e
   socklen_t size = sizeof bound;
   if (::getsockname(listener_, reinterpret_cast<sockaddr*>(&bound), &size) != 0) return fail("getsockname: " + ErrorText(errno));
   port_ = ntohs(bound.sin_port);
-  worker_ = std::thread([this] { Run(); });
+  idle_ = 0;
+  for (int i = 0; i < std::max(options.workers, 1); ++i) workers_.emplace_back([this] { Work(); });
+  acceptor_ = std::thread([this] { Run(); });
   return true;
 }
 
 void Server::Stop() {
   stop_.store(true);
   {
-    // Wakes a send or recv blocked on the client; the worker still owns and closes the descriptor.
-    std::lock_guard<std::mutex> lock(client_mutex_);
-    if (client_ >= 0) ::shutdown(client_, SHUT_RDWR);
+    // Wakes every send or recv blocked on a client; the worker still owns and closes the descriptor.
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const int client : clients_) ::shutdown(client, SHUT_RDWR);
   }
-  if (worker_.joinable()) worker_.join();
+  changed_.notify_all();
+  if (acceptor_.joinable()) acceptor_.join();
+  for (auto& worker : workers_)
+    if (worker.joinable()) worker.join();
+  workers_.clear();
+  // Accepted, but no worker took them before the stop.
+  for (const auto& accepted : waiting_) {
+    ::shutdown(accepted.fd, SHUT_RDWR);
+    ::close(accepted.fd);
+  }
+  waiting_.clear();
+  clients_.clear();
   if (listener_ >= 0) ::close(listener_);
   listener_ = -1;
 }
 
 void Server::Run() {
   while (!stop_.load()) {
+    // Accept only for a free worker: the others wait in the backlog, not in a queue of ours.
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      changed_.wait_for(lock, std::chrono::milliseconds(options_.poll_interval_ms),
+                        [this] { return stop_.load() || idle_ > static_cast<int>(waiting_.size()); });
+      if (stop_.load()) break;
+      if (idle_ <= static_cast<int>(waiting_.size())) continue;
+    }
     pollfd waiting{};
     waiting.fd = listener_;
     waiting.events = POLLIN;
@@ -148,19 +170,36 @@ void Server::Run() {
       Log("accept fd=" + std::to_string(client) + (client < 0 ? " " + ErrorText(accept_error) : std::string(" client=") + ip));
     if (client < 0) continue;
     NoSigpipe(client);
-    SetTimeout(client, SO_RCVTIMEO, options_.read_timeout_ms);
     SetTimeout(client, SO_SNDTIMEO, options_.write_timeout_ms);
     {
-      std::lock_guard<std::mutex> lock(client_mutex_);
-      client_ = client;
+      std::lock_guard<std::mutex> lock(mutex_);
+      waiting_.push_back({client, ip});
+      clients_.push_back(client);
     }
-    if (!stop_.load()) Serve(client, ip);
+    changed_.notify_all();
+  }
+}
+
+void Server::Work() {
+  while (true) {
+    Accepted accepted;
     {
-      std::lock_guard<std::mutex> lock(client_mutex_);
-      client_ = -1;
+      std::unique_lock<std::mutex> lock(mutex_);
+      ++idle_;
+      changed_.notify_all();
+      changed_.wait(lock, [this] { return stop_.load() || !waiting_.empty(); });
+      --idle_;
+      if (stop_.load()) return;
+      accepted = std::move(waiting_.front());
+      waiting_.erase(waiting_.begin());
     }
-    ::shutdown(client, SHUT_RDWR);
-    ::close(client);
+    Serve(accepted.fd, accepted.ip);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      clients_.erase(std::remove(clients_.begin(), clients_.end(), accepted.fd), clients_.end());
+    }
+    ::shutdown(accepted.fd, SHUT_RDWR);
+    ::close(accepted.fd);
   }
 }
 
@@ -181,20 +220,61 @@ void Server::Serve(int client, const std::string& client_ip) {
   std::vector<char> buffer(2048);
   Request request;
   ParseResult parsed = ParseResult::kIncomplete;
+  std::size_t head_size = 0;
+  SetTimeout(client, SO_RCVTIMEO, std::min(options_.silent_timeout_ms, options_.read_timeout_ms));
   while (parsed == ParseResult::kIncomplete) {
     if (std::chrono::steady_clock::now() > deadline || stop_.load()) break;
     const auto count = ::recv(client, buffer.data(), buffer.size(), 0);
     if (count < 0 && errno == EINTR) continue;
     if (count <= 0) break;
+    if (received.empty()) SetTimeout(client, SO_RCVTIMEO, options_.read_timeout_ms);
     received.append(buffer.data(), static_cast<std::size_t>(count));
-    parsed = ParseRequestHead(received, &request);
+    parsed = ParseRequestHead(received, &request, &head_size);
   }
   Response response(write, request.method == Method::kHead);
   std::string target = "-";
   if (parsed == ParseResult::kOk) {
     target = LoggedTarget(request);
+    // Body bytes that came with the head go first; the handler decides whether to read the rest.
+    received.erase(0, head_size);
+    std::uint64_t body_left = request.content_length.value_or(0);
+    std::size_t leftover = 0;
+    SetTimeout(client, SO_RCVTIMEO, options_.body_timeout_ms);
+    request.read_body = [&, client](char* data, std::size_t size) -> std::ptrdiff_t {
+      if (body_left == 0 || size == 0) return 0;
+      if (size > body_left) size = static_cast<std::size_t>(body_left);
+      if (leftover < received.size()) {
+        const auto count = std::min(size, received.size() - leftover);
+        std::memcpy(data, received.data() + leftover, count);
+        leftover += count;
+        body_left -= count;
+        return static_cast<std::ptrdiff_t>(count);
+      }
+      while (!stop_.load()) {
+        const auto count = ::recv(client, data, size, 0);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return -1;
+        body_left -= static_cast<std::uint64_t>(count);
+        return count;
+      }
+      return -1;
+    };
     handler_(request, response);
     if (!response.started()) SendError(response, 500, "No answer.");
+    // An answer sent before the whole body was read (a refused upload): closing now could reset the connection
+    // and lose the answer, so read a bounded amount more while the client finishes its side.
+    if (body_left > 0 && !stop_.load()) {
+      ::shutdown(client, SHUT_WR);
+      SetTimeout(client, SO_RCVTIMEO, 500);
+      const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      std::uint64_t drained = 0;
+      while (body_left > 0 && drained < 16 * 1024 * 1024 && !stop_.load() && std::chrono::steady_clock::now() < until) {
+        const auto count = ::recv(client, buffer.data(), buffer.size(), 0);
+        if (count <= 0) break;
+        drained += static_cast<std::uint64_t>(count);
+        body_left -= std::min<std::uint64_t>(body_left, static_cast<std::uint64_t>(count));
+      }
+    }
   } else if (parsed == ParseResult::kTooLarge) {
     SendError(response, 431, "The request is too large.");
   } else if (parsed == ParseResult::kBadRequest) {

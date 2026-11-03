@@ -79,5 +79,39 @@ int main() {
   // A client gone mid-answer: the response says so and writes nothing more.
   Response gone([](const char*, std::size_t) { return false; }, false);
   CHECK(!gone.Start(200, "text/plain", std::nullopt) && gone.failed() && !gone.Body("x"));
+  // The body's length, and where the body starts.
+  {
+    Request request;
+    std::size_t head = 0;
+    const std::string text = "POST /u HTTP/1.1\r\nContent-Length: 12\r\n\r\nbody";
+    CHECK(ParseRequestHead(text, &request, &head) == ParseResult::kOk);
+    CHECK(request.content_length == std::uint64_t{12} && text.substr(head) == "body");
+    CHECK(HeaderValue(request, "content-length") == std::string("12") && !HeaderValue(request, "origin"));
+    Request none;
+    CHECK(ParseRequestHead("GET / HTTP/1.1\r\n\r\n", &none) == ParseResult::kOk && !none.content_length);
+    for (const char* bad : {"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+                            "POST / HTTP/1.1\r\nContent-Length: x\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n",
+                            "POST / HTTP/1.1\r\nContent-Length: 12345678901234567890\r\n\r\n",
+                            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"}) {
+      Request refused;
+      CHECK(ParseRequestHead(bad, &refused) == ParseResult::kBadRequest);
+    }
+  }
+  // A chunked answer: each piece framed, the end only after FinishChunks; HEAD sends neither.
+  {
+    std::string out;
+    Response response([&out](const char* data, std::size_t size) { out.append(data, size); return true; }, false);
+    CHECK(response.StartChunked(200, "application/zip"));
+    CHECK(response.Body("hello"));
+    CHECK(out.find("Transfer-Encoding: chunked\r\n") != std::string::npos);
+    CHECK(out.size() > 10 && out.compare(out.size() - 10, 10, "5\r\nhello\r\n") == 0);
+    CHECK(response.FinishChunks());
+    CHECK(out.compare(out.size() - 5, 5, "0\r\n\r\n") == 0);
+    CHECK(response.body_bytes() == 5);
+    std::string head;
+    Response head_only([&head](const char* data, std::size_t size) { head.append(data, size); return true; }, true);
+    CHECK(head_only.StartChunked(200, "application/zip") && head_only.Body("hello") && head_only.FinishChunks());
+    CHECK(head.find("hello") == std::string::npos && head.find("chunked") == std::string::npos);
+  }
   std::puts("web_request: ok");
 }

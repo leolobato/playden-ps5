@@ -55,7 +55,7 @@ class Service {
   // Stops the server and the worker. Safe to call twice.
   void Shutdown();
 
-  // Routes one request, as the server's worker does (tests call it directly).
+  // Routes one request, as the server's workers do, at the same time (tests call it directly).
   void Handle(const Request& request, Response& response);
 
  private:

@@ -62,7 +62,13 @@ std::optional<std::string> QueryValue(std::string_view query, std::string_view k
   return std::nullopt;
 }
 
-ParseResult ParseRequestHead(std::string_view bytes, Request* out) {
+std::optional<std::string> HeaderValue(const Request& request, std::string_view name) {
+  for (const auto& [key, value] : request.headers)
+    if (key == name) return value;
+  return std::nullopt;
+}
+
+ParseResult ParseRequestHead(std::string_view bytes, Request* out, std::size_t* head_size) {
   std::size_t end = bytes.find("\r\n\r\n");
   std::size_t terminator = 4;
   if (const auto bare = bytes.find("\n\n"); bare != std::string_view::npos && (end == std::string_view::npos || bare < end)) {
@@ -114,9 +120,20 @@ ParseResult ParseRequestHead(std::string_view bytes, Request* out) {
     }
     const auto value = TrimSpaces(header.substr(colon + 1));
     for (const unsigned char c : value) if ((c < 0x20 && c != '\t') || c == 0x7f) return ParseResult::kBadRequest;
+    if (name == "transfer-encoding") return ParseResult::kBadRequest;  // no chunked uploads
+    if (name == "content-length") {
+      if (request.content_length || value.empty() || value.size() > 19) return ParseResult::kBadRequest;
+      std::uint64_t length = 0;
+      for (const char c : value) {
+        if (c < '0' || c > '9') return ParseResult::kBadRequest;
+        length = length * 10 + static_cast<std::uint64_t>(c - '0');
+      }
+      request.content_length = length;
+    }
     request.headers.emplace_back(std::move(name), std::string(value));
   }
   *out = std::move(request);
+  if (head_size) *head_size = end + terminator;
   return ParseResult::kOk;
 }
 
@@ -125,13 +142,19 @@ const char* StatusText(int status) {
     case 200: return "OK";
     case 202: return "Accepted";
     case 400: return "Bad Request";
+    case 401: return "Unauthorized";
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 408: return "Request Timeout";
+    case 409: return "Conflict";
+    case 411: return "Length Required";
+    case 413: return "Content Too Large";
+    case 429: return "Too Many Requests";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 503: return "Service Unavailable";
+    case 507: return "Insufficient Storage";
     default: return "Unknown";
   }
 }
@@ -156,9 +179,36 @@ bool Response::Start(int status, std::string_view content_type, std::optional<st
   return !failed_;
 }
 
+bool Response::StartChunked(int status, std::string_view content_type,
+                            const std::vector<std::pair<std::string, std::string>>& extra) {
+  auto headers = extra;
+  if (!head_only_) headers.emplace_back("Transfer-Encoding", "chunked");
+  const bool started = Start(status, content_type, std::nullopt, headers);
+  chunked_ = !head_only_;
+  return started;
+}
+
+bool Response::FinishChunks() {
+  if (!started_ || failed_) return false;
+  if (!chunked_) return true;
+  static constexpr char kLast[] = "0\r\n\r\n";
+  if (!write_(kLast, sizeof kLast - 1)) failed_ = true;
+  return !failed_;
+}
+
 bool Response::Body(const char* data, std::size_t size) {
   if (!started_ || failed_) return false;
   if (head_only_ || size == 0) return true;
+  if (chunked_) {
+    char line[32];
+    const int length = std::snprintf(line, sizeof line, "%zx\r\n", size);
+    if (!write_(line, static_cast<std::size_t>(length)) || !write_(data, size) || !write_("\r\n", 2)) {
+      failed_ = true;
+      return false;
+    }
+    body_bytes_ += size;
+    return true;
+  }
   if (!write_(data, size)) {
     failed_ = true;
     return false;
