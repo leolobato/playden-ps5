@@ -69,6 +69,7 @@ struct LiveWebAccess {
     std::string url;            // on: http://<address>:<port>/, empty when the address is unknown
     std::uint16_t port = 0;
     std::string error;          // failed: why
+    std::string pairing_code;   // a browser asked to pair: the code to show now; empty when none
     bool operator==(const LiveWebAccess&) const = default;
 };
 enum class JobState { Queued, Downloading, Pausing, Paused, Verifying, Downloaded, Failed, Cancelled, Interrupted };
@@ -861,7 +862,8 @@ struct State {
     std::string download_server;
     bool hide_run_once_help = false;  // "Don't show again" on Run launcher or setup's dialog
     bool hide_launcher_help = false;  // ...and on the one for turning on Start through a launcher
-    bool web_access = true;  // Settings › Web access: the logs page on the local network (on by default)
+    bool web_access = true;  // Settings › Web access: the logs and game files page on the local network (on by default)
+    std::string web_pairing_code;  // live: a browser asked to pair; shown in a corner over every screen
     bool controller_connected = true;
     ControllerState controller;
     bool persistence_available = true;

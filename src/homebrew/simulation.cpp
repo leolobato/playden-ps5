@@ -3898,6 +3898,7 @@ void Simulation::RequestQuit() {
 void Simulation::ApplyLiveWebAccess(const LiveWebAccess& snapshot) {
     if (web_access_ == snapshot) return;
     web_access_ = snapshot;
+    state_.web_pairing_code = snapshot.pairing_code;
     rebuild_view();
 }
 
@@ -7491,23 +7492,23 @@ void Simulation::rebuild_view() {
             LiveWebAccess shown = web_access_;
             if (!live()) shown = state_.web_access ? LiveWebAccess{"on", "http://192.168.1.50:7031/", 7031, {}} : LiveWebAccess{};
             if (!state_.web_access) {
-                toggle.subtitle = "Off: Playden's logs can't be opened from a browser.";
+                toggle.subtitle = "Off: Playden's logs and game files can't be opened from a browser.";
             } else if (shown.state == "on" && !shown.url.empty()) {
-                toggle.subtitle = "Playden's logs on the local network while Playden is open.";
+                toggle.subtitle = "Playden's logs and game files on the local network while Playden is open.";
                 auto& address = add("settings-web-address", RowKind::Status, "Open on a phone or computer on the same network", "");
                 address.value = shown.url.substr(0, shown.url.size() - 1);  // without the trailing "/"
-                address.subtitle = "Shows Playden's logs, with your Steam name removed. Nothing can be changed from there yet.";
+                address.subtitle = "Shows Playden's logs, with your Steam name removed. Pair the browser to reach game files.";
                 address.qr = shown.url;
                 address.enabled = false;  // nothing to do on it: focus stays on the switch
             } else if (shown.state == "on") {
-                toggle.subtitle = "Playden's logs on the local network while Playden is open.";
+                toggle.subtitle = "Playden's logs and game files on the local network while Playden is open.";
                 auto& address = add("settings-web-address", RowKind::Status, "Address unknown", "");
                 address.value = "port " + std::to_string(shown.port);
                 address.subtitle = "Open the console's IP address shown in the PS5's network settings, port " +
                                    std::to_string(shown.port) + ", on a phone or computer on the same network.";
                 address.enabled = false;  // nothing to do on it: focus stays on the switch
             } else if (shown.state == "failed") {
-                toggle.subtitle = "Playden's logs on the local network while Playden is open.";
+                toggle.subtitle = "Playden's logs and game files on the local network while Playden is open.";
                 auto& problem = add("settings-web-problem", RowKind::Status, "Web access is not open", "");
                 problem.subtitle = "Web access could not start: " + shown.error + ". Turn it off and on to try again.";
                 problem.enabled = false;  // nothing to do on it: focus stays on the switch

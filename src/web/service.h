@@ -58,6 +58,8 @@ class Service {
   void SetFileCatalog(FileCatalog catalog);
   // The player dismissed the pairing code on the TV.
   void CancelPairing();
+  // A paired browser used the Files tab in the last half a minute.
+  bool FilesInUse() const;
   // True once after the page asked Playden to quit; the caller quits.
   bool TakeQuitRequest();
   // Stops the server and the worker. Safe to call twice.

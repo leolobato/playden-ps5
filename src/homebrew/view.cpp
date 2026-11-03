@@ -537,6 +537,7 @@ class Render::Impl
         draw_persistent_status(scene, state);
         draw_footer(scene, view);
         draw_overlays(state, view);
+        draw_web_pairing(state);
         focus_motion_.end_frame();
         if (live_artwork_) {
             live_artwork_->EndFrame();
@@ -3574,6 +3575,23 @@ class Render::Impl
             ui::text(scene_, fonts_.semibold, "UI SIMULATION", 1738.0F, 1012.0F, 16.0F, kSecondary,
                      gfx::Align::center, 1.2F);
         }
+    }
+
+    // A browser asked to pair. In a corner, over everything and taking no input: a device on the network can make
+    // this appear, so it must not get in the way of what the player is doing.
+    void draw_web_pairing(const State &state)
+    {
+        if (state.web_pairing_code.empty())
+            return;
+        const gfx::Rect panel{1288.0F, 118.0F, 536.0F, 150.0F};
+        overlay_.shadow(panel, 10.0F, 28.0F, gfx::Color::rgb(0x000000, 0.6F));
+        overlay_.rounded_rect(panel, 10.0F, kPanel);
+        ui::text(overlay_, fonts_.semibold, "Pair a browser with Playden", panel.x + 28.0F, panel.y + 42.0F, 24.0F, kText);
+        std::string code = state.web_pairing_code;
+        if (code.size() == 6)
+            code.insert(3, " ");
+        ui::text(overlay_, fonts_.semibold, code, panel.x + 28.0F, panel.y + 96.0F, 48.0F, kAccent);
+        ui::text(overlay_, fonts_.regular, "Type this code in the browser", panel.x + 28.0F, panel.y + 130.0F, 18.0F, kSecondary);
     }
 
     void draw_overlays(const State &state, const ViewData &view)

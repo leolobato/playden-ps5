@@ -63,6 +63,8 @@ class FilesApi {
   void SetCatalog(FileCatalog catalog);
   std::string PairingCode() const;
   void CancelPairing();
+  // A paired browser asked for something in the last half a minute.
+  bool InUse() const;
 
  private:
   class Transfer;
@@ -72,6 +74,7 @@ class FilesApi {
   // The game and root a request names. False: answered.
   bool Find(const Request& request, Response& response, FileGame* game, FileRoot* root);
   std::optional<FileGame> Game(const std::string& id) const;
+  bool SettingUp() const;
   std::vector<std::pair<std::string, FileRoot>> Roots(const FileGame& game) const;
 
   FilesConfig config_;
@@ -80,6 +83,7 @@ class FilesApi {
   mutable std::mutex mutex_;
   FileCatalog catalog_;
   std::atomic<int> transfers_{0};
+  std::atomic<std::int64_t> last_used_{0};  // steady seconds; 0: never
 };
 
 }  // namespace playden::web

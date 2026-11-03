@@ -154,6 +154,8 @@ void Service::SetFileCatalog(FileCatalog catalog) { files_.SetCatalog(std::move(
 
 void Service::CancelPairing() { files_.CancelPairing(); }
 
+bool Service::FilesInUse() const { return files_.InUse(); }
+
 void Service::Shutdown() {
   {
     std::lock_guard<std::mutex> lock(mutex_);

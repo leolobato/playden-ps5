@@ -13,6 +13,10 @@ namespace {
 const std::vector<std::pair<std::string, std::string>> kNoStore = {{"Cache-Control", "no-store"}};
 constexpr const char* kCookie = "playden_files";
 
+std::int64_t SteadySeconds() {
+  return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 std::string Quoted(std::string_view text) {
   std::string out = "\"";
   for (const char raw : text) {
@@ -41,6 +45,14 @@ void Fail(Response& response, const FileError& error) {
   std::vector<std::pair<std::string, std::string>> headers = kNoStore;
   if (error.status == 503) headers.emplace_back("Retry-After", "1");
   response.Send(error.status, "text/plain; charset=utf-8", error.message + "\n", headers);
+}
+
+// A game's setup holds the path lock for minutes, so a file action answers now, not after the short wait for the lock.
+void SendSettingUp(Response& response) {
+  auto headers = kNoStore;
+  headers.emplace_back("Retry-After", "5");
+  headers.emplace_back("X-Playden-Busy", "setup");
+  response.Send(503, "text/plain; charset=utf-8", "Playden is setting up a game. Files are available when it finishes.\n", headers);
 }
 
 // A cookie's value from the Cookie header.
@@ -133,9 +145,16 @@ std::string FilesApi::PairingCode() const { return pairing_.ActiveCode(); }
 
 void FilesApi::CancelPairing() { pairing_.Cancel(); }
 
+bool FilesApi::InUse() const {
+  const auto used = last_used_.load();
+  return used != 0 && SteadySeconds() - used < 30;
+}
+
 bool FilesApi::Paired(const Request& request) {
   const auto token = CookieValue(request, kCookie);
-  return !token.empty() && pairing_.Paired(token);
+  if (token.empty() || !pairing_.Paired(token)) return false;
+  last_used_.store(SteadySeconds());
+  return true;
 }
 
 bool FilesApi::RequirePaired(const Request& request, Response& response) {
@@ -156,6 +175,11 @@ std::optional<FileGame> FilesApi::Game(const std::string& id) const {
   for (const auto& game : catalog_.games)
     if (game.id == id) return game;
   return std::nullopt;
+}
+
+bool FilesApi::SettingUp() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return catalog_.setting_up;
 }
 
 std::vector<std::pair<std::string, FileRoot>> FilesApi::Roots(const FileGame& game) const {
@@ -190,6 +214,10 @@ bool FilesApi::Find(const Request& request, Response& response, FileGame* game, 
   const auto found = id ? Game(*id) : std::nullopt;
   if (!found) {
     SendError(response, 404, "No such game.");
+    return false;
+  }
+  if (SettingUp()) {
+    SendSettingUp(response);
     return false;
   }
   *game = *found;
@@ -257,14 +285,20 @@ void FilesApi::Register(Router& router) {
     body += ",\"game_folder\":" + Quoted(game->game_folder_shown) + ",\"roots\":[";
     bool first = true;
     std::vector<RedistFolderInfo> redist;
+    const bool setting_up = SettingUp();
     bool redist_busy = false;
+    // Once the lock is busy, the other roots would each wait for it too.
+    bool busy = setting_up;
     for (const auto& [root_id, root] : Roots(*game)) {
       FileListing listing;
       // Only whether it exists: a busy lock leaves it unknown, and the page can still open it.
-      const auto error = store_.List(root, std::string(), &listing);
+      const auto error = busy ? FileError{503, std::string()} : store_.List(root, std::string(), &listing);
+      if (error.status == 503) busy = true;
       body += std::string(first ? "" : ",") + "{" + Field("id", root_id) + "," + Field("exists", error.ok() ? listing.exists : true) + "}";
       first = false;
-      if (root_id == "game" && store_.RedistFolders(root, &redist).status == 503) redist_busy = true;
+      // Asked for by the game's own page only: a look through a game folder is too slow for every folder opened.
+      if (root_id == "game" && QueryValue(request.query, "redist") == std::string("1") && (busy || store_.RedistFolders(root, &redist).status == 503))
+        redist_busy = true;
     }
     body += "],\"redist\":[";
     for (std::size_t i = 0; i < redist.size(); ++i) {
@@ -274,7 +308,7 @@ void FilesApi::Register(Router& router) {
       for (std::size_t j = 0; j < folder.sample.size(); ++j) body += (j ? "," : "") + Quoted(folder.sample[j]);
       body += "]}";
     }
-    SendJson(response, 200, body + "]," + Field("redist_busy", redist_busy) + "}");
+    SendJson(response, 200, body + "]," + Field("redist_busy", redist_busy) + "," + Field("all_setting_up", setting_up) + "}");
   });
   router.Exact("/api/files/list", [this](const Request& request, const std::string&, Response& response) {
     if (!RequirePaired(request, response)) return;

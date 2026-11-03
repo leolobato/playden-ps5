@@ -38,6 +38,11 @@ nav span { color: var(--soft); white-space: nowrap; }
 nav span.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); padding-bottom: 2px; }
 nav span.later { opacity: .55; }
 nav span.later em { font-style: normal; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; margin-left: 4px; }
+nav a { color: var(--soft); text-decoration: none; white-space: nowrap; }
+nav a:hover { color: var(--ink); }
+nav a.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); padding-bottom: 2px; }
+.top-end { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; }
+header { position: relative; }
 
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line);
   border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 0 0 24px; }
@@ -78,7 +83,93 @@ td.radio { width: 1%; }
 input[type=radio] { accent-color: var(--accent); margin: 0; }
 td.empty { color: var(--soft); }
 
+/* Files */
+.crumbs { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; font-size: 14px; color: var(--soft); margin: 0 0 16px; overflow-wrap: anywhere; }
+.crumbs a { text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.crumbs b { color: var(--ink); font-weight: 600; }
+.title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 4px; }
+.title-row h2 { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 600; overflow-wrap: anywhere; }
+.lede { color: var(--soft); margin: 0 0 20px; max-width: 76ch; }
+.mono { font: 400 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--soft); overflow-wrap: anywhere; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 12px; }
+.bar .end { margin-left: auto; }
+.primary { font: 600 14px/1.5 "Barlow", sans-serif; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 4px; padding: 5px 12px;
+  cursor: pointer; white-space: nowrap; text-decoration: none; display: inline-block; }
+.primary:hover { background: #f59a57; }
+.primary:disabled, .ghost:disabled { cursor: not-allowed; opacity: .45; }
+.ghost.danger { color: #f2a48f; }
+.badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--soft);
+  white-space: nowrap; vertical-align: middle; margin-left: 6px; }
+.badge.running { border-color: var(--warn); color: var(--warn); }
+.badge.ok { border-color: var(--ok); color: var(--ok); }
+.search { font: 400 14px/1.5 "Barlow", sans-serif; color: var(--ink); background: var(--row); border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; min-width: 260px; max-width: 100%; }
+td.entry-name { font-weight: 600; overflow-wrap: anywhere; }
+td.entry-name a { color: var(--ink); text-decoration: none; }
+td.entry-name a:hover { color: var(--accent); }
+td.entry-name span { display: block; color: var(--soft); font-size: 13px; font-weight: 400; }
+td.entry-name span.badge { display: inline-block; font-size: 12px; font-weight: 600; }
+td.entry-name .folder::before { content: ""; display: inline-block; width: 9px; height: 7px; margin-right: 8px; border: 1.5px solid var(--accent); border-radius: 1px; }
+td.acts { text-align: right; white-space: nowrap; }
+td.acts > * { margin-left: 6px; }
+td.status { color: var(--accent); font-weight: 600; font-size: 14px; white-space: nowrap; }
+.drop-hint { border: 1px dashed #4a4338; border-radius: 6px; padding: 32px 16px; text-align: center; color: var(--soft); margin-top: 8px; }
+.drop-hint strong { display: block; color: var(--ink); font-weight: 600; margin-bottom: 4px; }
+main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
+.scrim { position: fixed; inset: 0; z-index: 5; background: rgba(6, 5, 4, .72); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dialog { width: 100%; max-width: 520px; max-height: 100%; overflow: auto; background: var(--row-open); border: 1px solid #38332b; border-radius: 8px; padding: 22px 24px; }
+.dialog h3 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+.dialog p { margin: 0 0 12px; color: var(--soft); font-size: 15px; }
+.dialog ul { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 14px; padding: 4px 12px; list-style: none; font-size: 14px; max-height: 200px; overflow: auto; overflow-wrap: anywhere; }
+.dialog li { padding: 6px 0; }
+.dialog li + li { border-top: 1px solid var(--line); }
+.dialog .foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.choice { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; padding: 6px 0; }
+.choice small { display: block; color: var(--soft); font-size: 13px; }
+.pair { max-width: 520px; margin: 40px auto 0; }
+.pair h2 { margin: 0 0 8px; font-size: 26px; line-height: 1.2; font-weight: 600; }
+.pair p { color: var(--soft); margin: 0 0 12px; }
+.pair input { font: 600 30px/1.2 "Barlow", sans-serif; letter-spacing: .25em; color: var(--ink); background: var(--row); border: 1px solid #4a4338; border-radius: 6px; padding: 10px 14px; width: 100%; max-width: 280px; margin-bottom: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; font: 600 13px/1.4 "Barlow", sans-serif; color: var(--ink); background: var(--row-open); border: 1px solid #4a4338;
+  border-radius: 99px; padding: 4px 12px; cursor: pointer; white-space: nowrap; }
+.chip:hover, .chip[aria-expanded="true"] { border-color: var(--accent); }
+.meter { display: block; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.chip .meter { width: 64px; }
+.panel { position: absolute; right: 0; top: 100%; margin-top: 8px; width: 420px; max-width: 100%; z-index: 4; background: var(--row-open); border: 1px solid #38332b; border-radius: 8px; padding: 14px 16px; }
+.panel .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-weight: 600; margin-bottom: 8px; }
+.panel .head span { color: var(--soft); font-weight: 400; font-size: 14px; }
+.panel ul { list-style: none; margin: 10px 0 0; padding: 0; font-size: 14px; max-height: 280px; overflow: auto; }
+.panel li { padding: 7px 0; border-top: 1px solid var(--line); }
+.panel li .line { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.panel li .line span { color: var(--soft); font-weight: 400; white-space: nowrap; }
+.panel li .line span.done { color: var(--ok); }
+.panel li .line span.bad { color: #f2a48f; white-space: normal; }
+.panel li small { display: block; color: var(--soft); font-size: 13px; overflow-wrap: anywhere; }
+.panel li .meter { height: 4px; margin-top: 5px; }
+.panel .foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 10px; }
+.panel .foot small { color: var(--soft); font-size: 13px; }
+.editor { display: block; margin: 0; padding: 14px 16px; width: 100%; min-height: 360px; background: var(--row); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+  font: 400 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+
 @media (max-width: 720px) {
+  .primary, .ghost, .chip { min-height: 44px; padding: 8px 14px; }
+  .search { width: 100%; min-width: 0; min-height: 44px; }
+  .panel { width: 100%; }
+  table.files, table.files tbody { display: block; }
+  table.files thead { display: none; }
+  table.files tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 10px 2px; border-top: 1px solid var(--line); }
+  table.files tbody tr:last-child { border-bottom: 1px solid var(--line); }
+  table.files td { border: 0; padding: 0; background: none !important; white-space: normal; }
+  table.files td.pick { grid-row: 1; }
+  table.files td.entry-name { grid-row: 1; grid-column: 2; }
+  table.files td.pick + td.entry-name { grid-column: 2; }
+  table.files td.size { grid-row: 1; grid-column: 3; color: var(--soft); font-size: 13px; white-space: nowrap; }
+  table.files td.when { grid-column: 2 / -1; font-size: 13px; }
+  table.files td.status { grid-column: 2 / -1; }
+  table.files td.acts { grid-column: 1 / -1; text-align: left; white-space: normal; display: flex; flex-wrap: wrap; gap: 6px; }
+  table.files td.acts > * { margin-left: 0; }
+  table.files td.acts:empty { display: none; }
   .facts .wide { display: none; }
   thead, td.title, td.when-wide { display: none; }
   table, tbody { display: block; }
@@ -106,7 +197,11 @@ td.empty { color: var(--soft); }
 <main>
   <header>
     <h1>Playden<small id="where">on PS5</small></h1>
-    <nav aria-label="Sections"><span class="on">Logs</span><span class="later">Recipes<em>later</em></span><span class="later">Files<em>later</em></span></nav>
+    <div class="top-end">
+      <button class="chip" type="button" id="transfers-chip" aria-expanded="false" hidden></button>
+      <nav aria-label="Sections"><a href="#/logs" id="tab-logs">Logs</a><span class="later">Recipes<em>later</em></span><a href="#/files" id="tab-files">Files</a></nav>
+    </div>
+    <section class="panel" id="transfers-panel" aria-label="Uploads" hidden></section>
   </header>
 
   <div class="problem" id="problem" role="alert" hidden>
@@ -114,6 +209,9 @@ td.empty { color: var(--soft); }
     <button class="ghost" type="button" id="retry">Try again</button>
   </div>
 
+  <section id="files-view" hidden></section>
+
+  <section id="logs-view">
   <dl class="facts" id="facts">
     <div><dt>Playden</dt><dd id="fact-version">…</dd></div>
     <div class="wide"><dt>Package</dt><dd id="fact-package">…</dd></div>
@@ -141,7 +239,9 @@ td.empty { color: var(--soft); }
     <thead><tr><th>File</th><th>Changed</th><th class="num">Size</th><th class="num"></th></tr></thead>
     <tbody></tbody>
   </table>
+  </section>
 </main>
+<div class="scrim" id="dialog-scrim" hidden></div>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -152,6 +252,7 @@ td.empty { color: var(--soft); }
     for (const [key, value] of Object.entries(attributes)) {
       if (key === "class") node.className = value;
       else if (key === "text") node.textContent = value;
+      else if (key === "style") node.style.cssText = value;
       else node.setAttribute(key, value);
     }
     for (const child of children) if (child) node.append(child);
@@ -297,7 +398,636 @@ td.empty { color: var(--soft); }
       fail(error instanceof TypeError ? "Playden isn't answering. Is it open on the PS5?" : `Playden didn't quit (${error.message}).`);
     }
   });
+
+  // Files: everything below stays on this one page. Moving between screens only changes the hash, because a reload
+  // would cancel an upload.
+  const pane = $("files-view");
+  const clear = () => pane.replaceChildren();
+  const ROOTS = {
+    user: { label: "Windows user folder", detail: "Documents, AppData, Saved Games", windows: "C:\\users\\prospero" },
+    steam: { label: "Steam saves", detail: "Used by games that save through Steam", windows: "C:\\Program Files (x86)\\Steam\\userdata\\0" },
+    programdata: { label: "ProgramData", detail: "Shared by every Windows program", windows: "C:\\ProgramData" },
+    public: { label: "Public Documents", detail: "Shared by every Windows user", windows: "C:\\users\\Public\\Documents" },
+    game: { label: "Game folder", detail: "Game files, mods and game-side configs" },
+  };
+  const longSize = (bytes) => {
+    if (bytes < 1024 * 1024 * 1024) return size(bytes);
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  };
+  const q = (values) => Object.entries(values).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join("&");
+  const button = (text, onClick, kind = "ghost") => {
+    const node = element("button", { class: kind, type: "button", text });
+    node.addEventListener("click", onClick);
+    return node;
+  };
+  const anchor = (text, href, kind = "ghost") => element("a", { class: kind, href, text });
+  const gameHash = (game) => `#/files/${encodeURIComponent(game)}`;
+  const folderHash = (game, root, path) => `${gameHash(game)}/${root}${path ? "/" + path.split("/").map(encodeURIComponent).join("/") : ""}`;
+  const editHash = (game, root, path) => `#/edit/${encodeURIComponent(game)}/${root}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const files = { game: null, root: null, path: "", listing: null, selected: new Set(), route: 0, poll: 0, games: null };
+
+  class Answer extends Error {
+    constructor(status, message) {
+      super(message);
+      this.status = status;
+    }
+  }
+  const busyWords = () => files.setting_up
+    ? "Playden is setting up a game. Files are available when it finishes."
+    : "Playden is busy. Try again in a moment.";
+  // Answers 503 while a game's setup or another transfer has the way: a few quiet tries first.
+  const api = async (path, options = {}) => {
+    for (let attempt = 0; ; ++attempt) {
+      let response;
+      try {
+        response = await fetch(path, { cache: "no-store", ...options });
+      } catch (error) {
+        throw new Answer(0, "Playden isn't answering. Is it open on the PS5? It closes when a game starts.");
+      }
+      // A setup takes minutes: say so now. Anything else that's busy is over in a moment.
+      files.setting_up = response.status === 503 && response.headers.get("X-Playden-Busy") === "setup";
+      if (response.status === 503 && !files.setting_up && attempt < 3) { await sleep(1000); continue; }
+      const text = await response.text();
+      if (response.ok) {
+        const answer = text ? JSON.parse(text) : {};
+        files.setting_up = !!(answer.games ? answer.setting_up : answer.all_setting_up);
+        return answer;
+      }
+      if (response.status === 401) { showPairing(); throw new Answer(401, "Pair this browser first."); }
+      throw new Answer(response.status, response.status === 503 ? busyWords() : text.trim() || `Playden answered ${response.status}.`);
+    }
+  };
+  const act = (path) => api(path, { method: "POST", headers: { "X-Playden-Action": "files" } });
+  const report = (error) => {
+    if (error.status === 401) return;
+    fail(error.message);
+  };
+
+  // Pairing
+  const showPairing = () => {
+    ++files.route;
+    clearInterval(files.poll);
+    clear();
+    const code = element("input", { inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", "aria-label": "The code on the TV", placeholder: "000000" });
+    const note = element("p", { text: "" });
+    const pair = async () => {
+      $("problem").hidden = true;
+      try {
+        await act(`/api/pair/confirm?${q({ code: code.value.trim() })}`);
+        route();
+      } catch (error) { report(error); }
+    };
+    code.addEventListener("keydown", (event) => { if (event.key === "Enter") pair(); });
+    const ask = async (replace) => {
+      $("problem").hidden = true;
+      try {
+        await act(`/api/pair/start${replace ? "?new=1" : ""}`);
+        note.textContent = "The PS5 shows a 6-digit code for two minutes. Type it here.";
+        code.focus();
+      } catch (error) { report(error); }
+    };
+    pane.append(element("div", { class: "pair" },
+      element("h2", { text: "Pair this browser" }),
+      element("p", { text: "Game files can hold your saves and account details, so Playden asks once before showing them. The pairing ends when Playden closes." }),
+      note, code,
+      element("div", { class: "bar" }, button("Pair", pair, "primary"), button("Show a new code", () => ask(true)))));
+    ask(false);
+  };
+
+  // Games
+  const whereLabel = (game) => !game.drive ? "—" : game.drive_absent ? "Drive not connected" : game.drive === "usb" ? "USB drive" : game.drive === "m2" ? "M.2 drive" : "Console";
+  const gameBadges = (game) => {
+    const badges = [];
+    if (game.running) badges.push(element("span", { class: "badge running", text: "Running" }));
+    if (!game.installed) badges.push(element("span", { class: "badge", text: "Not installed" }));
+    if (game.kind === "imported") badges.push(element("span", { class: "badge", text: "Imported" }));
+    return badges;
+  };
+  const showGames = async () => {
+    const token = ++files.route;
+    clearInterval(files.poll);
+    let filter = "";
+    const search = element("input", { class: "search", type: "search", placeholder: "Find a game", "aria-label": "Find a game" });
+    const body = element("tbody");
+    const paint = () => {
+      const shown = (files.games.games || []).filter((game) => game.name.toLowerCase().includes(filter));
+      shown.sort((left, right) => Number(right.running) - Number(left.running) || (right.last_played || 0) - (left.last_played || 0) || left.name.localeCompare(right.name));
+      body.replaceChildren(...shown.map((game) => element("tr", {},
+        element("td", { class: "entry-name" }, element("a", { href: gameHash(game.id), text: game.name }), ...gameBadges(game),
+          element("span", { text: game.app ? `app ${game.app}` : game.id })),
+        element("td", { class: "soft when" , text: whereLabel(game) }),
+        element("td", { class: "soft when", text: game.cloud ? "Cloud sync" : "No Cloud sync" }),
+        element("td", { class: "soft when", text: game.last_played ? when(game.last_played) : "—" }),
+        element("td", { class: "num soft size", text: game.windows_user_bytes !== undefined ? longSize(game.windows_user_bytes) : "" }))));
+      if (!shown.length)
+        body.append(element("tr", {}, element("td", { class: "empty", colspan: "5", text: filter ? "No game has that name." : "No games with files yet." })));
+    };
+    search.addEventListener("input", () => { filter = search.value.toLowerCase(); paint(); });
+    const load = async () => {
+      files.games = await api("/api/files/games");
+      if (token === files.route) paint();
+    };
+    try { await load(); } catch (error) { return report(error); }
+    if (token !== files.route) return;
+    clear();
+    pane.append(element("div", { class: "title-row" }, element("h2", { text: "Game files" })),
+      element("p", { class: "lede", text: "Saves, configs and mods for each game. Pick a game to download, replace or add files." }),
+      element("div", { class: "bar" }, search),
+      element("table", { class: "files" },
+        element("thead", {}, element("tr", {}, element("th", { text: "Game" }), element("th", { text: "Installed on" }), element("th", { text: "Cloud" }),
+          element("th", { text: "Last played" }), element("th", { class: "num", text: "Windows user folders" }))),
+        body),
+      element("p", { class: "note", text: "Playden answers only while it is open. Starting a game ends this page until Playden opens again." }));
+    files.poll = setInterval(() => { load().catch(() => {}); }, 5000);
+  };
+
+  const rootRow = (game, root) => {
+    const info = ROOTS[root.id] || { label: root.id, detail: "" };
+    const where = root.id === "game" ? game.game_folder : info.windows;
+    return element("tr", {},
+      element("td", { class: "entry-name" }, element("a", { class: "folder", href: folderHash(game.id, root.id, ""), text: info.label }), element("span", { text: info.detail })),
+      element("td", { class: "mono when", text: where || "" }),
+      element("td", { class: "soft when", text: root.exists ? "" : "Empty" }),
+      element("td", { class: "acts" }, anchor("Open", folderHash(game.id, root.id, ""))));
+  };
+  const showGame = async (id) => {
+    const token = ++files.route;
+    clearInterval(files.poll);
+    let game;
+    files.listing = null;
+    try { game = await api(`/api/files/game?${q({ game: id, redist: 1 })}`); } catch (error) { if (token === files.route) report(error); return; }
+    if (token !== files.route) return;
+    clear();
+    pane.append(element("nav", { class: "crumbs", "aria-label": "Path" }, element("a", { href: "#/files", text: "Games" }), element("span", { text: "/" }), element("b", { text: game.name })));
+    pane.append(element("div", { class: "title-row" }, element("h2", { text: game.name }), ...gameBadges(game),
+      game.cloud ? element("span", { class: "badge ok", text: "Cloud sync" }) : ""));
+    const lede = [];
+    if (!game.installed) lede.push("You uninstalled this game, and Playden kept its saves.");
+    if (game.cloud) lede.push("A save you upload here can replace the one in Steam Cloud at the next sync.");
+    if (game.kind === "imported") lede.push("You added this game yourself, so Playden doesn't know where it saves. Look in the folders below.");
+    if (lede.length) pane.append(element("p", { class: "lede", text: lede.join(" ") }));
+    if (game.running) pane.append(runningNote());
+    if (game.physx_needed !== undefined) {
+      const version = game.physx_needed ? `PhysX ${game.physx_needed}` : "PhysX";
+      pane.append(element("div", { class: "problem" }, element("p", { text: `This game needs ${version}.` }),
+        element("p", { class: "note", text: game.drive_absent || !game.roots.some((root) => root.id === "game")
+          ? "Its game folder isn't available. Connect its drive to add the installer."
+          : "Upload its installer to the game's _Redist folder, then press Play on the PS5. The file name must start with \"physx\" and end in .msi or .exe." }),
+        game.roots.some((root) => root.id === "game")
+          ? element("div", { class: "bar" }, button("Open _Redist", async () => {
+              try {
+                if (!game.redist.some((folder) => folder.path.toLowerCase() === "_redist")) await act(`/api/files/mkdir?${q({ game: id, root: "game", path: "_Redist" })}`);
+                location.hash = folderHash(id, "game", (game.redist.find((folder) => folder.path.toLowerCase() === "_redist") || { path: "_Redist" }).path);
+              } catch (error) { report(error); }
+            }, "primary")) : ""));
+    }
+    if (game.drive_absent) pane.append(element("div", { class: "problem" }, element("p", { text: "Connect this game's drive to reach its game folder." }), element("p", { class: "note", text: "Its saves are on the console, below." })));
+    const bottleRoots = game.roots.filter((root) => root.id !== "game");
+    if (bottleRoots.length) {
+      pane.append(element("div", { class: "sub", text: "Saves & configs · on the console" }));
+      pane.append(element("table", { class: "files" }, element("tbody", {}, ...bottleRoots.map((root) => rootRow(game, root)))));
+    }
+    const gameRoot = game.roots.find((root) => root.id === "game");
+    if (gameRoot) {
+      pane.append(element("div", { class: "sub", text: `Game folder · ${whereLabel(game).toLowerCase()}` }));
+      pane.append(element("table", { class: "files" }, element("tbody", {}, rootRow(game, gameRoot))));
+      if (game.redist_busy) pane.append(element("p", { class: "note", text: busyWords() }));
+      if (game.redist.length) {
+        pane.append(element("div", { class: "sub", text: "Redistributable installers · in the game folder" }));
+        pane.append(element("table", { class: "files" }, element("tbody", {}, ...game.redist.map((folder) => element("tr", {},
+          element("td", { class: "entry-name" }, element("a", { class: "folder", href: folderHash(id, "game", folder.path), text: folder.path }),
+            element("span", { text: folder.physx_installer ? `Play installs ${folder.physx_installer.split("/").pop()} from here` : "" })),
+          element("td", { class: "soft when", text: folder.sample.join(", ") + (folder.entries > folder.sample.length ? `, ${folder.entries - folder.sample.length} more` : "") }),
+          element("td", { class: "num soft size", text: folder.bytes ? longSize(folder.bytes) : folder.entries ? "" : "Empty" }),
+          element("td", { class: "acts" }, anchor("Open", folderHash(id, "game", folder.path))))))));
+      }
+      pane.append(element("p", { class: "note", text: "Playden looks for PhysX in folders named _Redist, _CommonRedist, CommonRedist, Redist, Redists, Redistributable, Redistributables, Support, __Installer, _Installer, Installer, Installers, Prerequisites, Prereqs, PhysX, DirectX, VCRedist or DotNet, at the top of the game folder or one level down." }));
+    }
+    if (!bottleRoots.length && !gameRoot) pane.append(element("p", { class: "lede", text: "This game has no folders to show yet." }));
+  };
+  const runningNote = () => element("div", { class: "problem", role: "status" },
+    element("p", { text: "This game is running on the PS5, in the background." }),
+    element("p", { class: "note", text: "It can overwrite files you change here. To be safe, close it on the PS5 first." }));
+
+  // Folders
+  const relPath = (name) => (files.path ? `${files.path}/${name}` : name);
+  const breadcrumbs = (game, root, path, last) => {
+    const nav = element("nav", { class: "crumbs", "aria-label": "Path" }, element("a", { href: "#/files", text: "Games" }), element("span", { text: "/" }),
+      element("a", { href: gameHash(game.id), text: game.name }), element("span", { text: "/" }));
+    const parts = path ? path.split("/") : [];
+    const label = (ROOTS[root] || { label: root }).label;
+    if (!parts.length && !last) nav.append(element("b", { text: label }));
+    else nav.append(element("a", { href: folderHash(game.id, root, ""), text: label }));
+    parts.forEach((part, index) => {
+      nav.append(element("span", { text: "/" }));
+      if (index === parts.length - 1 && !last) nav.append(element("b", { text: part }));
+      else nav.append(element("a", { href: folderHash(game.id, root, parts.slice(0, index + 1).join("/")), text: part }));
+    });
+    if (last) { nav.append(element("span", { text: "/" })); nav.append(element("b", { text: last })); }
+    return nav;
+  };
+  const isText = (entry) => entry.size <= 1024 * 1024 && /\.(ini|cfg|txt|json|xml|conf|config|lua|yaml|yml|toml|csv|log|vdf)$/i.test(entry.name);
+  const editableRow = (entry) => !entry.read_only && !entry.recoverable;
+  const paintFolder = () => {
+    const { game, root, path, listing } = files;
+    const ctx = { game: game.id, root };
+    clear();
+    pane.append(breadcrumbs(game, root, path));
+    if (game.running) pane.append(runningNote());
+    const upload = button("Upload files", () => picker.click(), "primary");
+    const picker = element("input", { type: "file", multiple: "", hidden: "", "aria-label": "Files to upload" });
+    picker.addEventListener("change", () => { addFiles([...picker.files]); picker.value = ""; });
+    const newFolder = button("New folder", () => askNewFolder());
+    const zip = anchor("Download folder (.zip)", `/api/files/zip?${q({ ...ctx, path })}`);
+    const selected = [...files.selected];
+    const bar = element("div", { class: "bar" }, upload, picker, newFolder, listing.exists ? zip : "");
+    if (listing.read_only) { upload.disabled = true; newFolder.disabled = true; }
+    if (selected.length) bar.append(button(`Delete ${selected.length} selected`, () => askDelete(selected), "ghost danger end"));
+    if (listing.read_only)
+      pane.append(element("p", { class: "lede", text: "Read-only: Playden writes this folder itself when it prepares the game, so changes here wouldn't last. Change these settings in Game settings on the PS5." }));
+    if (root === "game" && !listing.read_only)
+      pane.append(element("p", { class: "note", style: "margin:0 0 14px", text: "A game update can overwrite the game's own files, and uninstalling removes this folder with everything you added." }));
+    pane.append(bar);
+    const queued = transfers.items.filter((item) => item.game === game.id && item.root === root && item.path === path && item.state !== "done");
+    const rows = listing.entries.map((entry) => {
+      const full = relPath(entry.name);
+      const pending = !entry.directory && queued.find((item) => item.name.toLowerCase() === entry.name.toLowerCase());
+      const check = element("input", { type: "checkbox", "aria-label": `Select ${entry.name}` });
+      check.checked = files.selected.has(entry.name);
+      check.disabled = !!entry.read_only;
+      check.addEventListener("change", () => {
+        if (check.checked) files.selected.add(entry.name); else files.selected.delete(entry.name);
+        paintFolder();
+      });
+      const name = entry.directory
+        ? element("td", { class: "entry-name" }, element("a", { class: "folder", href: folderHash(game.id, root, full), text: entry.name }), entry.read_only ? element("span", { text: "Read-only. Playden writes this folder." }) : "")
+        : element("td", { class: "entry-name" }, entry.name);
+      if (!entry.directory && entry.recoverable) name.append(element("span", { text: "Recoverable: an earlier replace stopped here. Restore it to get this file back." }));
+      else if (!entry.directory && entry.previous) name.append(element("span", { text: `Previous version from ${when(entry.previous.modified).toLowerCase()}, ${longSize(entry.previous.size)}` }));
+      if (entry.name.toLowerCase() === "configs.user.ini") name.append(element("span", { text: "Names your Steam account. Look through it before you share it." }));
+      const acts = element("td", { class: "acts" });
+      if (!entry.directory) {
+        if (!entry.recoverable) acts.append(anchor("Download", `/api/files/download?${q({ ...ctx, path: full })}`));
+        if (entry.previous) {
+          acts.append(anchor(entry.recoverable ? "Download" : "Download previous", `/api/files/download?${q({ ...ctx, path: full, previous: 1 })}`));
+          if (!entry.read_only) acts.append(button("Restore", () => restore(full)));
+        }
+        if (isText(entry) && editableRow(entry)) acts.append(anchor("Edit", editHash(game.id, root, full)));
+      }
+      const status = pending
+        ? element("td", { class: "status", text: pending.state === "active" ? `Uploading ${Math.round(pending.fraction * 100)}%` : pending.state === "waiting" ? "Waiting to upload" : "Upload failed" })
+        : element("td", { class: "soft when", text: when(entry.modified) });
+      return element("tr", {}, element("td", { class: "pick" }, check), name, status,
+        element("td", { class: "num soft size", text: entry.directory ? "" : longSize(entry.size) }), acts);
+    });
+    // Files on their way that aren't listed yet.
+    for (const item of queued)
+      if (!listing.entries.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()))
+        rows.push(element("tr", {}, element("td", { class: "pick" }), element("td", { class: "entry-name" }, item.name),
+          element("td", { class: "status", text: item.state === "active" ? `Uploading ${Math.round(item.fraction * 100)}%` : item.state === "waiting" ? "Waiting to upload" : "Upload failed" }),
+          element("td", { class: "num soft size", text: longSize(item.file.size) }), element("td", { class: "acts" })));
+    if (rows.length) {
+      pane.append(element("table", { class: "files" },
+        element("thead", {}, element("tr", {}, element("th", {}), element("th", { text: "Name" }), element("th", { text: "Changed" }), element("th", { class: "num", text: "Size" }), element("th", {}))),
+        element("tbody", {}, ...rows)));
+    } else {
+      pane.append(element("div", { class: "drop-hint" }, element("strong", { text: "This folder is empty" }),
+        listing.read_only ? "" : "Drop files here to upload them, or use Upload files."));
+    }
+    if (listing.unshown) pane.append(element("p", { class: "note", text: `${listing.unshown} ${listing.unshown === 1 ? "file" : "files"} can't be shown here.` }));
+    if (listing.truncated) pane.append(element("p", { class: "note", text: "This folder has too many files to list them all." }));
+    if (!listing.read_only && rows.length) pane.append(element("p", { class: "note", text: "Drop files anywhere on this page to upload them. A file you replace is kept as its previous version." }));
+    const windows = (ROOTS[root] || {}).windows;
+    if (windows) pane.append(element("p", { class: "note mono", text: path ? `${windows}\\${path.split("/").join("\\")}` : windows }));
+    else if (game.game_folder) pane.append(element("p", { class: "note mono", text: path ? `${game.game_folder}/${path}` : game.game_folder }));
+  };
+  const fetchListing = (game, root, path) => api(`/api/files/list?${q({ game, root, path })}`);
+  const showFolder = async (id, root, path) => {
+    const token = ++files.route;
+    clearInterval(files.poll);
+    files.listing = null;
+    let game, listing;
+    try {
+      game = await api(`/api/files/game?${q({ game: id })}`);
+      if (token !== files.route) return;
+      listing = await fetchListing(id, root, path);
+    } catch (error) {
+      if (token !== files.route) return;
+      if (error.status !== 503 || !files.setting_up) return report(error);
+      // Opens by itself when the setup ends.
+      clear();
+      pane.append(element("p", { class: "lede", text: error.message }));
+      setTimeout(() => { if (token === files.route) route(); }, 5000);
+      return;
+    }
+    // An answer for a screen the player has left changes nothing.
+    if (token !== files.route) return;
+    Object.assign(files, { game, root, path, listing, selected: new Set() });
+    paintFolder();
+  };
+  const onFolder = (game, root, path) => !!files.listing && !!files.game && location.hash === folderHash(game, root, path);
+  const refreshFolder = async () => {
+    if (!files.game || !files.listing) return;
+    const token = files.route;
+    const { root, path } = files;
+    const game = files.game.id;
+    let listing;
+    try { listing = await fetchListing(game, root, path); } catch (error) { if (token === files.route) report(error); return; }
+    if (token === files.route && onFolder(game, root, path)) {
+      files.listing = listing;
+      paintFolder();
+    }
+  };
+
+  // Dialogs
+  const dialog = (title, ...children) => {
+    const scrim = $("dialog-scrim");
+    const box = element("div", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": title }, element("h3", { text: title }), ...children);
+    scrim.replaceChildren(box);
+    scrim.hidden = false;
+    return () => { scrim.hidden = true; scrim.replaceChildren(); };
+  };
+  const askNewFolder = () => {
+    const name = element("input", { class: "search", style: "width:100%", "aria-label": "Folder name", placeholder: "Folder name" });
+    let close;
+    const make = async () => {
+      if (!name.value) return;
+      try {
+        await act(`/api/files/mkdir?${q({ game: files.game.id, root: files.root, path: relPath(name.value) })}`);
+        close();
+        refreshFolder();
+      } catch (error) { close(); report(error); }
+    };
+    name.addEventListener("keydown", (event) => { if (event.key === "Enter") make(); });
+    close = dialog("New folder", name, element("div", { class: "foot" }, button("Cancel", () => close()), button("Make folder", make, "primary")));
+    name.focus();
+  };
+  const askDelete = (names) => {
+    // Fixed now: the player can move to another folder or game while these go.
+    const batch = { game: files.game.id, root: files.root, paths: names.map(relPath) };
+    let close;
+    const remove = async () => {
+      close();
+      for (const path of batch.paths) {
+        try { await act(`/api/files/delete?${q({ game: batch.game, root: batch.root, path })}`); }
+        catch (error) { report(error); break; }
+      }
+      files.selected = new Set();
+      refreshFolder();
+    };
+    close = dialog(`Delete ${names.length} ${names.length === 1 ? "item" : "items"}?`,
+      element("p", { text: "They are deleted from the PS5 with any previous versions, and can't be restored from here. Only empty folders can be deleted." }),
+      element("ul", {}, ...names.map((name) => element("li", { text: name }))),
+      element("div", { class: "foot" }, button("Keep them", () => close()), button("Delete", remove, "primary")));
+  };
+  const restore = async (full) => {
+    try { await act(`/api/files/restore?${q({ game: files.game.id, root: files.root, path: full })}`); }
+    catch (error) { report(error); }
+    refreshFolder();
+  };
+
+  // Uploads: one at a time, whatever screen is showing. The indicator is in the header of every screen.
+  const transfers = { items: [], active: null, open: false };
+  const addFiles = (list) => {
+    if (!list.length || !files.game || !files.listing || files.listing.read_only) return;
+    const taken = list.filter((file) => files.listing.entries.some((entry) => !entry.directory && entry.name.toLowerCase() === file.name.toLowerCase()));
+    const queue = (chosen, overwrite) => {
+      for (const file of chosen)
+        transfers.items.push({ file, name: file.name, game: files.game.id, gameName: files.game.name, root: files.root, path: files.path, overwrite, state: "waiting", fraction: 0, message: "" });
+      paintTransfers();
+      paintFolder();
+      nextTransfer();
+    };
+    if (!taken.length) return queue(list, false);
+    let close;
+    const replace = element("input", { type: "radio", name: "clash", checked: "" });
+    const skip = element("input", { type: "radio", name: "clash" });
+    const free = list.filter((file) => !taken.includes(file));
+    close = dialog(`${taken.length} of ${list.length} ${list.length === 1 ? "file" : "files"} already ${taken.length === 1 ? "exists" : "exist"}`,
+      element("p", { text: "This folder already has these files:" }),
+      element("ul", {}, ...taken.map((file) => element("li", { text: file.name }))),
+      element("label", { class: "choice" }, replace, element("span", {}, "Replace them", element("small", { text: "The current files are kept as their previous versions." }))),
+      element("label", { class: "choice" }, skip, element("span", {}, "Skip them", element("small", { text: free.length ? `Upload only the other ${free.length}.` : "Upload nothing." }))),
+      element("div", { class: "foot" }, button("Cancel", () => close()), button("Upload", () => {
+        close();
+        queue(free, false);
+        if (replace.checked) queue(taken, true);
+      }, "primary")));
+  };
+  const finish = (item, state, message) => {
+    item.state = state;
+    item.message = message || "";
+    item.xhr = null;
+    transfers.active = null;
+    paintTransfers();
+    if (onFolder(item.game, item.root, item.path)) refreshFolder();
+    nextTransfer();
+    // All went well: the indicator goes away by itself. A failure stays until it is read and cleared.
+    if (transfers.items.every((candidate) => candidate.state === "done" || candidate.state === "cancelled"))
+      setTimeout(() => {
+        if (transfers.open || !transfers.items.every((candidate) => candidate.state === "done" || candidate.state === "cancelled")) return;
+        transfers.items = [];
+        paintTransfers();
+      }, 5000);
+  };
+  const nextTransfer = () => {
+    if (transfers.active) return;
+    const item = transfers.items.find((candidate) => candidate.state === "waiting");
+    paintTransfers();
+    if (!item) return;
+    // A setup can take many minutes: ask until it's over, with no file on the way and no limit on the wait.
+    if (files.setting_up) {
+      if (transfers.asking) return;
+      transfers.asking = true;
+      fetch("/api/files/games", { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((answer) => { files.setting_up = !!(answer && answer.setting_up); })
+        .catch(() => { files.setting_up = false; })
+        .finally(() => {
+          transfers.asking = false;
+          setTimeout(nextTransfer, files.setting_up ? 3000 : 0);
+        });
+      return;
+    }
+    transfers.active = item;
+    item.state = "active";
+    const xhr = new XMLHttpRequest();
+    item.xhr = xhr;
+    const full = item.path ? `${item.path}/${item.name}` : item.name;
+    xhr.open("POST", `/api/files/upload?${q({ game: item.game, root: item.root, path: full, overwrite: item.overwrite ? 1 : 0 })}`);
+    xhr.setRequestHeader("X-Playden-Action", "files");
+    let painted = 0;
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      item.fraction = event.total ? event.loaded / event.total : 1;
+      const now = Date.now();
+      if (now - painted < 250) return;
+      painted = now;
+      paintTransfers();
+      if (onFolder(item.game, item.root, item.path)) paintFolder();
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) { item.fraction = 1; return finish(item, "done"); }
+      if (xhr.status === 503) files.setting_up = xhr.getResponseHeader("X-Playden-Busy") === "setup";
+      if (xhr.status === 503 && !files.setting_up && (item.busy = (item.busy || 0) + 1) > 150) {
+        // About five minutes of waiting: it fails, so the rest of the queue isn't held up behind it.
+        return finish(item, "failed", busyWords());
+      }
+      if (xhr.status === 503) {
+        // A setup or another transfer has the way: this one waits its turn.
+        item.state = "waiting";
+        item.fraction = 0;
+        item.xhr = null;
+        transfers.active = null;
+        paintTransfers();
+        if (onFolder(item.game, item.root, item.path)) paintFolder();
+        setTimeout(nextTransfer, 2000);
+        return;
+      }
+      if (xhr.status === 401) showPairing();
+      finish(item, "failed", xhr.responseText.trim() || `Playden answered ${xhr.status}.`);
+    });
+    xhr.addEventListener("error", () => {
+      // Whatever else is queued can't go either.
+      finish(item, "failed", "Playden stopped answering. The old file is still there.");
+      fail("Playden stopped answering during your upload. It closes when a game starts. Open Playden on the PS5, then try again.");
+    });
+    xhr.addEventListener("abort", () => finish(item, "cancelled"));
+    xhr.send(item.file);
+    paintTransfers();
+  };
+  const cancelTransfer = (item) => {
+    if (item.xhr) return item.xhr.abort();
+    item.state = "cancelled";
+    paintTransfers();
+  };
+  const paintTransfers = () => {
+    const chip = $("transfers-chip"), panel = $("transfers-panel");
+    const items = transfers.items.filter((item) => item.state !== "cancelled");
+    const live = items.filter((item) => item.state === "waiting" || item.state === "active");
+    if (!items.length) {
+      chip.hidden = panel.hidden = true;
+      return;
+    }
+    const total = items.reduce((sum, item) => sum + item.file.size, 0);
+    const sent = items.reduce((sum, item) => sum + (item.state === "done" ? item.file.size : item.state === "active" ? item.file.size * item.fraction : 0), 0);
+    const percent = total ? Math.round((sent / total) * 100) : 100;
+    const failed = items.filter((item) => item.state === "failed").length;
+    const position = items.filter((item) => item.state === "done" || item.state === "failed").length + 1;
+    chip.hidden = false;
+    chip.setAttribute("aria-expanded", transfers.open ? "true" : "false");
+    chip.replaceChildren(live.length ? `${transfers.active ? "Uploading" : "Waiting to upload"} ${Math.min(position, items.length)} of ${items.length} · ${percent}%` : failed ? `${failed} ${failed === 1 ? "upload" : "uploads"} failed` : "Uploads finished",
+      element("span", { class: "meter" }, element("i", { style: `width:${percent}%` })));
+    panel.hidden = !transfers.open;
+    if (!transfers.open) return;
+    const rows = items.map((item) => {
+      const state = item.state === "done" ? element("span", { class: "done", text: "Done" })
+        : item.state === "failed" ? element("span", { class: "bad", text: item.message })
+        : element("span", { text: item.state === "active" ? `${Math.round(item.fraction * 100)}%` : "Waiting" });
+      const row = element("li", {}, element("div", { class: "line" }, item.name, state),
+        element("small", { text: `${item.gameName} › ${item.path || (ROOTS[item.root] || {}).label || item.root}` }));
+      if (item.state === "active") row.append(element("span", { class: "meter" }, element("i", { style: `width:${Math.round(item.fraction * 100)}%` })));
+      if (item.state === "active" || item.state === "waiting") row.append(button("Cancel", () => cancelTransfer(item)));
+      return row;
+    });
+    panel.replaceChildren(element("div", { class: "head" }, "Uploads", element("span", { text: `${longSize(sent)} of ${longSize(total)}` })),
+      element("span", { class: "meter" }, element("i", { style: `width:${percent}%` })),
+      element("ul", {}, ...rows),
+      element("div", { class: "foot" }, element("small", { text: live.length ? "Keep this tab open until they finish." : "" }),
+        live.length
+          ? button("Cancel all", () => { for (const item of [...live]) cancelTransfer(item); })
+          : button("Clear", () => { transfers.items = []; transfers.open = false; paintTransfers(); })));
+  };
+  $("transfers-chip").addEventListener("click", () => { transfers.open = !transfers.open; paintTransfers(); });
+  // The panel sits over the page: a click anywhere else closes it, so it never stands in the way.
+  document.addEventListener("click", (event) => {
+    if (!transfers.open || event.target.closest("#transfers-chip, #transfers-panel")) return;
+    transfers.open = false;
+    paintTransfers();
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (transfers.items.some((item) => item.state === "waiting" || item.state === "active")) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
+  const inFolder = () => location.hash.startsWith("#/files/") && !!files.listing && !files.listing.read_only;
+  document.addEventListener("dragover", (event) => {
+    if (!inFolder()) return;
+    event.preventDefault();
+    document.querySelector("main").classList.add("dragging");
+  });
+  document.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget === null) document.querySelector("main").classList.remove("dragging");
+  });
+  document.addEventListener("drop", (event) => {
+    document.querySelector("main").classList.remove("dragging");
+    if (!inFolder()) return;
+    event.preventDefault();
+    addFiles([...event.dataTransfer.files]);
+  });
+
+  // The config editor: small text files, saved only if the file is still what was opened.
+  const showEditor = async (id, root, path) => {
+    const token = ++files.route;
+    clearInterval(files.poll);
+    let game, text;
+    try {
+      game = await api(`/api/files/game?${q({ game: id })}`);
+      text = await api(`/api/files/text?${q({ game: id, root, path })}`);
+    } catch (error) { return report(error); }
+    if (token !== files.route) return;
+    const parts = path.split("/");
+    const name = parts.pop();
+    const folder = parts.join("/");
+    const area = element("textarea", { class: "editor", spellcheck: "false", "aria-label": `Contents of ${name}` });
+    area.value = text.text;
+    const back = () => { location.hash = folderHash(id, root, folder); };
+    const save = async () => {
+      $("problem").hidden = true;
+      try {
+        await api(`/api/files/upload?${q({ game: id, root, path, if_sha256: text.sha256 })}`,
+          { method: "POST", headers: { "X-Playden-Action": "files" }, body: new Blob([area.value]) });
+        back();
+      } catch (error) { report(error); }
+    };
+    clear();
+    pane.append(breadcrumbs(game, root, folder, name),
+      element("div", { class: "bar" }, button("Save", save, "primary"), button("Discard", back), anchor("Download", `/api/files/download?${q({ game: id, root, path })}`)),
+      game.running ? runningNote() : "",
+      area,
+      element("p", { class: "note", text: "Save keeps the old version as this file's previous version." }));
+  };
+
+  // Which screen the address names.
+  const route = () => {
+    const hash = location.hash || "#/logs";
+    const inFiles = hash.startsWith("#/files") || hash.startsWith("#/edit");
+    $("logs-view").hidden = inFiles;
+    $("files-view").hidden = !inFiles;
+    $("tab-logs").classList.toggle("on", !inFiles);
+    $("tab-files").classList.toggle("on", inFiles);
+    $("problem").hidden = true;
+    clearInterval(files.poll);
+    if (!inFiles) { ++files.route; return; }
+    const parts = hash.slice(2).split("/").map(decodeURIComponent);
+    const token = ++files.route;
+    files.listing = null;
+    (async () => {
+      const paired = await fetch("/api/pair/status", { cache: "no-store" }).then((response) => response.json()).catch(() => null);
+      if (token !== files.route) return;
+      if (!paired) return fail("Playden isn't answering. Is it open on the PS5? It closes when a game starts.");
+      if (!paired.paired) return showPairing();
+      if (parts[0] === "edit") return showEditor(parts[1], parts[2], parts.slice(3).join("/"));
+      if (parts.length === 1) return showGames();
+      if (parts.length === 2) return showGame(parts[1]);
+      return showFolder(parts[1], parts[2], parts.slice(3).join("/"));
+    })().catch(report);
+  };
+  window.addEventListener("hashchange", route);
   load();
+  route();
 })();
 </script>
 </body>

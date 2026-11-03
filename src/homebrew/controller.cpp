@@ -1940,13 +1940,89 @@ void Controller::TickWebAccess() {
   live.url = snapshot.url;
   live.port = snapshot.port;
   live.error = snapshot.error;
+  live.pairing_code = snapshot.pairing_code;
   model_.ApplyLiveWebAccess(live);
+  TickWebFiles();
   // The page's Quit Playden; it waits for a game being prepared.
   if (web_->TakeQuitRequest()) {
     if (shutdown_log_) shutdown_log_("quit requested from web access");
     model_.RequestQuit();
   }
 }
+void Controller::TickWebFiles() {
+  const auto now = std::chrono::steady_clock::now();
+  if (now < web_files_next_) return;
+  web_files_next_ = now + std::chrono::seconds(1);
+  const auto& state = model_.state();
+  const auto runtime = runtime_ ? runtime_->Shared() : nullptr;
+  web::FileCatalog catalog;
+  catalog.known = true;
+  std::map<GameId, web::FileGame> games;
+  const auto entry = [&](const GameId& id) -> web::FileGame& {
+    auto& game = games[id];
+    if (!game.id.empty()) return game;
+    game.id = ToInstallId(id);
+    game.kind = id.store == Store::kLocal ? "imported" : "steam";
+    game.app = id.steam_app().value_or(0);
+    const auto cloud = state.cloud.find(id);
+    game.cloud = CloudCapable(id) && (cloud == state.cloud.end() || cloud->second.status != CloudStatus::Unsupported);
+    for (const auto& known : state.games)
+      if (known.id == id) {
+        game.name = known.title;
+        game.last_played = known.last_played;
+        break;
+      }
+    return game;
+  };
+  for (const auto& location : locations_) {
+    auto& game = entry(location.game);
+    game.game_folder = location.root;
+    game.game_folder_shown = location.root;
+    game.drive_absent = !location.available;
+    game.drive = location.root.rfind("/mnt/usb", 0) == 0 ? "usb" : location.root.rfind("/mnt/ext", 0) == 0 ? "m2" : "console";
+  }
+  std::map<std::uint32_t, std::string> names;
+  if (runtime) {
+    catalog.setting_up = runtime->preparing_app.has_value();
+    for (const auto& install : runtime->installs) {
+      if (!install.prefix_root.empty()) entry(install.game).bottle = runtime_->HostFilePath(install.prefix_root);
+    }
+    for (const auto& kept : runtime->kept_bottles) {
+      if (games.count(kept.game) && !games[kept.game].bottle.empty()) continue;
+      auto& game = entry(kept.game);
+      game.bottle = runtime_->HostFilePath(kept.data_root + "/library/prefixes/game");
+      if (game.name.empty()) game.name = kept.name;
+      game.installed = !game.game_folder.empty();
+    }
+    const auto game_of = [&](std::uint32_t number) -> web::FileGame* {
+      for (const auto& install : runtime->installs)
+        if (install.runtime_number == number) return &entry(install.game);
+      for (const auto& kept : runtime->kept_bottles)
+        if (kept.runtime_number == number) return &entry(kept.game);
+      return nullptr;
+    };
+    for (const auto& [number, bytes] : runtime->save_bytes)
+      if (auto* game = game_of(number)) game->windows_user_bytes = bytes;
+    for (const auto& [number, version] : runtime->physx_needed)
+      if (auto* game = game_of(number)) game->physx_needed = version;
+    for (const auto& [number, activity] : runtime->activity)
+      if (auto* game = game_of(number)) game->running = activity.first == runtime::NativeActivity::kActive;
+    if (runtime->preparing_app)
+      if (auto* game = game_of(*runtime->preparing_app)) game->setting_up = true;
+    // Asking takes the console a moment, so only while the page is in use, and one game a second.
+    if (web_->FilesInUse() && !runtime->installs.empty()) {
+      web_activity_next_ %= runtime->installs.size();
+      runtime_->CheckActivity(runtime->installs[web_activity_next_++].runtime_number);
+    }
+  }
+  catalog.games.reserve(games.size());
+  for (auto& [id, game] : games) {
+    if (game.name.empty()) game.name = game.id;
+    catalog.games.push_back(std::move(game));
+  }
+  web_->SetFileCatalog(std::move(catalog));
+}
+
 void Controller::TickDownloadServers() {
   const auto requests = model_.TakeDownloadServerRequests();
   if (!download_servers_) return;

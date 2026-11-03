@@ -120,6 +120,10 @@ class Controller {
   steam::DownloadServerService* download_servers_ = nullptr;
   web::Service* web_ = nullptr;
   void TickWebAccess();
+  // Reports what the page's Files tab offers, about once a second, and keeps the running games current while it is in use.
+  void TickWebFiles();
+  std::chrono::steady_clock::time_point web_files_next_{};
+  std::size_t web_activity_next_ = 0;  // the next game whose title to ask about
   std::string download_servers_account_;
   std::optional<LiveDownloadServers> shown_download_servers_;
   void TickSelfUpdate();

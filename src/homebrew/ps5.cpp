@@ -6,6 +6,7 @@
 #include "homebrew/simulation.hpp"
 #include "homebrew/store_art.hpp"
 #include "homebrew/controller.hpp"
+#include "runtime/private_directories.h"
 #include "steam/install_volumes.h"
 #include "installs/game_move.h"
 #include "stores/local/copy_runner.h"
@@ -896,6 +897,14 @@ int main() {
                             "/data/homebrew/" PLAYDEN_PS5_TITLE_ID};
         web_config.server.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "web.log", line); };
         web_config.address_fallback = [] { return playden::ps5::ConsoleAddress(); };
+        // Files: path work waits for the runtime's batches, and never runs while root is raised (effective_uid.cpp).
+        web_config.files.try_hold = [] { return playden::ps5::TryHoldEffectiveUid(); };
+        web_config.files.free_space = [](const std::string& path) -> std::optional<std::uint64_t> {
+            const auto space = playden::steam::QueryVolumeSpace(path, playden::steam::kConsoleSystemReserve);
+            return space ? std::optional<std::uint64_t>(space->free_bytes) : std::nullopt;
+        };
+        for (const auto& private_path : playden::runtime::PrivateProfilePaths())
+            web_config.files.private_profile_paths.push_back(private_path.generic_string());
         playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
         services.SetDownloadServers(&servers);

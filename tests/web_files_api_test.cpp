@@ -183,7 +183,8 @@ int main() {
   CHECK(body.find("\"name\":\"Grand \\\"Theft\\\" Auto IV\"") != std::string::npos && body.find("\"running\":true") != std::string::npos);
   CHECK(body.find(game_folder.string()) == std::string::npos);
   // The game's page: roots, redistributable folders, what it needs.
-  body = Body(get("/api/files/game?game=steam-12210", cookie));
+  CHECK(Body(get("/api/files/game?game=steam-12210", cookie)).find("_Redist") == std::string::npos);
+  body = Body(get("/api/files/game?game=steam-12210&redist=1", cookie));
   for (const char* part : {"\"id\":\"user\"", "\"id\":\"steam\"", "\"id\":\"programdata\"", "\"id\":\"public\"", "\"id\":\"game\"", "\"physx_needed\":\"2.8.1\"", "\"path\":\"_Redist\"",
                            "\"physx_installer\":\"_Redist/PhysX.msi\"", "/mnt/usb0/playden/import/Game"})
     CHECK(body.find(part) != std::string::npos);
@@ -293,6 +294,21 @@ int main() {
     ::close(second);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     CHECK(Status(get("/api/files/download?" + game + "game&path=game.exe", cookie)) == 200);
+  }
+
+  // A game's setup: file actions say so at once, and the game's page still opens without touching the disk.
+  {
+    auto during = catalog;
+    during.setting_up = true;
+    service.SetFileCatalog(during);
+    const auto started = std::chrono::steady_clock::now();
+    answer = get("/api/files/list?" + game + "user", cookie);
+    CHECK(Status(answer) == 503 && answer.find("X-Playden-Busy: setup") != std::string::npos && answer.find("setting up a game") != std::string::npos);
+    answer = get("/api/files/game?game=steam-12210&redist=1", cookie);
+    CHECK(Status(answer) == 200 && answer.find("\"all_setting_up\":true") != std::string::npos && answer.find("\"redist_busy\":true") != std::string::npos);
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(1));
+    service.SetFileCatalog(catalog);
+    CHECK(Status(get("/api/files/list?" + game + "user", cookie)) == 200);
   }
 
   service.Shutdown();

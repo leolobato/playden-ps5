@@ -91,6 +91,10 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(web_files_api_test "${CMAKE_SOURCE_DIR}/tests/web_files_api_test.cpp")
     target_link_libraries(web_files_api_test PRIVATE playden_web)
     add_test(NAME web_files_api COMMAND web_files_api_test)
+    # A real server over a made-up game for a browser or a script; prints each pairing code.
+    add_executable(web_files_fixture_server "${CMAKE_SOURCE_DIR}/tests/web_files_fixture_server.cpp")
+    target_link_libraries(web_files_fixture_server PRIVATE playden_web)
+    add_test(NAME web_files_smoke COMMAND python3 -I "${CMAKE_SOURCE_DIR}/tests/test_web_files_smoke.py" $<TARGET_FILE:web_files_fixture_server>)
     # The console's path handling (no descriptor-relative opens), run on the host.
     add_executable(web_file_store_native_policy_test
         "${CMAKE_SOURCE_DIR}/tests/web_file_store_test.cpp"

@@ -7,6 +7,7 @@
 #include "homebrew/program_icon.hpp"
 #include "homebrew/simulation.hpp"
 #include "homebrew/controller.hpp"
+#include "runtime/private_directories.h"
 #include "steam/install_volumes.h"
 #include "installs/game_move.h"
 #include "stores/local/copy_runner.h"
@@ -747,6 +748,12 @@ int main(int argc, char** argv) {
             web_config.server.log = [log_directory](const std::string& line) {
                 playden::app::AppendLogLine(log_directory, "web.log", line);
             };
+            web_config.files.free_space = [](const std::string& path) -> std::optional<std::uint64_t> {
+                const auto space = playden::steam::QueryVolumeSpace(path);
+                return space ? std::optional<std::uint64_t>(space->free_bytes) : std::nullopt;
+            };
+            for (const auto& private_path : playden::runtime::PrivateProfilePaths())
+                web_config.files.private_profile_paths.push_back(private_path.generic_string());
             web = std::make_unique<playden::web::Service>(std::move(web_config));
             services->SetWebAccess(web.get());
         }

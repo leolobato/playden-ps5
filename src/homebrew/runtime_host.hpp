@@ -453,6 +453,8 @@ class RuntimeHost {
   // The same state without a copy per call: shared and read-only, made again only after a change.
   // The UI reads it many times a frame; Snapshot() copies every field each time.
   std::shared_ptr<const RuntimeSnapshot> Shared() const;
+  // A console path, as this process opens it (differs only in a host test's namespace).
+  std::string HostFilePath(const std::string& console_path) const { return HostPath(console_path).string(); }
   // Queues preparation of a downloaded game, or a retry of a failed one. Games are prepared one
   // at a time, in the order asked; asking again for a queued game keeps its place.
   void Prepare(RuntimePrepareRequest request);
