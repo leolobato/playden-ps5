@@ -357,6 +357,15 @@ void reconcile_library_selection(State& state) {
 
 std::string game_key(GameId id) { return "game-" + ToKey(id); }
 
+// A game's setup is under way: it's being set up or waiting for that, its bottle is being changed, or Play is installing
+// something first. Its files stay where they are until that ends.
+bool setup_under_way(const State& state, GameId id) {
+    const auto found = state.runtime_games.find(id);
+    if (found == state.runtime_games.end()) return false;
+    const auto& game = found->second;
+    return game.status == "Preparing" || game.queued || game.maintenance_running || !game.play_work.empty();
+}
+
 std::vector<std::string> context_actions(bool live) {
     if (live) return {"favorite", "collection", "note", "hide", "uninstall", "cancel"};
     return {"favorite", "collection", "note", "hide", "verify", "uninstall", "logs", "cancel"};
@@ -1309,7 +1318,7 @@ void Simulation::choose_import_volume(const std::string& volume_id) {
     const auto kind = subject.volume == kImportDropVolume && volume_id == kImportDropVolume ? ImportRequestKind::MoveIntoPlayden
                                                                                               : ImportRequestKind::CopyIntoPlayden;
     if (import_choice_game_.valid()) {
-        // A game already added (its page's Import into Playden): the transfer starts on its page.
+        // A game already added (its page's Copy to storage): the transfer starts on its page.
         const auto id = import_choice_game_;
         start_import_transfer(id, kind, volume_id);
         open_game_page(id);
@@ -6429,6 +6438,10 @@ void Simulation::rebuild_view() {
                         runtime_game != state_.runtime_games.end() && runtime_game->second.maintenance_running)
                         item.value = "Working…";
             }
+            else if (action_key == "import-remove" && setup_under_way(state_, state_.navigation.selected_game_id)) {
+                item.enabled = false;
+                item.subtitle = "Waits for setup to finish";
+            }
             else if (action_key == "verify" || action_key == "uninstall") {
                 if (!is_installed(state_, state_.navigation.selected_game_id)) { item.enabled = false; item.subtitle = "Game is not installed"; }
             } else if (action_key == "hide") item.title = state_.library.hidden.contains(state_.navigation.selected_game_id) ? "Unhide" : "Hide";
@@ -6922,8 +6935,9 @@ void Simulation::rebuild_view() {
                 }
         }
         if (imported) {
-            // An imported game: Import into Playden while it plays from its folder (the copy's
-            // progress while it runs), then Remove from library; a copy in Playden uninstalls.
+            // An imported game: Copy to storage while it plays from its folder (the copy's progress
+            // while it runs), then Remove from library; a copy in Playden uninstalls. Both wait for setup.
+            const bool setup_busy = setup_under_way(state_, game->id);
             const auto starting = copying || !in_place ? import_transfers_starting_.end()
                                                        : import_transfers_starting_.find(game->id);
             if (starting != import_transfers_starting_.end()) {
@@ -6941,12 +6955,13 @@ void Simulation::rebuild_view() {
                 row("details-cancel-copy", RowKind::Action, "Cancel copy…", "import-cancel-copy");
             } else if (const auto* external = in_place ? external_game(game->id) : nullptr; external && external->available) {
                 // Its drive is there: a folder the PS5 can't play from (its name) can still be copied.
-                row("details-copy", RowKind::Action, "Import into Playden…",
-                    "import-copy-game");
+                // The drop folder's game leaves it; a drive keeps its copy.
+                row("details-copy", RowKind::Action, external->volume_id == kImportDropVolume ? "Move to storage…" : "Copy to storage…",
+                    "import-copy-game").enabled = !setup_busy;
             }
             if (in_place) {
                 row("details-remove", RowKind::Action, "Remove from library…", "import-remove").enabled =
-                    !copying && starting == import_transfers_starting_.end();
+                    !copying && starting == import_transfers_starting_.end() && !setup_busy;
                 // Where it plays from, under the buttons.
                 for (const auto& candidate : state_.import_candidates)
                     if (candidate.imported == game->id && installation->available) {
@@ -9536,8 +9551,9 @@ void Simulation::activate() {
     } else if (action_name == "import-play-in-place" || action_name == "import-copy") {
         choose_import(action_name);
     } else if (action_name == "import-copy-game") {
-        // An imported game playing from its folder: Import into Playden opens the drive choice.
+        // An imported game playing from its folder: Copy to storage opens the drive choice.
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        if (setup_under_way(state_, id)) return;
         if (const auto* external = external_game(id); external && external->available && !import_copy_job(id)) open_import_storage(id);
     } else if (action_name == "import-cancel-copy") {
         // The same cancel as Queue's, from the game's page.
@@ -9556,7 +9572,7 @@ void Simulation::activate() {
         // Out of the library; the folder stays where it is.
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
         const auto* game = find_game(state_, id);
-        if (!game || !external_game(id)) return;
+        if (!game || !external_game(id) || setup_under_way(state_, id)) return;
         pending_destructive_action_ = action_name;
         destructive_target_ = id;
         ModalEntry confirmation{"confirmation", "Remove " + game->title + " from the library?", state_.navigation.focus_key,

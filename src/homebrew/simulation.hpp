@@ -1465,7 +1465,7 @@ private:
     // The import wizard. Step 1 (surface import-choice), for the program picked in the open program
     // list: play the game from its folder, or Import into Playden. Step 2 (surface import-storage):
     // the drive the game goes to, for that program's folder or for a game already added
-    // (import_choice_game_ valid: its page's Import into Playden opens step 2 directly).
+    // (import_choice_game_ valid: its page's Copy to storage opens step 2 directly).
     void open_import_choice(std::size_t program);
     void open_import_storage(GameId game = {});
     void choose_import(const std::string& action);

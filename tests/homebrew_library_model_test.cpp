@@ -3941,26 +3941,51 @@ void live_import_choice_and_details() {
     model.UpdateInstalls({}, {});
 
     // Its page while it plays from the drive, then while it copies.
-    check(find_row(model, "details-copy") && find_row(model, "details-copy")->title == "Import into Playden…" &&
+    check(find_row(model, "details-copy") && find_row(model, "details-copy")->title == "Copy to storage…" &&
               find_row(model, "details-remove") && !has_row(model, "details-cloud") && !has_row(model, "details-uninstall"),
-          "an imported game on a drive offers Copy into Playden and Remove from library");
-    // The page's Import into Playden opens step 2 with the folder's size (from the scan, the game has none).
+          "an imported game on a drive offers Copy to storage and Remove from library");
+    {
+        // Both wait while the game is set up, and so does Remove in its actions.
+        using playden::homebrew::LiveRuntimeGame;
+        using playden::homebrew::RuntimeState;
+        check(find_row(model, "details-copy")->enabled && find_row(model, "details-remove")->enabled, "both work when nothing runs");
+        for (int state = 0; state < 4; ++state) {
+            LiveRuntimeGame busy; busy.game_id = id; busy.status = state == 0 ? "Preparing" : "Ready";
+            if (state == 1) busy.queued = true;
+            if (state == 2) busy.maintenance_running = true;
+            if (state == 3) busy.play_work = "Installing PhysX…";
+            model.UpdateRuntime(RuntimeState::Ready, {busy});
+            check(!find_row(model, "details-copy")->enabled && !find_row(model, "details-remove")->enabled, "both wait for setup");
+            if (model.action("focus:details-remove")) model.action("cross");
+            check(model.state().navigation.modals.empty(), "Remove can't be pressed during setup");
+        }
+        activate(model, "details-more");
+        check(find_row(model, "import-remove") && !find_row(model, "import-remove")->enabled, "Game actions' Remove waits too");
+        model.action("circle");
+        LiveRuntimeGame done; done.game_id = id; done.status = "Ready"; done.ready = done.can_play = true;
+        model.UpdateRuntime(RuntimeState::Ready, {done});
+        check(find_row(model, "details-copy")->enabled && find_row(model, "details-remove")->enabled, "both are back after setup");
+        model.UpdateExternalGames({{id, "internal", true, ""}});
+        check(find_row(model, "details-copy")->title == "Move to storage…", "a game in the drop folder moves");
+        model.UpdateExternalGames({{id, "usb0", true, ""}});
+    }
+    // The page's Copy to storage opens step 2 with the folder's size (from the scan, the game has none).
     activate(model, "details-copy");
     check(model.view().surface == "import-storage" && model.view().subtitle == "8.9 GB will be copied there." &&
               !find_row(model, "volume-usb0")->enabled && model.view().eyebrow == "Import games · Rally",
-          "the page's Import into Playden opens the drive choice with the folder's size");
+          "the page's Copy to storage opens the drive choice with the folder's size");
     model.action("circle");
     check(model.state().navigation.modals.empty(), "Back closes the page's drive choice");
     // A folder the PS5 can't play from (its name) still offers the copy.
     model.UpdateExternalGames({{id, "usb0", true, "The game's folder name has characters the PS5 can't play from."}});
     check(has_row(model, "details-installed") && has_row(model, "details-copy") && has_row(model, "details-remove"),
-          "a copy-only folder says why and offers Import into Playden");
+          "a copy-only folder says why and offers Copy to storage");
     model.UpdateExternalGames({{id, "usb0", true, ""}});
     model.UpdateInstalls({{id, playden::homebrew::JobState::Downloading, 4'450'000'000, 8'900'000'000, {}, "usb1"}}, {});
     const auto* copying = find_row(model, "details-download");
     check(copying && copying->title == "Copying" && copying->progress > 0.49F && copying->progress < 0.51F &&
               !has_row(model, "details-copy") && !find_row(model, "details-remove")->enabled,
-          "the copy's progress replaces Import into Playden");
+          "the copy's progress replaces Copy to storage");
     // A failed copy can be cancelled from the page; the game plays in place again.
     model.UpdateInstalls({{id, playden::homebrew::JobState::Failed, 4'450'000'000, 8'900'000'000, "Copy failed", "usb1"}}, {});
     check(find_row(model, "details-cancel-copy") && !find_row(model, "details-remove")->enabled, "a failed copy offers Cancel copy");

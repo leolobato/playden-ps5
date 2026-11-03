@@ -1346,10 +1346,10 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     };
     check(simulation.scenario("import-details"), "T18 import-details scenario");
     check(simulation.state().navigation.route == Route::Details && row("details-play") && row("details-play")->title == "Play" &&
-              row("details-copy")->title == "Import into Playden…" && row("details-remove")->title == "Remove from library…" &&
+              row("details-copy")->title == "Copy to storage…" && row("details-remove")->title == "Remove from library…" &&
               row("details-folder")->title == "Plays from /mnt/usb0/playden/import/Night Sky" && !row("details-cloud"),
           "T18 an imported game's page plays in place and offers Import and Remove");
-    // Import into Playden: the wizard's drive choice at once; Back closes it.
+    // Copy to storage: the wizard's drive choice at once; Back closes it.
     press("details-copy");
     check(simulation.view().surface == "import-storage" && simulation.view().title == "Choose storage" &&
               simulation.view().subtitle == "412 MB will be copied there." &&
@@ -1359,7 +1359,7 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
               !row("volume-readonly")->enabled && row("volume-readonly")->subtitle == "No write access" &&
               simulation.state().navigation.focus_key == "volume-external" &&
               simulation.view().legends.front() == "Cross Import here" && simulation.view().rows.back().title == "Back",
-          "T18 Import into Playden from the page opens the drive choice, the default drive focused");
+          "T18 Copy to storage from the page opens the drive choice, the default drive focused");
     simulation.action("circle");
     check(simulation.state().navigation.modals.empty() && simulation.state().navigation.route == Route::Details,
           "T18 Back from the page's drive choice closes it");

@@ -269,7 +269,8 @@ The drive must be exFAT. The PS5 can't read NTFS, and FAT32 can't hold files ove
    copy, and once the copy is checked the game's files leave the drop folder, so it isn't stored twice. Until then
    it plays from the drop folder.
 
-You can import a game that plays from its folder later, with **Import into Playden** on its page. The PS5 adds the
+You can import a game that plays from its folder later, with **Copy to storage** on its page (**Move to storage** for
+one in the drop folder). The PS5 adds the
 game's title to Home when Playden quits. Importing a game later keeps its saves.
 
 **Limits:**

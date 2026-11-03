@@ -211,7 +211,7 @@ int main(int argc, char** argv) {
     choose(importing, "details-copy");
     require(importing.view().surface == "import-storage" && has_row(importing, "volume-internal") &&
                 !has_row(importing, "import-play-in-place"),
-            "Import into Playden asks for the drive");
+            "Copy to storage asks for the drive");
     choose(importing, "volume-internal");
     require(importing.state().navigation.route == Route::Details && has_row(importing, "details-download") &&
                 !has_row(importing, "details-copy"),
