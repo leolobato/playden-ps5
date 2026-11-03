@@ -1005,12 +1005,9 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
   // Still without the engine the game was built for, and a package added to its folder would be found: say which.
   std::optional<std::string> physx_needed;
   if (redist.physx_searched)
-    for (const auto& program : files.programs) {
-      if (!rt::ProgramUsesPhysx(files.root.string(), program) || rt::PhysxEngineBeside(files.root.string(), program)) continue;
-      const auto version = rt::PhysxVersionBeside(files.root.string(), program);
-      if (!rt::BottleHasPhysxEngine(files.prefix, version)) physx_needed = version;
-      break;
-    }
+    physx_needed = rt::MissingPhysxEngine(files.root.string(), files.programs, files.prefix, [&files](const std::string& program) {
+      return rt::ProgramUsesPhysx(files.root.string(), program);
+    });
   if (physx_needed) Log("redist app=" + std::to_string(number) + " physx engine missing version=" + (physx_needed->empty() ? "unknown" : *physx_needed));
   Publish([&](RuntimeSnapshot& s) {
     if (physx_needed) s.physx_needed[number] = *physx_needed;

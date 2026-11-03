@@ -502,6 +502,16 @@ void TestFoundPhysx() {
           BottleHasPhysxEngine(bottle.string(), ""));
     WriteText(bottle / "drive_c/Program Files (x86)/AGEIA Technologies/v2.8.1/PhysXCore.dll", "core");
     CHECK(BottleHasPhysxEngine(bottle.string(), "2.8.1"));
+    // Every program counts: one with its engine doesn't hide another that lacks its own.
+    const auto uses = [](const std::string& program) { return program != "Tools/Plain.exe"; };
+    std::string older = resource;
+    older[older.size() - 8] = '\x07';  // 2.7
+    older[older.size() - 2] = '\x05';  // .5
+    WriteText(versioned / "Older/NxCooking.dll", older);
+    CHECK(PhysxVersionBeside(versioned.string(), "Older/Game.exe") == "2.7.5");
+    CHECK((MissingPhysxEngine(versioned.string(), {"Tools/Plain.exe", "Binaries/Game.exe", "Local/Game.exe", "Older/Game.exe"},
+                              bottle.string(), uses) == std::optional<std::string>("2.7.5")));
+    CHECK(!MissingPhysxEngine(versioned.string(), {"Tools/Plain.exe", "Binaries/Game.exe", "Local/Game.exe"}, bottle.string(), uses));
   }
 
   // Needed, and nothing to install.

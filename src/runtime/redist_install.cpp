@@ -809,6 +809,17 @@ bool BottleHasPhysxEngine(const std::string& prefix_dir, const std::string& vers
   return false;
 }
 
+std::optional<std::string> MissingPhysxEngine(const std::string& game_root, const std::vector<std::string>& programs,
+                                              const std::string& prefix_dir,
+                                              const std::function<bool(const std::string&)>& uses_physx) {
+  for (const auto& program : programs) {
+    if (!uses_physx(program) || PhysxEngineBeside(game_root, program)) continue;
+    const auto version = PhysxVersionBeside(game_root, program);
+    if (!BottleHasPhysxEngine(prefix_dir, version)) return version;
+  }
+  return std::nullopt;
+}
+
 bool RedistIsPhysx(const std::string& name) { return Lower(name).find("physx") != std::string::npos; }
 
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,

@@ -53,6 +53,12 @@ bool PhysxEngineBeside(const std::string& game_root, const std::string& program)
 // With an empty version, any engine.
 bool BottleHasPhysxEngine(const std::string& prefix_dir, const std::string& version);
 
+// The PhysX version the first of a game's programs needs and the bottle lacks (empty when the program doesn't say
+// which), of those uses_physx accepts and that have no engine of their own; nullopt when none lacks one.
+std::optional<std::string> MissingPhysxEngine(const std::string& game_root, const std::vector<std::string>& programs,
+                                              const std::string& prefix_dir,
+                                              const std::function<bool(const std::string&)>& uses_physx);
+
 // Whether a redistributable's name (an install script's entry) is PhysX's.
 bool RedistIsPhysx(const std::string& name);
 
