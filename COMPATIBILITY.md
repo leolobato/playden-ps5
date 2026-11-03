@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-02.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-03.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -256,6 +256,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [WitchSpring R](https://store.steampowered.com/app/1958220) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#220](https://github.com/leolobato/playden-ps5/issues/220), firmware 13.60) |
 | [Wobbly Life](https://store.steampowered.com/app/1211020) | ✅ Works | 0.10 | — | Single-player with DualSense or USB mouse and keyboard; multiplayer does not work. Loading takes about a minute. ([#25](https://github.com/leolobato/playden-ps5/issues/25), firmware 9.40) |
 | [Wreckfest 2](https://store.steampowered.com/app/1203190) | ✅ Works | 0.17 | — | Default settings. ([#384](https://github.com/leolobato/playden-ps5/pull/384)) |
+| X-Men Origins: Wolverine | ✅ Works | 0.18 | UE3 · D3D9 · DXVK · 32-bit | Import the game's folder. Needs PhysX 2.8.1: add its installer (`PhysX_9.08.14_9.09.0814_SystemSoftware.exe`) to the game's `_Redist` folder. |
 | [Yet Another Zombie Survivors](https://store.steampowered.com/app/2163330) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#306](https://github.com/leolobato/playden-ps5/issues/306), firmware 12.40) |
 | [巫兎 - KANNAGI USAGI -](https://store.steampowered.com/app/2551500) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#314](https://github.com/leolobato/playden-ps5/issues/314), firmware 13.20) |
 | [Antichamber](https://store.steampowered.com/app/219890) | 🟡 Partial | 0.10 | Unreal 3 · D3D9 · 32-bit | Reaches the first room; the controller is ignored. With Controller preset = **Mouse** the stick turns the view; walking needs a USB keyboard (WASD) or Button mapping. |
