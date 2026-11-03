@@ -727,6 +727,10 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     check(find_row(model, "setup-program-0")->enabled && find_row(model, "setup-program-1")->value == "The game" &&
               !find_row(model, "setup-program-2")->enabled,
           "setup program: the picker names the game's program and refuses what can't start");
+    check(find_row(model, "setup-program-0")->title == "BmLauncher.exe" && find_row(model, "setup-program-0")->subtitle == "Binaries" &&
+              find_row(model, "setup-program-0")->value == "32-bit" &&
+              find_row(model, "setup-program-2")->subtitle == "Binaries · Uses a missing DLL.",
+          "setup program: the file name, with its folder and any refusal under it");
     (void)model.TakeProgramScanRequests();
     activate(model, "setup-program-0");
     check(model.state().navigation.modals.back().title == "Run BmLauncher.exe once?" &&
@@ -1450,8 +1454,11 @@ void live_setup_asks_for_a_steam_program(const std::filesystem::path& base) {
         for (const auto& row : model.view().rows) if (row.action == key) return row.title;
         return std::string();
     };
-    check(title("steam-program-0") == "x64/Launcher64.exe" && title("steam-program-2") == "x86/Setup.exe",
+    check(title("steam-program-0") == "Launcher64.exe" && title("steam-program-2") == "Setup.exe",
           "steam program: installers and tools last");
+    check(find_row(model, "steam-program-0")->subtitle == "x64" &&
+              find_row(model, "steam-program-2")->subtitle == "x86 · Installer or tool",
+          "steam program: the folder sits under the file name");
     activate(model, "steam-program-1");
     const auto& record = model.state().game_settings.at(SteamId(449610));
     check(record.steam_launch == "x86/Launcher.exe" && record.overrides.empty(),

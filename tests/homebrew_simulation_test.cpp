@@ -1301,8 +1301,8 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
     press("import-candidate-usb0:playden/import/Old School Rally");
     check(simulation.view().surface == "import-programs" && simulation.view().title == "Old School Rally" &&
               row("import-program-0")->title == "OldSchoolRally.exe" && row("import-program-0")->subtitle.empty() &&
-              row("import-program-1")->title == "Benchmark/RallyBench.exe" && row("import-program-1")->subtitle.empty() &&
-              row("import-program-2")->subtitle == "Installer or tool" && simulation.view().rows.back().title == "Back" &&
+              row("import-program-1")->title == "RallyBench.exe" && row("import-program-1")->subtitle == "Benchmark" &&
+              row("import-program-2")->subtitle.find("Installer or tool") != std::string::npos && simulation.view().rows.back().title == "Back" &&
               simulation.state().navigation.focus_key == "import-program-0",
           "T17 the program list puts the game first and labels helpers");
     simulation.action("cross");

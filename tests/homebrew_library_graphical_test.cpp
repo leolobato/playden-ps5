@@ -207,6 +207,28 @@ int main(int argc,char** argv) {
         assert(renderer.capture_png(output/name,1920,1080));
       };
       capture_live("details-play.png");
+      {
+        // A game's programs: same file names in long folders still read apart.
+        std::map<GameId, LiveGameSetup> setups;
+        setups[SteamId(42)].scanned = true;
+        const std::string root = "X-Men Origins - Wolverine(TM)/";
+        setups[SteamId(42)].programs = {
+            {root + "Binaries/Wolverine.exe", "pe32", "", false, ""},
+            {root + "_Redist/Visual C++ Redistributable/VC 2008/vcredist_x86.exe", "pe32", "", true, ""},
+            {root + "_Redist/Visual C++ Redistributable/VC 2010/vcredist_x86.exe", "pe32", "", true, ""},
+            {root + "_Redist/Visual C++ Redistributable/VC 2010/vcredist_x64.exe", "pe64", "", true, ""},
+            {root + "_Redist/DirectX/dxwebsetup.exe", "pe32", "Uses a missing DLL.", true, ""},
+            {root + "_Redist/A very long folder name for a publisher tool that needs a second line to fit under the name/Tool.exe", "pe32", "", true, ""}};
+        live.SetGameSetups(setups);
+        LiveRuntimeGame prepared=ready; prepared.prepared=true;
+        live.UpdateRuntime(RuntimeState::Ready, {prepared});
+        assert(live.action("focus:details-more") && live.action("cross"));
+        assert(live.action("focus:run-once") && live.action("cross"));
+        capture_live("setup-programs.png");
+        while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
+        live.SetGameSetups({});
+        live.UpdateRuntime(RuntimeState::Ready, {ready});
+      }
       ready.can_play=false; ready.play_status="Starting…";
       live.UpdateRuntime(RuntimeState::Ready, {ready});
       capture_live("details-play-disabled.png");

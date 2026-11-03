@@ -3844,7 +3844,8 @@ class Render::Impl
                           view.surface == "storage" || view.surface == "move-storage" || view.surface == "install" || view.surface == "update" || view.surface == "kept-data" || view.surface == "leftover-titles" ||
                           view.surface == "download-server" ||
                           view.surface == "import-games" ||
-                          view.surface == "import-programs" || view.surface == "steam-programs";
+                          view.surface == "import-programs" || view.surface == "steam-programs" ||
+                          view.surface == "setup-programs";
         const float width = overlay_transition_.panel_width(wide ? 960.0F : 640.0F);
         const gfx::Rect panel{kWidth - width + (1.0F - ease) * width, 0.0F, width, kHeight};
         overlay_.shadow({panel.x - 18.0F, 0.0F, panel.w + 18.0F, panel.h}, 0.0F, 36.0F,
@@ -4243,9 +4244,9 @@ class Render::Impl
         std::string label = row.title.empty() ? row.action : row.title;
         if (row.title.empty())
             std::replace(label.begin(), label.end(), '-', ' ');
-        // A program path ("redist/setup.exe") is shown as it is on the drive.
+        // A program's file name ("setup.exe") is shown as it is on the drive.
         if (!label.empty() && label.front() >= 'a' && label.front() <= 'z' && row.action.rfind("import-program-", 0) != 0 &&
-            row.action.rfind("steam-program-", 0) != 0)
+            row.action.rfind("steam-program-", 0) != 0 && row.action.rfind("setup-program-", 0) != 0)
             label.front() = static_cast<char>(label.front() - 'a' + 'A');
         return label;
     }
@@ -4289,7 +4290,8 @@ class Render::Impl
                                     view.surface == "game-maintenance";
         // The Import sheets: each folder's path (or why it can't be added) under its name.
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||
-                                  view.surface == "import-choice" || view.surface == "steam-programs";
+                                  view.surface == "import-choice" || view.surface == "steam-programs" ||
+                                  view.surface == "setup-programs";
         // About: each fact as its name over its value and note, at the row's full width, wrapped and never cut.
         const bool about_sheet = view.surface == "about";
         const auto about_lines = [&](const std::string &text, float size) {
@@ -4301,11 +4303,17 @@ class Render::Impl
             return 58.0F + 30.0F * std::max(1.0F, about_lines(overlay_value(row), 24.0F)) +
                    26.0F * std::max(1.0F, about_lines(row.subtitle, 19.0F));
         };
-        // The import wizard's hints wrap onto a second line rather than being cut.
+        // The import wizard's hints wrap onto a second line rather than being cut, and a program's folder
+        // takes the lines it needs: the folder is how to tell programs of the same name apart.
         const float hint_width = bounds.w - 48.0F;
+        const bool program_list = view.surface == "import-programs" || view.surface == "steam-programs" ||
+                                  view.surface == "setup-programs";
         const auto hint_extra = [&](const ViewRow &row) {
-            return view.surface == "import-choice" && !row.subtitle.empty() &&
-                           fonts_.regular.measure(row.subtitle, 19.0F) > hint_width
+            if (row.subtitle.empty())
+                return 0.0F;
+            if (program_list)
+                return 26.0F * static_cast<float>(std::max<std::size_t>(fonts_.regular.font->wrap(row.subtitle, 19.0F, hint_width).size(), 1) - 1);
+            return view.surface == "import-choice" && fonts_.regular.measure(row.subtitle, 19.0F) > hint_width
                        ? 26.0F
                        : 0.0F;
         };
@@ -4476,6 +4484,9 @@ class Render::Impl
                 // Under the value's line: the whole width, on two lines when it needs them.
                 ui::paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 74.0F, 19.0F, hint_width,
                               26.0F, row.enabled ? kSecondary : kMuted, 2);
+            else if (described && program_list)
+                ui::paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 74.0F, 19.0F, hint_width,
+                              26.0F, row.enabled ? kSecondary : kMuted);
             else if (described)
                 ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row.subtitle, 19.0F, rect.w - 72.0F - value_width),
                          checkbox ? name_x : rect.x + 24.0F, rect.y + 74.0F, 19.0F,

@@ -76,6 +76,19 @@ struct StringBuilder {
     StringBuilder& operator<<(const GameId& id) { value.append(id.valid() ? ToKey(id) : "0"); return *this; }
 };
 
+// A program in a list of a game's programs: its file name is what tells it from the others, with its whole
+// folder and anything else to say about it on the line under the name.
+std::string program_file_name(const std::string& path) {
+    const auto slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string program_note(const std::string& path, const std::string& note) {
+    const auto slash = path.find_last_of('/');
+    const auto folder = slash == std::string::npos ? std::string() : path.substr(0, slash);
+    return folder.empty() || note.empty() ? folder + note : folder + " · " + note;
+}
+
 std::string read_file(const std::filesystem::path& path) {
     std::FILE* input = std::fopen(path.string().c_str(), "rb");
     if (!input) return {};
@@ -6270,18 +6283,18 @@ void Simulation::rebuild_view() {
             else if (modal.id == "steam-programs" && action_key.rfind("steam-program-", 0) == 0) {
                 const auto index = static_cast<std::size_t>(std::stoul(action_key.substr(14)));
                 if (index < steam_programs_shown_.size()) {
-                    item.title = steam_programs_shown_[index].path;
-                    if (steam_programs_shown_[index].helper) item.subtitle = "Installer or tool";
+                    item.title = program_file_name(steam_programs_shown_[index].path);
+                    item.subtitle = program_note(steam_programs_shown_[index].path,
+                                                 steam_programs_shown_[index].helper ? "Installer or tool" : "");
                 }
             }
             else if (import_programs && action_key.rfind("import-program-", 0) == 0) {
                 const auto index = static_cast<std::size_t>(std::stoul(action_key.substr(15)));
                 if (index < import_programs->programs.size()) {
                     const auto& program = import_programs->programs[index];
-                    item.title = program.path;
+                    item.title = program_file_name(program.path);
                     item.value = format_bytes(program.bytes);
-                    if (program.helper) item.subtitle = "Installer or tool";
-
+                    item.subtitle = program_note(program.path, program.helper ? "Installer or tool" : "");
                 }
             }
             else if (modal.id == "import-choice" && action_key == "import-play-in-place") {
@@ -6400,11 +6413,12 @@ void Simulation::rebuild_view() {
                 const auto index = static_cast<std::size_t>(std::stoul(action_key.substr(14)));
                 if (setup != game_setups_.end() && index < setup->second.programs.size()) {
                     const auto& program = setup->second.programs[index];
-                    item.title = program.path;
+                    item.title = program_file_name(program.path);
                     const auto detected = rt::DetectedLabel(program.detected);
-                    item.subtitle = program.architecture.empty() ? "Not a Windows program the PS5 can start."
-                        : !program.refusal.empty() ? program.refusal
-                        : (program.architecture == "pe64" ? "64-bit" : "32-bit") + (detected.empty() ? std::string() : " · " + detected);
+                    item.subtitle = program_note(program.path, program.architecture.empty() ? "Not a Windows program the PS5 can start."
+                        : program.refusal);
+                    if (!program.architecture.empty() && program.refusal.empty())
+                        item.value = (program.architecture == "pe64" ? "64-bit" : "32-bit") + (detected.empty() ? std::string() : " · " + detected);
                     item.enabled = !program.architecture.empty() && program.refusal.empty();
                     rt::EffectiveSettings values;
                     if (EffectiveSettingsFor(state_.navigation.selected_game_id, &values) && values.launch &&
