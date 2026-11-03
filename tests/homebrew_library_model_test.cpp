@@ -1491,8 +1491,10 @@ void live_filters_sheet_sections() {
     const auto* playable=find_row(model,"filter-compat-playable");
     check(playable && playable->kind==RowKind::Toggle && !playable->selected && playable->value=="Off","Playable is a toggle, off");
 
-    // Up from the first sort stays there; down goes past the Filter heading and the divider.
-    check(model.action("up") && model.state().navigation.focus_key=="sort-name","no row above the first sort");
+    // Up from the first sort goes round to the last row; down goes past the Filter heading and the divider.
+    const auto filter_keys=model.state().navigation.modals.back().action_keys;
+    check(model.action("up") && model.state().navigation.focus_key==filter_keys.back(),"Up from the first sort goes to the last row");
+    check(model.action("focus:sort-name"),"back on the first sort");
     for(const auto* expected:{"sort-recent-played","sort-playtime","filter-compat-playable","filter-hide-demos","filters-reset"})
         check(model.action("down") && model.state().navigation.focus_key==expected,"down skips headings and the divider");
     check(model.action("up") && model.state().navigation.focus_key=="filter-hide-demos","up goes back past the divider");

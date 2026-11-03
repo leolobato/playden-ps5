@@ -736,6 +736,14 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     check(model.state().navigation.modals.back().title == "Run BmLauncher.exe once?" &&
               model.state().navigation.modals.back().body.find("Mouse preset") != std::string::npos,
           "setup program: the confirmation names the program and the Mouse preset");
+    {
+        // A dialog isn't a side menu: Up stops at its first button.
+        const auto buttons = model.state().navigation.modals.back().action_keys;
+        model.action("up");
+        model.action("up");
+        check(model.state().navigation.focus_key == buttons.front() && buttons.front() != buttons.back(),
+              "setup program: Up stops at a dialog's first button");
+    }
     check(model.TakeRuntimePlayRequests().empty(), "setup program: nothing starts before the confirmation");
     activate(model, "run-once-start");
     check(model.state().navigation.modals.empty() &&
@@ -795,6 +803,21 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
           "launcher hint: it turns the setting on and plays");
     model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe");
     check(model.state().navigation.modals.empty(), "launcher hint: not offered with the setting on");
+
+    // Up from a side menu's top row goes round to its last row, and carries on from there.
+    {
+        activate(model, "details-more");
+        const auto keys = model.state().navigation.modals.back().action_keys;
+        check(model.state().navigation.focus_key == keys.front(), "side menu: focus starts on the top row");
+        model.action("up");
+        check(model.state().navigation.focus_key == keys.back(), "side menu: Up from the top goes to the last row");
+        model.action("up");
+        check(model.state().navigation.focus_key == keys[keys.size() - 2], "side menu: Up carries on from the bottom");
+        model.action("down");
+        model.action("down");
+        check(model.state().navigation.focus_key == keys.back(), "side menu: Down stops on the last row");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+    }
 
     // Play with detailed logs: Verbose for this start, Normal again as the game starts, even if it crashes right
     // away or Playden quits before seeing the session end.

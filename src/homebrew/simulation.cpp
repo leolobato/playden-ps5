@@ -8149,6 +8149,23 @@ void Simulation::move(int delta_x, int delta_y) {
             state_.log_offset = std::clamp(state_.log_offset + delta, 0, std::max(0, static_cast<int>(state_.log_lines.size()) - 8));
             return;
         }
+        // Up from a side menu's top row goes round to its last row (a jump stops at the top); a dialog's buttons stay
+        // where they are.
+        if (delta_y == -1 && !modal.destructive && modal.id != "confirmation" && !modal.action_keys.empty()) {
+            const auto passed_over = [&modal](int index) {
+                const auto& key = modal.action_keys[static_cast<std::size_t>(index)];
+                return SheetDecoration(key) || (modal.id == "import-games" && key.rfind("import-group-", 0) == 0);
+            };
+            bool above = false;
+            for (int index = 0; index < modal.focused_action; ++index) above = above || !passed_over(index);
+            if (!above) {
+                int bottom = static_cast<int>(modal.action_keys.size()) - 1;
+                while (bottom > modal.focused_action && passed_over(bottom)) --bottom;
+                modal.focused_action = bottom;
+                state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(bottom)];
+                return;
+            }
+        }
         if (modal.id == "import-games") { move_import_sheet(delta_y != 0 ? delta_y : delta_x); return; }
         const int delta = delta_y != 0 ? delta_y : delta_x;
         const int last = static_cast<int>(modal.action_keys.size()) - 1;
