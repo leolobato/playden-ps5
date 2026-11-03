@@ -95,6 +95,9 @@ the same call:
 
 - Match surrounding style. Source files carry GPL-3.0-or-later SPDX headers.
 - Reusable UI fixes belong in ps5-homebrew-ui, product behaviour here.
+- Before adding or hand-drawing a UI element, look for it in the design system
+  (`third_party/ps5-homebrew-ui/docs/COMPONENT_INDEX.md`, `docs/components/`) and in the patterns `view.cpp` already
+  uses, and reuse what fits. If nothing fits, propose adding it to ps5-homebrew-ui instead of a one-off.
 - Commit format: see CONTRIBUTING.md › Commits. A commit that resolves an issue says `Fixes #N` (`Refs #N`
   for partial work).
 - History is linear: rebase and fast-forward, no merge commits.
