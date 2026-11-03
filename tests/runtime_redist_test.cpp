@@ -534,6 +534,10 @@ void TestFoundPhysx() {
   prefix = fresh_prefix("bare-prefix");
   result = InstallRedistributables(bare.string(), "Z:\\games\\4", prefix.string(), 1700000100, true);
   CHECK(result.outcomes.empty() && result.physx_missing && result.physx_searched);
+  // The installer added afterwards (from the web page, say): the next Play finds it.
+  WriteText(bare / "_Redist/PhysX_9.09.msi", "not really a package");
+  result = InstallRedistributables(bare.string(), "Z:\\games\\4", prefix.string(), 1700000200, true);
+  CHECK(!result.physx_missing && result.physx_searched && result.outcomes.size() == 1 && result.outcomes[0].result == "failed");
   std::filesystem::remove_all(base);
 }
 

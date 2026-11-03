@@ -1554,6 +1554,10 @@ void RemovesOnlyManagedFolders(const std::filesystem::path& base) {
 
   // Files the install did not record (written by the game or other tools, in open folders) go too.
   InstallsMergedDepotsAndWritesRecord(managed);
+  // The web page's previous versions among them, wherever they are.
+  std::ofstream(managed / ".playden-bak.top.sav") << "older";
+  std::filesystem::create_directories(managed / "web/sub");
+  std::ofstream(managed / "web/sub/.playden-bak.deep.sav") << "older";
   std::filesystem::create_directories(managed / "bottle/drive_c");
   std::filesystem::permissions(managed / "bottle", std::filesystem::perms::all);
   std::ofstream(managed / "bottle/drive_c/user.reg") << "written later";
@@ -1686,9 +1690,14 @@ void MeasureUpdateMatchesTheUpdate(const std::filesystem::path& root) {
   CHECK(measured.error == InstallError::kNone && world.chunk_calls == 0);
   CHECK(!std::filesystem::exists(root / DepotInstaller::kUpdateDir));
   CHECK(measured.staged_bytes == 27 + 5 && measured.install_bytes == 27 + 13 + 5);
+  // The web page's previous versions, at the top and in a folder, stay through an update and don't count in it.
+  std::ofstream(root / ".playden-bak.top.sav") << "older";
+  std::filesystem::create_directories(root / "web");
+  std::ofstream(root / "web/.playden-bak.deep.sav") << "older";
   InstallProgress last;
   CHECK(installer.Run({}, target, cancel, [&](const InstallProgress& progress) { last = progress; }).error == InstallError::kNone);
   CHECK(measured.download_bytes == last.download_total && measured.download_bytes > 0);
+  CHECK(std::filesystem::exists(root / ".playden-bak.top.sav") && std::filesystem::exists(root / "web/.playden-bak.deep.sav"));
   // Up to date: nothing to download.
   const auto same = installer.MeasureUpdate({}, target.app_id, target.depots, {}, root.string(), cancel);
   CHECK(same.error == InstallError::kNone && same.download_bytes == 0 && same.staged_bytes == 0);

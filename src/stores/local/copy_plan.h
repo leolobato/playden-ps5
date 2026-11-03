@@ -58,7 +58,8 @@ struct CopyPlanBuild {
 // A link anywhere fails it, naming the link; so do an unreadable entry and more than `max_files`
 // files or `max_bytes` bytes. Other kinds of entries (sockets, devices) are left out, and so are
 // Playden's own names at the top level (the copy journal, the install record and file list, the
-// download journal): never copied over Playden's, and never deleted from a drop folder.
+// download journal): never copied over Playden's, and never deleted from a drop folder. The web page's
+// temporary files are left out at any depth; its previous versions are copied with their files.
 CopyPlanBuild BuildCopyPlan(const std::string& source, std::size_t max_files = kMaxCopyFiles,
                             std::uint64_t max_bytes = kMaxCopyBytes);
 

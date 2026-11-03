@@ -216,6 +216,8 @@ CopyPlanBuild BuildCopyPlan(const std::string& source_path, std::size_t max_file
       build.skipped.push_back(name);
       continue;
     }
+    // Half of a file the web page is writing, or was when a crash stopped it (web/file_policy.h).
+    if (name.rfind(".playden-upload-", 0) == 0 || name.rfind(".playden-restore-", 0) == 0) continue;
     const auto relative = frame.relative.empty() ? name : frame.relative + "/" + name;
     if (entry->d_type == DT_LNK) return fail(LinkWords(relative), ELOOP);
     const int child = platform::OpenWalkChildUnprivileged(frame.fd, name.c_str(), kOpenAny, static_cast<std::uint64_t>(entry->d_fileno));

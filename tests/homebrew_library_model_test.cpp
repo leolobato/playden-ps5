@@ -1883,6 +1883,10 @@ void live_storage_section_and_installed_games() {
               address->section == "Web access" && address->subtitle.find("your Steam name removed") != std::string::npos &&
               !address->enabled,
           "the page's address shows with its QR code");
+    model.ApplyLiveWebAccess({"on", "http://192.168.1.50:7031/", 7031, {}, "481207"});
+    check(model.state().web_pairing_code == "481207", "a browser's pairing code reaches the screen");
+    model.ApplyLiveWebAccess({"on", "http://192.168.1.50:7031/", 7031, {}});
+    check(model.state().web_pairing_code.empty(), "and goes when pairing ends");
     model.ApplyLiveWebAccess({"on", "", 7032, {}});
     check(find_row(model, "settings-web-address") && find_row(model, "settings-web-address")->qr.empty() &&
               find_row(model, "settings-web-address")->title == "Address unknown" &&

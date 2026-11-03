@@ -686,6 +686,21 @@ void QuickCheckAndIndex() {
   CHECK(steps.size() == 2 && steps.front().first == 0 && steps.back().first == 14 && steps.back().second == 14);
   // The Apply refreshed the index: in step again.
   CHECK(sync.QuickCheck(session, {location}, cancel) == std::vector<Drift>{Drift::kUnchanged});
+  // The web page's previous versions and temporary files beside a save are not saves.
+  WriteText(docs / ".playden-bak.slot1.sav", "older progress");
+  WriteText(docs / ".playden-upload-1234", "half an upload");
+  WriteText(docs / ".playden-restore-1234", "a restore's other half");
+  CHECK(sync.QuickCheck(session, {location}, cancel) == std::vector<Drift>{Drift::kUnchanged});
+  plan = sync.Check(session, location, cancel);
+  CHECK(plan.status == PlanStatus::kUpToDate);
+  std::filesystem::remove(docs / ".playden-upload-1234");
+  std::filesystem::remove(docs / ".playden-restore-1234");
+  // A save replaced from the web page is a local change.
+  WriteText(docs / "slot1.sav", "uploaded from a computer");
+  CHECK(sync.QuickCheck(session, {location}, cancel) == std::vector<Drift>{Drift::kLocal});
+  outcome = sync.Apply(session, location, sync.Check(session, location, cancel), Resolution::kUseLocal, false, cancel, nullptr);
+  CHECK(outcome.ok && outcome.uploaded == 1);
+  CHECK(cloud.files.count("%WinMyDocuments%My Games/Cloud Game/.playden-bak.slot1.sav") == 0);
   cloud.files["%WinMyDocuments%My Games/Cloud Game/slot2.sav"] = {Bytes("other device"), 3'000, false};
   ++cloud.change;
   // A new file in a save folder is a local change too; a game without an index stays unknown.
@@ -705,7 +720,7 @@ void QuickCheckAndIndex() {
   CHECK(sync.RemoveLocal(location, &message) && message == "1 save deleted");
   CHECK(!std::filesystem::exists(docs / "slot1.sav"));
   CHECK(ReadText(base / "state/backup/1800000000/prefix/drive_c/users/prospero/Documents/My Games/Cloud Game/slot1.sav") ==
-        "local progress");
+        "uploaded from a computer");
   CHECK(cloud.files.count("%WinMyDocuments%My Games/Cloud Game/slot1.sav") == 1);
   CHECK(!sync.RemoveLocal(fresh, &message));
   std::filesystem::remove_all(base);

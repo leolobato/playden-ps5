@@ -220,6 +220,22 @@ struct Fixture {
   }
 };
 
+void PlanLeavesOutTheWebPagesTemporaryFiles() {
+  Fixture fixture;
+  const auto base = fixture.source / "saves";
+  std::ofstream(base / ".playden-upload-1234") << "half";
+  std::ofstream(fixture.source / ".playden-restore-1234") << "half";
+  std::ofstream(base / ".playden-bak.slot.sav") << "previous";
+  const auto build = BuildCopyPlan(fixture.source.string());
+  CHECK(build.ok);
+  bool previous = false;
+  for (const auto& file : build.plan.files) {
+    CHECK(file.path.find(".playden-upload-") == std::string::npos && file.path.find(".playden-restore-") == std::string::npos);
+    previous = previous || file.path == "saves/.playden-bak.slot.sav";
+  }
+  CHECK(previous);
+}
+
 void PlanCoversTheTree() {
   Fixture fixture;
   const auto build = BuildCopyPlan(fixture.source.string());
@@ -1162,6 +1178,7 @@ void DropFolderCopyFreesTheDropFolder() {
 
 int main() {
   PlanCoversTheTree();
+  PlanLeavesOutTheWebPagesTemporaryFiles();
   LinksAreRefused();
   CopiesIntoPlayden();
   UninstallWithoutTheSourceDrive();
