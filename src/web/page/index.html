@@ -73,6 +73,8 @@ table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-weight: 500; color: var(--soft); font-size: 13px; padding: 0 12px 8px; white-space: nowrap; }
 td { padding: 11px 12px; border-top: 1px solid var(--line); vertical-align: middle; }
 th.num, td.num { text-align: right; }
+th button.sort { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; }
+th button.sort:hover { color: var(--ink); text-decoration: underline; }
 tbody tr:hover td { background: var(--row); }
 tr.sel td { background: var(--row-open); }
 tr.pick { cursor: pointer; }
@@ -428,7 +430,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   const folderHash = (game, root, path) => `${gameHash(game)}/${root}${path ? "/" + path.split("/").map(encodeURIComponent).join("/") : ""}`;
   const editHash = (game, root, path) => `#/edit/${encodeURIComponent(game)}/${root}/${path.split("/").map(encodeURIComponent).join("/")}`;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const files = { game: null, root: null, path: "", listing: null, selected: new Set(), route: 0, poll: 0, games: null, refreshes: 0 };
+  const files = { game: null, root: null, path: "", listing: null, selected: new Set(), route: 0, poll: 0, games: null, refreshes: 0, sortGames: null, sortFolder: null };
 
   class Answer extends Error {
     constructor(status, message) {
@@ -509,15 +511,42 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     if (game.kind === "imported") badges.push(element("span", { class: "badge", text: "Imported" }));
     return badges;
   };
+  // A column's sort: { key, down }. A first click goes the way that column is usually read; another turns it round.
+  const sortHead = (label, key, current, down, change, kind) => {
+    const on = !!current && current.key === key;
+    const control = button(on ? `${label} ${current.down ? "▼" : "▲"}` : label, () => {
+      change({ key, down: on ? !current.down : down });
+      const again = document.querySelector(`button.sort[data-sort="${key}"]`);
+      if (again) again.focus();
+    }, "sort");
+    control.dataset.sort = key;
+    return element("th", { ...(kind ? { class: kind } : {}), ...(on ? { "aria-sort": current.down ? "descending" : "ascending" } : {}) }, control);
+  };
+  // Nothing to sort by (a game never played) goes last, whichever way the column runs.
+  const sortBy = (sort, valueOf, nameOf) => (left, right) => {
+    const a = valueOf(left, sort.key), b = valueOf(right, sort.key);
+    const noA = a === undefined || a === null, noB = b === undefined || b === null;
+    const text = (one, other) => String(one).localeCompare(String(other), undefined, { numeric: true, sensitivity: "base" });
+    if (noA || noB) return Number(noA) - Number(noB) || text(nameOf(left), nameOf(right));
+    const order = typeof a === "string" ? text(a, b) : a - b;
+    return (sort.down ? -order : order) || text(nameOf(left), nameOf(right));
+  };
   const showGames = async () => {
     const token = ++files.route;
     clearInterval(files.poll);
     let filter = "";
     const search = element("input", { class: "search", type: "search", placeholder: "Find a game", "aria-label": "Find a game" });
     const body = element("tbody");
+    const head = element("thead");
+    const paintHead = () => {
+      const column = (label, key, down, kind) => sortHead(label, key, files.sortGames, down, (sort) => { files.sortGames = sort; paintHead(); paint(); }, kind);
+      head.replaceChildren(element("tr", {}, column("Game", "name", false), column("Installed on", "where", false), column("Cloud", "cloud", false),
+        column("Last played", "played", true), column("Windows user folders", "bytes", true, "num")));
+    };
     const paint = () => {
       const shown = (files.games.games || []).filter((game) => game.name.toLowerCase().includes(filter));
-      shown.sort((left, right) => Number(right.running) - Number(left.running) || (right.last_played || 0) - (left.last_played || 0) || left.name.localeCompare(right.name));
+      if (files.sortGames) shown.sort(sortBy(files.sortGames, (game, key) => ({ name: game.name, where: whereLabel(game), cloud: game.cloud ? "Cloud sync" : "No Cloud sync", played: game.last_played, bytes: game.windows_user_bytes })[key], (game) => game.name));
+      else shown.sort((left, right) => Number(right.running) - Number(left.running) || (right.last_played || 0) - (left.last_played || 0) || left.name.localeCompare(right.name));
       body.replaceChildren(...shown.map((game) => element("tr", {},
         element("td", { class: "entry-name" }, element("a", { href: gameHash(game.id), text: game.name }), ...gameBadges(game),
           element("span", { text: game.app ? `app ${game.app}` : game.id })),
@@ -536,12 +565,12 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     try { await load(); } catch (error) { return report(error); }
     if (token !== files.route) return;
     clear();
+    paintHead();
     pane.append(element("div", { class: "title-row" }, element("h2", { text: "Game files" })),
       element("p", { class: "lede", text: "Saves, configs and mods for each game. Pick a game to download, replace or add files." }),
       element("div", { class: "bar" }, search),
       element("table", { class: "files" },
-        element("thead", {}, element("tr", {}, element("th", { text: "Game" }), element("th", { text: "Installed on" }), element("th", { text: "Cloud" }),
-          element("th", { text: "Last played" }), element("th", { class: "num", text: "Windows user folders" }))),
+        head,
         body),
       element("p", { class: "note", text: "Playden answers only while it is open. Starting a game ends this page until Playden opens again." }));
     files.poll = setInterval(() => { load().catch(() => {}); }, 5000);
@@ -660,7 +689,12 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     pane.append(bar);
     const queued = transfers.items.filter((item) => item.kind === "file" && item.game === game.id && item.root === root && item.path === path && item.state !== "done");
     const trees = treeProgress(game.id, root, path);
-    const rows = listing.entries.map((entry) => {
+    // Folders stay together above the files, whichever column is sorted.
+    const ordered = files.sortFolder
+      ? [...listing.entries].sort((left, right) => Number(right.directory) - Number(left.directory)
+        || sortBy(files.sortFolder, (entry, key) => ({ name: entry.name, modified: entry.modified, size: entry.directory ? undefined : entry.size })[key], (entry) => entry.name)(left, right))
+      : listing.entries;
+    const rows = ordered.map((entry) => {
       const full = relPath(entry.name);
       const pending = !entry.directory && queued.find((item) => item.name.toLowerCase() === entry.name.toLowerCase());
       const check = element("input", { type: "checkbox", "aria-label": `Select ${entry.name}` });
@@ -707,7 +741,8 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
           element("td", { class: "num soft size", text: longSize(itemSize(item)) }), element("td", { class: "acts" })));
     if (rows.length) {
       pane.append(element("table", { class: "files" },
-        element("thead", {}, element("tr", {}, element("th", {}), element("th", { text: "Name" }), element("th", { text: "Changed" }), element("th", { class: "num", text: "Size" }), element("th", {}))),
+        element("thead", {}, element("tr", {}, element("th", {}), ...[["Name", "name", false], ["Changed", "modified", true], ["Size", "size", true, "num"]].map(([label, key, down, kind]) =>
+          sortHead(label, key, files.sortFolder, down, (sort) => { files.sortFolder = sort; paintFolder(); }, kind)), element("th", {}))),
         element("tbody", {}, ...rows)));
     } else {
       pane.append(element("div", { class: "drop-hint" }, element("strong", { text: "This folder is empty" }),
