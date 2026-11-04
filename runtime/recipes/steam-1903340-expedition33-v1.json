@@ -1,0 +1,21 @@
+{
+  "recipe_id": "steam-1903340-expedition33-v1",
+  "recipe_version": 1,
+  "app_id": 1903340,
+  "name": "Clair Obscur: Expedition 33",
+  "launch_entries": [
+    {"id": "game", "label": "Clair Obscur: Expedition 33", "executable": "Sandfall/Binaries/Win64/SandFall-Win64-Shipping.exe"}
+  ],
+  "arguments": "-dx12",
+  "dll_overrides": "d3d8,d3d9,d3d10core,d3d11,dxgi=n",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "dxvk",
+  "defaults": {
+    "d3d12": "vkd3d-proton",
+    "steam_features": "emulate"
+  },
+  "steam_api_copies": ["Sandfall/Binaries/Win64/steam_api64.dll"],
+  "locked": ["steam_features"]
+}

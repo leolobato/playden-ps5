@@ -1575,6 +1575,42 @@ int main(int argc, char** argv) {
     CHECK(settings.values.at("steam_features").value == "emulate" && !settings.values.at("graphics").locked);
     CHECK(settings.launch && settings.launch->executable == "Binaries/ShippingPC-BmGame.exe" && settings.arguments.empty());
   }
+  // Clair Obscur: Expedition 33 hashes the Steam library at its project path and loads the emulator from the Engine
+  // path, so it needs both, and quits on the game's own files without a Steam client.
+  {
+    GameRecipe expedition;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-1903340-expedition33-v1.json"), &expedition, &reason));
+    CHECK(expedition.app_id == 1903340 && expedition.launch_entries.size() == 1 &&
+          expedition.launch_entries[0].executable == "Sandfall/Binaries/Win64/SandFall-Win64-Shipping.exe");
+    CHECK(expedition.steam_api_copies == std::vector<std::string>{"Sandfall/Binaries/Win64/steam_api64.dll"});
+    KitCapabilities kit;
+    kit.vkd3d_proton = true;
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(expedition, nullptr, {}, kit, &settings, &error));
+    CHECK(settings.graphics == "dxvk" && settings.arguments == "-dx12" && settings.vkd3d_proton);
+    CHECK(settings.values.at("steam_features").value == "emulate" && settings.values.at("steam_features").locked);
+    // The field survives a round trip, and only names a steam_api DLL inside the game's folders.
+    GameRecipe again;
+    CHECK(ParseGameRecipe(SerializeGameRecipe(expedition), &again, &reason) && again.steam_api_copies == expedition.steam_api_copies);
+    const auto with_copies = [](const std::string& copies, const std::string& id = "steam-1903340-test-v1") {
+      return R"({"recipe_id":")" + id + R"(","recipe_version":1,"app_id":1903340,"launch_entries":[{"id":"game","label":"G","executable":"g.exe"}],)"
+             R"("architecture":"pe64","runtime":"wine-wow64","prefix":"game","graphics":"dxvk","steam_api_copies":)" + copies + "}";
+    };
+    GameRecipe parsed;
+    CHECK(ParseGameRecipe(with_copies(R"(["Game/Binaries/STEAM_API64.dll"])"), &parsed, &reason));
+    for (const auto* bad : {R"("Game/steam_api64.dll")", R"(["steam_api64.dll"])", R"(["Game/other.dll"])",
+                            R"(["../steam_api64.dll"])", R"(["Game/../steam_api64.dll"])", R"(["/Game/steam_api64.dll"])",
+                            R"(["Game\steam_api64.dll"])", R"([1])", R"(["A/steam_api.dll","a/STEAM_API.dll"])",
+                            R"(["A/steam_api.dll","B/steam_api.dll","C/steam_api.dll","D/steam_api.dll","E/steam_api.dll"])"})
+      CHECK(!ParseGameRecipe(with_copies(bad), &parsed, &reason));
+    // A community recipe can't place a file in the game folder.
+    CHECK(!ParseGameRecipe(with_copies(R"(["Game/steam_api64.dll"])", "community-1903340-test"), &parsed, &reason));
+    CommunityRecipe community;
+    auto shared = with_copies(R"(["Game/steam_api64.dll"])");
+    shared.replace(shared.size() - 1, 1, R"(,"steam_appid":1903340,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
+    CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("steam_api_copies") != std::string::npos);
+  }
   // Batman: Arkham City is Asylum's sibling: BatmanAC.exe starts BmLauncher.exe and exits too while UserEngine.ini has
   // no Language.
   {
@@ -1639,8 +1675,8 @@ int main(int argc, char** argv) {
   std::vector<SettingsPreset> loaded_presets;
   std::vector<GameRecipe> loaded_recipes;
   CHECK(LoadSettingsData((source / "runtime").string(), &loaded_presets, &loaded_recipes, &reason));
-  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 7 && loaded_recipes.front().app_id == 220 &&
-        loaded_recipes.back().id == "steam-108600-projectzomboid-v1");
+  CHECK(loaded_presets.size() == 4 && loaded_recipes.size() == 8 && loaded_recipes.front().app_id == 220 &&
+        loaded_recipes.back().id == "steam-1903340-expedition33-v1");
   CHECK(!LoadSettingsData((source / "missing").string(), &loaded_presets, &loaded_recipes, &reason));
 
   // ApplyGameSettings writes the profile and a Playden dxvk.conf, removes it when nothing is

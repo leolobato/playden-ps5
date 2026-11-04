@@ -4167,6 +4167,89 @@ void GeneratedRecipeGetsShippedIni() {
   host.Shutdown();
 }
 
+// A copy of Clair Obscur: Expedition 33 prepared before Playden shipped its recipe keeps the recipe Playden generated,
+// and still gets the shipped recipe's copy of its Steam library the next time it is played. The game's own Steam files
+// take the copy away.
+void GeneratedRecipeGetsShippedSteamApiCopy() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  const auto runtime = fixture.root / "runtime";
+  Write(runtime / "presets.json", Read(fs::path(g_runtime_dir) / "presets.json"), 0644);
+  Write(runtime / "recipes/steam-220-hl2-v1.json", Read(fs::path(g_runtime_dir) / "recipes/steam-220-hl2-v1.json"), 0644);
+  Write(runtime / "recipes/recipes.lst", "steam-220-hl2-v1.json\n", 0644);
+  config.runtime_dir = runtime.string();
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  std::map<std::string, std::string> saved_settings;
+  config.settings_record = [&saved_settings](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    if (saved_settings.empty()) return std::nullopt;
+    GameSettingsRecord record;
+    record.overrides = saved_settings;
+    return record;
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/1903340";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  const std::string engine = "Engine/Binaries/ThirdParty/Steamworks/Steamv157/Win64/steam_api64.dll";
+  const std::string copy = "Sandfall/Binaries/Win64/steam_api64.dll";
+  const std::string own_api = pe + std::string("\0SteamUser021\0", 14);
+  Write(game / "Sandfall/Binaries/Win64/SandFall-Win64-Shipping.exe", pe, 0644);
+  Write(game / engine, own_api, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  RuntimePrepareRequest request{1903340, "/data/homebrew/FAKE77031/games/1903340", "internal", "Clair Obscur: Expedition 33"};
+  request.launches = {{"", "", "Sandfall\\Binaries\\Win64\\SandFall-Win64-Shipping.exe", "", ""}};
+  const auto prepared = [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(1903340) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  };
+  const auto emulator = Read(fs::path(g_runtime_dir) / "steamworks/steam_api64.dll");
+  {
+    RuntimeHost host(config);
+    host.SetSteamAccount("player", 76561198000000001ull);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(request);
+    const auto done = WaitFor(host, prepared, 60);
+    if (done.refusals.count(1903340)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(1903340).c_str());
+    CHECK(!done.refusals.count(1903340) && done.installs.size() == 1);
+    CHECK(Read(config.state_root / "installs.json").find("\"recipe_id\":\"steam-1903340-auto\"") != std::string::npos);
+    CHECK(Read(game / engine) == emulator && !fs::exists(game / copy));
+    host.Shutdown();
+  }
+  // Playden now ships the recipe: the game keeps its own, and its folder gets the copy.
+  Write(runtime / "recipes/steam-1903340-expedition33-v1.json",
+        Read(fs::path(g_runtime_dir) / "recipes/steam-1903340-expedition33-v1.json"), 0644);
+  Write(runtime / "recipes/recipes.lst", "steam-220-hl2-v1.json\nsteam-1903340-expedition33-v1.json\n", 0644);
+  RuntimeHost host(config);
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Play(1903340);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 0; }, 30);
+  CHECK(Read(config.state_root / "installs.json").find("\"recipe_id\":\"steam-1903340-auto\"") != std::string::npos);
+  CHECK(Read(game / engine) == emulator && Read(game / copy) == own_api);
+  saved_settings = {{"steam_features", "game"}};
+  host.Play(1903340);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 1; }, 30);
+  CHECK(Read(game / engine) == own_api && !fs::exists(game / copy));
+  host.Shutdown();
+}
+
 // A shipped recipe's requirements are checked against the kit's template, as the kit's packager
 // checks the kit's own recipe: without PS5 audio in the template, a recipe that needs it is refused.
 void ShippedRecipeRequirementsFollowTheKit(bool template_audio_ps5) {
@@ -6245,6 +6328,7 @@ int main(int argc, char** argv) {
   ShippedRecipeWritesGameIni(false);
   ShippedRecipeWritesGameIni(true);
   GeneratedRecipeGetsShippedIni();
+  GeneratedRecipeGetsShippedSteamApiCopy();
   RunsSetupProgramOnce();
   ShippedRecipeRequirementsFollowTheKit(false);
   ShippedRecipeRequirementsFollowTheKit(true);

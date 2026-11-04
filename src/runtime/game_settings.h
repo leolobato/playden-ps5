@@ -187,6 +187,9 @@ struct GameRecipe {
   // Values the game's own INI files get when its files are prepared, for a setting the game's
   // launcher would write before starting the game, which the console can't do (Batman: Arkham Asylum).
   std::vector<IniValue> ini;
+  // Where the game's own steam_api DLL must also be on disk while the emulator answers it, for a game that hashes the
+  // file it finds there (docs/community-recipes.md). Shipped recipes only.
+  std::vector<std::string> steam_api_copies;
   // What the kit's template bottle must provide ("audio": "ps5"); see UnmetRecipeRequirements.
   std::map<std::string, std::string> requirements;
 };

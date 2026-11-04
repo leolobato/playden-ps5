@@ -44,13 +44,17 @@ struct SteamworksIdentity {
   // own steam_appid.txt or Game settings: the emulator reads steam_settings/steam_appid.txt, and a file
   // Playden left in the game's folder would later pass for the game's own.
   bool write_game_appid_file = true;
+  // Relative paths that get a copy of the game's own DLL (the .orig) while the emulator stays where the game loads it
+  // from, for a game that hashes the file it finds at one of these paths (GameRecipe::steam_api_copies).
+  std::vector<std::string> steam_api_copies;
 };
 
 struct SteamworksResult {
   bool ok = false;
   std::string message;               // on failure: a sentence for the player
   std::vector<std::string> changed;  // DLL paths (relative) replaced or restored by this call
-  std::vector<std::string> found;    // every steam_api DLL found (relative)
+  std::vector<std::string> found;    // every steam_api DLL found (relative), without steam_api_copies
+  std::vector<std::string> skipped;  // steam_api_copies with no folder to go in or no single original to copy
 };
 
 // steam_api.dll / steam_api64.dll below install_root (any case, at most 10 folders deep, no
@@ -60,15 +64,17 @@ std::vector<std::string> FindSteamApi(const std::string& install_root);
 // Swaps every found DLL for the emulator and writes its steam_settings/. A DLL that already is
 // the emulator, or an earlier build of it (retired), needs its .orig, which must be the game's
 // own; a DLL that is neither (a newer original from an update) becomes the new .orig. No
-// steam_api DLL: ok with nothing found.
+// steam_api DLL: ok with nothing found. Then each of identity.steam_api_copies gets the .orig of the one found DLL with
+// its file name; these paths are not swapped.
 SteamworksResult EmulateSteamworks(const std::string& install_root, const std::string& emulator_dir,
                                    const SteamworksIdentity& identity,
                                    const std::vector<std::string>& retired = RetiredSteamApiSha256());
 
 // Puts each .orig back over a swapped DLL (the emulator or a retired build); .orig and
-// steam_settings/ stay.
+// steam_settings/ stay. A file at one of steam_api_copies that holds a kept .orig is removed.
 SteamworksResult RestoreSteamworks(const std::string& install_root,
-                                   const std::vector<std::string>& retired = RetiredSteamApiSha256());
+                                   const std::vector<std::string>& retired = RetiredSteamApiSha256(),
+                                   const std::vector<std::string>& steam_api_copies = {});
 
 // Games from before Steamworks (GUN) load steam.dll from beside their program and quit with "Failed
 // to find Steam." without it. For a game with no steam_api DLL, puts the minimal steam.dll
