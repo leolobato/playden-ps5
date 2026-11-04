@@ -573,10 +573,6 @@ int main() {
                 std::fclose(file);
                 if (!bytes.empty()) generic_icon = std::move(bytes);
             }
-            // The generic icon as an image: a small program icon goes on its floppy's label.
-            std::optional<playden::homebrew::ArtworkImage> generic_floppy;
-            if (generic_icon)
-                generic_floppy = playden::homebrew::DecodeArtwork(std::vector<std::uint8_t>(generic_icon->begin(), generic_icon->end()));
             // Owned DLC: the game's looked-up DLC that the last license read of this account grants.
             config.owned_dlc = [&library_backend, &licensed_depots](std::uint64_t steam_id, std::uint32_t app_id) {
                 std::vector<std::uint32_t> owned;
@@ -586,7 +582,7 @@ int main() {
                     if (grant->apps.count(dlc)) owned.push_back(dlc);
                 return owned;
             };
-            config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon, generic_floppy](
+            config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon](
                                     const playden::GameId& game, const std::filesystem::path& program) -> std::optional<std::string> {
                 // A store with no cover for the game (an imported one) gets the generic icon.
                 const auto source = playden::homebrew::CoverUrl(game);
@@ -599,9 +595,7 @@ int main() {
                 if (auto icon = cover ? playden::homebrew::MakeTitleIcon(*cover) : std::nullopt) return icon;
                 // An imported game, or a Steam game without a cover: the icon inside its program.
                 const auto own = program.empty() ? std::nullopt : playden::homebrew::ReadProgramIcon(program.string());
-                // A small icon goes on the generic floppy; a larger one makes the whole tile.
-                if (auto icon = own ? playden::homebrew::MakeProgramTitleIcon(*own, generic_floppy ? &*generic_floppy : nullptr)
-                                    : std::nullopt) {
+                if (auto icon = own ? playden::homebrew::MakeProgramTitleIcon(*own) : std::nullopt) {
                     playden::app::AppendLogLine(log_root, "runtime.log", "title icon app=" + playden::ToKey(game) +
                                                 " uses the program's icon: no cover program=" + program.filename().string() +
                                                 " size=" + std::to_string(own->width) + "x" + std::to_string(own->height));

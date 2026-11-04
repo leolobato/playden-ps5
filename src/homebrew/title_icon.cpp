@@ -63,9 +63,10 @@ constexpr double kTitleAreaStart = 0.8;
 // A centred icon's share of the square, and the rounding of an opaque one's corners.
 constexpr double kCentredIconShare = 0.62;
 constexpr double kCentredIconRounding = 0.08;
-// The generic floppy's label, in its 512-pixel art (assets/branding/generic-title-icon.png).
-constexpr double kFloppyLabel[4] = {78, 214, 432, 462};
-constexpr double kFloppyLabelPadding = 14;
+// A small icon on a PS5 title icon: a whole number of pixels per icon pixel, up to this many across
+// (9/16 of the tile: 32 pixels scale by 9 and 48 by 6), over a backdrop at this brightness.
+constexpr std::uint32_t kSmallTitleIconLimit = kTitleIconSize * 9 / 16;
+constexpr double kSmallTitleIconBrightness = 0.45;
 
 bool Valid(const ArtworkImage& image) {
   return image.width != 0 && image.height != 0 &&
@@ -93,8 +94,9 @@ struct Layer {
   std::vector<double> rgba;
 };
 
-// Bilinear on alpha-weighted colours; `radius` rounds the corners with anti-aliased edges.
-Layer Scale(const ArtworkImage& icon, double centre_x, double centre_y, double side, double radius) {
+// Bilinear on alpha-weighted colours, or nearest-neighbour when `pixelated`; `radius` rounds the corners
+// with anti-aliased edges.
+Layer Scale(const ArtworkImage& icon, double centre_x, double centre_y, double side, double radius, bool pixelated = false) {
   const double scale = side / std::max(icon.width, icon.height);
   Layer layer;
   layer.width = static_cast<std::uint32_t>(std::max(1.0, std::round(icon.width * scale)));
@@ -106,8 +108,10 @@ Layer Scale(const ArtworkImage& icon, double centre_x, double centre_y, double s
   radius = std::min(radius, std::min(layer.width, layer.height) / 2.0);
   for (std::uint32_t y = 0; y < layer.height; ++y)
     for (std::uint32_t x = 0; x < layer.width; ++x) {
-      const double sx = std::clamp((x + 0.5) / scale - 0.5, 0.0, icon.width - 1.0);
-      const double sy = std::clamp((y + 0.5) / scale - 0.5, 0.0, icon.height - 1.0);
+      const double offset = pixelated ? 0.0 : 0.5;
+      const double fit_x = (x + 0.5) / scale - offset, fit_y = (y + 0.5) / scale - offset;
+      const double sx = std::clamp(pixelated ? std::floor(fit_x) : fit_x, 0.0, icon.width - 1.0);
+      const double sy = std::clamp(pixelated ? std::floor(fit_y) : fit_y, 0.0, icon.height - 1.0);
       const auto x0 = static_cast<std::uint32_t>(sx), y0 = static_cast<std::uint32_t>(sy);
       const std::uint32_t x1 = std::min(x0 + 1, icon.width - 1), y1 = std::min(y0 + 1, icon.height - 1);
       const double fx = sx - x0, fy = sy - y0;
@@ -183,7 +187,7 @@ void Shadow(ArtworkImage& target, const Layer& layer, std::uint32_t blur, long d
 
 // The icon over the dark ground, covering width x height, averaged into a few cells, blurred among them
 // and smoothed back up: a heavy blur for little work. Darkened, and more so towards a tall image's bottom.
-ArtworkImage Backdrop(const ArtworkImage& icon, std::uint32_t width, std::uint32_t height) {
+ArtworkImage Backdrop(const ArtworkImage& icon, std::uint32_t width, std::uint32_t height, double base_brightness) {
   const double scale = std::max(static_cast<double>(width) / icon.width, static_cast<double>(height) / icon.height);
   const double window_w = width / scale, window_h = height / scale;
   const double origin_x = (icon.width - window_w) / 2, origin_y = (icon.height - window_h) / 2;
@@ -229,7 +233,7 @@ ArtworkImage Backdrop(const ArtworkImage& icon, std::uint32_t width, std::uint32
     const auto y0 = static_cast<std::uint32_t>(gy);
     const std::uint32_t y1 = std::min(y0 + 1, cells_y - 1);
     const double ty = gy - y0, fy = ty * ty * (3 - 2 * ty);
-    double brightness = kBackdropBrightness;
+    double brightness = base_brightness;
     const double fade_top = square * kTitleAreaStart;
     if (height > square && y >= fade_top)
       brightness *= 1.0 - (1.0 - kTitleAreaBrightness) * (y + 1.0 - fade_top) / (height - fade_top);
@@ -254,6 +258,12 @@ ArtworkImage Backdrop(const ArtworkImage& icon, std::uint32_t width, std::uint32
 
 bool Small(const ArtworkImage& icon) { return std::max(icon.width, icon.height) < kSmallProgramIconSide; }
 
+// A centred icon on its backdrop, with a shadow.
+void PlaceCentred(ArtworkImage& art, const Layer& layer, std::uint32_t square) {
+  Shadow(art, layer, static_cast<std::uint32_t>(std::lround(square * 0.04)), std::lround(square * 0.02), 0.6);
+  Composite(art, layer);
+}
+
 }  // namespace
 
 bool ProgramIconIsOpaque(const ArtworkImage& icon) {
@@ -266,7 +276,7 @@ bool ProgramIconIsOpaque(const ArtworkImage& icon) {
 std::optional<ArtworkImage> ProgramIconArt(const ArtworkImage& icon, std::uint32_t width, std::uint32_t height) {
   if (!Valid(icon) || width == 0 || height == 0 || width > kMaxArtworkDimension || height > kMaxArtworkDimension)
     return std::nullopt;
-  ArtworkImage art = Backdrop(icon, width, height);
+  ArtworkImage art = Backdrop(icon, width, height, kBackdropBrightness);
   const std::uint32_t square = std::min(width, height);
   const double centre_x = width / 2.0, centre_y = square / 2.0;
   const bool opaque = ProgramIconIsOpaque(icon);
@@ -275,26 +285,20 @@ std::optional<ArtworkImage> ProgramIconArt(const ArtworkImage& icon, std::uint32
     return art;
   }
   const double side = square * kCentredIconShare;
-  const Layer layer = Scale(icon, centre_x, centre_y, side, opaque ? side * kCentredIconRounding : 0.0);
-  Shadow(art, layer, static_cast<std::uint32_t>(std::lround(square * 0.04)), std::lround(square * 0.02), 0.6);
-  Composite(art, layer);
+  PlaceCentred(art, Scale(icon, centre_x, centre_y, side, opaque ? side * kCentredIconRounding : 0.0), square);
   return art;
 }
 
-std::optional<std::string> MakeProgramTitleIcon(const ArtworkImage& icon, const ArtworkImage* floppy) {
+std::optional<std::string> MakeProgramTitleIcon(const ArtworkImage& icon) {
   if (!Valid(icon)) return std::nullopt;
-  if (Small(icon) && floppy != nullptr && Valid(*floppy) && floppy->width == floppy->height) {
-    // The icon on the floppy's label, scaled with the floppy's own size.
-    ArtworkImage tile = *floppy;
-    const double unit = tile.width / 512.0;
-    const double left = kFloppyLabel[0] * unit, top = kFloppyLabel[1] * unit;
-    const double right = kFloppyLabel[2] * unit, bottom = kFloppyLabel[3] * unit;
-    const double side = std::min(right - left, bottom - top) - 2 * kFloppyLabelPadding * unit;
-    const bool opaque = ProgramIconIsOpaque(icon);
-    const Layer layer = Scale(icon, (left + right) / 2, (top + bottom) / 2, side, opaque ? side / 14 : 0.0);
-    Shadow(tile, layer, static_cast<std::uint32_t>(std::lround(6 * unit)), std::lround(4 * unit), 0.45);
-    Composite(tile, layer);
-    return MakeTitleIcon(tile);
+  if (Small(icon)) {
+    ArtworkImage art = Backdrop(icon, kTitleIconSize, kTitleIconSize, kSmallTitleIconBrightness);
+    const std::uint32_t longer = std::max(icon.width, icon.height);
+    const double side = kSmallTitleIconLimit / longer * longer;
+    const double centre = kTitleIconSize / 2.0;
+    const double radius = ProgramIconIsOpaque(icon) ? side * kCentredIconRounding : 0.0;
+    PlaceCentred(art, Scale(icon, centre, centre, side, radius, true), kTitleIconSize);
+    return MakeTitleIcon(art);
   }
   const auto art = ProgramIconArt(icon, kTitleIconSize, kTitleIconSize);
   return art ? MakeTitleIcon(*art) : std::nullopt;

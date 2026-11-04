@@ -11,7 +11,7 @@ namespace playden::homebrew {
 
 inline constexpr std::uint32_t kTitleIconSize = 512;
 // A program icon smaller than this (on its longer side) is too blurry to fill a tile: an old game's 32 or
-// 48 pixel icon. On the console's Home it goes on the generic floppy's label instead.
+// 48 pixel icon. It is centred instead, and on the console's Home scaled by whole pixels to stay sharp.
 inline constexpr std::uint32_t kSmallProgramIconSide = 128;
 // The size of a library poster made from a program icon: the 2:3 shape of the store's covers.
 inline constexpr std::uint32_t kProgramIconPosterWidth = 320;
@@ -31,7 +31,9 @@ bool ProgramIconIsOpaque(const ArtworkImage& icon);
 std::optional<ArtworkImage> ProgramIconArt(const ArtworkImage& icon, std::uint32_t width, std::uint32_t height);
 
 // The PS5 title icon of a game without a cover, encoded as MakeTitleIcon does: ProgramIconArt, or, for a
-// small icon, the icon on the label of `floppy` (the generic title icon) when it is given.
-std::optional<std::string> MakeProgramTitleIcon(const ArtworkImage& icon, const ArtworkImage* floppy = nullptr);
+// small icon, the same layout with sharper, smaller art on a darker backdrop: the icon scaled by the largest
+// whole number that fits 9/16 of the tile, without smoothing, and corners rounded if it is opaque. Each
+// Home tile is small, and a smooth upscale of an old game's icon looks blurry there.
+std::optional<std::string> MakeProgramTitleIcon(const ArtworkImage& icon);
 
 }  // namespace playden::homebrew

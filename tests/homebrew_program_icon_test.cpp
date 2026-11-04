@@ -279,9 +279,6 @@ int main() {
     CHECK(Pixel(*art, 4, 4)[0] < 200 && Pixel(*art, 150, 150)[0] > Pixel(*art, 4, 4)[0]);
   }
   CHECK(Pixel(*ProgramIconArt(solid(kSmallProgramIconSide - 1, 255), 300, 300), 150, 150)[0] == 255);
-  // A stand-in for the generic floppy: plain grey.
-  ArtworkImage floppy{256, 256, std::vector<std::uint8_t>(256u * 256 * 4, 100)};
-  for (std::size_t i = 3; i < floppy.rgba.size(); i += 4) floppy.rgba[i] = 255;
   // Opaque means at least 99% of the pixels at alpha 224 or more.
   CHECK(ProgramIconIsOpaque(solid(10, 224)) && !ProgramIconIsOpaque(solid(10, 223)));
   ArtworkImage gaps = solid(10, 255);
@@ -304,14 +301,14 @@ int main() {
   for (const auto& [w, h] : {std::pair<std::uint32_t, std::uint32_t>{1, 127}, {127, 1}}) {
     ArtworkImage thin{w, h, {}};
     for (std::uint32_t i = 0; i < w * h; ++i) thin.rgba.insert(thin.rgba.end(), {255, 0, 0, 255});
-    CHECK(ProgramIconArt(thin, 320, 480) && ProgramIconArt(thin, 480, 320) && MakeProgramTitleIcon(thin, &floppy));
+    CHECK(ProgramIconArt(thin, 320, 480) && ProgramIconArt(thin, 480, 320) && MakeProgramTitleIcon(thin));
   }
   ArtworkImage clear{1, 1, {255, 255, 255, 0}};
   art = ProgramIconArt(clear, 30, 30);  // nothing but the dark ground
   CHECK(art && Pixel(*art, 15, 15)[0] < 0x24);
   CHECK(!ProgramIconArt(ArtworkImage{}, 30, 30) && !ProgramIconArt(large, 0, 30) && !ProgramIconArt(large, 30, kMaxArtworkDimension + 1));
 
-  // The PS5 title icon: the art at 512, or a small icon on the floppy's label.
+  // The PS5 title icon: the art at 512, or a small icon scaled by whole pixels over a darker backdrop.
   const auto decode = [](const std::optional<std::string>& png, int x, int y) {
     std::vector<std::uint8_t> rgb;
     int width = 0, height = 0, components = 0;
@@ -322,18 +319,75 @@ int main() {
     stbi_image_free(pixels);
     return rgb;
   };
-  auto at = decode(MakeProgramTitleIcon(large, &floppy), 4, 4);
+  auto at = decode(MakeProgramTitleIcon(large), 4, 4);
   CHECK(at.size() == 3 && at[0] == 255 && at[1] == 0);
-  const ArtworkImage small = solid(16, 255);
-  at = decode(MakeProgramTitleIcon(small, &floppy), 4, 4);
-  CHECK(at.size() == 3 && at[0] == 100 && at[1] == 100);  // the floppy itself
-  at = decode(MakeProgramTitleIcon(small, &floppy), 255, 338);
-  CHECK(at.size() == 3 && at[0] == 255 && at[1] == 0);  // the middle of its label
-  at = decode(MakeProgramTitleIcon(small), 255, 255);  // no floppy: the art
+  // A larger see-through icon is the same art as on the library's square, unchanged.
+  const ArtworkImage see_through = solid(kSmallProgramIconSide, 100);
+  CHECK(MakeProgramTitleIcon(see_through) == MakeTitleIcon(*ProgramIconArt(see_through, kTitleIconSize, kTitleIconSize)));
+  CHECK(MakeProgramTitleIcon(large) == MakeTitleIcon(*ProgramIconArt(large, kTitleIconSize, kTitleIconSize)));
+  // The backdrop of a small icon is at 45%, darker than the library's.
+  at = decode(MakeProgramTitleIcon(solid(16, 255)), 4, 4);
+  CHECK(at.size() == 3 && at[0] == 115 && at[1] == 0);
+  // The largest whole-number scale within 288 pixels, centred: the row through the middle crosses its edges.
+  const auto spans = [&](std::uint32_t side, int first, int last) {
+    const auto icon = MakeProgramTitleIcon(solid(side, 255));
+    const auto red = [&](int x) { const auto rgb = decode(icon, x, 256); return rgb.size() == 3 && rgb[0] == 255; };
+    return red(first) && red(last) && !red(first - 1) && !red(last + 1);
+  };
+  CHECK(spans(16, 112, 399));   // 18x
+  CHECK(spans(32, 112, 399));   // 9x
+  CHECK(spans(48, 112, 399));   // 6x
+  CHECK(spans(64, 128, 383));   // 4x
+  CHECK(spans(97, 159, 352));   // 2x
+  CHECK(spans(127, 129, 382));  // 2x
+  // A wide icon scales by its longer side, keeping its shape.
+  ArtworkImage banner{32, 16, {}};
+  for (std::uint32_t i = 0; i < 32u * 16; ++i) banner.rgba.insert(banner.rgba.end(), {255, 0, 0, 255});
+  at = decode(MakeProgramTitleIcon(banner), 256, 256 - 72);
   CHECK(at.size() == 3 && at[0] == 255);
-  at = decode(MakeProgramTitleIcon(small), 4, 4);
-  CHECK(at.size() == 3 && at[0] < 200);
-  CHECK(!MakeProgramTitleIcon(ArtworkImage{}, &floppy));
+  at = decode(MakeProgramTitleIcon(banner), 256, 256 - 73);
+  CHECK(at.size() == 3 && at[0] < 255);
+  // Each icon pixel stays sharp: a hard edge between two colours, with no blend across it.
+  ArtworkImage halves{32, 32, {}};
+  for (std::uint32_t y = 0; y < 32; ++y)
+    for (std::uint32_t x = 0; x < 32; ++x)
+      halves.rgba.insert(halves.rgba.end(), {static_cast<std::uint8_t>(x < 16 ? 255 : 0), 0, static_cast<std::uint8_t>(x < 16 ? 0 : 255), 255});
+  const auto sharp = MakeProgramTitleIcon(halves);
+  at = decode(sharp, 255, 256);
+  CHECK(at.size() == 3 && at[0] == 255 && at[2] == 0);
+  at = decode(sharp, 256, 256);
+  CHECK(at.size() == 3 && at[0] == 0 && at[2] == 255);
+  // An opaque small icon has rounded corners.
+  at = decode(MakeProgramTitleIcon(solid(32, 255)), 112, 112);
+  CHECK(at.size() == 3 && at[0] < 255);
+  at = decode(MakeProgramTitleIcon(solid(32, 255)), 136, 136);
+  CHECK(at.size() == 3 && at[0] == 255);
+  // A see-through one keeps its own shape: its right half is solid up to the corner, its left half clear.
+  ArtworkImage half_clear{32, 32, {}};
+  for (std::uint32_t y = 0; y < 32; ++y)
+    for (std::uint32_t x = 0; x < 32; ++x)
+      half_clear.rgba.insert(half_clear.rgba.end(), {255, 0, 0, static_cast<std::uint8_t>(x < 16 ? 0 : 255)});
+  const auto cutout = MakeProgramTitleIcon(half_clear);
+  at = decode(cutout, 399, 112);
+  CHECK(at.size() == 3 && at[0] == 255);
+  at = decode(cutout, 256, 256);
+  CHECK(at.size() == 3 && at[0] == 255);
+  at = decode(cutout, 255, 256);
+  CHECK(at.size() == 3 && at[0] < 255);
+  // Thin and single-pixel icons scale too, centred.
+  CHECK(spans(1, 112, 399));  // 288x
+  const ArtworkImage tall{1, 127, std::vector<std::uint8_t>(solid(1, 255).rgba.size() * 127, 255)};
+  const ArtworkImage flat{127, 1, tall.rgba};
+  const auto red_at = [&](const ArtworkImage& icon, int x, int y) {
+    const auto rgb = decode(MakeProgramTitleIcon(icon), x, y);
+    return rgb.size() == 3 && rgb[0] == 255;
+  };
+  CHECK(red_at(tall, 255, 256) && red_at(tall, 256, 256) && !red_at(tall, 254, 256) && !red_at(tall, 257, 256));
+  CHECK(red_at(flat, 256, 255) && red_at(flat, 256, 256) && !red_at(flat, 256, 254) && !red_at(flat, 256, 257));
+  // A clear single pixel leaves only the backdrop of the dark ground.
+  at = decode(MakeProgramTitleIcon(ArtworkImage{1, 1, {255, 255, 255, 0}}), 256, 256);
+  CHECK(at.size() == 3 && at[0] < 0x24);
+  CHECK(!MakeProgramTitleIcon(ArtworkImage{}));
 
   fs::remove_all(root);
   std::puts("program icon tests passed");
