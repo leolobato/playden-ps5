@@ -105,6 +105,8 @@ struct AppInfo {
   std::vector<std::uint32_t> dlc_app_ids;  // extended/listofdlc, which Steam cuts at 64 entries
   // A DLC's game: extended/dlcforappid, else a DLC's common/parent. 0 for anything else.
   std::uint32_t dlc_for_app_id = 0;
+  // A demo's game: common/parent when the type is demo. 0 for anything else.
+  std::uint32_t demo_of_app_id = 0;
   bool free_app = false;  // extended/isfreeapp: anyone who owns the game can claim this DLC for free
   std::vector<AppLaunch> launches;  // sorted by id
   std::string controller_support;
@@ -114,6 +116,11 @@ struct AppInfo {
 
 // Parses a PICS app buffer (text VDF with optional trailing NULs) whose root is "appinfo".
 std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffer);
+
+// A demo can take its content from its game: its appinfo lists the depot with depotfromapp and no manifest on any branch, and the
+// game's appinfo holds the manifest. Trims the game's appinfo to those depots, for SelectDepots' dlc_apps, which
+// installs the listing that has a manifest. The rest of the game stays out, even for an account that owns it.
+void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game);
 
 // Steam `oslist`: empty means every platform; otherwise a comma list that must name windows.
 bool OsListMatchesWindows(std::string_view os_list);

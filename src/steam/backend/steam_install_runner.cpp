@@ -331,6 +331,7 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
     std::vector<std::uint32_t> dlc_ids;
     for (const auto dlc : app->dlc_app_ids)
       if (dlc != id && std::find(dlc_ids.begin(), dlc_ids.end(), dlc) == dlc_ids.end()) dlc_ids.push_back(dlc);
+    if (app->demo_of_app_id != 0) dlc_ids.push_back(app->demo_of_app_id);
     for (std::size_t start = 0; start < dlc_ids.size(); start += kMaxAppInfoBatch) {
       const std::vector<std::uint32_t> batch(
           dlc_ids.begin() + static_cast<std::ptrdiff_t>(start),
@@ -348,8 +349,14 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
       }
       for (const auto dlc : batch) {
         const auto found = dlc_info.buffers.find(dlc);
-        if (found == dlc_info.buffers.end()) continue;
-        if (auto parsed = ParseAppInfo(dlc, found->second)) dlc_apps.push_back(std::move(*parsed));
+        auto parsed = found == dlc_info.buffers.end() ? std::nullopt : ParseAppInfo(dlc, found->second);
+        if (!parsed) {
+          // Without its game's appinfo a demo's update would select only its own depots and delete the borrowed ones.
+          if (dlc == app->demo_of_app_id) unfetched.insert(dlc);
+          continue;
+        }
+        if (dlc == app->demo_of_app_id) KeepDepotsDemoBorrows(*app, &*parsed);
+        dlc_apps.push_back(std::move(*parsed));
       }
     }
   }

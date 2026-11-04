@@ -382,6 +382,8 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
     if ((!game || !*game) && LowerString(app.type) == "dlc") game = ChildU32(common, "parent");
     if (game && *game != 0 && *game != app_id) app.dlc_for_app_id = *game;
   }
+  if (LowerString(app.type) == "demo")
+    if (const auto game = ChildU32(common, "parent"); game && *game != 0 && *game != app_id) app.demo_of_app_id = *game;
   app.cloud = ParseCloudSaves(root->Find("ufs"));
 
   if (config != nullptr) {
@@ -469,6 +471,22 @@ bool InLanguage(const DepotInfo& depot, const std::string& language) {
 }
 
 }  // namespace
+
+void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game) {
+  std::vector<DepotInfo> kept;
+  for (DepotInfo& depot : game->depots) {
+    const bool borrowed = std::any_of(demo.depots.begin(), demo.depots.end(), [&](const DepotInfo& listed) {
+      return listed.id == depot.id && listed.depot_from_app == game->app_id && !listed.manifest_gid &&
+             listed.branches.empty();
+    });
+    if (!borrowed) continue;
+    // Still borrowed: an account that doesn't get its key installs the demo without it.
+    depot.depot_from_app = game->app_id;
+    kept.push_back(std::move(depot));
+  }
+  game->depots = std::move(kept);
+  game->dlc_app_ids.clear();
+}
 
 bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, const std::set<std::uint32_t>& owned_apps,
                   const std::optional<std::set<std::uint32_t>>& owned_depots, const DepotSelection& selection,

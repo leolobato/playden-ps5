@@ -200,6 +200,7 @@ std::vector<AppInfo> CmAppDetailsSource::FetchDlcApps(CmClient& client, const St
   std::vector<std::uint32_t> dlc_ids;
   for (const auto dlc : app->dlc_app_ids)
     if (dlc != id && std::find(dlc_ids.begin(), dlc_ids.end(), dlc) == dlc_ids.end()) dlc_ids.push_back(dlc);
+  if (app->demo_of_app_id != 0) dlc_ids.push_back(app->demo_of_app_id);
   for (std::size_t start = 0; start < dlc_ids.size() && !cancel.load(); start += kMaxAppInfoBatch) {
     const std::vector<std::uint32_t> batch(
         dlc_ids.begin() + static_cast<std::ptrdiff_t>(start),
@@ -208,7 +209,10 @@ std::vector<AppInfo> CmAppDetailsSource::FetchDlcApps(CmClient& client, const St
     if (!dlc_info.ok()) continue;
     for (const auto dlc : batch)
       if (const auto found = dlc_info.buffers.find(dlc); found != dlc_info.buffers.end())
-        if (auto parsed = ParseAppInfo(dlc, found->second)) dlc_apps.push_back(std::move(*parsed));
+        if (auto parsed = ParseAppInfo(dlc, found->second)) {
+          if (dlc == app->demo_of_app_id) KeepDepotsDemoBorrows(*app, &*parsed);
+          dlc_apps.push_back(std::move(*parsed));
+        }
   }
   return dlc_apps;
 }

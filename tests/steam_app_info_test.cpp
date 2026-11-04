@@ -1062,6 +1062,72 @@ void TestOsList() {
   CHECK(!OsListMatchesWindows("windows10"));
 }
 
+// The Evil Within 2 Demo takes its game files from the full game: two depots with depotfromapp and no manifest,
+// whose manifests only the game's appinfo holds. The rest of the game stays out, even for an account that owns it.
+void TestDemoInstallsTheDepotsItBorrows() {
+  const auto demo = ParseAppInfo(7000, R"("appinfo"
+{
+  "appid" "7000"
+  "common" { "name" "Game Demo" "type" "Demo" "parent" "6000" }
+  "config" { "launch" { "0" { "executable" "game.exe" "config" { "oslist" "windows" } } } }
+  "depots"
+  {
+    "6001" { "depotfromapp" "6000" "sharedinstall" "2" }
+    "7001" { "manifests" { "public" { "gid" "71" "size" "10" "download" "5" } } }
+  }
+})");
+  auto game = ParseAppInfo(6000, R"("appinfo"
+{
+  "appid" "6000"
+  "common" { "name" "Game" "type" "Game" }
+  "extended" { "listofdlc" "6500" }
+  "depots"
+  {
+    "6001" { "manifests" { "public" { "gid" "61" "size" "20" "download" "9" } } }
+    "6002" { "manifests" { "public" { "gid" "62" "size" "9000" "download" "8000" } } }
+  }
+})");
+  CHECK(demo && game);
+  CHECK(demo->demo_of_app_id == 6000 && game->demo_of_app_id == 0);
+  SelectionResult result;
+  // Without the game's appinfo the borrowed depot has no manifest, the case that left the demo without its files.
+  CHECK(SelectDepots(*demo, {}, {7000}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{7001}));
+  CHECK(RejectedAs(result, 6001) == "branch");
+  KeepDepotsDemoBorrows(*demo, &*game);
+  CHECK(game->depots.size() == 1 && game->depots[0].id == 6001 && game->dlc_app_ids.empty());
+  // An account with only the demo: the depot comes under the game's app and stays optional.
+  const std::vector<AppInfo> listings{*game};
+  CHECK(SelectDepots(*demo, listings, {7000}, std::set<std::uint32_t>{7001}, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{6001, 7001}));
+  CHECK(result.depots[0].manifest_gid == 61u && result.depots[0].source_app == 6000);
+  CHECK(result.depots[0].owner_app == 7000 && result.depots[0].depot_from_app == 6000u);
+  CHECK(OfferedDlc(*demo, listings, {7000}, std::set<std::uint32_t>{7001}, DepotSelection{}, {}).empty());
+  // An account that also owns the game: still only what the demo lists.
+  CHECK(SelectDepots(*demo, listings, {7000, 6000}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{6001, 7001}));
+  // A depot the demo has a manifest for on some branch isn't taken from the game: two manifests would conflict.
+  AppInfo own_beta = *demo;
+  own_beta.depots[0].branches["beta"] = BranchManifest{81, 5, 5, false};
+  auto whole_game = ParseAppInfo(6000, R"("appinfo"
+{
+  "appid" "6000"
+  "common" { "name" "Game" "type" "Game" }
+  "depots" { "6001" { "manifests" { "public" { "gid" "61" "size" "20" "download" "9" } } } }
+})");
+  CHECK(whole_game);
+  KeepDepotsDemoBorrows(own_beta, &*whole_game);
+  CHECK(whole_game->depots.empty());
+  // Another app that borrows a depot, here Half-Life 2's episode depot, is not a demo: nothing changes for it.
+  const auto other = ParseAppInfo(220, R"("appinfo"
+{
+  "appid" "220"
+  "common" { "name" "Half-Life 2" "type" "Game" "parent" "380" }
+  "depots" { "389" { "depotfromapp" "380" "sharedinstall" "2" } }
+})");
+  CHECK(other && other->demo_of_app_id == 0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1071,6 +1137,7 @@ int main(int argc, char** argv) {
   }
   g_fixtures = argv[1];
   TestParse();
+  TestDemoInstallsTheDepotsItBorrows();
   TestParseDefaultsAndFailures();
   TestDlcForApp();
   TestSelect();
