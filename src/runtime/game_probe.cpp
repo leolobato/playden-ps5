@@ -678,10 +678,11 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Chromium starts helper processes, which a PS5 title can't, so everything runs in the game's
     // process. There Chromium reserves 64 GB of address space, which the kit's high area may now hold.
     // ANGLE draws WebGL with Direct3D 11. 64-bit NW.js plays (Look Outside, NW.js 0.94), and so does a recent 32-bit
-    // one (Alabaster Dawn's demo, NW.js 0.86). Older 32-bit builds still stop early (OMORI, from 2017; CrossCode's demo,
-    // node-webkit 0.8), but they start like the others. V8 runs out of heap at about 124 MiB without the larger limit in a
-    // 32-bit game. A game loading hundreds of files at once needs the kit's direct-memory sections (Wine 0976);
-    // --enable-low-end-device-mode in Extra arguments also avoids those failed loads, if a game has to turn them off.
+    // one (Alabaster Dawn's demo, NW.js 0.86). Older 32-bit builds don't play yet (OMORI, from 2017, opens a black
+    // window; CrossCode's demo, node-webkit 0.8, crashes at start), but they start like the others. V8 runs out of heap
+    // at about 124 MiB without the larger limit in a 32-bit game. A game loading hundreds of files at once needs the
+    // kit's direct-memory sections (Wine 0976); --enable-low-end-device-mode in Extra arguments also avoids those failed
+    // loads, if a game has to turn them off.
     out.graphics = "dxvk";
     out.arguments = "--single-process --in-process-gpu --no-sandbox --disable-gpu-sandbox --disable-breakpad "
                     "--js-flags=--max-old-space-size=1024";

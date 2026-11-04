@@ -423,7 +423,7 @@ int main() {
     CHECK(KitCapabilitiesFromManifest({"dxvk", kKitDriverThreads}, false).driver_threads);
     CHECK(!KitCapabilitiesFromManifest({"dxvk"}, false).driver_threads);
   }
-  {  // 32-bit NW.js starts like 64-bit, on a kit with driver threads and with no "Try anyway". Older builds still stop.
+  {  // 32-bit NW.js starts like 64-bit, on a kit with driver threads and with no "Try anyway". Older builds don't play yet.
     const auto root = fresh();
     WritePe(root / "OMORI.exe", {false, {"nw.dll", "KERNEL32.dll"}});
     WritePe(root / "nw.dll", {false, {"d3d11.dll", "dxgi.dll", "KERNEL32.dll"}});
