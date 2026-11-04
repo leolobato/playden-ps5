@@ -974,7 +974,11 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
   const auto& record = files.record;
   const auto install_dir = rt::ProsperoWindowsPath(record.install_path);
   if (!install_dir) return {};
-  const auto script = rt::ApplyInstallScripts(files.root.string(), *install_dir, files.prefix, config_.unix_time());
+  // The game's language comes from its download; a game with no facts (imported) gets the English values.
+  rt::SteamworksIdentity identity;
+  rt::ReadSteamworksFacts(files.root.string(), &identity);
+  const auto script = rt::ApplyInstallScripts(files.root.string(), *install_dir, identity.language, files.prefix,
+                                              config_.unix_time());
   if (!script.found.empty()) {
     std::string names;
     for (const auto& name : script.found) names += (names.empty() ? "" : ",") + name;

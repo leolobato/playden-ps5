@@ -110,8 +110,8 @@ bool ReadScript(const std::filesystem::path& path, std::string* text) {
 
 }  // namespace
 
-bool ParseInstallScript(std::string_view text, const std::string& install_dir, InstallScriptValues* values,
-                        std::string* reason) {
+bool ParseInstallScript(std::string_view text, const std::string& install_dir, const std::string& language,
+                        InstallScriptValues* values, std::string* reason) {
   const auto fail = [&](const char* why) {
     if (reason) *reason = why;
     return false;
@@ -141,23 +141,35 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, I
     for (const auto& [type, entries] : key.children) {
       const auto kind = Lower(type);
       if (!entries.is_dict || (kind != "string" && kind != "dword")) continue;
-      for (const auto& [name, data] : entries.children) {
-        if (data.is_dict || name.empty() || !Ascii(name)) continue;
+      const auto add = [&](const std::string& name, const std::string& data) {
+        if (name.empty() || !Ascii(name)) return;
         std::string value;
-        if (!Substitute(data.value, install_dir, &value) || !Ascii(value)) continue;
+        if (!Substitute(data, install_dir, &value) || !Ascii(value)) return;
         if (kind == "dword") {
           char* end = nullptr;
           errno = 0;
           const auto number = std::strtoull(value.c_str(), &end, 0);
-          if (value.empty() || errno || *end || number > 0xffffffffull) continue;
+          if (value.empty() || errno || *end || number > 0xffffffffull) return;
           char text_value[16];
           std::snprintf(text_value, sizeof(text_value), "dword:%08llx", number);
           value = text_value;
         } else {
           value = RegistryString(value);
         }
-        for (const auto& name_key : keys) target.push_back({name_key, name, value});
+        const bool unnamed = Lower(name) == "(default)";
+        for (const auto& name_key : keys) target.push_back({name_key, unnamed ? std::string() : name, value, unnamed});
+      };
+      // A subkey holds the values for one language ("dword" { "english" { "Language" "1" } }).
+      const steam::VdfNode* localized = nullptr;
+      for (const auto* wanted : {language.c_str(), "english"}) {
+        for (const auto& [name, data] : entries.children)
+          if (!localized && data.is_dict && Lower(name) == Lower(wanted)) localized = &data;
       }
+      for (const auto& [name, data] : entries.children)
+        if (!data.is_dict) add(name, data.value);
+      if (localized)
+        for (const auto& [name, data] : localized->children)
+          if (!data.is_dict) add(name, data.value);
     }
   }
   return true;
@@ -200,7 +212,8 @@ bool ReadInstallScript(const std::string& path, std::string* text) {
 }
 
 InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std::string& install_dir,
-                                        const std::string& prefix_dir, std::int64_t unix_time) {
+                                        const std::string& language, const std::string& prefix_dir,
+                                        std::int64_t unix_time) {
   InstallScriptResult result;
   std::vector<std::filesystem::path> scripts;
   std::error_code error;
@@ -219,7 +232,7 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
     result.found.push_back(name);
     std::string text, reason;
     InstallScriptValues parsed;
-    if (!ReadScript(path, &text) || !ParseInstallScript(text, install_dir, &parsed, &reason)) {
+    if (!ReadScript(path, &text) || !ParseInstallScript(text, install_dir, language, &parsed, &reason)) {
       result.skipped.push_back(name);
       continue;
     }

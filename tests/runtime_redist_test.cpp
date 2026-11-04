@@ -330,8 +330,29 @@ void TestScripts() {
   InstallScriptValues values;
   CHECK(ParseInstallScript("\"InstallScript\" { \"Registry\" { \"HKEY_LOCAL_MACHINE\\\\Software\\\\Studio\" { \"string\" { "
                            "\"Path\" \"%INSTALLDIR%\" } } } } \"kvsignatures\" { \"InstallScript\" \"00\" }",
-                           "Z:\\games\\1", &values, &reason));
+                           "Z:\\games\\1", "", &values, &reason));
   CHECK(values.machine.size() == 2);
+  // Values under a language subkey apply for that language, then for English; (Default) is the unnamed value.
+  const std::string localized =
+      "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\Studio\" { "
+      "\"string\" { \"(Default)\" \"main\" \"Plain\" \"p\" \"english\" { \"Name\" \"en\" } \"Russian\" { \"Name\" \"ru\" } } "
+      "\"dword\" { \"english\" { \"Language\" \"1\" } \"french\" { \"Language\" \"2\" } } } } }";
+  const auto parsed_for = [&](const std::string& language) {
+    InstallScriptValues parsed;
+    CHECK(ParseInstallScript(localized, "Z:\\games\\1", language, &parsed, &reason));
+    return parsed.user;
+  };
+  auto english = parsed_for("");
+  CHECK(english.size() == 4);
+  CHECK(FindValue(english, "Software\\Studio", "Name")->data == "\"en\"");
+  CHECK(FindValue(english, "Software\\Studio", "Language")->data == "dword:00000001");
+  CHECK(FindValue(english, "Software\\Studio", "Plain")->data == "\"p\"");
+  const auto unnamed = std::find_if(english.begin(), english.end(), [](const RegistryValue& value) { return value.default_value; });
+  CHECK(unnamed != english.end() && unnamed->name.empty() && unnamed->data == "\"main\"");
+  auto russian = parsed_for("russian");
+  CHECK(FindValue(russian, "Software\\Studio", "Name")->data == "\"ru\"");
+  CHECK(FindValue(russian, "Software\\Studio", "Language")->data == "dword:00000001");  // no Russian value: English
+  CHECK(FindValue(parsed_for("french"), "Software\\Studio", "Language")->data == "dword:00000002");
   RedistEntry rooted{"X", "msiexec", "/i Z:\\data\\games\\696180\\\\tmp\\x.msi", ""};
   CHECK(ClassifyRedist(rooted, "Z:\\data\\games\\696180", &package) == RedistAction::kNotRun);
   RedistEntry dotted{"X", "msiexec", "/i Z:\\data\\games\\696180\\.\\x.msi", ""};

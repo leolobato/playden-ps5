@@ -19,13 +19,15 @@ namespace playden::runtime {
 // game folder's Windows path). HKLM\Software keys go to both registry views, as Steam, a
 // 32-bit program, writes them where 32-bit and 64-bit games find them. Only "string" and
 // "dword" values are taken; a value with another %TOKEN% or non-ASCII text, and keys under
-// other roots, are skipped. Text may be UTF-8 or UTF-16 with a byte order mark.
+// other roots, are skipped. Text may be UTF-8 or UTF-16 with a byte order mark. A language subkey
+// of "string" or "dword" gives its values only for that language: language (Steam's name, like
+// "russian"; empty for none) is used, then "english". A value named (Default) is the key's unnamed one.
 struct InstallScriptValues {
   std::vector<RegistryValue> machine;  // system.reg (HKEY_LOCAL_MACHINE)
   std::vector<RegistryValue> user;     // user.reg (HKEY_CURRENT_USER)
 };
-bool ParseInstallScript(std::string_view text, const std::string& install_dir, InstallScriptValues* values,
-                        std::string* reason);
+bool ParseInstallScript(std::string_view text, const std::string& install_dir, const std::string& language,
+                        InstallScriptValues* values, std::string* reason);
 
 // Applies the Registry sections of the install scripts at the top of game_root (file names
 // starting with "installscript" and ending ".vdf", any case) to the stopped bottle at
@@ -39,7 +41,8 @@ struct InstallScriptResult {
   std::string message;  // on failure
 };
 InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std::string& install_dir,
-                                        const std::string& prefix_dir, std::int64_t unix_time);
+                                        const std::string& language, const std::string& prefix_dir,
+                                        std::int64_t unix_time);
 
 // A redistributable an install script runs on the game's first start ("Run Process" entry).
 struct RedistEntry {
