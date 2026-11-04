@@ -427,7 +427,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   const folderHash = (game, root, path) => `${gameHash(game)}/${root}${path ? "/" + path.split("/").map(encodeURIComponent).join("/") : ""}`;
   const editHash = (game, root, path) => `#/edit/${encodeURIComponent(game)}/${root}/${path.split("/").map(encodeURIComponent).join("/")}`;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const files = { game: null, root: null, path: "", listing: null, selected: new Set(), route: 0, poll: 0, games: null };
+  const files = { game: null, root: null, path: "", listing: null, selected: new Set(), route: 0, poll: 0, games: null, refreshes: 0 };
 
   class Answer extends Error {
     constructor(status, message) {
@@ -641,9 +641,10 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const picker = element("input", { type: "file", multiple: "", hidden: "", "aria-label": "Files to upload" });
     picker.addEventListener("change", () => { addFiles([...picker.files]); picker.value = ""; });
     const newFolder = button("New folder", () => askNewFolder());
+    const refresh = button("Refresh", () => refreshFolder());
     const zip = anchor("Download folder (.zip)", `/api/files/zip?${q({ ...ctx, path })}`);
     const selected = [...files.selected];
-    const bar = element("div", { class: "bar" }, upload, picker, newFolder, listing.exists ? zip : "");
+    const bar = element("div", { class: "bar" }, upload, picker, newFolder, refresh, listing.exists ? zip : "");
     if (listing.read_only) { upload.disabled = true; newFolder.disabled = true; }
     if (selected.length) bar.append(button(`Delete ${selected.length} selected`, () => askDelete(selected), "ghost danger end"));
     if (listing.read_only)
@@ -734,10 +735,16 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const token = files.route;
     const { root, path } = files;
     const game = files.game.id;
+    // An older answer that arrives after a newer one changes nothing.
+    const asked = ++files.refreshes;
     let listing;
     try { listing = await fetchListing(game, root, path); } catch (error) { if (token === files.route) report(error); return; }
+    if (asked !== files.refreshes) return;
     if (token === files.route && onFolder(game, root, path)) {
       files.listing = listing;
+      // A tick on a file that is gone would stop the delete at that name.
+      const listed = new Set(listing.entries.map((entry) => entry.name));
+      files.selected = new Set([...files.selected].filter((name) => listed.has(name)));
       paintFolder();
     }
   };
