@@ -33,6 +33,7 @@ struct PeSpec {
   std::size_t data_at = 0x1400;  // file offset of the section holding the import table
   bool shared_data = false;  // the data section is writable and shared, on 4 KB pages
   std::vector<std::string> delay_imports;  // delay-loaded DLLs (descriptors at RVA 0x2a00)
+  std::string resource;      // the resource directory's bytes, at RVA 0x2c00 (at most 0x400)
 };
 
 void Put32(std::string* bytes, std::size_t at, std::uint32_t value) {
@@ -84,6 +85,11 @@ void WritePe(const fs::path& path, const PeSpec& spec) {
     bytes.replace(spec.data_at + (name_rva - 0x2000), spec.delay_imports[i].size(), spec.delay_imports[i]);
     name_rva += static_cast<std::uint32_t>(spec.delay_imports[i].size() + 1);
   }
+  if (!spec.resource.empty()) {
+    Put32(&bytes, directories + 2 * 8, 0x2c00);
+    Put32(&bytes, directories + 2 * 8 + 4, static_cast<std::uint32_t>(spec.resource.size()));
+    bytes.replace(spec.data_at + 0xc00, spec.resource.size(), spec.resource);
+  }
   std::ofstream(path, std::ios::binary) << bytes;
 }
 
@@ -96,6 +102,26 @@ std::string Wide(const std::string& text) {
 void Write(const fs::path& path, const std::string& bytes) {
   fs::create_directories(path.parent_path());
   std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes;
+}
+
+// A version resource's FileVersion String entry (key, padding, value), and its VS_FIXEDFILEINFO.
+std::string FileVersionString(const std::string& value) {
+  std::string entry(6, '\0');
+  entry += Wide("FileVersion") + std::string(2, '\0');
+  entry.resize((entry.size() + 3) / 4 * 4, '\0');
+  entry += Wide(value) + std::string(2, '\0');
+  Put16(&entry, 0, static_cast<std::uint16_t>(entry.size()));
+  Put16(&entry, 2, static_cast<std::uint16_t>(value.size() + 1));
+  Put16(&entry, 4, 1);
+  return std::string(10, 'x') + entry;  // anywhere in the resources
+}
+std::string FixedFileInfo(std::uint32_t major, std::uint32_t minor) {
+  std::string info(52, '\0');
+  Put32(&info, 0, 0xfeef04bd);
+  Put32(&info, 4, 0x10000);
+  Put32(&info, 8, major);
+  Put32(&info, 12, minor);
+  return std::string(4, 'x') + info;
 }
 
 void Touch(const fs::path& path) {
@@ -379,12 +405,115 @@ int main() {
     CHECK(defaults.graphics == "opengl" && defaults.summary.rfind("sil,", 0) == 0);
     CHECK(DetectedLabel(defaults.summary) == "SIL \xC2\xB7 OpenGL");
   }
-  {  // NW.js (Look Outside, RPG Maker MZ) is refused: Chromium can't start on the console.
+  {  // 64-bit NW.js (Look Outside, RPG Maker MZ) runs Chromium in one process on DXVK.
     const auto root = fresh();
     WritePe(root / "Game.exe", {true, {"nw.dll", "KERNEL32.dll"}});
     WritePe(root / "nw.dll", {true, {"dxgi.dll", "KERNEL32.dll"}});
-    const auto defaults = DefaultsFor(ProbeGame(root.string(), "Game.exe"));
-    CHECK(defaults.refusal.find("NW.js") != std::string::npos && defaults.summary.rfind("nwjs,", 0) == 0);
+    RuntimeAbilities abilities;
+    abilities.driver_threads = true;
+    const auto defaults = DefaultsFor(ProbeGame(root.string(), "Game.exe"), abilities);
+    CHECK(defaults.refusal.empty());
+    CHECK(defaults.summary.rfind("nwjs,", 0) == 0 && defaults.graphics == "dxvk");
+    CHECK(defaults.arguments.find("--single-process") != std::string::npos);
+    CHECK(defaults.arguments.find("--enable-low-end-device-mode") == std::string::npos);
+    CHECK(defaults.arguments.find("--js-flags=--max-old-space-size=1024") != std::string::npos);
+    // On a kit without it the game would hang in Xbox controller mode, so it stays refused.
+    const auto older_kit = DefaultsFor(ProbeGame(root.string(), "Game.exe"));
+    CHECK(older_kit.refusal.find("this runtime kit can't start") != std::string::npos && !older_kit.refusal_soft);
+    CHECK(KitCapabilitiesFromManifest({"dxvk", kKitDriverThreads}, false).driver_threads);
+    CHECK(!KitCapabilitiesFromManifest({"dxvk"}, false).driver_threads);
+  }
+  {  // 32-bit NW.js starts like 64-bit, on a kit with driver threads and with no "Try anyway". Older builds still stop.
+    const auto root = fresh();
+    WritePe(root / "OMORI.exe", {false, {"nw.dll", "KERNEL32.dll"}});
+    WritePe(root / "nw.dll", {false, {"d3d11.dll", "dxgi.dll", "KERNEL32.dll"}});
+    RuntimeAbilities abilities;
+    abilities.driver_threads = true;
+    const auto defaults = DefaultsFor(ProbeGame(root.string(), "OMORI.exe"), abilities);
+    CHECK(defaults.refusal.empty() && !defaults.refusal_soft);
+    CHECK(defaults.graphics == "dxvk" && defaults.arguments.find("--single-process") != std::string::npos);
+    const auto older_kit = DefaultsFor(ProbeGame(root.string(), "OMORI.exe"));
+    CHECK(older_kit.refusal.find("this runtime kit can't start") != std::string::npos && !older_kit.refusal_soft);
+  }
+  {  // A saved recipe set up with older defaults for its engine takes the current ones, and keeps what it is.
+    const auto root = fresh();
+    WritePe(root / "Game.exe", {true, {"nw.dll", "KERNEL32.dll"}});
+    WritePe(root / "nw.dll", {true, {"dxgi.dll", "KERNEL32.dll"}});
+    KitCapabilities kit;
+    kit.driver_threads = true;
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(3373660, "Look Outside", {{"", "", "Game.exe", "", ""}}, root.string(), &recipe, &reason, kit));
+    // Changed these arguments? Raise DefaultsRevision("nwjs") too, so games already set up take them.
+    CHECK(DefaultsRevision("nwjs") == 2);
+    CHECK(recipe.arguments == "--single-process --in-process-gpu --no-sandbox --disable-gpu-sandbox --disable-breakpad "
+                              "--js-flags=--max-old-space-size=1024");
+    CHECK(recipe.defaults_revision == 2 && !RefreshRecipeDefaults(root.string(), kit, &recipe));
+    GameRecipe saved;
+    CHECK(ParseGameRecipe(SerializeGameRecipe(recipe), &saved, &reason) && saved.defaults_revision == 2);
+
+    // As a recipe from before the revisions reads: no number, the old arguments.
+    auto old = recipe;
+    old.defaults_revision = 0;
+    old.arguments = "--single-process";
+    CHECK(ParseGameRecipe(SerializeGameRecipe(old), &saved, &reason) && saved.defaults_revision == 0);
+    CHECK(SerializeGameRecipe(old).find("defaults_revision") == std::string::npos);
+    auto missing = old;
+    CHECK(!RefreshRecipeDefaults((root / "not-plugged-in").string(), kit, &missing) && missing.arguments == old.arguments);
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &old));
+    CHECK(old.arguments == recipe.arguments && old.defaults_revision == 2);
+    CHECK(old.id == recipe.id && old.version == recipe.version && old.launch_entries.size() == recipe.launch_entries.size());
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &old));
+
+    // A recipe Playden didn't generate, and an engine whose defaults never changed, stay as they are.
+    auto shipped = recipe;
+    shipped.id = "steam-3373660-shipped-v1";
+    shipped.defaults_revision = 0;
+    shipped.arguments = "--mine";
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &shipped) && shipped.arguments == "--mine");
+    auto unity = recipe;
+    unity.detected = "unity,d3d11 graphics=dxvk";
+    unity.defaults_revision = 0;
+    unity.arguments = "-force-d3d11";
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &unity) && unity.arguments == "-force-d3d11");
+    CHECK(DefaultsRevision("unity,d3d11 graphics=dxvk") == 0 && DefaultsRevision("nwjs,nwjs-0.86,d3d11") == 2);
+  }
+  {  // node-webkit before NW.js 0.13 (CrossCode's demo): Chromium in the program, nw.pak beside it, no nw.dll.
+    const auto root = fresh();
+    WritePe(root / "crosscode-beta.exe", {false, {"KERNEL32.dll"}});
+    Touch(root / "nw.pak");
+    Touch(root / "libGLESv2.dll");
+    const auto probe = ProbeGame(root.string(), "crosscode-beta.exe");
+    CHECK(probe.engine == "nwjs" && probe.engine_version.empty() && !probe.x64);
+    RuntimeAbilities abilities;
+    abilities.driver_threads = true;
+    CHECK(DefaultsFor(probe, abilities).refusal.empty());
+  }
+  {  // NW.js's version comes from nw.dll's FileVersion string (Look Outside: 0.94.0) and shows on the settings sheet.
+    const auto root = fresh();
+    WritePe(root / "Game.exe", {true, {"nw.dll", "KERNEL32.dll"}});
+    PeSpec nw{true, {"dxgi.dll", "KERNEL32.dll"}};
+    nw.resource = FixedFileInfo(0, 0) + FileVersionString("0.94.0");
+    WritePe(root / "nw.dll", nw);
+    const auto probe = ProbeGame(root.string(), "Game.exe");
+    CHECK(probe.engine == "nwjs" && probe.engine_version == "0.94.0");
+    const auto defaults = DefaultsFor(probe);
+    CHECK(defaults.summary == "nwjs,nwjs-0.94.0,dxgi graphics=dxvk");
+    CHECK(DetectedLabel(defaults.summary) == "NW.js 0.94.0 \xC2\xB7 Direct3D 11");
+  }
+  {  // Without a FileVersion string, the fixed file version; a build with neither (OMORI's) has no version.
+    const auto root = fresh();
+    WritePe(root / "Game.exe", {false, {"nw.dll", "KERNEL32.dll"}});
+    PeSpec nw{false, {"dxgi.dll", "KERNEL32.dll"}};
+    nw.resource = FixedFileInfo(29, 4u << 16);
+    WritePe(root / "nw.dll", nw);
+    CHECK(ProbeGame(root.string(), "Game.exe").engine_version == "0.29.4");
+    nw.resource = FixedFileInfo(0, 0) + FileVersionString("");
+    WritePe(root / "nw.dll", nw);
+    const auto probe = ProbeGame(root.string(), "Game.exe");
+    CHECK(probe.engine == "nwjs" && probe.engine_version.empty());
+    CHECK(DefaultsFor(probe).summary == "nwjs,dxgi graphics=dxvk");
+    CHECK(DetectedLabel(DefaultsFor(probe).summary) == "NW.js \xC2\xB7 Direct3D 11");
   }
   {  // An Unreal root program is replaced by its Shipping program, which starts in its own folder.
     const auto root = fresh();

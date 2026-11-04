@@ -551,6 +551,9 @@ class RuntimeHost {
   const runtime::GameRecipe* RecipeForPrepare(Composition& composition, const RuntimePrepareRequest& request,
                                               std::string* reason);
   void LoadGeneratedRecipes(Composition& composition);
+  // A generated recipe set up with older defaults for its engine takes the current ones and its title is published
+  // again. Nothing of the game may be running. A refusal leaves the game as it was, for the next try.
+  void RefreshGeneratedRecipeDefaults(Composition& composition, const runtime::RuntimeInstall& record);
   void PublishRecipes(const Composition& composition);
   runtime::PackageActionResult DrivePublication(Composition& composition, const runtime::RuntimeInstall& record);
   // Moves *next (an install record) to the program and folder the saved settings choose, after checking

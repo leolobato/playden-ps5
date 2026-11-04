@@ -61,6 +61,7 @@ struct KitCapabilities {
   bool opengl_zink = false;        // OpenGL games draw through Mesa's Zink, not the PS5 OpenGL SDK
   bool wine_mono = false;          // .NET programs start on the kit's Wine Mono
   bool vkd3d_proton = false;       // the kit's runtime carries vkd3d-proton's Direct3D 12 DLLs
+  bool driver_threads = false;     // threads started in a hosted driver skip the game's thread attach (NW.js)
   // [display] refresh on every graphics path and [display] frame_rate (paced by the display). Counts only for a title
   // that runs this kit's runtime: an older runtime refuses a profile with frame_rate (KitForTitleRuntime).
   bool display_120hz = false;
@@ -181,6 +182,7 @@ struct GameRecipe {
   std::map<std::string, std::string> defaults;  // setting id -> value
   std::set<std::string> locked;                 // setting ids the player cannot change
   std::string detected;  // generated recipes: what the game's files showed (GameDefaults::summary)
+  int defaults_revision = 0;  // generated recipes: the DefaultsRevision of the defaults above
   // Values the bottle's user.reg gets when the game's files are prepared, as a Steam install
   // script's would be (docs/community-recipes.md): strings under HKEY_CURRENT_USER.
   std::vector<RegistryValue> registry;
@@ -348,6 +350,11 @@ std::string SerializeGameRecipe(const GameRecipe& recipe);
 std::string GeneratedRecipeId(std::uint32_t app_id);
 // "steam-<app id>-auto" or "local-<uuid>-auto".
 bool IsGeneratedRecipeId(std::string_view id);
+// A generated recipe set up with older defaults for its engine (DefaultsRevision) takes the current ones from its
+// program's files: arguments, graphics and what those imply. Its id, version and programs stay, and what the player
+// changed is kept apart from the recipe, so it still wins. False when nothing changed, also when the program can't be
+// read now (a drive not plugged in): the next Play tries again.
+bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
 // A community recipe (community-<app id>, docs/community-recipes.md). Like a generated one, it
 // is not a shipped recipe, so it does not force the game's own Steam library.
 bool IsCommunityRecipeId(std::string_view id);
@@ -362,8 +369,8 @@ RecipeChoices RecipeChoicesFrom(const GameSettingsRecord& record);
 // Builds that recipe from Steam's launch options (default first). Entries whose executable is
 // not a game-relative .exe are skipped. The architecture comes from the first usable entry's
 // PE header under install_root; entries built for the other architecture are skipped, and so
-// are programs the console cannot run (SteamStub, NW.js, Direct3D 12 only, and .NET or a
-// shared section unless the player chose "Try anyway"). An Unreal root program from Steam is
+// are programs the console cannot run (SteamStub, Direct3D 12 only, NW.js on an older kit, and
+// .NET or a shared section unless the player chose "Try anyway"). An Unreal root program from Steam is
 // replaced by its *-Shipping.exe. The player's program comes first and Steam's entries stay
 // as suggestions. On failure, reason is a short sentence for the player and refusal_soft
 // says whether "Try anyway" or another program could get past it.
@@ -566,6 +573,9 @@ inline constexpr const char* kKitWineMono = "wine-mono";
 // Runtime ability: the kit's runtime carries vkd3d-proton's d3d12.dll and d3d12core.dll at
 // lib/vkd3d-proton/<arch>-windows, for games that draw with Direct3D 12 (with DXVK's dxgi).
 inline constexpr const char* kKitVkd3dProton = "vkd3d-proton";
+// Runtime ability: threads that start in ntoskrnl.exe or a driver skip DLL_THREAD_ATTACH and TLS callbacks, as Windows'
+// system threads do, so a game's TLS callback can't stop its start in Xbox controller mode (NW.js).
+inline constexpr const char* kKitDriverThreads = "wine-driver-threads";
 // The runtime honors [display] refresh = 60|120 on every graphics path (Wine reports the rate it asked for) and
 // [display] frame_rate = 0|120|60|40|30, which the display paces. Runtimes without it refuse a profile with frame_rate.
 inline constexpr const char* kKitDisplay120Hz = "display-120hz";

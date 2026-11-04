@@ -30,6 +30,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [A Story About My Uncle](https://store.steampowered.com/app/278360) | ✅ Works | 0.12 | UE3 · D3D9 · DXVK · 32-bit | USB: set Program to Steam Launch entry (Binaries/Win32/ASAMU-Win32-Shipping.exe); automatic UnrealLightmass.exe selection is wrong. Intro and opening house render cleanly; controller movement, camera look and zoom verified. Grappling, platforming and later areas untested. |
 | [Absolute Drift](https://store.steampowered.com/app/320140) | ✅ Works | 0.14 | — | Default settings, DualSense. ([#388](https://github.com/leolobato/playden-ps5/issues/388), firmware 13.60) |
 | [Agefield High: Rock the School](https://store.steampowered.com/app/3562580) | ✅ Works | 0.17 | — | Default settings. ([#386](https://github.com/leolobato/playden-ps5/pull/386)) |
+| [Alabaster Dawn Demo](https://store.steampowered.com/app/3900710) | ✅ Works | 0.19 | NW.js · 32-bit | Default settings. |
 | [Alan Wake](https://store.steampowered.com/app/108710) | ✅ Works | 0.13 | — | Game settings › Graphics = DXVK ([#250](https://github.com/leolobato/playden-ps5/issues/250)). ([#277](https://github.com/leolobato/playden-ps5/issues/277), firmware 13.42) |
 | [Alan Wake's American Nightmare](https://store.steampowered.com/app/202750) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#268](https://github.com/leolobato/playden-ps5/issues/268), firmware 13.42) |
 | [American Truck Simulator](https://store.steampowered.com/app/270880) | ✅ Works | 0.10 | — | Disable news, World of Trucks and image spotlight. DualSense or USB mouse and keyboard; startup takes over a minute. ([#27](https://github.com/leolobato/playden-ps5/issues/27), firmware 9.40) |
@@ -146,6 +147,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [LEGO Marvel Super Heroes](https://store.steampowered.com/app/249130) | ✅ Works | 0.16 | — | Default settings, DualSense, default (Xbox controller). ([#405](https://github.com/leolobato/playden-ps5/pull/405), firmware 13.60) |
 | [Lethal Company](https://store.steampowered.com/app/1966720) | ✅ Works | 0.13 | — | Default settings, DualSense. Play with LAN: Online shows an error. ([#141](https://github.com/leolobato/playden-ps5/issues/141), firmware 13.60) |
 | [Little Nightmares Enhanced Edition](https://store.steampowered.com/app/2149010) | ✅ Works | 0.15 | — | Default settings, DualSense. ([#298](https://github.com/leolobato/playden-ps5/issues/298), firmware 11.60) |
+| [Look Outside](https://store.steampowered.com/app/3373660) | ✅ Works | 0.19 | RPG Maker (NW.js) · 64-bit | Default settings. |
 | [Loop Hero](https://store.steampowered.com/app/1282730) | ✅ Works | 0.10 | GameMaker · D3D11 · 64-bit | The controller drives the menus. |
 | [Lords of the Fallen](https://store.steampowered.com/app/1501750) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#322](https://github.com/leolobato/playden-ps5/issues/322), firmware 13.60) |
 | Lost Planet: Extreme Condition Colonies Edition | ✅ Works | 0.13 | — | Imported copy. Default settings, DualSense. ([#185](https://github.com/leolobato/playden-ps5/issues/185), firmware 10.01) |
@@ -320,6 +322,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | Mecha Chameleon | ❌ Broken | 0.16 | — | Needs an online login ([#115](https://github.com/leolobato/playden-ps5/issues/115)). ([#409](https://github.com/leolobato/playden-ps5/issues/409), firmware 13.60) |
 | [Monaco](https://store.steampowered.com/app/113020) | ❌ Broken | 0.12 | Custom · D3D9 · DXVK · 32-bit | Creates the D3D9 device, then exits during startup before the menu. Log reports missing winegstreamer.prx when wmadmod loads, followed by an unhandled page fault. Retested with project.ini AUDIO_MUTE_ALL 1; still exits. Original configuration restored. |
 | [MoonLess](https://store.steampowered.com/app/2322060) | ❌ Broken | 0.13 | GameMaker · D3D11 · 64-bit | Crashes right after it opens its window. |
+| [OMORI](https://store.steampowered.com/app/1150690) | ❌ Broken | 0.19 | RPG Maker (NW.js) · 32-bit | Stops at the start. |
 | [Order of the Sinking Star](https://store.steampowered.com/app/499170) | ❌ Broken | 0.12 | — · D3D12 · vkd3d-proton · 64-bit | vkd3d-proton starts, then the game says it needs a GPU with Direct3D feature level 12_0 and quits. Also after Recreate bottle. ([#95](https://github.com/leolobato/playden-ps5/issues/95), firmware 13.60) |
 | [Overwatch](https://store.steampowered.com/app/2357570) | ❌ Broken | 0.13 | — · D3D12 · 64-bit | Crashes at start. ([#183](https://github.com/leolobato/playden-ps5/pull/183), firmware 13.00) |
 | [Project Zomboid](https://store.steampowered.com/app/108600) | ❌ Broken | 0.16 | Java (LWJGL) · OpenGL · 64-bit | Stops about 20 seconds after start: it runs out of open files ([#194](https://github.com/leolobato/playden-ps5/issues/194)). |
@@ -344,12 +347,10 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Wizard101](https://store.steampowered.com/app/799960) | ❌ Broken | 0.12 | — | Stops with "Unable to launch game. Your Steam client may be out-of-date", also with Steam features = Game's own files. ([#101](https://github.com/leolobato/playden-ps5/issues/101), firmware 13.60) |
 | [Wrap House Simulator](https://store.steampowered.com/app/3533100) | ❌ Broken | 0.10 | — | Reaches the menu, but play lags at every setting, even the Low preset at 1600×900. USB mouse and keyboard. ([#19](https://github.com/leolobato/playden-ps5/issues/19), firmware 9.40) |
 | [Cookie Clicker](https://store.steampowered.com/app/1454400) | ⛔ Refused | 0.13 | Electron | Runs on Electron (a built-in web browser), which Playden can't start on the PS5 yet. ([#195](https://github.com/leolobato/playden-ps5/issues/195), firmware 13.00) |
-| [CrossCode](https://store.steampowered.com/app/368340) | ⛔ Refused | 0.12 | NW.js | Runs on NW.js (a built-in web browser), which Playden can't start on the PS5 yet. ([#102](https://github.com/leolobato/playden-ps5/issues/102), firmware 13.60) |
+| [CrossCode](https://store.steampowered.com/app/368340) | ⛔ Refused | 0.12 | NW.js | Refused on kit 0.12. NW.js games start from kit 0.19; not tested since. ([#102](https://github.com/leolobato/playden-ps5/issues/102), firmware 13.60) |
 | [Crysis 3](https://store.steampowered.com/app/1282690) | ⛔ Refused | 0.17 | — | Needs the EA app. ([#415](https://github.com/leolobato/playden-ps5/issues/415), firmware 12.20) |
 | [FACEMINER](https://store.steampowered.com/app/2276980) | ⛔ Refused | 0.17 | — | Electron game. ([#424](https://github.com/leolobato/playden-ps5/issues/424), firmware 12.20) |
-| [Look Outside](https://store.steampowered.com/app/3373660) | ⛔ Refused | 0.10 | RPG Maker (NW.js) · 64-bit | Runs on NW.js (a built-in web browser), which Playden can't start on the PS5 yet. |
 | [Need for Speed Most Wanted](https://store.steampowered.com/app/1262560) | ⛔ Refused | 0.10 | Chameleon · D3D11 · 32-bit | Needs the EA app. |
-| [OMORI](https://store.steampowered.com/app/1150690) | ⛔ Refused | 0.11 | RPG Maker (NW.js) · 64-bit | Runs on NW.js (a built-in web browser), which Playden can't start on the PS5 yet. |
 | [The Sims 4](https://store.steampowered.com/app/1222670) | ⛔ Refused | 0.16 | — | Needs the EA app. ([#397](https://github.com/leolobato/playden-ps5/issues/397), firmware 13.60) |
 
 ## Kits

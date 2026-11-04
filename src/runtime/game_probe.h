@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <set>
 #include <string>
+#include <string_view>
 
 namespace playden::runtime {
 
@@ -12,6 +14,10 @@ namespace playden::runtime {
 struct GameProbe {
   std::string engine;  // "unity", "unreal", "source", "gamemaker", "godot", "love", "nwjs", "sil", "idtech3",
                        // "hashlink", "xna", or empty
+  // NW.js: nw.dll's version ("0.94.0"), empty when its version resource carries none (2017 builds such as OMORI's)
+  // and for node-webkit before NW.js 0.13 (no nw.dll). Logs and the settings sheet show it.
+  std::string engine_version;
+  bool x64 = false;     // the program is PE32+ (x64)
   bool il2cpp = false;  // Unity with GameAssembly.dll
   bool legacy_unity = false;  // Unity before 2017.2: the player is built into the program
   int unity_major = 0;  // for legacy_unity, the Unity version from the data folder (4, 5); 0 when unknown
@@ -35,6 +41,8 @@ struct GameProbe {
 };
 
 inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull;
+// At most this much of a library's resources is read for its version.
+inline constexpr std::uint32_t kVersionScanBytes = 8u * 1024u * 1024u;
 
 // executable is relative to install_root with '/' separators, as spelled on disk.
 GameProbe ProbeGame(const std::string& install_root, const std::string& executable);
@@ -86,7 +94,8 @@ struct GameDefaults {
   std::string refusal;  // non-empty: the console cannot run this program; a sentence for the player
   // The refusal comes from a broad detection (.NET, a shared section) that a run could get
   // past, so the player may "Try anyway"; graphics and arguments are still filled in.
-  // SteamStub forms Playden can't unpack, NW.js and Direct3D 12 only (on a kit without vkd3d-proton) are never soft.
+  // SteamStub forms Playden can't unpack, Direct3D 12 only (on a kit without vkd3d-proton) and NW.js (on a kit
+  // without driver threads) are never soft.
   bool refusal_soft = false;
   std::string summary;  // e.g. "unity,d3d11 graphics=dxvk", for logs and the settings sheet
 };
@@ -95,8 +104,13 @@ struct RuntimeAbilities {
   bool shared_sections = false;  // maps a shared section the console's pages can't hold as a private copy
   bool wine_mono = false;        // carries Wine Mono, so .NET programs start
   bool vkd3d_proton = false;     // carries vkd3d-proton, so Direct3D 12 programs draw
+  bool driver_threads = false;   // hosted driver threads skip the game's thread attach, so NW.js gets past its start
 };
 GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime = {});
+// Which DefaultsFor an engine's games were set up with. Raise an engine's number when what DefaultsFor gives its games
+// changes: their saved recipes then take the new defaults on the next Play or kit update, without a Recreate bottle.
+// An engine not listed is 0. `engine` may be a GameDefaults::summary, whose first word is the engine.
+int DefaultsRevision(std::string_view engine);
 
 // The player's words for a GameDefaults::summary: "Unity · Direct3D 11", "OpenGL"; empty
 // when nothing was recognised.

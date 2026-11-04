@@ -641,6 +641,16 @@ int main(int argc, char** argv) {
   CHECK(BuildEffectiveSettings(gdi, nullptr, {{"performance_overlay", "on"}}, KitCapabilities{}, &settings, &error));
   CHECK(!settings.values.at("performance_overlay").available && Value(settings, "performance_overlay") == "off");
 
+  // The switch that keeps a game off the kit's direct-memory sections reaches the title as [debug] env.
+  {
+    KitCapabilities debug_kit;
+    debug_kit.environment = true;
+    debug_kit.opengl_zink = true;
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "PW_SECTIONS_FLEXIBLE=1"}}, debug_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("env = PW_SECTIONS_FLEXIBLE=1\n") != std::string::npos);
+  }
+
   // Environment variables need a runtime that reads [environment]; released ones refuse it.
   const std::map<std::string, std::string> environment = {{"environment", "WINE_CPU_TOPOLOGY=4:0,1,2,3; DXVK_FRAME_RATE = 45"}};
   CHECK(BuildEffectiveSettings(hl2, nullptr, environment, KitCapabilities{}, &settings, &error));

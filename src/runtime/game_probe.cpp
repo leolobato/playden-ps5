@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -90,6 +91,8 @@ struct PeFacts {
   // A writable section shared between processes that doesn't fill whole console pages.
   bool unaligned_shared = false;
   bool pe64 = false;                 // PE32+ (x64), otherwise PE32 (x86)
+  std::uint64_t resource_offset = 0;  // file offset of the resource directory, 0 when there is none
+  std::uint32_t resource_size = 0;
   std::vector<std::string> imports;  // lower case
   std::vector<std::string> delay_imports;  // lower case; read only when asked
 };
@@ -147,6 +150,11 @@ PeFacts ReadPe(const std::string& path, bool delay_imports = false) {
   for (const auto& section : list)
     if (entry >= section.address && entry - section.address < section.size) facts.entry_section = section.name;
   facts.valid = true;
+  if (const auto resource_rva = directory(2))
+    if (const auto at = file_offset(resource_rva)) {
+      facts.resource_offset = *at;
+      facts.resource_size = directories + 2 * 8 + 8 <= optional.size() ? U32(optional.data() + directories + 2 * 8 + 4) : 0;
+    }
 
   auto descriptor = import_rva ? file_offset(import_rva) : std::nullopt;
   for (unsigned count = 0; descriptor && count < 512; ++count, *descriptor += 20) {
@@ -176,6 +184,53 @@ PeFacts ReadPe(const std::string& path, bool delay_imports = false) {
     facts.delay_imports.push_back(Lower(std::string(name, strnlen(name, got))));
   }
   return facts;
+}
+
+// A library's version from its version resource: the "FileVersion" string, else the fixed file version.
+// Empty when it carries neither (or only 0.0.0.0). Only letters, digits, '.' and '-' are kept.
+std::string ResourceVersion(const std::string& path) {
+  const auto pe = ReadPe(path);
+  if (!pe.valid || pe.resource_size == 0) return {};
+  std::vector<unsigned char> data(std::min(pe.resource_size, kVersionScanBytes));
+  data.resize(Program(path).ReadSome(pe.resource_offset, data.data(), data.size()));
+  const auto clean = [](std::string text) {
+    std::string out;
+    for (char value : text) {
+      if (!std::isalnum(static_cast<unsigned char>(value)) && value != '.' && value != '-') break;
+      if (out.size() == 32) break;
+      out += value;
+    }
+    return out;
+  };
+  // A String entry: wLength, wValueLength (characters, with the terminating null), wType, the key, padding to
+  // 4 bytes from the entry's start, then the value.
+  static const std::string key = [] {
+    std::string wide;
+    for (char value : std::string_view("FileVersion")) wide += value, wide += '\0';
+    return wide + std::string(2, '\0');
+  }();
+  for (auto at = std::search(data.begin(), data.end(), key.begin(), key.end()); at != data.end();
+       at = std::search(at + 2, data.end(), key.begin(), key.end())) {
+    const auto start = static_cast<std::size_t>(at - data.begin());
+    if (start < 6) continue;
+    const std::size_t characters = U16(data.data() + start - 4);
+    std::size_t value = start + key.size();
+    value += (4 - (value - (start - 6)) % 4) % 4;
+    if (characters < 2 || value + characters * 2 > data.size()) continue;
+    std::string text;
+    for (std::size_t i = 0; i + 1 < characters; ++i)
+      text += data[value + i * 2 + 1] == 0 ? static_cast<char>(data[value + i * 2]) : '?';
+    if (auto version = clean(text); !version.empty()) return version;
+  }
+  // VS_FIXEDFILEINFO: the signature, the structure version, then the file version as two 32-bit halves.
+  static const unsigned char signature[] = {0xbd, 0x04, 0xef, 0xfe};
+  const auto fixed = std::search(data.begin(), data.end(), std::begin(signature), std::end(signature));
+  if (fixed == data.end() || data.end() - fixed < 16) return {};
+  const auto major = U32(&*fixed + 8), minor = U32(&*fixed + 12);
+  if (major == 0 && minor == 0) return {};
+  auto version = std::to_string(major >> 16) + '.' + std::to_string(major & 0xffff) + '.' + std::to_string(minor >> 16);
+  if (minor & 0xffff) version += '.' + std::to_string(minor & 0xffff);
+  return version;
 }
 
 // Graphics library names a program loads at run time (Unity, GameMaker and others call
@@ -529,6 +584,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.steam_stub_detail = stub.detail;
   }
   probe.shared_section = program.unaligned_shared;
+  probe.x64 = program.pe64;
   AddImports(program, &probe.apis);
   for (const auto& [name, directory] : here)
     if (!directory && EndsWith(Lower(name), ".dll")) AddImports(ReadPe((root / folder / name).string()), &probe.apis);
@@ -571,8 +627,11 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     probe.engine = "java";
   } else if (Find(here, "love.dll", false)) {
     probe.engine = "love";  // LÖVE draws with OpenGL through SDL, which it loads at run time
-  } else if (Find(here, "nw.dll", false)) {
+  } else if (const auto nw = Find(here, "nw.dll", false)) {
     probe.engine = "nwjs";  // NW.js (RPG Maker MV and MZ): Chromium with Node
+    probe.engine_version = ResourceVersion((root / folder / *nw).string());
+  } else if (Find(here, "nw.pak", false)) {
+    probe.engine = "nwjs";  // node-webkit before NW.js 0.13 (CrossCode's demo): Chromium built into the program
   } else if (std::any_of(here.begin(), here.end(), [&](const auto& entry) {
                if (!entry.second) return false;
                const auto inside = Entries(root / folder / entry.first);
@@ -594,6 +653,12 @@ namespace {
 bool LegacyDirect3D9(const GameProbe& probe) { return probe.legacy_unity && probe.unity_major < 5; }
 }  // namespace
 
+int DefaultsRevision(std::string_view engine) {
+  engine = engine.substr(0, engine.find_first_of(", "));
+  if (engine == "nwjs") return 2;  // 1: low-end device mode and a larger V8 heap. 2: low-end device mode gone
+  return 0;
+}
+
 GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime) {
   GameDefaults out;
   const auto has = [&](const char* api) { return probe.apis.count(api) != 0; };
@@ -610,8 +675,19 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
   if (probe.steam_stub && !probe.steam_stub_supported) {
     out.refusal = "This game's program has Steam DRM in a form Playden can't unpack yet.";
   } else if (probe.engine == "nwjs") {
-    // Chromium starts helper processes, and in one process it reserves 64 GB of address space.
-    out.refusal = "This game runs on NW.js (a built-in web browser), which Playden can't start on the PS5 yet.";
+    // Chromium starts helper processes, which a PS5 title can't, so everything runs in the game's
+    // process. There Chromium reserves 64 GB of address space, which the kit's high area may now hold.
+    // ANGLE draws WebGL with Direct3D 11. 64-bit NW.js plays (Look Outside, NW.js 0.94), and so does a recent 32-bit
+    // one (Alabaster Dawn's demo, NW.js 0.86). Older 32-bit builds still stop early (OMORI, from 2017; CrossCode's demo,
+    // node-webkit 0.8), but they start like the others. V8 runs out of heap at about 124 MiB without the larger limit in a
+    // 32-bit game. A game loading hundreds of files at once needs the kit's direct-memory sections (Wine 0976);
+    // --enable-low-end-device-mode in Extra arguments also avoids those failed loads, if a game has to turn them off.
+    out.graphics = "dxvk";
+    out.arguments = "--single-process --in-process-gpu --no-sandbox --disable-gpu-sandbox --disable-breakpad "
+                    "--js-flags=--max-old-space-size=1024";
+    // On an older runtime the game hangs before its first frame in the default Xbox controller mode.
+    if (!runtime.driver_threads)
+      out.refusal = "This game runs on NW.js (a built-in web browser), which this runtime kit can't start yet.";
   } else if (probe.engine == "unity") {
     // Unity also names d3d12 and Vulkan; D3D11 is the path DXVK covers. Unity 4 and earlier (Hexcells,
     // Thomas Was Alone) draw with Direct3D 9, where D3D11 was a player option. Unity 5 builds may leave
@@ -674,6 +750,7 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
   if (probe.il2cpp) facts += facts.empty() ? "il2cpp" : "-il2cpp";
   if (LegacyDirect3D9(probe)) facts += "-legacy";
   else if (probe.legacy_unity) facts += "-legacy5";
+  if (!probe.engine_version.empty()) facts += "," + probe.engine + "-" + probe.engine_version;
   for (const auto& api : probe.apis) facts += (facts.empty() ? "" : ",") + api;
   // An Unreal 5 game names both renderers; this says which one it starts on.
   if (probe.unreal5) facts += out.d3d12.empty() ? ",dx11" : ",dx12";
@@ -702,6 +779,8 @@ std::string DetectedLabel(const std::string& summary) {
            {"gamemaker", "GameMaker"}, {"godot", "Godot"}, {"love", "L\xC3\x96VE"}, {"nwjs", "NW.js"}, {"sil", "SIL"},
            {"idtech3", "id Tech 3"}, {"hashlink", "HashLink"}, {"xna", "XNA"}, {"java", "Java"}})
     if (facts.count(id)) engine = name;
+  for (const auto& fact : facts)
+    if (engine == "NW.js" && fact.rfind("nwjs-", 0) == 0) engine += " " + fact.substr(5);
   std::string api;
   if (graphics == "opengl") api = "OpenGL";
   else if (graphics == "dxvk" && engine == "Unreal Engine 5")

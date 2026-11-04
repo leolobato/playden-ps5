@@ -1577,6 +1577,119 @@ void PreparesGameWithoutShippedRecipe() {
   legacy.Shutdown();
 }
 
+// A game set up before Playden's defaults for its engine changed takes the new ones on the next Play: its saved
+// recipe is refreshed and its title published again, with no Recreate bottle, and a player's extra arguments stay.
+// A game with no saved settings takes them too (1). Settings older than the title's can't be published, so the recipe
+// keeps its old number (2). A publication refused before it began leaves nothing on the record: that Play starts the
+// game as before, and the next one takes the new defaults (3).
+void OlderEngineDefaultsArePublishedOnPlay(int scenario) {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back("wine-driver-threads");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4244";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Game.exe", pe, 0644);
+  Write(game / "nw.dll", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  GameSettingsRecord saved;
+  // Published first with the old arguments, as a build from before these flags left it.
+  const std::string old_arguments = "--single-process --in-process-gpu --no-sandbox --disable-gpu-sandbox --disable-breakpad";
+  saved.overrides["arguments"] = old_arguments;
+  if (scenario == 2) saved.revision = 5;
+  bool no_record = false;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    if (no_record) return std::nullopt;
+    return saved;
+  };
+  RuntimePrepareRequest request{4244, "/data/homebrew/FAKE77031/games/4244", "internal", "NW Game"};
+  request.launches = {{"", "", "Game.exe", "", ""}};
+  const auto profile = fixture.root / "data/playden/games/steam-4244/library/profiles/playden-steam-4244.profile";
+  const auto recipe_file = fixture.root / "data/runtime-state/recipe-steam-4244-auto.json";
+  const std::string new_flag = "--js-flags=--max-old-space-size=1024";
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(request);
+    const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4244) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (ready.refusals.count(4244)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(4244).c_str());
+    CHECK(ready.installs.size() == 1 && ready.installs[0].state == PreparationState::kReady);
+    CHECK(Read(profile).find(new_flag) == std::string::npos && Read(profile).find(old_arguments) != std::string::npos);
+    host.Shutdown();
+  }
+
+  // The saved recipe as that build wrote it: the old arguments, no number. The arguments were never the player's.
+  saved.overrides.erase("arguments");
+  auto recipe_text = Read(recipe_file);
+  const auto cut = [&](const std::string& what) {
+    const auto at = recipe_text.find(what);
+    CHECK(at != std::string::npos);
+    recipe_text.erase(at, what.size());
+  };
+  cut(" --js-flags=--max-old-space-size=1024");
+  cut(",\"defaults_revision\":2");
+  CHECK(chmod(recipe_file.c_str(), 0600) == 0);
+  Write(recipe_file, recipe_text, 0600);
+
+  no_record = scenario == 1;
+  if (scenario == 2) saved.revision = 1;
+  const auto operation = fixture.root / "data/playden/games/steam-4244/.playden-control/settings-operation.v1";
+  if (scenario == 3) {
+    fs::remove(operation);
+    fs::create_symlink("settings-operation.gone.v1", operation);
+  }
+
+  const auto play = [&](RuntimeHost& host) {
+    CHECK(host.Start());
+    const auto started = WaitFor(host, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+    CHECK(started.generated_recipes[0].defaults_revision == 0);
+    host.Play(4244);
+    const auto played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(4244) != 0; }, 30);
+    if (played.play_refusals.count(4244)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(4244).c_str());
+    CHECK(played.handoff_ready);
+    return played;
+  };
+  if (scenario == 2 || scenario == 3) {
+    RuntimeHost host(config);
+    const auto played = play(host);
+    CHECK(played.generated_recipes[0].defaults_revision == 0);
+    CHECK(Read(recipe_file).find(new_flag) == std::string::npos);
+    CHECK(Read(profile).find(new_flag) == std::string::npos);
+    CHECK(Read(fixture.root / "data/runtime-state/installs.json").find("\"journal\":{") == std::string::npos);
+    host.Shutdown();
+    if (scenario == 2) return;
+    fs::remove(operation);
+  }
+  RuntimeHost host(config);
+  const auto played = play(host);
+  CHECK(played.generated_recipes[0].defaults_revision == 2);
+  CHECK(Read(recipe_file).find(new_flag) != std::string::npos);
+  CHECK(Read(profile).find(new_flag) != std::string::npos);
+  host.Shutdown();
+}
+
 // An update changed a Ready game's files (its marker in the game's folder): Play refuses until Prepare has
 // made the launch again from the new files and Steam's options, as a fresh preparation would, and published
 // it; then the marker goes. A program that is gone with no other to start keeps the marker and says why.
@@ -6292,6 +6405,7 @@ int main(int argc, char** argv) {
   AnyTitleKitMakesTheGameItsOwnTitle();
   PreparationEndsAwaitingRegistration();
   PreparesGameWithoutShippedRecipe();
+  for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);
   UpdatedFilesSetUpTheLaunchAgain();
   PreparesProgramChosenInSettings();
   PreparesSteamProgramChosenAfterDownload();

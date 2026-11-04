@@ -1569,6 +1569,12 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
       !StringField(*root, "graphics", &out.graphics, false) ||
       !StringField(*root, "detected", &out.detected, false))
     return fail("recipe has a field of the wrong type");
+  if (const auto* revision = root->get("defaults_revision")) {
+    std::uint64_t parsed_revision = 0;
+    if (!ExactUnsigned(revision, static_cast<std::uint64_t>(std::numeric_limits<int>::max()), &parsed_revision, false))
+      return fail("recipe has a field of the wrong type");
+    out.defaults_revision = static_cast<int>(parsed_revision);
+  }
   const auto* entries = root->get("launch_entries");
   if (!entries || !entries->array() || entries->array()->empty()) return fail("recipe needs launch_entries");
   for (const auto& item : *entries->array()) {
@@ -1787,7 +1793,10 @@ std::string SerializeGameRecipe(const GameRecipe& recipe) {
           quoted(recipe.resolution_arguments) + ",\"dll_overrides\":" + quoted(recipe.dll_overrides) +
           ",\"architecture\":" + quoted(recipe.architecture) + ",\"runtime\":" + quoted(recipe.runtime) +
           ",\"prefix\":" + quoted(recipe.prefix) + ",\"graphics\":" + quoted(recipe.graphics) +
-          (recipe.detected.empty() ? std::string() : ",\"detected\":" + quoted(recipe.detected)) + ",\"defaults\":{";
+          (recipe.detected.empty() ? std::string() : ",\"detected\":" + quoted(recipe.detected)) +
+          (recipe.defaults_revision == 0 ? std::string()
+                                         : ",\"defaults_revision\":" + std::to_string(recipe.defaults_revision)) +
+          ",\"defaults\":{";
   bool first = true;
   for (const auto& [id, value] : recipe.defaults) {
     if (!first) text += ",";
@@ -2073,6 +2082,7 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
     abilities.shared_sections = kit.shared_sections;
     abilities.wine_mono = kit.wine_mono;
     abilities.vkd3d_proton = kit.vkd3d_proton;
+    abilities.driver_threads = kit.driver_threads;
     const auto defaults = DefaultsFor(probe, abilities);
     if (!defaults.refusal.empty() && !(defaults.refusal_soft && choices.try_anyway)) {
       if (first_refusal.empty()) first_refusal = defaults.refusal, first_refusal_soft = defaults.refusal_soft;
@@ -2098,6 +2108,7 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
       out.arguments = defaults.arguments;
       out.resolution_arguments = defaults.resolution_arguments;
       out.detected = defaults.summary;
+      out.defaults_revision = DefaultsRevision(defaults.summary);
       // Most Steam games stop when the Steam client is missing; the emulator answers instead.
       out.defaults["steam_features"] = "emulate";
       if (!defaults.environment.empty()) out.defaults["environment"] = defaults.environment;
@@ -2141,6 +2152,35 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
   return true;
 }
 
+bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
+  if (!IsGeneratedRecipeId(recipe->id) || recipe->launch_entries.empty() ||
+      recipe->defaults_revision >= DefaultsRevision(recipe->detected))
+    return false;
+  const auto relative = steam::RelativeGamePath(recipe->launch_entries.front().executable);
+  const auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
+  if (!on_disk) return false;
+  RuntimeAbilities abilities;
+  abilities.shared_sections = kit.shared_sections;
+  abilities.wine_mono = kit.wine_mono;
+  abilities.vkd3d_proton = kit.vkd3d_proton;
+  abilities.driver_threads = kit.driver_threads;
+  const auto defaults = DefaultsFor(ProbeGame(install_root, *on_disk), abilities);
+  auto refreshed = *recipe;
+  refreshed.graphics = defaults.graphics;
+  refreshed.arguments = defaults.arguments;
+  refreshed.resolution_arguments = defaults.resolution_arguments;
+  refreshed.detected = defaults.summary;
+  refreshed.defaults_revision = DefaultsRevision(defaults.summary);
+  if (defaults.environment.empty()) refreshed.defaults.erase("environment");
+  else refreshed.defaults["environment"] = defaults.environment;
+  if (defaults.d3d12.empty()) refreshed.defaults.erase("d3d12");
+  else refreshed.defaults["d3d12"] = defaults.d3d12;
+  // The files no longer show this engine (an update changed it): that's for the files-changed path, not this one.
+  if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) return false;
+  *recipe = std::move(refreshed);
+  return true;
+}
+
 std::string GameProgramArchitecture(const std::string& install_root, const std::string& relative) {
   const auto path = steam::RelativeGamePath(relative);
   if (!path) return {};
@@ -2157,6 +2197,7 @@ std::string GameProgramRefusal(const std::string& install_root, const std::strin
   abilities.shared_sections = kit.shared_sections;
   abilities.wine_mono = kit.wine_mono;
   abilities.vkd3d_proton = kit.vkd3d_proton;
+  abilities.driver_threads = kit.driver_threads;
   const auto defaults = DefaultsFor(ProbeGame(install_root, *on_disk), abilities);
   return defaults.refusal_soft && try_anyway ? std::string() : defaults.refusal;
 }
@@ -2199,6 +2240,7 @@ std::vector<GameProgram> ListGamePrograms(const std::string& install_root, const
   abilities.shared_sections = kit.shared_sections;
   abilities.wine_mono = kit.wine_mono;
   abilities.vkd3d_proton = kit.vkd3d_proton;
+  abilities.driver_threads = kit.driver_threads;
   for (const auto& relative : found) {
     GameProgram program;
     program.path = relative;
@@ -3267,6 +3309,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.opengl_zink = has(kKitOpenGLZink);
   kit.wine_mono = has(kKitWineMono);
   kit.vkd3d_proton = has(kKitVkd3dProton);
+  kit.driver_threads = has(kKitDriverThreads);
   kit.display_120hz = has(kKitDisplay120Hz);
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);

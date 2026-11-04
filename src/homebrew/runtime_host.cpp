@@ -2592,7 +2592,9 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
           Log("play moved app=" + std::to_string(app_id) + " " + (settings.empty() ? "republished" : settings));
         }
       } else if (idle) {
-        settings = RepublishSettings(c, *record);
+        RefreshGeneratedRecipeDefaults(c, *record);
+        const auto current = c.records.Find(record->install_id);
+        settings = current ? RepublishSettings(c, *current) : std::string("The game's install record is missing.");
       }
       // Saves the game wrote and FTP edits made since, once nothing of the bottle is held and
       // only when Play goes ahead: a refused Play changes no modes.
@@ -2952,6 +2954,49 @@ const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const Runtim
   return &c.recipes.back();
 }
 
+void RuntimeHost::RefreshGeneratedRecipeDefaults(Composition& c, const rt::RuntimeInstall& record) {
+  const auto kit = c.kit ? rt::KitCapabilitiesFromManifest(c.kit->capabilities, true) : rt::KitCapabilities{};
+  const auto app = std::to_string(record.runtime_number);
+  for (auto& candidate : c.recipes) {
+    if (candidate.id != record.recipe_id || !RecipeFits(candidate, record)) continue;
+    auto refreshed = candidate;
+    if (!rt::RefreshRecipeDefaults(HostPath(record.install_path).string(), kit, &refreshed)) return;
+    // Settings older than the title's can't be published over it, and a forced publication skips them without a word:
+    // the recipe would be marked as refreshed with the old profile still in place.
+    const auto stored = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+    if (stored ? stored->revision < record.settings_revision : record.settings_revision != 0) {
+      Log("generated recipe refresh app=" + app + " waits: saved settings older than the title's");
+      return;
+    }
+    if (c.kit)
+      if (const auto lacks = KitLacksForRecipe(refreshed, c.kit->view); !lacks.empty()) {
+        Log("generated recipe refresh app=" + app + " refused=" + lacks);
+        return;
+      }
+    const auto before = candidate;
+    candidate = std::move(refreshed);
+    // Forced because the player's settings didn't change, only what Playden sets up for the game, and a game with no
+    // saved settings is published from the defaults. It publishes nothing when the profile comes out the same
+    // (arguments the player typed). The recipe is saved only once this worked. A request whose publication never began
+    // is dropped, so the game starts as it did and the next Play tries again; one that began waits for recovery, like
+    // any settings update.
+    const auto refused = PublishSavedSettings(c, record, nullptr, true, nullptr, nullptr, true, true);
+    if (!refused.empty()) {
+      Log("generated recipe refresh app=" + app + " refused=" + refused);
+      for (auto& again : c.recipes)
+        if (again.id == before.id) again = before;
+      DropUpgradeRequest(c, record.install_id, refused);
+      return;
+    }
+    const auto saved = rt::SerializeGameRecipe(candidate);
+    const auto written = c.storage.WriteAtomicPrivate(GeneratedRecipeFile(candidate.id), Bytes(saved.begin(), saved.end()));
+    Log("generated recipe refreshed app=" + app + " defaults revision " + std::to_string(before.defaults_revision) + " to " +
+        std::to_string(candidate.defaults_revision) + (written.ok() ? std::string() : " not saved: " + written.message()));
+    PublishRecipes(c);
+    return;
+  }
+}
+
 void RuntimeHost::LoadGeneratedRecipes(Composition& c) {
   for (const auto& record : c.repository.Snapshot()) {
     if (!rt::IsGeneratedRecipeId(record.recipe_id)) continue;
@@ -3225,6 +3270,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       // fewer. Every Update that gets here publishes the saved settings again when they now write something else
       // (nothing otherwise), so an Update that failed after its title refresh is finished by the next one.
       {
+        if (const auto before = c.records.Find(existing->install_id)) RefreshGeneratedRecipeDefaults(c, *before);
         const auto current = c.records.Find(existing->install_id);
         if (!current) return "The game's install record is missing.";
         bool republished = false;
