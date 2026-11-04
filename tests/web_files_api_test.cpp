@@ -246,6 +246,10 @@ int main() {
   CHECK(Body(get("/api/files/list?" + game + "user&path=Documents", cookie)).find("\"previous\":{\"size\":5") != std::string::npos);
   CHECK(Status(post("/api/files/restore?" + game + "user&path=Documents/new.sav", cookie)) == 200 && Text(profile / "Documents/new.sav") == "hello");
   CHECK(Status(post("/api/files/mkdir?" + game + "game&path=_Redist2", cookie)) == 200 && fs::is_directory(game_folder / "_Redist2"));
+  CHECK(Status(post("/api/files/mkdir?" + game + "game&path=_Redist2", cookie)) == 409);
+  CHECK(Status(post("/api/files/mkdir?" + game + "game&path=_Redist2&parents=1", cookie)) == 200);
+  CHECK(Status(post("/api/files/mkdir?" + game + "game&path=tree/a/b&parents=1", cookie)) == 200 && fs::is_directory(game_folder / "tree/a/b"));
+  CHECK(Status(post("/api/files/mkdir?" + game + "game&path=game.exe/a&parents=1", cookie)) == 409);
   CHECK(Status(post("/api/files/delete?" + game + "game&path=_Redist2", cookie)) == 200 && !fs::exists(game_folder / "_Redist2"));
   CHECK(Status(post("/api/files/delete?" + game + "user&path=Documents/new.sav", cookie)) == 200 && !fs::exists(profile / "Documents/new.sav"));
   // A POST from another origin never reaches these.

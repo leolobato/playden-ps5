@@ -640,19 +640,23 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const upload = button("Upload files", () => picker.click(), "primary");
     const picker = element("input", { type: "file", multiple: "", hidden: "", "aria-label": "Files to upload" });
     picker.addEventListener("change", () => { addFiles([...picker.files]); picker.value = ""; });
+    const folderPicker = element("input", { type: "file", webkitdirectory: "", hidden: "", "aria-label": "Folder to upload" });
+    folderPicker.addEventListener("change", () => { addPickedFolder([...folderPicker.files]); folderPicker.value = ""; });
+    const uploadFolder = picksFolders ? button("Upload folder", () => folderPicker.click()) : "";
     const newFolder = button("New folder", () => askNewFolder());
     const refresh = button("Refresh", () => refreshFolder());
     const zip = anchor("Download folder (.zip)", `/api/files/zip?${q({ ...ctx, path })}`);
     const selected = [...files.selected];
-    const bar = element("div", { class: "bar" }, upload, picker, newFolder, refresh, listing.exists ? zip : "");
-    if (listing.read_only) { upload.disabled = true; newFolder.disabled = true; }
+    const bar = element("div", { class: "bar" }, upload, picker, uploadFolder, folderPicker, newFolder, refresh, listing.exists ? zip : "");
+    if (listing.read_only) { upload.disabled = true; newFolder.disabled = true; if (uploadFolder) uploadFolder.disabled = true; }
     if (selected.length) bar.append(button(`Delete ${selected.length} selected`, () => askDelete(selected), "ghost danger end"));
     if (listing.read_only)
       pane.append(element("p", { class: "lede", text: "Read-only: Playden writes this folder itself when it prepares the game, so changes here wouldn't last. Change these settings in Game settings on the PS5." }));
     if (root === "game" && !listing.read_only)
       pane.append(element("p", { class: "note", style: "margin:0 0 14px", text: "A game update can overwrite the game's own files, and uninstalling removes this folder with everything you added." }));
     pane.append(bar);
-    const queued = transfers.items.filter((item) => item.game === game.id && item.root === root && item.path === path && item.state !== "done");
+    const queued = transfers.items.filter((item) => item.kind === "file" && item.game === game.id && item.root === root && item.path === path && item.state !== "done");
+    const trees = treeProgress(game.id, root, path);
     const rows = listing.entries.map((entry) => {
       const full = relPath(entry.name);
       const pending = !entry.directory && queued.find((item) => item.name.toLowerCase() === entry.name.toLowerCase());
@@ -678,29 +682,37 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
         }
         if (isText(entry) && editableRow(entry)) acts.append(anchor("Edit", editHash(game.id, root, full)));
       }
-      const status = pending
+      const tree = entry.directory && trees.get(entry.name.toLowerCase());
+      const status = tree
+        ? element("td", { class: "status", text: tree.text })
+        : pending
         ? element("td", { class: "status", text: pending.state === "active" ? `Uploading ${Math.round(pending.fraction * 100)}%` : pending.state === "waiting" ? "Waiting to upload" : "Upload failed" })
         : element("td", { class: "soft when", text: when(entry.modified) });
       return element("tr", {}, element("td", { class: "pick" }, check), name, status,
         element("td", { class: "num soft size", text: entry.directory ? "" : longSize(entry.size) }), acts);
     });
+    // Folders on their way that aren't listed yet.
+    for (const [lower, tree] of trees)
+      if (!listing.entries.some((entry) => entry.directory && entry.name.toLowerCase() === lower))
+        rows.push(element("tr", {}, element("td", { class: "pick" }), element("td", { class: "entry-name" }, tree.name),
+          element("td", { class: "status", text: tree.text }), element("td", { class: "num soft size" }), element("td", { class: "acts" })));
     // Files on their way that aren't listed yet.
     for (const item of queued)
       if (!listing.entries.some((entry) => entry.name.toLowerCase() === item.name.toLowerCase()))
         rows.push(element("tr", {}, element("td", { class: "pick" }), element("td", { class: "entry-name" }, item.name),
           element("td", { class: "status", text: item.state === "active" ? `Uploading ${Math.round(item.fraction * 100)}%` : item.state === "waiting" ? "Waiting to upload" : "Upload failed" }),
-          element("td", { class: "num soft size", text: longSize(item.file.size) }), element("td", { class: "acts" })));
+          element("td", { class: "num soft size", text: longSize(itemSize(item)) }), element("td", { class: "acts" })));
     if (rows.length) {
       pane.append(element("table", { class: "files" },
         element("thead", {}, element("tr", {}, element("th", {}), element("th", { text: "Name" }), element("th", { text: "Changed" }), element("th", { class: "num", text: "Size" }), element("th", {}))),
         element("tbody", {}, ...rows)));
     } else {
       pane.append(element("div", { class: "drop-hint" }, element("strong", { text: "This folder is empty" }),
-        listing.read_only ? "" : "Drop files here to upload them, or use Upload files."));
+        listing.read_only ? "" : "Drop files or folders here to upload them, or use Upload files."));
     }
     if (listing.unshown) pane.append(element("p", { class: "note", text: `${listing.unshown} ${listing.unshown === 1 ? "file" : "files"} can't be shown here.` }));
     if (listing.truncated) pane.append(element("p", { class: "note", text: "This folder has too many files to list them all." }));
-    if (!listing.read_only && rows.length) pane.append(element("p", { class: "note", text: "Drop files anywhere on this page to upload them. A file you replace is kept as its previous version." }));
+    if (!listing.read_only && rows.length) pane.append(element("p", { class: "note", text: "Drop files or folders anywhere on this page to upload them. A file you replace is kept as its previous version." }));
     const windows = (ROOTS[root] || {}).windows;
     if (windows) pane.append(element("p", { class: "note mono", text: path ? `${windows}\\${path.split("/").join("\\")}` : windows }));
     else if (game.game_folder) pane.append(element("p", { class: "note mono", text: path ? `${game.game_folder}/${path}` : game.game_folder }));
@@ -797,40 +809,190 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   };
 
   // Uploads: one at a time, whatever screen is showing. The indicator is in the header of every screen.
-  const transfers = { items: [], active: null, open: false };
-  const addFiles = (list) => {
-    if (!list.length || !files.game || !files.listing || files.listing.read_only) return;
-    const taken = list.filter((file) => files.listing.entries.some((entry) => !entry.directory && entry.name.toLowerCase() === file.name.toLowerCase()));
-    const queue = (chosen, overwrite) => {
-      for (const file of chosen)
-        transfers.items.push({ file, name: file.name, game: files.game.id, gameName: files.game.name, root: files.root, path: files.path, overwrite, state: "waiting", fraction: 0, message: "" });
+  const transfers = { items: [], active: null, open: false, batches: 0 };
+  const picksFolders = "webkitdirectory" in document.createElement("input") && !matchMedia("(pointer: coarse)").matches;
+  const itemSize = (item) => (item.file ? item.file.size : 0);
+  const joined = (above, name) => (above && name ? `${above}/${name}` : above || name);
+  const parentOf = (relative) => (relative.includes("/") ? relative.slice(0, relative.lastIndexOf("/")) : "");
+  const leafOf = (relative) => relative.slice(relative.lastIndexOf("/") + 1);
+  // Finder's own file: it means nothing on the PS5, and every folder from a Mac has one.
+  const junkFile = (name) => name === ".DS_Store";
+  // Where a drop or a pick goes: fixed now, because reading a large folder takes time and the player can move on.
+  const uploadTarget = () => ({ route: files.route, game: files.game.id, gameName: files.game.name, root: files.root, path: files.path, listing: files.listing });
+
+  // A tree is { folders: [relative], files: [{ file, relative }], unread: [relative] }. Parents come before children.
+  const addTree = (target, tree) => {
+    if (target.route !== files.route) return fail("You left that folder before its files were ready. Drop them again.");
+    if (target.listing.read_only || (!tree.files.length && !tree.folders.length && !tree.unread.length)) return;
+    const tops = new Map();
+    const top = (relative, folder) => {
+      const name = relative.split("/")[0];
+      if (!tops.has(name)) tops.set(name, folder || relative.includes("/"));
+    };
+    for (const relative of tree.folders) top(relative, true);
+    for (const { relative } of tree.files) top(relative, false);
+    const clash = (name, folder) => target.listing.entries.some((entry) => entry.directory === folder && entry.name.toLowerCase() === name.toLowerCase());
+    const taken = [...tops].filter(([name, folder]) => clash(name, folder)).map(([name]) => name);
+    const inTop = (relative, names) => names.includes(relative.split("/")[0]);
+    // Only a folder's own drop depends on it: another upload to the same path can still go.
+    const batch = ++transfers.batches;
+    const queue = (names, overwrite) => {
+      const base = { batch, game: target.game, gameName: target.gameName, root: target.root, overwrite, fraction: 0, message: "" };
+      for (const relative of tree.folders)
+        if (inTop(relative, names))
+          transfers.items.push({ ...base, kind: "folder", file: null, name: leafOf(relative), path: joined(target.path, parentOf(relative)), state: "waiting" });
+      for (const { file, relative } of tree.files)
+        if (inTop(relative, names))
+          transfers.items.push({ ...base, kind: "file", file, name: leafOf(relative), path: joined(target.path, parentOf(relative)), state: "waiting" });
+    };
+    const unread = () => {
+      for (const relative of tree.unread)
+        transfers.items.push({ kind: "file", file: null, game: target.game, gameName: target.gameName, root: target.root, overwrite: false, fraction: 0,
+          name: leafOf(relative), path: joined(target.path, parentOf(relative)), state: "failed", message: "The browser couldn't read this." });
+    };
+    const start = () => {
       paintTransfers();
-      paintFolder();
+      if (onFolder(target.game, target.root, target.path)) paintFolder();
       nextTransfer();
     };
-    if (!taken.length) return queue(list, false);
+    const free = [...tops.keys()].filter((name) => !taken.includes(name));
+    if (!taken.length) {
+      queue(free, false);
+      unread();
+      return start();
+    }
     let close;
     const replace = element("input", { type: "radio", name: "clash", checked: "" });
     const skip = element("input", { type: "radio", name: "clash" });
-    const free = list.filter((file) => !taken.includes(file));
-    close = dialog(`${taken.length} of ${list.length} ${list.length === 1 ? "file" : "files"} already ${taken.length === 1 ? "exists" : "exist"}`,
-      element("p", { text: "This folder already has these files:" }),
-      element("ul", {}, ...taken.map((file) => element("li", { text: file.name }))),
-      element("label", { class: "choice" }, replace, element("span", {}, "Replace them", element("small", { text: "The current files are kept as their previous versions." }))),
+    const shown = taken.slice(0, 20);
+    const folder = (name) => tops.get(name);
+    const rows = shown.map((name) => element("li", { text: folder(name) ? `${name}/` : name }));
+    if (taken.length > shown.length) rows.push(element("li", { text: `and ${taken.length - shown.length} more` }));
+    close = dialog(`${taken.length} of ${tops.size} ${tops.size === 1 ? "item" : "items"} already ${taken.length === 1 ? "exists" : "exist"}`,
+      element("p", { text: "This folder already has:" }),
+      element("ul", {}, ...rows),
+      element("label", { class: "choice" }, replace, element("span", {}, "Replace matching files",
+        element("small", { text: taken.some(folder)
+          ? "Current files are kept as their previous versions. Other files already in these folders stay." : "The current files are kept as their previous versions." }))),
       element("label", { class: "choice" }, skip, element("span", {}, "Skip them", element("small", { text: free.length ? `Upload only the other ${free.length}.` : "Upload nothing." }))),
       element("div", { class: "foot" }, button("Cancel", () => close()), button("Upload", () => {
         close();
         queue(free, false);
         if (replace.checked) queue(taken, true);
+        unread();
+        start();
       }, "primary")));
+  };
+  const addFiles = (list) => {
+    if (!list.length || !files.game || !files.listing) return;
+    addTree(uploadTarget(), { folders: [], unread: [], files: list.map((file) => ({ file, relative: file.name })) });
+  };
+  // The folder picker names each file from the picked folder down, and leaves out empty folders.
+  const addPickedFolder = (list) => {
+    if (!list.length || !files.game || !files.listing) return;
+    const folders = new Set();
+    const chosen = [];
+    for (const file of list) {
+      if (junkFile(file.name)) continue;
+      const relative = file.webkitRelativePath || file.name;
+      chosen.push({ file, relative });
+      const parts = parentOf(relative).split("/").filter(Boolean);
+      parts.forEach((_, index) => folders.add(parts.slice(0, index + 1).join("/")));
+    }
+    addTree(uploadTarget(), { folders: [...folders].sort((left, right) => left.split("/").length - right.split("/").length), files: chosen, unread: [] });
+  };
+  // A drop: never a folder as a file. Level by level, so a parent always comes before its children and a deep folder
+  // uses no stack. readEntries gives only part of a large folder each time, until it gives nothing.
+  const readTree = async (entries) => {
+    const tree = { folders: [], files: [], unread: [] };
+    let level = entries.map((entry) => ({ entry, relative: entry.name }));
+    while (level.length) {
+      const below = [];
+      for (const { entry, relative } of level) {
+        try {
+          if (entry.isDirectory) {
+            const reader = entry.createReader();
+            const children = [];
+            for (;;) {
+              const part = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+              if (!part.length) break;
+              children.push(...part);
+            }
+            tree.folders.push(relative);
+            for (const child of children) below.push({ entry: child, relative: `${relative}/${child.name}` });
+          } else if (!junkFile(entry.name)) {
+            tree.files.push({ file: await new Promise((resolve, reject) => entry.file(resolve, reject)), relative });
+          }
+        } catch (error) { tree.unread.push(relative); }
+      }
+      level = below;
+    }
+    return tree;
+  };
+  // What's on its way into the folders below this one, by the name of the folder here.
+  const treeProgress = (game, root, path) => {
+    const trees = new Map();
+    const prefix = path ? `${path}/` : "";
+    for (const item of transfers.items) {
+      if (item.game !== game || item.root !== root || item.state === "cancelled") continue;
+      const whole = joined(item.path, item.name);
+      if (!whole.startsWith(prefix) || (item.kind === "file" && item.path === path)) continue;
+      const name = whole.slice(prefix.length).split("/")[0];
+      const lower = name.toLowerCase();
+      if (!trees.has(lower)) trees.set(lower, { name, total: 0, sent: 0, failed: 0, live: false });
+      const tree = trees.get(lower);
+      if (item.state === "failed") ++tree.failed;
+      if (item.state === "waiting" || item.state === "active") tree.live = true;
+      if (item.kind === "file") { ++tree.total; if (item.state === "done") ++tree.sent; }
+    }
+    for (const [lower, tree] of trees) {
+      if (tree.live) tree.text = tree.total ? `Uploading ${tree.sent} of ${tree.total}` : "Making folder";
+      else if (tree.failed) tree.text = `${tree.failed} failed. See Uploads.`;
+      else trees.delete(lower);
+    }
+    return trees;
+  };
+  const onTree = (item) => {
+    if (!files.game || !files.listing || item.game !== files.game.id || item.root !== files.root) return false;
+    if (location.hash !== folderHash(files.game.id, files.root, files.path)) return false;
+    return item.path === files.path || joined(item.path, item.name).startsWith(files.path ? `${files.path}/` : "");
+  };
+  // What a folder that failed or was cancelled leaves behind: the items below it can't go either.
+  const settleBelow = (folder, state, message) => {
+    const whole = joined(folder.path, folder.name);
+    for (const item of transfers.items)
+      if (item.state === "waiting" && item.batch === folder.batch && (item.path === whole || item.path.startsWith(`${whole}/`))) {
+        item.state = state;
+        item.message = message;
+      }
+  };
+  // A folder of many files mustn't list the folder after each one.
+  const refreshing = { last: 0, timer: 0 };
+  const refreshSoon = () => {
+    const live = transfers.items.some((item) => item.state === "waiting" || item.state === "active");
+    const wait = refreshing.last + 2000 - Date.now();
+    if (!live || wait <= 0) {
+      clearTimeout(refreshing.timer);
+      refreshing.timer = 0;
+      refreshing.last = Date.now();
+      refreshFolder();
+      return;
+    }
+    paintFolder();
+    if (!refreshing.timer) refreshing.timer = setTimeout(() => {
+      refreshing.timer = 0;
+      refreshing.last = Date.now();
+      if (files.listing) refreshFolder();
+    }, wait);
   };
   const finish = (item, state, message) => {
     item.state = state;
     item.message = message || "";
     item.xhr = null;
     transfers.active = null;
+    if (item.kind === "folder" && state !== "done") settleBelow(item, state, message || "");
     paintTransfers();
-    if (onFolder(item.game, item.root, item.path)) refreshFolder();
+    if (onTree(item)) refreshSoon();
     nextTransfer();
     // All went well: the indicator goes away by itself. A failure stays until it is read and cleared.
     if (transfers.items.every((candidate) => candidate.state === "done" || candidate.state === "cancelled"))
@@ -863,8 +1025,10 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     item.state = "active";
     const xhr = new XMLHttpRequest();
     item.xhr = xhr;
-    const full = item.path ? `${item.path}/${item.name}` : item.name;
-    xhr.open("POST", `/api/files/upload?${q({ game: item.game, root: item.root, path: full, overwrite: item.overwrite ? 1 : 0 })}`);
+    const full = joined(item.path, item.name);
+    xhr.open("POST", item.kind === "folder"
+      ? `/api/files/mkdir?${q({ game: item.game, root: item.root, path: full, parents: 1 })}`
+      : `/api/files/upload?${q({ game: item.game, root: item.root, path: full, overwrite: item.overwrite ? 1 : 0 })}`);
     xhr.setRequestHeader("X-Playden-Action", "files");
     let painted = 0;
     xhr.upload.addEventListener("progress", (event) => {
@@ -897,18 +1061,28 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       if (xhr.status === 401) showPairing();
       finish(item, "failed", xhr.responseText.trim() || `Playden answered ${xhr.status}.`);
     });
-    xhr.addEventListener("error", () => {
+    xhr.addEventListener("error", async () => {
+      // The browser can fail to read a file too, so ask before blaming Playden.
+      const answering = await fetch("/api/pair/status", { cache: "no-store", signal: AbortSignal.timeout(5000) }).then((response) => response.ok).catch(() => false);
+      if (item.state === "cancelled") return finish(item, "cancelled");
+      if (answering) return finish(item, "failed", item.kind === "folder" ? "The browser couldn't make this folder." : "The browser couldn't send this file.");
       // Whatever else is queued can't go either.
-      finish(item, "failed", "Playden stopped answering. The old file is still there.");
+      for (const other of transfers.items)
+        if (other.state === "waiting") {
+          other.state = "failed";
+          other.message = "Not sent: Playden stopped answering.";
+        }
+      finish(item, "failed", item.kind === "folder" ? "Playden stopped answering." : "Playden stopped answering. The old file is still there.");
       fail("Playden stopped answering during your upload. It closes when a game starts. Open Playden on the PS5, then try again.");
     });
     xhr.addEventListener("abort", () => finish(item, "cancelled"));
-    xhr.send(item.file);
+    xhr.send(item.file);  // nothing for a folder
     paintTransfers();
   };
   const cancelTransfer = (item) => {
-    if (item.xhr) return item.xhr.abort();
+    if (item.xhr && item.xhr.readyState !== XMLHttpRequest.DONE) return item.xhr.abort();
     item.state = "cancelled";
+    if (item.kind === "folder") settleBelow(item, "cancelled", "");
     paintTransfers();
   };
   const paintTransfers = () => {
@@ -919,8 +1093,8 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       chip.hidden = panel.hidden = true;
       return;
     }
-    const total = items.reduce((sum, item) => sum + item.file.size, 0);
-    const sent = items.reduce((sum, item) => sum + (item.state === "done" ? item.file.size : item.state === "active" ? item.file.size * item.fraction : 0), 0);
+    const total = items.reduce((sum, item) => sum + itemSize(item), 0);
+    const sent = items.reduce((sum, item) => sum + (item.state === "done" ? itemSize(item) : item.state === "active" ? itemSize(item) * item.fraction : 0), 0);
     const percent = total ? Math.round((sent / total) * 100) : 100;
     const failed = items.filter((item) => item.state === "failed").length;
     const position = items.filter((item) => item.state === "done" || item.state === "failed").length + 1;
@@ -934,7 +1108,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       const state = item.state === "done" ? element("span", { class: "done", text: "Done" })
         : item.state === "failed" ? element("span", { class: "bad", text: item.message })
         : element("span", { text: item.state === "active" ? `${Math.round(item.fraction * 100)}%` : "Waiting" });
-      const row = element("li", {}, element("div", { class: "line" }, item.name, state),
+      const row = element("li", {}, element("div", { class: "line" }, item.kind === "folder" ? `${item.name}/` : item.name, state),
         element("small", { text: `${item.gameName} › ${item.path || (ROOTS[item.root] || {}).label || item.root}` }));
       if (item.state === "active") row.append(element("span", { class: "meter" }, element("i", { style: `width:${Math.round(item.fraction * 100)}%` })));
       if (item.state === "active" || item.state === "waiting") row.append(button("Cancel", () => cancelTransfer(item)));
@@ -962,9 +1136,13 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     }
   });
   const inFolder = () => location.hash.startsWith("#/files/") && !!files.listing && !files.listing.read_only;
+  // Always handled: a drop the page leaves alone makes the browser leave the page to open the file.
   document.addEventListener("dragover", (event) => {
-    if (!inFolder()) return;
     event.preventDefault();
+    if (!inFolder()) {
+      event.dataTransfer.dropEffect = "none";
+      return;
+    }
     document.querySelector("main").classList.add("dragging");
   });
   document.addEventListener("dragleave", (event) => {
@@ -972,9 +1150,14 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   });
   document.addEventListener("drop", (event) => {
     document.querySelector("main").classList.remove("dragging");
-    if (!inFolder()) return;
     event.preventDefault();
-    addFiles([...event.dataTransfer.files]);
+    if (!inFolder()) return;
+    // Read here: a drop's items are gone once this handler returns.
+    const items = [...event.dataTransfer.items].filter((item) => item.kind === "file");
+    const entries = items.map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null));
+    if (!entries.length || !entries.every(Boolean)) return addFiles([...event.dataTransfer.files]);
+    const target = uploadTarget();
+    readTree(entries).then((tree) => addTree(target, tree)).catch(report);
   });
 
   // The config editor: small text files, saved only if the file is still what was opened.

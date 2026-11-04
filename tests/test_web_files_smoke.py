@@ -118,6 +118,13 @@ def run(port, server):
     # PhysX for a game playing from USB: a new _Redist folder, then the installer; the page now names it.
     wolverine_place = dict(game="local-3fa9c1", root="game")
     ok(call("POST", "/api/files/mkdir", path="_Redist", **wolverine_place))
+    # A folder upload: each folder, then its files. Sending it again finds them there.
+    for _ in range(2):
+        ok(call("POST", "/api/files/mkdir", path="Mods/Big/textures", parents=1, **wolverine_place))
+        ok(call("POST", "/api/files/upload", body=b"mod", path="Mods/Big/textures/a.dds", overwrite=1, **wolverine_place))
+    tree = ok(call("GET", "/api/files/list", path="Mods/Big/textures", **wolverine_place))
+    assert [entry["name"] for entry in tree["entries"]] == ["a.dds"] and "previous" in tree["entries"][0]
+    assert call("POST", "/api/files/mkdir", path="Mods/Big/textures/a.dds", parents=1, **wolverine_place)[0] == 409
     ok(call("POST", "/api/files/upload", body=b"msi", path="_Redist/PhysX_9.09.msi", **wolverine_place))
     wolverine = ok(call("GET", "/api/files/game", game="local-3fa9c1", redist=1))
     assert next(folder for folder in wolverine["redist"] if folder["path"] == "_Redist")["physx_installer"] == "_Redist/PhysX_9.09.msi"

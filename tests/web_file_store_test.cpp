@@ -528,6 +528,27 @@ int main() {
   CHECK(store.MakeFolder(root, "made").ok() && fs::is_directory(folder / "made"));
   CHECK(store.MakeFolder(root, "made").status == 409 && store.MakeFolder(root, "a/b").status == 404);
   CHECK(store.MakeFolder(root, ".playden-x").status == 400 && store.MakeFolder(root, "bad\\name").status == 400);
+  // A whole path at once, for a folder upload: what's there stays, a file in the way says so.
+  {
+    CHECK(store.MakeFolder(root, "tree/a/b", true).ok() && fs::is_directory(folder / "tree/a/b"));
+    Put(folder / "tree/a/keep.txt", "kept");
+    CHECK(store.MakeFolder(root, "tree/a/b", true).ok() && Text(folder / "tree/a/keep.txt") == "kept");
+    CHECK(store.MakeFolder(root, "tree/a/c", true).ok() && fs::is_directory(folder / "tree/a/c"));
+    const auto blocked = store.MakeFolder(root, "tree/a/keep.txt/d", true);
+    CHECK(blocked.status == 409 && blocked.message.find("keep.txt") != std::string::npos && Text(folder / "tree/a/keep.txt") == "kept");
+    CHECK(store.MakeFolder(root, "tree/a/keep.txt", true).status == 409);
+    CHECK(store.MakeFolder(root, "tree/.playden-x/d", true).status == 400 && !fs::exists(folder / "tree/.playden-x"));
+    CHECK(store.MakeFolder(root, "tree/playden_online.txt", true).status == 400);
+    CHECK(store.MakeFolder(root, "tree/steam_settings/d", true).status == 403 && !fs::exists(folder / "tree/steam_settings"));
+    CHECK(store.MakeFolder(root, "", true).status == 400);
+    const std::string too_long(kMaxNewNameBytes + 1, 'n');
+    CHECK(store.MakeFolder(root, "tree/" + too_long, true).status == 400);
+    fs::create_directories(base / "elsewhere");
+    fs::create_symlink(base / "elsewhere", folder / "tree/link");
+    CHECK(!store.MakeFolder(root, "tree/link/d", true).ok() && !fs::exists(base / "elsewhere/d"));
+    fs::remove_all(folder / "tree");
+    fs::remove_all(base / "elsewhere");
+  }
   CHECK(Send(store, root, "made/f.txt", "x").ok());
   CHECK(store.Delete(root, "made").status == 409 && fs::exists(folder / "made/f.txt"));
   CHECK(Send(store, root, "made/f.txt", "y", true).ok() && fs::exists(folder / "made/.playden-bak.f.txt"));

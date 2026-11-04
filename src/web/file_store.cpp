@@ -537,10 +537,29 @@ bool FileStore::CommitUpload(const FileRoot& root, const std::vector<std::string
   return true;
 }
 
-FileError FileStore::MakeFolder(const FileRoot& root, const std::string& path) {
+FileError FileStore::MakeFolder(const FileRoot& root, const std::string& path, bool parents) {
   auto parts = SplitRelativePath(path);
   if (!parts || parts->empty() || PrivatePath(*parts, root.private_paths)) return BadPath();
   if (ReadOnlyPath(*parts)) return {403, "Playden writes this folder itself, so it can't be changed here."};
+  if (parents) {
+    std::lock_guard<std::mutex> commit(commit_mutex_);
+    const auto held = Hold();
+    if (!held) return Busy();
+    std::optional<ManagedDirectory> folder;
+    if (auto error = Locate(root, {}, true, true, &folder); !error.ok()) return error;
+    for (const auto& part : *parts) {
+      struct stat existing{};
+      const bool exists = folder->InspectChild(part, &existing);
+      if (!exists && errno != ENOENT) return FromErrno(errno, "This folder can't be read");
+      if (exists && !S_ISDIR(existing.st_mode)) return {409, "A file named " + part + " is in the way."};
+      if (!exists && !NewName(part)) return BadPath();
+      auto next = folder->OpenChild(part, folder->policy(), !exists, root.folder_mode);
+      if (!next) return FromErrno(errno, "The folder can't be made");
+      if (!exists && (!next->Sync() || !folder->Sync())) return FromErrno(errno, "The folder can't be saved");
+      folder = std::move(next);
+    }
+    return kOk;
+  }
   const auto name = parts->back();
   if (!NewName(name)) return BadPath();
   parts->pop_back();

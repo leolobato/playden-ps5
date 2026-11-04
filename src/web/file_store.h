@@ -134,7 +134,9 @@ class FileStore {
   // A complete upload, or a refusal before anything changed (the old file stays). *replaced: a file was replaced.
   FileError Upload(const FileRoot& root, const std::string& path, const UploadOptions& options, const UploadReader& read,
                    bool* replaced);
-  FileError MakeFolder(const FileRoot& root, const std::string& path);
+  // One new folder, in a folder that is there. With parents: makes each level that's missing, and a folder already
+  // there is fine; a file in the way is 409 and named.
+  FileError MakeFolder(const FileRoot& root, const std::string& path, bool parents = false);
   // A file (with its previous version) or an empty folder.
   FileError Delete(const FileRoot& root, const std::string& path);
   // Swaps a file with its previous version, or brings back a previous version with no file.

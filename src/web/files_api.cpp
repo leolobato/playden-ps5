@@ -412,7 +412,16 @@ void FilesApi::Register(Router& router) {
       SendJson(response, 200, "{\"ok\":true}");
     };
   };
-  router.Post("/api/files/mkdir", action(&FileStore::MakeFolder));
+  router.Post("/api/files/mkdir", [this](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response) || !RequireAction(request, response)) return;
+    FileGame game;
+    FileRoot root;
+    if (!Find(request, response, &game, &root)) return;
+    const auto error = store_.MakeFolder(root, QueryValue(request.query, "path").value_or(std::string()),
+                                         QueryValue(request.query, "parents") == std::string("1"));
+    if (!error.ok()) return Fail(response, error);
+    SendJson(response, 200, "{\"ok\":true}");
+  });
   router.Post("/api/files/delete", action(&FileStore::Delete));
   router.Post("/api/files/restore", action(&FileStore::Restore));
 }
