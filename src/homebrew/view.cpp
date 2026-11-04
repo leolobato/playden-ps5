@@ -3385,8 +3385,9 @@ class Render::Impl
         if (installation == nullptr && external != state.external_games.end())
         {
             static const std::map<std::string, std::string> drives = {
-                {"usb0", "USB drive"}, {"usb1", "USB drive 2"}, {"m2", "M.2 SSD"}, {"extended", "Extended storage"},
-                {"internal", "Console drop folder"}};
+                {"usb0", "USB drive"}, {"usb1", "USB drive 2"}, {"usb2", "USB drive 3"}, {"usb3", "USB drive 4"},
+                {"usb4", "USB drive 5"}, {"usb5", "USB drive 6"}, {"usb6", "USB drive 7"}, {"usb7", "USB drive 8"},
+                {"m2", "M.2 SSD"}, {"extended", "Extended storage"}, {"internal", "Console drop folder"}};
             const auto drive = drives.find(external->volume_id);
             location = drive == drives.end() ? external->volume_id : drive->second;
             if (!external->available)

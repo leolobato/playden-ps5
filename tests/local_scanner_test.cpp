@@ -256,7 +256,9 @@ void ImportRootListsChildFolders() {
   CHECK(scan.folders == (std::vector<std::string>{"A Game", "B Game"}));
   CHECK(ScanImportRoot("relative").status == ScanStatus::kUnsupported);
   CHECK(ScanImportRoot((import / "loose.exe").string()).status == ScanStatus::kNotFolder);
-  CHECK(ImportRoots().size() == 5 && std::string(ImportRoots()[0].volume) == "internal");
+  CHECK(ImportRoots().size() == 11 && std::string(ImportRoots()[0].volume) == "internal");
+  // A drive with an EFI partition takes a slot for it, so a game partition can land past usb1.
+  CHECK(std::string(ImportRoots().back().volume) == "usb7" && std::string(ImportRoots().back().mount) == "/mnt/usb7");
 }
 
 void HelperRules() {

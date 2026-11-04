@@ -2,7 +2,7 @@
 // imports.json: the Windows games the player added from a drive or the drop folder, and the ones
 // they removed (so adding the same folder again brings back its ID, bottle and settings).
 //
-// A game is named by `volume` (an install volume ID: internal, m2, extended, usb0, usb1) and
+// A game is named by `volume` (an install volume ID: internal, m2, extended, usb0 to usb7) and
 // `folder`, relative to that volume's mount (scanner.h ImportRoots): "playden/import/Delores" on
 // usb0 is /mnt/usb0/playden/import/Delores; the drop folder's games are volume "internal",
 // folder "playden-import/<name>" (/data/playden-import/<name>). The store never touches the game

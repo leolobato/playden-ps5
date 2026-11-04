@@ -41,7 +41,7 @@ struct InstallRequest {
 //   move <local game>                   move an imported game from the drop folder into Playden
 //   move <app id> <volume>              move an installed Steam game to another drive (an install volume id)
 //   import <volume> <folder> <program>  add a game playing in place (volume: internal, m2, extended,
-//                                       usb0, usb1; folder: a name in that drive's import folder, or a
+//                                       usb0 to usb7; folder: a name in that drive's import folder, or a
 //                                       path from the drive's root; program: inside the folder)
 // <game> is a Steam app ID (strict decimal) or "local-<uuid>". Words are separated by spaces or tabs;
 // a word with spaces goes in double quotes ("Old School Rally"), which can't hold a quote themselves.

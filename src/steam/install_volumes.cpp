@@ -20,7 +20,8 @@ namespace playden::steam {
 namespace {
 
 std::string ExternalRoot(const std::string& path) {
-  for (const auto* root : {"/mnt/ext0", "/mnt/ext1", "/mnt/usb0", "/mnt/usb1"}) {
+  for (const auto* root : {"/mnt/ext0", "/mnt/ext1", "/mnt/usb0", "/mnt/usb1", "/mnt/usb2", "/mnt/usb3", "/mnt/usb4",
+                           "/mnt/usb5", "/mnt/usb6", "/mnt/usb7"}) {
     const std::size_t length = std::strlen(root);
     if (path.compare(0, length, root) == 0 &&
         (path.size() == length || path[length] == '/')) return root;
@@ -171,6 +172,12 @@ std::vector<VolumeCandidate> ConsoleVolumeCandidates(const std::string& title_ro
       {"extended", "Extended storage", "/mnt/ext0", "/mnt/ext0/playden/games", true},
       {"usb0", "USB drive", "/mnt/usb0", "/mnt/usb0/playden/games", true},
       {"usb1", "USB drive 2", "/mnt/usb1", "/mnt/usb1/playden/games", true},
+      {"usb2", "USB drive 3", "/mnt/usb2", "/mnt/usb2/playden/games", true},
+      {"usb3", "USB drive 4", "/mnt/usb3", "/mnt/usb3/playden/games", true},
+      {"usb4", "USB drive 5", "/mnt/usb4", "/mnt/usb4/playden/games", true},
+      {"usb5", "USB drive 6", "/mnt/usb5", "/mnt/usb5/playden/games", true},
+      {"usb6", "USB drive 7", "/mnt/usb6", "/mnt/usb6/playden/games", true},
+      {"usb7", "USB drive 8", "/mnt/usb7", "/mnt/usb7/playden/games", true},
   };
 }
 

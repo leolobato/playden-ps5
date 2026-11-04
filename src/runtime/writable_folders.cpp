@@ -37,7 +37,7 @@ mode_t RepairMode(const std::filesystem::path& folder, const std::filesystem::pa
   const auto relative = folder.lexically_relative(namespace_root).generic_string();
   if (relative == "data/playden" || relative == "data/homebrew") return 01777;
   if (relative == "data/playden-games" || relative == "data/playden-import") return 0777;
-  for (const auto* volume : {"ext0", "ext1", "usb0", "usb1"})
+  for (const auto* volume : {"ext0", "ext1", "usb0", "usb1", "usb2", "usb3", "usb4", "usb5", "usb6", "usb7"})
     for (const auto* folder : {"/playden/games", "/playden/import"})
       if (relative == std::string("mnt/") + volume + folder) return 0777;
   return 0;

@@ -287,6 +287,12 @@ const std::vector<ImportRoot>& ImportRoots() {
       {"extended", "/mnt/ext0", "playden/import"},
       {"usb0", "/mnt/usb0", "playden/import"},
       {"usb1", "/mnt/usb1", "playden/import"},
+      {"usb2", "/mnt/usb2", "playden/import"},
+      {"usb3", "/mnt/usb3", "playden/import"},
+      {"usb4", "/mnt/usb4", "playden/import"},
+      {"usb5", "/mnt/usb5", "playden/import"},
+      {"usb6", "/mnt/usb6", "playden/import"},
+      {"usb7", "/mnt/usb7", "playden/import"},
   };
   return roots;
 }

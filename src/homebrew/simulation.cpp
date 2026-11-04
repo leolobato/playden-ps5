@@ -749,9 +749,10 @@ void replay_organization_delta(playden::OrganizationSnapshot& base,
 }
 
 // The Import sheet's drive groups, in the order it lists them (ImportRoots' volume ids).
-constexpr std::array<std::pair<const char*, const char*>, 5> kImportGroups = {{
-    {"usb0", "USB drive"}, {"usb1", "USB drive 2"}, {"m2", "M.2 SSD"}, {"extended", "Extended storage"},
-    {"internal", "Console drop folder"}}};
+constexpr std::array<std::pair<const char*, const char*>, 11> kImportGroups = {{
+    {"usb0", "USB drive"}, {"usb1", "USB drive 2"}, {"usb2", "USB drive 3"}, {"usb3", "USB drive 4"},
+    {"usb4", "USB drive 5"}, {"usb5", "USB drive 6"}, {"usb6", "USB drive 7"}, {"usb7", "USB drive 8"},
+    {"m2", "M.2 SSD"}, {"extended", "Extended storage"}, {"internal", "Console drop folder"}}};
 constexpr const char* kImportEmptyText =
     "Copy game folders into playden/import on an exFAT drive, or into /data/playden-import over FTP, then choose "
     "Look for games.";
