@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-04.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-05.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -227,6 +227,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Terraria](https://store.steampowered.com/app/105600) | ✅ Works | 0.13 | — | Game settings › Program = `Terraria.exe`: the default program starts the server. ([#151](https://github.com/leolobato/playden-ps5/issues/151), firmware 13.60) |
 | [Tetris Effect: Connected](https://store.steampowered.com/app/1003590) | ✅ Works | 0.12 | Unreal 4 · D3D11 · DXVK · 64-bit | Default settings, direct shipping executable selected by Playden. Startup, controller menus and Journey Mode verified; gameplay confirmed by the user. Tested from USB storage. |
 | [The Binding of Isaac: Rebirth](https://store.steampowered.com/app/250900) | ✅ Works | 0.12 | Custom · OpenGL · Zink · 32-bit | Default program/settings on USB; SteamStub preparation now succeeds. New file, Normal difficulty: Basement I movement, right-stick shooting, room transitions, enemy damage, death and restart verified. Clean rendering. Bosses, later floors and co-op untested. |
+| [The Evil Within](https://store.steampowered.com/app/268050) | ✅ Works | 0.19 | id Tech 5 · 64-bit | Default settings. Needs a kit newer than 0.18. Tested on the demo. ([#116](https://github.com/leolobato/playden-ps5/issues/116), [#90](https://github.com/leolobato/playden-ps5/issues/90), firmware 13.60) |
 | [The Henry Stickmin Collection](https://store.steampowered.com/app/1089980) | ✅ Works | 0.13 | — | Default settings, DualSense with the Mouse preset. ([#190](https://github.com/leolobato/playden-ps5/issues/190), firmware 13.00) |
 | [The Rogue Prince of Persia](https://store.steampowered.com/app/2717880) | ✅ Works | 0.11 | Unity (IL2CPP) · D3D11 · DXVK · 64-bit | Default settings. |
 | [The Silent Age](https://store.steampowered.com/app/352520) | ✅ Works | 0.10 | Unity · D3D9 · 32-bit | Use Controller preset = **Mouse**: Options confirms the Unity settings window, then the left stick and Cross play. Cloud saves restore. |
@@ -336,8 +337,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [STAR WARS Empire at War: Gold Pack](https://store.steampowered.com/app/32470) | ❌ Broken | 0.10 | Alamo · D3D9 · DXVK · 64-bit | Set Program to `GameData/StarWarsG.exe` (`runme.exe` only starts a launcher), Graphics to DXVK and Controller preset to **Mouse**. The intro and the main menu's 3D scene play and the menus work with the pointer (on the very first start the menu was 4:3 and ignored clicks; later starts were fine). Starting any tutorial crashes while the map loads (NULL read in `ucrtbase.dll`). |
 | [Subnautica 2](https://store.steampowered.com/app/1962700) | ❌ Broken | 0.11 | Unreal · 64-bit | Cannot start with `-dx11`; without it, reports DirectX 12 is unsupported, also with Direct3D 12 = **vkd3d-proton**. ([#20](https://github.com/leolobato/playden-ps5/issues/20), firmware 13.60) |
 | [Tameshi](https://store.steampowered.com/app/1954720) | ❌ Broken | 0.13 | Defold · OpenGL · 64-bit | Crashes at start. |
-| [The Evil Within](https://store.steampowered.com/app/268050) | ❌ Broken | 0.12 | id Tech 5 · 64-bit | Stays on the loading spinner and never starts. ([#90](https://github.com/leolobato/playden-ps5/issues/90), firmware 13.60) |
-| [The Evil Within 2](https://store.steampowered.com/app/601430) | ❌ Broken | 0.12 | — · 64-bit | Returns to the console home screen right after start. ([#92](https://github.com/leolobato/playden-ps5/issues/92), firmware 13.60) |
+| [The Evil Within 2](https://store.steampowered.com/app/601430) | ❌ Broken | 0.18 | — · 64-bit | Returns to the console home screen right after start. Tested on the demo. ([#623](https://github.com/leolobato/playden-ps5/issues/623), [#92](https://github.com/leolobato/playden-ps5/issues/92), firmware 13.60) |
 | [The Riftbreaker](https://store.steampowered.com/app/780310) | ❌ Broken | 0.12 | — · 64-bit | Returns to the console home screen about 10 seconds after start, with no error. ([#112](https://github.com/leolobato/playden-ps5/issues/112), firmware 13.42) |
 | [The Talos Principle](https://store.steampowered.com/app/257510) | ❌ Broken | 0.11 | Serious Engine · 64-bit | Stops at "Display driver is too old or version cannot be determined". With Controller preset = **Mouse** the pointer moves, but clicking Cancel does nothing. |
 | [Tom Clancy's The Division 2](https://store.steampowered.com/app/2221490) | ❌ Broken | 0.13 | — | Needs Ubisoft Connect and uses Easy Anti-Cheat. ([#187](https://github.com/leolobato/playden-ps5/issues/187), firmware 11.00) |
