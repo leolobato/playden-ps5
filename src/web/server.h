@@ -25,6 +25,9 @@ struct ServerOptions {
   int write_timeout_ms = 10'000;
   // A connection that has sent nothing gives up after this (a browser's spare connection), so it doesn't hold a worker.
   int silent_timeout_ms = 2'000;
+  // Asked for on the listener, before it binds, so accepted sockets inherit it. The console gives at most 512 KiB, and
+  // the default of 64 KiB leaves too little ready for each large write to storage.
+  int receive_buffer_bytes = 4 * 1024 * 1024;
   // A request body may go quiet for this long.
   int body_timeout_ms = 30'000;
   // How often the accept wait looks at Stop. Closing a listening socket does not reliably wake a

@@ -86,6 +86,9 @@ bool Server::Start(const ServerOptions& options, Handler handler, std::string* e
     int on = 1;
     setsockopt(listener_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
     NoSigpipe(listener_);
+    // A system with a lower limit may refuse the size instead of giving what it can.
+    for (int wanted = options.receive_buffer_bytes; wanted >= 64 * 1024; wanted /= 2)
+      if (setsockopt(listener_, SOL_SOCKET, SO_RCVBUF, &wanted, sizeof wanted) == 0) break;
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<std::uint16_t>(port));
@@ -109,6 +112,10 @@ bool Server::Start(const ServerOptions& options, Handler handler, std::string* e
   socklen_t size = sizeof bound;
   if (::getsockname(listener_, reinterpret_cast<sockaddr*>(&bound), &size) != 0) return fail("getsockname: " + ErrorText(errno));
   port_ = ntohs(bound.sin_port);
+  int receive_buffer = 0;
+  socklen_t receive_size = sizeof receive_buffer;
+  getsockopt(listener_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, &receive_size);
+  Log("receive buffer=" + std::to_string(receive_buffer));
   idle_ = 0;
   for (int i = 0; i < std::max(options.workers, 1); ++i) workers_.emplace_back([this] { Work(); });
   acceptor_ = std::thread([this] { Run(); });

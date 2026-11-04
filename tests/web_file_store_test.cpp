@@ -561,6 +561,31 @@ int main() {
     fs::remove(folder / "large.txt");
   }
 
+  // A file larger than the transfer buffer, in the odd sizes a network gives: every byte, in order. Cut off part way
+  // through a buffer, nothing is published.
+  {
+    std::string large(3 * 1024 * 1024 + 123, '\0');
+    for (std::size_t i = 0; i < large.size(); ++i) large[i] = static_cast<char>((i * 31) ^ (i >> 8));
+    const auto pieces = [&](std::size_t stop_at) {
+      auto offset = std::make_shared<std::size_t>(0);
+      auto turn = std::make_shared<std::size_t>(0);
+      return UploadReader([&large, offset, turn, stop_at](char* data, std::size_t size) -> std::ptrdiff_t {
+        if (*offset >= stop_at) return -1;
+        const std::size_t sizes[] = {1, 4096, 70001, 13, 1460};
+        const auto count = std::min({size, sizes[(*turn)++ % 5], large.size() - *offset});
+        std::copy_n(large.data() + *offset, count, data);
+        *offset += count;
+        return static_cast<std::ptrdiff_t>(count);
+      });
+    };
+    UploadOptions whole;
+    whole.length = large.size();
+    CHECK(store.Upload(root, "large.bin", whole, pieces(large.size()), nullptr).ok() && Text(folder / "large.bin") == large);
+    CHECK(store.Upload(root, "cut.bin", whole, pieces(1500 * 1024), nullptr).status == 408 && !fs::exists(folder / "cut.bin"));
+    for (const auto& name : Names(folder)) CHECK(name.rfind(".playden-upload-", 0) != 0);
+    fs::remove(folder / "large.bin");
+  }
+
   // New folders and deletes.
   CHECK(store.MakeFolder(root, "made").ok() && fs::is_directory(folder / "made"));
   CHECK(store.MakeFolder(root, "made").status == 409 && store.MakeFolder(root, "a/b").status == 404);

@@ -2,6 +2,8 @@
 #include "web/router.h"
 #include "web/server.h"
 
+#include <algorithm>
+
 #include <arpa/inet.h>
 #include <chrono>
 #include <cstdio>
@@ -76,11 +78,18 @@ int main() {
   options.read_timeout_ms = 500;
   options.write_timeout_ms = 500;
   options.poll_interval_ms = 50;
+  options.receive_buffer_bytes = 256 * 1024;
   options.log = [&](const std::string& line) { std::lock_guard<std::mutex> lock(lines_mutex); lines.push_back(line); };
   Server server;
   std::string error;
   CHECK(server.Start(options, [&router](const Request& request, Response& response) { router.Handle(request, response); }, &error));
   CHECK(server.running() && server.port() != 0);
+  // The receive buffer is set on the listener, for every connection it accepts.
+  {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    const auto line = std::find_if(lines.begin(), lines.end(), [](const std::string& text) { return text.rfind("receive buffer=", 0) == 0; });
+    CHECK(line != lines.end() && std::atoi(line->c_str() + 15) >= 256 * 1024);
+  }
 
   auto answer = Exchange(server.port(), "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
   CHECK(answer.rfind("HTTP/1.1 200 OK\r\n", 0) == 0 && answer.size() > 6 && answer.compare(answer.size() - 6, 6, "hello\n") == 0);
