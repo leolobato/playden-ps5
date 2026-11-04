@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <string>
 #include <sys/stat.h>
@@ -91,7 +92,10 @@ int main() {
   std::vector<std::string> steps;
   FileStore::Options options;
   std::string fail_at;
+  // Uploads race later on, and each calls this with no lock of the store's held.
+  std::mutex steps_mutex;
   options.fault = [&](const std::string& step) {
+    std::lock_guard<std::mutex> lock(steps_mutex);
     steps.push_back(step);
     return step != fail_at;
   };
