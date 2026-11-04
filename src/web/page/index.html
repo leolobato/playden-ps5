@@ -275,6 +275,8 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     if (days === 1) return `Yesterday ${time}`;
     return `${months[date.getMonth()]} ${date.getDate()}${date.getFullYear() !== now.getFullYear() ? " " + date.getFullYear() : ""} ${time}`;
   };
+  // For the middle of a sentence: "yesterday 18:14", but still "Nov 2 18:14".
+  const whenInText = (seconds) => when(seconds).replace(/^(Today|Yesterday)/, (word) => word.toLowerCase());
   const view = (name) => element("a", { class: "ghost", href: `/api/logs/${encodeURIComponent(name)}`, target: "_blank", rel: "noopener", text: "View" });
 
   const fail = (message) => {
@@ -315,7 +317,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       element("td", { class: "soft title", text: game.title }),
       element("td", { class: "soft when-wide", text: when(game.last_run) }),
       element("td", { class: "num soft size", text: size(game.size) }),
-      element("td", { class: "soft card-line", text: `${game.title} · ${when(game.last_run).toLowerCase()}` }),
+      element("td", { class: "soft card-line", text: `${game.title} · ${whenInText(game.last_run)}` }),
       element("td", { class: "num view" }, view(`title-${game.title}.log`)));
     row.addEventListener("click", (event) => { if (!event.target.closest("a")) pick(game.title); });
     return row;
@@ -349,7 +351,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
         element("td", { class: "name", text: log.name }),
         element("td", { class: "soft when-wide", text: when(log.changed) }),
         element("td", { class: "num soft size", text: size(log.size) }),
-        element("td", { class: "soft card-line", text: `changed ${when(log.changed).toLowerCase()}` }),
+        element("td", { class: "soft card-line", text: `changed ${whenInText(log.changed)}` }),
         element("td", { class: "num view" }, view(log.name))));
     const keep = state.picked === "all" || state.games.some((game) => game.title === state.picked);
     pick(keep ? state.picked : state.games.length ? state.games[0].title : null);
@@ -602,7 +604,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
           element("td", { class: "num soft size", text: folder.bytes ? longSize(folder.bytes) : folder.entries ? "" : "Empty" }),
           element("td", { class: "acts" }, anchor("Open", folderHash(id, "game", folder.path))))))));
       }
-      pane.append(element("p", { class: "note", text: "Playden looks for PhysX in folders named _Redist, _CommonRedist, CommonRedist, Redist, Redists, Redistributable, Redistributables, Support, __Installer, _Installer, Installer, Installers, Prerequisites, Prereqs, PhysX, DirectX, VCRedist or DotNet, at the top of the game folder or one level down." }));
+      if (game.physx_needed !== undefined) pane.append(element("p", { class: "note", text: "Playden looks for PhysX in folders named _Redist, _CommonRedist, CommonRedist, Redist, Redists, Redistributable, Redistributables, Support, __Installer, _Installer, Installer, Installers, Prerequisites, Prereqs, PhysX, DirectX, VCRedist or DotNet, at the top of the game folder or one level down." }));
     }
     if (!bottleRoots.length && !gameRoot) pane.append(element("p", { class: "lede", text: "This game has no folders to show yet." }));
   };
@@ -664,7 +666,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
         ? element("td", { class: "entry-name" }, element("a", { class: "folder", href: folderHash(game.id, root, full), text: entry.name }), entry.read_only ? element("span", { text: "Read-only. Playden writes this folder." }) : "")
         : element("td", { class: "entry-name" }, entry.name);
       if (!entry.directory && entry.recoverable) name.append(element("span", { text: "Recoverable: an earlier replace stopped here. Restore it to get this file back." }));
-      else if (!entry.directory && entry.previous) name.append(element("span", { text: `Previous version from ${when(entry.previous.modified).toLowerCase()}, ${longSize(entry.previous.size)}` }));
+      else if (!entry.directory && entry.previous) name.append(element("span", { text: `Previous version from ${whenInText(entry.previous.modified)}, ${longSize(entry.previous.size)}` }));
       if (entry.name.toLowerCase() === "configs.user.ini") name.append(element("span", { text: "Names your Steam account. Look through it before you share it." }));
       const acts = element("td", { class: "acts" });
       if (!entry.directory) {
