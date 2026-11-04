@@ -118,6 +118,13 @@ def run(port, server):
     # PhysX for a game playing from USB: a new _Redist folder, then the installer; the page now names it.
     wolverine_place = dict(game="local-3fa9c1", root="game")
     ok(call("POST", "/api/files/mkdir", path="_Redist", **wolverine_place))
+    # A UTF-16 file opens as text, says how it is stored, and is saved against the hash of its bytes.
+    utf16 = "\ufeffversion=1\r\n".encode("utf-16-le")
+    ok(call("POST", "/api/files/upload", body=utf16, path="version.txt", **wolverine_place))
+    opened = ok(call("GET", "/api/files/text", path="version.txt", **wolverine_place))
+    assert (opened["text"], opened["encoding"], opened["bom"]) == ("version=1\r\n", "utf-16le", True)
+    ok(call("POST", "/api/files/upload", body="\ufeffversion=2\r\n".encode("utf-16-le"), path="version.txt", if_sha256=opened["sha256"], **wolverine_place))
+    assert call("POST", "/api/files/upload", body=utf16, path="version.txt", if_sha256=opened["sha256"], **wolverine_place)[0] == 409
     # A folder upload: each folder, then its files. Sending it again finds them there.
     for _ in range(2):
         ok(call("POST", "/api/files/mkdir", path="Mods/Big/textures", parents=1, **wolverine_place))

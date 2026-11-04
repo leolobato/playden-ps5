@@ -23,6 +23,9 @@ inline constexpr const char* kRestorePrefix = ".playden-restore-";
 
 std::string LowerAscii(std::string_view text);
 bool ValidUtf8(std::string_view text);
+// A text file's bytes as UTF-8 for the editor. UTF-8, or UTF-16 with a byte order mark; encoding is "utf-8", "utf-16le"
+// or "utf-16be", and bom says whether the file starts with one. False for anything else, or for text holding a NUL.
+bool DecodeText(std::string_view bytes, std::string* text, std::string* encoding, bool* bom);
 // Hidden and refused: Playden's own files and secrets kept in a game's folder.
 bool HiddenName(std::string_view name);
 // Readable, never changed: Playden writes these folders each time it prepares the game.

@@ -44,6 +44,57 @@ bool ValidUtf8(std::string_view text) {
   return true;
 }
 
+bool DecodeText(std::string_view bytes, std::string* text, std::string* encoding, bool* bom) {
+  const auto starts = [&](std::string_view mark) { return bytes.substr(0, mark.size()) == mark; };
+  const bool little = starts("\xff\xfe");
+  if (!little && !starts("\xfe\xff")) {
+    *bom = starts("\xef\xbb\xbf");
+    *encoding = "utf-8";
+    if (*bom) bytes.remove_prefix(3);
+    if (!ValidUtf8(bytes) || bytes.find('\0') != std::string_view::npos) return false;
+    *text = std::string(bytes);
+    return true;
+  }
+  *bom = true;
+  *encoding = little ? "utf-16le" : "utf-16be";
+  bytes.remove_prefix(2);
+  if (bytes.size() % 2 != 0) return false;
+  const auto unit = [&](std::size_t at) -> unsigned {
+    const auto first = static_cast<unsigned char>(bytes[at]), second = static_cast<unsigned char>(bytes[at + 1]);
+    return little ? first | (second << 8) : (first << 8) | second;
+  };
+  std::string out;
+  out.reserve(bytes.size());
+  for (std::size_t at = 0; at < bytes.size(); at += 2) {
+    unsigned value = unit(at);
+    if (value == 0 || (value >= 0xdc00 && value <= 0xdfff)) return false;
+    if (value >= 0xd800 && value <= 0xdbff) {
+      at += 2;
+      if (at >= bytes.size()) return false;
+      const unsigned low = unit(at);
+      if (low < 0xdc00 || low > 0xdfff) return false;
+      value = 0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00);
+    }
+    if (value < 0x80) {
+      out += static_cast<char>(value);
+    } else if (value < 0x800) {
+      out += static_cast<char>(0xc0 | (value >> 6));
+      out += static_cast<char>(0x80 | (value & 0x3f));
+    } else if (value < 0x10000) {
+      out += static_cast<char>(0xe0 | (value >> 12));
+      out += static_cast<char>(0x80 | ((value >> 6) & 0x3f));
+      out += static_cast<char>(0x80 | (value & 0x3f));
+    } else {
+      out += static_cast<char>(0xf0 | (value >> 18));
+      out += static_cast<char>(0x80 | ((value >> 12) & 0x3f));
+      out += static_cast<char>(0x80 | ((value >> 6) & 0x3f));
+      out += static_cast<char>(0x80 | (value & 0x3f));
+    }
+  }
+  *text = std::move(out);
+  return true;
+}
+
 bool HiddenName(std::string_view name) {
   const auto lower = LowerAscii(name);
   if (lower.rfind(".playden", 0) == 0) return true;

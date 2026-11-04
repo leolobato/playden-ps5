@@ -72,7 +72,9 @@ struct OpenedFile {
 
 // A file read and hashed for the editor.
 struct FileText {
-  std::string text;
+  std::string text;  // as UTF-8, with any byte order mark left out
+  std::string encoding = "utf-8";
+  bool bom = false;
   std::string sha256;
 };
 inline constexpr std::size_t kMaxTextBytes = 1024 * 1024;

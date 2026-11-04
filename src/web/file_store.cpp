@@ -288,10 +288,10 @@ FileError FileStore::ReadText(const FileRoot& root, const std::string& path, Fil
     if (count <= 0) return FromErrno(errno, "This file can't be read");
     done += static_cast<std::size_t>(count);
   }
-  if (!ValidUtf8(text) || text.find('\0') != std::string::npos) return {415, "This isn't a text file. Download it instead."};
+  if (!DecodeText(text, &out->text, &out->encoding, &out->bom)) return {415, "This file uses an encoding the editor can't show. Download it instead."};
+  // Of the bytes on disk, not the decoded text: the save compares it with the file as it is then.
   const auto hash = runtime::HashArtifactBytes(text);
   if (!hash) return {500, "This file can't be read."};
-  out->text = std::move(text);
   out->sha256 = *hash;
   return kOk;
 }

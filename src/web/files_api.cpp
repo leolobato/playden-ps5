@@ -377,7 +377,7 @@ void FilesApi::Register(Router& router) {
     FileText text;
     const auto error = store_.ReadText(root, QueryValue(request.query, "path").value_or(std::string()), &text);
     if (!error.ok()) return Fail(response, error);
-    SendJson(response, 200, "{" + Field("sha256", text.sha256) + "," + Field("text", text.text) + "}");
+    SendJson(response, 200, "{" + Field("sha256", text.sha256) + "," + Field("encoding", text.encoding) + "," + Field("bom", text.bom) + "," + Field("text", text.text) + "}");
   });
 
   router.Post("/api/files/upload", [this](const Request& request, const std::string&, Response& response) {

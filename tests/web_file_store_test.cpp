@@ -518,6 +518,43 @@ int main() {
     CHECK(Send(store, root, "conf.ini", "a=4\n", true, nullptr, hash).status == 409 && !fs::exists(folder / "conf.ini"));
     Put(folder / "binary.dat", std::string("\xff\xfe\0", 3));
     CHECK(store.ReadText(root, "binary.dat", &text).status == 415);
+    // Encodings: the text comes back as UTF-8, and the hash is still of the bytes on disk.
+    const auto reads_as = [&](const std::string& bytes, const std::string& expected, const std::string& encoding, bool bom) {
+      Put(folder / "coded.txt", bytes);
+      FileText coded;
+      return store.ReadText(root, "coded.txt", &coded).ok() && coded.text == expected && coded.encoding == encoding && coded.bom == bom &&
+             coded.sha256 == *playden::runtime::HashArtifactBytes(bytes);
+    };
+    const auto refused = [&](const std::string& bytes) {
+      Put(folder / "coded.txt", bytes);
+      FileText coded;
+      return store.ReadText(root, "coded.txt", &coded).status == 415;
+    };
+    CHECK(reads_as("plain\r\n", "plain\r\n", "utf-8", false));
+    CHECK(reads_as("\xef\xbb\xbf" "caf\xc3\xa9", "caf\xc3\xa9", "utf-8", true));
+    CHECK(reads_as(std::string("\xff\xfe" "1\0.\0" "\xe9\0" "\x20\x20", 10), "1.\xc3\xa9\xe2\x80\xa0", "utf-16le", true));
+    CHECK(reads_as(std::string("\xfe\xff\0" "1\0" "\xe9", 6), "1\xc3\xa9", "utf-16be", true));
+    CHECK(reads_as(std::string("\xff\xfe\x3d\xd8\x00\xde", 6), "\xf0\x9f\x98\x80", "utf-16le", true));
+    CHECK(reads_as("\xff\xfe", "", "utf-16le", true));
+    CHECK(refused(std::string("\xff\xfe" "a", 3)));                   // odd length
+    CHECK(refused(std::string("\xff\xfe\x3d\xd8", 4)));              // a surrogate cut off
+    CHECK(refused(std::string("\xff\xfe\x00\xde" "a\0", 6)));        // a low surrogate alone
+    CHECK(refused(std::string("\xff\xfe\x3d\xd8" "a\0", 6)));        // a high surrogate alone
+    CHECK(refused(std::string("\xff\xfe\0\0" "a\0", 6)));            // UTF-32, or a NUL
+    CHECK(refused("caf\xe9"));                                       // Windows-1252
+    CHECK(refused(std::string("a\0b\0", 4)));                         // UTF-16 with no mark
+    // The save's check on a UTF-16 file compares the bytes on disk.
+    {
+      const std::string utf16("\xff\xfe" "a\0=\0" "1\0", 8);
+      Put(folder / "coded.txt", utf16);
+      FileText coded;
+      CHECK(store.ReadText(root, "coded.txt", &coded).ok() && coded.text == "a=1");
+      const std::string saved("\xff\xfe" "a\0=\0" "2\0", 8);
+      CHECK(Send(store, root, "coded.txt", saved, true, nullptr, coded.sha256).ok() && Text(folder / "coded.txt") == saved);
+      CHECK(Send(store, root, "coded.txt", utf16, true, nullptr, coded.sha256).status == 409 && Text(folder / "coded.txt") == saved);
+      fs::remove(folder / "coded.txt");
+      fs::remove(folder / ".playden-bak.coded.txt");
+    }
     Put(folder / "large.txt", std::string(kMaxTextBytes + 1, 'a'));
     CHECK(store.ReadText(root, "large.txt", &text).status == 413);
     fs::remove(folder / "binary.dat");

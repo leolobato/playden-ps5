@@ -281,6 +281,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
 
   const fail = (message) => {
     $("problem-text").textContent = message;
+    $("retry").hidden = false;
     $("problem").hidden = false;
   };
 
@@ -464,6 +465,8 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   const report = (error) => {
     if (error.status === 401) return;
     fail(error.message);
+    // The same file gives the same refusal.
+    if (error.status === 415) $("retry").hidden = true;
   };
 
   // Pairing
@@ -1160,6 +1163,31 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     readTree(entries).then((tree) => addTree(target, tree)).catch(report);
   });
 
+  // A save goes back the way the file came: its encoding, its byte order mark, its usual line ending.
+  const encodeText = (value, original) => {
+    const count = (pattern) => (original.text.match(pattern) || []).length;
+    const crlf = count(/\r\n/g), lf = count(/(?<!\r)\n/g), cr = count(/\r(?!\n)/g);
+    const ending = crlf > lf && crlf >= cr ? "\r\n" : cr > lf ? "\r" : "\n";
+    const lines = ending === "\n" ? value : value.replace(/\n/g, ending);
+    if (original.encoding === "utf-8") {
+      const body = new TextEncoder().encode(lines);
+      if (!original.bom) return body;
+      const marked = new Uint8Array(body.length + 3);
+      marked.set([0xef, 0xbb, 0xbf]);
+      marked.set(body, 3);
+      return marked;
+    }
+    const little = original.encoding === "utf-16le";
+    const bytes = new Uint8Array((lines.length + 1) * 2);
+    const put = (at, unit) => {
+      bytes[at] = little ? unit & 0xff : unit >> 8;
+      bytes[at + 1] = little ? unit >> 8 : unit & 0xff;
+    };
+    put(0, 0xfeff);
+    for (let i = 0; i < lines.length; ++i) put((i + 1) * 2, lines.charCodeAt(i));
+    return bytes;
+  };
+
   // The config editor: small text files, saved only if the file is still what was opened.
   const showEditor = async (id, root, path) => {
     const token = ++files.route;
@@ -1175,12 +1203,15 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const folder = parts.join("/");
     const area = element("textarea", { class: "editor", spellcheck: "false", "aria-label": `Contents of ${name}` });
     area.value = text.text;
+    // The text area turns every line break into LF. Compared with this, an unchanged file isn't written at all.
+    const opened = area.value;
     const back = () => { location.hash = folderHash(id, root, folder); };
     const save = async () => {
       $("problem").hidden = true;
+      if (area.value === opened) return back();
       try {
         await api(`/api/files/upload?${q({ game: id, root, path, if_sha256: text.sha256 })}`,
-          { method: "POST", headers: { "X-Playden-Action": "files" }, body: new Blob([area.value]) });
+          { method: "POST", headers: { "X-Playden-Action": "files" }, body: new Blob([encodeText(area.value, text)]) });
         back();
       } catch (error) { report(error); }
     };
