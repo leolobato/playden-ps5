@@ -1443,6 +1443,24 @@ bool RecipeRegistryValueAllowed(const std::string& key, const std::string& name,
 }
 
 constexpr std::size_t kMaxRecipeIniValues = 16;
+constexpr std::size_t kMaxRecipeSteamApiCopies = 4;
+
+// A path in steam_api_copies (docs/community-recipes.md): a steam_api DLL inside the game folder, named with '/' and
+// no "." or ".." part.
+bool RecipeSteamApiCopyAllowed(const std::string& path) {
+  if (path.empty() || path.size() > 200 || path.find_first_of("\\:*?\"<>|") != std::string::npos) return false;
+  for (const unsigned char c : path)
+    if (c < 0x20 || c > 0x7e) return false;
+  std::string part;
+  for (std::size_t start = 0; start <= path.size();) {
+    const auto end = std::min(path.find('/', start), path.size());
+    part = path.substr(start, end - start);
+    if (part.empty() || part == "." || part == "..") return false;
+    start = end + 1;
+  }
+  const auto name = LowerAscii(part);
+  return path.find('/') != std::string::npos && (name == "steam_api.dll" || name == "steam_api64.dll");
+}
 
 // An INI value a recipe may carry (docs/community-recipes.md): a .ini file inside the game folder,
 // named with '/' and no "." or ".." part, and printable ASCII that keeps each value on its own line
@@ -1618,6 +1636,19 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
           out.ini.push_back(std::move(entry));
         }
       }
+    }
+  }
+  if (const auto* copies = root->get("steam_api_copies")) {
+    if (!copies->array()) return fail("steam_api_copies must be a list");
+    // It places a file in the game folder that the player can't see in Game settings, so only Playden's own recipes do.
+    if (IsCommunityRecipeId(out.id)) return fail("a community recipe can't carry steam_api_copies");
+    std::set<std::string> identities;
+    for (const auto& item : *copies->array()) {
+      if (!item.string() || !RecipeSteamApiCopyAllowed(*item.string()))
+        return fail("steam_api_copies needs steam_api DLL paths inside the game folder");
+      if (out.steam_api_copies.size() >= kMaxRecipeSteamApiCopies) return fail("steam_api_copies has too many paths");
+      if (!identities.insert(LowerAscii(*item.string())).second) return fail("steam_api_copies names a path twice");
+      out.steam_api_copies.push_back(*item.string());
     }
   }
   if (out.dll_overrides.size() && !IsProsperoDllOverrides(out.dll_overrides)) return fail("recipe dll_overrides are invalid");
@@ -1800,6 +1831,12 @@ std::string SerializeGameRecipe(const GameRecipe& recipe) {
     text += "}";
   }
   if (!recipe.ini.empty()) text += ",\"ini\":" + SerializeIniValues(recipe.ini, "", "");
+  if (!recipe.steam_api_copies.empty()) {
+    text += ",\"steam_api_copies\":[";
+    for (std::size_t index = 0; index < recipe.steam_api_copies.size(); ++index)
+      text += (index ? "," : "") + quoted(recipe.steam_api_copies[index]);
+    text += "]";
+  }
   return text + "}\n";
 }
 
@@ -3493,6 +3530,7 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
   };
   CommunityRecipe out;
   if (!ParseGameRecipe(text, &out.recipe, reason)) return false;
+  if (!out.recipe.steam_api_copies.empty()) return fail("a community recipe can't carry steam_api_copies");
   const auto root = json::parse(text);
   std::uint64_t appid = 0;
   if (!ExactUnsigned(root->get("steam_appid"), std::numeric_limits<std::uint32_t>::max(), &appid, false) ||

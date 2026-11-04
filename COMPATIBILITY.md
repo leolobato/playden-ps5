@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-02.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-04.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -69,6 +69,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [ChainStaff Demo](https://store.steampowered.com/app/3463500) | ✅ Works | 0.13 | — | Default settings. |
 | [CHAOS;HEAD NOAH](https://store.steampowered.com/app/1961950) | ✅ Works | 0.13 | — | Needs its free [Costume DLC](https://store.steampowered.com/app/2103330). Playden downloads it from 0.9.0-beta.1 ([#251](https://github.com/leolobato/playden-ps5/issues/251)); the tester copied its file by hand, so the download itself is not tested with this game. Default settings, DualSense. ([#212](https://github.com/leolobato/playden-ps5/issues/212), firmware 11.60) |
 | [CHRONO TRIGGER](https://store.steampowered.com/app/613830) | ✅ Works | 0.17 | Cocos2d · OpenGL · 32-bit | Title, menu, and Resume loads the bookmark; Crono walks. Through Zink. Also works on kit 0.13 ([#183](https://github.com/leolobato/playden-ps5/pull/183), firmware 13.00). Default settings on kit 0.17. ([#383](https://github.com/leolobato/playden-ps5/pull/383)) |
+| [Clair Obscur: Expedition 33](https://store.steampowered.com/app/1903340) | ✅ Works | 0.18 | Unreal Engine 5 · D3D12 · vkd3d-proton | Default settings, DualSense. ([#311](https://github.com/leolobato/playden-ps5/issues/311), firmware 13.42) |
 | [Clive Barker's Hellraiser: Revival Demo](https://store.steampowered.com/app/5184670) | ✅ Works | 0.14 | Unreal Engine 5 · D3D12 · vkd3d-proton | Default settings, DualSense, from Playden 0.9.0, which starts Unreal Engine 5 games with Direct3D 12. ([#173](https://github.com/leolobato/playden-ps5/issues/173)) |
 | [Clone Drone in the Danger Zone](https://store.steampowered.com/app/597170) | ✅ Works | 0.17 | — | Default settings. ([#431](https://github.com/leolobato/playden-ps5/pull/431)) |
 | [Core Keeper](https://store.steampowered.com/app/1621690) | ✅ Works | 0.13 | — | Default settings, DualSense. Cloud saves load. ([#236](https://github.com/leolobato/playden-ps5/issues/236), firmware 13.42) |

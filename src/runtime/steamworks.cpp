@@ -190,6 +190,37 @@ std::optional<Emulator> LoadEmulator(const std::string& emulator_dir, bool pe64)
   return Emulator{*bytes, *digest};
 }
 
+// Moves the steam_api_copies out of found, comparing as the file system may: exFAT ignores case.
+void DropSteamApiCopies(const std::vector<std::string>& copies, std::vector<std::string>* found) {
+  found->erase(std::remove_if(found->begin(), found->end(), [&](const std::string& relative) {
+    return std::any_of(copies.begin(), copies.end(), [&](const std::string& copy) { return Lower(copy) == Lower(relative); });
+  }), found->end());
+}
+
+// Whether every folder from root down to relative's parent is a real folder, not a link.
+bool RealFoldersTo(const fs::path& root, const std::string& relative) {
+  auto folder = root;
+  const auto parent = fs::path(relative).parent_path();
+  for (const auto& part : parent) {
+    folder /= part;
+    struct stat info {};
+    if (::lstat(folder.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return false;
+  }
+  return true;
+}
+
+// The .orig of the one found DLL named like relative; empty when there is not exactly one.
+fs::path OriginalFor(const fs::path& root, const std::vector<std::string>& found, const std::string& relative) {
+  const auto name = Lower(fs::path(relative).filename().string());
+  fs::path original;
+  for (const auto& candidate : found) {
+    if (Lower(fs::path(candidate).filename().string()) != name) continue;
+    if (!original.empty()) return {};
+    original = root / (candidate + ".orig");
+  }
+  return original;
+}
+
 }  // namespace
 
 std::vector<std::string> RetiredSteamApiSha256() {
@@ -251,6 +282,7 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
   SteamworksResult result;
   const fs::path root(install_root);
   result.found = FindSteamApi(install_root);
+  DropSteamApiCopies(identity.steam_api_copies, &result.found);
   const auto fail = [&](std::string why) {
     result.message = std::move(why);
     return result;
@@ -292,6 +324,20 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
     }
     if (!WriteSettings(path.parent_path(), identity, original))
       return fail("Playden could not write the game's Steam settings.");
+  }
+  for (const auto& relative : identity.steam_api_copies) {
+    const auto source = OriginalFor(root, result.found, relative);
+    const auto original = !source.empty() && IsRegular(source) ? ReadFile(source, kMaxDllBytes) : std::nullopt;
+    // A game whose folders changed in an update may no longer ask for this. It starts, or stops as it would have.
+    if (!original || !RealFoldersTo(root, relative)) {
+      result.skipped.push_back(relative);
+      continue;
+    }
+    const auto path = root / relative;
+    const auto current = IsRegular(path) ? ReadFile(path, kMaxDllBytes) : std::nullopt;
+    if (current && *current == *original) continue;
+    if (!WriteAtomic(path, *original)) return fail("Playden could not put a copy of the game's Steam library at " + relative + ".");
+    result.changed.push_back(relative);
   }
   result.ok = true;
   return result;
@@ -376,10 +422,24 @@ SteamworksResult RemoveLegacySteam(const std::string& install_root, const std::v
   return result;
 }
 
-SteamworksResult RestoreSteamworks(const std::string& install_root, const std::vector<std::string>& retired) {
+SteamworksResult RestoreSteamworks(const std::string& install_root, const std::vector<std::string>& retired,
+                                   const std::vector<std::string>& steam_api_copies) {
   SteamworksResult result;
   const fs::path root(install_root);
   result.found = FindSteamApi(install_root);
+  DropSteamApiCopies(steam_api_copies, &result.found);
+  for (const auto& relative : steam_api_copies) {
+    const auto path = root / relative;
+    const auto source = OriginalFor(root, result.found, relative);
+    if (source.empty() || !IsRegular(source) || !IsRegular(path) || !RealFoldersTo(root, relative)) continue;
+    const auto copy = ReadFile(path, kMaxDllBytes);
+    if (!copy || copy != ReadFile(source, kMaxDllBytes)) continue;  // not what Playden put there
+    if (::unlink(path.c_str()) != 0) {
+      result.message = "Playden could not remove its copy of the game's Steam library at " + relative + ".";
+      return result;
+    }
+    result.changed.push_back(relative);
+  }
   for (const auto& relative : result.found) {
     const auto path = root / relative;
     const auto current = ReadFile(path, kMaxDllBytes);

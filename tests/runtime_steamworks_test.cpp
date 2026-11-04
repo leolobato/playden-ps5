@@ -235,6 +235,59 @@ int main(int argc, char** argv) {
     CHECK(RetiredSteamApiSha256().size() == 2);
   }
 
+  {  // A game that hashes its library at one path and loads it from another (Clair Obscur: Expedition 33).
+    const auto game = root / "hashes-its-library";
+    const std::string engine = "Engine/Binaries/ThirdParty/Steamworks/Steamv157/Win64/steam_api64.dll";
+    const std::string copy = "Sandfall/Binaries/Win64/steam_api64.dll";
+    const auto own = GameDll(true, "own");
+    Write(game / engine, own);
+    Write(game / "Sandfall/Binaries/Win64/Game.exe", "program");
+    auto hashed = identity;
+    hashed.steam_api_copies = {copy};
+    auto swapped = EmulateSteamworks(game.string(), emulator, hashed);
+    CHECK(swapped.ok && swapped.skipped.empty() && (swapped.found == std::vector<std::string>{engine}));
+    CHECK((swapped.changed == std::vector<std::string>{engine, copy}));
+    CHECK(Read(game / engine) == emulator64 && Read(game / (engine + ".orig")) == own && Read(game / copy) == own);
+    CHECK(!fs::exists(game / "Sandfall/Binaries/Win64/steam_settings"));
+    // Again: the copy isn't found as a library to swap, and nothing changes.
+    swapped = EmulateSteamworks(game.string(), emulator, hashed);
+    CHECK(swapped.ok && swapped.changed.empty() && swapped.found.size() == 1 && Read(game / copy) == own);
+    // A game update brings a newer original: the copy follows it.
+    const auto newer = GameDll(true, "newer");
+    Write(game / engine, newer);
+    swapped = EmulateSteamworks(game.string(), emulator, hashed);
+    CHECK(swapped.ok && Read(game / engine) == emulator64 && Read(game / copy) == newer);
+    // A link at the path is replaced, not followed.
+    fs::remove(game / copy);
+    Write(game / "elsewhere.dll", "elsewhere");
+    fs::create_symlink(game / "elsewhere.dll", game / copy);
+    swapped = EmulateSteamworks(game.string(), emulator, hashed);
+    CHECK(swapped.ok && !fs::is_symlink(game / copy) && Read(game / copy) == newer && Read(game / "elsewhere.dll") == "elsewhere");
+    // The game's own mode removes the copy and leaves a file Playden didn't put there.
+    auto restored = RestoreSteamworks(game.string(), RetiredSteamApiSha256(), {copy});
+    CHECK(restored.ok && (restored.changed == std::vector<std::string>{copy, engine}));
+    CHECK(!fs::exists(game / copy) && Read(game / engine) == newer);
+    Write(game / copy, "the player's file");
+    restored = RestoreSteamworks(game.string(), RetiredSteamApiSha256(), {copy});
+    CHECK(restored.ok && restored.changed.empty() && Read(game / copy) == "the player's file");
+    fs::remove(game / copy);
+    // Without the folder, nothing is made: the game's folders changed in an update.
+    auto moved = hashed;
+    moved.steam_api_copies = {"Moved/Binaries/Win64/steam_api64.dll"};
+    swapped = EmulateSteamworks(game.string(), emulator, moved);
+    CHECK(swapped.ok && (swapped.skipped == moved.steam_api_copies) && !fs::exists(game / "Moved"));
+    // A linked folder on the way is not followed.
+    fs::create_directories(game / "real-folder");
+    fs::create_symlink(game / "real-folder", game / "Linked");
+    moved.steam_api_copies = {"Linked/steam_api64.dll"};
+    swapped = EmulateSteamworks(game.string(), emulator, moved);
+    CHECK(swapped.ok && swapped.skipped.size() == 1 && !fs::exists(game / "real-folder/steam_api64.dll"));
+    // Two libraries of that name: which original it wants isn't known, so nothing is copied.
+    Write(game / "Other/steam_api64.dll", GameDll(true, "other"));
+    swapped = EmulateSteamworks(game.string(), emulator, hashed);
+    CHECK(swapped.ok && (swapped.skipped == hashed.steam_api_copies) && !fs::exists(game / copy));
+  }
+
   fs::remove_all(root);
   fs::remove_all(broken);
   std::puts("steamworks tests passed");

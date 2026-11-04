@@ -69,6 +69,7 @@ Recipe fields:
 | `requirements` | What the runtime kit's template bottle must provide: `{"audio": "ps5"}` (Wine's PS5 audio driver) is the only one so far. On a kit without it, Playden refuses to prepare or start the game and names what is missing. |
 | `registry` | Values the bottle gets under `HKEY_CURRENT_USER` when the game's files are prepared, as a Steam install script's would be: `{"Software\\Wine\\AppDefaults\\game.exe\\Direct3D": {"VideoMemorySize": "4096"}}`. Only some keys are allowed; see [Registry values](#registry-values). |
 | `ini` | Values the game's own INI files get when the game's files are prepared, written only when the key is missing or empty: `{"BmGame/Config/UserEngine.ini": {"Engine.Engine": {"Language": "int"}}}`. See [INI values](#ini-values). |
+| `steam_api_copies` | Shipped recipes only. Paths in the game folder that get a copy of the game's own Steam library while the emulator answers the game: `["Sandfall/Binaries/Win64/steam_api64.dll"]`. See [Steam library copies](#steam-library-copies). |
 
 Community fields:
 
@@ -160,6 +161,27 @@ and no `.` or `..` part. At most 16 values. Printable ASCII only. No `[` or `]`
 in a section, no `=`, `[` or `]` in a key, and a key does not start with `;` or
 `#`. A value is not empty. Each value once (letter case does not make two
 values different).
+
+## Steam library copies
+
+Use `steam_api_copies` only for a game that hashes its Steam library on disk and quits when the file is the emulator,
+and only when the game loads the library from a different path than the one it hashes. Clair Obscur: Expedition 33
+hashes `Sandfall/Binaries/Win64/steam_api64.dll` first if it exists, while Unreal loads the copy under
+`Engine/Binaries/ThirdParty/Steamworks` by its full path.
+
+Playden keeps the emulator where the game loads it. When Steam features = Offline emulation, it copies the `.orig` it
+kept to each path when it prepares the game or applies its settings:
+
+- The source is the `.orig` of the one emulated library with the same file name. If there isn't exactly one, or the
+  path's folder is missing or is a link, Playden skips the copy and logs `copies_skipped=`.
+- The copy is a real file, not a link, because exFAT has no links.
+- With Steam features = Game's own files, Playden removes the copy.
+- A game that Playden prepared with the recipe it made itself also gets the copies of a recipe that Playden ships for
+  the game later.
+
+Rules: the path is a `steam_api.dll` or `steam_api64.dll` in a folder of the game, with `/` between folders and no `.`
+or `..` part. At most 4 paths, each once. A community recipe with this field is refused: it places a file that Game
+settings doesn't show, and a community recipe is only offered, so the game wouldn't start until the player chose it.
 
 ## Shipped recipes
 

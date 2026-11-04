@@ -713,6 +713,8 @@ struct RuntimeHost::GameFiles {
   // The INI values to apply: the recipe's, or for a game still on the recipe Playden generated, those of the recipe
   // Playden now ships for it (they touch only the game's own files, which the generated recipe doesn't name).
   const std::vector<rt::IniValue>* ini = nullptr;
+  // Likewise, the steam_api DLL copies to keep.
+  const std::vector<std::string>* steam_api_copies = nullptr;
 };
 
 namespace {
@@ -862,16 +864,19 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     // A game from another store keeps its folder as it shipped: no steam_appid.txt of Playden's would hide
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.
     identity.write_game_appid_file = !other_store;
+    identity.steam_api_copies = *files.steam_api_copies;
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
   } else {
-    result = rt::RestoreSteamworks(root.string());
+    result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);
   }
   if (!emulator_waits) {
     std::string changed;
     for (const auto& path : result.changed) changed += (changed.empty() ? "" : ",") + path;
+    std::string skipped;
+    for (const auto& path : result.skipped) skipped += (skipped.empty() ? "" : ",") + path;
     Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (emulate ? "emulate" : "game") +
         " found=" + std::to_string(result.found.size()) + " changed=" + (changed.empty() ? "-" : changed) +
-        (result.ok ? std::string() : " failed=" + result.message));
+        (skipped.empty() ? std::string() : " copies_skipped=" + skipped) + (result.ok ? std::string() : " failed=" + result.message));
     if (!result.ok) return result.message;
   }
   // A game from before Steamworks (no steam_api DLL) checks for Steam through steam.dll instead
@@ -1194,11 +1199,14 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
     if (RecipeFits(candidate, record) && candidate.id == record.recipe_id) files.recipe = &candidate;
   if (!files.recipe) return {};  // publication reports the missing recipe
   files.ini = &files.recipe->ini;
+  files.steam_api_copies = &files.recipe->steam_api_copies;
   if (rt::IsGeneratedRecipeId(files.recipe->id))
     for (const auto& candidate : c.recipes)
       if (rt::RecipeGame(candidate) == GameOf(record) && candidate.app_id == record.runtime_number &&
-          !rt::IsGeneratedRecipeId(candidate.id))
+          !rt::IsGeneratedRecipeId(candidate.id)) {
         files.ini = &candidate.ini;
+        files.steam_api_copies = &candidate.steam_api_copies;
+      }
   files.saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
   const rt::SettingsPreset* preset = nullptr;
   if (files.saved)
