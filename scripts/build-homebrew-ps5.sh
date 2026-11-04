@@ -45,4 +45,6 @@ bash "$environment" bash -c 'exec "$PS5_PAYLOAD_SDK/bin/prospero-cmake" "$@"' ba
  -DPLAYDEN_TITLE_REMOVER_ELF="$title_remover" -DPLAYDEN_RELAUNCH_ELF="$relaunch" \
  -DPLAYDEN_PS5_DEPS_DIR="$deps" -DPLAYDEN_HUI_SOURCE_DIR="$hui"
 bash "$environment" cmake --build "$root/build/homebrew-ps5" --target playden-homebrew-ps5-package
+bash "$environment" env PLAYDEN_PACKAGE_DIR="$root/build/homebrew-ps5/dist/FAKE77031" \
+ python3 "$root/tests/test_native_package_identity.py"
 echo "Selected Hui package (not deployed): $root/build/homebrew-ps5/dist/FAKE77031"

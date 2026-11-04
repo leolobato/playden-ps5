@@ -138,12 +138,16 @@ ShadowMountPlus adds its tile to the Home screen.
 
 1. Copy the `FAKE77031` folder from `playden-ps5-<version>` into `/data/homebrew/` on the console. Use any FTP client
    (FileZilla, Cyberduck, etc.) or the web file manager in a browser. Create `/data/homebrew` first if it isn't there.
-   You do not need to `chmod` anything: Playden checks the folders it writes to and fixes their permissions before
-   it writes. If it can't fix one, it names that folder. If your FTP client leaves out the empty `logs` and
+
+   **After an FTP copy, set `eboot.bin` and `sce_module/libc.prx` to `777`.** FTP uploads usually lose the zip's
+   modes, and without the execute bit the PS5 shows CE-107750-0.
+
+   You do not need to `chmod` anything else: Playden checks the folders it writes to and fixes their permissions
+   before it writes. If it can't fix one, it names that folder. If your FTP client leaves out the empty `logs` and
    `playden-data` folders, Playden makes them again when it starts.
 
    Or, from a computer with Python 3, run this in the `playden-ps5-<version>` folder. It creates the folders, copies
-   only what changed, and keeps a backup of the files it replaces:
+   only what changed, keeps a backup of the files it replaces, and sets the modes itself:
 
    ```sh
    python3 tools/console_title_deploy.py --host <PS5 IP> deploy --install FAKE77031 --backup backups/<name>
@@ -365,6 +369,8 @@ build/homebrew-host/playden-homebrew --simulation --scenario signed-out
   Reload ShadowMountPlus.
   Until the game is registered, its Cloud saves are not synced before its first launch.
 - If every game hangs on its loading spinner, the ELF loader has stopped. Reload it.
+- If the PS5 shows CE-107750-0 when you press the Playden tile, check that `eboot.bin` has its execute bit (see
+  [Install Playden](#install-playden)). Playden can't repair this, because it never starts.
 - If Playden can't start, its first screen says which step failed. The startup error under it is worth quoting
   in a report:
   - **Playden's app folder is incomplete:** files such as `lapy.elf` or `playden-package.identity` are missing

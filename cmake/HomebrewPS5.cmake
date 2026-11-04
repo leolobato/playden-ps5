@@ -295,10 +295,13 @@ function(playden_add_homebrew_ps5_title)
 			"${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md" "${app}/"
 		COMMAND "${host_tool}" self --sign --in "${out}/eboot.elf" --out "${app}/eboot.bin" --magic 0x1D3D154F
 		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${libc_prx}" "${app}/sce_module/libc.prx"
+		# Last, so it sees every file: the signing step and the copies above leave no execute bit.
+		COMMAND "${CMAKE_COMMAND}" -DAPP_DIR=${app} -P "${CMAKE_SOURCE_DIR}/cmake/SetPackageExecutableModes.cmake"
 		COMMAND "${CMAKE_COMMAND}" -DAPP_DIR=${app} -DTITLE_ID=${PLAYDEN_PS5_TITLE_ID}
 			-P "${CMAKE_SOURCE_DIR}/cmake/WriteNativePackageIdentity.cmake"
 		COMMAND "${CMAKE_COMMAND}" -E touch "${stamp}"
 		DEPENDS "${pie}" "${host_tool}" "${libc_prx}" "${CMAKE_SOURCE_DIR}/cmake/PackagePS5.cmake"
+			"${CMAKE_SOURCE_DIR}/cmake/SetPackageExecutableModes.cmake"
 			"${CMAKE_SOURCE_DIR}/cmake/WriteNativePackageIdentity.cmake"
 			"${CMAKE_SOURCE_DIR}/sce_sys/icon0.png" "${CMAKE_SOURCE_DIR}/assets/branding/generic-title-icon.png"
 			"${CMAKE_SOURCE_DIR}/sce_sys/pic0.dds" "${CMAKE_SOURCE_DIR}/sce_sys/pic1.dds"
