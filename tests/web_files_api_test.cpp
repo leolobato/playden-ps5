@@ -250,6 +250,17 @@ int main() {
   CHECK(Status(post("/api/files/mkdir?" + game + "game&path=_Redist2&parents=1", cookie)) == 200);
   CHECK(Status(post("/api/files/mkdir?" + game + "game&path=tree/a/b&parents=1", cookie)) == 200 && fs::is_directory(game_folder / "tree/a/b"));
   CHECK(Status(post("/api/files/mkdir?" + game + "game&path=game.exe/a&parents=1", cookie)) == 409);
+  // A folder with what's in it: counted first, then gone. Without the switch it still has to be empty.
+  Put(game_folder / "tree/a/b/f.txt", "12345");
+  CHECK(Status(post("/api/files/delete?" + game + "game&path=tree", cookie)) == 409 && fs::exists(game_folder / "tree/a/b/f.txt"));
+  {
+    const auto counted = get("/api/files/tree?" + game + "game&path=tree", cookie);
+    CHECK(counted.find("\"files\":1,\"folders\":3,\"bytes\":5,\"left\":0") != std::string::npos && fs::exists(game_folder / "tree/a/b/f.txt"));
+    CHECK(Status(get("/api/files/tree?" + game + "game&path=tree", "")) == 401);
+    CHECK(Status(post("/api/files/delete?" + game + "game&path=tree&recursive=1", cookie, "", "")) == 403 && fs::exists(game_folder / "tree"));
+    const auto gone = post("/api/files/delete?" + game + "game&path=tree&recursive=1", cookie);
+    CHECK(Status(gone) == 200 && gone.find("\"files\":1") != std::string::npos && !fs::exists(game_folder / "tree"));
+  }
   CHECK(Status(post("/api/files/delete?" + game + "game&path=_Redist2", cookie)) == 200 && !fs::exists(game_folder / "_Redist2"));
   CHECK(Status(post("/api/files/delete?" + game + "user&path=Documents/new.sav", cookie)) == 200 && !fs::exists(profile / "Documents/new.sav"));
   // A POST from another origin never reaches these.

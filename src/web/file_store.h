@@ -70,6 +70,14 @@ struct OpenedFile {
   std::string name;
 };
 
+// What a walk over a folder found, or what its delete did.
+struct TreeSummary {
+  std::uint64_t files = 0;    // not counting a previous version beside its file
+  std::uint64_t folders = 0;  // the folder itself too
+  std::uint64_t bytes = 0;
+  std::uint64_t left = 0;     // what a delete leaves: see DeleteTree
+};
+
 // A file read and hashed for the editor.
 struct FileText {
   std::string text;  // as UTF-8, with any byte order mark left out
@@ -141,6 +149,13 @@ class FileStore {
   FileError MakeFolder(const FileRoot& root, const std::string& path, bool parents = false);
   // A file (with its previous version) or an empty folder.
   FileError Delete(const FileRoot& root, const std::string& path);
+  // A folder and everything in it that the page can show. What stays, with the folders that hold it: hidden and secret
+  // names, read-only and private folders, links, files with another hard link, names the page can't show, temporary
+  // files still in use. A file or folder the console won't let this user remove stays too. Locks one batch at a time,
+  // so a long delete keeps nothing else waiting for long. Stopped by an error, a second run goes on with what is left.
+  FileError DeleteTree(const FileRoot& root, const std::string& path, TreeSummary* out);
+  // What DeleteTree would do, changing nothing.
+  FileError SummarizeTree(const FileRoot& root, const std::string& path, TreeSummary* out);
   // Swaps a file with its previous version, or brings back a previous version with no file.
   FileError Restore(const FileRoot& root, const std::string& path);
   // A folder as a zip, its entries named from the folder's own name down. Before any byte goes out, a folder too
@@ -162,6 +177,7 @@ class FileStore {
                    std::optional<platform::ManagedDirectory>* out);
   std::optional<platform::DirectoryPolicy> WritePolicy(const FileRoot& root);
   bool Step(const std::string& step);
+  FileError WalkTree(const FileRoot& root, const std::string& path, bool remove, TreeSummary* out);
   std::int64_t Now() const;
   std::optional<std::string> RandomText();
   void Sweep(const platform::ManagedDirectory& folder);

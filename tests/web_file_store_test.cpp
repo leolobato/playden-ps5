@@ -593,6 +593,102 @@ int main() {
   CHECK(store.Delete(root, "made").ok() && !fs::exists(folder / "made"));
   CHECK(store.Delete(root, "made").status == 404);
 
+  // A folder with what's in it: gone, except what Playden protects and the folders that hold it.
+  {
+    const auto tree = folder / "tree";
+    Put(tree / "a.txt", "aaa");
+    Put(tree / ".playden-bak.a.txt", "bb");
+    Put(tree / ".playden-bak.lost.txt", "c");
+    Put(tree / "sub/deep/d.txt", "dddd");
+    fs::create_directories(tree / "sub/empty");
+    TreeSummary summary;
+    CHECK(store.SummarizeTree(root, "tree", &summary).ok());
+    CHECK(summary.files == 3 && summary.folders == 4 && summary.bytes == 10 && summary.left == 0 && fs::exists(tree / "a.txt"));
+    TreeSummary done;
+    CHECK(store.DeleteTree(root, "tree", &done).ok() && !fs::exists(tree));
+    CHECK(done.files == summary.files && done.folders == summary.folders && done.bytes == summary.bytes && done.left == 0);
+    CHECK(store.DeleteTree(root, "tree", &done).status == 404);
+
+    // Each protected kind keeps its parents, and the rest goes around it.
+    Put(tree / "go.txt", "x");
+    Put(tree / "secret/playden_online.txt", "token");
+    Put(tree / "secret/go.txt", "x");
+    Put(tree / "hidden/.playden-install.json", "{}");
+    Put(tree / "settings/steam_settings/configs.user.ini", "x");
+    Put(tree / "hiddendir/.playden-x/f", "x");
+    Put(tree / "linked/one", "x");
+    fs::create_hard_link(tree / "linked/one", base / "elsewhere-hard");
+    Put(tree / "kept-going/deep/deeper/go.txt", "x");
+    Put(base / "outside/target.txt", "outside");
+    fs::create_directories(tree / "withlink");
+    fs::create_symlink(base / "outside", tree / "withlink/out");
+    fs::create_symlink(base / "outside/target.txt", tree / "withlink/out.txt");
+    Put(tree / "busy/.playden-upload-new", "part");
+    CHECK(store.SummarizeTree(root, "tree", &summary).ok() && summary.left == 8 && fs::exists(tree / "go.txt"));
+    CHECK(store.DeleteTree(root, "tree", &done).ok());
+    CHECK(done.left == 8 && done.files == summary.files);
+    CHECK(!fs::exists(tree / "go.txt") && !fs::exists(tree / "secret/go.txt") && !fs::exists(tree / "kept-going"));
+    CHECK(Text(tree / "secret/playden_online.txt") == "token" && fs::exists(tree / "hidden/.playden-install.json"));
+    CHECK(fs::exists(tree / "settings/steam_settings/configs.user.ini") && fs::exists(tree / "hiddendir/.playden-x/f"));
+    CHECK(fs::exists(tree / "linked/one") && fs::exists(tree / "busy/.playden-upload-new"));
+    CHECK(fs::is_symlink(tree / "withlink/out") && fs::is_symlink(tree / "withlink/out.txt") && Text(base / "outside/target.txt") == "outside");
+    fs::remove_all(tree);
+    fs::remove_all(base / "outside");
+    fs::remove(base / "elsewhere-hard");
+
+    // A folder below that can't be opened stays, with its parents, and everything around it still goes.
+    Put(tree / "go.txt", "x");
+    Put(tree / "open/go.txt", "x");
+    Put(tree / "parent/locked/inside.txt", "kept");
+    Put(tree / "parent/go.txt", "x");
+    fs::permissions(tree / "parent/locked", fs::perms::none);
+    CHECK(store.SummarizeTree(root, "tree", &summary).ok() && summary.left == 1 && summary.files == 3);
+    CHECK(store.DeleteTree(root, "tree", &done).ok() && done.left == 1 && done.files == 3);
+    CHECK(!fs::exists(tree / "go.txt") && !fs::exists(tree / "open") && !fs::exists(tree / "parent/go.txt"));
+    fs::permissions(tree / "parent/locked", fs::perms::owner_all);
+    CHECK(Text(tree / "parent/locked/inside.txt") == "kept");
+    fs::remove_all(tree);
+
+    // Never the top of a root, a read-only or hidden folder, a path out of the root, or a link.
+    CHECK(store.DeleteTree(root, "", &done).status == 404 && store.SummarizeTree(root, "", &done).status == 404);
+    CHECK(store.DeleteTree(root, "../x", &done).status == 404 && store.DeleteTree(root, ".playden-x", &done).status == 404);
+    Put(folder / "steam_settings/k.ini", "x");
+    CHECK(store.DeleteTree(root, "steam_settings", &done).status == 403 && store.DeleteTree(root, "steam_settings/in", &done).status == 403);
+    CHECK(fs::exists(folder / "steam_settings/k.ini"));
+    Put(base / "outside/target.txt", "outside");
+    fs::create_symlink(base / "outside", folder / "linktop");
+    CHECK(!store.DeleteTree(root, "linktop", &done).ok() && Text(base / "outside/target.txt") == "outside");
+    fs::remove(folder / "linktop");
+    fs::remove_all(base / "outside");
+
+    // Deep enough to break anything recursive, and more files in a folder than one batch.
+    std::string deep = "tree";
+    for (int level = 0; level < 40; ++level) deep += "/d";
+    Put(folder / deep / "f.txt", "x");
+    for (int index = 0; index < 200; ++index) Put(tree / ("many" + std::to_string(index)), "x");
+    CHECK(store.DeleteTree(root, "tree", &done).ok() && !fs::exists(tree) && done.files == 201 && done.folders == 41);
+
+    // Stopped part way by a disk error or a busy lock: nothing is lost by running it again.
+    int allowed = 3;
+    auto faulty_options = options;
+    faulty_options.fault = [&](const std::string& step) { return step != "tree-file" || allowed-- > 0; };
+    FileStore faulty(faulty_options);
+    for (int index = 0; index < 10; ++index) Put(tree / ("f" + std::to_string(index)), "x");
+    CHECK(faulty.DeleteTree(root, "tree", &done).status == 500 && fs::exists(tree));
+    allowed = 1000;
+    CHECK(faulty.DeleteTree(root, "tree", &done).ok() && !fs::exists(tree));
+    auto busy_options = options;
+    busy_options.hold_tries = 1;
+    busy_options.hold_retry_ms = 1;
+    std::atomic<int> holds{4};
+    busy_options.try_hold = [&]() -> std::shared_ptr<void> { return holds-- > 0 ? std::make_shared<int>(0) : nullptr; };
+    FileStore busy(busy_options);
+    for (int index = 0; index < 3; ++index) Put(tree / ("sub" + std::to_string(index)) / "f", "x");
+    CHECK(busy.DeleteTree(root, "tree", &done).status == 503);
+    holds = 1000;
+    CHECK(busy.DeleteTree(root, "tree", &done).ok() && !fs::exists(tree));
+  }
+
   // A root not made yet: empty to read, made by the first write, from an existing folder only.
   {
     const auto bottle = base / "bottle";

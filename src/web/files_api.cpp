@@ -422,7 +422,37 @@ void FilesApi::Register(Router& router) {
     if (!error.ok()) return Fail(response, error);
     SendJson(response, 200, "{\"ok\":true}");
   });
-  router.Post("/api/files/delete", action(&FileStore::Delete));
+  const auto tree_json = [](const TreeSummary& tree) {
+    return "{" + Number("files", tree.files) + "," + Number("folders", tree.folders) + "," + Number("bytes", tree.bytes) + "," + Number("left", tree.left) + "}";
+  };
+  router.Post("/api/files/delete", [this, tree_json](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response) || !RequireAction(request, response)) return;
+    FileGame game;
+    FileRoot root;
+    if (!Find(request, response, &game, &root)) return;
+    const auto path = QueryValue(request.query, "path").value_or(std::string());
+    if (QueryValue(request.query, "recursive") == std::string("1")) {
+      Transfer transfer(transfers_);
+      if (!transfer.held()) return Fail(response, {503, "Other transfers are running. Try again in a moment."});
+      TreeSummary tree;
+      const auto error = store_.DeleteTree(root, path, &tree);
+      if (!error.ok()) return Fail(response, error);
+      return SendJson(response, 200, tree_json(tree));
+    }
+    const auto error = store_.Delete(root, path);
+    if (!error.ok()) return Fail(response, error);
+    SendJson(response, 200, "{\"ok\":true}");
+  });
+  router.Exact("/api/files/tree", [this, tree_json](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response)) return;
+    FileGame game;
+    FileRoot root;
+    if (!Find(request, response, &game, &root)) return;
+    TreeSummary tree;
+    const auto error = store_.SummarizeTree(root, QueryValue(request.query, "path").value_or(std::string()), &tree);
+    if (!error.ok()) return Fail(response, error);
+    SendJson(response, 200, tree_json(tree));
+  });
   router.Post("/api/files/restore", action(&FileStore::Restore));
 }
 

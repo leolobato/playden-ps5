@@ -787,21 +787,49 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     close = dialog("New folder", name, element("div", { class: "foot" }, button("Cancel", () => close()), button("Make folder", make, "primary")));
     name.focus();
   };
-  const askDelete = (names) => {
+  const askDelete = async (names) => {
     // Fixed now: the player can move to another folder or game while these go.
-    const batch = { game: files.game.id, root: files.root, paths: names.map(relPath) };
+    const batch = { game: files.game.id, root: files.root };
+    const entries = names.map((name) => ({ name, path: relPath(name), entry: files.listing.entries.find((entry) => entry.name === name) }));
+    const inGameFolder = files.root === "game";
+    const folders = entries.filter((item) => item.entry && item.entry.directory);
+    const total = { files: entries.length - folders.length, folders: 0, bytes: entries.reduce((sum, item) => sum + (item.entry && !item.entry.directory ? item.entry.size : 0), 0), left: 0 };
+    try {
+      for (const { path } of folders) {
+        const tree = await api(`/api/files/tree?${q({ ...batch, path })}`);
+        total.files += tree.files;
+        total.folders += tree.folders;
+        total.bytes += tree.bytes;
+        total.left += tree.left;
+      }
+    } catch (error) { return report(error); }
     let close;
     const remove = async () => {
       close();
-      for (const path of batch.paths) {
-        try { await act(`/api/files/delete?${q({ game: batch.game, root: batch.root, path })}`); }
-        catch (error) { report(error); break; }
+      close = dialog("Deleting…", element("p", { text: "Keep this tab open until it finishes." }));
+      let left = 0;
+      for (const { path, entry } of entries) {
+        try {
+          const answer = await act(`/api/files/delete?${q({ ...batch, path, ...(entry && entry.directory ? { recursive: 1 } : {}) })}`);
+          left += answer.left || 0;
+        } catch (error) { report(error); break; }
       }
+      close();
       files.selected = new Set();
+      if (left) fail(`${left} ${left === 1 ? "item stays" : "items stay"}, because Playden protects ${left === 1 ? "it" : "them"} or can't remove ${left === 1 ? "it" : "them"} from here.`);
+      if (left) $("retry").hidden = true;
       refreshFolder();
     };
-    close = dialog(`Delete ${names.length} ${names.length === 1 ? "item" : "items"}?`,
-      element("p", { text: "They are deleted from the PS5 with any previous versions, and can't be restored from here. Only empty folders can be deleted." }),
+    const count = (number, word) => `${number} ${word}${number === 1 ? "" : "s"}`;
+    const title = folders.length
+      ? `Delete ${count(total.files, "file")}${total.bytes ? ` (${longSize(total.bytes)})` : ""} in ${count(total.folders, "folder")}?`
+      : `Delete ${count(names.length, "item")}?`;
+    close = dialog(title,
+      element("p", { text: "They are deleted from the PS5 with any previous versions, and can't be restored from here." }),
+      total.left ? element("p", { text: total.left === 1
+        ? "1 item will stay, because Playden protects it or can't remove it from here. The folders that hold it stay too."
+        : `${total.left} items will stay, because Playden protects them or can't remove them from here. The folders that hold them stay too.` }) : "",
+      folders.length && inGameFolder ? element("p", { text: "If these are the game's own files, the game may stop working until you install it again." }) : "",
       element("ul", {}, ...names.map((name) => element("li", { text: name }))),
       element("div", { class: "foot" }, button("Keep them", () => close()), button("Delete", remove, "primary")));
   };

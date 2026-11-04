@@ -14,6 +14,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
+#include <set>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -30,6 +31,8 @@ constexpr std::uint64_t kSpaceMargin = 64ull * 1024 * 1024;
 constexpr std::size_t kMaxZipEntries = 65535;
 constexpr std::uint64_t kMaxZipBytes = 0x7fffffffu;
 constexpr std::size_t kMaxZipDepth = 32;
+constexpr std::size_t kMaxTreeFolderEntries = 65536;  // more stays in the folder until the next delete
+constexpr std::size_t kTreeBatch = 64;                // files removed under one hold of the locks
 
 const FileError kOk{};
 FileError Busy() { return {503, "Playden is busy. Try again in a moment."}; }
@@ -54,7 +57,7 @@ struct RawEntry {
 };
 
 // Every regular file and folder a folder lists, links left out. Path operations: hold the lock.
-bool ReadFolder(const std::string& path, std::vector<RawEntry>* out, std::size_t limit, bool* truncated) {
+bool ReadFolder(const std::string& path, std::vector<RawEntry>* out, std::size_t limit, bool* truncated, std::uint64_t* others = nullptr) {
   DIR* directory = ::opendir(path.c_str());
   if (!directory) return false;
   while (true) {
@@ -68,7 +71,10 @@ bool ReadFolder(const std::string& path, std::vector<RawEntry>* out, std::size_t
     if (name == "." || name == "..") continue;
     struct stat info{};
     if (::lstat((path + "/" + name).c_str(), &info) != 0) continue;
-    if (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode)) continue;
+    if (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode)) {
+      if (others) ++*others;
+      continue;
+    }
     out->push_back({name, info});
   }
   ::closedir(directory);
@@ -610,6 +616,126 @@ FileError FileStore::Delete(const FileRoot& root, const std::string& path) {
   if (exists) {
     if (!Step("delete-current") || !folder->RemoveRegularFile(name)) return FromErrno(errno ? errno : EIO, "The file can't be deleted");
     if (!folder->Sync()) return FromErrno(errno, "The change can't be saved");
+  }
+  return kOk;
+}
+
+FileError FileStore::DeleteTree(const FileRoot& root, const std::string& path, TreeSummary* out) { return WalkTree(root, path, true, out); }
+
+FileError FileStore::SummarizeTree(const FileRoot& root, const std::string& path, TreeSummary* out) { return WalkTree(root, path, false, out); }
+
+// Iterative, because worker stacks are small and a folder's depth is the player's: a folder is read and its files go,
+// then its folders are walked, then it goes itself if it is empty by then.
+FileError FileStore::WalkTree(const FileRoot& root, const std::string& path, bool remove, TreeSummary* out) {
+  *out = {};
+  const auto top = SplitRelativePath(path);
+  if (!top || top->empty() || PrivatePath(*top, root.private_paths)) return NotFound();
+  if (ReadOnlyPath(*top)) return {403, "Playden writes this folder itself, so it can't be changed here."};
+  const auto locks = [&](std::unique_lock<std::mutex>* commit) {
+    if (remove) *commit = std::unique_lock<std::mutex>(commit_mutex_);
+    return Hold();
+  };
+  struct Frame {
+    std::vector<std::string> parts;
+    bool read = false;
+  };
+  std::vector<Frame> stack;
+  stack.push_back({*top});
+  while (!stack.empty()) {
+    const auto current = stack.back().parts;
+    if (stack.back().read) {
+      stack.pop_back();
+      if (!remove) {
+        ++out->folders;
+        continue;
+      }
+      std::unique_lock<std::mutex> commit;
+      const auto held = locks(&commit);
+      if (!held) return Busy();
+      const std::vector<std::string> above(current.begin(), current.end() - 1);
+      std::optional<ManagedDirectory> parent;
+      if (auto error = Locate(root, above, true, false, &parent); !error.ok()) {
+        if (error.status == 404) continue;
+        return error;
+      }
+      if (!Step("tree-folder") || !parent->RemoveEmptyDirectory(current.back())) {
+        const int error = errno;
+        if (error == ENOENT || error == ENOTEMPTY || error == EEXIST) continue;
+        if (error == EACCES || error == EPERM) { ++out->left; continue; }
+        return FromErrno(error, "The folder can't be deleted");
+      }
+      if (!parent->Sync()) return FromErrno(errno, "The change can't be saved");
+      ++out->folders;
+      continue;
+    }
+    stack.back().read = true;
+    std::vector<RawEntry> raw;
+    bool truncated = false;
+    {
+      std::unique_lock<std::mutex> commit;
+      const auto held = locks(&commit);
+      if (!held) return Busy();
+      std::optional<ManagedDirectory> folder;
+      if (auto error = Locate(root, current, remove, false, &folder); !error.ok()) {
+        if (current.size() == top->size()) return error;
+        // A folder below that can't be opened, or a path too long to reach, stays with what's in it. The rest goes on.
+        if (error.status != 404) ++out->left;
+        stack.pop_back();
+        continue;
+      }
+      if (remove) Sweep(*folder);
+      if (!ReadFolder(folder->path().string(), &raw, kMaxTreeFolderEntries, &truncated, &out->left)) {
+        if (current.size() == top->size()) return FromErrno(errno, "This folder can't be listed");
+        ++out->left;
+        stack.pop_back();
+        continue;
+      }
+    }
+    if (truncated) ++out->left;
+    const std::string prefix = kPreviousPrefix;
+    std::set<std::string> beside;
+    for (const auto& entry : raw)
+      if (S_ISREG(entry.info.st_mode)) beside.insert(LowerAscii(entry.name));
+    std::vector<std::string> doomed;
+    auto child = current;
+    child.emplace_back();
+    for (const auto& entry : raw) {
+      const bool previous = S_ISREG(entry.info.st_mode) && entry.name.rfind(prefix, 0) == 0 && entry.name.size() > prefix.size();
+      const auto shown = previous ? entry.name.substr(prefix.size()) : entry.name;
+      child.back() = shown;
+      if (!UsableName(shown) || HiddenName(shown) || PrivatePath(child, root.private_paths) || HardLinked(entry.info)) {
+        ++out->left;
+        continue;
+      }
+      if (S_ISDIR(entry.info.st_mode)) {
+        if (ReadOnlyFolderName(shown)) ++out->left;
+        else stack.push_back({child});
+        continue;
+      }
+      out->bytes += static_cast<std::uint64_t>(entry.info.st_size);
+      // A previous version counts once, with its file; alone, the page lists it as a file.
+      if (!previous || !beside.count(LowerAscii(shown))) ++out->files;
+      doomed.push_back(entry.name);
+    }
+    if (!remove) continue;
+    for (std::size_t done = 0; done < doomed.size();) {
+      std::unique_lock<std::mutex> commit;
+      const auto held = locks(&commit);
+      if (!held) return Busy();
+      std::optional<ManagedDirectory> folder;
+      if (auto error = Locate(root, current, true, false, &folder); !error.ok()) {
+        if (error.status == 404) break;
+        return error;
+      }
+      for (const auto end = std::min(doomed.size(), done + kTreeBatch); done < end; ++done) {
+        if (Step("tree-file") && folder->RemoveRegularFile(doomed[done])) continue;
+        const int error = errno;
+        if (error == ENOENT) continue;
+        if (error == EACCES || error == EPERM) { ++out->left; continue; }
+        return FromErrno(error, "The file can't be deleted");
+      }
+      if (!folder->Sync()) return FromErrno(errno, "The change can't be saved");
+    }
   }
   return kOk;
 }

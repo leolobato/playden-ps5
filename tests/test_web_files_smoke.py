@@ -132,6 +132,11 @@ def run(port, server):
     tree = ok(call("GET", "/api/files/list", path="Mods/Big/textures", **wolverine_place))
     assert [entry["name"] for entry in tree["entries"]] == ["a.dds"] and "previous" in tree["entries"][0]
     assert call("POST", "/api/files/mkdir", path="Mods/Big/textures/a.dds", parents=1, **wolverine_place)[0] == 409
+    # And a mod that was a mistake goes in one request.
+    counted = ok(call("GET", "/api/files/tree", path="Mods", **wolverine_place))
+    assert (counted["files"], counted["folders"], counted["left"]) == (1, 3, 0)
+    assert ok(call("POST", "/api/files/delete", path="Mods", recursive=1, **wolverine_place))["files"] == 1
+    assert call("GET", "/api/files/list", path="Mods", **wolverine_place)[0] == 404
     ok(call("POST", "/api/files/upload", body=b"msi", path="_Redist/PhysX_9.09.msi", **wolverine_place))
     wolverine = ok(call("GET", "/api/files/game", game="local-3fa9c1", redist=1))
     assert next(folder for folder in wolverine["redist"] if folder["path"] == "_Redist")["physx_installer"] == "_Redist/PhysX_9.09.msi"
