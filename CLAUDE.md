@@ -34,6 +34,7 @@ Console tools in `tools/` (Python 3, stdlib only) take `--host <PS5 IP>`: `conso
 `console_kit_upload.py`, `collect_logs.py`.
 
 - The checkout path must not contain symlinks (e.g. macOS `/tmp`): Playden refuses symlinked data paths.
+- Run a test through ctest, not its binary: some tests need arguments ctest passes in.
 - Each test is its own executable. Register a new `tests/<name>_test.cpp` with `add_test` in the matching
   `cmake/*.cmake`. Python tests in `tests/` also run through ctest.
 - Many tests have a `*_native_policy` twin: the same source built on the host with `PLAYDEN_PLATFORM_PS5=1` to run
@@ -81,6 +82,7 @@ the same call:
 - Run the full host test suite (`ctest --preset homebrew-host --output-on-failure`). For PS5-only code, also run
   `scripts/build-homebrew-ps5.sh`.
 - Host tests and a PS5 build are not console acceptance. Say plainly which console behaviour was not tested.
+- When you fix a bug, remove the fix once and confirm the new test fails.
 
 ## Dependencies
 
