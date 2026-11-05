@@ -10,6 +10,16 @@ if(NOT PLAYDEN_PRERELEASE STREQUAL "")
     endif()
     string(APPEND PLAYDEN_FULL_VERSION "-${PLAYDEN_PRERELEASE}")
 endif()
+# The release a nightly is built on: it isn't offered that release or an older one. Other builds ignore it.
+set(PLAYDEN_NIGHTLY_BASE "" CACHE STRING "A nightly's base release: empty, X.Y.Z or X.Y.Z-beta.N")
+if(NOT PLAYDEN_NIGHTLY_BASE STREQUAL "" AND
+   NOT PLAYDEN_NIGHTLY_BASE MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-beta\\.[1-9][0-9]*)?$")
+    message(FATAL_ERROR "PLAYDEN_NIGHTLY_BASE must be empty, X.Y.Z or X.Y.Z-beta.N")
+endif()
+set(PLAYDEN_BUILD_NIGHTLY_BASE "")
+if(PLAYDEN_PRERELEASE MATCHES "^nightly\\.")
+    set(PLAYDEN_BUILD_NIGHTLY_BASE "${PLAYDEN_NIGHTLY_BASE}")
+endif()
 
 # The commit the build is made from, for Settings › About. Configure runs again whenever HEAD moves.
 set(PLAYDEN_BUILD_COMMIT "")

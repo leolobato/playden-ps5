@@ -301,6 +301,87 @@ int main() {
     stable.Check(true); Wait(stable);
     CHECK(stable.Snapshot().phase == UpdatePhase::kAvailable && stable.Snapshot().available.ToString() == "0.7.1");
   }
+  // A nightly built on a release isn't offered that release or an older one, only a newer one.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("nightly-base");
+    Installed(fixture.root);
+    const auto beta_named = [&](const char* tag) {
+      Publish(fixture.server, tag, "0.7.0", "00.007.001");
+      auto beta = fixture.server.latest;
+      beta.replace(beta.find("\"prerelease\":false"), 18, "\"prerelease\":true");
+      return beta;
+    };
+    auto config = fixture.Config(*ParseVersion("0.7.1-nightly.20261027.1"));
+    config.nightly_base = *ParseVersion("0.7.1-beta.1");
+    config.include_betas = true;
+    const auto beta1 = beta_named("v0.7.1-beta.1");
+    fixture.server.releases = "[" + beta1 + "]";
+    UpdateService same(config);
+    same.Check(true); Wait(same);
+    CHECK(same.Snapshot().phase == UpdatePhase::kUpToDate);
+    const auto beta2 = beta_named("v0.7.1-beta.2");
+    fixture.server.releases = "[" + beta2 + "," + beta1 + "]";
+    UpdateService newer(config);
+    newer.Check(true); Wait(newer);
+    CHECK(newer.Snapshot().phase == UpdatePhase::kAvailable && newer.Snapshot().available.ToString() == "0.7.1-beta.2");
+    Publish(fixture.server, "v0.7.1", "0.7.0", "00.007.001");
+    config.include_betas = false;
+    UpdateService stable(config);
+    stable.Check(true); Wait(stable);
+    CHECK(stable.Snapshot().phase == UpdatePhase::kAvailable && stable.Snapshot().available.ToString() == "0.7.1");
+    // A base older than the nightly's own version changes nothing, and neither does one on a non-nightly build.
+    auto older_base = fixture.Config(*ParseVersion("0.7.1-nightly.20261027.1"));
+    older_base.nightly_base = *ParseVersion("0.7.0");
+    older_base.include_betas = true;
+    fixture.server.releases = "[" + beta_named("v0.7.1-beta.1") + "]";
+    UpdateService older(older_base);
+    older.Check(true); Wait(older);
+    CHECK(older.Snapshot().phase == UpdatePhase::kAvailable && older.Snapshot().available.ToString() == "0.7.1-beta.1");
+    auto not_nightly = fixture.Config(*ParseVersion("0.7.0"));
+    not_nightly.nightly_base = *ParseVersion("0.7.1-beta.1");
+    not_nightly.include_betas = true;
+    UpdateService plain(not_nightly);
+    plain.Check(true); Wait(plain);
+    CHECK(plain.Snapshot().phase == UpdatePhase::kAvailable && plain.Snapshot().available.ToString() == "0.7.1-beta.1");
+    // A release that updates only from the base accepts the nightly built on it, and no other nightly.
+    Publish(fixture.server, "v0.7.1-beta.2", "0.7.1-beta.1", "00.007.001");
+    fixture.server.releases = "[" + fixture.server.latest + "]";
+    config.include_betas = true;
+    UpdateService from_base(config);
+    from_base.Check(true); Wait(from_base);
+    CHECK(from_base.Snapshot().phase == UpdatePhase::kAvailable);
+    config.nightly_base.reset();
+    UpdateService no_base(config);
+    no_base.Check(true); Wait(no_base);
+    CHECK(no_base.Snapshot().phase == UpdatePhase::kFailed);
+  }
+  // An update staged before a nightly built on that release was put in place is dropped at the next start.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("nightly-base-staged");
+    Installed(fixture.root);
+    Publish(fixture.server, "v0.7.1-beta.1", "0.7.0", "00.007.001");
+    fixture.server.releases = "[" + fixture.server.latest + "]";
+    auto config = fixture.Config(*ParseVersion("0.7.1-nightly.20261027.1"));
+    config.include_betas = true;
+    {
+      UpdateService service(config);
+      service.Start();
+      service.Check(true); Wait(service);
+      service.Install(); Wait(service);
+      CHECK(service.Snapshot().phase == UpdatePhase::kStaged);
+    }
+    {
+      UpdateService still(config);
+      still.Start(); Wait(still);
+      CHECK(still.Snapshot().phase == UpdatePhase::kStaged);
+    }
+    config.nightly_base = *ParseVersion("0.7.1-beta.1");
+    UpdateService based(config);
+    based.Start(); Wait(based);
+    CHECK(based.Snapshot().phase != UpdatePhase::kStaged);
+  }
   // Opting out during a download and cancelling must not leave a beta installable.
   {
     Fixture fixture;
@@ -402,6 +483,19 @@ int main() {
     Wait(refused);
     CHECK(refused.Snapshot().kit.phase == KitInstallPhase::kUnavailable);
     refused.Shutdown();
+    // A nightly built on a release takes its kit from that release, though it sorts after the nightly.
+    KitOnly based("kit-nightly-base", "");
+    Publish(based.fixture.server, "v0.4.0-beta.1");
+    based.fixture.server.releases = "[" + based.fixture.server.latest + "]";
+    auto based_config = based.Config();
+    based_config.current = *ParseVersion("0.4.0-nightly.20261027.1");
+    based_config.nightly_base = *ParseVersion("0.4.0-beta.1");
+    UpdateService from_base(based_config);
+    from_base.Start();
+    from_base.CheckKit();
+    Wait(from_base);
+    CHECK(from_base.Snapshot().kit.phase == KitInstallPhase::kAvailable && from_base.Snapshot().kit.version == "0.4.0-beta.1");
+    from_base.Shutdown();
   }
   // Another kit is installed: the right one replaces it, and the old one is left as a ".replaced-" leftover.
   {

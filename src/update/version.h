@@ -14,7 +14,8 @@ struct Version {
   unsigned patch = 0;
   unsigned beta = 0;  // 0 is stable, newer than every beta of the same version.
   // A nightly test build (YYYYMMDD and that day's build number), never a release. A version's nightlies
-  // come before its betas and its stable release, so an update to either is offered.
+  // come before its betas and its stable release, so an update to either is offered, unless the nightly
+  // is built on that release (NightlyBase).
   unsigned nightly_date = 0;
   unsigned nightly_build = 0;
 
@@ -44,6 +45,9 @@ std::optional<Version> ParseVersion(std::string_view text);
 
 // The version this build was made from (CMake's PROJECT_VERSION and pre-release suffix).
 Version CurrentVersion();
+
+// The release this nightly was built on (CMake's PLAYDEN_NIGHTLY_BASE), or nothing when it wasn't recorded.
+std::optional<Version> NightlyBase();
 
 // The commit this build was made from (10 hex digits), or empty when the source was not a git checkout.
 std::string BuildCommit();

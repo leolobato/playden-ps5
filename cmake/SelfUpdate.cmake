@@ -16,7 +16,7 @@ add_library(playden_self_update STATIC
 target_include_directories(playden_self_update PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_self_update PUBLIC cxx_std_17)
 target_compile_definitions(playden_self_update PRIVATE PLAYDEN_VERSION="${PLAYDEN_FULL_VERSION}"
-    PLAYDEN_BUILD_COMMIT="${PLAYDEN_BUILD_COMMIT}")
+    PLAYDEN_BUILD_COMMIT="${PLAYDEN_BUILD_COMMIT}" PLAYDEN_NIGHTLY_BASE="${PLAYDEN_BUILD_NIGHTLY_BASE}")
 target_link_libraries(playden_self_update PUBLIC playden_miniz playden_steam_protocol playden_steam_http Threads::Threads)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_self_update PRIVATE -fno-exceptions -fno-rtti)

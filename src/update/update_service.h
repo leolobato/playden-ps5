@@ -39,6 +39,8 @@ struct UpdateConfig {
   // going back below 0.6.0 is refused whatever the current version. Empty: the version rule only.
   std::string layout_journal;
   Version current;
+  // A nightly's base release (NightlyBase): it already holds that release, so that one and older are no update.
+  std::optional<Version> nightly_base;
   bool include_betas = false;
   Fetch fetch;
   std::function<std::optional<std::string>(const std::string& path)> hash_file;
@@ -170,6 +172,8 @@ class UpdateService {
   std::optional<Backup> LatestBackup() const;
 
  private:
+  // The version a release has to be newer than: the running one, or the release a nightly is built on.
+  const Version& UpdateFloor() const;
   struct Shared;
   void Run(std::function<void()> work);
   void DoCheck(bool user_asked);

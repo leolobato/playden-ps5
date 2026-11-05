@@ -6,6 +6,9 @@
 #ifndef PLAYDEN_BUILD_COMMIT
 #define PLAYDEN_BUILD_COMMIT ""
 #endif
+#ifndef PLAYDEN_NIGHTLY_BASE
+#define PLAYDEN_NIGHTLY_BASE ""
+#endif
 
 namespace playden::update {
 
@@ -70,6 +73,8 @@ Version CurrentVersion() {
   static const Version version = ParseVersion(PLAYDEN_VERSION).value_or(Version{});
   return version;
 }
+
+std::optional<Version> NightlyBase() { return ParseVersion(PLAYDEN_NIGHTLY_BASE); }
 
 std::string BuildCommit() { return PLAYDEN_BUILD_COMMIT; }
 

@@ -16,6 +16,7 @@ int main() {
   CHECK(!((Version{1, 0, 0}) < (Version{1, 0, 0})));
   CHECK((Version{0, 3, 10}).ToString() == "0.3.10");
   // The build's own version comes from CMake.
+  if (!CurrentVersion().nightly()) CHECK(!NightlyBase());  // only a nightly records one
   CHECK(ParseVersion(PLAYDEN_VERSION) && CurrentVersion() == *ParseVersion(PLAYDEN_VERSION));
   // And its commit from git, when the source is a checkout.
   CHECK(BuildCommit() == PLAYDEN_BUILD_COMMIT);

@@ -443,7 +443,7 @@ void UpdateService::Start() {
     const std::string stage = field("stage");
     const std::string kit = field("kit");
     const bool kit_present = kit.empty() || (config_.verify_kit && config_.verify_kit(kit));
-    if (version && config_.current < *version && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
+    if (version && UpdateFloor() < *version && !stage.empty() && Exists(stage + "/eboot.bin") && kit_present) {
       staged_folder_ = stage;
       staged_version_ = *version;
       staged_kit_ = kit;
@@ -567,6 +567,11 @@ void UpdateService::Install() {
   });
 }
 
+const Version& UpdateService::UpdateFloor() const {
+  const auto& base = config_.nightly_base;
+  return config_.current.nightly() && base && !base->nightly() && config_.current < *base ? *base : config_.current;
+}
+
 void UpdateService::DoCheck(bool user_asked) {
   Set([&](UpdateSnapshot& s) {
     s.phase = UpdatePhase::kChecking;
@@ -600,7 +605,7 @@ void UpdateService::DoCheck(bool user_asked) {
     if (!release) return Fail("The latest release on GitHub could not be read.", error);
     if (release->draft || release->prerelease || release->version.beta) release.reset();
   }
-  if (!release || !(config_.current < release->version)) {
+  if (!release || !(UpdateFloor() < release->version)) {
     Log("up to date: running " + config_.current.ToString());
     release_.reset();
     manifest_.reset();
@@ -620,7 +625,7 @@ void UpdateService::DoCheck(bool user_asked) {
   if (!manifest) return Fail("The update information of " + release->tag + " is not valid.", error);
   if (manifest->app_version != release->version || manifest->title_id != config_.title_id)
     return Fail("The update information does not match release " + release->tag + ".", "version or title");
-  if (config_.current < manifest->min_from)
+  if (UpdateFloor() < manifest->min_from)
     return Fail("Playden " + release->version.ToString() + " cannot update from this version. Install it by hand.",
                 "min_from " + manifest->min_from.ToString());
   const auto* app = release->Find(manifest->app_asset);
@@ -867,13 +872,13 @@ void UpdateService::DoCheckKit() {
   std::string error;
   const auto releases = FetchReleases(&error);
   if (!releases) return FailKit("Playden could not reach GitHub to download its runtime kit.", error);
-  // The running version's release names its kit. A nightly has no release: the newest release before it
-  // stands in, and is used only if it names the same kit (checked below).
+  // The running version's release names its kit. A nightly has no release: its base, or the newest release
+  // before it, stands in, and is used only if it names the same kit (checked below).
   const Release* own = nullptr;
   for (const auto& release : *releases) {
     if (release.draft) continue;
     if (release.version == config_.current) own = &release;
-    else if (config_.current.nightly() && release.version < config_.current &&
+    else if (config_.current.nightly() && !(UpdateFloor() < release.version) &&
              (!own || (own->version != config_.current && own->version < release.version)))
       own = &release;
   }
