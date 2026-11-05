@@ -17,5 +17,6 @@
     "steam_features": "emulate",
     "windows_version": "win7"
   },
-  "locked": []
+  "locked": [],
+  "game_files": ["zombie/DebugFileWatcher.class"]
 }

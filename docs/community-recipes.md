@@ -70,6 +70,7 @@ Recipe fields:
 | `registry` | Values the bottle gets under `HKEY_CURRENT_USER` when the game's files are prepared, as a Steam install script's would be: `{"Software\\Wine\\AppDefaults\\game.exe\\Direct3D": {"VideoMemorySize": "4096"}}`. Only some keys are allowed; see [Registry values](#registry-values). |
 | `ini` | Values the game's own INI files get when the game's files are prepared, written only when the key is missing or empty: `{"BmGame/Config/UserEngine.ini": {"Engine.Engine": {"Language": "int"}}}`. See [INI values](#ini-values). |
 | `steam_api_copies` | Shipped recipes only. Paths in the game folder that get a copy of the game's own Steam library while the emulator answers the game: `["Sandfall/Binaries/Win64/steam_api64.dll"]`. See [Steam library copies](#steam-library-copies). |
+| `game_files` | Shipped recipes only. Paths in the game folder that get a file Playden ships: `["zombie/DebugFileWatcher.class"]`. See [Game files](#game-files). |
 
 Community fields:
 
@@ -182,6 +183,31 @@ kept to each path when it prepares the game or applies its settings:
 Rules: the path is a `steam_api.dll` or `steam_api64.dll` in a folder of the game, with `/` between folders and no `.`
 or `..` part. At most 4 paths, each once. A community recipe with this field is refused: it places a file that Game
 settings doesn't show, and a community recipe is only offered, so the game wouldn't start until the player chose it.
+
+## Game files
+
+Use `game_files` only for a game that can't run on the console without a changed file, and only when nothing else in
+this file can do it. Project Zomboid watches its folders for changes by holding one handle on each of its 1704 media
+folders. A PS5 title can hold about 250 open files, so the game quits while it starts. The game looks for classes in
+its own folder first, so a watcher that watches nothing stands in for the game's. That only stops the game reloading
+files that change while it runs.
+
+Playden copies each file from `runtime/recipes/files/<recipe id>/<path>` to `<path>` in the game folder when it
+prepares the game or applies its settings:
+
+- A file already at the path stays, whatever it holds. A game version that ships its own keeps it, and a newer file
+  from Playden doesn't replace an older one there.
+- Missing folders are made. A link or a file in the way of a folder is left alone and the file is skipped.
+- Without the file in Playden's package, or with something in the way, the game starts without it. Playden logs
+  `recipe files ... skipped=`.
+- A game that Playden prepared with the recipe it made itself also gets the files of a recipe that Playden ships for
+  the game later.
+- Uninstalling the game removes the file with the rest of the folder.
+
+Rules: the path is inside the game folder, with `/` between folders and no `.` or `..` part. At most 4 paths, each
+once. A community recipe with this field is refused, for the same reason as `steam_api_copies`. The source of a file
+that isn't plain text goes in `tools/recipe-files/<recipe id>`, with what builds it. Write it yourself: no part of
+the game goes in Playden's repository.
 
 ## Shipped recipes
 

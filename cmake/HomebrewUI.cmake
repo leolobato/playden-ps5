@@ -69,6 +69,7 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/runtime/prospero_profile.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/game_settings.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_ini.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/recipe_files.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/install_script.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/msi_package.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/lzx_decoder.cpp"
@@ -582,6 +583,9 @@ if(BUILD_TESTING)
     add_executable(runtime_recipe_ini_test tests/runtime_recipe_ini_test.cpp)
     target_link_libraries(runtime_recipe_ini_test PRIVATE playden_steam_cm_codec)
     add_test(NAME runtime_recipe_ini COMMAND runtime_recipe_ini_test)
+    add_executable(runtime_recipe_files_test tests/runtime_recipe_files_test.cpp)
+    target_link_libraries(runtime_recipe_files_test PRIVATE playden_steam_cm_codec)
+    add_test(NAME runtime_recipe_files COMMAND runtime_recipe_files_test)
     # Inject failures only at the POSIX I/O boundary of this test's production
     # compilation; the shipped settings implementation has ordinary syscalls.
     add_executable(runtime_settings_publication_test tests/runtime_settings_publication_test.cpp)

@@ -10,6 +10,7 @@
 #include "runtime/prospero_profile.h"
 #include "runtime/settings_publication_journal.h"
 #include "runtime/dotnet_heap.h"
+#include "runtime/recipe_files.h"
 #include "runtime/recipe_ini.h"
 #include "runtime/game_probe.h"
 #include "runtime/install_script.h"
@@ -715,6 +716,8 @@ struct RuntimeHost::GameFiles {
   const std::vector<rt::IniValue>* ini = nullptr;
   // Likewise, the steam_api DLL copies to keep.
   const std::vector<std::string>* steam_api_copies = nullptr;
+  // Likewise, the files Playden ships for the game, and the recipe that names them.
+  const rt::GameRecipe* game_files_recipe = nullptr;
 };
 
 namespace {
@@ -1179,6 +1182,20 @@ std::string RuntimeHost::RecipeIniStep(const GameFiles& files) {
   return applied.ok ? std::string() : applied.message;
 }
 
+// Generic step: files Playden ships for a game that can't run on the console without them (docs/community-recipes.md).
+std::string RuntimeHost::RecipeFilesStep(const GameFiles& files) {
+  if (!files.game_files_recipe || files.game_files_recipe->game_files.empty()) return {};
+  const auto& recipe = *files.game_files_recipe;
+  const auto applied = rt::ApplyRecipeFiles(files.root.string(), config_.runtime_dir + "/recipes/files/" + recipe.id, recipe.game_files);
+  std::string changed, skipped;
+  for (const auto& file : applied.changed) changed += (changed.empty() ? "" : ",") + file;
+  for (const auto& file : applied.skipped) skipped += (skipped.empty() ? "" : ",") + file;
+  Log("recipe files app=" + std::to_string(files.record.runtime_number) + " files=" + std::to_string(recipe.game_files.size()) +
+      " changed=" + (changed.empty() ? "-" : changed) + (skipped.empty() ? std::string() : " skipped=" + skipped) +
+      (applied.ok ? std::string() : " failed=" + applied.message));
+  return applied.ok ? std::string() : applied.message;
+}
+
 // Generic step: self-contained .NET games reserve more address space than the console grants unless their
 // garbage collector is given a heap limit (runtime/dotnet_heap.h).
 std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
@@ -1193,8 +1210,8 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
 }
 
 // The steps run in this order for every game, whatever its store: generic ones (media, EULA, Direct3D 12, Wine
-// Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values, the .NET
-// heap) and Steam-file ones, which act only on the Steam files a game has (SteamStub, Steamworks and steam.dll,
+// Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values and files, the
+// .NET heap) and Steam-file ones, which act only on the Steam files a game has (SteamStub, Steamworks and steam.dll,
 // install scripts and redistributables).
 std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known) {
   MediaStep(c, record);
@@ -1204,12 +1221,14 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   if (!files.recipe) return {};  // publication reports the missing recipe
   files.ini = &files.recipe->ini;
   files.steam_api_copies = &files.recipe->steam_api_copies;
+  files.game_files_recipe = files.recipe;
   if (rt::IsGeneratedRecipeId(files.recipe->id))
     for (const auto& candidate : c.recipes)
       if (rt::RecipeGame(candidate) == GameOf(record) && candidate.app_id == record.runtime_number &&
           !rt::IsGeneratedRecipeId(candidate.id)) {
         files.ini = &candidate.ini;
         files.steam_api_copies = &candidate.steam_api_copies;
+        files.game_files_recipe = &candidate;
       }
   files.saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
   const rt::SettingsPreset* preset = nullptr;
@@ -1249,6 +1268,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(files); !refused.empty()) return refused;
   if (auto refused = RecipeIniStep(files); !refused.empty()) return refused;
+  if (auto refused = RecipeFilesStep(files); !refused.empty()) return refused;
   return DotnetHeapStep(files);
 }
 

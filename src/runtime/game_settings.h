@@ -192,6 +192,9 @@ struct GameRecipe {
   // Where the game's own steam_api DLL must also be on disk while the emulator answers it, for a game that hashes the
   // file it finds there (docs/community-recipes.md). Shipped recipes only.
   std::vector<std::string> steam_api_copies;
+  // Files Playden ships in runtime/recipes/files/<recipe id>, placed at these paths in the game folder when its files
+  // are prepared, for a game that can't run on the console without them (runtime/recipe_files.h). Shipped recipes only.
+  std::vector<std::string> game_files;
   // What the kit's template bottle must provide ("audio": "ps5"); see UnmetRecipeRequirements.
   std::map<std::string, std::string> requirements;
 };

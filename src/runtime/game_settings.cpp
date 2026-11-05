@@ -1444,10 +1444,10 @@ bool RecipeRegistryValueAllowed(const std::string& key, const std::string& name,
 
 constexpr std::size_t kMaxRecipeIniValues = 16;
 constexpr std::size_t kMaxRecipeSteamApiCopies = 4;
+constexpr std::size_t kMaxRecipeGameFiles = 4;
 
-// A path in steam_api_copies (docs/community-recipes.md): a steam_api DLL inside the game folder, named with '/' and
-// no "." or ".." part.
-bool RecipeSteamApiCopyAllowed(const std::string& path) {
+// A path inside the game folder, named with '/' and no "." or ".." part; *name gets its last part.
+bool RecipePathInGameFolder(const std::string& path, std::string* name) {
   if (path.empty() || path.size() > 200 || path.find_first_of("\\:*?\"<>|") != std::string::npos) return false;
   for (const unsigned char c : path)
     if (c < 0x20 || c > 0x7e) return false;
@@ -1458,6 +1458,14 @@ bool RecipeSteamApiCopyAllowed(const std::string& path) {
     if (part.empty() || part == "." || part == "..") return false;
     start = end + 1;
   }
+  *name = part;
+  return true;
+}
+
+// A path in steam_api_copies (docs/community-recipes.md): a steam_api DLL in a folder of the game.
+bool RecipeSteamApiCopyAllowed(const std::string& path) {
+  std::string part;
+  if (!RecipePathInGameFolder(path, &part)) return false;
   const auto name = LowerAscii(part);
   return path.find('/') != std::string::npos && (name == "steam_api.dll" || name == "steam_api64.dll");
 }
@@ -1657,6 +1665,20 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
       out.steam_api_copies.push_back(*item.string());
     }
   }
+  if (const auto* game_files = root->get("game_files")) {
+    if (!game_files->array()) return fail("game_files must be a list");
+    // Like steam_api_copies, only Playden's own recipes place a file the player can't see in Game settings.
+    if (IsCommunityRecipeId(out.id)) return fail("a community recipe can't carry game_files");
+    std::set<std::string> identities;
+    for (const auto& item : *game_files->array()) {
+      std::string name;
+      if (!item.string() || !RecipePathInGameFolder(*item.string(), &name))
+        return fail("game_files needs paths inside the game folder");
+      if (out.game_files.size() >= kMaxRecipeGameFiles) return fail("game_files has too many paths");
+      if (!identities.insert(LowerAscii(*item.string())).second) return fail("game_files names a path twice");
+      out.game_files.push_back(*item.string());
+    }
+  }
   if (out.dll_overrides.size() && !IsProsperoDllOverrides(out.dll_overrides)) return fail("recipe dll_overrides are invalid");
   if (out.architecture != "pe32" && out.architecture != "pe64") return fail("architecture must be pe32 or pe64");
   for (const auto& [id, value] : out.defaults) {
@@ -1844,6 +1866,12 @@ std::string SerializeGameRecipe(const GameRecipe& recipe) {
     text += ",\"steam_api_copies\":[";
     for (std::size_t index = 0; index < recipe.steam_api_copies.size(); ++index)
       text += (index ? "," : "") + quoted(recipe.steam_api_copies[index]);
+    text += "]";
+  }
+  if (!recipe.game_files.empty()) {
+    text += ",\"game_files\":[";
+    for (std::size_t index = 0; index < recipe.game_files.size(); ++index)
+      text += (index ? "," : "") + quoted(recipe.game_files[index]);
     text += "]";
   }
   return text + "}\n";
@@ -3574,6 +3602,7 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
   CommunityRecipe out;
   if (!ParseGameRecipe(text, &out.recipe, reason)) return false;
   if (!out.recipe.steam_api_copies.empty()) return fail("a community recipe can't carry steam_api_copies");
+  if (!out.recipe.game_files.empty()) return fail("a community recipe can't carry game_files");
   const auto root = json::parse(text);
   std::uint64_t appid = 0;
   if (!ExactUnsigned(root->get("steam_appid"), std::numeric_limits<std::uint32_t>::max(), &appid, false) ||

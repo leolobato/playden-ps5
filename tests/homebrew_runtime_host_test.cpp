@@ -4464,6 +4464,77 @@ void GeneratedRecipeGetsShippedSteamApiCopy() {
   host.Shutdown();
 }
 
+// Project Zomboid prepared before Playden shipped its recipe keeps the recipe Playden generated, and still gets the
+// file the shipped recipe names the next time it is played. A game that brings its own keeps it.
+void GeneratedRecipeGetsShippedGameFile() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  const auto runtime = fixture.root / "runtime";
+  Write(runtime / "presets.json", Read(fs::path(g_runtime_dir) / "presets.json"), 0644);
+  Write(runtime / "recipes/steam-220-hl2-v1.json", Read(fs::path(g_runtime_dir) / "recipes/steam-220-hl2-v1.json"), 0644);
+  Write(runtime / "recipes/recipes.lst", "steam-220-hl2-v1.json\n", 0644);
+  config.runtime_dir = runtime.string();
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/108600";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  const std::string placed = "zombie/DebugFileWatcher.class";
+  Write(game / "ProjectZomboid64.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  RuntimePrepareRequest request{108600, "/data/homebrew/FAKE77031/games/108600", "internal", "Project Zomboid"};
+  request.launches = {{"", "", "ProjectZomboid64.exe", "", ""}};
+  const auto prepared = [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(108600) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  };
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(request);
+    const auto done = WaitFor(host, prepared, 60);
+    if (done.refusals.count(108600)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(108600).c_str());
+    CHECK(!done.refusals.count(108600) && done.installs.size() == 1);
+    CHECK(Read(config.state_root / "installs.json").find("\"recipe_id\":\"steam-108600-auto\"") != std::string::npos);
+    CHECK(!fs::exists(game / placed));
+    host.Shutdown();
+  }
+  // Playden now ships the recipe and the file: the game keeps its own recipe, and its folder gets the file.
+  const auto shipped = Read(fs::path(g_runtime_dir) / "recipes/files/steam-108600-projectzomboid-v1" / placed);
+  Write(runtime / "recipes/steam-108600-projectzomboid-v1.json",
+        Read(fs::path(g_runtime_dir) / "recipes/steam-108600-projectzomboid-v1.json"), 0644);
+  Write(runtime / "recipes/files/steam-108600-projectzomboid-v1" / placed, shipped, 0644);
+  Write(runtime / "recipes/recipes.lst", "steam-220-hl2-v1.json\nsteam-108600-projectzomboid-v1.json\n", 0644);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Play(108600);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 0; }, 30);
+  CHECK(Read(config.state_root / "installs.json").find("\"recipe_id\":\"steam-108600-auto\"") != std::string::npos);
+  CHECK(Read(game / placed) == shipped);
+  Write(game / placed, "the game's own", 0644);
+  host.Play(108600);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.plays_handled > 1; }, 30);
+  CHECK(Read(game / placed) == "the game's own");
+  host.Shutdown();
+}
+
 // A shipped recipe's requirements are checked against the kit's template, as the kit's packager
 // checks the kit's own recipe: without PS5 audio in the template, a recipe that needs it is refused.
 void ShippedRecipeRequirementsFollowTheKit(bool template_audio_ps5) {
@@ -6545,6 +6616,7 @@ int main(int argc, char** argv) {
   ShippedRecipeWritesGameIni(true);
   GeneratedRecipeGetsShippedIni();
   GeneratedRecipeGetsShippedSteamApiCopy();
+  GeneratedRecipeGetsShippedGameFile();
   RunsSetupProgramOnce();
   ShippedRecipeRequirementsFollowTheKit(false);
   ShippedRecipeRequirementsFollowTheKit(true);

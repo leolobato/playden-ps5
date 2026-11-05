@@ -1621,6 +1621,34 @@ int main(int argc, char** argv) {
     shared.replace(shared.size() - 1, 1, R"(,"steam_appid":1903340,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
     CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("steam_api_copies") != std::string::npos);
   }
+  // Project Zomboid runs out of open files watching its folders, so Playden ships a watcher that watches nothing.
+  {
+    GameRecipe zomboid;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-108600-projectzomboid-v1.json"), &zomboid, &reason));
+    CHECK(zomboid.game_files == std::vector<std::string>{"zombie/DebugFileWatcher.class"});
+    const auto shipped = ReadText(source / "runtime/recipes/files/steam-108600-projectzomboid-v1/zombie/DebugFileWatcher.class");
+    CHECK(shipped.size() > 4 && shipped.compare(0, 4, "\xCA\xFE\xBA\xBE") == 0);
+    // Java 17, so that it loads on every Java the game could bring.
+    CHECK(static_cast<unsigned char>(shipped[6]) == 0 && static_cast<unsigned char>(shipped[7]) == 61);
+    // The field survives a round trip, and only names a path inside the game's folders.
+    GameRecipe again;
+    CHECK(ParseGameRecipe(SerializeGameRecipe(zomboid), &again, &reason) && again.game_files == zomboid.game_files);
+    const auto with_files = [](const std::string& paths, const std::string& id = "steam-108600-test-v1") {
+      return R"({"recipe_id":")" + id + R"(","recipe_version":1,"app_id":108600,"launch_entries":[{"id":"game","label":"G","executable":"g.exe"}],)"
+             R"("architecture":"pe64","runtime":"wine-wow64","prefix":"game","graphics":"opengl","game_files":)" + paths + "}";
+    };
+    GameRecipe parsed;
+    CHECK(ParseGameRecipe(with_files(R"(["a.class","b/c.class"])"), &parsed, &reason));
+    for (const auto* bad : {R"("a.class")", R"(["../a.class"])", R"(["b/../a.class"])", R"(["/a.class"])", R"(["b\\a.class"])",
+                            R"([""])", R"([1])", R"(["a.class","A.CLASS"])", R"(["a","b","c","d","e"])"})
+      CHECK(!ParseGameRecipe(with_files(bad), &parsed, &reason));
+    // A community recipe can't place a file in the game folder.
+    CHECK(!ParseGameRecipe(with_files(R"(["a.class"])", "community-108600-test"), &parsed, &reason));
+    CommunityRecipe community;
+    auto shared = with_files(R"(["a.class"])");
+    shared.replace(shared.size() - 1, 1, R"(,"steam_appid":108600,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
+    CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("game_files") != std::string::npos);
+  }
   // Batman: Arkham City is Asylum's sibling: BatmanAC.exe starts BmLauncher.exe and exits too while UserEngine.ini has
   // no Language.
   {
