@@ -1978,12 +1978,15 @@ namespace {
 
 // A program that only starts the game: a launcher, updater or settings window (Win32 dialogs
 // the controller can't use) or a .NET launcher. Steam often lists it as the default (#70, #46).
+// A program that draws or has a known engine is the game. A .NET program is the game only when it names XNA itself
+// (Guncraft): its graphics libraries and most engines are found from the folder (UnityPlayer.dll, a DLL that imports
+// Direct3D), which a .NET launcher beside the game shares.
 bool StartsTheGameOnly(const std::string& program, const GameProbe& probe) {
   auto name = LowerAscii(program.substr(program.rfind('/') == std::string::npos ? 0 : program.rfind('/') + 1));
   // Redistributable installers and uninstallers are never the game, whatever they import (UE3Redist.exe draws a dialog with D3D9).
   for (const char* word : {"redist", "dxsetup", "uninst"})
     if (name.find(word) != std::string::npos) return true;
-  if (probe.dotnet) return true;
+  if (probe.dotnet) return probe.engine != "xna";
   if (!probe.apis.empty() || !probe.engine.empty()) return false;
   for (const char* word : {"launch", "updater", "config", "setup", "settings"})
     if (name.find(word) != std::string::npos) return true;

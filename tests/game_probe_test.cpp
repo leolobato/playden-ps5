@@ -860,6 +860,32 @@ int main() {
       CHECK(GenerateGameRecipe(1, "Server Side", {{"", "", "Launcher.exe", "", ""}}, side.string(), &recipe, &reason));
       CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "ServerSide.exe");
     }
+    {  // An XNA game's own program is the game, not a .NET launcher: Guncraft starts Guncraft.exe, not the
+       // dedicated server beside it (#576).
+      const auto guncraft = fresh();
+      // Both name the framework and OpenGL ("detected=xna,opengl"); the server is the larger.
+      WritePe(guncraft / "Guncraft.exe", {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework.Game opengl32.dll"});
+      WritePe(guncraft / "GunCraftServer.exe",
+              {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework.Game opengl32.dll", 0x40000});
+      KitCapabilities mono;
+      mono.wine_mono = true;
+      CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Guncraft.exe", "", ""}}, guncraft.string(), &recipe, &reason,
+                               mono));
+
+      CHECK(recipe.launch_entries.size() == 1 && recipe.launch_entries[0].executable == "Guncraft.exe" &&
+            recipe.graphics == "opengl");
+      // A .NET launcher that draws nothing is still one: the XNA game beside it is started, not its server.
+      WritePe(guncraft / "Launcher.exe", {false, {"mscoree.dll"}, true});
+      CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Launcher.exe", "", ""}}, guncraft.string(), &recipe,
+                               &reason, mono));
+      CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "Guncraft.exe" &&
+            recipe.launch_entries[0].id == "game");
+      // ...even beside a DLL that imports Direct3D: the folder's graphics libraries are not the launcher's.
+      WritePe(guncraft / "Render.dll", {false, {"KERNEL32.dll", "d3d9.dll"}});
+      CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Launcher.exe", "", ""}}, guncraft.string(), &recipe,
+                               &reason, mono));
+      CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "Guncraft.exe");
+    }
     // A program that draws, or the player's choice, is started as listed.
     CHECK(GenerateGameRecipe(1, "Game", {{"", "", "Tools/Viewer.exe", "", ""}}, root.string(), &recipe, &reason));
     CHECK(recipe.launch_entries.size() == 1 && recipe.launch_entries[0].executable == "Tools/Viewer.exe");
