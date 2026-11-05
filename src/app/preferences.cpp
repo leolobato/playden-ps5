@@ -19,11 +19,12 @@ std::string ToString(const Bytes& bytes) {
 
 // Versions 8 to 11: one "key=value" line per field, in this order, each ending in a newline. Version 9 adds
 // web_access (on in older files), version 10 content_language (English in older files, which is what they
-// downloaded), version 11 the launcher dialogs' "Don't show this again" (shown in older files).
+// downloaded), version 11 the launcher dialogs' "Don't show this again" (shown in older files), version 12 the kit
+// whose "Update your games" prompt was shown (none in older files, so they are offered it).
 constexpr const char* kKeys[] = {"reduce_motion", "title_store_suffix", "cloud_saves_auto",
                                           "steam_sign_in_password", "downloads_slow_network", "steam_stay_signed_in",
                                           "beta_updates", "download_server", "web_access", "content_language",
-                                          "hide_run_once_help", "hide_launcher_help"};
+                                          "hide_run_once_help", "hide_launcher_help", "runtime_prompt_kit"};
 
 bool ParseFlag(const std::string& value, bool* flag) {
   if (value != "0" && value != "1") return false;
@@ -43,7 +44,8 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
   if (serialized.compare(0, header.size(), header) != 0 || serialized.back() != '\n') return false;
   std::vector<std::string> values;
   std::size_t start = header.size();
-  const std::size_t count = std::size(kKeys) - static_cast<std::size_t>(version >= 11 ? 0 : 2 + (10 - version));
+  // Version 11 added two fields; the others one each from version 8's eight.
+  const std::size_t count = static_cast<std::size_t>(version >= 11 ? version + 1 : version);
   for (std::size_t field = 0; field < count; ++field) {
     const char* key = kKeys[field];
     const std::string prefix = std::string(key) + "=";
@@ -66,6 +68,10 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
   }
   if (version >= 11 && (!ParseFlag(values[10], &parsed.hide_run_once_help) || !ParseFlag(values[11], &parsed.hide_launcher_help)))
     return false;
+  // Anything but a SHA-256 is dropped: the prompt is offered again, and nothing else resets.
+  if (version >= 12 && values[12].size() == 64 &&
+      std::all_of(values[12].begin(), values[12].end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+    parsed.runtime_prompt_kit = values[12];
   // A host the current rule refuses is dropped without resetting unrelated preferences.
   if (ValidDownloadServer(values[7])) parsed.download_server = values[7];
   *preferences = std::move(parsed);
@@ -93,7 +99,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
 
   std::string serialized = ToString(read.value());
   Preferences keyed;
-  if (ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
+  if (ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};
   bool beta_updates = false;
   if (serialized.rfind("version=7\n", 0) == 0) {
@@ -194,7 +200,7 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
   if(!ready.ok()) return ready;
   // Never write a host that cannot be read back, including embedded newlines.
   const std::string server = ValidDownloadServer(preferences.download_server) ? preferences.download_server : std::string();
-  const std::string text = std::string("version=11\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
+  const std::string text = std::string("version=12\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
                            "\ntitle_store_suffix=" + (preferences.title_store_suffix ? "1" : "0") +
                            "\ncloud_saves_auto=" + (preferences.cloud_saves_auto ? "1" : "0") +
                            "\nsteam_sign_in_password=" + (preferences.steam_sign_in_password ? "1" : "0") +
@@ -207,7 +213,8 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
                                 ? preferences.content_language
                                 : std::string(steam::kDefaultContentLanguage)) +
                            "\nhide_run_once_help=" + (preferences.hide_run_once_help ? "1" : "0") +
-                           "\nhide_launcher_help=" + (preferences.hide_launcher_help ? "1" : "0") + "\n";
+                           "\nhide_launcher_help=" + (preferences.hide_launcher_help ? "1" : "0") +
+                           "\nruntime_prompt_kit=" + preferences.runtime_prompt_kit + "\n";
   return storage_.WriteAtomic(kPreferencesPath, Bytes(text.begin(), text.end()));
 }
 

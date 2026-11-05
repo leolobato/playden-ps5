@@ -237,7 +237,7 @@ void live_120hz_waits_for_the_title_update(const std::filesystem::path& base) {
     model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}});
     playden::homebrew::LiveRuntimeGame runtime;
     runtime.game_id = SteamId(220);
-    runtime.status = "Kit update available";
+    runtime.status = "Runtime kit update available";
     runtime.prepared = runtime.has_title = true;
     runtime.runtime_current = false;
     runtime.launch_entry_id = "game";
@@ -330,7 +330,7 @@ void live_120hz_waits_for_the_title_update(const std::filesystem::path& base) {
           "resetting Refresh rate sets a cap of 40 back to Off");
 
     // Reset takes the waiting choices back.
-    runtime.status = "Kit update available";
+    runtime.status = "Runtime kit update available";
     runtime.ready = false;
     runtime.runtime_current = false;
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
@@ -396,7 +396,7 @@ void live_update_runtime_from_maintenance(const std::filesystem::path& base) {
     model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}});
     playden::homebrew::LiveRuntimeGame runtime;
     runtime.game_id = SteamId(220);
-    runtime.status = "Kit update available";
+    runtime.status = "Runtime kit update available";
     runtime.prepared = runtime.has_title = runtime.can_prepare = true;
     runtime.runtime_current = false;
     runtime.launch_entry_id = "game";
@@ -409,8 +409,8 @@ void live_update_runtime_from_maintenance(const std::filesystem::path& base) {
     model.TakeActivityRequests();
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     const auto* update = find_row(model, "maintenance-update");
-    check(update && update->enabled && update->title == "Update runtime…" &&
-              update->subtitle == "Moves the game to the installed kit's runtime without starting it." &&
+    check(update && update->enabled && update->title == "Update runtime kit…" &&
+              update->subtitle == "Moves the game to the installed runtime kit without starting it." &&
               update->badge == "Game must be closed",
           "Update runtime is offered for a closed game whose title waits for its kit update");
 
@@ -432,7 +432,7 @@ void live_update_runtime_from_maintenance(const std::filesystem::path& base) {
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
 
     activate(model, "maintenance-update");
-    check(model.state().navigation.modals.back().title == "Update the runtime?", "Update runtime asks first");
+    check(model.state().navigation.modals.back().title == "Update the runtime kit?", "Update runtime asks first");
     activate(model, "confirm-destructive");
     check(model.TakeMaintenanceRequests() == Requests{{SteamId(220), MaintenanceKind::UpdateRuntime}},
           "a confirmed Update runtime goes to the runtime");
@@ -446,19 +446,19 @@ void live_update_runtime_from_maintenance(const std::filesystem::path& base) {
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     update = find_row(model, "maintenance-update");
     check(update && !update->enabled && update->value == "Working…" &&
-              update->subtitle == "Moves the game to the installed kit's runtime without starting it.",
+              update->subtitle == "Moves the game to the installed runtime kit without starting it.",
           "the running update keeps saying what it does");
     runtime.can_prepare = true;
     runtime.maintenance_running = false;
     runtime.maintenance_ok = true;
-    runtime.maintenance_message = "Runtime updated.";
+    runtime.maintenance_message = "Runtime kit updated.";
     runtime.status = "Ready";
     runtime.ready = true;
     runtime.runtime_current = true;
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     check(has_notice(model, "maintenance-220"), "the finished update reports its outcome");
     update = find_row(model, "maintenance-update");
-    check(update && !update->enabled && update->subtitle == "Runtime updated.", "the row shows the outcome");
+    check(update && !update->enabled && update->subtitle == "Runtime kit updated.", "the row shows the outcome");
     runtime.maintenance.reset();
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     update = find_row(model, "maintenance-update");
@@ -992,7 +992,7 @@ void live_kit_install(const std::filesystem::path& base) {
     replace.kit_phase = "downloading";
     other.UpdateSelfUpdate(replace);
     replace.kit_phase = "failed";
-    replace.kit_error = "The kit download failed.";
+    replace.kit_error = "The runtime kit download failed.";
     other.UpdateSelfUpdate(replace);
     // Like every alert, it waits for sign-in.
     other.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
@@ -1242,11 +1242,11 @@ void live_self_update(const std::filesystem::path& base) {
     step.phase = "downloading";
     failing.UpdateSelfUpdate(step);
     step.phase = "failed";
-    step.error = "The kit download failed.";
+    step.error = "The runtime kit download failed.";
     failing.UpdateSelfUpdate(step);
     check(!failing.state().navigation.modals.empty() &&
               failing.state().navigation.modals.back().title == "Playden update stopped" &&
-              failing.state().navigation.modals.back().body == "The kit download failed.",
+              failing.state().navigation.modals.back().body == "The runtime kit download failed.",
           "update: a failed install is reported");
     check(failing.action("cross") && failing.state().navigation.modals.empty(), "update: OK closes the report");
     step.phase = "idle";
@@ -1684,9 +1684,9 @@ void live_manage_games_tabs(const std::filesystem::path& base) {
         for (const auto& item : model.view().tabs) if (item.key == key) return item;
         return playden::homebrew::ViewRow{};
     };
-    check(model.view().tabs.size() == 3 && model.view().tabs[1].key == "manage-tab-move" && tab("manage-tab-updates").value == "2" &&
-              tab("manage-tab-uninstall").selected,
-          "manage: three tabs, Move in the middle, Updates counts its games");
+    check(model.view().tabs.size() == 4 && model.view().tabs[1].key == "manage-tab-runtimes" && model.view().tabs[2].key == "manage-tab-move" &&
+              tab("manage-tab-updates").value == "2" && tab("manage-tab-uninstall").selected,
+          "manage: four tabs, Runtimes after Updates, Updates counts its games");
     check(model.view().aside == "Console storage 500.0 GB free", "manage: each drive's free space");
     activate(model, "manage-toggle-30");
     check(find_row(model, "manage-toggle-30")->selected && model.view().footer == "1 selected · frees 30.0 GB",
@@ -1724,10 +1724,12 @@ void live_manage_games_tabs(const std::filesystem::path& base) {
     check(navigation.focus_key == "manage-toggle-20", "manage: Updates comes back on its row");
     // With one drive there is nowhere to move to: the Move tab stays and says so.
     model.action("r1");
+    model.action("r1");
     const auto* only = find_row(model, "manage-empty");
     check(navigation.manage_tab == ManageTab::Move && only && only->title == "Only one drive" && !find_row(model, "manage-toggle-10") &&
               !find_row(model, "manage-move-to")->enabled && navigation.focus_key == "manage-sort",
           "manage: Move with a single drive explains why it is empty, and the focus is on a button that works");
+    model.action("l1");
     model.action("l1");
 
     // Check for updates: the button waits while Steam answers, games show up checked as they do.
@@ -1903,6 +1905,274 @@ void live_manage_update_selected(const std::filesystem::path& base) {
 
 // Settings: Storage's Manage installed games counts the saved check's updates and opens on Uninstall; Updates'
 // Game updates says how the check stands and opens on Updates. Both read the saved result without asking Steam.
+// The Runtimes tab: what is due, what it skips and why, and a batch that goes one game at a time and stops before
+// console storage runs too low.
+void live_manage_runtimes(const std::filesystem::path& base) {
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::MaintenanceKind;
+    using playden::homebrew::TitleActivity;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    auto model = make_live(base);
+    model.SetWallClock(kNow);
+    model.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{{SteamId(10), "Ten", "", "", ""}, {SteamId(20), "Twenty", "", "", ""}, {SteamId(30), "Thirty", "", "", ""},
+                                {SteamId(40), "Forty", "", "", ""}, {SteamId(50), "Fifty", "", "", ""}, {SteamId(60), "Sixty", "", "", ""},
+                                {SteamId(70), "Seventy", "", "", ""}, {SteamId(80), "Eighty", "", "", ""}},
+                               false, {}, false, true, kNow}),
+          "runtimes: library delivered");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}, {"usb", "USB Drive", false, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(10), 40 * gb, "internal", true}, {SteamId(20), 30 * gb, "internal", true},
+                              {SteamId(30), 20 * gb, "internal", true}, {SteamId(40), 10 * gb, "internal", true},
+                              {SteamId(50), 9 * gb, "internal", true}, {SteamId(60), 8 * gb, "usb", false},
+                              {SteamId(70), 7 * gb, "internal", true}, {SteamId(80), 6 * gb, "internal", true}});
+    const auto game = [](int id, const char* status) {
+        LiveRuntimeGame runtime;
+        runtime.game_id = SteamId(id);
+        runtime.status = status;
+        runtime.prepared = runtime.has_title = runtime.can_prepare = true;
+        runtime.activity = TitleActivity::Stopped;
+        return runtime;
+    };
+    auto stale = game(10, "Runtime kit update available");
+    auto repair = game(20, "Needs repair");
+    auto later = game(30, "Runtime kit update available");
+    auto current = game(40, "Ready");
+    current.ready = true;
+    auto recreate = game(50, "Not prepared");
+    recreate.setup_other_kit = true;
+    auto unplugged = game(60, "Runtime kit update available");
+    auto moving = game(70, "Needs repair");
+    moving.moving = true;
+    auto playing = game(80, "Runtime kit update available");
+    playing.activity = TitleActivity::Running;
+    const auto all = [&] { return std::vector<LiveRuntimeGame>{stale, repair, later, current, recreate, unplugged, moving, playing}; };
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    for (int i = 0; i < 6 && model.state().navigation.route != playden::homebrew::Route::Settings; ++i) model.action("r1");
+    activate(model, "settings-installed");
+    check(model.state().navigation.route == playden::homebrew::Route::ManageGames, "Manage installed games opens");
+    while (model.state().navigation.manage_tab != playden::homebrew::ManageTab::Runtimes) check(model.action("r1"), "tabs go round");
+    check(model.view().title == "Update to the new runtime kit", "the tab is Runtimes");
+
+    const auto toggle = [&](int id) { return find_row(model, "manage-toggle-" + playden::ToKey(SteamId(id))); };
+    check(toggle(10) && toggle(10)->enabled && toggle(10)->selected && toggle(10)->value == "Runtime kit" &&
+              toggle(10)->subtitle == "Runtime kit update available · Console storage",
+          "a stale title is listed, chosen, and says what changes");
+    check(toggle(20) && toggle(20)->enabled && toggle(20)->selected && toggle(20)->value == "Repair", "a repair is listed too");
+    check(!toggle(40), "a current game isn't listed");
+    check(toggle(50) && !toggle(50)->enabled && toggle(50)->value == "Skipped" && toggle(50)->subtitle.find("Recreate") != std::string::npos,
+          "only Recreate can fix this one, and the batch doesn't run it");
+    check(toggle(60) && !toggle(60)->enabled && toggle(60)->subtitle.find("Drive disconnected") == 0, "an unplugged drive is skipped");
+    check(toggle(70) && !toggle(70)->enabled && toggle(70)->subtitle.find("Moving") == 0, "a stopped move isn't repaired");
+    check(toggle(80) && !toggle(80)->enabled && toggle(80)->subtitle == "Playing: close it to update", "a running game is skipped");
+    const auto primary = find_row(model, "manage-primary");
+    check(primary && primary->enabled && primary->title == "Update 3" && primary->action == "manage-runtimes", "Update counts the three");
+
+    // Triangle runs this tab's Update, not the Updates tab's downloads. These aren't install jobs, so the Queue's
+    // limit doesn't apply either.
+    model.TakeMaintenanceRequests();
+    check(model.action("triangle"), "Triangle starts it");
+    check(model.TakeInstallRequests().empty(), "Triangle asks for no downloads");
+    check(model.state().navigation.route == playden::homebrew::Route::Downloads, "it goes to Queue");
+    auto sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].first == SteamId(10) && sent[0].second == MaintenanceKind::UpdateRuntime, "one game at a time");
+    const auto& waiting = model.state().preparation_queue.waiting;
+    check(std::find(waiting.begin(), waiting.end(), SteamId(20)) != waiting.end() &&
+              std::find(waiting.begin(), waiting.end(), SteamId(30)) != waiting.end(),
+          "Queue lists the games still to come");
+    check(model.TakeMaintenanceRequests().empty(), "nothing else goes while it works");
+    stale.status = "Preparing";
+    stale.maintenance = MaintenanceKind::UpdateRuntime;
+    stale.maintenance_running = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    check(model.TakeMaintenanceRequests().empty(), "nothing else goes while it prepares");
+
+    stale.status = "Ready";
+    stale.ready = true;
+    stale.maintenance_running = false;
+    stale.maintenance_ok = true;
+    stale.maintenance_message = "Runtime kit updated.";
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].first == SteamId(20) && sent[0].second == MaintenanceKind::Repair, "the repair is next");
+
+    // Room runs short: the next game could cross the floor, so the rest stay as they are and the player can free some.
+    repair.status = "Ready";
+    repair.ready = true;
+    repair.maintenance = MaintenanceKind::Repair;
+    repair.maintenance_ok = true;
+    repair.maintenance_message = "Repaired.";
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 9 * gb}, {"usb", "USB Drive", false, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    check(model.TakeMaintenanceRequests().empty(), "below the floor no other game starts");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Runtime kit update stopped",
+          "the player is told why it stopped");
+    check(model.state().navigation.modals.back().body.find("2 of 3 games are done") != std::string::npos, "and how far it got");
+    const auto& after = model.state().preparation_queue.waiting;
+    check(std::find(after.begin(), after.end(), SteamId(30)) == after.end(), "Queue no longer lists the rest");
+    activate(model, "runtime-batch-free");
+    check(model.state().navigation.manage_tab == playden::homebrew::ManageTab::Uninstall, "Free up space opens Uninstall");
+
+    // Room again: a game left over can be sent, and a failure says why and can go again.
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 50 * gb}, {"usb", "USB Drive", false, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    while (model.state().navigation.manage_tab != playden::homebrew::ManageTab::Runtimes) check(model.action("r1"), "tabs go round");
+    check(toggle(30) && toggle(30)->enabled && !toggle(10) && !toggle(20), "only what is still due is listed");
+    if (!toggle(30)->selected) activate(model, "manage-toggle-" + playden::ToKey(SteamId(30)));
+    activate(model, "manage-primary");
+    sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].first == SteamId(30), "the last one goes");
+    later.maintenance = MaintenanceKind::UpdateRuntime;
+    later.maintenance_message = "The runtime kit could not be updated.";
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    const auto notice = std::find_if(model.state().notices.begin(), model.state().notices.end(),
+                                     [](const auto& item) { return item.id == "runtime-batch"; });
+    check(notice != model.state().notices.end() && notice->message == "Runtime kit updated with problems", "the end says it wasn't all good");
+    for (int i = 0; i < 6 && model.state().navigation.route != playden::homebrew::Route::Settings; ++i) model.action("r1");
+    activate(model, "settings-installed");
+    while (model.state().navigation.manage_tab != playden::homebrew::ManageTab::Runtimes) check(model.action("r1"), "tabs go round");
+    check(toggle(30) && toggle(30)->enabled && toggle(30)->tone == "problem" &&
+              toggle(30)->subtitle == "Failed: The runtime kit could not be updated.",
+          "the failure stays on its row, ready to try again");
+
+    // A refusal may pass (a game still closing), so it says why and can go again.
+    later.maintenance.reset();
+    later.maintenance_message.clear();
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    playden::homebrew::PreparationQueue refusing;
+    refusing.refused[SteamId(30)] = "Close the game first.";
+    model.UpdatePreparationQueue(refusing);
+    check(toggle(30) && toggle(30)->enabled && toggle(30)->value == "Runtime kit" && toggle(30)->subtitle == "Refused: Close the game first.",
+          "a refused game can be chosen again");
+    model.UpdatePreparationQueue({});
+
+    // Waiting games are looked at again when their turn comes: one that has since started stays on the tab.
+    auto second = game(40, "Runtime kit update available");
+    current = second;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    if (!toggle(30)->selected) activate(model, "manage-toggle-" + playden::ToKey(SteamId(30)));
+    if (!toggle(40)->selected) activate(model, "manage-toggle-" + playden::ToKey(SteamId(40)));
+    model.TakeMaintenanceRequests();
+    check(model.action("triangle"), "Update goes again");
+    sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1, "one goes first");
+    auto& first = sent[0].first == SteamId(30) ? later : current;
+    auto& waiting_one = sent[0].first == SteamId(30) ? current : later;
+    waiting_one.activity = TitleActivity::Running;
+    first.status = "Ready";
+    first.ready = true;
+    first.maintenance = MaintenanceKind::UpdateRuntime;
+    first.maintenance_running = false;
+    first.maintenance_ok = true;
+    first.maintenance_message = "Runtime kit updated.";
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    check(model.TakeMaintenanceRequests().empty(), "the game that started isn't sent");
+}
+
+// The runtime kit prompt: once per kit, only when a kit update is due, and never over What's new or another dialog.
+void live_runtime_prompt(const std::filesystem::path& base) {
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::MaintenanceKind;
+    using playden::homebrew::TitleActivity;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    auto model = make_live(base);
+    check(model.ApplyPreferences(model.BeginPreferencesLoad(), {playden::Preferences{}, playden::PreferencesLoadStatus::kDefaultMissing, ""}),
+          "prompt: preferences loaded");
+    model.SetWallClock(kNow);
+    model.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{{SteamId(10), "Ten", "", "", ""}, {SteamId(20), "Twenty", "", "", ""}}, false, {}, false, true, kNow}), "prompt: library");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(10), 40 * gb, "internal", true}, {SteamId(20), 30 * gb, "internal", true}});
+    const auto game = [](int id, const char* status) {
+        LiveRuntimeGame runtime;
+        runtime.game_id = SteamId(id);
+        runtime.status = status;
+        runtime.prepared = runtime.has_title = runtime.can_prepare = true;
+        runtime.activity = TitleActivity::Stopped;
+        return runtime;
+    };
+    const auto open_title = [&]() {
+        const auto& modals = model.state().navigation.modals;
+        return modals.empty() ? std::string() : modals.back().title;
+    };
+    const std::string kit_a(64, 'a'), kit_b(64, 'b');
+    playden::homebrew::LiveKitInfo kit;
+    kit.manifest_sha256 = kit_a;
+    model.SetKitInfo(kit);
+
+    // A repair alone says nothing about the kit.
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {game(10, "Needs repair"), game(20, "Ready")});
+    check(open_title().empty(), "a repair alone doesn't ask");
+    check(model.ExportPreferences().runtime_prompt_kit.empty(), "and isn't recorded as asked");
+
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {game(10, "Needs repair"), game(20, "Runtime kit update available")});
+    check(open_title() == "Update games to the new runtime kit?", "a kit update asks");
+    {
+        const auto* button = find_row(model, "runtime-prompt-update");
+        check(button && button->title == "Update 2 games", "the prompt's button counts the kit update and the repair");
+        check(model.state().navigation.modals.back().body.find("Nothing is downloaded from Steam") != std::string::npos,
+              "the prompt says this isn't a Steam update");
+    }
+    check(model.state().navigation.modals.back().body.find("1 game uses an older version of the runtime kit, and 1 needs a repair") == 0, "with what is due");
+    check(model.state().navigation.modals.back().body.find("USB games") == std::string::npos, "and no promise about USB drives");
+    check(model.state().navigation.modals.back().focused_action == 0, "Later has the focus: a stray Cross starts nothing");
+    check(model.ExportPreferences().runtime_prompt_kit.empty(), "not recorded until it is answered: closing Playden asks again");
+    activate(model, "ready-later");
+    check(open_title().empty() && model.TakeMaintenanceRequests().empty(), "Later changes nothing");
+    check(model.ExportPreferences().runtime_prompt_kit == kit_a, "Later records the kit");
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {game(10, "Needs repair"), game(20, "Runtime kit update available")});
+    check(open_title().empty(), "once per kit");
+
+    // The next kit asks again; its button takes every game that can go, and says how many.
+    kit.manifest_sha256 = kit_b;
+    model.SetKitInfo(kit);
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {game(10, "Runtime kit update available"), game(20, "Runtime kit update available")});
+    check(open_title() == "Update games to the new runtime kit?", "a new kit asks again");
+    // Circle answers it too, and a kit the player answered doesn't ask again.
+    check(model.action("circle"), "Circle closes the prompt");
+    check(open_title().empty() && model.ExportPreferences().runtime_prompt_kit == kit_b, "Circle records the kit");
+    const std::string kit_c(64, 'c');
+    kit.manifest_sha256 = kit_c;
+    model.SetKitInfo(kit);
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {game(10, "Runtime kit update available"), game(20, "Runtime kit update available")});
+    check(open_title() == "Update games to the new runtime kit?", "the next kit asks");
+    activate(model, "runtime-prompt-update");
+    check(model.ExportPreferences().runtime_prompt_kit == kit_c, "Update records the kit");
+    const auto sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].second == MaintenanceKind::UpdateRuntime, "Update all starts the batch");
+    check(model.state().navigation.route == playden::homebrew::Route::Downloads, "and goes to Queue");
+}
+
+void live_runtime_prompt_survives_library(const std::filesystem::path& base) {
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::TitleActivity;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    auto model = make_live(base);
+    check(model.ApplyPreferences(model.BeginPreferencesLoad(), {playden::Preferences{}, playden::PreferencesLoadStatus::kDefaultMissing, ""}),
+          "library prompt: preferences loaded");
+    model.SetWallClock(kNow);
+    model.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{{SteamId(10), "Ten", "", "", ""}, {SteamId(20), "Twenty", "", "", ""}}, false, {}, false, true, kNow}), "library prompt: library");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(10), 40 * gb, "internal", true}, {SteamId(20), 30 * gb, "internal", true}});
+    playden::homebrew::LiveKitInfo kit;
+    kit.manifest_sha256 = std::string(64, 'a');
+    model.SetKitInfo(kit);
+    LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(10);
+    runtime.status = "Runtime kit update available";
+    runtime.prepared = runtime.has_title = runtime.can_prepare = true;
+    runtime.activity = TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    const auto& modals = model.state().navigation.modals;
+    check(!modals.empty() && modals.back().title == "Update games to the new runtime kit?", "library prompt: asks");
+    check(model.UpdateLibrary({{{SteamId(30), "Thirty", "", "", ""}}, false, {}, false, true, kNow}), "library prompt: replaced");
+    check(!modals.empty() && modals.back().title == "Update games to the new runtime kit?", "a library refresh leaves the prompt open");
+    check(model.ExportPreferences().runtime_prompt_kit.empty(), "and doesn't answer it");
+}
+
 void live_settings_manage_rows(const std::filesystem::path& base) {
     using playden::homebrew::ManageTab;
     constexpr std::int64_t kNow = 1'800'000'000;
@@ -2287,6 +2557,7 @@ void live_manage_queue_full(const std::filesystem::path& base) {
 
     // Moves count the same way, with what was asked for and not yet queued.
     model.action("r1");
+    model.action("r1");
     check(navigation.manage_tab == ManageTab::Move, "queue full: Move open");
     check(find_row(model, "manage-move-to")->value == "USB Drive", "queue full: Move picks the drive with the most free space");
     model.action("square");
@@ -2328,6 +2599,9 @@ int main() {
     live_update_check(base / "update-check");
     live_manage_games_tabs(base / "manage-games");
     live_manage_update_selected(base / "update-selected");
+    live_manage_runtimes(base / "manage-runtimes");
+    live_runtime_prompt(base / "runtime-prompt");
+    live_runtime_prompt_survives_library(base / "runtime-prompt");
     live_manage_move(base / "manage-move");
     live_manage_uninstall_drive(base / "manage-uninstall-drive");
     live_manage_queue_full(base / "queue-full");

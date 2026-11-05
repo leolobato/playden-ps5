@@ -16,7 +16,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitInputWheel, kKitEnvironment, kKitWineMono, kKitVkd3dProton,
                                 kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble,
                                 kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode,
-                                kKitInputPlaystation, kKitDriverThreads};
+                                kKitInputPlaystation, kKitDriverThreads, kKitGameRootUsbSearch};
   std::sort(config.known_capabilities.begin(), config.known_capabilities.end());
   return config;
 }

@@ -56,6 +56,8 @@ struct KitCapabilities {
   bool audio_volume = false;  // prospero-win [audio] volume (U4, not released)
   bool shared_sections = false;  // Wine maps unaligned shared PE sections as private copies (patch 0602)
   bool title_any_id = false;     // one title shell for every game; no fixed set of titles
+  // The title finds a USB game's drive when it starts, so it can be published naming no mount.
+  bool game_root_usb_search = false;
   bool game_root_unowned = false;  // games start from drives that record no file owners (exFAT)
   bool bottle_profile_shared = false;  // the bottle's 4 folders to its user profile may be 0711
   bool opengl_zink = false;        // OpenGL games draw through Mesa's Zink, not the PS5 OpenGL SDK
@@ -316,6 +318,8 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
 struct ProfileTarget {
   std::string id;            // prospero profile id, also the file stem
   std::string install_root;  // console path of the game files
+  // What the profile names instead, when not that: a USB game's search form (/mnt/usb/<folder>).
+  std::string published_root;
 };
 
 // The full prospero profile: [application], [display], [input] and [debug].
@@ -579,6 +583,7 @@ inline constexpr const char* kKitVkd3dProton = "vkd3d-proton";
 // Runtime ability: threads that start in ntoskrnl.exe or a driver skip DLL_THREAD_ATTACH and TLS callbacks, as Windows'
 // system threads do, so a game's TLS callback can't stop its start in Xbox controller mode (NW.js).
 inline constexpr const char* kKitDriverThreads = "wine-driver-threads";
+inline constexpr const char* kKitGameRootUsbSearch = "game-root-usb-search";
 // The runtime honors [display] refresh = 60|120 on every graphics path (Wine reports the rate it asked for) and
 // [display] frame_rate = 0|120|60|40|30, which the display paces. Runtimes without it refuse a profile with frame_rate.
 inline constexpr const char* kKitDisplay120Hz = "display-120hz";

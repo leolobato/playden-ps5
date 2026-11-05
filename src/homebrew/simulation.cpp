@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "homebrew/simulation.hpp"
+#include "platform/usb_mount.h"
 #include "runtime/game_probe.h"
 
 #include "app/diagnostic_log.h"
@@ -550,7 +551,7 @@ bool SheetDecoration(const std::string& key) { return key.rfind("heading-", 0) =
 
 std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
-        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"ready-later", "Later"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
+        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"note", "Compatibility and note"}, {"verify", "Verify files"},
         {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
@@ -1088,6 +1089,34 @@ void Simulation::UpdateKeptBottles(std::vector<LiveKeptBottle> kept) {
     rebuild_view();
 }
 
+void Simulation::UpdateDriveUpdates(std::size_t done, std::size_t total, std::size_t failed) {
+    if (!live() || total == 0 || (done == drive_updates_done_ && total == drive_updates_total_)) return;
+    drive_updates_done_ = done;
+    drive_updates_total_ = total;
+    const auto of = std::to_string(total) + (total == 1 ? " game" : " games");
+    if (done >= total) {
+        if (failed > 0 && failed <= total) {
+            push_notice({"drive-updates", "Drive change updated with problems", "", false, kLiveNoticeSeconds, false,
+                         std::to_string(total - failed) + " of " + of + " · the others may not start from Home"});
+            return;
+        }
+        push_notice({"drive-updates", "Games updated for the drive change", "", false, kLiveNoticeSeconds, false, of});
+        return;
+    }
+    // It stays up until the job ends, however long a step waits for a game to close.
+    constexpr int kUntilItEnds = 24 * 60 * 60;
+    Notice notice{"drive-updates", "Updating games for the drive change", "", false, kUntilItEnds, false,
+                  std::to_string(done) + " of " + of};
+    notice.progress = static_cast<float>(done) / static_cast<float>(total);
+    push_notice(std::move(notice));
+}
+
+void Simulation::UpdateAlsoOnDrives(std::map<GameId, std::string> drives) {
+    if (!live() || state_.also_on_drives == drives) return;
+    state_.also_on_drives = std::move(drives);
+    rebuild_view();
+}
+
 void Simulation::UpdateExternalGames(std::vector<LiveExternalGame> games) {
     if (!live() || games == state_.external_games) return;
     state_.external_games = std::move(games);
@@ -1512,6 +1541,7 @@ std::vector<GameId> Simulation::manage_list(ManageTab tab) const {
     struct Entry { GameId id; std::uint64_t bytes; std::optional<std::int64_t> played; std::string title; };
     std::vector<Entry> entries;
     const bool updates = tab == ManageTab::Updates;
+    const bool runtimes = tab == ManageTab::Runtimes;
     const auto found = manage_tabs_.find(tab);
     const bool by_played = found != manage_tabs_.end() && found->second.by_played;
     // Move: nothing to list without a second drive to move to.
@@ -1524,6 +1554,11 @@ std::vector<GameId> Simulation::manage_list(ManageTab tab) const {
         if (tab == ManageTab::Move && !manage_move_from_id_.empty() && installation.volume_id != manage_move_from_id_) continue;
         if (tab == ManageTab::Uninstall && !manage_uninstall_from_id_.empty() && installation.volume_id != manage_uninstall_from_id_)
             continue;
+        // Runtimes: games whose title a newer kit left behind or that need a repair, and those only Recreate can fix.
+        if (runtimes) {
+            const auto runtime = state_.runtime_games.find(id);
+            if (!runtime_work(id) && (runtime == state_.runtime_games.end() || !runtime->second.setup_other_kit)) continue;
+        }
         // Updates: installed Steam games whose update or new DLC Steam told of; their size is the download (an
         // unknown one sorts last).
         if (updates) {
@@ -1565,10 +1600,39 @@ std::string Simulation::installed_blocker(GameId id) const {
     return {};
 }
 
+namespace {
+const Volume* volume_of(const State& state, const std::string& id);
+}
+
+std::optional<MaintenanceKind> Simulation::runtime_work(GameId id) const {
+    const auto found = state_.runtime_games.find(id);
+    if (found == state_.runtime_games.end()) return std::nullopt;
+    const auto& game = found->second;
+    if (game.status == "Runtime kit update available" || game.status == "Update available") return MaintenanceKind::UpdateRuntime;
+    if (game.status == "Needs repair") return MaintenanceKind::Repair;
+    return std::nullopt;
+}
+
 std::string Simulation::manage_blocker(ManageTab tab, GameId id) const {
     if (tab == ManageTab::Move) return move_blocker(id, manage_move_volume_id_);
     auto blocker = installed_blocker(id);
-    if (!blocker.empty() || tab != ManageTab::Updates) return blocker;
+    if (!blocker.empty() || tab == ManageTab::Uninstall) return blocker;
+    if (tab == ManageTab::Runtimes) {
+        // Waiting its turn in a batch that is running.
+        const auto batched = [id](const auto& entry) { return entry.first == id; };
+        if (std::any_of(runtime_batch_.begin(), runtime_batch_.end(), batched)) return "In Queue";
+        const auto* installation = find_installation(state_, id);
+        const auto* volume = installation ? volume_of(state_, installation->volume_id) : nullptr;
+        if (!installation || !installation->available || !volume || !volume->available)
+            return "Drive disconnected: connect it to update";
+        const auto runtime = state_.runtime_games.find(id);
+        if (runtime != state_.runtime_games.end() && runtime->second.setup_other_kit)
+            return "Needs Recreate bottle: open the game to do it";
+        if (runtime != state_.runtime_games.end() && runtime->second.moving)
+            return "Moving: press Play on the game to finish";
+        if (runtime == state_.runtime_games.end() || !runtime->second.can_prepare) return "Busy";
+        return {};
+    }
     if (update_locked(id)) return "In Queue";
     if (const auto check = update_check(id); !check.allowed) return check.reason;
     return {};
@@ -1576,7 +1640,12 @@ std::string Simulation::manage_blocker(ManageTab tab, GameId id) const {
 
 namespace {
 // The tabs L1/R1 go through, in order; the destructive one last.
-constexpr ManageTab kManageTabs[] = {ManageTab::Updates, ManageTab::Move, ManageTab::Uninstall};
+constexpr ManageTab kManageTabs[] = {ManageTab::Updates, ManageTab::Runtimes, ManageTab::Move, ManageTab::Uninstall};
+
+// Below this much free on console storage the batch stops; the PS5 restarts itself at about 5 GB.
+constexpr std::uint64_t kRuntimeBatchFloorBytes = 8'000'000'000;
+// Room kept for the next game on top of that, since one can use space and free space is read every few seconds.
+constexpr std::uint64_t kRuntimeBatchStepBytes = 2'000'000'000;
 
 const Volume* volume_of(const State& state, const std::string& id) {
     const auto found = std::find_if(state.volumes.begin(), state.volumes.end(), [&id](const Volume& volume) { return volume.id == id; });
@@ -1620,6 +1689,107 @@ void Simulation::open_manage_games(ManageTab tab) {
 
 // A batch the screen queued: it closes on the Queue so the player sees it start, on the first game's job once
 // that is listed.
+// The Runtimes tab's Update: the chosen games in the order listed, one at a time. It goes to Queue, as Update does.
+void Simulation::start_runtime_batch() {
+    if (!runtime_batch_.empty() || runtime_batch_current_) return;
+    auto& tab = manage_tabs_[ManageTab::Runtimes];
+    std::vector<std::pair<GameId, MaintenanceKind>> chosen;
+    for (const auto id : manage_list(ManageTab::Runtimes))
+        if (tab.selected.contains(id) && manage_blocker(ManageTab::Runtimes, id).empty())
+            if (const auto work = runtime_work(id)) chosen.push_back({id, *work});
+    if (chosen.empty()) return;
+    tab.selected.clear();
+    runtime_batch_ = std::move(chosen);
+    runtime_batch_total_ = runtime_batch_.size();
+    runtime_batch_failed_ = 0;
+    state_.navigation.route = Route::Downloads;
+    state_.navigation.settings_rail_focused = false;
+    state_.queue_expanded = kQueuePreparation;
+    state_.navigation.focus_key = "queue-preparation";
+    if (!live()) {
+        // Fixture mode only describes what the real action does.
+        push_notice({"runtime-batch", std::to_string(runtime_batch_total_) + " games queued", "", false, kLiveNoticeSeconds, false,
+                     "Fixture: nothing changes"});
+        runtime_batch_.clear();
+        return;
+    }
+    runtime_batch_step();
+}
+
+void Simulation::stop_runtime_batch() {
+    const auto done = runtime_batch_total_ - runtime_batch_.size();
+    const auto left = runtime_batch_.size();
+    runtime_batch_.clear();
+    UpdatePreparationQueue(runtime_queue_);
+    ModalEntry stopped{"confirmation", "Runtime kit update stopped", state_.navigation.focus_key, {"alert-ok", "runtime-batch-free"}, 0, false};
+    stopped.body = "Console storage would drop below " + format_bytes(kRuntimeBatchFloorBytes) +
+                   ", and the PS5 can restart when it runs this low.\n\n" + std::to_string(done) + " of " +
+                   std::to_string(runtime_batch_total_) + " games are done. The other " + std::to_string(left) +
+                   " stay on the Runtimes tab, and they still start as they did.";
+    state_.notices.erase(std::remove_if(state_.notices.begin(), state_.notices.end(),
+                                        [](const Notice& notice) { return notice.id == "runtime-batch"; }),
+                         state_.notices.end());
+    open_modal(std::move(stopped));
+}
+
+void Simulation::runtime_batch_step() {
+    if (!live() || (runtime_batch_.empty() && !runtime_batch_current_)) return;
+    if (runtime_batch_current_) {
+        const auto& [id, kind] = *runtime_batch_current_;
+        const auto found = state_.runtime_games.find(id);
+        if (found != state_.runtime_games.end()) {
+            const auto& game = found->second;
+            if (game.maintenance_running || game.status == "Preparing") return;
+            // A Repair is asked of the worker, which reports it a moment later: wait for its answer, within reason.
+            if (kind == MaintenanceKind::Repair && game.maintenance_message.empty() && !game.maintenance_ok &&
+                state_.clock_ticks - runtime_batch_sent_at_ < 120)
+                return;
+            if (!game.maintenance_ok) ++runtime_batch_failed_;
+        } else {
+            ++runtime_batch_failed_;
+        }
+        runtime_batch_current_.reset();
+    }
+    constexpr int kUntilItEnds = 24 * 60 * 60;
+    const auto done = runtime_batch_total_ - runtime_batch_.size();
+    if (runtime_batch_.empty()) {
+        const auto good = runtime_batch_total_ - runtime_batch_failed_;
+        const auto of = std::to_string(runtime_batch_total_) + (runtime_batch_total_ == 1 ? " game" : " games");
+        push_notice({"runtime-batch", runtime_batch_failed_ ? "Runtime kit updated with problems" : "Runtime kit updated", "",
+                     false, kLiveNoticeSeconds, false,
+                     runtime_batch_failed_ ? std::to_string(good) + " of " + of + " · the rest stay on the Runtimes tab" : of});
+        UpdatePreparationQueue(runtime_queue_);
+        return;
+    }
+    // Anything else being prepared goes first; the runtime tells again when it ends.
+    if (std::any_of(state_.runtime_games.begin(), state_.runtime_games.end(), [](const auto& entry) {
+            return entry.second.status == "Preparing" || entry.second.maintenance_running;
+        }))
+        return;
+    if (const auto* console = volume_of(state_, "internal"))
+        if (const auto free = volume_free(*console); free && *free < kRuntimeBatchFloorBytes + kRuntimeBatchStepBytes) {
+            stop_runtime_batch();
+            return;
+        }
+    // Things changed while it waited: a game that has since started, or that an update now holds, stays on the tab.
+    const auto next = runtime_batch_.front();
+    runtime_batch_.erase(runtime_batch_.begin());
+    const auto work = runtime_work(next.first);
+    if (!work || !manage_blocker(ManageTab::Runtimes, next.first).empty()) {
+        if (work) ++runtime_batch_failed_;
+        runtime_batch_step();
+        return;
+    }
+    runtime_batch_current_ = {next.first, *work};
+    runtime_batch_sent_at_ = state_.clock_ticks;
+    request_maintenance(runtime_batch_current_->first, runtime_batch_current_->second);
+    Notice notice{"runtime-batch", "Updating to the new runtime kit", "", false, kUntilItEnds, false,
+                  std::to_string(done) + " of " + std::to_string(runtime_batch_total_) + (runtime_batch_total_ == 1 ? " game" : " games")};
+    notice.progress = static_cast<float>(done) / static_cast<float>(runtime_batch_total_);
+    push_notice(std::move(notice));
+    UpdatePreparationQueue(runtime_queue_);
+}
+
 void Simulation::show_manage_queue(GameId first) {
     state_.navigation.route = Route::Downloads;
     state_.navigation.settings_rail_focused = false;
@@ -1978,7 +2148,7 @@ void Simulation::refresh_manage_games() {
         auto& state = manage_tabs_[tab];
         const auto games = manage_list(tab);
         const std::set<GameId> listed(games.begin(), games.end());
-        if (tab == ManageTab::Updates)
+        if (tab == ManageTab::Updates || tab == ManageTab::Runtimes)
             for (const auto id : games)
                 if (state.listed.insert(id).second) state.selected.insert(id);
         std::erase_if(state.selected, [&](GameId id) { return !listed.contains(id) || !manage_blocker(tab, id).empty(); });
@@ -2039,6 +2209,7 @@ void Simulation::build_manage_games_view() {
     refresh_manage_games();
     const auto current = state_.navigation.manage_tab;
     const bool updates = current == ManageTab::Updates;
+    const bool runtimes = current == ManageTab::Runtimes;
     const bool moves = current == ManageTab::Move;
     auto& tab = manage_tabs_[current];
     const auto& check = state_.update_check;
@@ -2051,11 +2222,18 @@ void Simulation::build_manage_games_view() {
     };
     for (const auto shown : kManageTabs) {
         ViewRow item;
-        item.key = shown == ManageTab::Updates ? "manage-tab-updates" : shown == ManageTab::Move ? "manage-tab-move" : "manage-tab-uninstall";
-        item.title = shown == ManageTab::Updates ? "Updates" : shown == ManageTab::Move ? "Move" : "Uninstall";
+        item.key = shown == ManageTab::Updates ? "manage-tab-updates" : shown == ManageTab::Runtimes ? "manage-tab-runtimes"
+                 : shown == ManageTab::Move ? "manage-tab-move" : "manage-tab-uninstall";
+        item.title = shown == ManageTab::Updates ? "Updates" : shown == ManageTab::Runtimes ? "Runtimes"
+                   : shown == ManageTab::Move ? "Move" : "Uninstall";
         item.selected = shown == current;
         if (shown == ManageTab::Updates)
             if (const auto count = manage_list(shown).size(); count > 0) item.value = std::to_string(count);
+        if (shown == ManageTab::Runtimes) {
+            std::size_t due = 0;
+            for (const auto id : manage_list(shown)) due += manage_blocker(shown, id).empty() ? 1 : 0;
+            if (due > 0) item.value = std::to_string(due);
+        }
         view_.tabs.push_back(std::move(item));
     }
     for (const auto& volume : state_.volumes)
@@ -2063,10 +2241,14 @@ void Simulation::build_manage_games_view() {
             view_.aside += (view_.aside.empty() ? "" : " · ") + volume.label + " " + (*free ? format_bytes(*free) : "0 GB") + " free";
 
     const auto games = manage_list(current);
-    view_.title = updates ? "Update games" : moves ? "Move games" : "Uninstall games";
+    view_.title = updates ? "Update games" : runtimes ? "Update to the new runtime kit" : moves ? "Move games" : "Uninstall games";
     const auto* destination = moves ? volume_of(state_, manage_move_volume_id_) : nullptr;
     if (moves) {
         view_.subtitle = "Saves, settings and the PS5 title go with the game · it can't be played while it moves";
+    } else if (runtimes) {
+        view_.subtitle = !runtime_batch_.empty() || runtime_batch_current_
+            ? "Updating " + std::to_string(runtime_batch_total_ - runtime_batch_.size()) + " of " + std::to_string(runtime_batch_total_)
+            : "Moves games to the installed runtime kit and repairs their titles · saves and settings are kept";
     } else if (!updates) {
         view_.subtitle = !manage_message_.empty() ? manage_message_ : "Saves and settings are kept · free up space on your drives";
     } else if (check.checking) {
@@ -2099,7 +2281,7 @@ void Simulation::build_manage_games_view() {
         auto& move_to = row("manage-move-to", RowKind::Action, "Move to", "manage-move-to");
         move_to.enabled = move_volumes().size() >= 2;
         move_to.value = !move_to.enabled ? "No other drive" : destination ? destination->label : "No drive";
-    } else if (!updates && (!uninstall_from_volumes().empty() || volume_of(state_, manage_uninstall_from_id_))) {
+    } else if (current == ManageTab::Uninstall && (!uninstall_from_volumes().empty() || volume_of(state_, manage_uninstall_from_id_))) {
         // Drive narrows the list to one drive's games, to free room on that drive.
         auto& drive = row("manage-uninstall-from", RowKind::Action, "Drive", "manage-uninstall-from");
         const auto* source = volume_of(state_, manage_uninstall_from_id_);
@@ -2127,6 +2309,11 @@ void Simulation::build_manage_games_view() {
         item.selected = tab.selected.contains(id);
         const std::uint64_t size = installation ? installation->installed_bytes : 0;
         item.value = update != check.games.end() ? update_size_text(id) : size > 0 ? format_bytes(size) : std::string();
+        if (runtimes) {
+            const auto work = runtime_work(id);
+            item.value = !manage_blocker(current, id).empty() ? "Skipped"
+                       : work == MaintenanceKind::Repair ? "Repair" : "Runtime kit";
+        }
         if (item.selected) bytes += size;
         // The last-played column.
         const auto runtime = state_.runtime_games.find(id);
@@ -2137,8 +2324,25 @@ void Simulation::build_manage_games_view() {
         const auto blocker = manage_blocker(current, id);
         if (!blocker.empty()) {
             item.subtitle = blocker != "Playing" ? blocker
-                          : updates ? "Playing: close it to update" : moves ? "Playing: close it to move" : "Playing: close it to uninstall";
+                          : updates || runtimes ? "Playing: close it to update" : moves ? "Playing: close it to move" : "Playing: close it to uninstall";
             item.enabled = false;
+        } else if (runtimes) {
+            // The last try's failure stays until it goes again; the status says what is due otherwise.
+            const auto* game_runtime = runtime != state_.runtime_games.end() ? &runtime->second : nullptr;
+            const auto* volume = installation ? volume_of(state_, installation->volume_id) : nullptr;
+            const std::string where = volume ? " · " + volume->label : std::string();
+            if (game_runtime && (game_runtime->maintenance == MaintenanceKind::UpdateRuntime || game_runtime->maintenance == MaintenanceKind::Repair) &&
+                !game_runtime->maintenance_running && !game_runtime->maintenance_ok && !game_runtime->maintenance_message.empty()) {
+                item.subtitle = "Failed: " + game_runtime->maintenance_message;
+                item.tone = "problem";
+            } else if (const auto refused = state_.preparation_queue.refused.find(id); refused != state_.preparation_queue.refused.end()) {
+                // Listed with the reason, and it can go again: some refusals pass, such as a game that was still closing.
+                item.subtitle = "Refused: " + refused->second;
+                item.tone = "problem";
+            } else {
+                item.subtitle = (game_runtime ? game_runtime->status : std::string()) + where;
+                item.tone = "update";
+            }
         } else if (const auto* stopped = updates || moves ? nullptr : uninstall_stop(id)) {
             // Its uninstall stopped: the reason stays until it goes again or is dismissed in Queue.
             item.subtitle = "Stopped: " + stopped->stopped;
@@ -2169,6 +2373,9 @@ void Simulation::build_manage_games_view() {
         } else if (moves) {
             empty.title = "Nothing to move";
             empty.subtitle = "Games installed from Steam can move here. Imported games use Copy or Move into Playden.";
+        } else if (runtimes) {
+            empty.title = "Up to date";
+            empty.subtitle = "Every game is on the installed runtime kit.";
         } else if (!updates && volume_of(state_, manage_uninstall_from_id_)) {
             empty.title = "Nothing installed";
             empty.subtitle = "No games on " + volume_of(state_, manage_uninstall_from_id_)->label + ".";
@@ -2188,15 +2395,22 @@ void Simulation::build_manage_games_view() {
 
     const auto count = tab.selected.size();
     // Uninstall always asks first; Update asks when a drive is short of room.
-    const bool asks = count > 0 && (updates ? !manage_updates().short_drive.empty() : !moves);
+    const bool asks = count > 0 && !runtimes && (updates ? !manage_updates().short_drive.empty() : !moves);
     auto& primary = row("manage-primary", RowKind::Action,
-                        std::string(updates ? "Update" : moves ? "Move" : "Uninstall") +
+                        std::string(updates || runtimes ? "Update" : moves ? "Move" : "Uninstall") +
                             (count > 0 ? " " + std::to_string(count) : std::string()) + (asks ? "…" : ""),
-                        updates ? "manage-update" : moves ? "manage-move" : "manage-uninstall");
-    primary.enabled = count > 0;
-    primary.dangerous = !updates && !moves;
+                        updates ? "manage-update" : runtimes ? "manage-runtimes" : moves ? "manage-move" : "manage-uninstall");
+    primary.enabled = count > 0 && (!runtimes || (runtime_batch_.empty() && !runtime_batch_current_));
+    primary.dangerous = current == ManageTab::Uninstall;
     if (count == 0) {
-        view_.footer = updates ? "Select games to update" : moves ? "Select games to move" : "Select games to uninstall";
+        view_.footer = updates || runtimes ? "Select games to update" : moves ? "Select games to move" : "Select games to uninstall";
+    } else if (runtimes) {
+        const auto* console = volume_of(state_, "internal");
+        const auto free = console ? volume_free(*console) : std::nullopt;
+        view_.footer = std::to_string(count) + " selected";
+        if (free && console)
+            view_.footer += " · " + format_bytes(*free) + " free on " + console->label + " · stops before it drops below " +
+                            format_bytes(kRuntimeBatchFloorBytes);
     } else if (moves) {
         // "2 selected · 99.1 GB to USB Drive · 311 GB free after", or what more the drive needs.
         const auto plan = manage_moves();
@@ -2226,7 +2440,7 @@ void Simulation::build_manage_games_view() {
         }
     }
     view_.legends = {"Cross Select", "Square " + select_title,
-                     updates ? "Triangle Update selected" : moves ? "Triangle Move selected" : "Triangle Uninstall selected",
+                     updates || runtimes ? "Triangle Update selected" : moves ? "Triangle Move selected" : "Triangle Uninstall selected",
                      "L1/R1 Switch tab", "Circle Close"};
 }
 
@@ -2359,6 +2573,11 @@ void Simulation::RequestRuntimePrepare(GameId id) {
 }
 
 void Simulation::UpdatePreparationQueue(PreparationQueue queue) {
+    runtime_queue_ = queue;
+    // The batch's games wait in the model; Queue lists them after what the runtime already has.
+    for (const auto& [id, kind] : runtime_batch_)
+        if (std::find(queue.waiting.begin(), queue.waiting.end(), id) == queue.waiting.end() && queue.active != id)
+            queue.waiting.push_back(id);
     // A dismissal or Prepare next the runtime has not carried out yet keeps showing as asked; once the
     // runtime's list no longer has the entry, or has the game first, it is done.
     std::erase_if(prepared_dismissed_, [&queue](const LiveCompletedPreparation& done) {
@@ -2394,6 +2613,10 @@ void Simulation::prepare_next(GameId id) {
     const auto found = std::find(waiting.begin(), waiting.end(), id);
     if (found == waiting.end() || found == waiting.begin()) return;
     std::rotate(waiting.begin(), found, found + 1);
+    // A game still waiting in the Runtimes batch goes first in it too.
+    if (const auto batched = std::find_if(runtime_batch_.begin(), runtime_batch_.end(), [id](const auto& entry) { return entry.first == id; });
+        batched != runtime_batch_.end())
+        std::rotate(runtime_batch_.begin(), batched, batched + 1);
     if (live()) {
         pending_prepare_next_requests_.push_back(id);
         prepare_next_asked_ = id;
@@ -2659,7 +2882,7 @@ void Simulation::close_game_modals() {
     modals.erase(std::remove_if(modals.begin(), modals.end(), [](const ModalEntry& modal) {
         return std::none_of(modal.action_keys.begin(), modal.action_keys.end(), [](const std::string& key) {
             return key == "self-update-install" || key == "self-update-restart" || key == "release-notes-ok" ||
-                   key == "kit-install";
+                   key == "kit-install" || key == "runtime-prompt-update";
         });
     }), modals.end());
 }
@@ -2716,7 +2939,9 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
         if (before->second.maintenance_running && !game.maintenance_running && game.maintenance) {
             const bool apply = *game.maintenance == MaintenanceKind::ApplySettings;
             const bool deferred = game.maintenance_message == "Changes apply the next time Playden starts the game.";
-            if (!apply || (!game.maintenance_ok && !deferred))
+            // A game in the Runtimes batch tells on its row and in the batch's own notice: a dialog each would pile up.
+            const bool batched = runtime_batch_current_ && runtime_batch_current_->first == id;
+            if (!batched && (!apply || (!game.maintenance_ok && !deferred)))
                 push_notice({"maintenance-" + ToKey(id), game.maintenance_ok ? title + ": done" : title + ": not done", "",
                              false, kLiveNoticeSeconds * (game.maintenance_ok ? 1 : 2), !game.maintenance_ok, game.maintenance_message});
         }
@@ -2749,6 +2974,9 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
     }
     show_ready_prompt();
     open_settings_after_prepare();
+    runtime_batch_step();
+    show_update_ready_prompt();
+    show_runtime_prompt();
     refresh_manage_games();
     rebuild_view();
 }
@@ -2792,6 +3020,67 @@ void Simulation::show_ready_prompt() {
     ModalEntry prompt{"confirmation", (game ? game->title : std::string("Your game")) + " is ready to play",
                       state_.navigation.focus_key, {"ready-later", "quit-to-home"}, 1, false};
     prompt.body = "Play quits Playden to the PS5 Home screen, where the game appears. Start it from there.";
+    open_modal(std::move(prompt));
+}
+
+void Simulation::NotifyRuntimeUpdated(GameId id) {
+    if (!live()) return;
+    if (std::find(update_ready_prompts_.begin(), update_ready_prompts_.end(), id) == update_ready_prompts_.end())
+        update_ready_prompts_.push_back(id);
+    show_update_ready_prompt();
+    rebuild_view();
+}
+
+// "<game> is ready": the player pressed Play and the update took a while, so the dialog comes up wherever they are now,
+// once whatever is open closes.
+void Simulation::show_update_ready_prompt() {
+    if (!live() || update_ready_prompts_.empty() || !state_.navigation.modals.empty() || state_.editor.active) return;
+    const auto route = state_.navigation.route;
+    if (route == Route::Session || route == Route::Startup || route == Route::SignIn) return;
+    const auto id = update_ready_prompts_.front();
+    update_ready_prompts_.erase(update_ready_prompts_.begin());
+    const auto* game = find_game(state_, id);
+    if (!game) return;
+    update_ready_game_ = id;
+    ModalEntry prompt{"confirmation", game->title + " is ready", state_.navigation.focus_key,
+                      {"update-ready-later", "update-ready-play"}, 1, false};
+    prompt.body = "Its runtime kit is up to date. Starting it now closes Playden.";
+    open_modal(std::move(prompt));
+}
+
+void Simulation::show_runtime_prompt() {
+    // Answered, whichever way it closed. Closing Playden with it open asks again next time.
+    if (runtime_prompt_open_ && state_.navigation.modals.empty()) {
+        runtime_prompt_open_ = false;
+        state_.runtime_prompt_kit = runtime_prompt_shown_kit_;
+        save_profile();
+    }
+    if (!live() || !preferences_loaded_ || state_.kit.manifest_sha256.empty() || state_.kit.manifest_sha256 == state_.runtime_prompt_kit)
+        return;
+    const auto route = state_.navigation.route;
+    if (!state_.navigation.modals.empty() || state_.editor.active || !pending_update_prompt_.empty() || route == Route::Session ||
+        route == Route::Startup || route == Route::SignIn || !runtime_batch_.empty() || runtime_batch_current_)
+        return;
+    std::size_t updates = 0, repairs = 0;
+    for (const auto id : manage_list(ManageTab::Runtimes)) {
+        if (!manage_blocker(ManageTab::Runtimes, id).empty()) continue;
+        const auto work = runtime_work(id);
+        updates += work == MaintenanceKind::UpdateRuntime ? 1 : 0;
+        repairs += work == MaintenanceKind::Repair ? 1 : 0;
+    }
+    // A repair alone isn't news about the kit. The next kit asks again; until then the tab has them.
+    if (updates == 0) return;
+    runtime_prompt_open_ = true;
+    runtime_prompt_shown_kit_ = state_.kit.manifest_sha256;
+    runtime_prompt_games_ = updates + repairs;
+    ModalEntry prompt{"confirmation", "Update games to the new runtime kit?", state_.navigation.focus_key,
+                      {"ready-later", "runtime-prompt-update"}, 0, false};
+    prompt.body = std::to_string(updates) +
+                  (updates == 1 ? " game uses an older version of the runtime kit" : " games use an older version of the runtime kit") +
+                  (repairs ? ", and " + std::to_string(repairs) + (repairs == 1 ? " needs a repair" : " need a repair") : std::string()) +
+                  ".\n\nNothing is downloaded from Steam, and saves and settings are kept. "
+                  "Later leaves them on the Runtimes tab of Manage installed games.";
+    // Later has the focus: this can open just as the player presses Cross on a game.
     open_modal(std::move(prompt));
 }
 
@@ -3929,7 +4218,8 @@ void Simulation::ApplyLiveDownloadServers(const LiveDownloadServers& snapshot) {
 playden::Preferences Simulation::ExportPreferences() const {
     return {state_.reduced_motion, state_.title_store_suffix, state_.cloud_saves_auto, state_.sign_in_password,
             state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
-            state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help};
+            state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help,
+            state_.runtime_prompt_kit};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -4163,6 +4453,7 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.content_language = loaded.preferences.content_language;
         state_.hide_run_once_help = loaded.preferences.hide_run_once_help;
         state_.hide_launcher_help = loaded.preferences.hide_launcher_help;
+        state_.runtime_prompt_kit = loaded.preferences.runtime_prompt_kit;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
     }
@@ -4429,6 +4720,7 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.content_language != captured_preferences_.content_language ||
                                       after_preferences.hide_run_once_help != captured_preferences_.hide_run_once_help ||
                                       after_preferences.hide_launcher_help != captured_preferences_.hide_launcher_help ||
+                                      after_preferences.runtime_prompt_kit != captured_preferences_.runtime_prompt_kit ||
                                       after_preferences.steam_stay_signed_in != captured_preferences_.steam_stay_signed_in);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
@@ -4459,6 +4751,7 @@ bool Simulation::record_live_persistence() {
                 state_.content_language = captured_preferences_.content_language;
                 state_.hide_run_once_help = captured_preferences_.hide_run_once_help;
                 state_.hide_launcher_help = captured_preferences_.hide_launcher_help;
+                state_.runtime_prompt_kit = captured_preferences_.runtime_prompt_kit;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -4963,7 +5256,7 @@ bool Simulation::scenario(const std::string& name) {
         // (with and without room), the Uninstall tab with a game running, and the Settings rows that open it.
         static const std::set<std::string> known = {"manage-updates", "manage-updates-checking", "manage-uninstall",
                                                     "manage-updates-current", "manage-updates-unchecked", "manage-updates-failed",
-                                                    "manage-updates-no-room", "manage-settings", "manage-move",
+                                                    "manage-updates-no-room", "manage-settings", "manage-move", "manage-runtimes", "manage-runtimes-empty",
                                                     "manage-move-no-room"};
         if (!known.contains(name) || state_.games.size() < 6) return false;
         manage_fixture_ = true;
@@ -5003,6 +5296,26 @@ bool Simulation::scenario(const std::string& name) {
         running.play_status = "Playing";
         state_.runtime_games[running.game_id] = running;
         state_.update_check.checked_at = now - 2 * 3600;
+        // The Runtimes tab: two kit updates, a repair, and two it can only skip, beside the running game.
+        if (name == "manage-runtimes") {
+            const auto due = [this](std::size_t index, const char* status) {
+                LiveRuntimeGame game;
+                game.game_id = state_.games[index].id;
+                game.status = status;
+                game.prepared = game.has_title = game.can_prepare = true;
+                game.runtime_current = false;
+                game.activity = TitleActivity::Stopped;
+                state_.runtime_games[game.game_id] = game;
+            };
+            due(0, "Runtime kit update available");
+            due(1, "Needs repair");
+            due(2, "Runtime kit update available");
+            due(4, "Not prepared");
+            state_.runtime_games[state_.games[4].id].setup_other_kit = true;
+            due(5, "Runtime kit update available");
+            state_.preparation_queue.refused[state_.games[5].id] = "Playden no longer knows how to start this game.";
+            state_.runtime_games[state_.games[3].id].status = "Runtime kit update available";
+        }
         // 82 GB free on the console's drive as in the mockup, or 1 GB: short of its games' 2.2 GB of updates.
         if (auto* volume = find_volume(state_, "internal"); volume && volume->capacity_bytes > 82'000'000'000) {
             volume->used_bytes = volume->capacity_bytes - (name == "manage-updates-no-room" ? 1'000'000'000 : 82'000'000'000);
@@ -5030,6 +5343,7 @@ bool Simulation::scenario(const std::string& name) {
             state_.navigation.focus_key = "settings-game-updates";
         } else {
             open_manage_games(name == "manage-uninstall" ? ManageTab::Uninstall
+                              : name.rfind("manage-runtimes", 0) == 0 ? ManageTab::Runtimes
                               : name.rfind("manage-move", 0) == 0 ? ManageTab::Move : ManageTab::Updates);
             refresh_manage_games();
         }
@@ -5329,6 +5643,10 @@ bool Simulation::scenario(const std::string& name) {
         state_.session = name == "crash" ? SessionState::Crashed : SessionState::Failed;
         state_.session_error = name == "launch-failure" ? "Simulated launch failed" : (name == "crash" ? "Game exited unexpectedly" : "Game did not stop");
         state_.navigation.focus_key = name == "crash" ? "session-logs" : "session-retry";
+    } else if (name == "drive-updates") {
+        Notice notice{"drive-updates", "Updating games for the drive change", "", false, 3600, false, "12 of 37 games"};
+        notice.progress = 12.0F / 37.0F;
+        state_.notices.push_back(std::move(notice));
     } else if (name == "controller-disconnected") {
         state_.controller_connected = false;
         state_.notices.push_back({"controller", "Controller disconnected", "controller-test", true, 0});
@@ -5746,6 +6064,8 @@ void Simulation::rebuild_view() {
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
+            if (action_key == "runtime-prompt-update")
+                item.title = "Update " + std::to_string(runtime_prompt_games_) + (runtime_prompt_games_ == 1 ? " game" : " games");
             if (modal.id == "job-actions")
                 if (const auto label = move_action_label(action_key); !label.empty())
                     if (const auto* job = find_job(state_, action_key.substr(action_key.find('-', 4) + 1)); job && job->move)
@@ -5886,7 +6206,7 @@ void Simulation::rebuild_view() {
             if (modal.id == "install" && action_key == "install-language") {
                 const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
                 item.value = playden::steam::LanguageName(install_language(id));
-                item.subtitle = install_language_.empty() ? "From Settings › Downloads" : "This game only";
+                item.subtitle = install_language_.empty() ? "From Settings, under Downloads" : "This game only";
             }
             // Every library filter is a toggle. Demos and Family sharing are on unless the player hid them;
             // the others (Playable) narrow the library while on.
@@ -6174,19 +6494,19 @@ void Simulation::rebuild_view() {
                             ? "Nothing else to reset. The program you chose stays; change it in the Program row."
                             : "Nothing to reset: the settings follow the preset.";
                 } else if (kind == MaintenanceKind::UpdateRuntime) {
-                    // What Play does first for a title on an older kit's runtime ("Kit update available"), alone.
-                    const bool stale = runtime && (runtime->status == "Kit update available" || runtime->status == "Update available");
-                    item.title = "Update runtime…";
-                    item.subtitle = "Moves the game to the installed kit's runtime without starting it.";
+                    // What Play does first for a title on an older kit's runtime ("Runtime kit update available"), alone.
+                    const bool stale = runtime && (runtime->status == "Runtime kit update available" || runtime->status == "Update available");
+                    item.title = "Update runtime kit…";
+                    item.subtitle = "Moves the game to the installed runtime kit without starting it.";
                     item.badge = "Game must be closed";
                     item.enabled = stale && runtime->can_prepare && closed && !busy;
-                    // While it runs the title is being prepared, no longer "Kit update available".
+                    // While it runs the title is being prepared, no longer "Runtime kit update available".
                     const bool updating = busy && runtime->maintenance == MaintenanceKind::UpdateRuntime;
                     // A setup an earlier kit left has no title to update: it is made again.
                     if (!stale && !updating)
-                        item.subtitle = runtime && runtime->status == "No kit" ? "Needs a usable runtime kit."
+                        item.subtitle = runtime && runtime->status == "No runtime kit" ? "Needs a usable runtime kit."
                                       : runtime && runtime->setup_other_kit
-                                          ? "Setup was started with an earlier kit. Use Recreate bottle to finish it; saves are kept."
+                                          ? "Setup was started with an earlier version of the runtime kit. Use Recreate bottle to finish it; saves are kept."
                                           : "Already up to date.";
                     else if (!updating && !closed) item.subtitle = closed_reason;
                     else if (!updating && !runtime->can_prepare && !busy) item.subtitle = "Wait for the game's setup to finish.";
@@ -6803,6 +7123,14 @@ void Simulation::rebuild_view() {
                     status.subtitle = "Connect " + (volume ? volume->label : std::string("its storage")) + " to use this game";
                     status.enabled = false;
                 }
+                if (const auto also = state_.also_on_drives.find(game->id); installation->available && also != state_.also_on_drives.end()) {
+                    const auto* here = find_volume(state_, installation->volume_id);
+                    const auto* other = find_volume(state_, also->second);
+                    auto& status = row("details-also-on", RowKind::Status, "On two drives", "");
+                    status.subtitle = "Playden uses the copy on " + (here ? here->label : std::string("this drive")) + ". Delete the one on " +
+                                      (other ? other->label : std::string("the other drive")) + " so the PS5 can't mix them up.";
+                    status.enabled = false;
+                }
                 if (installation->available) {
                     // The primary action says what pressing does; setup facts and a single
                     // player-facing hint carry its state without repeating technical diagnostics.
@@ -6810,8 +7138,8 @@ void Simulation::rebuild_view() {
                     const auto play_game = state_.runtime_games.find(game->id);
                     if (play_game != state_.runtime_games.end()) {
                         const auto& value = play_game->second;
-                        const bool kit_update = value.status == "Kit update available" || value.status == "Update available";
-                        const bool no_kit = value.status == "No kit";
+                        const bool kit_update = value.status == "Runtime kit update available" || value.status == "Update available";
+                        const bool no_kit = value.status == "No runtime kit";
                         const bool prepares_first = !value.ready && value.can_prepare &&
                             (value.status == "Not prepared" || kit_update || value.status == "Needs repair");
                         const bool recovery = value.status == "Needs recovery" || value.status == "Failed";
@@ -6837,7 +7165,7 @@ void Simulation::rebuild_view() {
                             : queued_uninstall ? "Uninstalling…"
                             : value.awaiting_registration ? "Quits to Home"
                             : !value.play_status.empty() ? value.play_status
-                            : prepares_first ? (kit_update ? "Kit update first" : value.status == "Needs repair" ? "Repairs first" : "Sets up first")
+                            : prepares_first ? (kit_update ? "Updates runtime kit first" : value.status == "Needs repair" ? "Repairs first" : "Sets up first")
                             // Only the step's number, if it has one: Setup says what it does, and the button keeps its width.
                             : value.status == "Preparing" ? (value.detail.find(" · ") == std::string::npos
                                   ? std::string{} : value.detail.substr(0, value.detail.find(" · ")))
@@ -6992,11 +7320,11 @@ void Simulation::rebuild_view() {
                                               runtime->status != "Removal incomplete";
             const std::string status = !installation->available ? "Unavailable"
                 : runtime_uninstalling ? "Removing"
-                : runtime ? runtime->status : !live() ? (installation->runtime_ready ? "Ready" : "No kit") : "Checking";
+                : runtime ? runtime->status : !live() ? (installation->runtime_ready ? "Ready" : "No runtime kit") : "Checking";
             const bool waiting = runtime && runtime->awaiting_registration && installation->available && !runtime_uninstalling;
-            const bool kit_update = status == "Kit update available" || status == "Update available";
+            const bool kit_update = status == "Runtime kit update available" || status == "Update available";
             const std::string tone = waiting || kit_update ? "busy" : status == "Ready" ? "good"
-                : status == "Failed" || status == "No kit" ? "problem"
+                : status == "Failed" || status == "No runtime kit" ? "problem"
                 : status == "Needs repair" || status == "Needs recovery" || status == "Registration pending" ||
                   status == "Removal incomplete" ? "attention" : "quiet";
             // The game right ahead of this one in the preparation queue (the one being set up now when
@@ -7017,7 +7345,7 @@ void Simulation::rebuild_view() {
             // Once setup has finished, when Play can start the game and adding the installer would help.
             const bool physx_message = runtime && runtime->physx_needed && status == "Ready" && runtime->play_work.empty();
             auto& setup = row("details-setup", RowKind::Status, "Setup", "");
-            setup.value = waiting ? "Waiting for the PS5" : kit_update ? "Kit update available"
+            setup.value = waiting ? "Waiting for the PS5" : kit_update ? "Runtime kit update available"
                 : status == "Not prepared" ? "Not set up" : status == "Needs recovery" ? "Interrupted"
                 : status == "Registration pending" ? "Not confirmed" : status == "Removal incomplete" ? "Removing"
                 : status == "Preparing" && runtime && !runtime->detail.empty() ? runtime->detail : status;
@@ -7047,14 +7375,14 @@ void Simulation::rebuild_view() {
             else if (status == "Registration pending") hint = "The PS5 hasn't confirmed " + game->title + " yet.";
             else if (status == "Removal incomplete") hint = "Removing " + game->title + " from the PS5 Home screen stopped partway.";
             else if (status == "Needs repair") hint = "Some of " + game->title + "'s setup files changed.";
-            else if (status == "No kit") hint = "Playden needs its runtime kit to set up games.";
+            else if (status == "No runtime kit") hint = "Playden needs its runtime kit to set up games.";
             else if (physx_message) {
                 const auto& version = *runtime->physx_needed;
                 hint = version.empty() ? "This game needs PhysX. Add its installer to the game's _Redist folder, then press Play."
                                        : "This game needs PhysX " + version + ". Add its installer to the game's _Redist folder, then press Play.";
             }
             else if (runtime && runtime->setup_other_kit)
-                hint = "Setup started with an earlier kit. Recreate bottle makes it again; saves and settings are kept.";
+                hint = "Setup started with an earlier version of the runtime kit. Recreate bottle makes it again; saves and settings are kept.";
             else if (runtime && (status == "Needs recovery" || status == "Failed")) {
                 const bool stopped = status == "Needs recovery";
                 if (runtime->failure_code.rfind("kit-", 0) == 0 ||
@@ -7461,11 +7789,11 @@ void Simulation::rebuild_view() {
                 auto& kit = add("settings-kit", RowKind::Action, "Runtime kit", "kit");
                 if (phase == "available") {
                     kit.value = "Download";
-                    kit.subtitle = update.kit_replaces ? "The installed kit isn't the one this version was made for"
+                    kit.subtitle = update.kit_replaces ? "The installed runtime kit isn't the one this version was made for"
                                                        : "Needed to prepare and play games";
                 } else if (phase == "checking") {
                     kit.value = "Checking…";
-                    kit.subtitle = "Looking for this version's kit on GitHub";
+                    kit.subtitle = "Looking for this version's runtime kit on GitHub";
                 } else if (phase == "failed") {
                     kit.value = "Try again";
                     kit.subtitle = update.kit_error;
@@ -9445,7 +9773,17 @@ void Simulation::activate() {
             wait.body = "Playden quits to the PS5 Home screen once this game's saves are in step with Steam Cloud.";
             open_modal(std::move(wait));
         }
-    } else if (action_name == "ready-later" || action_name == "alert-ok" || action_name == "launcher-hint-later") {
+    } else if (action_name == "update-ready-play") {
+        const auto game = update_ready_game_;
+        close_modal();
+        update_ready_game_ = {};
+        if (game.valid() && find_game(state_, game) && !update_locked(game)) {
+            if (auto previous = state_.runtime_games.find(game); previous != state_.runtime_games.end())
+                previous->second.play_detail.clear();
+            pending_runtime_play_requests_.push_back(game);
+        }
+    } else if (action_name == "ready-later" || action_name == "alert-ok" || action_name == "launcher-hint-later" ||
+               action_name == "update-ready-later") {
         close_modal();
     } else if (action_name == "launcher-hint-on") {
         const auto game = alert_settings_game_;
@@ -9491,6 +9829,18 @@ void Simulation::activate() {
         ask_manage_uninstall();
     } else if (action_name == "manage-update") {
         queue_manage_updates();
+    } else if (action_name == "manage-runtimes") {
+        start_runtime_batch();
+    } else if (action_name == "runtime-prompt-update") {
+        close_modal();
+        auto& tab = manage_tabs_[ManageTab::Runtimes];
+        tab.selected.clear();
+        for (const auto id : manage_list(ManageTab::Runtimes))
+            if (manage_blocker(ManageTab::Runtimes, id).empty()) tab.selected.insert(id);
+        start_runtime_batch();
+    } else if (action_name == "runtime-batch-free") {
+        close_modal();
+        open_manage_games(ManageTab::Uninstall);
     } else if (action_name == "manage-move") {
         queue_manage_moves();
     } else if (action_name == "manage-move-to") {
@@ -9876,7 +10226,7 @@ void Simulation::activate() {
             heading = "Reset settings?";
             body = "Your changes to " + title + "'s settings are removed. The chosen preset and program stay; saves are not touched.";
         } else if (action_name == "maintenance-update") {
-            heading = "Update the runtime?";
+            heading = "Update the runtime kit?";
             body = title + " moves to the installed runtime kit, and settings that need it apply. "
                    "The game doesn't start; saves are not touched.";
         } else if (action_name == "maintenance-repair") {
@@ -10527,6 +10877,7 @@ bool Simulation::action(const std::string& logical_action) {
         // Triangle runs the open tab's action from anywhere on the screen; the dialog returns to the row.
         if (state_.navigation.manage_tab == ManageTab::Uninstall) ask_manage_uninstall();
         else if (state_.navigation.manage_tab == ManageTab::Move) queue_manage_moves();
+        else if (state_.navigation.manage_tab == ManageTab::Runtimes) start_runtime_batch();
         else queue_manage_updates();
     }
     else if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
@@ -10693,7 +11044,9 @@ bool Simulation::action(const std::string& logical_action) {
     }
     else { last_error_ = "Unknown action: " + logical_action; return false; }
     show_ready_prompt();  // a ready-to-play prompt waits for the player to close what was open
+    show_update_ready_prompt();
     show_alert_prompt();
+    show_runtime_prompt();
     rebuild_view();
     if (live() || state_.persistence_available) save_profile();
     return true;
@@ -11243,7 +11596,7 @@ void Simulation::request_maintenance(GameId id, MaintenanceKind kind) {
                           : kind == MaintenanceKind::Repair ? "Repaired"
                           : kind == MaintenanceKind::BackupSaves ? "Saves backed up"
                           : kind == MaintenanceKind::RecreateBottle ? "Bottle recreated"
-                          : kind == MaintenanceKind::UpdateRuntime ? "Runtime updated" : "Settings applied";
+                          : kind == MaintenanceKind::UpdateRuntime ? "Runtime kit updated" : "Settings applied";
         push_notice({"maintenance-" + ToKey(id), words, "", false, kLiveNoticeSeconds, false, "Simulated"});
         return;
     }

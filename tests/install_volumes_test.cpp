@@ -1,3 +1,4 @@
+#include "platform/usb_mount.h"
 #include "steam/install_volumes.h"
 
 #include <cstdio>
@@ -134,6 +135,16 @@ int main() {
   }
   CHECK(detail::VolumeMountMatches("/data/playden/games", "/data"));
   CHECK(detail::VolumeMountMatches("/mnt/ext10", "/mnt"));
+  using playden::platform::IsUsbVolumeId;
+  using playden::platform::OnUsbMount;
+  using playden::platform::WithoutUsbMountNumber;
+  CHECK(IsUsbVolumeId("usb0") && IsUsbVolumeId("usb7") && !IsUsbVolumeId("usb8") && !IsUsbVolumeId("usb") &&
+        !IsUsbVolumeId("usb10") && !IsUsbVolumeId("m2"));
+  CHECK(WithoutUsbMountNumber("/mnt/usb1/playden/games/730") == "/mnt/usb/playden/games/730");
+  CHECK(WithoutUsbMountNumber("/mnt/usb1") == "/mnt/usb");
+  for (const char* other : {"/mnt/usb/x", "/mnt/usb10/x", "/mnt/usb8/x", "/mnt/usbx/x", "/mnt/ext1/x", "/data/mnt/usb1/x", "/mnt/usb1x"})
+    CHECK(WithoutUsbMountNumber(other) == other);
+  CHECK(OnUsbMount("/mnt/usb1/playden/games/730", 3) == "/mnt/usb3/playden/games/730");
 
   std::filesystem::permissions(base / "locked", std::filesystem::perms::owner_all);
   std::filesystem::remove_all(base);

@@ -4,6 +4,7 @@
 #include "steam/backend/depot_installer.h"
 #include "stores/local/drop_folder_access.h"
 #include "stores/local/scanner.h"
+#include "platform/usb_mount.h"
 #include "stores/local/source_walk.h"
 
 #include <algorithm>
@@ -347,6 +348,13 @@ installs::InstallRunner::Result LocalCopyRunner::Install(
   }
   auto plan = LoadCopyPlan(root);
   if (!plan) return Abandon(*entry, root, kCopyStoppedFailure);
+  // The drive may have changed places since the copy began: the plan names the mount it had.
+  if (const auto source = "/mnt/" + entry->volume + "/" + entry->folder;
+      platform::IsUsbVolumeId(entry->volume) && plan->source != source &&
+      platform::WithoutUsbMountNumber(plan->source) == platform::WithoutUsbMountNumber(source)) {
+    Log("import copy follows its drive id=" + entry->id + " from=" + plan->source + " to=" + source);
+    plan->source = source;
+  }
 
   // What a resume already has: files at their final name and planned size.
   std::vector<char> done(plan->files.size(), 0);

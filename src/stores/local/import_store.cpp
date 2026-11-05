@@ -1,5 +1,7 @@
 #include "stores/local/import_store.h"
 
+#include "platform/usb_mount.h"
+
 #include "platform/random_id.h"
 #include "steam/backend/json.h"
 #include "stores/local/scanner.h"
@@ -124,6 +126,13 @@ std::optional<RemovedImport> ParseRemoved(const JsonValue& value) {
 bool SameFolder(const std::string& volume_a, const std::string& folder_a, const std::string& volume_b,
                 const std::string& folder_b) {
   return volume_a == volume_b && folder_a == folder_b;
+}
+
+// A removed game keeps its ID for its folder, on whichever mount its USB drive is now.
+bool SameRemovedFolder(const std::string& volume_a, const std::string& folder_a, const std::string& volume_b,
+                       const std::string& folder_b) {
+  return SameFolder(volume_a, folder_a, volume_b, folder_b) ||
+         (platform::IsUsbVolumeId(volume_a) && platform::IsUsbVolumeId(volume_b) && SameFolder(volume_a, folder_a, volume_a, folder_b));
 }
 
 }  // namespace
@@ -298,7 +307,7 @@ std::optional<RemovedImport> ImportStore::FindRemoved(const std::string& volume,
   std::lock_guard<std::mutex> lock(mutex_);
   if (!loaded_) return std::nullopt;
   for (const auto& entry : removed_)
-    if (SameFolder(entry.volume, entry.folder, volume, folder)) return entry;
+    if (SameRemovedFolder(entry.volume, entry.folder, volume, folder)) return entry;
   return std::nullopt;
 }
 
@@ -314,11 +323,31 @@ void ImportStore::MoveToRemoved(std::size_t index) {
   removed_.erase(std::remove_if(removed_.begin(), removed_.end(),
                                 [&](const auto& entry) {
                                   return entry.id == game.id ||
-                                         SameFolder(entry.volume, entry.folder, game.volume, game.folder);
+                                         SameRemovedFolder(entry.volume, entry.folder, game.volume, game.folder);
                                 }),
                  removed_.end());
   removed_.push_back({game.id, game.volume, game.folder, game.program});
   while (removed_.size() > kMaxRemoved) removed_.erase(removed_.begin());
+}
+
+ImportResult<ImportEntry> ImportStore::SetVolume(const std::string& id, const std::string& volume) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!loaded_) return FailureOf<ImportEntry>(ImportError::kNotLoaded, "imports are not loaded");
+  if (!ValidVolume(volume)) return FailureOf<ImportEntry>(ImportError::kInvalid, "the game's drive is invalid");
+  auto* game = Mutable(id);
+  if (!game) return FailureOf<ImportEntry>(ImportError::kNotFound, "the game is not in the library");
+  if (game->volume == volume) return ImportResult<ImportEntry>::Success(*game);
+  for (const auto& other : games_)
+    if (other.id != id && SameFolder(other.volume, other.folder, volume, game->folder))
+      return FailureOf<ImportEntry>(ImportError::kDuplicate, "this folder is already in the library");
+  const auto previous = game->volume;
+  game->volume = volume;
+  const auto persisted = Persist();
+  if (!persisted.ok()) {
+    game->volume = previous;
+    return FailureOf<ImportEntry>(persisted.error(), persisted.message());
+  }
+  return ImportResult<ImportEntry>::Success(*game);
 }
 
 ImportResult<ImportEntry> ImportStore::Add(const std::string& volume, const std::string& folder,
@@ -332,7 +361,7 @@ ImportResult<ImportEntry> ImportStore::Add(const std::string& volume, const std:
       return FailureOf<ImportEntry>(ImportError::kDuplicate, "this folder is already in the library");
   if (games_.size() >= kMaxGames) return FailureOf<ImportEntry>(ImportError::kBounds, "too many imported games");
   const auto removed = std::find_if(removed_.begin(), removed_.end(), [&](const auto& entry) {
-    return SameFolder(entry.volume, entry.folder, volume, folder);
+    return SameRemovedFolder(entry.volume, entry.folder, volume, folder);
   });
   std::string id;
   if (removed != removed_.end()) {

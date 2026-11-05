@@ -2,6 +2,7 @@
 #include "runtime/artifact_hash.h"
 #include "runtime/publication_contract.h"
 #include "platform/managed_directory.h"
+#include "platform/usb_mount.h"
 #include <cerrno>
 #include <unistd.h>
 extern "C" {
@@ -194,7 +195,8 @@ bool BaseValid(const SettingsPublicationOperation& o, std::string* reason) {
       launch.app_id != r.runtime_number || launch.settings_revision != p.settings_revision || launch.install_id != r.install_id ||
       launch.data_root != r.data_root || launch.default_profile_id != p.profile_id ||
       launch.runtime_bundle_id != r.runtime_bundle_id || launch.recipe_id != p.recipe_id || launch.recipe_version != p.recipe_version ||
-      launch.exit_policy != r.exit_policy || launch.game_root != r.install_path)
+      launch.exit_policy != r.exit_policy ||
+      launch.game_root != (launch.schema_version == 3 ? platform::WithoutUsbMountNumber(r.install_path) : r.install_path))
     return Reject(reason, "Frozen descriptor does not match the OWNER record.");
   PwGameProfile profile{};
   if (pw_game_profile_parse(reinterpret_cast<const uint8_t*>(p.profile_bytes.data()), p.profile_bytes.size(), &profile) != PW_OK ||
@@ -206,8 +208,10 @@ bool BaseValid(const SettingsPublicationOperation& o, std::string* reason) {
       pw_wine_launch_host_dir(prefix, profile.app.executable, executable, sizeof(executable)) ||
       pw_wine_launch_host_dir(prefix, profile.app.working_directory, working, sizeof(working)))
     return Reject(reason, "Frozen profile cannot form a Wine launch.");
-  std::string expected_exe = r.install_path + "/" + NormalRelative(r.launch_path);
-  std::string expected_working = r.install_path;
+  // A USB game published naming no mount: its profile and dxvk.conf name the same form as its descriptor.
+  const std::string published_root = launch.schema_version == 3 ? platform::WithoutUsbMountNumber(r.install_path) : r.install_path;
+  std::string expected_exe = published_root + "/" + NormalRelative(r.launch_path);
+  std::string expected_working = published_root;
   if (!r.launch_working_directory.empty()) expected_working += "/" + NormalRelative(r.launch_working_directory);
   else if (r.launch_in_install_root) {}
   else if (expected_exe.find_last_of('/') != std::string::npos) expected_working = expected_exe.substr(0, expected_exe.find_last_of('/'));

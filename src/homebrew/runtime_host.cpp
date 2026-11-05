@@ -2,6 +2,9 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 #include "homebrew/runtime_host.hpp"
+
+#include "pw_app_profile.h"
+#include "platform/usb_mount.h"
 #include "installs/install_record.h"
 
 #include "platform/random_id.h"
@@ -106,7 +109,7 @@ std::string KitLacksForRecipe(const rt::GameRecipe& recipe, const rt::VerifiedKi
   if (recipe.id == kit.recipe.id) return {};
   const auto unmet = rt::UnmetRecipeRequirements(recipe.requirements, kit);
   return unmet.empty() ? std::string()
-                       : "The installed runtime kit lacks what this game needs (" + unmet + "); install a newer kit.";
+                       : "The installed runtime kit lacks what this game needs (" + unmet + "); install a newer runtime kit.";
 }
 
 // Staged, its registration submitted, and only waiting for ShadowMountPlus, which
@@ -1342,6 +1345,12 @@ std::size_t RuntimeHost::LeftoverRequests(Composition& c, bool remove) {
   return kept;
 }
 
+// A finished publication's request is no longer named by any journal, so updating many games doesn't pile them up.
+void RuntimeHost::RemoveFinishedRequests(Composition& c) {
+  const auto kept = LeftoverRequests(c, true);
+  Publish([&](RuntimeSnapshot& s) { s.leftover_requests = kept; });
+}
+
 bool RuntimeHost::Handoff() {
   {
     std::lock_guard<std::mutex> lock(launch_mutex_);
@@ -1607,7 +1616,7 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
   return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen || kit.display_fps_counter ||
-                 kit.launcher_mode || kit.input_playstation
+                 kit.launcher_mode || kit.input_playstation || kit.game_root_usb_search
              ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
              : kit;
 }
@@ -1709,7 +1718,7 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   for (const auto& preset : c.presets)
     if (preset.id == input.record.preset_id) input.preset = &preset;
   input.kit = TitleKit(c, record);
-  input.target = {record.default_profile_id, record.install_path};
+  input.target = {record.default_profile_id, record.install_path, UsbSearchRoot(c, record)};
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
@@ -1733,6 +1742,8 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
         return failed("settings-plan", unwritable);
     }
   }
+  // The program settled above decides this: a copy of another program on another drive doesn't count.
+  input.target.published_root = UsbSearchRoot(c, current);
   // The first start may come from the PS5 Home screen, so the game's Steam files are set up now.
   if (const auto steamworks = ApplyPreparationSteps(c, current); !steamworks.empty()) return failed("steamworks", steamworks);
   if (!rt::BuildSettingsLaunchPlan(input, &plan, &reason)) {
@@ -1763,6 +1774,7 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   const auto resumed = c.owner->ResumeRequested(*armed, c.request_directory, prefix);
   Log("publication resume state=" + std::to_string(static_cast<int>(resumed.state)) + " code=" + resumed.code +
       " message=" + resumed.message);
+  if (resumed.state == rt::PackageActionState::kComplete) RemoveFinishedRequests(c);
   return resumed;
 }
 
@@ -1852,6 +1864,38 @@ bool RuntimeHost::NeedsUnownedPublication(const Composition& c, const rt::Runtim
       !rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).game_root_unowned)
     return false;
   return rt::PublishedGameRootUnowned(record, config_.host_namespace_prefix) == std::optional<bool>(false);
+}
+
+std::string RuntimeHost::UsbSearchRoot(const Composition& c, const rt::RuntimeInstall& record) const {
+  const auto root = platform::WithoutUsbMountNumber(record.install_path);
+  if (!platform::IsUsbSearchPath(root)) return {};
+  // A title older than the kit reads this form if it is already published in it: a kit change doesn't pin it to a mount.
+  if (!TitleKit(c, record).game_root_usb_search && rt::PublishedGameRoot(record, config_.host_namespace_prefix) != root) return {};
+  auto program = record.launch_path;
+  std::replace(program.begin(), program.end(), '\\', '/');
+  // The title puts the mount's number in, and the profile's limit is on the real paths too.
+  const auto working = WorkingFolder(record.launch_working_directory, record.launch_path, record.launch_in_install_root);
+  if (("Z:" + record.install_path + "/" + program).size() >= PW_APP_PATH_CAPACITY ||
+      ("Z:" + record.install_path + "/" + working).size() >= PW_APP_PATH_CAPACITY)
+    return {};
+  // A copy on another drive makes the title refuse the search: this drive's copy is named outright.
+  for (int number = 0; number < platform::kUsbMounts; ++number) {
+    const auto other = platform::OnUsbMount(record.install_path, number);
+    if (other == record.install_path) continue;
+    struct stat info{};
+    if (lstat((HostPath(other) / program).c_str(), &info) == 0 && S_ISREG(info.st_mode)) return {};
+  }
+  return root;
+}
+
+bool RuntimeHost::NeedsDrivePublication(const Composition& c, const rt::RuntimeInstall& record) const {
+  if (!c.kit || record.state != rt::PreparationState::kReady || record.journal || !record.moved_from.empty() ||
+      platform::WithoutUsbMountNumber(record.install_path) == record.install_path)
+    return false;
+  const auto published = rt::PublishedGameRoot(record, config_.host_namespace_prefix);
+  if (!published || platform::WithoutUsbMountNumber(*published) != platform::WithoutUsbMountNumber(record.install_path)) return false;
+  const auto wanted = UsbSearchRoot(c, record);
+  return *published != (wanted.empty() ? record.install_path : wanted);
 }
 
 bool RuntimeHost::DropUpgradeRequest(Composition& c, const std::string& install_id, const std::string& why) {
@@ -1995,7 +2039,8 @@ std::string RuntimeHost::RepublishSettings(Composition& c, const rt::RuntimeInst
   const auto saved_revision = config_.settings_record
       ? config_.settings_record(GameOf(record)).value_or(rt::GameSettingsRecord{}).revision : 0;
   const bool upgrade_only = !force && setup_program.empty() && record.setup_program.empty() && record.moved_from.empty() &&
-                            saved_revision <= record.settings_revision && NeedsUnownedPublication(c, record);
+                            saved_revision <= record.settings_revision &&
+                            (NeedsUnownedPublication(c, record) || NeedsDrivePublication(c, record));
   // A game folder that isn't there (a stale record, an unplugged drive) can't be published, and
   // arming the request first would leave a journal on the record: nothing is armed for it.
   if (upgrade_only || !record.moved_from.empty()) {
@@ -2068,7 +2113,9 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // its descriptor, profile and dxvk.conf name the new folder.
   const bool moved = !record.moved_from.empty();
   // So is an owned publication the kit can replace by an unowned one (folders opened for mods).
-  const bool unowned_upgrade = !moved && NeedsUnownedPublication(c, record);
+  // So is a USB game the other way round: naming no mount once its title can find the drive, and naming its mount
+  // once a copy on another drive would make the title refuse.
+  const bool unowned_upgrade = !moved && (NeedsUnownedPublication(c, record) || NeedsDrivePublication(c, record));
   if (unowned_upgrade) Log("settings update app=" + std::to_string(record.runtime_number) + " publishes the game folder unowned");
   // "Steam features" only swaps the game's own files, so it follows the saved value at once.
   if (!force && setup_program.empty() && !restoring && saved.revision <= record.settings_revision && !moved &&
@@ -2145,7 +2192,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   overrides["program_folder"] = next.launch_in_install_root ? std::string(".") : next.launch_working_directory;
   input.preset = preset;
   input.kit = kit;
-  input.target = {next.default_profile_id, next.install_path};
+  input.target = {next.default_profile_id, next.install_path, UsbSearchRoot(c, next)};
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
@@ -2236,6 +2283,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     return "The settings could not be applied: " + resumed.message;
   }
   if (published) *published = true;
+  RemoveFinishedRequests(c);
   if (const auto current = c.records.Find(record.install_id)) OpenGameFolders(c, *current);
   if (moved) FinishGamesMove(c);
   if (restoring) return MarkSetupProgram(c, record.install_id, {});
@@ -2347,6 +2395,114 @@ bool RuntimeHost::MoveGameRecords(Composition& c) {
   const auto indexes = RebaseCloudIndexes(HostPath(to) / ".playden-saves", from, to);
   if (indexes) Log("layout move cloud indexes=" + std::to_string(indexes));
   return true;
+}
+
+namespace {
+// A Ready game whose publication still names the mount its USB drive had.
+bool NeedsDriveUpdate(const rt::RuntimeInstall& record) {
+  return record.state == rt::PreparationState::kReady && !record.moved_from.empty() &&
+         record.moved_from != record.install_path &&
+         platform::WithoutUsbMountNumber(record.moved_from) == platform::WithoutUsbMountNumber(record.install_path);
+}
+}  // namespace
+
+void RuntimeHost::RunDriveUpdateStep(Composition& c) {
+  constexpr auto kBusyRetry = std::chrono::seconds(3);
+  const auto finish = [&](std::size_t total) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      drive_updates_pending_ = false;
+    }
+    Publish([&](RuntimeSnapshot& s) { s.drive_updates_done = total; s.drive_updates_total = total; });
+  };
+  const auto left = [&] {
+    std::vector<rt::RuntimeInstall> records;
+    for (const auto& record : c.repository.Snapshot())
+      if ((NeedsDriveUpdate(record) || NeedsDrivePublication(c, record)) && !drive_update_tried_.count(record.install_id))
+        records.push_back(record);
+    return records;
+  };
+  const auto total = Snapshot().drive_updates_total;
+  const auto records = left();
+  if (records.empty() || !c.kit) return finish(total);
+  // A game that is running or needs its title's recovery holds back only itself. Recovery is not this job's to do,
+  // so that game counts as not updated; a running one is tried again once nothing else is left.
+  const rt::RuntimeInstall* next = nullptr;
+  std::size_t needs_recovery = 0;
+  for (const auto& candidate : records) {
+    if (candidate.journal) {
+      Log("drive update app=" + std::to_string(candidate.runtime_number) + " failed: its title needs recovery");
+      drive_update_tried_.insert(candidate.install_id);
+      ++needs_recovery;
+    } else if (!next && MaintenanceRefusal(c, candidate).empty()) {
+      next = &candidate;
+    }
+  }
+  if (needs_recovery) {
+    const auto remaining = left().size();
+    Publish([&](RuntimeSnapshot& s) {
+      s.drive_updates_done = total > remaining ? total - remaining : 0;
+      s.drive_updates_failed += needs_recovery;
+    });
+  }
+  if (!next) {
+    if (left().empty()) return finish(total);
+    std::lock_guard<std::mutex> lock(mutex_);
+    drive_update_not_before_ = std::chrono::steady_clock::now() + kBusyRetry;
+    return;
+  }
+  const auto& record = *next;
+  bool published = false;
+  std::string deferred;
+  // The Steam account may not be known yet: the emulator's files and install scripts wait for Play.
+  const auto refused = RepublishSettings(c, record, &published, false, nullptr, &deferred);
+  Log("drive update app=" + std::to_string(record.runtime_number) + " " +
+      (published ? std::string("republished") : !deferred.empty() ? "deferred: " + deferred : "failed: " + refused));
+  drive_update_tried_.insert(record.install_id);
+  PublishInstalls(c, record.install_id);
+  const auto remaining = left().size();
+  // Whatever the reason, its publication still names the old mount.
+  Publish([&](RuntimeSnapshot& s) {
+    s.drive_updates_done = total > remaining ? total - remaining : 0;
+    s.drive_updates_failed += published ? 0 : 1;
+  });
+}
+
+bool RuntimeHost::RebaseUsbRecord(Composition& c, rt::RuntimeInstall record, const std::string& install_path) {
+  const auto from = record.install_path;
+  // What the publication names stays in moved_from, so a drive that goes back to its mount needs nothing published.
+  // Published naming no mount, nothing does: only this record says where the drive is.
+  const auto named = rt::PublishedGameRoot(record, config_.host_namespace_prefix);
+  const auto published = record.moved_from.empty() ? from : record.moved_from;
+  record.moved_from = published == install_path || (named && platform::IsUsbSearchPath(*named)) ? std::string() : published;
+  record.install_path = install_path;
+  const auto written = c.repository.UpdateAll({record});
+  Log("usb drive follows app=" + std::to_string(record.runtime_number) + " from=" + from + " to=" + install_path + " " +
+      (written.ok() ? std::string("rewritten") : "failed: " + written.message()));
+  if (!written.ok()) return false;
+  if (!config_.cloud_saves_root.empty()) RebaseCloudIndexes(HostPath(config_.cloud_saves_root), from, install_path);
+  return true;
+}
+
+void RuntimeHost::FollowUsbDrives(Composition& c) {
+  for (const auto& record : c.repository.Snapshot()) {
+    // A publication in progress names its folder: it finishes first, and the next start follows.
+    if (record.journal || platform::WithoutUsbMountNumber(record.install_path) == record.install_path) continue;
+    auto program = record.launch_path;
+    std::replace(program.begin(), program.end(), '\\', '/');
+    const auto holds = [&](const std::string& root) {
+      struct stat info{};
+      const auto folder = HostPath(root);
+      if (lstat(folder.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return false;
+      return program.empty() || lstat((folder / program).c_str(), &info) == 0;
+    };
+    if (holds(record.install_path)) continue;
+    std::vector<std::string> found;
+    for (int number = 0; number < platform::kUsbMounts; ++number)
+      if (const auto root = platform::OnUsbMount(record.install_path, number); holds(root)) found.push_back(root);
+    if (found.size() == 1) RebaseUsbRecord(c, record, found.front());
+    else if (found.size() > 1) Log("usb drive app=" + std::to_string(record.runtime_number) + " on " + std::to_string(found.size()) + " drives: stays");
+  }
 }
 
 void RuntimeHost::FinishGamesMove(Composition& c) {
@@ -2810,13 +2966,13 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   };
   if (!c.kit) return failed("No verified runtime kit is installed.");
   const rt::KitTitleVariant* variant = rt::KitVariantFor(c.kit->view, record.title_id);
-  if (!variant) return failed("The kit has no title for this game.");
+  if (!variant) return failed("The runtime kit has no title for this game.");
   // The kit's param.json with the game's name in place of the kit's.
   std::string param;
   {
     const auto path = c.kit->view.root / variant->path / "sce_sys/param.json";
     const int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) return failed("The kit's title parameters are unreadable.");
+    if (fd < 0) return failed("The runtime kit's title parameters are unreadable.");
     char chunk[4096];
     for (ssize_t count; (count = read(fd, chunk, sizeof(chunk))) > 0 && param.size() < 64 * 1024;)
       param.append(chunk, static_cast<std::size_t>(count));
@@ -2840,7 +2996,7 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   if (variant->any_title &&
       !(replace_value("titleId", record.title_id) && replace_value("conceptId", record.title_id.substr(4)) &&
         replace_value("contentId", "UP9000-" + record.title_id + "_00-PROSPEROWIN00001")))
-    return failed("The kit's title parameters have an unexpected layout.");
+    return failed("The runtime kit's title parameters have an unexpected layout.");
   const std::string name = title_name.empty() ? "Steam game " + std::to_string(record.runtime_number) : title_name;
   if (!replace_value("titleName", JsonEscaped(name)))
     Log("title metadata app=" + std::to_string(record.runtime_number) + " keeps the kit's name: unexpected layout");
@@ -3126,6 +3282,13 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     return "This game's PS5 title is still being removed. Uninstall the game again to finish.";
   // RunRemove runs inline, so removals_handled (the controller's uninstall progress) does not move.
   // A pending move finishes whatever the paths say now (the game may be back in its first folder).
+  // The same folder on another USB mount: its drive changed places, and the game hasn't gone anywhere.
+  if (existing && !moving && !existing->journal && existing->install_path != request.install_path &&
+      platform::WithoutUsbMountNumber(existing->install_path) == platform::WithoutUsbMountNumber(request.install_path)) {
+    if (!RebaseUsbRecord(c, *existing, request.install_path)) return "The game's new drive could not be recorded.";
+    existing = c.records.Find(existing->install_id);
+    if (!existing) return "The game's install record is missing.";
+  }
   if (existing && (moving || (!existing->journal && existing->install_path != request.install_path))) {
     // Installed again on another drive (an uninstall that stopped part way can leave the title behind):
     // the old title starts files that are no longer the game's. It goes, keeping its saves, and the
@@ -3178,7 +3341,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     if (!*records_ownership) {
       if (!rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).game_root_unowned)
         return "This drive doesn't keep file owners, and the installed runtime kit can't start games from it. "
-               "Install the game on console storage, or update the kit.";
+               "Install the game on console storage, or update the runtime kit.";
       Log("game root without ownership path=" + request.install_path);
       game_root_owned = false;
     } else if (info.st_uid != geteuid()) {
@@ -3215,7 +3378,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       if (!record.artifacts.empty()) Log("prepare rebinds app=" + std::to_string(record.runtime_number) + " to the kit's artifacts");
       record.artifacts = std::move(current);
       const auto bound = c.repository.Update(record);
-      if (!bound.ok()) return "The kit artifacts could not be recorded: " + bound.message();
+      if (!bound.ok()) return "The runtime kit artifacts could not be recorded: " + bound.message();
     }
     if (!c.installer->TitleMetadataCurrent(record)) {
       const auto written = WriteTitleMetadata(c, record, request.title_name);
@@ -3289,7 +3452,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
         if (runtime_upgrade && refreshed.state == rt::PackageActionState::kComplete) {
           const auto recorded = c.repository.Update(target);
           Log("runtime upgrade app=" + std::to_string(request.runtime_number) + " recorded=" + std::to_string(recorded.ok()));
-          if (!recorded.ok()) return "The runtime was updated but could not be recorded; press Update again.";
+          if (!recorded.ok()) return "The runtime kit was updated but could not be recorded; press Update again.";
           *existing = target;
         }
         Log("title refresh app=" + std::to_string(request.runtime_number) + " state=" +
@@ -3302,7 +3465,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       // owned publication again as unowned. A moved game whose publication can't be redone
       // (settings older than its title, a recipe Playden no longer has) stays as it is: the way
       // out is the player's confirmed choice.
-      if (!existing->moved_from.empty() || NeedsUnownedPublication(c, *existing)) {
+      if (!existing->moved_from.empty() || NeedsUnownedPublication(c, *existing) || NeedsDrivePublication(c, *existing)) {
         bool again = false;
         std::string deferred;
         if (const auto refused = RepublishSettings(c, *existing, nullptr, true, &again, &deferred); !refused.empty())
@@ -3316,7 +3479,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       SettleBottle(c, *existing, "update");
       if (const auto unlinked = UnlinkDxvkConfig(*existing); !unlinked.empty()) return unlinked;
       auto admission = c.installer->AdmissionDiagnostic(*existing);
-      if (admission != "ok") {
+      if (rt::AdmissionNeedsRepair(admission)) {
         const auto repaired = c.installer->RepairBottle(*existing);
         admission = c.installer->AdmissionDiagnostic(*existing);
         Log("bottle repair app=" + std::to_string(request.runtime_number) + " state=" +
@@ -3329,7 +3492,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       }
       c.admission[existing->install_id] = admission;
       PublishInstalls(c);
-      if (admission != "ok") return "The PS5 title still fails its start check: " + admission;
+      if (rt::AdmissionNeedsRepair(admission)) return "The PS5 title still fails its start check: " + admission;
       OpenGameFolders(c, *existing);
       // An update changed the game's files since its launch was set up: the launch is made again from them.
       if (FilesChanged(*existing)) {
@@ -3819,7 +3982,7 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
     case RuntimeMaintenance::kRepair: {
       // An owned publication with a kit that admits unowned folders fails the start check once
       // the player opened the folder; it is published again as unowned, just below.
-      const bool unowned_upgrade = NeedsUnownedPublication(c, *record);
+      const bool unowned_upgrade = NeedsUnownedPublication(c, *record) || NeedsDrivePublication(c, *record);
       const auto working = WorkingFolder(record->launch_working_directory, record->launch_path, record->launch_in_install_root);
       if (const auto unwritable = EnsureWritable(record->install_path, working); !unwritable.empty())
         return unwritable;
@@ -3832,7 +3995,7 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
       PublishInstalls(c, record->install_id);
       if (repaired.state != rt::PackageActionState::kComplete) return "The bottle could not be repaired: " + repaired.message;
       // A game whose folder moved fails the check until it is published again, just below.
-      if (admission != "ok" && record->moved_from.empty() && !unowned_upgrade)
+      if (rt::AdmissionNeedsRepair(admission) && record->moved_from.empty() && !unowned_upgrade)
         return "The PS5 title still fails its start check: " + admission;
       std::string deferred;
       if (auto refused = RepublishSettings(c, *record, nullptr, true, nullptr, &deferred); !refused.empty())
@@ -4673,6 +4836,7 @@ bool RuntimeHost::RunServices() {
       // Install records with a journal wait for an explicit recovery action. Leftover-title
       // deletion journals are resumed separately before their retired folders can be swept.
       Log("startup records loaded installs=" + std::to_string(c.repository.Snapshot().size()));
+      FollowUsbDrives(c);
       LoadGeneratedRecipes(c);
       Log("startup generated recipes loaded");
       PublishInstalls(c);
@@ -4800,7 +4964,9 @@ bool RuntimeHost::RunServices() {
         if (record.state != rt::PreparationState::kReady) continue;
         const bool moved = !record.moved_from.empty();
         if (!moved && !NeedsUnownedPublication(c, record)) continue;
-        const auto busy = c.kit ? MaintenanceRefusal(c, record) : std::string("no verified kit");
+        // The background job does these, after the first frame (below, with NeedsDrivePublication).
+        if (NeedsDriveUpdate(record)) continue;
+        const auto busy = c.kit ? MaintenanceRefusal(c, record) : std::string("no verified runtime kit");
         bool published = false;
         std::string deferred;
         const auto refused = busy.empty() ? RepublishSettings(c, record, &published, false, nullptr, &deferred) : busy;
@@ -4825,14 +4991,22 @@ bool RuntimeHost::RunServices() {
           if (published || !refused.empty())
             Log("startup settings app=" + std::to_string(record.runtime_number) + " " + (refused.empty() ? "applied" : refused));
         }
-      const auto leftovers = LeftoverRequests(c, false);
-      Publish([&](RuntimeSnapshot& s) { s.leftover_requests = leftovers; });
+      RemoveFinishedRequests(c);
       const bool kit_available = c.kit.has_value();
       Log("runtime ready installs=" + std::to_string(c.repository.Snapshot().size()) + " kit=" +
           (kit_available ? c.kit->view.kit_id : "none (" + kit_reason + ")") +
           (c.settings_data_reason.empty() ? std::string{} : " settings_data=" + c.settings_data_reason));
+      std::size_t drive_updates = 0;
+      drive_update_tried_.clear();
+      for (const auto& record : c.repository.Snapshot()) drive_updates += NeedsDriveUpdate(record) || NeedsDrivePublication(c, record) ? 1 : 0;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        drive_updates_pending_ = drive_updates > 0;
+        drive_update_not_before_ = {};
+      }
       Publish([&](RuntimeSnapshot& s) {
         s.status = RuntimeHostStatus::kReady; s.reason.clear();
+        s.drive_updates_done = 0; s.drive_updates_total = drive_updates; s.drive_updates_failed = 0;
         s.kit_available = kit_available; s.kit_reason = kit_available ? std::string{} : kit_reason;
         s.kit = c.kit;
         // The UI reads the kit's identity and capabilities; its file and artifact lists (thousands of
@@ -4880,9 +5054,12 @@ bool RuntimeHost::RunServices() {
                !scan_requests_.empty() || !prepared_dismissals_.empty() || prepared_clear_requested_ ||
                (!maintenance_requests_.empty() && !snapshot_.handoff_ready) ||
                (!relocation_requests_.empty() && !snapshot_.handoff_ready) ||
-               (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_);
+               (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) ||
+               (drive_updates_pending_ && !snapshot_.handoff_ready && !launch_poll_ &&
+                std::chrono::steady_clock::now() >= drive_update_not_before_);
       };
       if (launch_poll_) wake_.wait_for(lock, kLaunchPollInterval, ready);
+      else if (drive_updates_pending_) wake_.wait_until(lock, drive_update_not_before_, [&] { return ready() || launch_poll_; });
       else wake_.wait(lock, [&] { return ready() || launch_poll_; });
       if (stopping_) break;
       // Between batches, with no launch to hand off or follow: the services hold no work, and PS5
@@ -5089,6 +5266,18 @@ bool RuntimeHost::RunServices() {
       const bool again = PollLaunch(*composition);
       std::lock_guard<std::mutex> lock(mutex_);
       launch_poll_ = again;
+    }
+    // What the player asked for goes first: one game of the drive update, only when nothing else waits.
+    if (composition) {
+      bool step = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        step = drive_updates_pending_ && !stopping_ && !launch_poll_ && !snapshot_.handoff_ready && !prepares_held_ &&
+               prepare_requests_.empty() && play_requests_.empty() && maintenance_requests_.empty() &&
+               remove_requests_.empty() && relocation_requests_.empty() &&
+               std::chrono::steady_clock::now() >= drive_update_not_before_;
+      }
+      if (step) RunDriveUpdateStep(*composition);
     }
     // One preparation per pass, taken from the front of the queue only as it starts, so PrepareNext
     // reorders everything not started yet. A handoff that became ready during this pass reads install

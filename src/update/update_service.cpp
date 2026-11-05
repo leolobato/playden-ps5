@@ -737,7 +737,7 @@ bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool
       cancelled();
       return false;
     }
-    fail("The kit download failed.", download.error);
+    fail("The runtime kit download failed.", download.error);
     return false;
   }
   step(true, 0);
@@ -750,7 +750,7 @@ bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool
     return MakeFolders(staging) && chmod(staging.c_str(), 0777) == 0;
   });
   if (!IsFolder(staging) || access(staging.c_str(), W_OK) != 0) {
-    fail("Playden could not create the kit folder.", staging);
+    fail("Playden could not create the runtime kit folder.", staging);
     return false;
   }
   ZipExtractOptions unzip;
@@ -773,7 +773,7 @@ bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool
       cancelled();
       return false;
     }
-    fail("The kit could not be unpacked.", unpacked.error);
+    fail("The runtime kit could not be unpacked.", unpacked.error);
     return false;
   }
   Log("kit unpacked: " + std::to_string(unpacked.files) + " files, " + std::to_string(unpacked.rewritten) +
@@ -781,7 +781,7 @@ bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool
   const auto sha = config_.verify_kit ? config_.verify_kit(staging) : std::nullopt;
   if (!sha || *sha != kit.manifest_sha256) {
     RemoveOwnedTree(staging);
-    fail("The new kit did not pass its check.", sha ? "manifest " + *sha : "not a complete kit");
+    fail("The new runtime kit did not pass its check.", sha ? "manifest " + *sha : "not a complete kit");
     return false;
   }
   // Ready next to the installed kit; it replaces it when Playden quits for the update.
@@ -794,7 +794,7 @@ bool UpdateService::StageKit(const ReleaseAsset& asset, const KitPart& kit, bool
   RemoveOwnedTree(replaced);
   if (!moved) {
     RemoveOwnedTree(staging);
-    fail("Playden could not put the new kit in place.", final_folder);
+    fail("Playden could not put the new runtime kit in place.", final_folder);
     return false;
   }
   if (!local) unlink(zip.c_str());
@@ -891,9 +891,9 @@ void UpdateService::DoCheckKit() {
   } else {
     error = std::string("cannot read ") + kUpdateManifestAsset;
   }
-  if (!manifest_text) return FailKit("Playden could not read the kit information.", error);
+  if (!manifest_text) return FailKit("Playden could not read the runtime kit information.", error);
   const auto manifest = ParseUpdateManifest(*manifest_text, &error);
-  if (!manifest) return FailKit("The kit information of " + own->tag + " is not valid.", error);
+  if (!manifest) return FailKit("The runtime kit information of " + own->tag + " is not valid.", error);
   if (manifest->kit.kit_id != config_.kit_id || manifest->kit.manifest_sha256 != config_.kit_manifest_sha256)
     return unavailable("release " + own->tag + " names kit " + manifest->kit.kit_id + " " + manifest->kit.manifest_sha256);
   // Only a missing or older kit is replaced: one as new or newer (a development kit, or the same version
@@ -916,7 +916,7 @@ void UpdateService::DoCheckKit() {
     if ((zip = release.Find(manifest->kit.asset))) source = &release;
   }
   if (!zip) return unavailable("no release has " + manifest->kit.asset);
-  if (zip->sha256.empty()) return FailKit("The kit on GitHub has no checksum. Install it by hand.", source->tag);
+  if (zip->sha256.empty()) return FailKit("The runtime kit on GitHub has no checksum. Install it by hand.", source->tag);
   const bool staged = !ReadyKit(manifest->kit).empty();
   kit_asset_ = *zip;
   kit_part_ = manifest->kit;
@@ -947,12 +947,12 @@ void UpdateService::DoInstallKit() {
     if (config_.free_bytes) {
       const auto free = config_.free_bytes(config_.work_root);
       if (free && *free < needed)
-        return FailKit("The kit needs " + Gigabytes(needed) + " of free space; " + Gigabytes(*free) + " is free.",
+        return FailKit("The runtime kit needs " + Gigabytes(needed) + " of free space; " + Gigabytes(*free) + " is free.",
                        "free space");
     }
     if (!StageKit(*kit_asset_, kit, true)) return;
     folder = ReadyKit(kit);
-    if (folder.empty()) return FailKit("The new kit did not pass its check.", "not ready after unpacking");
+    if (folder.empty()) return FailKit("The new runtime kit did not pass its check.", "not ready after unpacking");
   }
   if (folder != installed) {
     // No game can use the kit in place (none was admitted), so it is swapped now; the one it
@@ -964,7 +964,7 @@ void UpdateService::DoInstallKit() {
       if (Exists(aside)) rename(aside.c_str(), installed.c_str());
       return false;
     });
-    if (!moved) return FailKit("Playden could not put the kit in place.", installed);
+    if (!moved) return FailKit("Playden could not put the runtime kit in place.", installed);
   }
   Log("kit " + kit.kit_id + " " + kit.revision + " installed");
   Set([](UpdateSnapshot& s) {

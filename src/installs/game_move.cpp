@@ -3,6 +3,7 @@
 
 #include "installs/install_record.h"
 #include "steam/backend/depot_installer.h"
+#include "platform/usb_mount.h"
 #include "stores/local/copy_plan.h"
 #include "stores/local/source_walk.h"
 
@@ -410,7 +411,8 @@ InstallRunner::Result GameMover::Copy(const GameId& id, const std::string& from,
           !steam::RemoveManagedInstall(to, &why) || !Missing(to))
         return fail("A folder on the destination is in the way of the move.", to + " is in the way " + why);
     }
-  } else if (saved->source != from) {
+  } else if (platform::WithoutUsbMountNumber(saved->source) != platform::WithoutUsbMountNumber(from)) {
+    // (Drives may have changed places since the plan was saved: that's still a copy of this folder.)
     // A partial copy of another folder goes with Cancel; one with an install record is an install.
     if (Exists(to + "/" + kInstallRecordName))
       return fail("A folder on the destination is in the way of the move.", to + " has a record, plan source " + saved->source);
@@ -420,7 +422,8 @@ InstallRunner::Result GameMover::Copy(const GameId& id, const std::string& from,
   // play from the copy, and if it doesn't, the switch checks the copy against the game again with the title
   // stopped. Walking the game and comparing it first would only do that twice. The copy is still checked
   // (every planned file at its size): one that lost files since goes the whole way again.
-  bool at_switch = switching && saved && saved->source == from;
+  bool at_switch = switching && saved &&
+                   platform::WithoutUsbMountNumber(saved->source) == platform::WithoutUsbMountNumber(from);
   if (at_switch) {
     if (step) step(InstallStep::kVerifying);
     for (std::size_t index = 0; index < saved->files.size(); ++index) {

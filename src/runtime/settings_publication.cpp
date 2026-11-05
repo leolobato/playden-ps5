@@ -1,4 +1,6 @@
 #include "runtime/settings_publication.h"
+
+#include "platform/usb_mount.h"
 #include "runtime/publication_contract.h"
 #include "runtime/artifact_hash.h"
 extern "C" {
@@ -6,6 +8,7 @@ extern "C" {
 #include "pw_wine_launch.h"
 }
 #include "platform/managed_file_lock.h"
+#include "platform/usb_mount.h"
 #include <cerrno>
 #include <atomic>
 #include <charconv>
@@ -145,7 +148,7 @@ std::optional<std::string> LiveGameRoot(const std::string& title_id, const std::
 bool NamesMovedRoot(const GameRootMove* moved, const std::string& title_id, const std::filesystem::path& prefix) {
   if (!moved) return false;
   const auto root = LiveGameRoot(title_id, prefix);
-  return root && *root == moved->from;
+  return root && (*root == moved->from || *root == platform::WithoutUsbMountNumber(moved->from));
 }
 // An owned publication (schema 2) that an unowned one replaces. The player may have opened the
 // game folder since (mods over FTP), which the owned rule refuses, so it is checked as a folder
@@ -190,6 +193,9 @@ std::optional<bool> PublishedGameRootUnowned(const RuntimeInstall& r, const std:
     return std::nullopt;
   return m.game_root_unowned != 0;
 }
+std::optional<std::string> PublishedGameRoot(const RuntimeInstall& r, const std::filesystem::path& prefix) {
+  return LiveGameRoot(r.title_id, prefix);
+}
 std::optional<std::string> PublishedProfileDigest(const RuntimeInstall& r, const std::filesystem::path& prefix) {
   if (!prefix.empty() && (!prefix.is_absolute() || prefix != prefix.lexically_normal())) return std::nullopt;
   auto profiles = ManagedDirectory::Open(Map(prefix, r.data_root + "/library/profiles"), DirectoryPolicy::kPrivate);
@@ -223,13 +229,18 @@ PackageActionResult VerifyMovedPublication(const RuntimeInstall& r, const GameRo
   const auto host = prefix.string(); PwTitlePublicationPlatform platform{};
   platform.host_root = host.empty() ? nullptr : host.c_str(); platform.owner_uid = geteuid();
   PwTitlePublicationDescriptor descriptor{}; char error[256]{};
+  // Published naming no mount, the old folder is its search form too.
+  const auto published_from = [&] {
+    const auto root = LiveGameRoot(r.title_id, prefix);
+    return root && platform::IsUsbSearchPath(*root) ? platform::WithoutUsbMountNumber(move.from) : move.from;
+  }();
   const auto descriptor_digest = [&] {
     return HashArtifactBytes(std::string_view(reinterpret_cast<const char*>(descriptor.bytes), descriptor.length));
   };
   if (pw_title_publication_read_descriptor(("/data/homebrew/" + r.title_id + "/game-launch.json").c_str(), r.title_id.c_str(),
         &platform, &descriptor, error, sizeof(error)) != PW_OK ||
       descriptor.launch.app_id != r.runtime_number || descriptor.launch.install_id != r.install_id ||
-      descriptor.launch.data_root != r.data_root || descriptor.launch.game_root != move.from ||
+      descriptor.launch.data_root != r.data_root || descriptor.launch.game_root != published_from ||
       descriptor_digest() != std::optional<std::string>(m.descriptor_sha256))
     return refuse("The moved game's descriptor does not match its publication.");
   // Profile and catalog live in the private data root, which did not move.
@@ -248,9 +259,9 @@ PackageActionResult VerifyMovedPublication(const RuntimeInstall& r, const GameRo
   if (pw_wine_launch_host_dir(bottle.c_str(), profile.app.working_directory, working, sizeof(working)) ||
       pw_wine_launch_host_dir(bottle.c_str(), profile.app.executable, executable, sizeof(executable)) ||
       std::string(m.dxvk_path) != std::string(working) + "/dxvk.conf" ||
-      !RebaseInstallPath(executable, move.from, move.to))
+      !RebaseInstallPath(executable, published_from, move.to))
     return refuse("The moved game's profile names a program outside its game folder.");
-  const auto moved_working = RebaseInstallPath(working, move.from, move.to);
+  const auto moved_working = RebaseInstallPath(working, published_from, move.to);
   struct stat info{};
   if (!moved_working || lstat(Map(prefix, *moved_working).c_str(), &info) != 0 ||
       !OwnedGameDirectory(info, unowned || m.game_root_unowned != 0))
@@ -300,9 +311,17 @@ PackageActionResult PublishSettingsOperation(const SettingsPublicationOperation&
         Map(deps.host_namespace_prefix, "/data/homebrew/" + previous.install.title_id + "/game-launch.json"),
         Map(deps.host_namespace_prefix, profile_root + ".playden-publication")};
       // A journal left by a game folder that moved names the old folder, which no longer exists.
-      if (deps.moved_root && previous.install.install_path == deps.moved_root->from)
+      // Compared without the USB mount's number: published naming no mount, the drive may have changed places first.
+      if (deps.moved_root && platform::WithoutUsbMountNumber(previous.install.install_path) ==
+                                 platform::WithoutUsbMountNumber(deps.moved_root->from))
         result = VerifyMovedPublication(o.install, *deps.moved_root, previous.committed_receipt_bytes, previous.metadata_bytes,
                                         deps.host_namespace_prefix, PublishesUnowned(o));
+      // Published naming no mount: its drive changed places since, with nothing published, and the journal names the old one.
+      else if (previous.install.install_path != o.install.install_path &&
+               platform::WithoutUsbMountNumber(previous.install.install_path) == platform::WithoutUsbMountNumber(o.install.install_path))
+        result = VerifyMovedPublication(o.install, GameRootMove{previous.install.install_path, o.install.install_path},
+                                        previous.committed_receipt_bytes, previous.metadata_bytes, deps.host_namespace_prefix,
+                                        PublishesUnowned(o));
       else if (OwnedReplacedByUnowned(previous.metadata_bytes, PublishesUnowned(o)))
         result = VerifyMovedPublication(o.install, InPlace(o.install), previous.committed_receipt_bytes,
                                         previous.metadata_bytes, deps.host_namespace_prefix, true);
@@ -390,6 +409,8 @@ PackageActionResult VerifySettingsPublicationFiles(const SettingsPublicationOper
   if (!digest) return Failure("publication-hash", "Metadata hashing is unavailable.");
   const auto host = prefix.string(); PwTitlePublicationPlatform platform{};
   platform.host_root = host.empty() ? nullptr : host.c_str(); platform.owner_uid = geteuid();
+  const auto mount = platform::UsbMountOf(o.install.install_path);
+  platform.known_game_mount = mount.empty() ? nullptr : mount.c_str();
   const auto& receipt = committed ? o.committed_receipt_bytes : o.pending_receipt_bytes;
   PwTitlePublicationContents contents{};
   if (pw_title_publication_verify_locked(&descriptor, &platform, borrowed,
@@ -474,7 +495,7 @@ PackageActionResult ApplyPendingPublicationDxvk(const SettingsPublicationOperati
   if (pw_title_publication_metadata_parse(reinterpret_cast<const uint8_t*>(o.metadata_bytes.data()),
       o.metadata_bytes.size(), &metadata) != PW_OK)
     return Failure("publication-invalid", "Frozen DXVK metadata is invalid.");
-  const auto target = Map(prefix, metadata.dxvk_path);
+  const auto target = Map(prefix, platform::OnGameMount(metadata.dxvk_path, o.install.install_path));
   const bool unowned = metadata.game_root_unowned != 0;
   auto game = ManagedDirectory::Open(target.parent_path(), GameDirectoryPolicy(unowned));
   struct stat game_info{};
@@ -549,7 +570,7 @@ PackageActionResult ApplyPendingPublicationFiles(const SettingsPublicationOperat
       pw_title_publication_metadata_parse(reinterpret_cast<const uint8_t*>(o.previous_metadata_bytes.data()),
       o.previous_metadata_bytes.size(), &previous) != PW_OK))
     return Failure("publication-invalid", "Frozen publication metadata is invalid.");
-  if (!checkpoint(Map(prefix, current.dxvk_path))) return Failure("publication-interrupted", "DXVK effect requires fresh recovery.");
+  if (!checkpoint(Map(prefix, platform::OnGameMount(current.dxvk_path, o.install.install_path)))) return Failure("publication-interrupted", "DXVK effect requires fresh recovery.");
   auto library = ManagedDirectory::Open(Map(prefix, o.install.data_root + "/library"), DirectoryPolicy::kPrivateTraversable);
   if (!library) return Failure("publication-directory", "Owned private library is unavailable.");
   auto profiles = library->OpenChild("profiles", DirectoryPolicy::kPrivate, true);
@@ -644,6 +665,8 @@ PackageActionResult PreflightSettingsPublication(const SettingsPublicationOperat
   } else if (!initial) {
     const auto host = prefix.string(); PwTitlePublicationPlatform platform{};
     platform.host_root = host.empty() ? nullptr : host.c_str(); platform.owner_uid = geteuid();
+    const auto mount = platform::UsbMountOf(o.install.install_path);
+    platform.known_game_mount = mount.empty() ? nullptr : mount.c_str();
     PwTitlePublicationDescriptor descriptor{}; PwTitlePublicationContents contents{}; char error[256]{};
     auto hash = HashArtifactBytes(o.previous_metadata_bytes);
     if (!hash || pw_title_publication_metadata_parse(reinterpret_cast<const uint8_t*>(o.previous_metadata_bytes.data()),
@@ -656,7 +679,7 @@ PackageActionResult PreflightSettingsPublication(const SettingsPublicationOperat
         hash->c_str(), &contents, error, sizeof(error)) != PW_OK)
       return {PackageActionState::kFailed, "publication-preflight-previous", error[0] ? error : "Previous complete publication is invalid."};
   }
-  const auto dxvk = Map(prefix, desired.dxvk_path);
+  const auto dxvk = Map(prefix, platform::OnGameMount(desired.dxvk_path, o.install.install_path));
   const bool unowned = desired.game_root_unowned != 0;
   auto game = ManagedDirectory::Open(dxvk.parent_path(), GameDirectoryPolicy(unowned));
   struct stat game_info{};
@@ -700,8 +723,14 @@ Result<SettingsPublicationOperation> CaptureSettingsPublicationOperation(const R
   SettingsPublicationOperation o; o.install = r; o.plan = plan; o.kit_id = kit_id;
   o.transaction_id = transaction; o.registry_unix_time = unix_time;
   o.catalog_bytes = plan.profile_id + ".profile\n";
-  // Schema 2 binds the recorded download root, which is independent of the native title.
-  o.descriptor_bytes = "{\"schema_version\":2,\"app_id\":" + std::to_string(r.runtime_number) +
+  // Schema 2 binds the recorded download root, which is independent of the native title. Schema 3 binds a USB
+  // game's folder on no mount in particular: the plan's profile says which this is.
+  PwGameProfile planned{}; char planned_working[1024]{};
+  const auto planned_bottle = r.data_root + "/library/prefixes/game";
+  const bool searches_usb = pw_game_profile_parse(reinterpret_cast<const uint8_t*>(plan.profile_bytes.data()), plan.profile_bytes.size(), &planned) == PW_OK &&
+      !pw_wine_launch_host_dir(planned_bottle.c_str(), planned.app.working_directory, planned_working, sizeof(planned_working)) &&
+      platform::IsUsbSearchPath(planned_working);
+  o.descriptor_bytes = std::string("{\"schema_version\":") + (searches_usb ? "3" : "2") + ",\"app_id\":" + std::to_string(r.runtime_number) +
       ",\"settings_revision\":" + std::to_string(plan.settings_revision);
   auto field = [&](const char* name, const std::string& value) {
     o.descriptor_bytes += ",\""; o.descriptor_bytes += name; o.descriptor_bytes += "\":\"";
@@ -715,7 +744,7 @@ Result<SettingsPublicationOperation> CaptureSettingsPublicationOperation(const R
   if (!field("title_id", r.title_id) || !field("install_id", r.install_id) || !field("data_root", r.data_root) ||
       !field("default_profile_id", plan.profile_id) || !field("runtime_bundle_id", r.runtime_bundle_id) ||
       !field("recipe_id", plan.recipe_id) || !field("recipe_version", plan.recipe_version) || !field("exit_policy", r.exit_policy) ||
-      !field("game_root", r.install_path))
+      !field("game_root", searches_usb ? platform::WithoutUsbMountNumber(r.install_path) : r.install_path))
     return fail("Descriptor identities cannot be represented safely.");
   o.descriptor_bytes += "}\n";
   PwGameProfile profile{}; char working[1024]{};
@@ -733,7 +762,7 @@ Result<SettingsPublicationOperation> CaptureSettingsPublicationOperation(const R
   // Schema 3 (game_root_unowned) lets the kit's launch admission accept a game folder of any
   // owner and mode: every folder when the kit can, else one on a drive that records no owner
   // or permissions (exFAT).
-  bool unowned = unowned_game_roots;
+  bool unowned = unowned_game_roots || searches_usb;
   if (!unowned) {
     const auto records_ownership = platform::RecordsOwnership(Map(prefix, working));
     if (!records_ownership) return fail("The game's working directory cannot be checked.");
@@ -811,17 +840,19 @@ Result<SettingsPublicationOperation> CaptureSettingsPublicationOperation(const R
       if (!Complete(checked) || pw_title_publication_parse(reinterpret_cast<const uint8_t*>(receipt.bytes.data()),
                                                            receipt.bytes.size(), &parsed) != PW_OK)
         return fail("Before state is not the verified publication of this game folder: " + checked.message);
-    } else if (pw_title_publication_parse(reinterpret_cast<const uint8_t*>(receipt.bytes.data()), receipt.bytes.size(), &parsed) != PW_OK ||
+    } else if (const auto known_mount = platform::UsbMountOf(r.install_path);
+        pw_title_publication_parse(reinterpret_cast<const uint8_t*>(receipt.bytes.data()), receipt.bytes.size(), &parsed) != PW_OK ||
         parsed.phase != PW_TITLE_PUBLICATION_COMMITTED || !prior || !prior->present ||
         pw_title_publication_read_descriptor(("/data/homebrew/" + r.title_id + "/game-launch.json").c_str(), r.title_id.c_str(),
         &platform, &descriptor, error, sizeof(error)) != PW_OK || descriptor.launch.app_id != r.runtime_number ||
+        (platform.known_game_mount = known_mount.empty() ? nullptr : known_mount.c_str(), false) ||
         pw_title_publication_verify_locked(&descriptor, &platform, borrowed,
         reinterpret_cast<const uint8_t*>(receipt.bytes.data()), receipt.bytes.size(), parsed.publication_sha256,
         &contents, error, sizeof(error)) != PW_OK)
       return fail("Before state is not a verified committed complete publication.");
     o.previous_revision = parsed.settings_revision; o.previous_receipt_bytes = receipt.bytes; o.previous_metadata_bytes = prior->bytes;
   }
-  auto game = ManagedDirectory::Open(Map(prefix, working), GameDirectoryPolicy(m.game_root_unowned != 0));
+  auto game = ManagedDirectory::Open(Map(prefix, platform::OnGameMount(working, r.install_path)), GameDirectoryPolicy(m.game_root_unowned != 0));
   auto dxvk = game ? ReadPublicationFile(*game, "dxvk.conf", 256 * 1024) : std::nullopt;
   if (!dxvk) return fail("Before DXVK snapshot cannot be verified.");
   o.dxvk_before = *dxvk;

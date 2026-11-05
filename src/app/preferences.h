@@ -36,6 +36,8 @@ struct Preferences {
   // Start through a launcher. Separate, because the second warns about other games.
   bool hide_run_once_help = false;
   bool hide_launcher_help = false;
+  // The runtime kit whose "Update your games" prompt has been shown (its manifest SHA-256): once per kit.
+  std::string runtime_prompt_kit;
 };
 
 enum class PreferencesLoadStatus {

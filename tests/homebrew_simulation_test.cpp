@@ -900,7 +900,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     auto& setup = setups[SteamId(900001)];
     setup.scanned = true;
     setup.programs = {{"bin/win64/hl2_win64.exe", "pe64", "", false, "d3d11 graphics=dxvk"},
-                      {"Launcher.exe", "pe32", "This game needs .NET, which Playden's runtime doesn't include yet.", true, ""},
+                      {"Launcher.exe", "pe32", "This game needs .NET, which Playden's runtime kit doesn't include yet.", true, ""},
                       {"Stub.exe", "pe32", "This game's program has Steam DRM in a form Playden can't unpack yet.", false, ""}};
     // The programs show in an open Program picker as soon as the folder's scan arrives.
     simulation.action("details:900001");

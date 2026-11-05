@@ -127,6 +127,8 @@ struct InstalledGame {
   std::uint64_t update_bytes = 0;
   // `finished_at` is older than the record: a move copied the record, and the registry keeps the time.
   bool finished_kept = false;
+  // Another USB drive that holds the same folder too (a copy, or a move that stopped); empty when none.
+  std::string also_on;
 };
 
 // A recent finished download that Downloads lists after the queue until the player dismisses it.

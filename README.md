@@ -50,7 +50,8 @@ private Windows environment and its own tile on the PS5 Home screen.
   mouse, or the D-pad as the arrow keys.
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
   account is needed. See [Import Windows games](#import-windows-games).
-- **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC.
+- **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC. USB
+  drives can change places: Playden and your games find them again.
 
 See the [compatibility list](COMPATIBILITY.md) for the games we have tested.
 
@@ -204,7 +205,10 @@ The runtime kit is what runs Windows games: Wine, Mesa and DXVK. Playden
 downloads the kit its version was made for from this repository's releases, on its first start and whenever the
 installed kit isn't that one. It installs in the background, shows on the Queue screen, and games can be prepared
 as soon as it is in place. If you choose Later, or the download fails, Settings › About › Runtime kit starts
-it again. Games pick up a new kit when you press Play.
+it again.
+
+Games pick up a new kit when you press Play, or all at once: Playden offers this the first time you open it with a new
+kit, and Settings › Manage installed games › Runtimes does it whenever you want. Saves and settings are kept.
 
 You can also install the kit by hand, with Python 3: download `playden-kit-<version>.zip` from the release, unzip it
 next to `playden-ps5-<version>`, and run this from the `playden-ps5-<version>` folder. A plain FTP copy does not
@@ -360,6 +364,7 @@ build/homebrew-host/playden-homebrew --simulation --scenario signed-out
 
 ## Known issues
 
+- If you plug in or swap USB drives while Playden is open, restart Playden so it sees them.
 - Online multiplayer and games with anti-cheat do not work. See [Before you use it](#before-you-use-it).
 - Uninstall games from Playden. Title folders belong to Playden; FTP and file managers can't delete them.
   Leftover titles appear in Settings › Storage. Deleting a leftover removes its title folder and Home tile;

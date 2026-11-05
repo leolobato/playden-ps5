@@ -49,6 +49,8 @@ PackageActionResult VerifyCommittedPublicationReceipt(const RuntimeInstall& reco
     const std::filesystem::path& host_namespace_prefix = {});
 // Whether the game's committed publication (its .playden-publication) admits the game folder
 // unowned (metadata schema 3); nothing when there is none or it can't be read.
+// The folder the game's descriptor names now: /mnt/usb/<folder> for a USB game published naming no mount.
+std::optional<std::string> PublishedGameRoot(const RuntimeInstall& record, const std::filesystem::path& prefix);
 std::optional<bool> PublishedGameRootUnowned(const RuntimeInstall& record,
     const std::filesystem::path& host_namespace_prefix = {});
 // The SHA-256 of the profile the game's committed publication wrote (its .playden-publication);

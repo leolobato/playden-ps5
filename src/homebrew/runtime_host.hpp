@@ -158,6 +158,8 @@ struct RuntimeHostConfig {
   std::optional<runtime::LayoutPaths> layout_paths;
   runtime::LayoutOps layout_operations;
   std::function<std::optional<std::pair<std::string, std::string>>()> moved_games_root;
+  // Console path of the folder holding the games' Cloud indexes (.playden-saves on console storage).
+  std::string cloud_saves_root;
   std::function<bool(std::string* error)> finish_games_move;
   // SQLite and the native readers run on this worker. PS5 std::thread stacks are
   // too small for them, so the worker uses an explicit stack size.
@@ -299,6 +301,10 @@ struct RuntimeSnapshot {
   std::string reason;  // why the runtime services are unavailable
   bool kit_available = false;
   std::string kit_reason;  // why preparation is unavailable
+  // Games published again in the background after their USB drive changed places: how many of how many.
+  std::size_t drive_updates_done = 0;
+  std::size_t drive_updates_total = 0;
+  std::size_t drive_updates_failed = 0;  // of those done, the ones that could not be published
   std::optional<RuntimeKit> kit;  // the admitted kit, for display
   std::vector<RuntimeInstallView> installs;
   // False while the PS5 title records could not be read (after a failed write): `installs` is then
@@ -610,6 +616,19 @@ class RuntimeHost {
   // and marks the move done once no moved Ready game is left to republish.
   bool MoveGames(Composition& composition, std::string* error);
   bool MoveGameRecords(Composition& composition);
+  // USB drives can change places: records follow their games' folders. One publication still naming the old mount
+  // is marked (moved_from), and the startup pass or Play publishes it again; the title itself is kept.
+  void FollowUsbDrives(Composition& composition);
+  // What a game's profile and descriptor should name: the search form for a USB game whose title can find its drive,
+  // unless a copy on another drive would make the title refuse. Empty names install_path as it is.
+  std::string UsbSearchRoot(const Composition& composition, const runtime::RuntimeInstall& record) const;
+  // A Ready USB game whose publication names its folder the other way (see UsbSearchRoot).
+  bool NeedsDrivePublication(const Composition& composition, const runtime::RuntimeInstall& record) const;
+  bool RebaseUsbRecord(Composition& composition, runtime::RuntimeInstall record, const std::string& install_path);
+  // One game of that background job. A busy console (a game running, a session Playden hasn't closed yet) makes it
+  // try again shortly; a refusal is logged and left for Play.
+  void RunDriveUpdateStep(Composition& composition);
+  std::set<std::string> drive_update_tried_;  // install IDs, this session; worker only
   void FinishGamesMove(Composition& composition);
   // Relocate on the worker.
   RuntimeRelocationResult RunRelocate(Composition& composition, const RuntimeRelocation& request);
@@ -737,6 +756,7 @@ class RuntimeHost {
   void PublishLaunch(Composition& composition, const runtime::LaunchSnapshot& launch);
   // Settings request files that no record's journal names; with remove, deletes them.
   std::size_t LeftoverRequests(Composition& composition, bool remove);
+  void RemoveFinishedRequests(Composition& composition);
   bool Stopping() const;
   void Log(const std::string& line) const;
   void LogSteamStubPrograms(std::uint32_t app, const std::vector<runtime::GameProgram>& programs) const;
@@ -793,6 +813,9 @@ class RuntimeHost {
   std::vector<std::shared_ptr<PendingRelocation>> relocation_requests_;  // guarded by mutex_
   int work_percent_ = -1;  // worker thread only: the published work percent, -1 for none
   bool launch_poll_ = false;
+  // More games to publish for a USB drive that changed places, and when to try next. Guarded by mutex_.
+  bool drive_updates_pending_ = false;
+  std::chrono::steady_clock::time_point drive_update_not_before_{};
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;
   bool kit_reload_requested_ = false;  // guarded by mutex_

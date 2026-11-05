@@ -525,7 +525,7 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (id == "frame_limit" && !dxvk && graphics == "opengl" && kit.display_120hz_needs_update)
       return kAppliesAfterKitUpdate;
     if (!dxvk) return "Only available with DXVK.";
-    if (!kit.dxvk_config) return "Needs a runtime that reads dxvk.conf.";
+    if (!kit.dxvk_config) return "Needs a runtime kit that reads dxvk.conf.";
     // Checked on the console (results/20261005-dxvk-conf-probe): the cap works, DXVK applies
     // latency and VRAM, VSync off does not change the display's pacing.
     if (id == "vsync" && !kit.dxvk_present) return "The PS5 display always waits for the TV; VSync cannot be turned off yet.";
@@ -535,16 +535,16 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   // A Zink kit's runtime (upstream prospero-win) reads MESA_, DXVK_, RADV_ and the like as [debug] env.
   // Pixel shaders is an environment variable for the driver, so it goes where Environment variables go.
   if ((id == "environment" || id == "pixel_shader_waves") && !kit.environment && !kit.opengl_zink)
-    return "Needs a prospero-win update that reads [environment].";
-  if (id == "wheel_stick" && !kit.input_wheel) return "Needs a prospero-win update that turns the mouse wheel.";
-  if (id == "volume" && !kit.audio_volume) return "Needs a prospero-win update with per-game volume.";
+    return "Needs a newer runtime kit that reads [environment].";
+  if (id == "wheel_stick" && !kit.input_wheel) return "Needs a newer runtime kit that turns the mouse wheel.";
+  if (id == "volume" && !kit.audio_volume) return "Needs a newer runtime kit with per-game volume.";
   // Rumble alone (input-rumble) or with the rest of controller tuning.
   if (id == "rumble" && !kit.input_tuning && !kit.input_rumble) {
     if (kit.input_rumble_needs_update) return kAppliesAfterKitUpdate;
     return "Needs a runtime kit with rumble control.";
   }
   if (id == "stick_deadzone" || id == "rumble" || id == "trigger_deadzone") {
-    if (!kit.input_tuning && id != "rumble") return "Needs a prospero-win update with controller tuning.";
+    if (!kit.input_tuning && id != "rumble") return "Needs a newer runtime kit with controller tuning.";
     const auto controller = values.find("controller");
     const std::string mode = controller == values.end() ? std::string() : controller->second.value;
     // The title scales the game's rumble the same way for both controllers; the dead zones are XInput's.
@@ -552,14 +552,14 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (id != "rumble" && mode != "xinput") return "Only with the Xbox controller.";
   }
   // Rows whose runtime or Playden side is not built yet: listed so players see what is coming.
-  if (id == "invert_stick") return "Needs a prospero-win update that inverts sticks.";
+  if (id == "invert_stick") return "Needs a newer runtime kit that inverts sticks.";
   // Wine sets the user locale from the Unix locale (LANG, LC_ALL) at start and only mirrors it into
   // Control Panel\International, so a registry value alone would be overwritten.
-  if (id == "locale") return "Needs a prospero-win update that sets the game's language (LANG).";
+  if (id == "locale") return "Needs a newer runtime kit that sets the game's language (LANG).";
   // The title publication carries only the two registry values it owns (Windows version, text scale).
-  if (id == "registry_dll_overrides") return "Needs a prospero-win update that lets Playden write more registry values.";
+  if (id == "registry_dll_overrides") return "Needs a newer runtime kit that lets Playden write more registry values.";
   // Wine reads WINE_CPU_TOPOLOGY from the [environment] section; [debug] env does not take WINE_ names.
-  if (id == "cpu_topology" && !kit.environment) return "Needs a prospero-win update that reads [environment].";
+  if (id == "cpu_topology" && !kit.environment) return "Needs a newer runtime kit that reads [environment].";
   if (id == "start_through_launcher" || id == "launcher_controller_preset") {
     if (kit.launcher_mode_needs_update) return kAppliesAfterKitUpdate;
     if (!kit.launcher_mode) return "Needs a runtime kit with launcher mode.";
@@ -580,7 +580,7 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     return kit.display_fps_counter ? "Direct3D 12 games show only the frame rate." : "Not shown for Direct3D 12 games.";
   if (id == "overlay_detail") {
     if (!dxvk) return "Only available with DXVK.";
-    if (!kit.dxvk_config) return "Needs a runtime that reads dxvk.conf.";
+    if (!kit.dxvk_config) return "Needs a runtime kit that reads dxvk.conf.";
     const auto overlay = values.find("performance_overlay");
     if (overlay == values.end() || overlay->second.value != "on") return "Turn the performance overlay on first.";
   }
@@ -1100,7 +1100,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     return false;
   };
   if (!settings.launch) return fail("no launch option");
-  const auto root = ProsperoWindowsPath(target.install_root);
+  const auto root = ProsperoWindowsPath(target.published_root.empty() ? target.install_root : target.published_root);
   if (!root) return fail("install folder cannot be mapped for Wine");
   const auto executable = steam::RelativeGamePath(settings.launch->executable);
   if (!executable) return fail("launch executable is not a game path");
@@ -3338,6 +3338,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.wine_mono = has(kKitWineMono);
   kit.vkd3d_proton = has(kKitVkd3dProton);
   kit.driver_threads = has(kKitDriverThreads);
+  kit.game_root_usb_search = has(kKitGameRootUsbSearch);
   kit.display_120hz = has(kKitDisplay120Hz);
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);
@@ -3350,6 +3351,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 }
 
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current) {
+  // An older title refuses the search form outright, and nothing the player chose waits on it.
+  if (!title_runtime_current) kit.game_root_usb_search = false;
   if (!title_runtime_current && kit.display_120hz) {
     kit.display_120hz = false;
     kit.display_120hz_needs_update = true;

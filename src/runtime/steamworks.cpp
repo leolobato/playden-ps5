@@ -386,7 +386,7 @@ SteamworksResult ProvideLegacySteam(const std::string& install_root, const std::
       stub = ReadFile(fs::path(emulator_dir) / "steam.dll", kMaxDllBytes);
       const auto digest = stub ? HashArtifactBytes(*stub) : std::nullopt;
       if (!digest || *digest != kLegacySteamSha256) {
-        result.message = "Playden's runtime is missing its steam.dll; reinstall Playden.";
+        result.message = "Playden's runtime kit is missing its steam.dll; reinstall Playden.";
         return result;
       }
     }

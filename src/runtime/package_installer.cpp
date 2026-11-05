@@ -2,6 +2,7 @@
 #include "runtime/kit_trust.h"
 #include "runtime/private_directories.h"
 #include "platform/managed_directory.h"
+#include "platform/usb_mount.h"
 #include "pw_title_publication_native.h"
 #include "pw_title_publication.h"
 
@@ -394,9 +395,12 @@ bool DescriptorMatches(const RuntimeInstall& record, std::string_view bytes) {
     if (parsed->object().size() != 11 ||
         record.install_path != "/data/homebrew/" + record.title_id + "/games/" + std::to_string(record.runtime_number))
       return false;
-  } else if (version == 2) {
+  } else if (version == 2 || version == 3) {
     const auto* game_root = Required(*parsed, "game_root", Type::kString);
-    if (parsed->object().size() != 12 || !game_root || game_root->text() != record.install_path) return false;
+    if (parsed->object().size() != 12 || !game_root ||
+        game_root->text() != (version == 3 ? platform::WithoutUsbMountNumber(record.install_path) : record.install_path) ||
+        (version == 3 && !platform::IsUsbSearchPath(game_root->text())))
+      return false;
   } else {
     return false;
   }
@@ -860,6 +864,9 @@ std::string FilesystemPackageInstaller::AdmissionDiagnostic(const RuntimeInstall
       &descriptor, error, sizeof(error)) != PW_OK) return std::string("descriptor: ") + error;
   PwTitlePublicationLease lease{}; pw_title_publication_lease_init(&lease);
   const int status = pw_title_publication_open(&descriptor, &platform, &lease, error, sizeof(error));
+  // Nothing is wrong with the title: Repair can't help, and the game's page says what is.
+  if (status == PW_TITLE_PUBLICATION_ADMISSION_DRIVE_MISSING) return kAdmissionDriveMissing;
+  if (status == PW_TITLE_PUBLICATION_ADMISSION_DRIVE_AMBIGUOUS) return kAdmissionDriveAmbiguous;
   if (status != PW_OK) return "admission status=" + std::to_string(status) + ": " + error;
   pw_title_publication_close(&lease);
   return "ok";
@@ -983,6 +990,9 @@ bool FilesystemPackageInstaller::PublicationMatches(
   PwTitlePublicationDescriptor descriptor{}; char error[256]{};
   if (pw_title_publication_read_descriptor(canonical.c_str(), record.title_id.c_str(), &platform,
       &descriptor, error, sizeof(error)) != PW_OK) return false;
+  // The record says where the game is; a copy on another drive doesn't change what was published.
+  const auto mount = platform::UsbMountOf(record.install_path);
+  platform.known_game_mount = mount.empty() ? nullptr : mount.c_str();
   const auto& launch = descriptor.launch;
   if (launch.install_id != record.install_id || launch.title_id != record.title_id || launch.app_id != record.runtime_number ||
       launch.data_root != record.data_root || launch.default_profile_id != record.default_profile_id ||

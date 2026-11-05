@@ -1,4 +1,5 @@
 #include "runtime/settings_publication_owner.h"
+#include "platform/usb_mount.h"
 #include "runtime/publication_contract.h"
 #include "runtime/artifact_hash.h"
 #include "platform/managed_file_lock.h"
@@ -539,8 +540,12 @@ PackageActionResult SettingsPublicationOwner::AuthorizeRetirement(const Settings
   // once, by Block, before this apply changes anything.
   // The journal of a game folder that moved names the old folder.
   auto earlier = previous.install;
-  if (const auto moved = record ? GameRootMoveOf(*record) : std::nullopt; moved && earlier.install_path == moved->from)
+  if (const auto moved = record ? GameRootMoveOf(*record) : std::nullopt;
+      moved && platform::WithoutUsbMountNumber(earlier.install_path) == platform::WithoutUsbMountNumber(moved->from))
     earlier.install_path = moved->to;
+  // A game published naming no mount: its drive may have changed places since, with nothing published.
+  else if (record && platform::WithoutUsbMountNumber(earlier.install_path) == platform::WithoutUsbMountNumber(record->install_path))
+    earlier.install_path = record->install_path;
   if (!record || !SameRuntimeInstallIdentity(*record, earlier) || !SameRuntimeInstallIdentity(*record, next.install) ||
       !ReadyCaptureAllowed(*record, next.transaction_id) ||
       record->settings_revision != previous.plan.settings_revision)

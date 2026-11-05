@@ -2766,9 +2766,10 @@ class Render::Impl
     void draw_manage_games(const ViewData &view, const State &state)
     {
         const auto shown = state.navigation.manage_tab;
+        const bool runtimes = shown == ManageTab::Runtimes;
         const bool updates = shown == ManageTab::Updates;
         const bool moves = shown == ManageTab::Move;
-        const gfx::Color tone = updates ? kBlue : moves ? kAmber : kRed;
+        const gfx::Color tone = updates || runtimes ? kBlue : moves ? kAmber : kRed;
         const auto focused_key = [&]() -> std::string {
             if (view.focused_row < 0 || static_cast<std::size_t>(view.focused_row) >= view.rows.size()) return {};
             return view.rows[static_cast<std::size_t>(view.focused_row)].key;
@@ -2884,9 +2885,9 @@ class Render::Impl
         {
             heading("GAME", name_x, gfx::Align::left);
             heading("LAST PLAYED", played_x, gfx::Align::left);
-            heading(updates ? "DOWNLOAD" : "SIZE", size_right, gfx::Align::right);
+            heading(updates ? "DOWNLOAD" : runtimes ? "WHAT CHANGES" : "SIZE", size_right, gfx::Align::right);
         }
-        const std::string list_key = "manage-" + std::string(updates ? "updates" : moves ? "move" : "uninstall");
+        const std::string list_key = "manage-" + std::string(updates ? "updates" : runtimes ? "runtimes" : moves ? "move" : "uninstall");
         int focus_index = 0;
         bool on_game = false;
         for (std::size_t index = 0; index < games.size(); ++index)
@@ -2974,9 +2975,9 @@ class Render::Impl
             focus_glow(scene_, button, amount);
             scene_.rounded_rect(button, 8.0F, kBackground);
             scene_.bordered_rect(button, 8.0F, kText.with_alpha(0.04F), 2.0F,
-                                 primary->enabled ? tone.with_alpha(updates ? 0.65F : moves ? 0.60F : 0.55F) : kText.with_alpha(0.12F));
+                                 primary->enabled ? tone.with_alpha(updates || runtimes ? 0.65F : moves ? 0.60F : 0.55F) : kText.with_alpha(0.12F));
             ui::text(scene_, fonts_.display, primary->title, button.cx(), button.cy() + 10.0F, 27.0F,
-                     !primary->enabled ? kMuted : updates || moves ? kText : kRed, gfx::Align::center);
+                     !primary->enabled ? kMuted : updates || runtimes || moves ? kText : kRed, gfx::Align::center);
             focus_ring(scene_, button, amount);
         }
         ui::text(scene_, fonts_.regular, fit(fonts_.regular, view.footer, 24.0F, summary_w), kSafeX, 935.0F, 24.0F, kSecondary);
@@ -3637,6 +3638,19 @@ class Render::Impl
             if (!second.empty())
                 ui::text(overlay_, fonts_.regular, fit(fonts_.regular, second, 18.0F, 460.0F), 1342.0F, y + 62.0F,
                          18.0F, notice.detail.empty() ? kAccent : kSecondary);
+            if (notice.progress >= 0.0F)
+            {
+                ui::ProgressBar bar;
+                bar.style.theme = theme_;
+                bar.style.height = 6.0F;
+                bar.style.placement = ui::LabelPlacement::none;
+                bar.style.status = ui::Status::accent;
+                bar.style.finish_flash = false;
+                bar.set_bounds({1342.0F, y + 70.0F, 460.0F, 6.0F});
+                bar.set_value(std::clamp(notice.progress, 0.0F, 1.0F), true);
+                ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
+                bar.draw(canvas);
+            }
             y += 98.0F;
         }
     }

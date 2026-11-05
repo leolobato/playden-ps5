@@ -1,6 +1,7 @@
 #include "homebrew/controller.hpp"
 #include "homebrew/program_icon.hpp"
 #include "diagnostics/redaction.h"
+#include "platform/usb_mount.h"
 #include "steam/install_volumes.h"
 #include "steam/secret.h"
 #include <algorithm>
@@ -969,17 +970,17 @@ void Controller::TickRuntime() {
     };
     const auto ready = [](const RuntimeInstallView* view) {
       return view && view->state == runtime::PreparationState::kReady && !view->recovery_pending &&
-             view->title_current && view->admission == "ok" && !view->files_changed;
+             view->title_current && !runtime::AdmissionNeedsRepair(view->admission) && !view->files_changed;
     };
     const auto refusal_of = [&prepared](GameId id) {
       const auto found = prepared.refusals.find(NumberIn(prepared, id));
       return found == prepared.refusals.end() ? std::string{} : found->second;
     };
-    // Play on a game that was never prepared prepares it first; on one whose title needs an
-    // Update or a Repair, it updates or repairs it first. Both then start the game.
+    // Play on a game that was never prepared prepares it first and starts it; so does a Repair. A title a newer kit
+    // left behind updates and stops on a dialog, since the player may only have wanted the update.
     const auto needs_work = [](const RuntimeInstallView* view) {
       return view && view->state == runtime::PreparationState::kReady && !view->recovery_pending &&
-             (!view->title_current || view->admission != "ok" || view->files_changed);
+             (!view->title_current || runtime::AdmissionNeedsRepair(view->admission) || view->files_changed);
     };
     // A record left before Ready by an earlier session, with no journal to resume, is what the
     // game page calls "Not prepared": Play prepares it too, instead of asking the launcher.
@@ -995,7 +996,9 @@ void Controller::TickRuntime() {
       if (view && view->moving) return true;  // a move that stopped part way: Prepare finishes it
       if (!view || view->install_path.empty() || view->recovery_pending) return false;
       const auto root = game_roots_.find(view->game);
-      return root != game_roots_.end() && root->second != view->install_path;
+      // The same folder on another USB mount is the game's drive changing places, which Prepare only records.
+      return root != game_roots_.end() &&
+             platform::WithoutUsbMountNumber(root->second) != platform::WithoutUsbMountNumber(view->install_path);
     };
     std::vector<GameId> direct;
     for (const auto id : plays) {
@@ -1005,10 +1008,12 @@ void Controller::TickRuntime() {
         auto& pending = play_after_prepare_[id];
         if (const auto* view = record_of(id); moved(view))
           pending.words = "Preparing the game on its new drive…";
-        else if (needs_work(view))
-          pending.words = !view->title_current ? "Updating runtime…"
-                          : view->admission != "ok" ? "Repairing runtime…"
+        else if (needs_work(view)) {
+          pending.words = !view->title_current ? "Updating runtime kit…"
+                          : runtime::AdmissionNeedsRepair(view->admission) ? "Repairing game setup…"
                                                     : "Setting up the updated game…";
+          pending.stops_when_ready = !view->title_current;
+        }
         std::erase(auto_prepare_, id);
         ++play_notes_revision_;
       } else if (!play_after_prepare_.count(id)) {
@@ -1139,8 +1144,8 @@ void Controller::TickRuntime() {
       if (!pending.seen_preparing && !handled && !unseen_too_long) { ++it; continue; }
       const auto* record = record_of(id);
       const auto refusal = refusal_of(id);
-      runtime_update_results_[id] = ready(record) ? std::pair<bool, std::string>{true, "Runtime updated."}
-          : std::pair<bool, std::string>{false, refusal.empty() ? "The runtime could not be updated." : refusal};
+      runtime_update_results_[id] = ready(record) ? std::pair<bool, std::string>{true, "Runtime kit updated."}
+          : std::pair<bool, std::string>{false, refusal.empty() ? "The runtime kit could not be updated." : refusal};
       ++play_notes_revision_;
       it = runtime_updates_.erase(it);
     }
@@ -1161,7 +1166,8 @@ void Controller::TickRuntime() {
       if (IsNumber(prepared, prepared.preparing_app, id)) { pending.seen_preparing = true; ++it; continue; }
       // A title still made for the game's old folder waits for the preparation that moves it.
       if (ready(record_of(id)) && !moved(record_of(id))) {
-        plays.push_back(id);
+        if (pending.stops_when_ready) model_.NotifyRuntimeUpdated(id);
+        else plays.push_back(id);
         it = play_after_prepare_.erase(it);
         ++play_notes_revision_;
         continue;
@@ -1334,7 +1340,7 @@ void Controller::TickRuntime() {
       game.status = "Preparing"; game.detail = "Removing the PS5 title made for the game's old drive";
     } else if (record && record->moving) {
       // That removal stopped part way: Play or Prepare finishes the move, never an uninstall of the new download.
-      game.status = "Needs repair"; game.can_prepare = usable;
+      game.status = "Needs repair"; game.can_prepare = usable; game.moving = true;
       game.detail = "Play finishes moving the PS5 title to the game's new drive.";
     } else if (record && record->state == runtime::PreparationState::kRemoving) {
       game.status = "Removal incomplete"; game.can_prepare = true;
@@ -1344,12 +1350,12 @@ void Controller::TickRuntime() {
       game.status = "Preparing"; game.detail = PreparationProgressWords(record != nullptr, record ? record->step : std::string{});
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
                !record->title_current) {
-      game.status = "Kit update available"; game.can_prepare = usable;
+      game.status = "Runtime kit update available"; game.can_prepare = usable;
       game.detail = "Play updates the runtime kit first; the game and its saves stay as they are";
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
-               record->admission != "ok") {
+               runtime::AdmissionNeedsRepair(record->admission)) {
       game.status = "Needs repair"; game.can_prepare = usable;
-      game.detail = "Play repairs the runtime first (" + record->admission + ")";
+      game.detail = "Play repairs the game's setup first (" + record->admission + ")";
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending) {
       game.status = "Ready"; game.detail = record->title_id; game.ready = true;
     } else if (record && record->awaiting_registration) {
@@ -1374,22 +1380,22 @@ void Controller::TickRuntime() {
                           record->state == runtime::PreparationState::kUnavailable)) {
       game.status = "Failed"; game.detail = record->failure; game.can_prepare = usable;
     } else {
-      game.status = usable ? "Not prepared" : "No kit";
+      game.status = usable ? "Not prepared" : "No runtime kit";
       game.detail = usable ? "Play prepares it: a private bottle and the game's own PS5 title" : snapshot.kit_reason;
       game.can_prepare = usable;
     }
     // Preparation and its recovery checks require the kit. Keep actions that
     // launch or remove an existing title, and route blocked setup to Settings.
     if (snapshot.status == RuntimeHostStatus::kReady && !usable &&
-        (game.status == "Kit update available" || game.status == "Needs repair" ||
+        (game.status == "Runtime kit update available" || game.status == "Needs repair" ||
          game.status == "Needs recovery" || game.status == "Failed" || game.status == "Registration pending"))
-      game.status = "No kit";
+      game.status = "No runtime kit";
     if (refusal != snapshot.refusals.end() && !game.ready) game.detail = refusal->second;
     // A setup left over from an earlier kit: what to do, not the check that failed (or the refusal saying so).
     if (record && record->setup_other_kit && usable &&
         (game.status == "Needs recovery" || game.status == "Failed" || game.status == "Not prepared")) {
       game.setup_other_kit = true;
-      game.detail = "Started with an earlier kit · Recreate the bottle to finish (saves are kept)";
+      game.detail = "Started with an earlier version of the runtime kit · Recreate the bottle to finish (saves are kept)";
     }
     if (const auto refused = snapshot.play_refusals.find(NumberIn(snapshot, id)); refused != snapshot.play_refusals.end())
       game.play_detail = "Could not start: " + refused->second;
@@ -1532,6 +1538,7 @@ void Controller::TickRuntime() {
     }
   }
   model_.UpdateRuntime(state, games);
+  model_.UpdateDriveUpdates(snapshot.drive_updates_done, snapshot.drive_updates_total, snapshot.drive_updates_failed);
   model_.SetRuntimeLeftovers(snapshot.leftover_requests);
   LiveKitInfo kit;
   if (snapshot.kit) {
@@ -1692,6 +1699,10 @@ void Controller::ProjectLocations(const std::vector<steam::InstalledGame>& manag
       external_projected_ = games;
       model_.UpdateExternalGames(std::move(games));
     }
+    std::map<GameId, std::string> also_on;
+    for (const auto& location : locations_)
+      if (!location.also_on.empty()) also_on[location.game] = location.also_on;
+    model_.UpdateAlsoOnDrives(std::move(also_on));
   }
   game_roots_.clear();
   game_volumes_.clear();
@@ -2472,14 +2483,20 @@ void Controller::SubmitPrepare(GameId id, bool announce) {
   // An imported game starts the program chosen when it was added: written into Game settings when
   // it was added, or here before its first preparation if that couldn't be; never over the player's
   // own choice or reset (SeedGameProgram).
+  std::string imported_name;
   if (id.store == Store::kLocal && local_) {
     const auto snapshot = local_->Snapshot();
     for (const auto& game : snapshot->games)
-      if (game.id == id.value) model_.SeedGameProgram(id, game.program);
+      if (game.id == id.value) {
+        model_.SeedGameProgram(id, game.program);
+        imported_name = game.title;
+      }
   }
   RuntimePrepareRequest request{*app, root->second, game_volumes_[id], {}};
   request.game = id;
   for (const auto& game : model_.state().games) if (game.id == id) request.title_name = game.title;
+  // A new import prepares straight away, maybe before the library lists it: Home keeps the name it registers with.
+  if (request.title_name.empty()) request.title_name = imported_name;
   if (model_.state().title_store_suffix && !request.title_name.empty()) request.title_name += TitleStoreSuffix(id.store);
   if (const auto found = launch_options_.find(id); found != launch_options_.end())
     for (const auto& option : found->second)

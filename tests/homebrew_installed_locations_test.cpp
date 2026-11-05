@@ -915,7 +915,7 @@ void ImportedGamePlaysInPlace() {
     tick_until([&] {
       const auto* runtime = runtime_of();
       const auto snapshot = host.Snapshot();
-      return game_of(model, game) && runtime && runtime->status == "Kit update available" && !runtime->runtime_current &&
+      return game_of(model, game) && runtime && runtime->status == "Runtime kit update available" && !runtime->runtime_current &&
              (!snapshot.launch || (snapshot.launch->state != LaunchState::kLaunching &&
                                    snapshot.launch->state != LaunchState::kRunning));
     });
@@ -968,15 +968,79 @@ void ImportedGamePlaysInPlace() {
     {
       const auto& updated = *runtime_of();
       if (!updated.maintenance_ok) std::fprintf(stderr, "Update runtime: %s\n", updated.maintenance_message.c_str());
-      CHECK(updated.maintenance_ok && updated.maintenance_message == "Runtime updated.");
-      CHECK(updated.runtime_current && updated.status != "Kit update available");
+      CHECK(updated.maintenance_ok && updated.maintenance_message == "Runtime kit updated.");
+      CHECK(updated.runtime_current && updated.status != "Runtime kit update available");
     }
     CHECK(Read(profile).find("\nrefresh = 120\nframe_rate = 120\n") != std::string::npos);
     const auto* update = row_of(model, "maintenance-update");
-    CHECK(update && !update->enabled && update->subtitle == "Runtime updated.");
+    CHECK(update && !update->enabled && update->subtitle == "Runtime kit updated.");
     // The game does not start.
     for (int i = 0; i < 50; ++i) { controller.Tick(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
     CHECK(launched.size() == plays_before);
+  });
+
+  // Play on a title a newer kit left behind updates it and stops on a dialog: the player chooses to start the game.
+  const auto stale_game = [&](hb::Simulation& model, local::LocalLibrarySource& source, RuntimeHost& host,
+                             const std::function<void(const std::function<bool()>&)>& tick_until) {
+    std::string sky_id;
+    for (const auto& imported : source.Snapshot()->games)
+      if (imported.volume == "internal") sky_id = imported.id;
+    CHECK(!sky_id.empty());
+    const auto game = GameId::Local(sky_id);
+    tick_until([&] {
+      const auto found = model.state().runtime_games.find(game);
+      const auto snapshot = host.Snapshot();
+      return game_of(model, game) && found != model.state().runtime_games.end() &&
+             found->second.status == "Runtime kit update available" &&
+             (!snapshot.launch || (snapshot.launch->state != LaunchState::kLaunching &&
+                                   snapshot.launch->state != LaunchState::kRunning));
+    });
+    return game;
+  };
+  // The fake launch never reports a running game, so the last start ends in "Can't play"; the dialog waits behind it.
+  const auto ready_dialog = [](hb::Simulation& model) {
+    const auto& modals = model.state().navigation.modals;
+    if (!modals.empty() && modals.back().title == "Can't play") CHECK(model.action("focus:alert-ok") && model.action("cross"));
+    return !model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Sky is ready";
+  };
+  const auto close_cant_play = [](hb::Simulation& model) {
+    const auto& modals = model.state().navigation.modals;
+    if (!modals.empty() && modals.back().title == "Can't play") CHECK(model.action("focus:alert-ok") && model.action("cross"));
+  };
+  kit = SyntheticKit(fixture.root / "kit-not-now", "native-2", "kit-1", 'd');
+  run(false, [&](hb::Simulation& model, hb::Controller& controller, RuntimeHost& host, local::LocalLibrarySource& source,
+                 const std::function<void(const std::function<bool()>&)>& tick_until) {
+    const auto game = stale_game(model, source, host, tick_until);
+    const auto plays_before = launched.size();
+    close_cant_play(model);
+    open_details(model, game);
+    CHECK(model.action("focus:details-play") && model.action("cross"));
+    tick_until([&] { return ready_dialog(model); });
+    for (int i = 0; i < 50; ++i) { controller.Tick(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+    CHECK(launched.size() == plays_before);
+    CHECK(model.state().runtime_games.at(game).runtime_current);
+    CHECK(model.action("focus:update-ready-later") && model.action("cross"));
+    CHECK(model.state().navigation.modals.empty());
+    for (int i = 0; i < 50; ++i) { controller.Tick(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+    CHECK(launched.size() == plays_before);
+    // Up to date now: Play starts it, with no dialog.
+    CHECK(model.action("focus:details-play") && model.action("cross"));
+    tick_until([&] { return launched.size() > plays_before; });
+    CHECK(!ready_dialog(model));
+  });
+  kit = SyntheticKit(fixture.root / "kit-play", "native-2", "kit-1", 'e');
+  run(false, [&](hb::Simulation& model, hb::Controller& controller, RuntimeHost& host, local::LocalLibrarySource& source,
+                 const std::function<void(const std::function<bool()>&)>& tick_until) {
+    const auto game = stale_game(model, source, host, tick_until);
+    const auto plays_before = launched.size();
+    close_cant_play(model);
+    open_details(model, game);
+    CHECK(model.action("focus:details-play") && model.action("cross"));
+    tick_until([&] { return ready_dialog(model); });
+    CHECK(model.action("focus:update-ready-play") && model.action("cross"));
+    CHECK(model.state().navigation.modals.empty());
+    tick_until([&] { return launched.size() > plays_before; });
+    (void)controller;
   });
 }
 

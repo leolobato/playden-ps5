@@ -186,10 +186,10 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   Check(store.Save(preferences).ok(), "sign-in method preference saves");
   const auto saved = storage.Read("preferences.conf");
   Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()) ==
-                          "version=11\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
+                          "version=12\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
                           "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
-                          "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\n",
-        "version 11 format includes Automatic download server, web access and English");
+                          "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\nruntime_prompt_kit=\n",
+        "version 12 format includes Automatic download server, web access and English");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
             loaded.preferences.cloud_saves_auto,
@@ -324,6 +324,33 @@ void LauncherDialogsRemembered() {
   playden::Storage storage(directory.path());
   playden::PreferencesStore store(storage);
   playden::Preferences preferences;
+  {
+    // Version 11 loads with no prompt shown; a kit's SHA-256 round-trips, and anything else is dropped alone.
+    playden::Preferences offered;
+    offered.runtime_prompt_kit = std::string(64, 'a');
+    offered.hide_launcher_help = true;
+    Check(store.Save(offered).ok(), "the prompt's kit saves");
+    auto kept = store.Load();
+    Check(kept.status == playden::PreferencesLoadStatus::kLoaded && kept.preferences.runtime_prompt_kit == offered.runtime_prompt_kit,
+          "the prompt's kit is kept");
+    const auto file = storage.Read("preferences.conf");
+    Check(file.ok(), "preferences read back");
+    std::string text(file.value().begin(), file.value().end());
+    const auto bad = text;
+    auto corrupted = bad;
+    corrupted.replace(corrupted.find("runtime_prompt_kit=") + 19, 64, "not-a-sha");
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(corrupted.begin(), corrupted.end())).ok(), "write a bad value");
+    kept = store.Load();
+    Check(kept.status == playden::PreferencesLoadStatus::kLoaded && kept.preferences.runtime_prompt_kit.empty() && kept.preferences.hide_launcher_help,
+          "a bad prompt value is dropped alone");
+    auto older = bad;
+    older.replace(0, 10, "version=11");
+    older.erase(older.find("runtime_prompt_kit="));
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(older.begin(), older.end())).ok(), "write version 11");
+    kept = store.Load();
+    Check(kept.status == playden::PreferencesLoadStatus::kLoaded && kept.preferences.runtime_prompt_kit.empty() && kept.preferences.hide_launcher_help,
+          "version 11 loads with the prompt not shown yet");
+  }
   Check(!preferences.hide_run_once_help && !preferences.hide_launcher_help, "the launcher dialogs show by default");
   preferences.hide_launcher_help = true;
   Check(store.Save(preferences).ok(), "launcher dialog choice saves");
@@ -358,8 +385,8 @@ void OlderPreferencesUseAutomaticDownloadServer() {
           "migration retains old fields and defaults later fields");
     Check(store.Save(loaded.preferences).ok(), "migrated preferences save");
     const auto saved = storage.Read("preferences.conf");
-    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=11\n", 0) == 0,
-          "saving a migrated file writes version 11");
+    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=12\n", 0) == 0,
+          "saving a migrated file writes version 12");
     Check(loaded.preferences.web_access, "every older preference version has web access on");
     Check(loaded.preferences.content_language == "english", "every older preference version downloads English");
   }

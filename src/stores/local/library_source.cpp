@@ -1,5 +1,7 @@
 #include "stores/local/library_source.h"
 
+#include "platform/usb_mount.h"
+
 #include "stores/local/copy_plan.h"
 
 #include <cerrno>
@@ -540,7 +542,32 @@ bool LocalLibrarySource::CheckPresence() {
   for (const auto& volume : present) line += volume + ",";
   Log(line);
   present_ = std::move(present);
+  FollowUsbDrives();
   return true;
+}
+
+// As InstallService does for installs: a game whose folder and program aren't on its USB mount follows them when
+// exactly one other holds them. Two copies can't be told apart, so the recorded one stays. A copied game plays
+// from Playden's own folder and has nothing to follow.
+void LocalLibrarySource::FollowUsbDrives() {
+  also_on_.clear();
+  for (const auto& game : store_.Games()) {
+    if (game.state == ImportState::kCopied || !platform::IsUsbVolumeId(game.volume)) continue;
+    std::vector<std::string> holders;
+    for (const auto& volume : config_.volumes) {
+      if (!platform::IsUsbVolumeId(volume.volume) || !present_.count(volume.volume)) continue;
+      const auto check = CheckProgram(HostPath(Join(volume.mount, game.folder)), game.program);
+      if (check == ProgramCheck::kOk) holders.push_back(volume.volume);
+    }
+    if (std::find(holders.begin(), holders.end(), game.volume) != holders.end()) {
+      for (const auto& other : holders)
+        if (other != game.volume) also_on_[game.id] = other;
+    } else if (holders.size() == 1) {
+      const auto moved = store_.SetVolume(game.id, holders.front());
+      Log("import follows its drive id=" + game.id + " from=" + game.volume + " to=" + holders.front() +
+          (moved.ok() ? std::string() : " failed: " + moved.message()));
+    }
+  }
 }
 
 void LocalLibrarySource::Scan() {
@@ -594,6 +621,7 @@ void LocalLibrarySource::Project() {
     location.volume_id = game.volume;
     location.ownership = installs::InstalledLocation::Ownership::kExternal;
     location.available = present_.count(game.volume) && IsFolder(HostPath(location.root));
+    if (const auto other = also_on_.find(game.id); other != also_on_.end()) location.also_on = other->second;
     if (location.available && !IsPrintableAscii(location.root)) {
       location.available = false;
       location.reason = kNotAsciiReason;

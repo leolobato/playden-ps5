@@ -138,9 +138,13 @@ void InPlaceRemoveAndRestoreFromRemoved() {
   // Removed twice keeps one entry for the folder.
   CHECK(reloaded.Remove(kA).ok() && reloaded.Add("usb0", "playden/import/Celeste", "Celeste", "Celeste.exe").ok());
   CHECK(reloaded.Remove(kA).ok() && reloaded.Removed().size() == 1);
-  // Another slot is another folder: a new ID.
+  // Another USB slot is the same folder (drives change places): its ID, bottle and settings come back.
   const auto other = reloaded.Add("usb1", "playden/import/Celeste", "Celeste", "Celeste.exe");
-  CHECK(other.ok() && other.value().id == kB);
+  CHECK(other.ok() && other.value().id == kA);
+  // Another kind of drive is another folder: a new ID.
+  CHECK(reloaded.Remove(kA).ok());
+  const auto m2 = reloaded.Add("m2", "playden/import/Celeste", "Celeste", "Celeste.exe");
+  CHECK(m2.ok() && m2.value().id == kB);
 }
 
 void CopyTransitionsFollowTheStateTable() {
@@ -261,7 +265,36 @@ void FileIsPrivate() {
 
 }  // namespace
 
+// USB drives can change places: a game can follow its folder, and a removed game keeps its ID on either mount.
+void UsbDrivesChangePlaces() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path);
+  CHECK(storage.EnsureRootDirectory().ok());
+  ImportStore store(storage, "imports.json", Ids({kA, kB, kC}), Clock());
+  CHECK(store.Load().ok());
+  CHECK(store.Add("usb0", "playden/import/Celeste", "Celeste", "Celeste.exe").ok());
+  CHECK(store.Add("usb1", "playden/import/Rally", "Rally", "Rally.exe").ok());
+  CHECK(store.SetVolume(kA, "usb1").ok());
+  CHECK(store.Find(kA)->volume == "usb1" && store.FindByFolder("usb1", "playden/import/Celeste")->id == kA);
+  // That folder on that drive is another game's.
+  CHECK(store.Add("usb0", "playden/import/Rally", "Rally 2", "Rally.exe").ok());
+  CHECK(store.SetVolume(kB, "usb0").error() == ImportError::kDuplicate && store.Find(kB)->volume == "usb1");
+  CHECK(store.SetVolume(kA, "not a volume!").error() == ImportError::kInvalid);
+  CHECK(store.SetVolume("nobody", "usb0").error() == ImportError::kNotFound);
+  // It is saved.
+  ImportStore reloaded(storage, "imports.json", Ids({kC}), Clock());
+  CHECK(reloaded.Load().ok() && reloaded.Find(kA)->volume == "usb1");
+  // Removed on one mount, added on another: the same game.
+  CHECK(reloaded.Remove(kA).ok());
+  CHECK(reloaded.FindRemoved("usb2", "playden/import/Celeste")->id == kA);
+  const auto readded = reloaded.Add("usb2", "playden/import/Celeste", "Celeste", "Celeste.exe");
+  CHECK(readded.ok() && readded.value().id == kA && readded.value().volume == "usb2" && reloaded.Removed().empty());
+  // Console storage has no mounts to change.
+  CHECK(!reloaded.FindRemoved("m2", "playden/import/Celeste"));
+}
+
 int main() {
+  UsbDrivesChangePlaces();
   RandomIdsAreLowerCaseVersionFour();
   AddFindAndRoundTrip();
   DuplicatesAndInvalidFieldsAreRefused();

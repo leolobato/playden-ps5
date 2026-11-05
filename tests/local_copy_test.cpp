@@ -100,6 +100,7 @@ struct Fixture {
   std::mutex log_mutex;
   int next_id = 0;
   std::atomic<bool> usb_present{true};  // the source drive
+  bool extra_import_volumes = false;     // /mnt/usb1 too
   std::vector<InstallVolume> extra_volumes;  // install volumes after the console storage
   std::function<std::string(const std::string&, const std::string&)> game_program;  // LocalLibraryConfig::game_program
 
@@ -143,6 +144,7 @@ struct Fixture {
     }
     LocalLibraryConfig config;
     config.volumes = {{"internal", "/data", "playden-import", false}, {"usb0", "/mnt/usb0", "playden/import", false}};
+    if (extra_import_volumes) config.volumes.push_back({"usb1", "/mnt/usb1", "playden/import", false});
     config.host_prefix = root.string();
     config.present = [this](const ImportVolume& volume) { return volume.volume != "usb0" || usb_present.load(); };
     config.log = options.log;
@@ -762,6 +764,31 @@ void UninstallWithoutTheSourceDrive() {
   CHECK(fs::is_regular_file(fixture.root / "unplugged/playden/import/Rally/Bin/Rally.exe"));
 }
 
+// The console mounts the source drive somewhere else: an in-place game follows its folder, and is saved there.
+void UsbDriveChangesPlaces() {
+  Fixture fixture;
+  fixture.Start();
+  fixture.Add();
+  WaitFor([&] { const auto all = fixture.local->Locations(); return all.size() == 1 && all[0].volume_id == "usb0"; }, "the game on usb0");
+  fixture.Stop();
+  fs::create_directories(fixture.root / "mnt/usb1");
+  fs::rename(fixture.root / "mnt/usb0/playden", fixture.root / "mnt/usb1/playden");
+  fixture.extra_import_volumes = true;
+  fixture.Start();
+  WaitFor([&] { return fixture.store->Find(kId)->volume == "usb1"; }, "the game on the other mount");
+  WaitFor([&] { const auto all = fixture.local->Locations(); return all.size() == 1 && all[0].available &&
+                                                                    all[0].root == "/mnt/usb1/playden/import/Rally"; },
+          "its location on the other mount");
+  // A second copy on another drive: the recorded one stays, and the location says so.
+  fs::create_directories(fixture.root / "mnt/usb0/playden/import");
+  fs::copy(fixture.root / "mnt/usb1/playden/import/Rally", fixture.root / "mnt/usb0/playden/import/Rally",
+           fs::copy_options::recursive);
+  fixture.Stop();
+  fixture.Start();
+  WaitFor([&] { const auto all = fixture.local->Locations(); return all.size() == 1 && all[0].also_on == "usb0"; }, "two copies");
+  CHECK(fixture.store->Find(kId)->volume == "usb1");
+}
+
 void CrashBetweenCommitSteps() {
   Fixture fixture;
   // Playden stops after the install record, before imports.json says copied.
@@ -1177,6 +1204,7 @@ void DropFolderCopyFreesTheDropFolder() {
 }
 
 int main() {
+  UsbDriveChangesPlaces();
   PlanCoversTheTree();
   PlanLeavesOutTheWebPagesTemporaryFiles();
   LinksAreRefused();

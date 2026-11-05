@@ -624,14 +624,10 @@ void PreparesExistingDownloadToReady() {
   struct stat info{};
   CHECK(stat((fixture.root / "data/playden/games/steam-220/library/prefixes/game").c_str(), &info) == 0 &&
         (info.st_mode & 0777) == 0700);
-  // The finished publication's request is no longer named by any journal: an
-  // explicit cleanup removes it.
+  // The finished publication's request is no longer named by any journal, so it goes with it.
   const auto request = fixture.root / "data/runtime-state/requests/settings-request-00000000-0000-4000-8000-000000000001.v1";
-  CHECK(fs::is_regular_file(request));
-  CHECK(WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_requests == 1; }).leftover_requests == 1);
-  host.CleanUpRequests();
-  WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_requests == 0; });
   CHECK(!fs::exists(request));
+  CHECK(WaitFor(host, [](const RuntimeSnapshot& s) { return s.leftover_requests == 0; }).leftover_requests == 0);
   // A second request does not redo anything.
   host.Prepare(Hl2());
   const auto again = WaitFor(host, [](const RuntimeSnapshot& s) { return s.refusals.count(220) != 0; });
@@ -4964,6 +4960,362 @@ void StuckMovedGameOffersRecreateBottle() {
   host.Shutdown();
 }
 
+// The console mounts a USB drive somewhere else: the record follows the game's folder, its old publication is
+// replaced at startup, and the title stays. Back on its first mount, nothing is left to publish.
+// A kit whose title finds a USB game's drive: the game is published naming no mount, so nothing needs publishing
+// when drives change places, a copy on another drive pins it, and an older title never gets the form it would refuse.
+void UsbGameNamesNoMount() {
+  Fixture fixture;
+  GamesMove move;
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back("game-root-usb-search");
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
+  unsigned uuids = 0;
+  auto config = MoveConfig(fixture, kit, &uuids, move);
+  int unregistered = 0;
+  config.unregister_title = [&unregistered](const std::string&, const std::string&) {
+    ++unregistered;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  const auto usb0 = fixture.root / "mnt/usb0/playden/games/220";
+  Write(usb0 / "hl2.exe", "existing-game", 0644);
+  for (const auto& folder : {fixture.root / "mnt", fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden",
+                             fixture.root / "mnt/usb0/playden/games", usb0})
+    CHECK(chmod(folder.c_str(), 0755) == 0);
+  fs::create_directories(fixture.root / "mnt/usb1");
+  CHECK(chmod((fixture.root / "mnt/usb1").c_str(), 0755) == 0);
+  auto game = Hl2();
+  game.install_path = "/mnt/usb0/playden/games/220";
+  game.volume_id = "usb0";
+  std::string title;
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(game);
+    const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (ready.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(220).c_str());
+    CHECK(!ready.refusals.count(220));
+    title = ready.installs[0].title_id;
+    CHECK(ready.installs[0].admission == "ok");
+    host.Shutdown();
+  }
+  const auto descriptor = fixture.root / "data/homebrew" / title / "game-launch.json";
+  const auto profile = fixture.root / "data/playden/games/steam-220/library/profiles/playden-steam-220.profile";
+  const auto published = Read(descriptor);
+  CHECK(published.find("\"schema_version\":3") != std::string::npos);
+  CHECK(published.find("\"game_root\":\"/mnt/usb/playden/games/220\"") != std::string::npos);
+  CHECK(Read(profile).find("Z:\\mnt\\usb\\playden\\games\\220\\hl2.exe") != std::string::npos);
+  const auto receipt = fixture.root / "data/playden/games/steam-220/.playden-control/publication-state.v1";
+  const auto receipt_before = Read(receipt);
+
+  // Drives change places: only the record follows.
+  fs::rename(fixture.root / "mnt/usb0/playden", fixture.root / "mnt/usb1/playden");
+  game.install_path = "/mnt/usb1/playden/games/220";
+  game.volume_id = "usb1";
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(started.installs.size() == 1 && started.installs[0].install_path == "/mnt/usb1/playden/games/220");
+    CHECK(started.installs[0].title_id == title && !started.installs[0].republish_pending);
+    CHECK(started.drive_updates_total == 0);
+    CHECK(Read(descriptor) == published && Read(receipt) == receipt_before);
+    host.Shutdown();
+  }
+  CHECK(unregistered == 0);
+
+  // A copy on the other drive: the title would refuse, so the game is published naming this one. This publication
+  // also starts from the journal the old mount left.
+  Write(usb0 / "hl2.exe", "a-copy", 0644);
+  for (const auto& folder : {fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden", fixture.root / "mnt/usb0/playden/games", usb0})
+    CHECK(chmod(folder.c_str(), 0755) == 0);
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(started.drive_updates_total == 1);
+    const auto pinned = WaitFor(host, [](const RuntimeSnapshot& s) { return s.drive_updates_done == 1; }, 30);
+    CHECK(pinned.installs[0].install_path == "/mnt/usb1/playden/games/220" && !pinned.installs[0].republish_pending);
+    const auto named = Read(descriptor);
+    CHECK(named.find("\"schema_version\":2") != std::string::npos);
+    CHECK(named.find("\"game_root\":\"/mnt/usb1/playden/games/220\"") != std::string::npos);
+    CHECK(Read(profile).find("Z:\\mnt\\usb1\\playden\\games\\220\\hl2.exe") != std::string::npos);
+    host.Shutdown();
+  }
+  // The copy goes: back to naming no mount.
+  fs::remove_all(fixture.root / "mnt/usb0/playden");
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).drive_updates_total == 1);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.drive_updates_done == 1; }, 30);
+    CHECK(Read(descriptor).find("\"game_root\":\"/mnt/usb/playden/games/220\"") != std::string::npos);
+    host.Shutdown();
+  }
+  // Unplugged: nothing is published, and it doesn't read as needing a repair.
+  const auto away = fixture.root / "unplugged";
+  fs::rename(fixture.root / "mnt/usb1/playden", away);
+  const auto before_unplug = Read(descriptor);
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(started.installs[0].install_path == "/mnt/usb1/playden/games/220" && started.drive_updates_total == 0);
+    CHECK(!playden::runtime::AdmissionNeedsRepair(started.installs[0].admission));
+    CHECK(Read(descriptor) == before_unplug);
+    host.Shutdown();
+  }
+  CHECK(playden::runtime::AdmissionNeedsRepair("admission status=-1: x") && !playden::runtime::AdmissionNeedsRepair(playden::runtime::kAdmissionDriveMissing) &&
+        !playden::runtime::AdmissionNeedsRepair(playden::runtime::kAdmissionDriveAmbiguous) && !playden::runtime::AdmissionNeedsRepair("ok"));
+  fs::rename(away, fixture.root / "mnt/usb1/playden");
+  CHECK(unregistered == 0);
+}
+
+// A title on an older runtime refuses the search form: it stays with its mount until Update runtime, which brings both.
+void OlderTitleKeepsItsMount() {
+  Fixture fixture;
+  GamesMove move;
+  auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  auto config = MoveConfig(fixture, kit, &uuids, move);
+  const auto usb0 = fixture.root / "mnt/usb0/playden/games/220";
+  Write(usb0 / "hl2.exe", "existing-game", 0644);
+  for (const auto& folder : {fixture.root / "mnt", fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden",
+                             fixture.root / "mnt/usb0/playden/games", usb0})
+    CHECK(chmod(folder.c_str(), 0755) == 0);
+  auto game = Hl2();
+  game.install_path = "/mnt/usb0/playden/games/220";
+  game.volume_id = "usb0";
+  std::string title;
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(game);
+    const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+    }, 60);
+    title = ready.installs[0].title_id;
+    host.Shutdown();
+  }
+  const auto descriptor = fixture.root / "data/homebrew" / title / "game-launch.json";
+  CHECK(Read(descriptor).find("\"game_root\":\"/mnt/usb0/playden/games/220\"") != std::string::npos);
+  // The new kit arrives: the title is on the old runtime, so starting Playden publishes nothing.
+  auto newer = SyntheticKit(fixture.root / "kit-newer", "native-2", "kit-1", 'c');
+  newer.capabilities.push_back("game-root-usb-search");
+  std::sort(newer.capabilities.begin(), newer.capabilities.end());
+  config.admit_kit = [newer](std::string*) { return std::optional<RuntimeKit>(newer); };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(!started.installs[0].title_current && started.drive_updates_total == 0);
+  CHECK(Read(descriptor).find("\"game_root\":\"/mnt/usb0/playden/games/220\"") != std::string::npos);
+  // Update runtime brings the runtime, then the form the title can now read.
+  host.Prepare(game);
+  const auto updated = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.installs[0].title_current || s.refusals.count(220));
+  }, 60);
+  if (updated.refusals.count(220)) std::fprintf(stderr, "Update refused: %s\n", updated.refusals.at(220).c_str());
+  CHECK(!updated.refusals.count(220) && updated.installs[0].admission == "ok");
+  const auto after = Read(descriptor);
+  CHECK(after.find("\"schema_version\":3") != std::string::npos && after.find("\"game_root\":\"/mnt/usb/playden/games/220\"") != std::string::npos);
+  host.Shutdown();
+  // The next kit makes this title older too, but it already reads the form: it isn't pinned to a mount again.
+  auto next = SyntheticKit(fixture.root / "kit-next", "native-3", "kit-1", 'd');
+  next.capabilities.push_back("game-root-usb-search");
+  std::sort(next.capabilities.begin(), next.capabilities.end());
+  config.admit_kit = [next](std::string*) { return std::optional<RuntimeKit>(next); };
+  RuntimeHost later(config);
+  CHECK(later.Start());
+  const auto restarted = WaitFor(later, Started);
+  CHECK(!restarted.installs[0].title_current && restarted.drive_updates_total == 0);
+  CHECK(Read(descriptor) == after);
+  later.Shutdown();
+}
+
+// A game that is running holds only itself back: the others are updated for the drive change meanwhile.
+void DriveUpdateSkipsABusyGame() {
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = AnyTitleKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  auto config = MoveConfig(fixture, kit, &uuids, move);
+  config.write_title_allow_list = [](const std::string&, std::string*) { return true; };
+  // Two titles, so the registry knows each by the ID in its request.
+  auto registered = std::make_shared<std::set<std::string>>();
+  config.native.database = [registered](const std::string& title) {
+    if (!registered->count(title)) return TitleDatabaseObservation{TitleAvailability::kFree, {}};
+    return TitleDatabaseObservation{TitleAvailability::kOccupied,
+        InstalledTitleIdentity{title, "UP9000-" + title + "_00-PROSPEROWIN00001", "/user/app/" + title + "/sce_sys"}};
+  };
+  config.registry_transport = [registered](const std::string& route, const std::string& body) -> std::optional<std::string> {
+    if (route != "/api/v1/games") {
+      const auto at = body.find("FAKE78");
+      if (at != std::string::npos) registered->insert(body.substr(at, 9));
+      return R"({"status":0})";
+    }
+    std::string games;
+    for (const auto& title : *registered)
+      games += (games.empty() ? "" : ",") + std::string(R"({"title_id":")") + title +
+               R"(","installed":true,"managed":true,"source_available":true,"source_type":"folder","path":"/data/homebrew/)" + title + R"("})";
+    return R"({"status":0,"games":[)" + games + "]}";
+  };
+  std::vector<std::string> titles;
+  auto busy = std::make_shared<std::string>();
+  config.native.activity = [busy](const std::string& title) { return title == *busy ? NativeActivity::kActive : NativeActivity::kStopped; };
+  auto game = [](std::uint32_t app, int mount) {
+    auto request = Hl2();
+    request.runtime_number = app;
+    request.install_path = "/mnt/usb" + std::to_string(mount) + "/playden/games/" + std::to_string(app);
+    request.volume_id = "usb" + std::to_string(mount);
+    if (app != 220) request.launches = {{"", "", "bin\\game.exe", "", ""}};
+    return request;
+  };
+  CHECK(chmod(fixture.root.c_str(), 0755) == 0);
+  for (const std::uint32_t app : {220u, 221u}) {
+    const auto folder = fixture.root / "mnt/usb0/playden/games" / std::to_string(app);
+    if (app == 220) Write(folder / "hl2.exe", "existing-game", 0644);
+    else {
+      // A 64-bit PE header is all the generator reads.
+      std::string pe(0x80 + 26, '\0');
+      pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+      pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+      Write(folder / "Bin/Game.exe", pe, 0644);
+      CHECK(chmod((folder / "Bin").c_str(), 0755) == 0);
+    }
+    for (const auto& part : {fixture.root / "mnt", fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden",
+                             fixture.root / "mnt/usb0/playden/games", folder})
+      CHECK(chmod(part.c_str(), 0755) == 0);
+  }
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    for (const std::uint32_t app : {220u, 221u}) {
+      host.Prepare(game(app, 0));
+      const auto ready = WaitFor(host, [app](const RuntimeSnapshot& s) {
+        if (s.preparing_app || s.refusals.count(app)) return !s.preparing_app;
+        return std::any_of(s.installs.begin(), s.installs.end(), [app](const auto& install) {
+          return install.runtime_number == app && install.state == PreparationState::kReady; });
+      }, 60);
+      if (ready.refusals.count(app)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(app).c_str());
+      CHECK(!ready.refusals.count(app));
+    }
+    const auto installed = host.Snapshot();
+    for (const auto& install : installed.installs) titles.push_back(install.title_id);
+    host.Shutdown();
+  }
+  CHECK(titles.size() == 2);
+  // The drive comes back on another mount with the first game's title running.
+  fs::rename(fixture.root / "mnt/usb0", fixture.root / "mnt/usb1");
+  fs::create_directories(fixture.root / "mnt/usb0");
+  *busy = titles[0];
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.drive_updates_total == 2);
+  const auto partly = WaitFor(host, [](const RuntimeSnapshot& s) { return s.drive_updates_done >= 1; }, 10);
+  CHECK(partly.drive_updates_done == 1);
+  busy->clear();
+  const auto all = WaitFor(host, [](const RuntimeSnapshot& s) { return s.drive_updates_done == 2; }, 30);
+  CHECK(all.drive_updates_done == 2 && all.drive_updates_failed == 0);
+  host.Shutdown();
+}
+
+void UsbDriveChangesPlaces() {
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  auto config = MoveConfig(fixture, kit, &uuids, move);
+  config.cloud_saves_root = "/data/playden-games/.playden-saves";
+  int unregistered = 0;
+  config.unregister_title = [&unregistered](const std::string&, const std::string&) {
+    ++unregistered;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  const auto usb0 = fixture.root / "mnt/usb0/playden/games/220";
+  const auto usb1 = fixture.root / "mnt/usb1/playden/games/220";
+  Write(usb0 / "hl2.exe", "existing-game", 0644);
+  for (const auto& folder : {fixture.root / "mnt", fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden",
+                             fixture.root / "mnt/usb0/playden/games", usb0})
+    CHECK(chmod(folder.c_str(), 0755) == 0);
+  auto game = Hl2();
+  game.install_path = "/mnt/usb0/playden/games/220";
+  game.volume_id = "usb0";
+  std::string title;
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(game);
+    const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (ready.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(220).c_str());
+    CHECK(!ready.refusals.count(220));
+    title = ready.installs[0].title_id;
+    host.Shutdown();
+  }
+  const auto descriptor = fixture.root / "data/homebrew" / title / "game-launch.json";
+  CHECK(Read(descriptor).find("/mnt/usb0/playden/games/220") != std::string::npos);
+  Write(fixture.root / "data/playden-games/.playden-saves/220/cloud-index.txt",
+        "version=1\naccount=a\nchange=7\ngame_root=/mnt/usb0/playden/games/220\nprefix_root=/data/x\n", 0644);
+  fs::create_directories(fixture.root / "mnt/usb1");
+  CHECK(chmod((fixture.root / "mnt/usb1").c_str(), 0755) == 0);
+  fs::rename(fixture.root / "mnt/usb0/playden", fixture.root / "mnt/usb1/playden");
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    // Playden is ready with the old publication: it goes in the background, and the job counts it.
+    const auto started = WaitFor(host, Started);
+    CHECK(started.installs.size() == 1 && started.installs[0].install_path == "/mnt/usb1/playden/games/220");
+    CHECK(started.installs[0].title_id == title && started.installs[0].state == PreparationState::kReady);
+    CHECK(started.drive_updates_total == 1);
+    CHECK(!move.Logged("startup moved app=220"));
+    const auto updated = WaitFor(host, [](const RuntimeSnapshot& s) { return s.drive_updates_done == 1; }, 30);
+    CHECK(updated.drive_updates_total == 1 && !updated.installs[0].republish_pending);
+    CHECK(move.Logged("drive update app=220 republished"));
+    CHECK(Read(descriptor).find("/mnt/usb1/playden/games/220") != std::string::npos);
+    CHECK(Read(fixture.root / "data/playden-games/.playden-saves/220/cloud-index.txt").find("game_root=/mnt/usb1/") != std::string::npos);
+    // A Prepare naming the other mount (the drive moved while Playden was open) never removes the title.
+    host.Shutdown();
+  }
+  CHECK(unregistered == 0);
+  // Moved back with the title busy, as after a Play Playden hasn't closed yet: the job waits instead of giving up,
+  // and carries on when the title stops.
+  fs::rename(fixture.root / "mnt/usb1/playden", fixture.root / "mnt/usb0/playden");
+  fixture.activity->store(static_cast<int>(NativeActivity::kActive));
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    const auto started = WaitFor(host, Started);
+    CHECK(started.installs[0].install_path == "/mnt/usb0/playden/games/220" && started.installs[0].title_id == title);
+    CHECK(started.drive_updates_total == 1 && started.drive_updates_done == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(host.Snapshot().drive_updates_done == 0 && host.Snapshot().installs[0].republish_pending);
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    const auto caught_up = WaitFor(host, [](const RuntimeSnapshot& s) { return s.drive_updates_done == 1; }, 30);
+    CHECK(!caught_up.installs[0].republish_pending);
+    CHECK(Read(descriptor).find("/mnt/usb0/playden/games/220") != std::string::npos);
+    // Prepare with the record on one mount and the request on another: the record only follows.
+    fs::rename(fixture.root / "mnt/usb0/playden", fixture.root / "mnt/usb1/playden");
+    auto other = game;
+    other.install_path = "/mnt/usb1/playden/games/220";
+    other.volume_id = "usb1";
+    host.Prepare(other);
+    const auto followed = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && !s.installs.empty() && s.installs[0].install_path == "/mnt/usb1/playden/games/220";
+    }, 60);
+    CHECK(followed.installs[0].title_id == title && !move.Logged("moved install app=220"));
+    host.Shutdown();
+  }
+  CHECK(unregistered == 0);
+}
+
 // A moved game whose title was busy at startup is republished by Play first, which says so.
 void PlayBeforeRepublishRepublishesFirst() {
   Fixture fixture;
@@ -5629,7 +5981,7 @@ void UnownedUpgradeAfterCommittedSettingsUpdates(int scenario) {
         CHECK(logged("unowned upgrade request 00000000-0000-4000-8000-000000000006 dropped: "));
         CHECK(logged("startup unowned app=220 deferred: "));
         CHECK(!journaled() && Read(metadata) == owned);
-        CHECK(restarted.Snapshot().leftover_requests == 4);
+        CHECK(restarted.Snapshot().leftover_requests == 0);
       } else {
         CHECK(logged("startup unowned app=220 republished"));
         CHECK(!journaled() && unowned_published());
@@ -5692,9 +6044,8 @@ void UnownedUpgradeAfterCommittedSettingsUpdates(int scenario) {
     CHECK(logged("unowned upgrade request 00000000-0000-4000-8000-000000000005 dropped: "));
     CHECK(logged("startup unowned app=220 deferred: "));
     CHECK(!journaled() && !fs::exists(request) && Read(metadata) == owned);
-    // The preparation's and the committed updates' requests are the usual leftovers; the dropped
-    // one is gone.
-    CHECK(host.Snapshot().leftover_requests == 4 && !host.Snapshot().installs[0].recovery_pending);
+    // Finished publications leave no requests, and the dropped one is gone.
+    CHECK(host.Snapshot().leftover_requests == 0 && !host.Snapshot().installs[0].recovery_pending);
     // Play tries the upgrade again, drops its request again, and starts the game as before.
     play(host);
     CHECK(logged("unowned upgrade request 00000000-0000-4000-8000-000000000006 dropped: "));
@@ -5819,6 +6170,40 @@ RuntimeRelocationResult RelocateNow(RuntimeHost& host, std::uint32_t number, std
   request.volume_id = "internal";
   request.move_files = std::move(move_files);
   return host.Relocate(std::move(request), std::chrono::seconds(60));
+}
+
+// Published naming no mount, the drive changes places, and then the game moves off it: the journal still names the
+// mount it was published on, and the record another one.
+void MoveAfterUsbSwap() {
+  Fixture fixture;
+  GamesMove move;
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back("game-root-usb-search");
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
+  unsigned uuids = 0;
+  const auto config = MoveConfig(fixture, kit, &uuids, move);
+  const auto imported = PrepareImported(fixture, config, "/mnt/usb0/playden/import/Imported");
+  const auto descriptor = fixture.root / "data/homebrew" / imported.title_id / "game-launch.json";
+  CHECK(Read(descriptor).find("\"game_root\":\"/mnt/usb/playden/import/Imported\"") != std::string::npos);
+  fs::create_directories(fixture.root / "mnt/usb1");
+  CHECK(chmod((fixture.root / "mnt/usb1").c_str(), 0755) == 0);
+  fs::rename(fixture.root / "mnt/usb0/playden", fixture.root / "mnt/usb1/playden");
+  fs::create_directories(fixture.root / "data/playden-games");
+  fs::copy(fixture.root / "mnt/usb1/playden/import/Imported", fixture.root / fs::path(kImportedRoot).relative_path(),
+           fs::copy_options::recursive);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.installs[0].install_path == "/mnt/usb1/playden/import/Imported" && started.drive_updates_total == 0);
+  const auto result = RelocateNow(host, imported.number);
+  if (!result.message.empty()) std::fprintf(stderr, "Relocate: %s\n", result.message.c_str());
+  CHECK(result.outcome == RuntimeRelocationResult::Outcome::kDone && !result.prepare_again && result.message.empty());
+  const auto moved = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && !s.installs[0].republish_pending; }, 30);
+  CHECK(moved.installs[0].install_path == kImportedRoot && moved.installs[0].title_id == imported.title_id);
+  const auto published = Read(descriptor);
+  CHECK(published.find(std::string("\"game_root\":\"") + kImportedRoot + "\"") != std::string::npos);
+  CHECK(published.find("\"schema_version\":2") != std::string::npos);
+  host.Shutdown();
 }
 
 // Copy later: a game prepared on a USB drive, copied into Playden. Its title follows the copy;
@@ -6570,6 +6955,11 @@ int main(int argc, char** argv) {
   LocalGameSteamworksAppId();
   PublicStateRootIsUnavailable();
   PreparesExistingDownloadToReady();
+  UsbDriveChangesPlaces();
+  DriveUpdateSkipsABusyGame();
+  UsbGameNamesNoMount();
+  MoveAfterUsbSwap();
+  OlderTitleKeepsItsMount();
   PreparesGameOnUnownedDrive();
   PrepareFixesRootOwnedHomebrewFolder();
   PrepareNamesUnfixableFolder();

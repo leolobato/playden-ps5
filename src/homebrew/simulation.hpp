@@ -27,7 +27,7 @@ using GameId = playden::GameId;
 
 enum class Route { Startup, SignIn, Home, Library, Downloads, Settings, Details, Session, Saves, SaveDetails, ManageGames };
 // Manage installed games: one tab per batch action. Each has its own list and selection.
-enum class ManageTab { Updates, Move, Uninstall };
+enum class ManageTab { Updates, Runtimes, Move, Uninstall };
 enum class ModelMode { Simulation, Live };
 // UsePassword/UseQr switch the sign-in screen's method; BeginPassword and SubmitCode carry the form's
 // secrets, which the controller takes with TakeSignInCredentials and TakeGuardCode.
@@ -247,6 +247,8 @@ struct LiveRuntimeGame {
     // Its setup stopped before Ready and left a PS5 title or bottle made with an earlier kit: Try again
     // can't finish it, Recreate bottle does (RuntimeInstallView::setup_other_kit).
     bool setup_other_kit = false;
+    // A move stopped part way: "Needs repair", but only Play finishes it.
+    bool moving = false;
     // Has a prepared title (Ready, perhaps with an update or repair to make): its Game
     // settings and maintenance apply to it.
     bool prepared = false;
@@ -775,6 +777,7 @@ struct Notice {
     bool failure = false;     // drawn with the failure tone
     std::string detail;       // second line; when empty the action key is shown, as fixtures expect
     bool alert = true;        // a live failure waits in a dialog for OK; false keeps it a corner notification
+    float progress = -1.0F;   // 0 to 1: a corner notification draws a bar; below 0 it has none
 };
 
 struct ControllerState {
@@ -823,6 +826,7 @@ struct State {
     std::vector<LiveLeftoverDelete> leftover_deletions;
     std::vector<LiveKeptBottle> kept_bottles;           // live: saves kept from uninstalled games
     std::vector<LiveExternalGame> external_games;       // live: games playing in place (imported)
+    std::map<GameId, std::string> also_on_drives;       // live: a game's folder is on this USB volume too
     std::vector<LiveImportCandidate> import_candidates; // live: folders on the drives that could be imported
     bool import_scanning = false;                       // live: Playden is looking for games to import
     LiveSavesJob saves_job;                             // live: the Saves tab's running check or Sync all
@@ -861,6 +865,7 @@ struct State {
     // the chosen provider's stable identifier.
     std::string download_server;
     bool hide_run_once_help = false;  // "Don't show again" on Run launcher or setup's dialog
+    std::string runtime_prompt_kit;  // the kit whose runtime kit prompt was answered (its manifest SHA-256)
     bool hide_launcher_help = false;  // ...and on the one for turning on Start through a launcher
     bool web_access = true;  // Settings › Web access: the logs and game files page on the local network (on by default)
     std::string web_pairing_code;  // live: a browser asked to pair; shown in a corner over every screen
@@ -1029,6 +1034,9 @@ public:
     [[nodiscard]] std::vector<std::string> TakeLeftoverDeleteRequests();
     // Live mode: games playing in place, and what the drives offer to import.
     void UpdateExternalGames(std::vector<LiveExternalGame> games);
+    void UpdateAlsoOnDrives(std::map<GameId, std::string> drives);
+    // Games being published again in the background after a USB drive changed places.
+    void UpdateDriveUpdates(std::size_t done, std::size_t total, std::size_t failed = 0);
     void UpdateImportCandidates(std::vector<LiveImportCandidate> candidates, bool scanning);
     // Live mode: requests for the Local store (the Import sheet, the dev request file).
     void RequestImport(ImportRequest request);
@@ -1053,6 +1061,8 @@ public:
     void NotifyUninstallFinished(GameId id);
     // Play prepared the game first and that ended without a playable title.
     void NotifyPlayStopped(GameId id, const std::string& reason);
+    // Play updated the game's title to the installed kit's runtime and left it there: asks whether to start it.
+    void NotifyRuntimeUpdated(GameId id);
     // The game's last run tried to start this program and couldn't: offers launcher mode.
     // False until the game is known, so the caller tells it again.
     bool NotifyLauncherHint(GameId id, const std::string& program);
@@ -1208,6 +1218,7 @@ private:
     bool download_server_cancel_pending_ = false;
     bool download_server_test_requested_ = false;
     bool download_server_fixture_ = false;
+    std::size_t drive_updates_done_ = 0, drive_updates_total_ = 0;  // what the corner notification last said
     bool manage_fixture_ = false;  // a Manage installed games scenario: Settings shows its rows in the fixture
     void refresh_download_servers(const std::string& focus = {});
     [[nodiscard]] std::string best_tested_download_server() const;
@@ -1345,7 +1356,17 @@ private:
     std::filesystem::path log_directory_;
     std::vector<CloudRequest> pending_cloud_requests_;
     std::map<GameId, CloudStatus> settled_cloud_;  // each game's last settled Cloud state, for notices
+    // The Runtimes tab's batch: the games still to send, in order, and the one at work. One at a time, so free space
+    // is checked before each. Not kept across runs: what didn't finish stays listed on the tab.
+    std::vector<std::pair<GameId, MaintenanceKind>> runtime_batch_;
+    std::optional<std::pair<GameId, MaintenanceKind>> runtime_batch_current_;
+    std::int64_t runtime_batch_sent_at_ = 0;
+    std::size_t runtime_batch_total_ = 0;
+    std::size_t runtime_batch_failed_ = 0;
+    PreparationQueue runtime_queue_;  // the runtime's own queue, before the batch's waiting games are added to it
     GameId ready_prompt_game_;  // the game the "ready to play" dialog is about
+    std::vector<GameId> update_ready_prompts_;  // games Play updated, whose "is ready" dialog hasn't opened yet
+    GameId update_ready_game_;  // the game the open "is ready" dialog is about
     GameId quit_sync_game_;     // Play quits to Home once this game's saves are in step
     std::string quit_wait_title_;   // the dialog a quit to Home waits in while a game is prepared
     std::string live_log_topic_;
@@ -1525,6 +1546,13 @@ private:
     [[nodiscard]] std::string installed_blocker(GameId id) const;
     // On Updates also a game whose drive is disconnected or read-only.
     [[nodiscard]] std::string manage_blocker(ManageTab tab, GameId id) const;
+    // What the Runtimes tab would do for a game: update its runtime or repair it; nothing when it is current.
+    [[nodiscard]] std::optional<MaintenanceKind> runtime_work(GameId id) const;
+    void start_runtime_batch();
+    // Sends the batch's next game once the last one is done and nothing else is being prepared. Stops first if
+    // console storage is too low to go on.
+    void runtime_batch_step();
+    void stop_runtime_batch();
     void refresh_manage_games();
     void open_manage_games(ManageTab tab);
     void close_manage_games();
@@ -1618,6 +1646,12 @@ private:
     void apply_live_volume_usage();
     void push_notice(Notice notice);
     void show_ready_prompt();
+    void show_update_ready_prompt();
+    // The runtime kit prompt: once per kit, when games wait for its runtime, after What's new.
+    void show_runtime_prompt();
+    std::size_t runtime_prompt_games_ = 0;  // what its button starts: kit updates and repairs
+    bool runtime_prompt_open_ = false;
+    std::string runtime_prompt_shown_kit_;
     void show_alert(std::string title, std::string body, GameId settings_game = {});
     void open_game_settings();
     void show_alert_prompt();

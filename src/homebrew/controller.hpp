@@ -261,6 +261,7 @@ class Controller {
     std::string refusal;
     std::uint64_t prepares_handled = 0;  // the worker's count when this prepare was queued
     std::chrono::steady_clock::time_point queued_at{};
+    bool stops_when_ready = false;  // only the title's kit update was due: the player chooses whether to start it now
     std::string words = "Preparing…";  // what Play says meanwhile: preparing, updating or repairing the runtime
   };
   std::map<GameId, PlayAfterPrepare> play_after_prepare_;

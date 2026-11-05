@@ -435,6 +435,30 @@ void live_install_volumes() {
     check(model.action("details:42"), "installed game opens");
     const auto* installed = find_row(model, "details-installed");
     check(!installed, "installed size and location are shown only in facts");
+    check(!find_row(model, "details-also-on"), "one copy says nothing about drives");
+    model.UpdateAlsoOnDrives({{SteamId(42), "usb0"}});
+    const auto* also_on = find_row(model, "details-also-on");
+    check(also_on && also_on->title == "On two drives" && also_on->subtitle.find("USB drive") != std::string::npos,
+          "a game on two USB drives says so and names the other one");
+    model.UpdateAlsoOnDrives({});
+    check(!find_row(model, "details-also-on"), "and stops saying so when the copy has gone");
+    const auto drive_notice = [&model]() -> decltype(&model.state().notices.front()) {
+        for (const auto& notice : model.state().notices)
+            if (notice.id == "drive-updates") return &notice;
+        return nullptr;
+    };
+    model.UpdateDriveUpdates(0, 0);
+    check(!drive_notice(), "no drive change: nothing to say");
+    model.UpdateDriveUpdates(12, 37);
+    check(drive_notice() && !drive_notice()->persistent && drive_notice()->detail == "12 of 37 games" &&
+              drive_notice()->progress > 0.3F && drive_notice()->progress < 0.35F, "the job shows how far it is");
+    model.UpdateDriveUpdates(37, 37);
+    check(drive_notice() && drive_notice()->detail == "37 games" && drive_notice()->progress < 0.0F &&
+              drive_notice()->remaining_ticks < 60, "and says when it ends, then leaves");
+    model.UpdateDriveUpdates(12, 37);
+    model.UpdateDriveUpdates(37, 37, 1);
+    check(drive_notice() && drive_notice()->message == "Drive change updated with problems" &&
+              drive_notice()->detail == "36 of 37 games · the others may not start from Home", "a failure isn't reported as done");
     check(model.action("details:44"), "game on an absent drive opens");
     installed = find_row(model, "details-installed");
     check(installed && installed->title == "Storage disconnected" && installed->subtitle == "Connect USB drive to use this game",
@@ -868,7 +892,7 @@ void live_install_language_row() {
     check(model.view().surface == "install" && model.TakeInstallRequests().empty(),
           "a game in several languages opens the install sheet");
     const auto* row = find_row(model, "install-language");
-    check(row && row->title == "Language" && row->value == "English" && row->subtitle == "From Settings › Downloads",
+    check(row && row->title == "Language" && row->value == "English" && row->subtitle == "From Settings, under Downloads",
           "the Language row shows the language the Settings one resolves to");
     activate(model, "install-language");
     check(model.view().surface == "install-language", "the row opens the game's languages");
@@ -2545,21 +2569,21 @@ void live_play_does_the_next_useful_thing() {
     const std::vector<Case> cases{
         {"Ready", "Play", "", "", "Ready", "good", "runtime-play"},
         {"Not prepared", "Play", "Sets up first", "", "Not set up", "quiet", "runtime-play"},
-        {"Kit update available", "Play", "Kit update first", "", "Kit update available", "busy", "runtime-play"},
+        {"Runtime kit update available", "Play", "Updates runtime kit first", "", "Runtime kit update available", "busy", "runtime-play"},
         {"Needs repair", "Play", "Repairs first", "Some of Synthetic's setup files changed.", "Needs repair", "attention", "runtime-play"},
         {"Needs recovery", "Finish setup", "", "Setup stopped early.", "Interrupted", "attention", "runtime-prepare"},
         {"Waiting for the PS5", "Finish setup", "Quits to Home", "Quit Playden and Synthetic appears on the PS5 Home screen.", "Waiting for the PS5", "busy", "quit-to-home"},
         {"Failed", "Finish setup", "", "Setup failed.", "Failed", "problem", "runtime-prepare"},
         {"Registration pending", "Check again", "", "The PS5 hasn't confirmed Synthetic yet.", "Not confirmed", "attention", "runtime-prepare"},
         {"Removal incomplete", "Finish removing", "", "Removing Synthetic from the PS5 Home screen stopped partway.", "Removing", "attention", "runtime-remove-retry"},
-        {"No kit", "Open Settings", "", "Playden needs its runtime kit to set up games.", "No kit", "problem", ""},
+        {"No runtime kit", "Open Settings", "", "Playden needs its runtime kit to set up games.", "No runtime kit", "problem", ""},
     };
     for (const auto& expected : cases) {
         LiveRuntimeGame state; state.game_id = SteamId(42); state.status = expected.status;
         state.detail = "raw technical detail for bug reports";
         state.ready = state.status == "Ready"; state.can_play = state.ready;
-        state.can_prepare = !state.ready && state.status != "No kit";
-        state.has_title = state.status != "No kit" && state.status != "Not prepared";
+        state.can_prepare = !state.ready && state.status != "No runtime kit";
+        state.has_title = state.status != "No runtime kit" && state.status != "Not prepared";
         state.awaiting_registration = state.status == "Waiting for the PS5";
         model.UpdateRuntime(RuntimeState::Ready, {state});
         check(model.action("details:42"), "details open");
@@ -2576,7 +2600,7 @@ void live_play_does_the_next_useful_thing() {
               (state.status + ": setup fact states readiness").c_str());
         check(!has_row(model, "details-runtime") && !has_row(model, "details-installed") &&
                   !has_row(model, "details-update-runtime"), "details avoid duplicated facts and separate kit update action");
-        if (state.status == "No kit") {
+        if (state.status == "No runtime kit") {
             activate(model, "details-play");
             check(model.state().navigation.route == Route::Settings, "missing kit opens Settings");
             check(model.TakeRuntimePlayRequests().empty() && model.TakeRuntimePrepareRequests().empty(),
@@ -3601,7 +3625,7 @@ void live_setup_from_an_earlier_kit_offers_recreate() {
     check(model.UpdateLibrary({{game(SteamId(34), "Spire"), game(SteamId(35), "Broke")}, false, {}, false, false, {}}),
           "library loaded");
     model.UpdateInstalls({}, {{SteamId(34), 600'000'000}, {SteamId(35), 600'000'000}});
-    const std::string words = "Started with an earlier kit · Recreate the bottle to finish (saves are kept)";
+    const std::string words = "Started with an earlier version of the runtime kit · Recreate the bottle to finish (saves are kept)";
     LiveRuntimeGame spire; spire.game_id = SteamId(34); spire.status = "Needs recovery"; spire.has_title = true;
     spire.can_prepare = true; spire.setup_other_kit = true; spire.detail = words;
     LiveRuntimeGame broke; broke.game_id = SteamId(35); broke.status = "Failed"; broke.has_title = true;
@@ -3643,7 +3667,7 @@ void live_setup_from_an_earlier_kit_offers_recreate() {
           "the game page offers Recreate bottle instead of Finish setup");
     check(find_row(model, "details-hint") &&
               find_row(model, "details-hint")->title ==
-                  "Setup started with an earlier kit. Recreate bottle makes it again; saves and settings are kept.",
+                  "Setup started with an earlier version of the runtime kit. Recreate bottle makes it again; saves and settings are kept.",
           "the hint says why");
     activate(model, "details-play");
     activate(model, "confirm-destructive");
@@ -3660,7 +3684,7 @@ void live_setup_from_an_earlier_kit_offers_recreate() {
     model.UpdateRuntime(RuntimeState::Ready, {spire, broke});
     const auto* update = find_row(model, "maintenance-update");
     check(update && !update->enabled &&
-              update->subtitle == "Setup was started with an earlier kit. Use Recreate bottle to finish it; saves are kept.",
+              update->subtitle == "Setup was started with an earlier version of the runtime kit. Use Recreate bottle to finish it; saves are kept.",
           "Update runtime points to Recreate bottle");
     const auto* recreate = find_row(model, "maintenance-recreate");
     check(recreate && recreate->enabled, "Recreate bottle is there to use");

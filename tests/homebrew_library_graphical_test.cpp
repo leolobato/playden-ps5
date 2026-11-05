@@ -259,12 +259,12 @@ int main(int argc,char** argv) {
       }
       // The details state gallery covers button widths, hint colours and the seventh fact.
       for (const auto& [status, filename] : std::vector<std::pair<std::string, std::string>>{
-               {"Not prepared", "details-not-prepared.png"}, {"Kit update available", "details-kit-update.png"},
+               {"Not prepared", "details-not-prepared.png"}, {"Runtime kit update available", "details-kit-update.png"},
                {"Needs repair", "details-needs-repair.png"}, {"Needs recovery", "details-interrupted.png"},
                {"Failed", "details-failed.png"}, {"Registration pending", "details-not-confirmed.png"},
-               {"Removal incomplete", "details-removing.png"}, {"No kit", "details-no-kit.png"}}) {
+               {"Removal incomplete", "details-removing.png"}, {"No runtime kit", "details-no-kit.png"}}) {
         LiveRuntimeGame state; state.game_id= SteamId(42); state.status=status;
-        state.can_prepare=status!="No kit"; state.has_title=status!="No kit" && status!="Not prepared";
+        state.can_prepare=status!="No runtime kit"; state.has_title=status!="No runtime kit" && status!="Not prepared";
         if (status=="Needs recovery" || status=="Failed") state.detail="insufficient verified free space for package copy";
         live.UpdateRuntime(RuntimeState::Ready, {state});
         capture_live(filename.c_str());

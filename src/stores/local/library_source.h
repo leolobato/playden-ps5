@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -198,6 +199,7 @@ class LocalLibrarySource final : public LibrarySource {
   void WarmRuntimeNumber(const std::function<std::uint32_t(const GameId&)>& given, const std::string& id);
   void EnsureLoaded();
   bool CheckPresence();  // true when the present volumes changed
+  void FollowUsbDrives();  // games on a USB drive that changed places: their folder says where they are now
   void Scan();
   void Project();
   void Outcome(const Job& job, bool ok, std::string id, std::string message);
@@ -213,6 +215,7 @@ class LocalLibrarySource final : public LibrarySource {
   bool load_tried_ = false;
   std::string load_error_;
   std::set<std::string> present_;
+  std::map<std::string, std::string> also_on_;  // a game's ID: another USB drive with the same folder
   std::vector<ImportCandidate> candidates_;
   std::vector<ImportOutcome> outcomes_;
   std::uint64_t games_revision_ = 0;

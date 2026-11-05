@@ -9,6 +9,14 @@
 
 namespace playden::runtime {
 
+inline constexpr const char* kAdmissionDriveMissing = "drive-missing";
+inline constexpr const char* kAdmissionDriveAmbiguous = "drive-ambiguous";
+// An admission that a Repair could change: not "ok", and not only about the game's USB drive.
+inline bool AdmissionNeedsRepair(const std::string& admission) {
+  return admission != "ok" && admission != kAdmissionDriveMissing && admission != kAdmissionDriveAmbiguous;
+}
+
+
 struct RecordUpdateResult {
   bool ok = false;
   std::string code;
@@ -74,6 +82,7 @@ public:
   virtual PackageActionResult PublishProfile(const RuntimeInstall &record) = 0;
   // Runs the wrapper's publication admission over the installed title and
   // returns "ok" or its refusal text (diagnostics only).
+  // Besides "ok" and a reason, AdmissionDiagnostic can answer that the title is fine and only its USB drive is the matter.
   virtual std::string AdmissionDiagnostic(const RuntimeInstall &) { return "unsupported"; }
   // A cheap form for start-up: only what a game run changes and RepairBottle fixes
   // (the bottle registry file's mode). "ok" or the refusal text.

@@ -129,10 +129,13 @@ class ImportStore {
   std::optional<ImportEntry> FindByFolder(const std::string& volume, const std::string& folder) const;
   std::optional<RemovedImport> FindRemoved(const std::string& volume, const std::string& folder) const;
 
-  // Adds a folder, playing in place. A folder on the removed list gets its old ID back; one already
-  // in the library is refused (kDuplicate).
+  // Adds a folder, playing in place. A folder on the removed list gets its old ID back, also when its USB
+  // drive has changed places since; one already in the library is refused (kDuplicate).
   ImportResult<ImportEntry> Add(const std::string& volume, const std::string& folder, const std::string& title,
                                 const std::string& program);
+  // The drive a game was found on: USB drives can change places. Refused (kDuplicate) when that folder is
+  // another game's already.
+  ImportResult<ImportEntry> SetVolume(const std::string& id, const std::string& volume);
   // The program Game settings chose (a program check precedes it).
   ImportResult<ImportEntry> SetProgram(const std::string& id, const std::string& program);
 

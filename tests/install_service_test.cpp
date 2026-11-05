@@ -1180,7 +1180,92 @@ void UpdateWaitsLongerWhenTheConsoleDoesNotSay(const std::filesystem::path& root
   std::filesystem::remove_all(root);
 }
 
+// The console can mount USB drives the other way round, or on another port: a game's line names the mount it
+// had, and its folder decides where it is now. Only USB volumes change places.
+void UsbDrivesChangePlaces(const std::filesystem::path& base) {
+  std::filesystem::remove_all(base);
+  const auto primary = base / "data";
+  const auto usb0 = base / "usb0";
+  const auto usb1 = base / "usb1";
+  const auto usb2 = base / "usb2";
+  for (const auto& folder : {primary, usb0, usb1, usb2}) std::filesystem::create_directories(folder);
+  const auto copying = [](const std::filesystem::path& root) {
+    std::filesystem::create_directories(root / ".playden-copy");
+    std::ofstream(root / ".playden-copy" / "plan.json") << "{}";
+  };
+  InstalledGameFolder(usb1 / "40");  // on the other mount
+  InstalledGameFolder(usb0 / "41");
+  InstalledGameFolder(usb1 / "41");  // on both: stays where it was recorded
+  InstalledGameFolder(usb1 / "43");
+  InstalledGameFolder(usb2 / "43");  // on two others: can't tell which
+  InstalledGameFolder(usb1 / "44");  // recorded on console storage: never followed
+  std::filesystem::create_directories(usb1 / "45");
+  std::ofstream(usb1 / "45" / ".playden-download") << "x";  // a download's partial folder
+  InstalledGameFolder(usb1 / "46");  // an uninstall that hadn't finished
+  // A paused move from usb0 to usb1, drives swapped: the partial copy is now on usb0 and the original on usb1.
+  InstalledGameFolder(usb1 / "47");
+  copying(usb0 / "47");
+  // One past its switch, deleting the old folder: the copy (with its journal) is on usb0, the old folder on usb1.
+  InstalledGameFolder(usb0 / "48");
+  copying(usb0 / "48");
+  InstalledGameFolder(usb1 / "48");
+  // A move that hadn't copied anything: the game is now on the drive it was going to.
+  InstalledGameFolder(usb1 / "49");
+  // Fully moved to usb1 with only the line left, drives swapped: the copy is on usb0 and there's nothing to do.
+  InstalledGameFolder(usb0 / "50");
+  std::ofstream(primary / ".playden-games")
+      << "40\tusb0\t4096\n41\tusb0\t4096\n42\tusb0\t4096\n43\tusb0\t4096\n44\tinternal\t4096\n"
+      << "45\tusb0\t0\tpaused\n46\tusb0\t4096\tremoving\n"
+      << "47\tusb0\t4096\tmove=usb1\tfrom=usb0\tpaused\n48\tusb1\t4096\tmove=usb1\tfrom=usb0\tpaused\n"
+      << "49\tusb0\t4096\tmove=usb1\tfrom=usb0\tpaused\n50\tusb1\t4096\tmove=usb1\tfrom=usb0\tpaused\n";
+  const std::vector<InstallVolume> volumes{{"internal", "Console storage", primary.string(), true},
+                                           {"usb0", "USB drive", usb0.string(), true},
+                                           {"usb1", "USB drive 2", usb1.string(), true},
+                                           {"usb2", "USB drive 3", usb2.string(), true}};
+  Sessions sessions;
+  Runner runner(sessions);
+  InstallService service(runner, volumes);
+  const auto game = [&](std::uint32_t app) -> InstalledGame {
+    for (const auto& installed : service.Snapshot().installed)
+      if (installed.id == SteamId(app)) return installed;
+    CHECK(false);
+    return {};
+  };
+  CHECK(game(40).volume_id == "usb1" && game(40).available && game(40).root == (usb1 / "40").string());
+  CHECK(game(41).volume_id == "usb0" && game(41).available && game(41).also_on == "usb1");
+  CHECK(game(40).also_on.empty());
+  CHECK(game(42).volume_id == "usb0" && !game(42).available);
+  CHECK(game(43).volume_id == "usb0" && !game(43).available);
+  CHECK(game(44).volume_id == "internal" && !game(44).available);
+  const auto snapshot = service.Snapshot();
+  const auto* download = JobOf(snapshot, SteamId(45));
+  CHECK(download && download->volume_id == "usb1");
+  // The partial copy is the destination, whatever the line says: it is never copied over the original.
+  CHECK(game(47).volume_id == "usb1" && game(47).available);
+  const auto* move = JobOf(snapshot, SteamId(47));
+  CHECK(move && move->volume_id == "usb0" && move->from_volume_id == "usb1");
+  // Past the switch the game plays from the copy, and the folder left to delete is the old one.
+  CHECK(game(48).volume_id == "usb0" && game(48).available);
+  const auto* finishing = JobOf(snapshot, SteamId(48));
+  CHECK(finishing && finishing->volume_id == "usb0" && finishing->from_volume_id == "usb1");
+  // Nothing copied yet: still bound for the other drive.
+  CHECK(game(49).volume_id == "usb1");
+  const auto* queued = JobOf(snapshot, SteamId(49));
+  CHECK(queued && queued->volume_id == "usb0" && queued->from_volume_id == "usb1");
+  // A finished move is not made again, and its only copy isn't taken for an old folder.
+  CHECK(game(50).volume_id == "usb0" && game(50).available && !JobOf(snapshot, SteamId(50)));
+  // What was found is saved: the next start reads it, and no drive has to stay where it is.
+  const auto text = ReadText(primary / ".playden-games");
+  CHECK(text.find("40\tusb1\t") != std::string::npos);
+  CHECK(text.find("41\tusb0\t") != std::string::npos);
+  CHECK(text.find("44\tinternal\t") != std::string::npos);
+  // The uninstall deletes the folder where it is now.
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return !std::filesystem::exists(usb1 / "46"); });
+  service.Shutdown();
+}
+
 int main() {
+  UsbDrivesChangePlaces(std::filesystem::temp_directory_path() / ("playden-usb-swap-" + std::to_string(::getpid())));
   UpdateWaitsLongerWhenTheConsoleDoesNotSay(std::filesystem::temp_directory_path() /
                                             ("playden-update-unknown-" + std::to_string(::getpid())));
   UpdateWaitsForTheGameToClose(std::filesystem::temp_directory_path() / ("playden-update-wait-" + std::to_string(::getpid())));

@@ -506,6 +506,7 @@ int main() {
             config.homebrew_root = "/data/homebrew";
             config.layout_paths = rt::LayoutPaths{paths.title_root, "/data/playden/user", "/data/playden/logs",
                                                    "/data/playden-games", "/data/playden/runtime-state", "/data"};
+            config.cloud_saves_root = "/data/playden-games/.playden-saves";
             config.as_root = [](const std::function<bool()>& work) { return playden::ps5::WithRoot(work); };
             config.writable_folders = {"/data/homebrew", "/data/playden", "/data/playden-games", "/data/playden/user",
                                        "/data/playden/logs"};

@@ -1,4 +1,5 @@
 #include "installs/install_service.h"
+#include "platform/usb_mount.h"
 #include "steam/install_volumes.h"
 
 #include <fcntl.h>
@@ -232,6 +233,7 @@ struct RegistryEntry {
   InstallOptions options;  // a job's "lang=<code>", "branch=<name>" and "nodlc=<app>,<app>" fields
   std::optional<std::uint64_t> estimated_bytes;  // a job's "est=<bytes>": what it reserves on its drive
   std::int64_t finished_at = 0;  // "finished=<unix seconds>": a moved game's install time, older than its record
+  std::string also_on;  // not stored: another USB drive holding the same folder (FollowUsbDrives)
 };
 
 // One line per game: "<key>" (legacy, primary volume) or "<key>\t<volume id>\t<install bytes>",
@@ -378,6 +380,93 @@ std::string InstallService::RootFor(GameId id) {
   return LockedRootFor(id);
 }
 
+namespace {
+// The console can mount USB drives the other way round, or on another port, so a line's USB volume is only the
+// mount the game had: its folder says where it is now. Returns whether a line changed. Only an available USB
+// volume counts, and a game on console storage or an M.2 drive never follows. Two drives holding the same folder
+// can't be told apart: the recorded one stays, and a game that isn't there stays where it is too.
+bool FollowUsbDrives(std::vector<RegistryEntry>& entries, const std::vector<InstallVolume>& volumes) {
+  std::vector<const InstallVolume*> usb;
+  for (const auto& volume : volumes)
+    if (platform::IsUsbVolumeId(volume.id) && volume.available) usb.push_back(&volume);
+  if (usb.empty()) return false;
+  const auto holders = [&usb](GameId id, const char* inside, const std::string& except = {}) {
+    std::vector<std::string> found;
+    for (const auto* volume : usb) {
+      if (volume->id == except) continue;
+      auto path = volume->games_root + "/" + ToKey(id);
+      if (inside) path += std::string("/") + inside;
+      if (Exists(path)) found.push_back(volume->id);
+    }
+    return found;
+  };
+  const auto contains = [](const std::vector<std::string>& list, const std::string& id) {
+    return std::find(list.begin(), list.end(), id) != list.end();
+  };
+  bool changed = false;
+  for (auto& entry : entries) {
+    if (!entry.move_to.empty()) {
+      const auto to = entry.move_to;
+      const auto from = entry.move_from.empty() ? entry.volume_id : entry.move_from;
+      if (!platform::IsUsbVolumeId(to) && !platform::IsUsbVolumeId(from)) continue;
+      auto new_to = to, new_from = from;
+      // The copy holds the journal until the old folder is gone: that drive is the destination.
+      const auto journals = platform::IsUsbVolumeId(to) ? holders(entry.id, kMoveJournal) : std::vector<std::string>{};
+      const bool journal_known = journals.size() == 1;
+      if (journal_known) new_to = journals.front();
+      // No journal, and the game was already on its destination: the move ended, only its line is left.
+      if (journals.empty() && entry.volume_id == to && platform::IsUsbVolumeId(to) && !contains(holders(entry.id, kRecord), to)) {
+        const auto records = holders(entry.id, kRecord);
+        if (records.size() == 1) {
+          entry.volume_id = records.front();
+          entry.move_to.clear();
+          entry.move_from.clear();
+          changed = true;
+        }
+        continue;
+      }
+      // Past the switch with no journal, the old folder is simply gone: nothing to find.
+      if (platform::IsUsbVolumeId(from) && (journal_known || entry.volume_id != to)) {
+        const auto left = holders(entry.id, nullptr, journal_known ? new_to : std::string());
+        if (!contains(left, from) || new_to == from) {
+          if (left.size() == 1) {
+            new_from = left.front();
+            // Nothing copied yet, and the game is now on the drive it was going to.
+            if (!journal_known && new_from == to) new_to = from;
+          } else if (new_to == from) {
+            new_from = to;  // the old folder's drive isn't connected
+          }
+        }
+      }
+      if (new_to == to && new_from == from) continue;
+      entry.volume_id = entry.volume_id == to ? new_to : new_from;
+      entry.move_to = new_to;
+      entry.move_from = new_from;
+      changed = true;
+      continue;
+    }
+    if (!platform::IsUsbVolumeId(entry.volume_id)) continue;
+    const auto present = [&](const std::string& except) {
+      auto found = holders(entry.id, kRecord, except);
+      for (auto& other : holders(entry.id, kJournal, except))
+        if (!contains(found, other)) found.push_back(std::move(other));
+      if (entry.removing)
+        for (auto& other : holders(entry.id, nullptr, except))
+          if (!contains(found, other)) found.push_back(std::move(other));
+      return found;
+    };
+    const auto everywhere = present({});
+    if (contains(everywhere, entry.volume_id)) {
+      if (const auto others = present(entry.volume_id); !others.empty()) entry.also_on = others.front();
+    } else if (everywhere.size() == 1) {
+      entry.volume_id = everywhere.front();
+      changed = true;
+    }
+  }
+  return changed;
+}
+}  // namespace
+
 // The primary volume keeps a registry of app IDs Playden manages and the volume of each;
 // directory listing is avoided because the console's readdir did not return entries reliably.
 void InstallService::Scan() {
@@ -403,6 +492,7 @@ void InstallService::Scan() {
     }
     std::fclose(registry);
   }
+  const bool followed = FollowUsbDrives(entries, volumes_);
   if (FILE* file = std::fopen((primary + "/" + kDefaultVolume).c_str(), "r")) {
     char line[64] = {};
     if (std::fgets(line, sizeof(line), file)) {
@@ -479,6 +569,7 @@ void InstallService::Scan() {
                             entry.finished_at > 0 ? entry.finished_at : RecordTime(root + "/" + kRecord),
                             ReadInstallRecord(root + "/" + kRecord)});
       installed_.back().finished_kept = entry.finished_at > 0;
+      installed_.back().also_on = entry.also_on;
       if (!entry.move_to.empty()) {
         restore_move(entry);
       } else if ((update || entry.update) && jobs_.size() < kMaxJobs) {
@@ -547,6 +638,8 @@ void InstallService::Scan() {
     }
     std::fclose(file);
   }
+  // Saved now: anything that acts on these folders reads the volumes from here on.
+  if (followed) SaveRegistry(true);
   ++revision_;
 }
 
