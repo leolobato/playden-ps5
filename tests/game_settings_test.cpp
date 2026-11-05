@@ -1141,6 +1141,15 @@ int main(int argc, char** argv) {
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_HUD=full", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_A=1;DXVK_A=2", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_A", &reason));
+  // A refused name says which names are allowed, and every name the hint lists is (#480).
+  CHECK(!ValidateSettingValue(hl2, "environment", "PROTON_LOG=1", &reason) &&
+        reason == std::string("PROTON_LOG is not an allowed variable. ") + kEnvironmentNamesHint);
+  for (const char* prefix : {"DXVK_", "MESA_", "RADV_", "SDL_", "VK_", "ZINK_", "GALLIUM_", "PW_"}) {
+    CHECK(std::string_view(kEnvironmentNamesHint).find(std::string(prefix) + ",") != std::string_view::npos ||
+          std::string_view(kEnvironmentNamesHint).find(std::string(prefix) + " ") != std::string_view::npos);
+    CHECK(ValidateSettingValue(hl2, "environment", std::string(prefix) + "PLAYDEN_TEST=1", &reason));
+  }
+  CHECK(ValidateSettingValue(hl2, "environment", "VKD3D_CONFIG=dxr;WINE_CPU_TOPOLOGY=4:0,1,2,3", &reason));
 
   // Registry settings: Windows version per executable and text scale, edited in user.reg.
   KitCapabilities registry_kit;

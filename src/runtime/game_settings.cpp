@@ -285,7 +285,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // Advanced.
   {
     auto environment = Text("environment", "Environment variables",
-                            "Extra variables for the game, separated by ';', like WINE_CPU_TOPOLOGY=4:0,1,2,3.",
+                            std::string("Extra variables for the game, separated by ';', like WINE_CPU_TOPOLOGY=4:0,1,2,3. ") +
+                                kEnvironmentNamesHint,
                             "[environment]", G::kAdvanced);
     environment.phase = 2;
     list.push_back(std::move(environment));
@@ -741,7 +742,7 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
       while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
       if (!IsProsperoEnvironmentEntry(name, item) && !IsProsperoDebugEnvEntry(name, item) &&
           !IsBottleEnvironmentEntry(name, item))
-        return fail(std::string(name) + " is not an allowed variable");
+        return fail(std::string(name) + " is not an allowed variable. " + kEnvironmentNamesHint);
       if (!names.insert(std::string(name)).second) return fail(std::string(name) + " appears twice");
       if (++count > kProsperoMaxEnvironmentEntries) return fail("at most 8 variables");
     }

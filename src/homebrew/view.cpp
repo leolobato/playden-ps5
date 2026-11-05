@@ -3497,13 +3497,24 @@ class Render::Impl
         {
             if (!notice.persistent)
                 continue;
+            // The message on one line; a detail (why a value was refused) wraps below it, so the
+            // reason is never cut.
             const float width = 560.0F;
-            scene_.rounded_rect({kWidth - kSafeX - width, y, width, 54.0F}, 8.0F,
-                                kAmber.with_alpha(0.16F));
-            scene_.circle(kWidth - kSafeX - width + 25.0F, y + 27.0F, 6.0F, kAmber);
+            const float left = kWidth - kSafeX - width;
+            constexpr int kDetailLines = 4;
+            constexpr float kDetailLine = 28.0F;
+            const std::size_t wrapped =
+                notice.detail.empty() ? 0 : fonts_.regular.font->wrap(notice.detail, 20.0F, width - 64.0F).size();
+            const float detail_height = static_cast<float>(std::min<std::size_t>(wrapped, kDetailLines)) * kDetailLine;
+            const float height = 54.0F + (detail_height > 0.0F ? detail_height + 4.0F : 0.0F);
+            scene_.rounded_rect({left, y, width, height}, 8.0F, kAmber.with_alpha(0.16F));
+            scene_.circle(left + 25.0F, y + 27.0F, 6.0F, kAmber);
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, notice.message, 21.0F, width - 64.0F),
-                     kWidth - kSafeX - width + 44.0F, y + 35.0F, 21.0F, kText);
-            y += 64.0F;
+                     left + 44.0F, y + 35.0F, 21.0F, kText);
+            if (wrapped > 0)
+                ui::paragraph(scene_, fonts_.regular, notice.detail, left + 44.0F, y + 35.0F + kDetailLine + 2.0F,
+                              20.0F, width - 64.0F, kDetailLine, kSecondary, kDetailLines);
+            y += height + 10.0F;
         }
     }
 
@@ -3698,6 +3709,11 @@ class Render::Impl
         overlay_.rounded_rect({std::min(caret_x, field.x + field.w - 24.0F), field.y + 18.0F,
                                2.0F, field.h - 36.0F},
                               1.0F, kAccent);
+        // Why the value was refused, under the field: the corner notice is behind this panel.
+        for (const Notice &notice : state.notices)
+            if (notice.id == "setting-validation" && !notice.detail.empty())
+                ui::paragraph(overlay_, fonts_.regular, notice.detail, field.x, field.y + field.h + 40.0F, 24.0F,
+                              field.w, 34.0F, kAmber, 3);
         keyboard_.style.reduced_motion = state.reduced_motion;
         const int layouts = !state.editor.secret ? 0 : state.editor.revealed ? 2 : 1;
         if (layouts != keyboard_layouts_)

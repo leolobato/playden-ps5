@@ -8141,6 +8141,8 @@ void Simulation::start_editor(std::string purpose, std::string value, bool secre
     const auto opener = state_.navigation.focus_key;
     editing_setting_id_.clear();
     editing_append_ = false;
+    // A refusal belongs to the editor it was given in.
+    std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
     state_.editor = {};
     state_.editor.active = true;
     state_.editor.secret = secret;
@@ -8328,8 +8330,9 @@ void Simulation::commit_editor() {
         const auto value = trimmed(state_.editor.value);
         const auto parsed = value.empty() ? std::optional<std::uint32_t>{0} : rt::ParseSteamAppId(value);
         if (!parsed || (!value.empty() && std::to_string(*parsed) != value)) {
-            state_.notices.push_back({"setting-validation", "Steam app ID: use the number in the game's Steam store address",
-                                      "", true, 0, true});
+            std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
+            state_.notices.push_back({"setting-validation", "Steam app ID", "", true, 0, true,
+                                      "Use the number in the game's Steam store address."});
             return;
         }
         std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
@@ -8357,7 +8360,12 @@ void Simulation::commit_editor() {
         }
         std::string reason;
         if (!value.empty() && !rt::ValidateSettingValue(RecipeFor(state_.navigation.selected_game_id), editing_setting_id_, value, &reason)) {
-            state_.notices.push_back({"setting-validation", state_.editor.purpose + ": " + reason, "", true, 0, true});
+            // The setting on the first line, the whole reason below it (the reason can be long: a refused
+            // variable also lists the accepted names).
+            if (!reason.empty() && reason.front() >= 'a' && reason.front() <= 'z') reason.front() = static_cast<char>(reason.front() - 'a' + 'A');
+            if (!reason.empty() && reason.back() != '.') reason += '.';
+            std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
+            state_.notices.push_back({"setting-validation", state_.editor.purpose, "", true, 0, true, reason});
             return;
         }
         state_.notices.erase(std::remove_if(state_.notices.begin(), state_.notices.end(),
@@ -8430,6 +8438,7 @@ void Simulation::cancel() {
         state_.editor.active = false;
         state_.editor.revealed = false;
         state_.navigation.focus_key = state_.editor.opener_focus_key;
+        std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
         return;
     }
     // An applied search is undone before Circle leaves the Library.

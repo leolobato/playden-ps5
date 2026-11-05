@@ -1008,6 +1008,55 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     activate(simulation, "value-reset");
     check(!overrides().count("dll_overrides"), "T52 library overrides reset");
 
+    // A refused value keeps the editor open with a notice: the setting first, then the whole reason, which
+    // names the variables Environment variables accepts (#480). The row says which ones too.
+    {
+        playden::runtime::KitCapabilities kit;
+        kit.environment = true;
+        simulation.SetKitCapabilities(kit);
+    }
+    check(find_row(simulation, "setting-environment") != nullptr, "T52 Environment variables is listed");
+    check(find_row(simulation, "setting-environment")->subtitle.find("DXVK_") != std::string::npos,
+          "T52 Environment variables names the variables it accepts");
+    activate(simulation, "setting-environment");
+    check(simulation.state().editor.active, "T52 Environment variables opens the keyboard");
+    simulation.text("PROTON_DISABLE_LSTEAMCLIENT=1");
+    simulation.action("done");
+    {
+        const auto refused = std::find_if(simulation.state().notices.begin(), simulation.state().notices.end(),
+                                          [](const auto& notice) { return notice.id == "setting-validation"; });
+        check(simulation.state().editor.active && refused != simulation.state().notices.end() && refused->persistent,
+              "T52 a refused variable keeps the editor open with a notice");
+        check(refused != simulation.state().notices.end() && refused->message == "Environment variables" &&
+                  refused->detail.rfind("PROTON_DISABLE_LSTEAMCLIENT is not an allowed variable.", 0) == 0 &&
+                  refused->detail.find("DXVK_") != std::string::npos &&
+                  refused->detail.find("WINE_CPU_TOPOLOGY") != std::string::npos,
+              "T52 the notice gives the whole reason and the accepted names");
+    }
+    // Cancelled, the refusal goes with the editor and does not show in the next one.
+    simulation.action("circle");
+    check(!simulation.state().editor.active &&
+              std::none_of(simulation.state().notices.begin(), simulation.state().notices.end(),
+                           [](const auto& notice) { return notice.id == "setting-validation"; }),
+          "T52 a cancelled editor takes its refusal with it");
+    activate(simulation, "setting-environment");
+    simulation.action("triangle");  // clears the editor
+    simulation.text("PROTON_LOG=1");
+    simulation.action("done");
+    check(simulation.state().editor.active, "T52 refused again");
+    simulation.action("triangle");  // clears the editor
+    simulation.text("DXVK_ASYNC=1");
+    simulation.action("done");
+    check(overrides().at("environment") == "DXVK_ASYNC=1" &&
+              std::none_of(simulation.state().notices.begin(), simulation.state().notices.end(),
+                           [](const auto& notice) { return notice.id == "setting-validation"; }),
+          "T52 an accepted variable saves and clears the notice");
+    activate(simulation, "setting-environment");
+    simulation.action("triangle");
+    simulation.action("done");
+    check(!overrides().count("environment") || overrides().at("environment").empty(), "T52 Environment variables clear");
+    simulation.SetKitCapabilities({});
+
     // Locked rows: Change anyway, then reset to the recipe.
     activate(simulation, "setting-graphics");
     activate(simulation, "unlock-setting");
