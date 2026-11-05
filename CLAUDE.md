@@ -100,6 +100,13 @@ the same call:
 - Before adding or hand-drawing a UI element, look for it in the design system
   (`third_party/ps5-homebrew-ui/docs/COMPONENT_INDEX.md`, `docs/components/`) and in the patterns `view.cpp` already
   uses, and reuse what fits. If nothing fits, propose adding it to ps5-homebrew-ui instead of a one-off.
+- UI text, player-visible errors and the README call it the **runtime kit**, never "kit" or "runtime" alone. Log lines,
+  code and maintainer docs may say "kit". The Runtimes tab keeps its name.
+  - Use "runtime kit" when it is what the player acts on: "Update to the new runtime kit", "Replace the runtime kit?"
+  - Use "version" when comparing or naming one: "uses an older version of the runtime kit", "Runtime kit version 0.19".
+    Write "version of the runtime kit", not "runtime kit version", unless a number follows.
+  - A bare "update" means a game update from Steam. A runtime kit update names the runtime kit, and says so when a player
+    could expect a download.
 - Commit format: see CONTRIBUTING.md › Commits. A commit that resolves an issue says `Fixes #N` (`Refs #N`
   for partial work).
 - History is linear: rebase and fast-forward, no merge commits.
