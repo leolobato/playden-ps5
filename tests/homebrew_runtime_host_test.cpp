@@ -3647,7 +3647,9 @@ void SteamEntryWithoutFolderStartsInInstallRoot() {
   const auto kit = SyntheticKit(fixture.root / "kit");
   config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
   unsigned uuids = 0;
-  config.uuid = [&uuids]() -> std::optional<std::string> {
+  bool no_random = false;
+  config.uuid = [&uuids, &no_random]() -> std::optional<std::string> {
+    if (no_random) return std::nullopt;
     ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
   };
   config.unix_time = [] { return std::int64_t{1760000000}; };
@@ -3694,6 +3696,105 @@ void SteamEntryWithoutFolderStartsInInstallRoot() {
   CHECK(applied.maintenance.at(646570).ok && applied.installs[0].launch_in_install_root &&
         applied.installs[0].launch_working_directory.empty());
   CHECK(Read(profile).find("working_directory = Z:\\data\\homebrew\\FAKE77031\\games\\646570\n") != std::string::npos);
+  // A published folder the player deleted doesn't stop the settings changing, and doesn't come back.
+  std::filesystem::create_directories(game / "extras/deep");
+  CHECK(chmod((game / "extras").c_str(), 0755) == 0 && chmod((game / "extras/deep").c_str(), 0755) == 0);
+  saved.overrides = {{"program_folder", "extras/deep"}};
+  applied = apply(3);
+  CHECK(applied.maintenance.at(646570).ok && applied.installs[0].launch_working_directory == "extras/deep");
+  std::filesystem::remove_all(game / "extras");
+  saved.overrides = {{"program_folder", "."}};
+  applied = apply(4);
+  if (!applied.maintenance.at(646570).ok) std::fprintf(stderr, "apply: %s\n", applied.maintenance.at(646570).message.c_str());
+  CHECK(applied.maintenance.at(646570).ok && applied.installs[0].launch_in_install_root);
+  CHECK(!std::filesystem::exists(game / "extras"));
+  // The new settings still start the program there: the folder stays, as the title's start check needs it.
+  std::filesystem::create_directories(game / "extras/deep");
+  CHECK(chmod((game / "extras").c_str(), 0755) == 0 && chmod((game / "extras/deep").c_str(), 0755) == 0);
+  saved.overrides = {{"program_folder", "extras/deep"}};
+  applied = apply(5);
+  CHECK(applied.maintenance.at(646570).ok);
+  std::filesystem::remove_all(game / "extras");
+  saved.overrides = {{"program_folder", "extras/deep"}, {"arguments", "-windowed"}};
+  applied = apply(6);
+  if (!applied.maintenance.at(646570).ok) std::fprintf(stderr, "apply: %s\n", applied.maintenance.at(646570).message.c_str());
+  CHECK(applied.maintenance.at(646570).ok && std::filesystem::is_directory(game / "extras/deep"));
+  // A try that fails before its publication leaves no folder behind for the next try to keep.
+  std::filesystem::remove_all(game / "extras");
+  no_random = true;
+  applied = apply(7);
+  no_random = false;
+  CHECK(!applied.maintenance.at(646570).ok && !std::filesystem::exists(game / "extras"));
+  std::filesystem::create_directories(game / "extras/deep");
+  CHECK(chmod((game / "extras").c_str(), 0755) == 0 && chmod((game / "extras/deep").c_str(), 0755) == 0);
+  // A link in the deleted folder's place: nothing is made through it, and the check refuses it.
+  const auto outside = fixture.root / "outside";
+  std::filesystem::create_directories(outside);
+  std::filesystem::remove_all(game / "extras");
+  std::filesystem::create_directory_symlink(outside, game / "extras");
+  saved.overrides = {{"program_folder", "."}};
+  applied = apply(8);
+  CHECK(!applied.maintenance.at(646570).ok && !std::filesystem::exists(outside / "deep"));
+  host.Shutdown();
+}
+
+// A link above the game folder: a settings change makes no folder through it.
+void SettingsChangeMakesNoFolderThroughLinkAboveGame() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  const auto games = fixture.root / "data/homebrew/FAKE77031/games";
+  const auto game = games / "646570";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "game.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  fs::create_directories(game / "extras");
+  CHECK(chmod((game / "extras").c_str(), 0755) == 0);
+  GameSettingsRecord saved;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  RuntimePrepareRequest request{646570, "/data/homebrew/FAKE77031/games/646570", "internal", "Game"};
+  request.launches = {{"", "Play", "game.exe", "", ""}};
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(request);
+  WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+  }, 60);
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto apply = [&](std::uint64_t revision) {
+    saved.revision = revision;
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(646570, RuntimeMaintenance::kApplySettings);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  };
+  saved.overrides = {{"program_folder", "extras"}};
+  CHECK(apply(1).maintenance.at(646570).ok);
+  fs::remove_all(game / "extras");
+  const auto elsewhere = fixture.root / "games-elsewhere";
+  fs::rename(games, elsewhere);
+  fs::create_directory_symlink(elsewhere, games);
+  saved.overrides = {{"program_folder", "."}};
+  apply(2);
+  CHECK(!fs::exists(elsewhere / "646570/extras"));
   host.Shutdown();
 }
 
@@ -6408,6 +6509,7 @@ int main(int argc, char** argv) {
   for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);
   UpdatedFilesSetUpTheLaunchAgain();
   PreparesProgramChosenInSettings();
+  SettingsChangeMakesNoFolderThroughLinkAboveGame();
   PreparesSteamProgramChosenAfterDownload();
   SteamEntryWithoutFolderStartsInInstallRoot();
   PreparesUdkGameWithEulaAccepted();

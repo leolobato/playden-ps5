@@ -1782,6 +1782,37 @@ std::string RuntimeHost::TightenWorkingFolder(const std::filesystem::path& root,
   return {};
 }
 
+// The publication being replaced is checked before its settings change, and that needs the folder its
+// program ran in. A folder the player deleted comes back empty so another program can still be chosen.
+// The folders it made, outermost first; empty when none was missing or the game folder itself is gone.
+static std::vector<std::filesystem::path> RestorePublishedFolder(const std::filesystem::path& root,
+                                                                 const std::string& working) {
+  std::vector<std::filesystem::path> made;
+  struct stat info{};
+  if (working.empty() || lstat(root.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return made;
+  for (const auto& part : std::filesystem::path(working))
+    if (part.empty() || part == "." || part == "..") return made;
+  // A link above the game folder is for the publication check to refuse too.
+  std::filesystem::path above;
+  for (const auto& part : root) {
+    above /= part;
+    if (lstat(above.c_str(), &info) == 0 && S_ISLNK(info.st_mode)) return made;
+  }
+  auto folder = root;
+  for (const auto& part : std::filesystem::path(working)) {
+    folder /= part;
+    // Something else there, such as a link, is for the publication check to refuse: nothing is made through it.
+    if (lstat(folder.c_str(), &info) == 0) {
+      if (!S_ISDIR(info.st_mode)) break;
+      continue;
+    }
+    if (errno != ENOENT || mkdir(folder.c_str(), 0755) != 0) break;
+    chmod(folder.c_str(), 0755);  // whatever the umask: the publication check admits 0755
+    made.push_back(folder);
+  }
+  return made;
+}
+
 std::string RuntimeHost::EnsureWritable(const std::string& install_path, const std::string& working) {
   std::vector<std::filesystem::path> folders;
   for (const auto& folder : config_.writable_folders) folders.push_back(HostPath(folder));
@@ -2133,6 +2164,12 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     if (const auto marked = MarkSetupProgram(c, record.install_id, setup_program); !marked.empty()) return marked;
   const auto transaction = config_.uuid();
   if (!transaction) return "No secure random source for the settings update.";
+  std::vector<std::filesystem::path> restored_folders;
+  if (record.moved_from.empty())
+    restored_folders = RestorePublishedFolder(HostPath(record.install_path),
+                                              WorkingFolder(record.launch_working_directory, record.launch_path,
+                                                            record.launch_in_install_root));
+  for (const auto& folder : restored_folders) Log("settings update restored missing folder " + folder.string());
   rt::SettingsPublicationRequest request;
   request.transaction_id = *transaction;
   request.kit_id = c.kit->view.kit_id;
@@ -2145,6 +2182,8 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
       " revision=" + std::to_string(record.settings_revision) + "->" + std::to_string(saved.revision) + " state=" +
       std::to_string(static_cast<int>(requested.state)) + " code=" + requested.code + " message=" + requested.message);
   if (requested.state != rt::PackageActionState::kComplete) {
+    // A later try would not know these were made for it.
+    for (auto folder = restored_folders.rbegin(); folder != restored_folders.rend(); ++folder) rmdir(folder->c_str());
     if (code) *code = requested.code;
     return "The settings could not be applied: " + requested.message;
   }
@@ -2153,6 +2192,15 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   const auto resumed = c.owner->ResumeRequested(*armed, c.request_directory, config_.host_namespace_prefix);
   Log("settings update resume app=" + std::to_string(record.runtime_number) + " state=" +
       std::to_string(static_cast<int>(resumed.state)) + " code=" + resumed.code + " message=" + resumed.message);
+  // Removed again unless the new settings start the program in or below them, and the title's start check
+  // needs them; a folder with anything in it stays.
+  if (resumed.state == rt::PackageActionState::kComplete) {
+    const auto used = (HostPath(record.install_path) /
+                       WorkingFolder(next.launch_working_directory, next.launch_path, next.launch_in_install_root))
+                          .lexically_normal().generic_string() + "/";
+    for (auto folder = restored_folders.rbegin(); folder != restored_folders.rend(); ++folder)
+      if (used.rfind(folder->lexically_normal().generic_string() + "/", 0) != 0) rmdir(folder->c_str());
+  }
   // The title's start check now finds the new folder.
   if (moved && resumed.state == rt::PackageActionState::kComplete)
     if (const auto current = c.records.Find(record.install_id))
