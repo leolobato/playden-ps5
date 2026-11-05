@@ -38,7 +38,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [AMID EVIL](https://store.steampowered.com/app/673130) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#525](https://github.com/leolobato/playden-ps5/issues/525), firmware 12.20) |
 | [Among Us](https://store.steampowered.com/app/945360) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#542](https://github.com/leolobato/playden-ps5/issues/542), firmware 12.20) |
 | [ANIMAL WELL](https://store.steampowered.com/app/813230) | ✅ Works | 0.17 | — · D3D12 · vkd3d-proton · 64-bit | Default settings, DualSense. ([#413](https://github.com/leolobato/playden-ps5/issues/413), firmware 12.20) |
-| [Another Crab's Treasure](https://store.steampowered.com/app/1887840) | ✅ Works | 0.18 | — | Set Graphics Driver to OpenGL. (firmware 13.60) |
+| [Another Crab's Treasure](https://store.steampowered.com/app/1887840) | ✅ Works | 0.18 | — | Set Graphics Driver to OpenGL. ([#658](https://github.com/leolobato/playden-ps5/pull/658), firmware 13.60) |
 | [Arco Demo](https://store.steampowered.com/app/2736970) | ✅ Works | 0.13 | — | Default settings. |
 | [Arctic Eggs](https://store.steampowered.com/app/2763670) | ✅ Works | 0.11 | Godot · 64-bit | Default settings. |
 | [Assetto Corsa Rally](https://store.steampowered.com/app/3917090) | ✅ Works | 0.13 | — | Default settings, DualSense. Changing the in-game anti-aliasing setting makes the game crash at every start until its save is deleted. ([#257](https://github.com/leolobato/playden-ps5/issues/257), firmware 13.00) |
