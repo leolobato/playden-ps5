@@ -3725,6 +3725,9 @@ constexpr char kKeptMarker[] = "playden-kept.json";
 constexpr char kKeptSuffix[] = ".kept";
 // In a bottle once its kept saves were brought back: a kept copy still beside it is then older.
 constexpr char kRestoredMarker[] = ".playden-saves-restored";
+// In a bottle whose kept saves came back but for files that could not be read: the kept copy stays beside it, as it
+// still holds those files, but is not brought back again.
+constexpr char kPartlyRestoredMarker[] = ".playden-saves-partly-restored";
 // Save backups: <games>/<install id>.saves/<Unix time>/users, the newest few kept.
 constexpr char kSaveBackupSuffix[] = ".saves";
 constexpr std::size_t kSaveBackupsKept = 3;
@@ -3872,22 +3875,34 @@ std::optional<KeptBottleView> ReadKeptMarker(const std::filesystem::path& kept, 
 // owner bits, links are skipped (Wine links point outside the bottle).
 // Files with another link are skipped (logged): their content may be another file's (a private
 // one linked into the profile), which the copy would make the profile's own.
+// With `unreadable`, a file or folder that cannot be read is skipped (logged, its path relative to the
+// first `from` added) and the rest is copied; without it, the copy stops there. Writing stops it either way.
 bool CopySavesTree(const std::filesystem::path& from, const std::filesystem::path& to, std::string* error,
-                   const std::function<void(const std::string&)>& log) {
+                   const std::function<void(const std::string&)>& log,
+                   std::vector<std::string>* unreadable = nullptr, const std::string& relative = {}) {
   struct stat info{};
   if (lstat(to.c_str(), &info) != 0) {
     if (mkdir(to.c_str(), 0700) != 0) { *error = "cannot create " + to.filename().string(); return false; }
   } else if (!S_ISDIR(info.st_mode)) {
     *error = to.filename().string() + " is not a folder"; return false;
   }
+  const auto skip = [&](const std::string& path, int code) {
+    log("saves copy skips " + path + ": cannot read (errno " + std::to_string(code) + ")");
+    unreadable->push_back(path);
+  };
   std::error_code iteration;
   for (std::filesystem::directory_iterator it(from, iteration), end; !iteration && it != end; it.increment(iteration)) {
     const auto source = it->path();
     const auto target = to / source.filename();
-    if (lstat(source.c_str(), &info) != 0) continue;
+    const auto name = relative.empty() ? source.filename().string() : relative + "/" + source.filename().string();
+    if (lstat(source.c_str(), &info) != 0) {
+      // A folder that can be listed but not searched: its entries cannot be looked at, so they count as unread.
+      if (unreadable && errno != ENOENT) skip(name, errno);
+      continue;
+    }
     if (S_ISLNK(info.st_mode)) continue;
     if (S_ISDIR(info.st_mode)) {
-      if (!CopySavesTree(source, target, error, log)) return false;
+      if (!CopySavesTree(source, target, error, log, unreadable, name)) return false;
       continue;
     }
     if (!S_ISREG(info.st_mode)) continue;
@@ -3896,6 +3911,10 @@ bool CopySavesTree(const std::filesystem::path& from, const std::filesystem::pat
       continue;
     }
     const int input = open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (input < 0 && unreadable) {
+      skip(name, errno);
+      continue;
+    }
     struct stat opened{};
     if (input >= 0 && (fstat(input, &opened) != 0 || opened.st_ino != info.st_ino || opened.st_dev != info.st_dev ||
                        opened.st_nlink != 1)) {
@@ -3908,10 +3927,12 @@ bool CopySavesTree(const std::filesystem::path& from, const std::filesystem::pat
     const int output = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
                             (info.st_mode & 0700) | 0600);
     bool ok = input >= 0 && output >= 0;
+    int read_error = 0;
     std::vector<char> buffer(64 * 1024);  // heap: console worker stacks are small
     while (ok) {
       const auto count = read(input, buffer.data(), buffer.size());
       if (count < 0 && errno == EINTR) continue;
+      if (count < 0) read_error = errno;
       if (count <= 0) { ok = count == 0; break; }
       for (ssize_t offset = 0; ok && offset < count;) {
         const auto written = write(output, buffer.data() + offset, static_cast<std::size_t>(count - offset));
@@ -3922,11 +3943,20 @@ bool CopySavesTree(const std::filesystem::path& from, const std::filesystem::pat
     ok = ok && fsync(output) == 0;
     if (input >= 0) close(input);
     if (output >= 0) ok = close(output) == 0 && ok;
+    if (!ok && read_error != 0 && unreadable) {
+      unlink(temporary.c_str());
+      skip(name, read_error);
+      continue;
+    }
     if (!ok || rename(temporary.c_str(), target.c_str()) != 0) {
       unlink(temporary.c_str());
       *error = "cannot copy " + source.filename().string();
       return false;
     }
+  }
+  if (iteration && unreadable) {
+    skip(relative.empty() ? from.filename().string() : relative, iteration.value());
+    return true;
   }
   if (iteration) { *error = "cannot list " + from.filename().string(); return false; }
   return true;
@@ -4421,7 +4451,18 @@ std::optional<RuntimeHost::RemovalFailure> RuntimeHost::KeepBottle(
   if (fd >= 0) close(fd);
   if (!written) return RemovalFailure{"bottle-keep", "The game's saves could not be marked as kept."};
   const bool restored = lstat((bottle / kRestoredMarker).c_str(), &info) == 0;
-  if (lstat(kept.c_str(), &info) == 0 && !restored) {
+  const bool partly_restored = lstat((bottle / kPartlyRestoredMarker).c_str(), &info) == 0;
+  if (lstat(kept.c_str(), &info) == 0 && partly_restored) {
+    // The kept copy came back but for files that could not be read: this bottle has the newer saves and becomes the
+    // kept copy; the older one, which still holds those files, is set aside beside it, never deleted.
+    const auto aside = bottle.parent_path() / (install_id + ".set-aside-" + operation_id);
+    Log("remove sets the partly restored kept bottle aside install=" + install_id);
+    if (rename(kept.c_str(), aside.c_str()) != 0)
+      return RemovalFailure{"bottle-keep", "An older copy of the game's saves could not be set aside (error " +
+                                               std::to_string(errno) + ")."};
+    if (rename(bottle.c_str(), kept.c_str()) != 0)
+      return RemovalFailure{"bottle-keep", "The game's saves could not be kept (error " + std::to_string(errno) + ")."};
+  } else if (lstat(kept.c_str(), &info) == 0 && !restored) {
     // The kept copy's saves were never brought back into this bottle (a preparation after a move or
     // reinstall stopped before that): the kept copy holds them and stays. The newer bottle is set
     // aside beside it, never deleted.
@@ -4706,13 +4747,20 @@ std::string RuntimeHost::RestoreKeptSaves(Composition& c, std::uint32_t app) {
   const auto kept = bottle.parent_path() / (record->install_id + kKeptSuffix);
   struct stat info{};
   if (lstat(kept.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return {};
+  // This bottle already has the kept saves (some files of them, for a partial restore): the kept copy is older than
+  // what the game saved since, and is not copied over it.
+  if (lstat((bottle / kRestoredMarker).c_str(), &info) == 0 || lstat((bottle / kPartlyRestoredMarker).c_str(), &info) == 0)
+    return {};
   const auto from = kept / "library/prefixes/game/drive_c/users";
   const auto to = bottle / "library/prefixes/game/drive_c/users";
   std::string reason;
+  // Files that cannot be read (left by FTP with another owner, or a mode that shuts Playden out) are skipped: the
+  // rest comes back, and the kept copy, which still holds them, stays.
+  std::vector<std::string> unreadable;
   if (lstat(from.c_str(), &info) == 0 && S_ISDIR(info.st_mode)) {
     if (lstat(to.parent_path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode))
       return "The game's new bottle has no drive C for its kept saves.";
-    if (!CopySavesTree(from, to, &reason, [this](const std::string& line) { Log(line); })) {
+    if (!CopySavesTree(from, to, &reason, [this](const std::string& line) { Log(line); }, &unreadable)) {
       Log("restore kept saves failed app=" + std::to_string(app) + " " + reason);
       return "The saves kept from the previous install could not be brought back: " + reason;
     }
@@ -4721,10 +4769,21 @@ std::string RuntimeHost::RestoreKeptSaves(Composition& c, std::uint32_t app) {
       SettleBottle(c, *record, "restore");
   }
   {
-    const int fd = open((bottle / kRestoredMarker).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
-    const bool marked = fd >= 0 && fsync(fd) == 0;
+    const auto marker = bottle / (unreadable.empty() ? kRestoredMarker : kPartlyRestoredMarker);
+    std::string skipped;
+    for (const auto& path : unreadable) skipped += path + "\n";
+    const int fd = open(marker.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    const bool marked = fd >= 0 &&
+                        (skipped.empty() || write(fd, skipped.data(), skipped.size()) == static_cast<ssize_t>(skipped.size())) &&
+                        fsync(fd) == 0;
     if (fd >= 0) close(fd);
     if (!marked) return "The saves were brought back, but that could not be recorded.";
+  }
+  if (!unreadable.empty()) {
+    Log("restore kept saves app=" + std::to_string(app) + " skipped=" + std::to_string(unreadable.size()) +
+        " kept_removed=0");
+    PublishKeptBottles(c);
+    return {};
   }
   std::error_code error;
   RemoveTreeNoFollow(kept, error);

@@ -3396,6 +3396,116 @@ void LocalGameKeepsItsBottle() {
   }
 }
 
+// One unreadable file in the kept saves (put there over FTP, #569): Prepare brings back the rest and logs the one
+// skipped. The kept copy stays, as it still holds that file; a later Prepare does not copy it over newer saves, and the
+// next uninstall keeps the newer bottle and sets the older copy aside. Nothing is deleted.
+void RestoresReadableKeptSaves() {
+  if (geteuid() == 0) return;  // root reads a file of mode 000
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.removal_confirm_polls = 3;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  config.unregister_title = [&fixture](const std::string&, const std::string&) {
+    fixture.registered = false; fixture.submitted = false;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  auto log_mutex = std::make_shared<std::mutex>();
+  auto lines = std::make_shared<std::vector<std::string>>();
+  config.log = [log_mutex, lines](const std::string& line) {
+    std::lock_guard<std::mutex> lock(*log_mutex);
+    lines->push_back(line);
+  };
+  const auto logged = [log_mutex, lines](const std::string& part) {
+    std::lock_guard<std::mutex> lock(*log_mutex);
+    return std::any_of(lines->begin(), lines->end(), [&](const std::string& line) { return line.find(part) != std::string::npos; });
+  };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  const auto games = fixture.root / "data/playden/games";
+  const auto bottle = games / "steam-220";
+  const auto kept = games / "steam-220.kept";
+  const auto users = fs::path("library/prefixes/game/drive_c/users");
+  const auto folder = users / "steamuser/Documents/Game/savegames";
+  const auto prepare = [](RuntimeHost& host) {
+    const auto before = host.Snapshot().prepares_handled;
+    host.Prepare(Hl2());
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return !s.preparing_app && s.prepares_handled > before; }, 60);
+  };
+  const auto remove = [](RuntimeHost& host) {
+    const auto before = host.Snapshot().removals_handled;
+    host.Remove(220, false);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.removals_handled > before; }, 30);
+  };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  CHECK(!prepare(host).refusals.count(220));
+  host.SetTitleNames({{220, "Half-Life 2"}});
+  for (const char* name : {"SGTA400", "SGTA401", "SGTA402"}) Write(bottle / folder / name, std::string("save ") + name, 0600);
+  auto removed = remove(host);
+  CHECK(!removed.removal_failures.count(220) && removed.installs.empty() && fs::is_directory(kept));
+  CHECK(chmod((kept / folder / "SGTA401").c_str(), 0) == 0);
+  // A folder that can be listed but not searched: its files cannot be looked at either.
+  const auto profiles = users / "steamuser/Documents/Game/Profiles";
+  Write(kept / profiles / "profile.dat", "profile", 0600);
+  CHECK(chmod((kept / profiles).c_str(), 0444) == 0);
+
+  // Prepared again: the readable saves come back, the unreadable one is named in the log, Prepare succeeds.
+  auto ready = prepare(host);
+  if (ready.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(220).c_str());
+  CHECK(!ready.refusals.count(220) && ready.installs.size() == 1 && ready.installs[0].state == PreparationState::kReady);
+  CHECK(Read(bottle / folder / "SGTA400") == "save SGTA400" && Read(bottle / folder / "SGTA402") == "save SGTA402");
+  CHECK(!fs::exists(bottle / folder / "SGTA401"));
+  CHECK(logged("saves copy skips steamuser/Documents/Game/savegames/SGTA401: cannot read (errno " +
+               std::to_string(EACCES) + ")"));
+  CHECK(logged("saves copy skips steamuser/Documents/Game/Profiles/profile.dat: cannot read (errno " +
+               std::to_string(EACCES) + ")"));
+  CHECK(logged("restore kept saves app=220 skipped=2 kept_removed=0"));
+  CHECK(!fs::exists(bottle / profiles / "profile.dat"));
+  CHECK(fs::is_directory(kept) && Read(kept / folder / "SGTA400") == "save SGTA400");
+
+  // The game is played, then updated: Update's Prepare does not bring the older saves back over the newer ones.
+  Write(bottle / folder / "SGTA400", "newer save", 0600);
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "updated-game", 0644);
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220" / playden::installs::kFilesChangedName, "v1\n", 0644);
+  host.RecheckInstalls();
+  WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && s.installs[0].files_changed; });
+  ready = prepare(host);
+  if (ready.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(220).c_str());
+  CHECK(!ready.refusals.count(220));
+  CHECK(Read(bottle / folder / "SGTA400") == "newer save");
+
+  // Uninstalled again keeping saves: the newer bottle becomes the kept copy; the older one, with the file that
+  // could not be read, is set aside.
+  CHECK(chmod((kept / folder / "SGTA401").c_str(), 0600) == 0);
+  CHECK(chmod((kept / profiles).c_str(), 0700) == 0);
+  removed = remove(host);
+  CHECK(!removed.removal_failures.count(220) && removed.installs.empty());
+  CHECK(Read(kept / folder / "SGTA400") == "newer save" && !fs::exists(bottle));
+  bool aside = false;
+  for (const auto& entry : fs::directory_iterator(games))
+    aside |= entry.path().filename().string().rfind("steam-220.set-aside-", 0) == 0 &&
+             Read(entry.path() / folder / "SGTA401") == "save SGTA401" &&
+             Read(entry.path() / profiles / "profile.dat") == "profile";
+  CHECK(aside);
+  host.Shutdown();
+}
+
 void RemovesTitleKeepingSaves() {
   Fixture fixture;
   auto config = fixture.Config();
@@ -6997,6 +7107,7 @@ int main(int argc, char** argv) {
   UpdateWithoutSavedSettingsKeepsThePublication();
   StaleTitleKeeps120HzChoicesForUpdate();
   RemovesTitleKeepingSaves();
+  RestoresReadableKeptSaves();
   PreparesGameInstalledAgainElsewhere();
   SharedProfileKitOpensSaves();
   ExistingBottleOpensWithSharedKit();
