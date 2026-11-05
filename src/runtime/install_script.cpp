@@ -157,7 +157,13 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
           value = RegistryString(value);
         }
         const bool unnamed = Lower(name) == "(default)";
-        for (const auto& name_key : keys) target.push_back({name_key, unnamed ? std::string() : name, value, unnamed});
+        for (const auto& name_key : keys) {
+          // A language's value replaces the plain one of the same name: a registry key holds one of each.
+          target.erase(std::remove_if(target.begin(), target.end(), [&](const RegistryValue& known) {
+            return Lower(known.key) == Lower(name_key) && Lower(known.name) == Lower(unnamed ? std::string() : name);
+          }), target.end());
+          target.push_back({name_key, unnamed ? std::string() : name, value, unnamed});
+        }
       };
       // A subkey holds the values for one language ("dword" { "english" { "Language" "1" } }).
       const steam::VdfNode* localized = nullptr;

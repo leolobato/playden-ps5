@@ -353,6 +353,15 @@ void TestScripts() {
   CHECK(FindValue(russian, "Software\\Studio", "Name")->data == "\"ru\"");
   CHECK(FindValue(russian, "Software\\Studio", "Language")->data == "dword:00000001");  // no Russian value: English
   CHECK(FindValue(parsed_for("french"), "Software\\Studio", "Language")->data == "dword:00000002");
+  // A language's value replaces a plain one of the same name, any case: a registry key holds one of each.
+  const std::string overlapping =
+      "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\Studio\" { \"string\" { "
+      "\"Language\" \"English\" \"russian\" { \"LANGUAGE\" \"Russian\" } } } } }";
+  InstallScriptValues overlaps;
+  CHECK(ParseInstallScript(overlapping, "Z:\\games\\1", "russian", &overlaps, &reason));
+  CHECK(overlaps.user.size() == 1 && overlaps.user[0].data == "\"Russian\"");
+  std::string applied_registry = "WINE REGISTRY Version 2\n";
+  CHECK(ApplyRegistryValues(&applied_registry, overlaps.user, 1760000000, &reason));
   RedistEntry rooted{"X", "msiexec", "/i Z:\\data\\games\\696180\\\\tmp\\x.msi", ""};
   CHECK(ClassifyRedist(rooted, "Z:\\data\\games\\696180", &package) == RedistAction::kNotRun);
   RedistEntry dotted{"X", "msiexec", "/i Z:\\data\\games\\696180\\.\\x.msi", ""};
