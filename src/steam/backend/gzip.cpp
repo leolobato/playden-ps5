@@ -113,7 +113,7 @@ bool Gunzip(const std::uint8_t* data, std::size_t size, std::size_t expected_siz
 
 bool InflateRaw(const std::uint8_t* data, std::size_t size, std::size_t expected_size,
                 std::vector<std::uint8_t>* out) {
-  if (!data || !out || expected_size == 0 || expected_size > kMaxGunzipBytes * 16 ||
+  if (!data || !out || expected_size == 0 || expected_size > kMaxInflateRawBytes ||
       size > static_cast<std::size_t>(INT_MAX) || expected_size > static_cast<std::size_t>(INT_MAX))
     return false;
   std::vector<std::uint8_t> result(expected_size);

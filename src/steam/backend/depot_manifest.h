@@ -12,7 +12,11 @@
 // reference CDN.swift / ResumableDepotDownload.swift.
 namespace playden::steam {
 
-inline constexpr std::size_t kMaxManifestBytes = 64 * 1024 * 1024;
+// An inflated depot manifest. Manifests compress little (chunk hashes, encrypted file names), so a zip at the
+// download cap (CdnClient::kMaxManifestDownloadBytes, 64 MiB) can inflate to about twice its size.
+inline constexpr std::size_t kMaxManifestBytes = 128 * 1024 * 1024;
+// What UnzipFirstEntry unpacks unless the caller says otherwise (a Cloud save).
+inline constexpr std::size_t kMaxUnzipBytes = 64 * 1024 * 1024;
 inline constexpr std::size_t kMaxManifestFiles = 500'000;
 inline constexpr std::size_t kMaxManifestChunks = 4'000'000;
 
@@ -76,8 +80,8 @@ bool ValidateDepotManifest(const DepotManifest& manifest, std::string* reason);
 using InflateRawFn = bool (*)(const std::uint8_t* data, std::size_t size, std::size_t expected,
                               std::vector<std::uint8_t>* out);
 // Extracts the first zip entry (method 0 stored, or 8 deflate via `inflate`). Result is capped at
-// kMaxManifestBytes.
+// max_bytes (kMaxManifestBytes for a depot manifest).
 bool UnzipFirstEntry(const std::vector<std::uint8_t>& zip, InflateRawFn inflate,
-                     std::vector<std::uint8_t>* out);
+                     std::vector<std::uint8_t>* out, std::size_t max_bytes = kMaxUnzipBytes);
 
 }  // namespace playden::steam

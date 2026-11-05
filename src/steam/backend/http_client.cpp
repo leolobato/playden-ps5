@@ -141,7 +141,7 @@ bool ValidUrl(const std::string& url, bool allow_plain_http) {
 bool ValidRequest(const HttpRequest& request) {
   if (!ValidUrl(request.url, request.allow_plain_http) || request.timeout_ms == 0 ||
       request.timeout_ms > kMaxHttpTimeoutMs || request.max_response_bytes == 0 ||
-      request.max_response_bytes > kMaxHttpResponseBytes ||
+      request.max_response_bytes > (request.depot_manifest ? kMaxHttpManifestResponseBytes : kMaxHttpResponseBytes) ||
       request.body.size() > kMaxHttpResponseBytes ||
       request.headers.size() > kMaxHttpResponseHeaderCount)
     return false;

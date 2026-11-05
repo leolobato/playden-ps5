@@ -600,6 +600,8 @@ DepotInstaller::DepotInstaller(CmClient& cm, CdnClient& cdn) {
     manifest_problem->clear();  // a manifest problem from an earlier run must not hide why this list failed
     return cdn.Servers(cell, cancel, out);
   };
+  static_assert(CdnClient::kMaxManifestDownloadBytes <= kMaxManifestBytes && kMaxManifestBytes <= kMaxInflateRawBytes,
+                "a manifest the CDN client accepts must unzip");
   hooks_.manifest = [&cdn, manifest_problem](const ContentServer& server, const DepotGrant& grant,
                                              const std::atomic<bool>& cancel, DepotManifest* out) {
     manifest_problem->clear();
@@ -608,13 +610,20 @@ DepotInstaller::DepotInstaller(CmClient& cm, CdnClient& cdn) {
                                       cancel, &zip);
     if (fetched == CdnError::kCanceled) return InstallError::kCanceled;
     if (fetched != CdnError::kNone) return InstallError::kNetwork;
+    const auto zip_bytes = zip.size();
     const auto corrupt = [&](std::string what) {
-      *manifest_problem = "depot=" + std::to_string(grant.depot_id) + " bytes=" + std::to_string(zip.size()) + " " + what;
+      *manifest_problem = "depot=" + std::to_string(grant.depot_id) + " bytes=" + std::to_string(zip_bytes) + " " + what;
       return InstallError::kCorrupt;
     };
+    // A large manifest is tens of MiB as a zip and inflated: each is freed once used.
     std::vector<std::uint8_t> raw;
-    if (!UnzipFirstEntry(zip, &InflateRaw, &raw)) return corrupt("unzip");
-    if (!ParseDepotManifest(raw, out)) return corrupt("parse raw=" + std::to_string(raw.size()));
+    const bool unzipped = UnzipFirstEntry(zip, &InflateRaw, &raw, kMaxManifestBytes);
+    std::vector<std::uint8_t>().swap(zip);
+    if (!unzipped) return corrupt("unzip");
+    const bool parsed = ParseDepotManifest(raw, out);
+    const auto raw_bytes = raw.size();
+    std::vector<std::uint8_t>().swap(raw);
+    if (!parsed) return corrupt("parse raw=" + std::to_string(raw_bytes));
     if (out->filenames_encrypted && !DecryptManifestFilenames(out, grant.key, &SymmetricDecrypt))
       return corrupt("filenames");
     if (out->depot_id != grant.depot_id || out->gid != grant.manifest_gid)

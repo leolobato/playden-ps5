@@ -7,6 +7,8 @@
 namespace playden::steam {
 
 inline constexpr std::size_t kMaxGunzipBytes = 4 * 1024 * 1024;
+// InflateRaw's own bound: an inflated depot manifest (kMaxManifestBytes); callers cap below it.
+inline constexpr std::size_t kMaxInflateRawBytes = 128 * 1024 * 1024;
 
 // Decodes one RFC 1952 gzip member whose uncompressed size is declared in advance
 // (CMsgMulti.size_unzipped). Returns false on any malformed, truncated or oversized input.

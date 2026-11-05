@@ -174,6 +174,36 @@ void Unzip() {
   Bytes bad = zip;
   bad[0] = 'X';  // local header signature
   CHECK(!UnzipFirstEntry(bad, InflateStub, &out));
+  // A large game's manifest inflates past 64 MiB (#451): accepted up to kMaxManifestBytes when the caller
+  // asks for it; other zips (Cloud saves) keep the 64 MiB bound.
+  {
+    const auto stored = [](std::size_t size) {
+      Bytes z(30 + size + 46 + 22, 0);
+      const auto put16 = [&](std::size_t at, std::uint32_t v) { z[at] = v & 0xff; z[at + 1] = (v >> 8) & 0xff; };
+      const auto put32 = [&](std::size_t at, std::uint32_t v) { put16(at, v & 0xffff); put16(at + 2, v >> 16); };
+      put32(0, 0x04034B50u);
+      put32(18, static_cast<std::uint32_t>(size));
+      put32(22, static_cast<std::uint32_t>(size));
+      const std::size_t cd = 30 + size;
+      put32(cd, 0x02014B50u);
+      put32(cd + 20, static_cast<std::uint32_t>(size));
+      put32(cd + 24, static_cast<std::uint32_t>(size));
+      const std::size_t eocd = cd + 46;
+      put32(eocd, 0x06054B50u);
+      put16(eocd + 8, 1);
+      put16(eocd + 10, 1);
+      put32(eocd + 12, 46);
+      put32(eocd + 16, static_cast<std::uint32_t>(cd));
+      return z;
+    };
+    Bytes big = stored(kMaxUnzipBytes + 1);
+    CHECK(!UnzipFirstEntry(big, InflateStub, &out));
+    CHECK(UnzipFirstEntry(big, InflateStub, &out, kMaxManifestBytes) && out.size() == kMaxUnzipBytes + 1);
+    out.clear();
+    out.shrink_to_fit();
+    big = stored(kMaxManifestBytes + 1);
+    CHECK(!UnzipFirstEntry(big, InflateStub, &out, kMaxManifestBytes));
+  }
 }
 
 void RejectBadInput() {

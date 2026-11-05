@@ -419,8 +419,8 @@ bool ValidateDepotManifest(const DepotManifest& manifest, std::string* reason) {
 }
 
 bool UnzipFirstEntry(const std::vector<std::uint8_t>& zip, InflateRawFn inflate,
-                     std::vector<std::uint8_t>* out) {
-  if (!out || zip.size() < 22 || zip.size() > kMaxManifestBytes + (1u << 20)) return false;
+                     std::vector<std::uint8_t>* out, std::size_t max_bytes) {
+  if (!out || zip.size() < 22 || zip.size() > max_bytes + (1u << 20)) return false;
   const std::uint8_t* d = zip.data();
   const std::size_t n = zip.size();
   // End of central directory (PK\x05\x06), scanning back over a trailing comment.
@@ -443,7 +443,7 @@ bool UnzipFirstEntry(const std::vector<std::uint8_t>& zip, InflateRawFn inflate,
   const std::size_t local = ReadLE32(d + cd + 42);
   if (flags & 1) return false;  // encrypted entry
   if (csize == 0xFFFFFFFFu || usize == 0xFFFFFFFFu || local == 0xFFFFFFFFu) return false;  // zip64
-  if (usize > kMaxManifestBytes) return false;
+  if (usize > max_bytes) return false;
   if (local > n || n - local < 30 || ReadLE32(d + local) != 0x04034B50u) return false;
   const std::size_t start = local + 30 + ReadLE16(d + local + 26) + ReadLE16(d + local + 28);
   if (start > n || csize > n - start) return false;

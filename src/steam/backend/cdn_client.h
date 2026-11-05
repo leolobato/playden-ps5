@@ -47,12 +47,13 @@ class CdnClient {
   CdnError Servers(std::uint32_t cell_id, const std::atomic<bool>& cancel, std::vector<ContentServer>* out);
   CdnError Manifest(const ContentServer& server, std::uint32_t depot_id, std::uint64_t gid,
                     std::uint64_t request_code, const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out,
-                    std::size_t max_bytes = kMaxHttpResponseBytes);
+                    std::size_t max_bytes = kMaxManifestDownloadBytes);
   CdnError Chunk(const ContentServer& server, std::uint32_t depot_id, const std::string& sha_hex,
                  std::size_t max_bytes, const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out);
 
-  // Bounded by the HTTP client's response cap.
-  static constexpr std::size_t kMaxManifestDownloadBytes = kMaxHttpResponseBytes;
+  // A manifest has its own cap, above the HTTP client's general one: a large game's manifest is more than
+  // 16 MiB. Its zip stays within what UnzipFirstEntry accepts (depot_manifest.h).
+  static constexpr std::size_t kMaxManifestDownloadBytes = kMaxHttpManifestResponseBytes;
   static constexpr std::size_t kMaxServerListDownloadBytes = 512 * 1024;
   // The last failure as "http=<status>" or "transport=<category>", for sanitized logs.
   const CdnStats& stats() const { return stats_; }
@@ -61,7 +62,8 @@ class CdnClient {
 
  private:
   CdnError Get(const std::string& url, std::size_t max_bytes, std::uint32_t timeout_ms,
-               const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out, bool plain_http = false);
+               const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out, bool plain_http = false,
+               bool depot_manifest = false);
   std::string ca_bundle_;
   Perform perform_;
   std::unique_ptr<HttpClient> http_;

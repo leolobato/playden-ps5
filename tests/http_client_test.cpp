@@ -217,6 +217,19 @@ int main(int argc, char** argv) {
   response = client.Perform(invalid_bounds, cancel);
   Check(response.error == HttpError::kInvalidRequest, "timeout should have a hard upper bound");
 
+  // Only a depot manifest may ask for more than the general cap (#451), and only up to its own.
+  HttpRequest large_cap = get;
+  large_cap.max_response_bytes = playden::steam::kMaxHttpResponseBytes + 1;
+  response = client.Perform(large_cap, cancel);
+  Check(response.error == HttpError::kInvalidRequest, "a response cap above 16 MiB needs the manifest opt-in");
+  large_cap.depot_manifest = true;
+  large_cap.max_response_bytes = playden::steam::kMaxHttpManifestResponseBytes;
+  response = client.Perform(large_cap, cancel);
+  Check(response.ok() && response.status_code == 200, "a depot manifest may be up to 64 MiB");
+  large_cap.max_response_bytes = playden::steam::kMaxHttpManifestResponseBytes + 1;
+  response = client.Perform(large_cap, cancel);
+  Check(response.error == HttpError::kInvalidRequest, "a depot manifest's cap has an upper bound");
+
   HttpRequest invalid_get_body = get;
   invalid_get_body.body = {'x'};
   response = client.Perform(invalid_get_body, cancel);

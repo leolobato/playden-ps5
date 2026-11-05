@@ -34,6 +34,8 @@ const char* HttpErrorName(HttpError error);
 
 inline constexpr std::uint32_t kMaxHttpTimeoutMs = 120'000;
 inline constexpr std::size_t kMaxHttpResponseBytes = 16 * 1024 * 1024;
+// Steam depot manifests only (HttpRequest::depot_manifest): a large game's manifest is more than 16 MiB.
+inline constexpr std::size_t kMaxHttpManifestResponseBytes = 64 * 1024 * 1024;
 inline constexpr std::size_t kMaxHttpResponseHeaderBytes = 16 * 1024;
 inline constexpr std::size_t kMaxHttpResponseHeaderCount = 64;
 
@@ -46,6 +48,8 @@ struct HttpRequest {
   std::size_t max_response_bytes = 1024 * 1024;
   // Also accept an http:// URL. Only for content checked by other means, such as Steam CDN chunks.
   bool allow_plain_http = false;
+  // A Steam depot manifest: max_response_bytes may be up to kMaxHttpManifestResponseBytes, not kMaxHttpResponseBytes.
+  bool depot_manifest = false;
 };
 
 struct HttpTiming {

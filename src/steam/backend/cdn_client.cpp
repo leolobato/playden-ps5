@@ -74,10 +74,12 @@ CdnClient::CdnClient(Perform perform) : perform_(std::move(perform)) {}
 CdnClient::~CdnClient() = default;
 
 CdnError CdnClient::Get(const std::string& url, std::size_t max_bytes, std::uint32_t timeout_ms,
-                        const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out, bool plain_http) {
+                        const std::atomic<bool>& cancel, std::vector<std::uint8_t>* out, bool plain_http,
+                        bool depot_manifest) {
   HttpRequest request;
   request.url = url;
   request.allow_plain_http = plain_http;
+  request.depot_manifest = depot_manifest;
   request.headers = {{"User-Agent", "Valve/Steam HTTP Client 1.0"}};
   request.timeout_ms = timeout_ms;
   request.max_response_bytes = max_bytes;
@@ -166,7 +168,7 @@ CdnError CdnClient::Manifest(const ContentServer& server, std::uint32_t depot_id
   if (!ValidCdnHost(server.vhost) || !max_bytes) return CdnError::kProtocol;
   return Get(Scheme(server) + server.vhost + "/depot/" + std::to_string(depot_id) + "/manifest/" +
                  std::to_string(gid) + "/5/" + std::to_string(request_code),
-             std::min(max_bytes, kMaxManifestDownloadBytes), 60'000, cancel, out, !server.https);
+             std::min(max_bytes, kMaxManifestDownloadBytes), kMaxHttpTimeoutMs, cancel, out, !server.https, true);
 }
 
 CdnError CdnClient::Chunk(const ContentServer& server, std::uint32_t depot_id, const std::string& sha_hex,

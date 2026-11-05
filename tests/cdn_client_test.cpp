@@ -179,6 +179,44 @@ void PlainHttpServerUrls() {
   assert(!requests.back().allow_plain_http);
 }
 
+// A depot manifest above the general 16 MiB response cap still downloads (Solo Leveling: ARISE OVERDRIVE, #451); one
+// above the manifest cap does not, and chunks keep the cap their caller gives.
+void LargeManifestsDownload() {
+  std::vector<HttpRequest> requests;
+  std::size_t size = 0;
+  CdnClient client([&](const HttpRequest& request, const std::atomic<bool>&) {
+    requests.push_back(request);
+    HttpResponse response;
+    if (size > request.max_response_bytes) {  // as HttpClient's body limit does
+      response.error = HttpError::kResponseTooLarge;
+      return response;
+    }
+    response.status_code = 200;
+    response.body.assign(size, 0x5a);
+    return response;
+  });
+  std::atomic<bool> cancel{false};
+  const ContentServer server{"h.example.invalid", "v.example.invalid", 1};
+  std::vector<std::uint8_t> out;
+  size = 16 * 1024 * 1024 + 1;
+  assert(client.Manifest(server, 2373991, 11, 99, cancel, &out) == CdnError::kNone && out.size() == size);
+  size = 64 * 1024 * 1024;
+  assert(client.Manifest(server, 2373991, 11, 99, cancel, &out) == CdnError::kNone && out.size() == size);
+  assert(requests.back().max_response_bytes == 64 * 1024 * 1024);
+  out.clear();
+  out.shrink_to_fit();
+  size = 64 * 1024 * 1024 + 1;
+  assert(client.Manifest(server, 2373991, 11, 99, cancel, &out) == CdnError::kNetwork && out.empty());
+  assert(client.last_failure() == "transport=response_too_large");
+  // A caller's smaller budget still holds.
+  size = 1024;
+  assert(client.Manifest(server, 2373991, 11, 99, cancel, &out, 1023) == CdnError::kNetwork);
+  assert(requests.back().max_response_bytes == 1023);
+  const std::string sha(40, 'c');
+  assert(client.Chunk(server, 2373991, sha, 4096, cancel, &out) == CdnError::kNone);
+  assert(requests.back().max_response_bytes == 4096);
+}
+
 }  // namespace
 
 int main() {
@@ -191,4 +229,5 @@ int main() {
   EmptyServerListSaysWhy();
   ManifestAndChunkUrlsAndErrors();
   PlainHttpServerUrls();
+  LargeManifestsDownload();
 }

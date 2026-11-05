@@ -1917,8 +1917,33 @@ void TestSizeLimits() {
 
 }  // namespace
 
+// A large game's depot manifest inflates past 64 MiB (#451); InflateRaw takes it, up to kMaxInflateRawBytes.
+void TestLargeRawInflate() {
+  const auto stored = [](std::size_t size) {  // raw deflate in stored blocks of at most 65535 bytes
+    std::vector<std::uint8_t> out;
+    out.reserve(size + (size / 65535 + 1) * 5);
+    for (std::size_t left = size; left > 0;) {
+      const auto block = static_cast<std::uint16_t>(left < 65535 ? left : 65535);
+      left -= block;
+      out.push_back(left == 0 ? 1 : 0);
+      out.push_back(block & 0xff);
+      out.push_back(block >> 8);
+      out.push_back(static_cast<std::uint8_t>(~block & 0xff));
+      out.push_back(static_cast<std::uint8_t>((~block >> 8) & 0xff));
+      out.insert(out.end(), block, 0x5a);
+    }
+    return out;
+  };
+  constexpr std::size_t kLarge = 64 * 1024 * 1024 + 1;
+  std::vector<std::uint8_t> raw = stored(kLarge);
+  std::vector<std::uint8_t> out;
+  assert(playden::steam::InflateRaw(raw.data(), raw.size(), kLarge, &out) && out.size() == kLarge);
+  assert(!playden::steam::InflateRaw(raw.data(), raw.size(), playden::steam::kMaxInflateRawBytes + 1, &out));
+}
+
 int main() {
   TestRoundTrips();
+  TestLargeRawInflate();
   TestTruncation();
   TestCorruption();
   TestSizeLimits();

@@ -108,7 +108,8 @@ CdnDownloadServerSource::PayloadResult CdnDownloadServerSource::PrepareApp(
       std::vector<std::uint8_t> zip, raw;
       DepotManifest manifest;
       if (!metadata_budget_) return PayloadResult::kFailed;
-      const auto cap = static_cast<std::size_t>(std::min<std::uint64_t>(metadata_budget_, CdnClient::kMaxManifestDownloadBytes));
+      // The speed test keeps the general response cap: it needs a few chunk hashes, not a large game's manifest.
+      const auto cap = static_cast<std::size_t>(std::min<std::uint64_t>(metadata_budget_, kMaxHttpResponseBytes));
       const auto before = cdn_.stats().bytes;
       const auto outcome = cdn_.Manifest(servers_[attempt], grant.depot_id, grant.manifest_gid,
           grant.manifest_request_code, cancel, &zip, cap);
@@ -116,7 +117,7 @@ CdnDownloadServerSource::PayloadResult CdnDownloadServerSource::PrepareApp(
       // fallback depots draw from this ledger, and the next request is capped before it starts.
       metadata_budget_ -= std::min(metadata_budget_, cdn_.stats().bytes - before);
       if (outcome != CdnError::kNone ||
-          !UnzipFirstEntry(zip, &InflateRaw, &raw) || !ParseDepotManifest(raw, &manifest) ||
+          !UnzipFirstEntry(zip, &InflateRaw, &raw, kMaxManifestBytes) || !ParseDepotManifest(raw, &manifest) ||
           manifest.depot_id != grant.depot_id || manifest.gid != grant.manifest_gid) continue;
       // Names and content remain encrypted. Only bounded chunk hashes and compressed sizes are used.
       for (const auto& file : manifest.files) {
