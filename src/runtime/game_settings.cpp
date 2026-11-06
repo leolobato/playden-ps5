@@ -2733,21 +2733,53 @@ bool ApplyGameSettings(const GameRecipe& recipe, const EffectiveSettings& settin
   return true;
 }
 
+PrivateSettingsRead ReadPrivateSettingsFile(const std::string& path, std::string* text) {
+  text->clear();
+  std::string name;
+  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
+  if (!directory) return errno == ENOENT ? PrivateSettingsRead::kMissing : PrivateSettingsRead::kError;
+  switch (ReadRegularAt(*directory, name.c_str(), storage_json::Limits{}.max_bytes, text, nullptr, true)) {
+    case RelativeRead::kMissing: return PrivateSettingsRead::kMissing;
+    case RelativeRead::kPresent: return PrivateSettingsRead::kPresent;
+    case RelativeRead::kError: break;
+  }
+  return PrivateSettingsRead::kError;
+}
+
+bool WritePrivateSettingsFile(const std::string& path, const std::string& text) {
+  std::string name;
+  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
+  if (!directory) return false;
+  struct stat status {};
+  const bool inspected = directory->InspectChild(name, &status);
+  if (inspected && (!S_ISREG(status.st_mode) || status.st_uid != ::geteuid() ||
+                    ((status.st_mode & 07777) != 0600 && (status.st_mode & 07777) != 0644)))
+    return false;
+  if (!inspected && errno != ENOENT) return false;
+  return WriteAtomicAt(*directory, name.c_str(), text, 0600, false, true);
+}
+
+bool SetPrivateSettingsFileAside(const std::string& path, const std::string& aside_name) {
+  std::string name;
+  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
+  if (!directory || aside_name.empty() || aside_name == name) return false;
+  struct stat status {};
+  if (!directory->InspectChild(name, &status) || !S_ISREG(status.st_mode) || status.st_uid != ::geteuid()) return false;
+  if (directory->InspectChild(aside_name, &status)) {
+    errno = EEXIST;
+    return false;
+  }
+  if (errno != ENOENT) return false;
+  return directory->RenameChild(name, *directory, aside_name, false) && directory->Sync();
+}
+
 bool LoadGameSettingsFile(const std::string& path, std::map<GameId, GameSettingsRecord>* records,
                           std::string* reason) {
   records->clear();
   std::string text;
-  std::string name;
-  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
-  if (!directory) {
-    if (errno == ENOENT) return true;
-    if (reason) *reason = "cannot read game settings";
-    return false;
-  }
-  const auto read = ReadRegularAt(*directory, name.c_str(), storage_json::Limits{}.max_bytes,
-                                  &text, nullptr, true);
-  if (read == RelativeRead::kMissing) return true;
-  if (read == RelativeRead::kError) {
+  const auto read = ReadPrivateSettingsFile(path, &text);
+  if (read == PrivateSettingsRead::kMissing) return true;
+  if (read == PrivateSettingsRead::kError) {
     if (reason) *reason = "cannot read game settings";
     return false;
   }
@@ -2760,26 +2792,7 @@ bool LoadGameSettingsFile(const std::string& path, std::map<GameId, GameSettings
 
 bool SaveGameSettingsFile(const std::string& path, const std::map<GameId, GameSettingsRecord>& records,
                           std::string* reason) {
-  const auto text = SerializeSettingsFile(records);
-  std::string name;
-  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
-  if (!directory) {
-    if (reason) *reason = "cannot write game settings";
-    return false;
-  }
-  struct stat status {};
-  const bool inspected = directory->InspectChild(name, &status);
-  if (inspected && (!S_ISREG(status.st_mode) || status.st_uid != ::geteuid() ||
-                    ((status.st_mode & 07777) != 0600 && (status.st_mode & 07777) != 0644))) {
-    if (reason) *reason = "cannot write game settings";
-    return false;
-  }
-  if (!inspected && errno != ENOENT) {
-    if (reason) *reason = "cannot write game settings";
-    return false;
-  }
-  const bool written = WriteAtomicAt(*directory, name.c_str(), text, 0600, false, true);
-  if (!written) {
+  if (!WritePrivateSettingsFile(path, SerializeSettingsFile(records))) {
     if (reason) *reason = "cannot write game settings";
     return false;
   }

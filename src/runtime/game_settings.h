@@ -788,6 +788,16 @@ bool BuildSettingsLaunchPlan(const SettingsLaunchInput& input, SettingsLaunchPla
 bool ApplySettingsFiles(const SettingsLaunchPlan& plan, const std::string& install_root, const std::string& prefix_dir,
                         std::int64_t unix_time, std::string* reason);
 
+// A file in the private settings folder (game-settings-private/, settings_storage.h): a regular file owned by the
+// effective user, 0600 or 0644, in a folder opened with DirectoryPolicy::kPrivate. A missing folder or file is
+// kMissing; anything else that can't be read safely (another owner or mode, a symlink, over 1 MiB) is kError.
+enum class PrivateSettingsRead { kMissing, kPresent, kError };
+PrivateSettingsRead ReadPrivateSettingsFile(const std::string& path, std::string* text);
+// Replaces it atomically (a synced temporary file renamed over it), mode 0600. Refuses one it could not read back.
+bool WritePrivateSettingsFile(const std::string& path, const std::string& text);
+// Renames it to aside_name in the same folder; never replaces a file already named so (false, EEXIST).
+bool SetPrivateSettingsFileAside(const std::string& path, const std::string& aside_name);
+
 // Per-game records in one small JSON file ({"version":1,"games":{"<key>":record}}), keyed by
 // ToKey: a Steam game's app ID, "local-<uuid>" for an imported game. A missing file loads as no
 // records. Saving replaces the file atomically.
