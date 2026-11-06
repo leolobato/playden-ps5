@@ -14,6 +14,14 @@ ShareDecision DecideShare(const ShareInputs& inputs) {
     decision.send_submission_id = saved;
     return decision;
   }
+  if (inputs.based_on_other_game) {
+    // Another game's recipe: Suggest changes is only for a recipe of the same game, so this is a recipe for this game
+    // that credits it, changed or not; this game's own saved share is updated instead.
+    decision.kind = saved ? ShareKind::kUpdateOwn : ShareKind::kNewRecipe;
+    decision.send_based_on = true;
+    decision.send_submission_id = saved;
+    return decision;
+  }
   if (saved && !inputs.saved_recipe_id.empty() && inputs.saved_recipe_id == inputs.based_on->recipe_id) {
     // This console's own recipe (in review or published): an update, whatever changed.
     decision.kind = ShareKind::kUpdateOwn;

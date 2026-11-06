@@ -7739,13 +7739,14 @@ void LinkedRecipeAppliesUnderItsAlias() {
   const playden::GameRef long_game{"imported", std::string(48, 'a')};
   const playden::GameRef gog_game{"gog", "1207658924"};
   const playden::GameRef unrelated{"imported", "another-game"};
-  const auto recipe_for = [](const playden::GameRef& ref, const std::string& slug, const std::string& program) {
+  const auto recipe_for = [](const playden::GameRef& ref, const std::string& slug, const std::string& program,
+                              const std::string& architecture = "pe64") {
     CommunityRecipe out;
     out.recipe.id = CommunityRecipeIdFor(ref, slug);
     out.recipe.version = 1;
     out.recipe.name = "Linked";
     out.recipe.launch_entries = {{"game", "Fast", program, ""}};
-    out.recipe.architecture = "pe64";
+    out.recipe.architecture = architecture;
     out.recipe.graphics = "dxvk";
     out.game = ref;
     out.game_name = "Linked";
@@ -7763,6 +7764,8 @@ void LinkedRecipeAppliesUnderItsAlias() {
   const auto rev_long = cache.Add(recipe_for(long_game, std::string(32, 'z'), "Bin/Fast.exe"));
   const auto rev_gog = cache.Add(recipe_for(gog_game, "pad", "GOG/Launcher.exe"));
   const auto rev_unrelated = cache.Add(recipe_for(unrelated, "fast", "Bin/Fast.exe"));
+  // Made on a copy whose Bin/Game.exe is 32-bit; this copy's is 64-bit.
+  const auto rev_pe32 = cache.Add(recipe_for(gog_game, "pe32", "Bin/Game.exe", "pe32"));
   std::mutex settings_mutex;
   GameSettingsRecord saved;
   config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
@@ -7813,6 +7816,34 @@ void LinkedRecipeAppliesUnderItsAlias() {
   CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-gog-1207658924-pad" &&
         done.installs[0].recipe_version == rev_gog.substr(0, 32) && done.installs[0].launch_path == "Bin/Game.exe" &&
         !done.recipe_fallbacks.count(number));
+  // A stale record: the game's settings no longer name the game the applied recipe is for (no choice or link records
+  // it). The record's recipe is never bound to this game: nothing is published from it.
+  {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.community_recipe.game = {};
+    saved.linked_game = {};
+    ++saved.revision;
+  }
+  done = apply();
+  CHECK(!done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-gog-1207658924-pad" &&
+        done.installs[0].settings_revision < saved.revision);
+  // Choosing a recipe again switches away from it.
+  choose(long_id, rev_long, long_game);
+  done = apply();
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == alias);
+  // Another game's recipe whose program this copy has, built for the other architecture: the copy's file decides.
+  choose(CommunityRecipeIdFor(gog_game, "pe32"), rev_pe32, gog_game);
+  done = apply();
+  if (!done.maintenance.at(number).ok) std::fprintf(stderr, "apply: %s\n", done.maintenance.at(number).message.c_str());
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-gog-1207658924-pe32" &&
+        done.installs[0].launch_path == "Bin/Game.exe");
+  {
+    std::string profile_text;
+    for (const auto& entry : fs::recursive_directory_iterator(fixture.root / "data/playden/games"))
+      if (entry.path().extension() == ".profile" && entry.path().parent_path().filename() == "profiles")
+        profile_text = Read(entry.path());
+    CHECK(profile_text.find("\narchitecture = pe64\n") != std::string::npos);
+  }
   // Back to the long one.
   choose(long_id, rev_long, long_game);
   done = apply();

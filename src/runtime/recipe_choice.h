@@ -64,14 +64,22 @@ struct RecipeSelection {
 // preparation share it.
 RecipeSelection SelectRecipe(const RecipeCandidates& candidates);
 
-// Another game's community recipe (found by searching by name) whose program isn't in this copy runs with the game's
-// own program, Playden's choice: the launch entries and architecture of `own`, and none of the recipe's defaults or
-// locks for the program rows (launch option, program, folder, arguments, architecture). Everything else stays the
-// recipe's. in_copy is asked for the recipe's program (its first launch entry, '/' separated, relative to the game
-// folder). Returns that program when it isn't in the copy and the recipe now starts own's; empty when nothing changed
-// (the program is there, the recipe has none, or own has none either). Pure.
+// The program a recipe starts as it selects it: its "program" default (a game-relative path), else the launch entry its
+// "launch_option" default names, else its default entry (the first that isn't the player's own program). '/'
+// separated, relative to the game folder; empty when it names none.
+std::string SelectedProgram(const GameRecipe& recipe);
+
+// Another game's community recipe (found by searching by name) as it applies to this copy. architecture_in_copy is asked
+// for the program the recipe selects (SelectedProgram) and answers its architecture in this copy, empty when the copy
+// hasn't it.
+// - Not in the copy: the game's own program starts, Playden's choice: the launch entries and architecture of `own`, and
+//   none of the recipe's defaults or locks for the program rows (launch option, program, folder, arguments,
+//   architecture). Everything else stays the recipe's. Returns that program. Nothing changes when own has no program.
+// - In the copy, built for another architecture than the recipe says: the copy's architecture, without the recipe's
+//   architecture default or lock. Returns empty.
+// Pure.
 std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
-                          const std::function<bool(const std::string& program)>& in_copy);
+                          const std::function<std::string(const std::string& program)>& architecture_in_copy);
 
 // A player override that stops applying when the game's base (recipe and preset) changes.
 struct DroppedOverride {

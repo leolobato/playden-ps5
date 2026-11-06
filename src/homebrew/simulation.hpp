@@ -1502,9 +1502,10 @@ private:
     // the game's own (*missing names it); the object itself otherwise.
     [[nodiscard]] const playden::runtime::CommunityRecipe* applied_object(GameId id, const playden::runtime::CommunityRecipe& object,
                                                                          std::string* missing = nullptr) const;
-    // Whether a game-relative program is in the game's copy, as far as Playden knows without reading the folder here:
-    // the game's own launch entries and its scanned programs. A live game not scanned yet counts as having it.
-    [[nodiscard]] bool program_in_copy(GameId id, const std::string& program) const;
+    // A game-relative program's architecture in the game's copy, as far as Playden knows without reading the folder
+    // here: the game's own launch entries (its recipe's architecture) and its scanned programs; empty when the copy
+    // hasn't it. A live game not scanned yet counts as having it, built as `assumed` says (the recipe's).
+    [[nodiscard]] std::string program_in_copy(GameId id, const std::string& program, const std::string& assumed) const;
     // "<name> · <store>" for another game.
     [[nodiscard]] std::string recipe_game_label(const GameRef& game) const;
     // The chooser's rows again (after a search, a result chosen, Back or Unlink), focused on focus when it is listed.

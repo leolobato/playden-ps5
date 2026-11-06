@@ -5,6 +5,7 @@
 #include "runtime/recipe_choice.h"
 
 #include "homebrew/json.hpp"
+#include "steam/backend/app_info.h"
 #include "steam/backend/json.h"
 
 #include <algorithm>
@@ -54,12 +55,40 @@ RecipeSelection SelectRecipe(const RecipeCandidates& candidates) {
   return selection;
 }
 
-std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
-                          const std::function<bool(const std::string& program)>& in_copy) {
-  if (!recipe || recipe->launch_entries.empty() || own.launch_entries.empty()) return {};
-  auto program = recipe->launch_entries.front().executable;
+std::string SelectedProgram(const GameRecipe& recipe) {
+  std::string program;
+  if (const auto chosen = recipe.defaults.find("program"); chosen != recipe.defaults.end() && !chosen->second.empty()) {
+    program = steam::RelativeGamePath(chosen->second).value_or(chosen->second);
+  } else {
+    const LaunchEntry* entry = nullptr;
+    if (const auto option = recipe.defaults.find("launch_option"); option != recipe.defaults.end())
+      for (const auto& candidate : recipe.launch_entries)
+        if (candidate.id == option->second) entry = &candidate;
+    // As BuildEffectiveSettings starts without a choice (DefaultLaunchEntry).
+    if (!entry)
+      for (const auto& candidate : recipe.launch_entries)
+        if (candidate.id != kProgramEntryId) { entry = &candidate; break; }
+    if (!entry && !recipe.launch_entries.empty()) entry = &recipe.launch_entries.front();
+    if (entry) program = entry->executable;
+  }
   std::replace(program.begin(), program.end(), '\\', '/');
-  if (program.empty() || in_copy(program)) return {};
+  return program;
+}
+
+std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
+                          const std::function<std::string(const std::string& program)>& architecture_in_copy) {
+  if (!recipe) return {};
+  const auto program = SelectedProgram(*recipe);
+  if (program.empty()) return {};
+  if (const auto architecture = architecture_in_copy(program); !architecture.empty()) {
+    if (architecture != recipe->architecture) {
+      recipe->architecture = architecture;
+      recipe->defaults.erase("architecture");
+      recipe->locked.erase("architecture");
+    }
+    return {};
+  }
+  if (own.launch_entries.empty()) return {};
   recipe->launch_entries = own.launch_entries;
   recipe->architecture = own.architecture;
   for (const char* id : {"launch_option", "program", "program_folder", "program_arguments", "architecture"}) {

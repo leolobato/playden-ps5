@@ -121,6 +121,28 @@ int main() {
     CHECK(DecideShare(inputs).kind == ShareKind::kAskPlayer);
   }
 
+  // Based on another game's recipe (chosen from a search): never Suggest changes, which the API refuses across games.
+  // A new recipe for this game that credits it, changed or not; this game's own saved share is updated instead.
+  for (bool differs : {false, true})
+    for (bool program : {false, true}) {
+      ShareInputs inputs;
+      inputs.based_on = kTheirs;
+      inputs.based_on_other_game = true;
+      inputs.differs_from_base = differs;
+      inputs.program_or_graphics_differ = program;
+      auto decision = DecideShare(inputs);
+      CHECK(decision.kind == ShareKind::kNewRecipe);
+      CHECK(decision.send_based_on && !decision.send_submission_id);
+      CHECK(decision.preselect == ShareChoice::kNone);
+      CHECK(ChoiceToSend(decision, ShareChoice::kUpdate) == ShareChoice::kNone);
+      inputs.saved_submission_id = "s5";
+      inputs.saved_recipe_id = kMine.recipe_id;
+      decision = DecideShare(inputs);
+      CHECK(decision.kind == ShareKind::kUpdateOwn);
+      CHECK(decision.send_based_on && decision.send_submission_id);
+      CHECK(ChoiceToSend(decision, ShareChoice::kUpdate) == ShareChoice::kNone);
+    }
+
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
   return failures ? 1 : 0;
 }

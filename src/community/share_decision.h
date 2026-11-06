@@ -29,6 +29,8 @@ struct ShareInputs {
   // The community recipe the game is based on (GameSettingsRecord::community_recipe); nothing for
   // Playden's default or a preset.
   std::optional<RecipeRef> based_on;
+  // based_on is another game's recipe (chosen from a search by name): credited, never updated from this game.
+  bool based_on_other_game = false;
   // The game's saved share (GameSettingsRecord::shared_recipe); empty when it was never shared.
   std::string saved_submission_id;
   std::string saved_recipe_id;
@@ -39,7 +41,7 @@ struct ShareInputs {
 };
 
 enum class ShareKind {
-  kNewRecipe,           // send without based_on; the API makes a new file
+  kNewRecipe,           // the API makes a new file; based_on only credits another game's recipe
   kUpdateOwn,           // send based_on (when set) and the saved submission id, no choice
   kAskPlayer,           // show "Suggest changes" / "Share as a new recipe"
   kNoChangesOfferVote,  // no request; offer a thumbs up for based_on

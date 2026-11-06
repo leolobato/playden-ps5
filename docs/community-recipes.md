@@ -192,7 +192,9 @@ the results, and again to the game's own recipes. Choosing one of them:
 
 - records the game it is for with the choice (`community_recipe.game` in the game's settings, `"<store>/<key>"`): the
   runtime takes a community recipe for a game only when it is for the game's own `GameRef` or for the game its choice
-  records, so an unrelated recipe is still refused;
+  records, so an unrelated recipe is still refused. An installed game's record is checked the same way before its
+  recipe is bound to the game (the linked game counts too, for a choice changed since): a record naming another
+  game's recipe that neither the game nor its settings name resolves to nothing, and nothing is published from it;
 - links that game (`linked_game` in the game's settings): the chooser lists its recipes after the game's own, under
   "Linked game's recipes", and a newer revision of the chosen one shows as **Updated recipe available**, as for the
   game's own recipes. **Unlink …** at the end of that list goes back to the game's own recipes; the current choice
@@ -200,12 +202,16 @@ the results, and again to the game's own recipes. Choosing one of them:
 
 Records written before linking have neither field: the choice is one of the game's own recipes, and nothing is linked.
 
-Another game's recipe is offered even when its program isn't in this copy. Its program is its first launch entry; when
-that file isn't in the game's folder (any case), the game starts Playden's own program instead: Playden's launch
-entries and architecture, and none of the recipe's defaults or locks for the launch option, program, program folder,
-program arguments or architecture (`UseOwnProgram`, `src/runtime/recipe_choice.h`). Everything else is the recipe's.
-The Preset row and the side panel say so: "Made for Night Sky · GOG: NightSky64.exe isn't in this copy, so Playden's
-program is used." The chooser only knows the game's own launch entries and the folder's programs once scanned (it asks
+Another game's recipe is offered even when its program isn't in this copy. Its program is the one it selects
+(`SelectedProgram`: its `program` default, else the launch entry its `launch_option` default names, else its first
+entry); when that file isn't in the game's folder (any case), the game starts Playden's own program instead: Playden's
+launch entries and architecture, and none of the recipe's defaults or locks for the launch option, program, program
+folder, program arguments or architecture (`UseOwnProgram`, `src/runtime/recipe_choice.h`). Everything else is the
+recipe's. When the file is there but built for the other architecture, this copy's architecture is used. The Preset
+row and the side panel say so: "Made for Night Sky · GOG: NightSky64.exe isn't in this copy, so Playden's program is
+used.", and the side panel's program line reads "program: Game.exe, Playden's (NightSky64.exe isn't in this copy)".
+Sharing a game based on another game's recipe credits it as `based_on` but never offers Suggest changes: the share is a
+new recipe for this game (or updates this game's own earlier share). The chooser only knows the game's own launch entries and the folder's programs once scanned (it asks
 for a scan); the runtime checks the folder itself when it prepares or publishes the game. Your changes that don't
 apply to the new recipe are listed when you switch, as for any recipe switch.
 

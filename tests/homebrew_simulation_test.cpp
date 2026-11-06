@@ -1790,6 +1790,8 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
               simulation.state().navigation.focus_key == "search-game-gog/1453375253" &&
               find_row(simulation, "search-game-gog/1453375253")->subtitle == "GOG · 2 recipes",
           "the results name each game, its store and its recipe count");
+    check(find_row(simulation, "search-game-gog/1453375253")->tone.empty(),
+          "a game in the results is no player's recipe: no Community tag");
     simulation.action("circle");
     check(top(simulation).id == "preset-picker" && listed(simulation, "recipes-none"), "Circle leaves the results for the game's own");
     activate(simulation, "recipes-search");
@@ -1808,6 +1810,15 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
     check(find_row(simulation, "recipe-" + rev('7'))->lines.back() == "NightSky64.exe isn't in this copy: Playden's program is used." &&
               simulation.view().comparison && simulation.view().comparison->note.rfind("Made for Night Sky", 0) == 0,
           "the row and the side panel say so");
+    {
+        // The side panel lists how the game starts here: Playden's program, said to be Playden's, not the recipe's.
+        const auto& starts = simulation.view().comparison->starts;
+        check(find_row(simulation, "recipe-" + rev('7'))->tone == "community" && !starts.empty() &&
+                  starts.front() == "program: Game.exe, Playden's (NightSky64.exe isn't in this copy)" &&
+                  std::none_of(starts.begin(), starts.end(),
+                               [](const std::string& line) { return line.find("program: NightSky64.exe") != std::string::npos; }),
+              "the side panel's program is the one used here, named as Playden's");
+    }
     simulation.action("circle");
     check(simulation.state().navigation.focus_key == "search-game-gog/1453375253", "Circle goes back to the results, on that game");
     activate(simulation, "search-game-gog/1453375253");
@@ -1824,6 +1835,28 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
     const auto preset_row = find_row(simulation, "preset-picker");
     check(preset_row && !preset_row->lines.empty() && preset_row->lines.back().rfind("Made for Night Sky · GOG: NightSky64.exe", 0) == 0,
           "the Preset row carries the note");
+    {
+        // Sharing it: another game's recipe is credited, never updated (the API refuses that across games): a new recipe
+        // for this game, without a choice, changed or not.
+        namespace cm = playden::community;
+        const auto decision = simulation.ShareDecisionFor(night_sky);
+        check(decision.kind == cm::ShareKind::kNewRecipe && decision.send_based_on && !decision.send_submission_id,
+              "another game's recipe is shared as a new recipe for this game, crediting it");
+        // The sheet offers no Suggest changes, and Send makes a new recipe for this game.
+        if (!has_row(simulation, "share-recipe")) activate(simulation, "section-advanced");
+        activate(simulation, "share-recipe");
+        check(top(simulation).id == "share-recipe" && !has_row(simulation, "share-choice-update") &&
+                  !has_row(simulation, "share-choice-new") && has_row(simulation, "share-send"),
+              "the Share sheet doesn't ask to suggest changes to another game's recipe");
+        activate(simulation, "share-send");
+        if (has_row(simulation, "share-send-confirm")) activate(simulation, "share-send-confirm");
+        check(simulation.state().game_settings.at(night_sky).shared_recipe.recipe_id.rfind("community-imported-night-sky-shared-", 0) == 0,
+              "it is shared as a new recipe for this game");
+        for (int i = 0; i < 4 && top(simulation).id != "game-settings"; ++i)
+            if (has_row(simulation, "alert-ok")) activate(simulation, "alert-ok");
+            else simulation.action("circle");
+        check(top(simulation).id == "game-settings", "back to Game settings");
+    }
     // The chooser lists the linked game's recipes after the game's own, with Unlink.
     activate(simulation, "preset-picker");
     check(listed(simulation, "chooser-heading-linked") && listed(simulation, "recipe-" + rev('8')) && listed(simulation, "recipes-unlink") &&

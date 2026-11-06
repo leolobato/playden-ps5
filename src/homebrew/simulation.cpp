@@ -7121,7 +7121,7 @@ void Simulation::rebuild_view() {
                 item.title = name == state_.community.names.end() ? action_key.substr(12) : name->second;
                 item.subtitle = (ref ? RecipeStoreLabel(ref->store) : std::string()) + " \u00b7 " + std::to_string(count) +
                                 (count == 1 ? " recipe" : " recipes");
-                item.tone = "community";
+                // A game, not a player's recipe: no Community tag (its recipes have it).
                 if (ref && LinkedGameFor(settings_game) == *ref) item.badge = "Linked";
             } else if (settings_ready && modal.id == "preset-picker" && action_key == "search-none") {
                 item.kind = RowKind::Status;
@@ -12968,21 +12968,24 @@ std::optional<GameRef> Simulation::LinkedGameFor(GameId id) const {
     return record->second.linked_game;
 }
 
-bool Simulation::program_in_copy(GameId id, const std::string& program) const {
+std::string Simulation::program_in_copy(GameId id, const std::string& program, const std::string& assumed) const {
     const auto same = [&](std::string path) {
         std::replace(path.begin(), path.end(), '\\', '/');
         return std::equal(path.begin(), path.end(), program.begin(), program.end(), [](char a, char b) {
             return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
         });
     };
-    for (const auto& entry : own_recipe(id).launch_entries)
-        if (same(entry.executable)) return true;
     const auto setup = game_setups_.find(id);
-    if (setup != game_setups_.end() && setup->second.scanned)
-        return std::any_of(setup->second.programs.begin(), setup->second.programs.end(),
-                           [&](const rt::GameProgram& candidate) { return same(candidate.path); });
+    const bool scanned = setup != game_setups_.end() && setup->second.scanned;
+    if (scanned)
+        for (const auto& candidate : setup->second.programs)
+            if (same(candidate.path)) return candidate.architecture;
+    const auto& own = own_recipe(id);
+    for (const auto& entry : own.launch_entries)
+        if (same(entry.executable)) return own.architecture.empty() ? assumed : own.architecture;
+    if (scanned) return {};
     // A live game whose folder wasn't scanned yet (the chooser asks for a scan): the runtime decides when it prepares it.
-    return live();
+    return live() ? assumed : std::string();
 }
 
 const rt::CommunityRecipe* Simulation::applied_object(GameId id, const rt::CommunityRecipe& object, std::string* missing) const {
@@ -12990,9 +12993,11 @@ const rt::CommunityRecipe* Simulation::applied_object(GameId id, const rt::Commu
     const auto own = community_ref(id);
     if (own && object.game == *own) return &object;
     auto adapted = object;
-    const auto program = rt::UseOwnProgram(&adapted.recipe, own_recipe(id),
-                                           [&](const std::string& path) { return program_in_copy(id, path); });
-    if (program.empty()) return &object;
+    const auto program = rt::UseOwnProgram(&adapted.recipe, own_recipe(id), [&](const std::string& path) {
+        return program_in_copy(id, path, object.recipe.architecture);
+    });
+    // Its program is here, built as the recipe says: the object as it is.
+    if (program.empty() && adapted.recipe.architecture == object.recipe.architecture) return &object;
     if (missing) *missing = program;
     auto& slot = adapted_community_[{id, object.recipe.revision}];
     slot = std::move(adapted);
@@ -13397,8 +13402,18 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
     comparison.starts = offer.flags;
     // How it starts the game here: another game's recipe may start Playden's program.
     rt::CommunityObjectState object_state;
-    if (const auto* object = community_object(offer.revision, &object_state))
-        comparison.starts = rt::CommunityRecipeFlags(*applied_object(id, *object));
+    if (const auto* object = community_object(offer.revision, &object_state)) {
+        std::string missing;
+        comparison.starts = rt::CommunityRecipeFlags(*applied_object(id, *object, &missing));
+        // Playden's program in place of the recipe's: said to be Playden's, the first time with the program it replaces.
+        if (!missing.empty())
+            for (auto& line : comparison.starts) {
+                if (line.rfind("program: ", 0) != 0) continue;
+                line += ", Playden's";
+                if (!missing.empty()) line += " (" + missing + " isn't in this copy)";
+                missing.clear();
+            }
+    }
     const int changes = fill_comparison(before, after, &comparison);
     const auto refusal = community_refusal(id, offer);
     const auto program = ProgramNoteFor(id, offer.revision);
@@ -13995,10 +14010,14 @@ GameRef shared_game_of(GameId id, const rt::SharedRecipeRef& shared) {
 
 cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
     cm::ShareInputs inputs;
-    if (const auto base = RecipeBaseFor(id)) inputs.based_on = cm::RecipeRef{base->id, base->revision};
+    const auto ref = sharing_ref(id);
+    if (const auto base = RecipeBaseFor(id)) {
+        inputs.based_on = cm::RecipeRef{base->id, base->revision};
+        // Another game's recipe (chosen from a search): the game its choice records, when it isn't the one shared for.
+        inputs.based_on_other_game = base->game.valid() && (!ref || base->game != *ref);
+    }
     // The saved share counts only for the game it was made for: a changed GameRef starts a new share.
     if (const auto record = state_.game_settings.find(id); record != state_.game_settings.end()) {
-        const auto ref = sharing_ref(id);
         if (ref && shared_game_of(id, record->second.shared_recipe) == *ref) {
             inputs.saved_submission_id = record->second.shared_recipe.submission_id;
             inputs.saved_recipe_id = record->second.shared_recipe.recipe_id;

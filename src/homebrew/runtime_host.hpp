@@ -609,6 +609,11 @@ class RuntimeHost {
   // Playden no longer has it.
   const runtime::GameRecipe* RecipeOf(Composition& composition, const runtime::RuntimeInstall& record);
   const runtime::CommunityRecipe* CommunityOf(Composition& composition, const runtime::RuntimeInstall& record);
+  // Whether a community recipe made for recipe_game may apply to a game: the game's own GameRef (MatchingRefOf) or the
+  // game its choice records (CommunityRecipeChoice::game), and with linked also its linked game (an installed record
+  // whose choice changed since, while that game stays linked).
+  bool CommunityRecipeAllowed(const GameId& game, std::uint32_t runtime_number, const runtime::GameSettingsRecord& saved,
+                              const GameRef& recipe_game, bool linked) const;
   // A loaded community recipe bound to one game (runtime::BindCommunityRecipe), kept for the session.
   // Another game's recipe whose program isn't in the game folder at install_path starts Playden's own program instead
   // (runtime::UseOwnProgram); the bound copy follows the folder and Playden's recipe at every call, in place.

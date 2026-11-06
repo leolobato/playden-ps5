@@ -2742,7 +2742,7 @@ int main(int argc, char** argv) {
     own.architecture = "pe64";
     std::vector<std::string> asked;
     auto adapted = other;
-    CHECK(UseOwnProgram(&adapted, own, [&](const std::string& program) { asked.push_back(program); return false; }) ==
+    CHECK(UseOwnProgram(&adapted, own, [&](const std::string& program) { asked.push_back(program); return std::string(); }) ==
           "GOG/Launcher.exe");
     CHECK(asked == std::vector<std::string>{"GOG/Launcher.exe"} && adapted.launch_entries.size() == 2 &&
           adapted.launch_entries[1].executable == "hammer.exe" && adapted.architecture == "pe64" &&
@@ -2754,11 +2754,42 @@ int main(int argc, char** argv) {
     // The program is there (any '\\' made '/'), or Playden has no program either: nothing changes.
     auto present = other;
     present.launch_entries[0].executable = "GOG\\Launcher.exe";
-    CHECK(UseOwnProgram(&present, own, [](const std::string& program) { return program == "GOG/Launcher.exe"; }).empty() &&
+    CHECK(UseOwnProgram(&present, own, [](const std::string& program) {
+            return program == "GOG/Launcher.exe" ? std::string("pe32") : std::string();
+          }).empty() &&
           present.launch_entries[0].executable == "GOG\\Launcher.exe");
     auto no_own = other;
-    CHECK(UseOwnProgram(&no_own, GameRecipe{}, [](const std::string&) { return false; }).empty() &&
+    CHECK(UseOwnProgram(&no_own, GameRecipe{}, [](const std::string&) { return std::string(); }).empty() &&
           no_own.launch_entries[0].executable == "GOG/Launcher.exe");
+    // The program the recipe selects decides (its launch_option default, else its first entry), not its first entry.
+    auto selects_second = other;
+    selects_second.launch_entries = {{"launcher", "Launcher", "Launcher.exe", ""}, {"game", "Game", "Game.exe", ""}};
+    selects_second.defaults["launch_option"] = "game";
+    auto copy = selects_second;
+    asked.clear();
+    CHECK(UseOwnProgram(&copy, own, [&](const std::string& program) {
+            asked.push_back(program);
+            return program == "Launcher.exe" ? std::string("pe32") : std::string();
+          }) == "Game.exe" &&
+          asked == std::vector<std::string>{"Game.exe"} && copy.launch_entries.size() == own.launch_entries.size() &&
+          copy.launch_entries[0].executable == own.launch_entries[0].executable);
+    copy = selects_second;
+    CHECK(UseOwnProgram(&copy, own, [](const std::string& program) {
+            return program == "Game.exe" ? std::string("pe32") : std::string();
+          }).empty() &&
+          copy.launch_entries.size() == 2 && copy.launch_entries[1].executable == "Game.exe" &&
+          copy.defaults.at("launch_option") == "game");
+    CHECK(SelectedProgram(selects_second) == "Game.exe");
+    selects_second.defaults.erase("launch_option");
+    CHECK(SelectedProgram(selects_second) == "Launcher.exe");
+    // A program the copy has, built for the other architecture: the copy's file decides, defaults and locks included.
+    auto other_arch = other;
+    other_arch.defaults["architecture"] = "pe32";
+    other_arch.locked.insert("architecture");
+    CHECK(UseOwnProgram(&other_arch, own, [](const std::string&) { return std::string("pe64"); }).empty() &&
+          other_arch.architecture == "pe64" && !other_arch.defaults.count("architecture") &&
+          !other_arch.locked.count("architecture") && other_arch.launch_entries.size() == 1 &&
+          other_arch.launch_entries[0].executable == "GOG/Launcher.exe");
 
     // Registry: A, then B (A's value B doesn't set is removed), then Playden's own (everything removed).
     RecipeRegistryState after_a, after_b, after_default;
