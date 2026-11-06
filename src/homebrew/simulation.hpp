@@ -315,14 +315,25 @@ inline std::string CommunityRecipeLabel(const CommunityRecipeOffer& offer) { ret
 
 // Live: the community recipes Playden has (community::RecipeSnapshot, projected), by the game they are for. A library
 // game gets those of its GameRef (Simulation::community_ref: a Steam game's app ID, an imported game's Steam app ID).
+// Search by name (the chooser's "Search recipes by game name…") finds any game here that has recipes, by its name.
 struct CommunityCatalog {
     std::map<GameRef, std::vector<CommunityRecipeOffer>> games;
+    std::map<GameRef, std::string> names;  // each game's name as the release's index has it
     std::string release_tag;      // empty: no copy yet
     std::int64_t fetched_at = 0;  // the copy's last successful refresh (Unix seconds)
     bool refreshing = false;
     std::string last_error;       // the last refresh's failure; empty after a success
     bool operator==(const CommunityCatalog&) const = default;
 };
+// A game the chooser's search found (Simulation::SearchRecipeGames): one with community recipes whose name matches.
+struct RecipeSearchResult {
+    GameRef game;
+    std::string name;
+    std::size_t recipes = 0;
+    bool operator==(const RecipeSearchResult&) const = default;
+};
+// "Steam", "Epic", "GOG" or "Imported", for a recipe's store.
+std::string RecipeStoreLabel(std::string_view store);
 // Sharing recipes and voting (community recipes, plan Phases 5 and 6). The model hands these to the
 // sharing worker (homebrew/sharing_service.hpp) and gets its answers back; it never holds the
 // console's sharing ID (the install secret), which only that worker reads and sends.
@@ -1361,6 +1372,16 @@ public:
     // The game's community recipes in the chooser's order: works, playable, broken, then untested; then
     // by votes (up − down), then by title.
     [[nodiscard]] std::vector<CommunityRecipeOffer> CommunityOffersFor(GameId id) const;
+    // Another game's recipes in the same order (the linked game's, a search result's).
+    [[nodiscard]] std::vector<CommunityRecipeOffer> CommunityOffersOf(const GameRef& game) const;
+    // Search by game name (docs/community-recipes.md): the games with community recipes whose name matches the query
+    // (playden::NameMatchesSearch), the game's own GameRef left out; by name, then store.
+    [[nodiscard]] std::vector<RecipeSearchResult> SearchRecipeGames(GameId id, std::string_view query) const;
+    // The other game whose recipes the chooser lists beside the game's own (GameSettingsRecord::linked_game).
+    [[nodiscard]] std::optional<GameRef> LinkedGameFor(GameId id) const;
+    // Another game's recipe whose program isn't in this copy: "Made for <name> · <store>: <program> isn't in this copy,
+    // so Playden's program is used." Empty for the game's own recipes and when the program is there.
+    [[nodiscard]] std::string ProgramNoteFor(GameId id, const std::string& revision) const;
 
     // Sharing and votes. Requests for the sharing worker (live; fixture mode answers them itself),
     // its answers, and what it remembers about votes.
@@ -1466,6 +1487,30 @@ private:
     GameId install_choice_game_;
     GameId chooser_game_;
     bool chooser_for_install_ = false;
+    // The chooser's search: the results of a query (set), or one result's recipes (chooser_browse_ too). Both empty:
+    // the game's own recipes (and its linked game's).
+    std::optional<std::string> chooser_query_;
+    std::optional<GameRef> chooser_browse_;
+    // Other games' recipes as they apply to a game: with Playden's own program when theirs isn't in the copy
+    // (runtime::UseOwnProgram), by game and revision. Rebuilt when asked, so they follow the game's programs.
+    mutable std::map<std::pair<GameId, std::string>, playden::runtime::CommunityRecipe> adapted_community_;
+    // The game a catalog revision is for (its object's when the catalog no longer lists it).
+    [[nodiscard]] std::optional<GameRef> offer_game(const std::string& revision) const;
+    // The game a chosen recipe is for, as a choice records it: empty when it is the game's own.
+    [[nodiscard]] GameRef choice_game(GameId id, const std::string& revision) const;
+    // A community recipe object as it applies to the game: another game's whose program isn't in this copy starts
+    // the game's own (*missing names it); the object itself otherwise.
+    [[nodiscard]] const playden::runtime::CommunityRecipe* applied_object(GameId id, const playden::runtime::CommunityRecipe& object,
+                                                                         std::string* missing = nullptr) const;
+    // Whether a game-relative program is in the game's copy, as far as Playden knows without reading the folder here:
+    // the game's own launch entries and its scanned programs. A live game not scanned yet counts as having it.
+    [[nodiscard]] bool program_in_copy(GameId id, const std::string& program) const;
+    // "<name> · <store>" for another game.
+    [[nodiscard]] std::string recipe_game_label(const GameRef& game) const;
+    // The chooser's rows again (after a search, a result chosen, Back or Unlink), focused on focus when it is listed.
+    void refresh_chooser(const std::string& focus);
+    // Live: a scan of the game's folder when it has another game's recipe chosen, linked or shown (program_in_copy).
+    void request_program_scan_for_other_recipes(GameId id);
     // A switch on an installed game waits for the player's confirmation.
     std::optional<BaseChoice> pending_switch_;
     GameId pending_switch_game_;

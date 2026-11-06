@@ -2620,6 +2620,24 @@ int main(int argc, char** argv) {
     CHECK(SerializeGameSettingsRecord(choice).find(",\"game\":\"imported/night-sky\"}") != std::string::npos);
     CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice &&
           reread.shared_recipe.game == (playden::GameRef{"imported", "night-sky"}));
+    // Another game's recipe (chosen from a search): the choice names that game, which becomes the linked game. Both are
+    // saved; an older record has neither (the game's own recipe, nothing linked), and Unlink keeps the choice.
+    const playden::GameRef gog{"gog", "1207658924"};
+    const auto gog_id = CommunityRecipeIdFor(gog, "pad");
+    GameSettingsRecord linked;
+    ChooseCommunityRecipe(&linked, gog_id, rev_a, gog);
+    CHECK(linked.community_recipe.game == gog && linked.linked_game == gog && linked.revision == 1);
+    CHECK(SerializeGameSettingsRecord(linked).find("\"community_recipe\":{\"id\":\"" + gog_id + "\",\"revision\":\"" + rev_a +
+                                                   "\",\"game\":\"gog/1207658924\"},\"linked_game\":\"gog/1207658924\"") != std::string::npos);
+    CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(linked), &reread, &reason) && reread == linked);
+    ChooseCommunityRecipe(&linked, a.id, rev_a);  // the game's own recipe: the link stays
+    CHECK(!linked.community_recipe.game.valid() && linked.linked_game == gog);
+    linked.linked_game = {};
+    CHECK(SerializeGameSettingsRecord(linked).find("linked_game") == std::string::npos &&
+          SerializeGameSettingsRecord(linked).find("\"game\"") == std::string::npos);
+    CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"" + gog_id + "\",\"revision\":\"" + rev_a +
+                                  "\",\"game\":\"gog/x\"},\"linked_game\":\"nowhere\"}", &reread, &reason) &&
+          reread.community_recipe.id == gog_id && !reread.community_recipe.game.valid() && !reread.linked_game.valid());
     // A malformed choice is dropped, not the record.
     CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"community-steam-220-fast\",\"revision\":\"abc\"}}", &reread, &reason) &&
           reread.community_recipe.id.empty());
@@ -2669,14 +2687,15 @@ int main(int argc, char** argv) {
     candidates.community = &cb;
     candidates.community_state = CommunityObjectState::kLoaded;
     CHECK(SelectRecipe(candidates).fallback_reason == kCommunityRecipeUnreadable);
-    // An id longer than the game's title holds (another store's) falls back and says why.
+    // An id longer than the game's title holds (another store's) is selected: the title gets its alias.
     auto long_id = ca;
     long_id.recipe.id = CommunityRecipeIdFor({"imported", std::string(48, 'a')}, "fast");
     const CommunityRecipeChoice long_wanted{long_id.recipe.id, rev_a};
     candidates.wanted = &long_wanted;
     candidates.community = &long_id;
     selection = SelectRecipe(candidates);
-    CHECK(selection.recipe == &hl2 && !selection.community && selection.fallback_reason == kCommunityRecipeIdTooLong);
+    CHECK(selection.recipe == &long_id.recipe && selection.community && selection.fallback_reason.empty());
+    CHECK(InstalledRecipeId(long_id.recipe.id) == "community-h-6e9d499dc48358f916810bf5");
     candidates.wanted = &wanted;
     // The kit: a min_kit newer than the kit, and one the kit has but the game's title (older runtime) doesn't.
     candidates.community = &ca;
@@ -2710,6 +2729,36 @@ int main(int argc, char** argv) {
     // Nothing is dropped going the other way, and a value that didn't apply before is no loss.
     CHECK(DroppedOverrides(hl2, nullptr, two, nullptr, overrides, KitCapabilities{}).empty());
     CHECK(DroppedOverrides(hl2, nullptr, a, nullptr, {{"launch_option", "nowhere"}}, KitCapabilities{}).empty());
+
+    // Another game's recipe whose program isn't in this copy starts Playden's own: its launch entries and architecture,
+    // none of the recipe's program defaults or locks; the rest stays the recipe's.
+    GameRecipe other = a;
+    other.launch_entries = {{"game", "Game", "GOG/Launcher.exe", ""}};
+    other.architecture = "pe32";
+    other.defaults["launch_option"] = "game";
+    other.locked.insert("launch_option");
+    other.defaults["resolution"] = "1280x720";
+    GameRecipe own = two;
+    own.architecture = "pe64";
+    std::vector<std::string> asked;
+    auto adapted = other;
+    CHECK(UseOwnProgram(&adapted, own, [&](const std::string& program) { asked.push_back(program); return false; }) ==
+          "GOG/Launcher.exe");
+    CHECK(asked == std::vector<std::string>{"GOG/Launcher.exe"} && adapted.launch_entries.size() == 2 &&
+          adapted.launch_entries[1].executable == "hammer.exe" && adapted.architecture == "pe64" &&
+          !adapted.defaults.count("launch_option") && !adapted.locked.count("launch_option") &&
+          adapted.defaults.at("resolution") == "1280x720" && adapted.id == other.id);
+    // With Playden's program the player's launch option still applies; with the recipe's it is dropped, as a switch says.
+    CHECK(DroppedOverrides(two, nullptr, adapted, nullptr, {{"launch_option", "editor"}}, KitCapabilities{}).empty());
+    CHECK(DroppedOverrides(two, nullptr, other, nullptr, {{"launch_option", "editor"}}, KitCapabilities{}).size() == 1);
+    // The program is there (any '\\' made '/'), or Playden has no program either: nothing changes.
+    auto present = other;
+    present.launch_entries[0].executable = "GOG\\Launcher.exe";
+    CHECK(UseOwnProgram(&present, own, [](const std::string& program) { return program == "GOG/Launcher.exe"; }).empty() &&
+          present.launch_entries[0].executable == "GOG\\Launcher.exe");
+    auto no_own = other;
+    CHECK(UseOwnProgram(&no_own, GameRecipe{}, [](const std::string&) { return false; }).empty() &&
+          no_own.launch_entries[0].executable == "GOG/Launcher.exe");
 
     // Registry: A, then B (A's value B doesn't set is removed), then Playden's own (everything removed).
     RecipeRegistryState after_a, after_b, after_default;

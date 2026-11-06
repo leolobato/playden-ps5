@@ -132,6 +132,26 @@ void Refs() {
   CHECK(RecipeStoreOf(Store::kLocal) == "imported" && RecipeStoreOf(Store::kSteam) == "steam");
 }
 
+// The chooser's search by game name: the NameKey way of normalising, words of any script, every query word the start
+// of a word of the name.
+void Search() {
+  CHECK((SearchWords("Crème Brûlée & Clockwork — déjà vu") ==
+         std::vector<std::string>{"creme", "brulee", "clockwork", "deja", "vu"}));
+  CHECK((SearchWords("TMNT: Mutant Melee") == std::vector<std::string>{"tmnt", "mutant", "melee"}));
+  CHECK((SearchWords("ＦＵＬＬ　ＷＩＤＴＨ") == std::vector<std::string>{"full", "width"}));
+  CHECK((SearchWords("Half-Life 2") == std::vector<std::string>{"half", "life", "2"}));
+  CHECK((SearchWords("Звёздный архив") == std::vector<std::string>{"звездныи", "архив"}));  // й is и with a mark
+  CHECK(SearchWords("  ---  ").empty() && SearchWords("\xff").empty());
+  CHECK(NameMatchesSearch("Crème Brûlée & Clockwork — déjà vu", "creme brulee"));
+  CHECK(NameMatchesSearch("Crème Brûlée & Clockwork — déjà vu", "CLOCK cr"));  // prefixes, any order
+  CHECK(NameMatchesSearch("TMNT: Mutant Melee", "tmnt mutant-melee"));
+  CHECK(!NameMatchesSearch("TMNT: Mutant Melee", "tmnt racing"));               // every word must match
+  CHECK(!NameMatchesSearch("TMNT: Mutant Melee", "utant"));                     // a word's start, not inside it
+  CHECK(NameMatchesSearch("Звёздный архив: Последняя орбита", "звездн"));
+  CHECK(NameMatchesSearch("Night Sky", ""));
+  CHECK(NameMatchesSearch("Night Sky", "night sky") && !NameMatchesSearch("Night Orchard", "night sky"));
+}
+
 }  // namespace
 
 int main() {
@@ -139,6 +159,7 @@ int main() {
   GameNames();
   StoreKeys();
   Refs();
+  Search();
   if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
   return failures ? 1 : 0;
 }

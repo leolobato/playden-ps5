@@ -610,8 +610,12 @@ class RuntimeHost {
   const runtime::GameRecipe* RecipeOf(Composition& composition, const runtime::RuntimeInstall& record);
   const runtime::CommunityRecipe* CommunityOf(Composition& composition, const runtime::RuntimeInstall& record);
   // A loaded community recipe bound to one game (runtime::BindCommunityRecipe), kept for the session.
+  // Another game's recipe whose program isn't in the game folder at install_path starts Playden's own program instead
+  // (runtime::UseOwnProgram); the bound copy follows the folder and Playden's recipe at every call, in place.
   const runtime::CommunityRecipe* BoundCommunityRecipe(Composition& composition, const runtime::CommunityRecipe& loaded,
-                                                       const GameId& game, std::uint32_t runtime_number);
+                                                       const GameId& game, std::uint32_t runtime_number,
+                                                       const std::string& install_path,
+                                                       const runtime::GameSettingsRecord& saved);
   // The GameRef whose community recipes a game takes (MatchingGameRef); nothing for another store's game without a
   // Steam app ID.
   std::optional<GameRef> MatchingRefOf(const GameId& game, std::uint32_t runtime_number,
@@ -621,9 +625,11 @@ class RuntimeHost {
   std::optional<runtime::KitVersion> TitleKitVersion(const Composition& composition,
                                                      const runtime::RuntimeInstall* record) const;
   // runtime::SelectRecipe for a game: its shipped and generated recipes, the saved record's wanted
-  // community recipe (loaded from the cache) and the kit as the game's title (record, or none yet) runs it.
+  // community recipe (loaded from the cache) and the kit as the game's title (record, or none yet) runs it. The game
+  // folder is the record's, else install_path (a game being prepared).
   runtime::RecipeSelection SelectRecipeFor(Composition& composition, const GameId& game, std::uint32_t runtime_number,
-                                           const runtime::RuntimeInstall* record, const runtime::GameSettingsRecord& saved);
+                                           const runtime::RuntimeInstall* record, const runtime::GameSettingsRecord& saved,
+                                           const std::string& install_path = {});
   // The shipped and generated recipes of a game, from the loaded list.
   const runtime::GameRecipe* ShippedRecipeFor(const Composition& composition, const GameId& game,
                                               std::uint32_t runtime_number) const;

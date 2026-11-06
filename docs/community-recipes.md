@@ -159,11 +159,55 @@ Which recipes a game gets, matched only by ID:
 
 - A Steam game: those of `steam/<its app ID>`.
 - An imported game with a Steam app ID (its `steam_appid.txt`, or the **Steam app ID** in Game settings): those of
-  `steam/<that ID>`. Without one, none: an imported game is never matched by its name. Searching recipes by name is
-  planned.
+  `steam/<that ID>`. Without one, none: an imported game is never matched by its name.
+
+Games are never mapped between stores. A player who wants another game's recipe (the same game from another store, or
+an imported copy under another name) searches for it by name, below.
 
 What a share or an export is for: the same `steam/<ID>`, with `"made_on": "imported"` for an imported copy, or for an
 imported game without a Steam app ID `imported/<name key of its title>`.
+
+A share saved before shares recorded their game (Playden builds before store and key) counts as made for
+`steam/<app ID>` on a Steam game, the only kind that could share then, so its next share updates it. On any other game
+it counts as unknown, and the next share is a new one.
+
+### Search by name and linked games
+
+The chooser (Game settings › Preset, and the Install sheet's Settings row) has **Search recipes by game name…**. It
+opens the keyboard with the game's name, and lists the games of the release that have community recipes and whose
+name matches, each with its store (Steam, Epic, GOG or Imported) and how many recipes it has. A game without recipes
+is never found, and the searching game's own recipes are already in the chooser, so they aren't listed again. When a
+game has no recipes of its own (an imported game without a Steam app ID, for example), the chooser's "None yet" row
+points at the search.
+
+The search compares words (`SearchWords` and `NameMatchesSearch`, `src/library/game_ref.h`). The name and the query
+are normalised the way `NameKey` does it (Unicode NFKD, every mark dropped, case folded), but letters and digits of
+every script are kept; each run of letters and digits is a word. A name matches when every word of the query begins
+one of its words, in any order: "creme bru" and "clock" find "Crème Brûlée & Clockwork — déjà vu", "utant" doesn't
+find "TMNT: Mutant Melee". A query without words lists every game with recipes. Results are sorted by name, then
+store.
+
+Choosing a result lists that game's recipes, with the same rows and side panel as the game's own; Circle goes back to
+the results, and again to the game's own recipes. Choosing one of them:
+
+- records the game it is for with the choice (`community_recipe.game` in the game's settings, `"<store>/<key>"`): the
+  runtime takes a community recipe for a game only when it is for the game's own `GameRef` or for the game its choice
+  records, so an unrelated recipe is still refused;
+- links that game (`linked_game` in the game's settings): the chooser lists its recipes after the game's own, under
+  "Linked game's recipes", and a newer revision of the chosen one shows as **Updated recipe available**, as for the
+  game's own recipes. **Unlink …** at the end of that list goes back to the game's own recipes; the current choice
+  stays until another is chosen (it keeps working, without updates).
+
+Records written before linking have neither field: the choice is one of the game's own recipes, and nothing is linked.
+
+Another game's recipe is offered even when its program isn't in this copy. Its program is its first launch entry; when
+that file isn't in the game's folder (any case), the game starts Playden's own program instead: Playden's launch
+entries and architecture, and none of the recipe's defaults or locks for the launch option, program, program folder,
+program arguments or architecture (`UseOwnProgram`, `src/runtime/recipe_choice.h`). Everything else is the recipe's.
+The Preset row and the side panel say so: "Made for Night Sky · GOG: NightSky64.exe isn't in this copy, so Playden's
+program is used." The chooser only knows the game's own launch entries and the folder's programs once scanned (it asks
+for a scan); the runtime checks the folder itself when it prepares or publishes the game. Your changes that don't
+apply to the new recipe are listed when you switch, as for any recipe switch.
 
 ## Ids and file names
 
@@ -181,9 +225,11 @@ imported game without a Steam app ID `imported/<name key of its title>`.
 Export as recipe writes `community-<store>-<key>`, without a slug, because the slug is the author's choice.
 Playden reads such a file, but the checker refuses it until it has a slug.
 
-An installed game's title holds its recipe id in 64 bytes. Every Steam game's id fits (at most 59 bytes); an imported
-game's can be longer, and Playden doesn't apply such a recipe yet: the game keeps Playden's own recipe and Game
-settings says why.
+An installed game's record and title hold its recipe id in 64 bytes (the runtime kit's title files and Playden's
+publication journal). Every Steam game's id fits (at most 59 bytes); an imported game's can be longer (up to 100
+bytes). Playden publishes a longer id as its alias, `community-h-<the first 24 lowercase hex of the SHA-256 of the
+full id>` (`InstalledRecipeId`, `src/runtime/game_settings.h`), and maps it back from its own records: the recipe's
+object, found by the revision the record holds, and the game's settings name the full id.
 
 ## Rules for community recipes
 

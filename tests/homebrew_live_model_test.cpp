@@ -1441,6 +1441,67 @@ const playden::homebrew::ViewRow* find_view_row(const Simulation& model, const s
 
 // An imported game's Game settings: Program, and a "Steam app ID" that takes plain decimal only,
 // shows the game's own steam_appid.txt when that one wins, and clears when emptied.
+// A linked game's recipe with an id over 64 bytes: the title and its record hold the alias (InstalledRecipeId); the model
+// maps it back to the full id from its own records, so the applied recipe and its updates are known.
+void live_linked_long_recipe_id(const std::filesystem::path& base) {
+    namespace rt = playden::runtime;
+    std::filesystem::create_directories(base);
+    const auto id = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    const playden::GameRef long_game{"imported", std::string(48, 'a')};
+    const auto long_id = rt::CommunityRecipeIdFor(long_game, std::string(32, 'z'));
+    const auto rev = [](char digit) { return std::string(64, digit); };
+    rt::GameSettingsRecord record;
+    rt::ChooseCommunityRecipe(&record, long_id, rev('a'), long_game);
+    std::string reason;
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all);
+    const auto settings_file = base / "linked-settings.json";
+    check(rt::SaveGameSettingsFile(settings_file.string(), {{id, record}}, &reason), "seed the linked choice");
+    auto model = make_live(base);
+    model.SetGameSettingsFile(settings_file);
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    playden::GameSummary game;
+    game.id = id;
+    game.title = "Night Sky";
+    playden::homebrew::LibraryUpdate update{{game}, false, {}, false, true, 100};
+    update.source = playden::Store::kLocal;
+    check(model.UpdateLibrary(update), "imported library delivered");
+    model.UpdateExternalGames({{id, "usb0", true, ""}});
+    playden::homebrew::CommunityCatalog catalog;
+    catalog.release_tag = "r1";
+    playden::homebrew::CommunityRecipeOffer offer;
+    offer.id = long_id;
+    offer.title = "Long";
+    offer.status = "works";
+    offer.revision = rev('b');  // newer than the chosen revision
+    catalog.games[long_game] = {offer};
+    catalog.names[long_game] = "Night Sky";
+    model.UpdateCommunityCatalog(catalog);
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = id;
+    runtime.status = "Ready";
+    runtime.ready = runtime.prepared = runtime.has_title = true;
+    runtime.recipe_id = rt::InstalledRecipeId(long_id);
+    check(runtime.recipe_id == "community-h-f924d923ba7c01f94c0a2b65", "the title holds the alias");
+    // The title plays the chosen revision: the newer one is an update.
+    runtime.recipe_version = rev('a').substr(0, 32);
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    auto applied = model.AppliedCommunityRecipe(id);
+    check(applied && applied->recipe_id == long_id && applied->revision == rev('a'), "the alias maps back to the chosen recipe");
+    check(model.action("details:" + playden::ToKey(id)), "imported game details");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    check(find_view_row(model, "recipe-update") != nullptr, "the linked game's newer revision is an update");
+    // The title already plays the newer revision (its record names the alias): no update, and that is the applied one.
+    runtime.recipe_version = rev('b').substr(0, 32);
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    applied = model.AppliedCommunityRecipe(id);
+    check(applied && applied->recipe_id == long_id && applied->revision == rev('b'), "the alias maps back through the catalog");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    check(find_view_row(model, "recipe-update") == nullptr, "the revision the title plays is not offered again");
+}
+
 void live_imported_game_steam_app_id(const std::filesystem::path& base) {
     std::filesystem::create_directories(base);
     auto model = make_live(base);
@@ -2673,6 +2734,7 @@ int main() {
     live_names_program_found_instead_of_steam_default(base);
     live_runs_setup_program_once(base);
     live_imported_game_steam_app_id(base);
+    live_linked_long_recipe_id(base / "linked");
     live_imported_program_seeds_once(base);
     live_setup_asks_for_a_steam_program(base);
     live_starts_clean_and_never_reads_or_writes_fixtures(base);

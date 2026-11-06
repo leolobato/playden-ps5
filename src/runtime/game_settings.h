@@ -228,13 +228,16 @@ struct SettingsPreset {
 
 // The community recipe the player wants for a game (docs/community-recipes.md): its id and the
 // revision (64 hex) it was chosen at. A newer revision of the same recipe is never applied
-// silently: the choice keeps its revision until the player chooses the updated one.
+// silently: the choice keeps its revision until the player chooses the updated one. game is the game the recipe is
+// for when it is another game's (found by searching by name, docs/community-recipes.md); invalid for one of the game's
+// own recipes (its GameRef's), as every record before linking. The runtime takes a recipe only for one of the two.
 struct CommunityRecipeChoice {
   std::string id;
   std::string revision;
+  GameRef game;
 };
 inline bool operator==(const CommunityRecipeChoice& left, const CommunityRecipeChoice& right) {
-  return left.id == right.id && left.revision == right.revision;
+  return left.id == right.id && left.revision == right.revision && left.game == right.game;
 }
 inline bool operator!=(const CommunityRecipeChoice& left, const CommunityRecipeChoice& right) { return !(left == right); }
 // The recipe a game's shared settings were sent as (Phase 5): the submission the service answered
@@ -267,17 +270,22 @@ struct GameSettingsRecord {
   CommunityRecipeChoice community_recipe;
   // Set once the game's settings were shared from Playden. Saved only when set.
   SharedRecipeRef shared_recipe;
+  // Another game whose recipes the chooser lists beside the game's own, and whose newer revisions show as updates:
+  // set when the player chose one of its recipes from a search, cleared by Unlink. Saved only when set.
+  GameRef linked_game;
 };
 
 inline bool operator==(const GameSettingsRecord& left, const GameSettingsRecord& right) {
   return left.preset_id == right.preset_id && left.overrides == right.overrides && left.revision == right.revision &&
          left.steam_app_id == right.steam_app_id && left.steam_launch == right.steam_launch &&
-         left.community_recipe == right.community_recipe && left.shared_recipe == right.shared_recipe;
+         left.community_recipe == right.community_recipe && left.shared_recipe == right.shared_recipe &&
+         left.linked_game == right.linked_game;
 }
 inline bool operator!=(const GameSettingsRecord& left, const GameSettingsRecord& right) { return !(left == right); }
 
-// The player chooses a community recipe as the game's base: clears the preset. Both bump revision.
-void ChooseCommunityRecipe(GameSettingsRecord* record, std::string id, std::string revision);
+// The player chooses a community recipe as the game's base: clears the preset. Both bump revision. game: the game the
+// recipe is for when it is another game's (CommunityRecipeChoice::game), which also becomes the linked game.
+void ChooseCommunityRecipe(GameSettingsRecord* record, std::string id, std::string revision, GameRef game = {});
 // The player chooses a preset (empty: Playden default) as the base: clears the community recipe.
 void ChoosePreset(GameSettingsRecord* record, std::string preset_id);
 
@@ -430,9 +438,17 @@ bool IsCommunityRecipeId(std::string_view id);
 inline constexpr std::size_t kCommunitySlugMaxBytes = 32;
 inline constexpr std::size_t kCommunityRecipeIdMaxBytes = 128;
 // The installed-game record and the game's title hold a recipe id in 64 bytes (settings_publication_journal.cpp,
-// prospero-win's pw_title_launch.h): a longer community recipe id can't be applied to a game yet (SelectRecipe).
-// Every Steam game's fits: community-steam-<10 digits>-<32-byte slug> is 59 bytes.
+// prospero-win's pw_title_launch.h). Every Steam game's fits (community-steam-<10 digits>-<32-byte slug> is 59 bytes);
+// a longer one is published as its alias (InstalledRecipeId).
 inline constexpr std::size_t kInstalledRecipeIdMaxBytes = 64;
+// The id a game's record and title hold for a recipe: the id itself when it fits in 64 bytes, else the alias
+// community-h-<the first 24 lowercase hex of the SHA-256 of the full id>. Playden maps an alias back from its own
+// records: the recipe's object (loaded by the record's revision) and the game's settings name the full id.
+std::string InstalledRecipeId(std::string_view id);
+// community-h-<24 lowercase hex>.
+bool IsCommunityRecipeAlias(std::string_view id);
+// What a record may name for a community recipe: an id of at most 64 bytes (IsCommunityRecipeId) or an alias.
+bool IsInstalledCommunityRecipeId(std::string_view id);
 bool IsValidCommunitySlug(std::string_view slug);
 // "community-<store>-<key>-<slug>"; "community-<store>-<key>" for an empty slug (the export's form).
 std::string CommunityRecipeIdFor(const GameRef& game, std::string_view slug);

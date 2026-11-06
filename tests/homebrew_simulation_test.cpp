@@ -1654,10 +1654,10 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     check(offers.size() == 3 && offers[0].title == "120 Hz, pointer on left stick" && offers[1].title == "Gamepad layout" &&
               offers[2].title == "Windowed 1080p", "the chooser sorts by status, then votes");
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
-    check(keys.size() >= 7 && keys[0] == "preset-playden-default" && keys[1] == "chooser-heading-community" &&
+    check(keys.size() >= 8 && keys[0] == "preset-playden-default" && keys[1] == "chooser-heading-community" &&
               keys[2] == "recipe-" + rev('1') && keys[3] == "recipe-" + rev('2') && keys[4] == "recipe-" + rev('3') &&
-              keys[5] == "chooser-heading-presets" && keys[6] == "preset-mouse-driven",
-          "Playden default, the recipes in order, then the built-in presets");
+              keys[5] == "recipes-search" && keys[6] == "chooser-heading-presets" && keys[7] == "preset-mouse-driven",
+          "Playden default, the recipes in order, search by name, then the built-in presets");
     // Broken after playable, untested last; equal status and votes by title.
     playden::homebrew::CommunityCatalog catalog = simulation.state().community;
     auto make = [](std::string title, std::string status, std::uint32_t up, std::uint32_t down, char digit) {
@@ -1739,6 +1739,144 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
 
 // An imported game gets the recipes of its Steam app ID; without one it gets none (no matching by name), and it still
 // shares and exports: under its Steam app ID (made_on imported), else under the name key of its title.
+// Search by game name and linking (docs/community-recipes.md): only games with recipes, by their names' words; another
+// game's recipe links that game (saved), its updates show, Unlink keeps the choice; a recipe whose program isn't in this
+// copy starts Playden's own, with a note.
+void community_recipes_search_and_link(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    using playden::GameRef;
+    const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    const GameRef gog_night{"gog", "1453375253"}, imported_night{"imported", "night-sky"}, gog_creme{"gog", "1207658924"};
+    const auto top = [](playden::homebrew::Simulation& simulation) -> const playden::homebrew::ModalEntry& {
+        return simulation.state().navigation.modals.back();
+    };
+    const auto keys_of = [&](playden::homebrew::Simulation& simulation) { return top(simulation).action_keys; };
+    const auto listed = [&](playden::homebrew::Simulation& simulation, const std::string& key) {
+        const auto keys = keys_of(simulation);
+        return std::find(keys.begin(), keys.end(), key) != keys.end();
+    };
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    check(simulation.scenario("recipes-imported-none"), "recipes-imported-none scenario loads");
+    // No Steam app ID: none of its own, and the chooser offers the search.
+    check(simulation.CommunityOffersFor(night_sky).empty() && has_row(simulation, "recipes-none") && has_row(simulation, "recipes-search") &&
+              find_row(simulation, "recipes-none")->subtitle.find("Search by name") != std::string::npos,
+          "an imported game without a Steam app ID has none of its own and is offered the search");
+    // The rule: each query word begins a word of the name; only games with recipes; the game's own ref left out.
+    auto results = simulation.SearchRecipeGames(night_sky, "night sky");
+    check(results.size() == 2 && results[0].game == gog_night && results[0].recipes == 2 && results[0].name == "Night Sky" &&
+              results[1].game == imported_night && results[1].recipes == 1,
+          "the search finds the games named Night Sky, with their store and recipe count");
+    check(simulation.SearchRecipeGames(night_sky, "NIGHT").size() == 3 && simulation.SearchRecipeGames(night_sky, "ight").empty() &&
+              simulation.SearchRecipeGames(night_sky, "night sky deluxe").empty(),
+          "every query word must begin a word of the name");
+    const auto creme = simulation.SearchRecipeGames(SteamId(900002), "creme brulee");
+    check(creme.size() == 1 && creme[0].game == gog_creme, "the searching game's own recipes are not a result");
+    {
+        auto catalog = simulation.state().community;
+        catalog.names[GameRef{"gog", "99"}] = "Night Sky Without Recipes";
+        catalog.games[GameRef{"gog", "99"}] = {};
+        simulation.UpdateCommunityCatalog(catalog);
+        check(simulation.SearchRecipeGames(night_sky, "night sky").size() == 2, "a game without recipes is never found");
+    }
+    // The keyboard opens prefilled with the game's name; Done lists the results.
+    activate(simulation, "recipes-search");
+    check(simulation.state().editor.active && simulation.state().editor.purpose == "Search recipes" &&
+              simulation.state().editor.value == "Night Sky",
+          "the search opens the keyboard with the game's name");
+    simulation.SubmitEditorText("night sky");
+    check(!simulation.state().editor.active && top(simulation).id == "preset-picker" &&
+              listed(simulation, "search-game-gog/1453375253") && listed(simulation, "search-game-imported/night-sky") &&
+              simulation.state().navigation.focus_key == "search-game-gog/1453375253" &&
+              find_row(simulation, "search-game-gog/1453375253")->subtitle == "GOG · 2 recipes",
+          "the results name each game, its store and its recipe count");
+    simulation.action("circle");
+    check(top(simulation).id == "preset-picker" && listed(simulation, "recipes-none"), "Circle leaves the results for the game's own");
+    activate(simulation, "recipes-search");
+    simulation.SubmitEditorText("zzz");
+    check(listed(simulation, "search-none") && simulation.state().navigation.focus_key == "recipes-search", "nothing found says so");
+    activate(simulation, "recipes-search");
+    simulation.SubmitEditorText("Night Sky");
+    // One result's recipes, with the program note for the one whose program isn't in this copy.
+    activate(simulation, "search-game-gog/1453375253");
+    check(listed(simulation, "recipe-" + rev('7')) && listed(simulation, "recipe-" + rev('8')) && !listed(simulation, "recipes-search"),
+          "a result shows that game's recipes");
+    check(simulation.ProgramNoteFor(night_sky, rev('7')) ==
+              "Made for Night Sky · GOG: NightSky64.exe isn't in this copy, so Playden's program is used." &&
+              simulation.ProgramNoteFor(night_sky, rev('8')).empty() && simulation.ProgramNoteFor(SteamId(900002), rev('1')).empty(),
+          "another game's recipe whose program isn't in this copy gets the note; one whose program is, and own ones, don't");
+    check(find_row(simulation, "recipe-" + rev('7'))->lines.back() == "NightSky64.exe isn't in this copy: Playden's program is used." &&
+              simulation.view().comparison && simulation.view().comparison->note.rfind("Made for Night Sky", 0) == 0,
+          "the row and the side panel say so");
+    simulation.action("circle");
+    check(simulation.state().navigation.focus_key == "search-game-gog/1453375253", "Circle goes back to the results, on that game");
+    activate(simulation, "search-game-gog/1453375253");
+    // Choosing it links the game: the choice names the game it is for, saved with the settings.
+    activate(simulation, "recipe-" + rev('7'));
+    const auto record = [&] { return simulation.state().game_settings.at(night_sky); };
+    check(record().community_recipe.id == rt::CommunityRecipeIdFor(gog_night, "night-drive-pad") &&
+              record().community_recipe.game == gog_night && record().linked_game == gog_night &&
+              simulation.LinkedGameFor(night_sky) == gog_night,
+          "choosing another game's recipe records that game and links it");
+    check(simulation.RecipeFor(night_sky).launch_entries.front().executable == "Game.exe" &&
+              simulation.RecipeFor(night_sky).defaults.count("pointer_stick"),
+          "it applies with Playden's program and the recipe's settings");
+    const auto preset_row = find_row(simulation, "preset-picker");
+    check(preset_row && !preset_row->lines.empty() && preset_row->lines.back().rfind("Made for Night Sky · GOG: NightSky64.exe", 0) == 0,
+          "the Preset row carries the note");
+    // The chooser lists the linked game's recipes after the game's own, with Unlink.
+    activate(simulation, "preset-picker");
+    check(listed(simulation, "chooser-heading-linked") && listed(simulation, "recipe-" + rev('8')) && listed(simulation, "recipes-unlink") &&
+              simulation.state().navigation.focus_key == "recipe-" + rev('7'),
+          "the linked game's recipes are listed, the chosen one focused");
+    // A newer revision of the linked game's recipe shows as an update.
+    {
+        auto catalog = simulation.state().community;
+        for (auto& offer : catalog.games.at(gog_night))
+            if (offer.revision == rev('7')) offer.revision = rev('b');
+        simulation.UpdateCommunityCatalog(catalog);
+    }
+    simulation.action("circle");
+    check(has_row(simulation, "recipe-update"), "a newer revision of the linked game's recipe is an update");
+    // Unlink: the game's own recipes only; the choice stays, and so does it in the runtime's eyes.
+    activate(simulation, "preset-picker");
+    activate(simulation, "recipes-unlink");
+    check(!record().linked_game.valid() && record().community_recipe.game == gog_night && !listed(simulation, "chooser-heading-linked") &&
+              listed(simulation, "recipe-" + rev('7')) && simulation.RecipeBaseFor(night_sky).has_value(),
+          "Unlink drops the linked game's recipes, keeping the current choice");
+    simulation.action("circle");
+    check(!has_row(simulation, "recipe-update"), "an unlinked game's updates no longer show");
+    // A choice of an unrelated game's recipe (no game recorded) is refused, as the runtime refuses it.
+    check(simulation.RecipeFallbackFor(SteamId(900004)).empty(), "no choice, no fallback");
+}
+
+// A share saved before shares recorded their game counts as the Steam game's own (only Steam games could share then).
+void community_old_share_is_the_steam_games(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    check(simulation.scenario("share-imported"), "share-imported scenario loads");
+    // Saved before shares recorded their game: no "game" in shared_recipe.
+    rt::GameSettingsRecord steam, imported;
+    steam.overrides["resolution"] = "3840x2160";
+    steam.shared_recipe = {"sub-old", "community-steam-900002-old", {}};
+    imported.overrides["resolution"] = "3840x2160";
+    imported.shared_recipe = {"sub-old-2", "community-imported-night-sky-old", {}};
+    const auto settings_file = profile.string() + ".old-share.settings";
+    std::string reason;
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900002), steam}, {night_sky, imported}}, &reason), "seed old shares");
+    simulation.SetGameSettingsFile(settings_file);
+    check(!simulation.state().game_settings.at(SteamId(900002)).shared_recipe.game.valid(), "the old share reads back without a game");
+    const auto decision = simulation.ShareDecisionFor(SteamId(900002));
+    check(decision.kind == playden::community::ShareKind::kUpdateOwn && decision.send_submission_id,
+          "an old share of a Steam game is the Steam game's: its next share updates it");
+    const auto other = simulation.ShareDecisionFor(night_sky);
+    check(other.kind == playden::community::ShareKind::kNewRecipe && !other.send_submission_id,
+          "an old share of another game stays unknown: its next share is new");
+    std::filesystem::remove(settings_file);
+}
+
 void community_recipes_imported(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
     const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
@@ -1965,6 +2103,7 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
         activate(live, "cancel");
         playden::runtime::CommunityRecipe object;
         object.recipe.id = "community-steam-42-pad";
+        object.game = playden::GameRef::Steam(42);
         object.recipe.version = 1;
         object.recipe.app_id = 42;
         object.recipe.name = "Recipe game";
@@ -2341,6 +2480,8 @@ int main(int argc, char** argv) {
     community_recipes_chooser(fixtures, profile);
     clean();
     community_recipes_imported(fixtures, profile);
+    community_recipes_search_and_link(fixtures, profile);
+    community_old_share_is_the_steam_games(fixtures, profile);
     clean();
     community_recipes_one_base(fixtures, profile);
     clean();

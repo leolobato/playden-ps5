@@ -103,6 +103,21 @@ int main(int argc, char** argv) {
         capture("recipes-details", "details", "details");
         check(find_row(model, "details-recipe") && find_row(model, "details-recipe")->title == "Recipe available",
               "an installed game with recipes carries the mark");
+        // Search by game name and linked games.
+        capture("recipes-imported-none", "preset-picker", "preset-playden-default");
+        check(find_row(model, "recipes-none") && find_row(model, "recipes-search"), "no recipes of its own: None yet and the search");
+        capture("recipes-search", "keyboard", "keyboard-done");
+        check(model.state().editor.value == "Night Sky", "the search opens prefilled with the game's name");
+        capture("recipes-search-results", "preset-picker", "search-game-gog/1453375253");
+        check(find_row(model, "search-game-imported/night-sky") &&
+                  find_row(model, "search-game-gog/1453375253")->subtitle == "GOG \u00b7 2 recipes",
+              "the results name each game's store and recipe count");
+        capture("recipes-other-game", "preset-picker", "recipe-" + std::string(64, '7'));
+        check(model.view().comparison && model.view().comparison->note.find("isn't in this copy") != std::string::npos,
+              "another game's recipe: the side panel notes Playden's program");
+        capture("recipes-linked", "preset-picker", "recipe-" + std::string(64, '6'));
+        check(find_row(model, "chooser-heading-linked") && find_row(model, "recipes-unlink") && find_row(model, one),
+              "the game's own recipes, the linked game's, and Unlink");
         // The chooser with a recipe focused: its comparison beside the sheet.
         check(model.scenario("recipes-three") && model.action("focus:" + one), "focus the first recipe");
         for (int frame = 0; frame < 16; ++frame) renderer.draw(model, 1920, 1080);

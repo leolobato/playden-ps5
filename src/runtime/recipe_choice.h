@@ -9,6 +9,7 @@
 #include "runtime/game_settings.h"
 #include "runtime/kit_version.h"
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -32,8 +33,6 @@ enum class CommunityObjectState { kLoaded, kMissing, kUnreadable };
 
 inline constexpr const char* kCommunityRecipeRemoved = "This recipe was removed.";
 inline constexpr const char* kCommunityRecipeUnreadable = "The recipe can't be read.";
-// Its id is longer than a game's title holds (kInstalledRecipeIdMaxBytes): only another store's recipe can be.
-inline constexpr const char* kCommunityRecipeIdTooLong = "Playden can't use this recipe yet: its ID is too long for the game's title.";
 inline constexpr const char* kCommunityRecipeNeedsRuntimeUpdate =
     " Update the game's runtime kit first: Play, or Maintenance › Update runtime kit.";
 
@@ -64,6 +63,15 @@ struct RecipeSelection {
 // for the title's kit, else the shipped recipe, else the generated one. Pure; the settings sheet and
 // preparation share it.
 RecipeSelection SelectRecipe(const RecipeCandidates& candidates);
+
+// Another game's community recipe (found by searching by name) whose program isn't in this copy runs with the game's
+// own program, Playden's choice: the launch entries and architecture of `own`, and none of the recipe's defaults or
+// locks for the program rows (launch option, program, folder, arguments, architecture). Everything else stays the
+// recipe's. in_copy is asked for the recipe's program (its first launch entry, '/' separated, relative to the game
+// folder). Returns that program when it isn't in the copy and the recipe now starts own's; empty when nothing changed
+// (the program is there, the recipe has none, or own has none either). Pure.
+std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
+                          const std::function<bool(const std::string& program)>& in_copy);
 
 // A player override that stops applying when the game's base (recipe and preset) changes.
 struct DroppedOverride {

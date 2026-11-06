@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "library/store.h"
 
@@ -50,6 +51,14 @@ std::optional<GameRef> ParseGameRefText(std::string_view text);
 // every run of other characters one "-", "-" trimmed at both ends, cut to 48 bytes and trimmed again; "game" when
 // nothing is left (invalid UTF-8 included). The same name gives the same key on every console, the API and the checker.
 std::string NameKey(std::string_view name);
+
+// The words a recipe search compares (the chooser's "Search recipes by game name…"): normalised the NameKey way, Unicode
+// NFKD with every mark dropped and case folded, but letters and digits of every script are kept: each run of letters
+// and digits is a word, everything else separates words. For an ASCII name they are the words NameKey joins with "-".
+std::vector<std::string> SearchWords(std::string_view text);
+// Whether a game's name matches a search: every word of the query begins a word of the name, in any order ("brulee
+// cr" matches "Crème Brûlée & Clockwork"). A query without words matches every name.
+bool NameMatchesSearch(std::string_view name, std::string_view query);
 
 // A game's name as a recipe's game.name holds it: valid UTF-8 of 1-120 characters (code points) with at least one
 // visible character (outside categories Z, M and C), and no control, format, private-use or unassigned character and

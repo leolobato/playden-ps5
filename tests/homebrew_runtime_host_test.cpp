@@ -7717,6 +7717,128 @@ void ImportedGameTakesItsSteamAppIdsRecipe() {
   restarted.Shutdown();
 }
 
+// Another game's recipe chosen from a search (CommunityRecipeChoice::game): it applies to this game, a 100-byte id goes
+// to the record and the title as its alias and maps back after a restart, a recipe whose program isn't in this copy
+// starts Playden's own program, and an unrelated recipe (no game recorded for it) is still refused.
+void LinkedRecipeAppliesUnderItsAlias() {
+  const auto local = playden::GameId::Local("6a0c1c9e-3b57-4d0e-9f53-3c5b2f7a9d41");
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  RecipeCache cache;
+  cache.Wire(config);
+  const auto game = fixture.root / "data/playden-import/Linked";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Bin/Game.exe", pe, 0644);
+  Write(game / "Bin/Fast.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const playden::GameRef long_game{"imported", std::string(48, 'a')};
+  const playden::GameRef gog_game{"gog", "1207658924"};
+  const playden::GameRef unrelated{"imported", "another-game"};
+  const auto recipe_for = [](const playden::GameRef& ref, const std::string& slug, const std::string& program) {
+    CommunityRecipe out;
+    out.recipe.id = CommunityRecipeIdFor(ref, slug);
+    out.recipe.version = 1;
+    out.recipe.name = "Linked";
+    out.recipe.launch_entries = {{"game", "Fast", program, ""}};
+    out.recipe.architecture = "pe64";
+    out.recipe.graphics = "dxvk";
+    out.game = ref;
+    out.game_name = "Linked";
+    out.executable = program;
+    out.title = "Fast";
+    out.status = "works";
+    out.tested_kit = "0.12";
+    out.author = "Ana";
+    return SerializeCommunityRecipe(out);
+  };
+  const auto long_id = CommunityRecipeIdFor(long_game, std::string(32, 'z'));
+  CHECK(long_id.size() == 100);
+  const auto alias = InstalledRecipeId(long_id);
+  CHECK(alias == "community-h-f924d923ba7c01f94c0a2b65");
+  const auto rev_long = cache.Add(recipe_for(long_game, std::string(32, 'z'), "Bin/Fast.exe"));
+  const auto rev_gog = cache.Add(recipe_for(gog_game, "pad", "GOG/Launcher.exe"));
+  const auto rev_unrelated = cache.Add(recipe_for(unrelated, "fast", "Bin/Fast.exe"));
+  std::mutex settings_mutex;
+  GameSettingsRecord saved;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    return saved;
+  };
+  const auto choose = [&](const std::string& id, const std::string& revision, const playden::GameRef& for_game) {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    ChooseCommunityRecipe(&saved, id, revision, for_game);
+  };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto number = *host.RuntimeNumberFor(local);
+  RuntimePrepareRequest request{number, "/data/playden-import/Linked", "internal", "Linked"};
+  request.launches = {{"", "", "Bin/Game.exe", "", ""}};
+  request.game = local;
+  // Chosen from a search for the game (no Steam app ID: no recipes of its own): the 100-byte id applies, as its alias.
+  choose(long_id, rev_long, long_game);
+  CHECK(saved.linked_game == long_game);
+  host.Prepare(request);
+  auto done = WaitFor(host, [number](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(number).c_str());
+  CHECK(!done.refusals.count(number) && done.installs.size() == 1);
+  CHECK(done.installs[0].recipe_id == alias && done.installs[0].recipe_version == rev_long.substr(0, 32) &&
+        done.installs[0].launch_path == "Bin/Fast.exe" && !done.recipe_fallbacks.count(number));
+  const auto apply = [&] {
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(number, RuntimeMaintenance::kApplySettings);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  };
+  // Applying settings again finds the alias's recipe: no switch, nothing falls back.
+  {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.overrides["volume"] = "80";
+    ++saved.revision;
+  }
+  done = apply();
+  if (!done.maintenance.at(number).ok) std::fprintf(stderr, "apply: %s\n", done.maintenance.at(number).message.c_str());
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == alias && !done.recipe_fallbacks.count(number));
+  // Another store's game's recipe whose program isn't in this copy: Playden's own program starts.
+  choose(CommunityRecipeIdFor(gog_game, "pad"), rev_gog, gog_game);
+  done = apply();
+  if (!done.maintenance.at(number).ok) std::fprintf(stderr, "apply: %s\n", done.maintenance.at(number).message.c_str());
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-gog-1207658924-pad" &&
+        done.installs[0].recipe_version == rev_gog.substr(0, 32) && done.installs[0].launch_path == "Bin/Game.exe" &&
+        !done.recipe_fallbacks.count(number));
+  // Back to the long one.
+  choose(long_id, rev_long, long_game);
+  done = apply();
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == alias && done.installs[0].launch_path == "Bin/Fast.exe");
+  // An unrelated recipe: no game recorded for it, and it isn't the game's own. Refused; the applied one stays.
+  choose(CommunityRecipeIdFor(unrelated, "fast"), rev_unrelated, {});
+  done = apply();
+  CHECK(done.installs[0].recipe_id == alias && done.recipe_fallbacks.at(number) == kCommunityRecipeUnreadable);
+  // Recorded for one game, the object another's: refused too.
+  choose(CommunityRecipeIdFor(unrelated, "fast"), rev_unrelated, long_game);
+  done = apply();
+  CHECK(done.installs[0].recipe_id == alias && done.recipe_fallbacks.at(number) == kCommunityRecipeUnreadable);
+  choose(long_id, rev_long, long_game);
+  done = apply();
+  CHECK(done.installs[0].recipe_id == alias && !done.recipe_fallbacks.count(number));
+  host.Shutdown();
+  // After a restart the alias in the record resolves to the long id's recipe again.
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.installs.empty(); });
+  CHECK(reloaded.installs[0].recipe_id == alias && reloaded.installs[0].state == PreparationState::kReady);
+  CHECK(std::find(reloaded.community_references.begin(), reloaded.community_references.end(), rev_long.substr(0, 32)) !=
+        reloaded.community_references.end());
+  restarted.Shutdown();
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
@@ -7820,6 +7942,7 @@ int main(int argc, char** argv) {
   AppliedCommunityRecipeSurvivesKitSwap();
   CommunityRecipeOverGeneratedAndKitFallback();
   ImportedGameTakesItsSteamAppIdsRecipe();
+  LinkedRecipeAppliesUnderItsAlias();
   std::puts("runtime host tests passed");
   return 0;
 }

@@ -17,7 +17,9 @@ bool RecipeForGame(const GameRecipe& recipe, const RuntimeInstall& record) {
 }
 
 bool RecipeMatchesInstall(const GameRecipe& recipe, const RuntimeInstall& record) {
-  return RecipeForGame(recipe, record) && recipe.id == record.recipe_id && RecipeVersionTag(recipe) == record.recipe_version;
+  // The record holds a longer community recipe id as its alias (InstalledRecipeId).
+  return RecipeForGame(recipe, record) && InstalledRecipeId(recipe.id) == record.recipe_id &&
+         RecipeVersionTag(recipe) == record.recipe_version;
 }
 
 RecipeSelection SelectRecipe(const RecipeCandidates& candidates) {
@@ -32,9 +34,6 @@ RecipeSelection SelectRecipe(const RecipeCandidates& candidates) {
     if (!loaded) {
       reason = candidates.community_state == CommunityObjectState::kMissing ? kCommunityRecipeRemoved
                                                                             : kCommunityRecipeUnreadable;
-    } else if (community->recipe.id.size() > kInstalledRecipeIdMaxBytes) {
-      // The game's title holds a recipe id in 64 bytes; only another store's longer ids can be longer.
-      reason = kCommunityRecipeIdTooLong;
     } else if (!candidates.kit) {
       reason = "No verified runtime kit is installed.";
     } else {
@@ -53,6 +52,21 @@ RecipeSelection SelectRecipe(const RecipeCandidates& candidates) {
   }
   selection.recipe = candidates.shipped ? candidates.shipped : candidates.generated;
   return selection;
+}
+
+std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
+                          const std::function<bool(const std::string& program)>& in_copy) {
+  if (!recipe || recipe->launch_entries.empty() || own.launch_entries.empty()) return {};
+  auto program = recipe->launch_entries.front().executable;
+  std::replace(program.begin(), program.end(), '\\', '/');
+  if (program.empty() || in_copy(program)) return {};
+  recipe->launch_entries = own.launch_entries;
+  recipe->architecture = own.architecture;
+  for (const char* id : {"launch_option", "program", "program_folder", "program_arguments", "architecture"}) {
+    recipe->defaults.erase(id);
+    recipe->locked.erase(id);
+  }
+  return program;
 }
 
 std::vector<DroppedOverride> DroppedOverrides(const GameRecipe& from, const SettingsPreset* from_preset,

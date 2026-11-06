@@ -81,6 +81,14 @@ void Ids() {
   const auto longest_imported = CommunityRecipeIdFor({"imported", std::string(48, 'a')}, std::string(32, 'z'));
   CHECK(longest_imported.size() == 100 && longest_imported.size() > kInstalledRecipeIdMaxBytes &&
         IsCommunityRecipeId(longest_imported));
+  // A record and the title hold it as its alias: community-h-<first 24 hex of its SHA-256>; an id that fits stays.
+  CHECK(InstalledRecipeId(longest_imported) == "community-h-f924d923ba7c01f94c0a2b65");
+  CHECK(InstalledRecipeId(longest_steam) == longest_steam && InstalledRecipeId("steam-220-auto") == "steam-220-auto");
+  CHECK(IsCommunityRecipeAlias(InstalledRecipeId(longest_imported)) && !IsCommunityRecipeId(InstalledRecipeId(longest_imported)));
+  CHECK(IsInstalledCommunityRecipeId(InstalledRecipeId(longest_imported)) && IsInstalledCommunityRecipeId(longest_steam) &&
+        !IsInstalledCommunityRecipeId(longest_imported));
+  CHECK(!IsCommunityRecipeAlias("community-h-f924d923ba7c01f94c0a2b6") && !IsCommunityRecipeAlias("community-h-F924D923BA7C01F94C0A2B65") &&
+        !IsCommunityRecipeAlias("community-h-f924d923ba7c01f94c0a2b65\n"));
   // The slug comes only from comparing with an id made from the game; nothing splits an id.
   CHECK(CommunityRecipeSlug("community-steam-274520-120hz-left-stick-pointer", darkwood) == "120hz-left-stick-pointer");
   CHECK(CommunityRecipeSlug("community-imported-tmnt-mutant-melee-arrow-keys", tmnt) == "arrow-keys");

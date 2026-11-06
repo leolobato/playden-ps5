@@ -5,6 +5,7 @@
 
 #include <utf8proc.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace playden {
@@ -159,6 +160,50 @@ std::string NameKey(std::string_view name) {
   if (key.size() > kNameKeyMaxBytes) key.resize(kNameKeyMaxBytes);
   while (!key.empty() && key.back() == '-') key.pop_back();
   return key.empty() ? std::string("game") : key;
+}
+
+std::vector<std::string> SearchWords(std::string_view text) {
+  utf8proc_uint8_t* mapped = nullptr;
+  const auto count = utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(text.data()),
+                                  static_cast<utf8proc_ssize_t>(text.size()), &mapped,
+                                  static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPAT | UTF8PROC_DECOMPOSE |
+                                                                 UTF8PROC_CASEFOLD));
+  std::vector<std::string> words;
+  if (count >= 0) {
+    const std::string_view folded(reinterpret_cast<const char*>(mapped), static_cast<std::size_t>(count));
+    bool gap = true;
+    ForEachCodePoint(folded, [&](utf8proc_int32_t code_point) {
+      const auto category = utf8proc_category(code_point);
+      if (Mark(category)) return true;
+      const bool letter = category == UTF8PROC_CATEGORY_LU || category == UTF8PROC_CATEGORY_LL ||
+                          category == UTF8PROC_CATEGORY_LT || category == UTF8PROC_CATEGORY_LM ||
+                          category == UTF8PROC_CATEGORY_LO || category == UTF8PROC_CATEGORY_ND ||
+                          category == UTF8PROC_CATEGORY_NL || category == UTF8PROC_CATEGORY_NO;
+      if (!letter) {
+        gap = true;
+        return true;
+      }
+      if (gap) words.emplace_back();
+      gap = false;
+      utf8proc_uint8_t encoded[4];
+      const auto used = utf8proc_encode_char(code_point, encoded);
+      words.back().append(reinterpret_cast<const char*>(encoded), static_cast<std::size_t>(used));
+      return true;
+    });
+  }
+  std::free(mapped);
+  return words;
+}
+
+bool NameMatchesSearch(std::string_view name, std::string_view query) {
+  const auto names = SearchWords(name);
+  for (const auto& word : SearchWords(query)) {
+    const bool found = std::any_of(names.begin(), names.end(), [&](const std::string& candidate) {
+      return candidate.compare(0, word.size(), word) == 0;
+    });
+    if (!found) return false;
+  }
+  return true;
 }
 
 bool IsGameName(std::string_view name) {

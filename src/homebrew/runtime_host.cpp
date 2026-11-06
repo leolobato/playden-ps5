@@ -111,17 +111,12 @@ std::string KitLacksForRecipe(const rt::GameRecipe& recipe, const rt::VerifiedKi
 
 // Whether a record names a community recipe the installer may resolve (FilesystemPackageInstaller::AcceptRecipes)
 // whether or not the recipe's object is still cached, so a game whose recipe left the cache stays inspectable and
-// removable. An id is never split to find its game: a Steam game's record must name one made for its GameRef
-// (steam/<app>); another store's game may hold a recipe of its Steam app ID's, which the record doesn't carry, so
-// only the id's shape counts there. A plan is only ever built from a loaded, hash-checked object bound to the game
-// (RuntimeHost::RecipeOf).
+// removable. An id is never split to find its game, and any game may play another game's recipe (chosen from a search,
+// CommunityRecipeChoice::game), which the record doesn't carry: only the id's shape counts, an id of at most 64 bytes
+// or the alias of a longer one (InstalledRecipeId). A plan is only ever built from a loaded, hash-checked object
+// whose game is the game's own or the one its choice names, bound to the game (RuntimeHost::SelectRecipeFor, RecipeOf).
 bool CommunityRecipeNamesGame(const rt::RuntimeInstall& record) {
-  if (!rt::IsCommunityRecipeId(record.recipe_id) || record.recipe_id.size() > rt::kInstalledRecipeIdMaxBytes ||
-      !rt::IsCommunityRevisionPrefix(record.recipe_version))
-    return false;
-  const auto game = GameOf(record);
-  if (const auto app = game.steam_app()) return rt::CommunityRecipeSlug(record.recipe_id, GameRef::Steam(*app)).has_value();
-  return true;
+  return rt::IsInstalledCommunityRecipeId(record.recipe_id) && rt::IsCommunityRevisionPrefix(record.recipe_version);
 }
 
 // Private runtime state files, one per game or install.
@@ -2203,7 +2198,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // sheet shows why (RuntimeSnapshot::recipe_fallbacks). Decided on every call, so a choice that fell
   // back once is switched to by the next Play, Apply settings or Update once its object is cached or
   // the kit fits, whatever the settings revision.
-  const bool applied_is_community = rt::IsCommunityRecipeId(record.recipe_id);
+  const bool applied_is_community = rt::IsInstalledCommunityRecipeId(record.recipe_id);
   const rt::GameRecipe* applied = RecipeOf(c, record);
   const rt::GameRecipe* recipe = applied;
   rt::RecipeSelection selection;
@@ -2212,7 +2207,8 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   if (c.kit) {
     selection = SelectRecipeFor(c, GameOf(record), record.runtime_number, &record, saved);
     if (selection.community) {
-      switching = selection.recipe->id != record.recipe_id || rt::RecipeVersionTag(*selection.recipe) != record.recipe_version;
+      switching = rt::InstalledRecipeId(selection.recipe->id) != record.recipe_id ||
+                  rt::RecipeVersionTag(*selection.recipe) != record.recipe_version;
       if (switching) recipe = selection.recipe;
     } else if (applied_is_community && saved.community_recipe.id.empty()) {
       // Back to Playden's own recipe: the shipped one, else the one generated when the game was prepared.
@@ -2285,7 +2281,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     return refuse(refused);
   // The publication carries the recipe it is built from; the record takes it at the commit (Reconcile,
   // like the program above).
-  next.recipe_id = recipe->id;
+  next.recipe_id = rt::InstalledRecipeId(recipe->id);
   next.recipe_version = rt::RecipeVersionTag(*recipe);
   // An unowned folder is published as it is, so one made over FTP (root's, 0755) is opened up
   // before dxvk.conf is written into it, as preparation does.
@@ -3305,12 +3301,30 @@ RuntimeHost::CommunityLoad RuntimeHost::LoadCommunityRecipe(Composition& c, std:
 }
 
 const rt::CommunityRecipe* RuntimeHost::BoundCommunityRecipe(Composition& c, const rt::CommunityRecipe& loaded,
-                                                             const GameId& game, std::uint32_t runtime_number) {
-  auto& bound = c.bound_community[{loaded.recipe.revision, runtime_number}];
-  if (!bound) {
-    bound = std::make_unique<rt::CommunityRecipe>(loaded);
-    rt::BindCommunityRecipe(bound.get(), game, runtime_number);
+                                                             const GameId& game, std::uint32_t runtime_number,
+                                                             const std::string& install_path,
+                                                             const rt::GameSettingsRecord& saved) {
+  auto fresh = std::make_unique<rt::CommunityRecipe>(loaded);
+  rt::BindCommunityRecipe(fresh.get(), game, runtime_number);
+  // Another game's recipe whose program isn't in this copy starts the game's own program (Playden's choice).
+  const auto own_ref = MatchingRefOf(game, runtime_number, saved);
+  if (!install_path.empty() && (!own_ref || loaded.game != *own_ref)) {
+    const auto* own = ShippedRecipeFor(c, game, runtime_number);
+    if (!own) own = GeneratedRecipeFor(c, game, runtime_number);
+    if (own) {
+      const auto root = HostPath(install_path).string();
+      const auto missing = rt::UseOwnProgram(&fresh->recipe, *own, [&](const std::string& program) {
+        return !rt::GameProgramArchitecture(root, program).empty();
+      });
+      if (!missing.empty())
+        Log("community recipe app=" + std::to_string(runtime_number) + " id=" + loaded.recipe.id + " program " + missing +
+            " not in this copy: Playden's program is used");
+    }
   }
+  // Kept for the session, so pointers stay valid; updated in place when the copy or Playden's own recipe changed.
+  auto& bound = c.bound_community[{loaded.recipe.revision, runtime_number}];
+  if (!bound) bound = std::move(fresh);
+  else if (rt::SerializeGameRecipe(bound->recipe) != rt::SerializeGameRecipe(fresh->recipe)) *bound = std::move(*fresh);
   return bound.get();
 }
 
@@ -3330,16 +3344,20 @@ std::optional<GameRef> RuntimeHost::MatchingRefOf(const GameId& game, std::uint3
 }
 
 const rt::CommunityRecipe* RuntimeHost::CommunityOf(Composition& c, const rt::RuntimeInstall& record) {
-  if (!rt::IsCommunityRecipeId(record.recipe_id)) return nullptr;
+  if (!rt::IsInstalledCommunityRecipeId(record.recipe_id)) return nullptr;
+  // The record holds the revision's first 32 hex: the object found by it names the full id, which the record holds
+  // as its alias when it is longer than 64 bytes (RecipeMatchesInstall compares InstalledRecipeId).
   const auto load = LoadCommunityRecipe(c, record.recipe_version);
   if (!load.recipe) return nullptr;
   // What the title plays under: bound to the record's game whatever its GameRef is now (a changed Steam app ID).
-  const auto* bound = BoundCommunityRecipe(c, *load.recipe, GameOf(record), record.runtime_number);
+  const auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+  const auto* bound = BoundCommunityRecipe(c, *load.recipe, GameOf(record), record.runtime_number, record.install_path,
+                                           saved.value_or(rt::GameSettingsRecord{}));
   return rt::RecipeMatchesInstall(bound->recipe, record) ? bound : nullptr;
 }
 
 const rt::GameRecipe* RuntimeHost::RecipeOf(Composition& c, const rt::RuntimeInstall& record) {
-  if (rt::IsCommunityRecipeId(record.recipe_id)) {
+  if (rt::IsInstalledCommunityRecipeId(record.recipe_id)) {
     const auto* community = CommunityOf(c, record);
     return community ? &community->recipe : nullptr;
   }
@@ -3349,7 +3367,8 @@ const rt::GameRecipe* RuntimeHost::RecipeOf(Composition& c, const rt::RuntimeIns
 }
 
 rt::RecipeSelection RuntimeHost::SelectRecipeFor(Composition& c, const GameId& game, std::uint32_t runtime_number,
-                                                 const rt::RuntimeInstall* record, const rt::GameSettingsRecord& saved) {
+                                                 const rt::RuntimeInstall* record, const rt::GameSettingsRecord& saved,
+                                                 const std::string& install_path) {
   rt::RecipeCandidates candidates;
   candidates.shipped = ShippedRecipeFor(c, game, runtime_number);
   candidates.generated = GeneratedRecipeFor(c, game, runtime_number);
@@ -3362,10 +3381,13 @@ rt::RecipeSelection RuntimeHost::SelectRecipeFor(Composition& c, const GameId& g
     candidates.wanted = &saved.community_recipe;
     const auto load = LoadCommunityRecipe(c, saved.community_recipe.revision);
     candidates.community_state = load.state;
-    // The object must be a recipe for this game's GameRef; anything else reads as unreadable.
+    // The object must be a recipe for this game's GameRef, or for the other game the choice names (chosen from a
+    // search); anything else reads as unreadable.
     const auto ref = load.recipe ? MatchingRefOf(game, runtime_number, saved) : std::nullopt;
-    if (load.recipe && ref && load.recipe->game == *ref)
-      candidates.community = BoundCommunityRecipe(c, *load.recipe, game, runtime_number);
+    const auto& chosen_for = saved.community_recipe.game;
+    if (load.recipe && ((ref && load.recipe->game == *ref) || (chosen_for.valid() && load.recipe->game == chosen_for)))
+      candidates.community = BoundCommunityRecipe(c, *load.recipe, game, runtime_number,
+                                                  record ? record->install_path : install_path, saved);
     else if (load.recipe)
       candidates.community_state = rt::CommunityObjectState::kUnreadable;
   }
@@ -3373,6 +3395,7 @@ rt::RecipeSelection RuntimeHost::SelectRecipeFor(Composition& c, const GameId& g
   if (candidates.wanted)
     Log("recipe selection app=" + std::to_string(runtime_number) + " wanted=" + candidates.wanted->id + "@" +
         candidates.wanted->revision.substr(0, rt::kCommunityRevisionPrefixBytes) +
+        (candidates.wanted->game.valid() ? " for=" + ToText(candidates.wanted->game) : std::string()) +
         (selection.community ? std::string(" selected") : " fallback: " + selection.fallback_reason));
   return selection;
 }
@@ -3384,8 +3407,15 @@ rt::RecipeSelection RuntimeHost::SelectRecipeFor(Composition& c, const GameId& g
 const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const RuntimePrepareRequest& request,
                                                     std::string* reason) {
   const auto saved = config_.settings_record ? config_.settings_record(GameOf(request)) : std::nullopt;
+  // Another game's recipe may need Playden's own program (BoundCommunityRecipe): it is generated first when the game
+  // has none yet.
+  if (saved && saved->community_recipe.game.valid() && !ShippedRecipeFor(c, GameOf(request), request.runtime_number) &&
+      !GeneratedRecipeFor(c, GameOf(request), request.runtime_number)) {
+    std::string ignored;
+    GenerateRecipeForPrepare(c, request, &ignored, true);
+  }
   const auto selection = SelectRecipeFor(c, GameOf(request), request.runtime_number, nullptr,
-                                         saved.value_or(rt::GameSettingsRecord{}));
+                                         saved.value_or(rt::GameSettingsRecord{}), request.install_path);
   Publish([&](RuntimeSnapshot& s) {
     if (selection.fallback_reason.empty()) s.recipe_fallbacks.erase(request.runtime_number);
     else s.recipe_fallbacks[request.runtime_number] = selection.fallback_reason;
@@ -3626,12 +3656,12 @@ std::string RuntimeHost::RebindRecipeMarkers(Composition& c, const rt::RuntimeIn
 void RuntimeHost::PublishCommunityReferences(const Composition& c) {
   std::set<std::string> references;
   for (const auto& record : c.repository.Snapshot()) {
-    if (rt::IsCommunityRecipeId(record.recipe_id) && rt::IsCommunityRevisionPrefix(record.recipe_version))
+    if (rt::IsInstalledCommunityRecipeId(record.recipe_id) && rt::IsCommunityRevisionPrefix(record.recipe_version))
       references.insert(record.recipe_version);
     // An unfinished settings transaction carries the recipe it publishes.
     if (record.journal && (record.journal->operation == "settings-request" || record.journal->operation == "settings-publication")) {
       const auto loaded = rt::LoadSettingsPublicationRequest(c.request_directory, record.journal->operation_id);
-      if (loaded.request && rt::IsCommunityRecipeId(loaded.request->install.recipe_id) &&
+      if (loaded.request && rt::IsInstalledCommunityRecipeId(loaded.request->install.recipe_id) &&
           rt::IsCommunityRevisionPrefix(loaded.request->install.recipe_version))
         references.insert(loaded.request->install.recipe_version);
     }
@@ -3939,7 +3969,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       const auto* recipe = rt::IsGeneratedRecipeId(existing->recipe_id) ? GenerateRecipeForPrepare(c, request, &reason, false)
                                                                         : RecipeForPrepare(c, request, &reason);
       if (!recipe) return reason;
-      if (recipe->id != existing->recipe_id || rt::RecipeVersionTag(*recipe) != existing->recipe_version)
+      if (rt::InstalledRecipeId(recipe->id) != existing->recipe_id || rt::RecipeVersionTag(*recipe) != existing->recipe_version)
         return "This game's setup changed; remove its PS5 title before preparing it again.";
     }
     // A setup that stopped before a kit swap left its title or bottle made with the earlier kit. Neither
@@ -4019,7 +4049,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     reserve.game = game;
     reserve.default_profile_id = ProfileId(game);
     reserve.runtime_bundle_id = c.kit->view.runtime.bundle_id;
-    reserve.recipe_id = recipe->id;
+    reserve.recipe_id = rt::InstalledRecipeId(recipe->id);
     reserve.recipe_version = rt::RecipeVersionTag(*recipe);
     reserve.settings_revision = settings ? settings->revision : 0;
     reserve.launch_entry_id = launch.id;

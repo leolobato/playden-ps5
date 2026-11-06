@@ -1,5 +1,6 @@
 #include "runtime/game_settings.h"
 #include "runtime/game_probe.h"
+#include "runtime/artifact_hash.h"
 
 #include "homebrew/json.hpp"
 #include "platform/managed_directory.h"
@@ -1772,12 +1773,18 @@ bool RecordFromValue(const storage_json::Value& root, GameSettingsRecord* out) {
     const auto* revision = chosen->Find("revision");
     if (id && id->is_string() && revision && revision->is_string() && IsCommunityRecipeId(id->text()) &&
         IsCommunityRevision(revision->text())) {
-      out->community_recipe = {id->text(), revision->text()};
+      out->community_recipe = {id->text(), revision->text(), GameRef{}};
+      // Another game's recipe names that game; one that can't be read leaves the game's own (the runtime then
+      // refuses another game's recipe, never takes it for the wrong game).
+      if (const auto* game = chosen->Find("game"); game && game->is_string())
+        if (const auto ref = ParseGameRefText(game->text())) out->community_recipe.game = *ref;
       // One base: a file that names both (written by hand, or by a build that didn't keep them
       // exclusive) keeps the community recipe, never a preset stacked on it.
       out->preset_id.clear();
     }
   }
+  if (const auto* linked = root.Find("linked_game"); linked && linked->is_string())
+    if (const auto ref = ParseGameRefText(linked->text())) out->linked_game = *ref;
   if (const auto* shared = root.Find("shared_recipe"); shared && shared->is_object()) {
     const auto* submission = shared->Find("submission_id");
     const auto* id = shared->Find("recipe_id");
@@ -1829,7 +1836,10 @@ std::string SerializeGameSettingsRecord(const GameSettingsRecord& record) {
   if (!record.steam_launch.empty()) text += ",\"steam_launch\":\"" + json::escape(record.steam_launch) + "\"";
   if (!record.community_recipe.id.empty())
     text += ",\"community_recipe\":{\"id\":\"" + json::escape(record.community_recipe.id) + "\",\"revision\":\"" +
-            json::escape(record.community_recipe.revision) + "\"}";
+            json::escape(record.community_recipe.revision) + "\"" +
+            (record.community_recipe.game.valid() ? ",\"game\":\"" + json::escape(ToText(record.community_recipe.game)) + "\"" : "") +
+            "}";
+  if (record.linked_game.valid()) text += ",\"linked_game\":\"" + json::escape(ToText(record.linked_game)) + "\"";
   if (!record.shared_recipe.submission_id.empty())
     text += ",\"shared_recipe\":{\"submission_id\":\"" + json::escape(record.shared_recipe.submission_id) +
             "\",\"recipe_id\":\"" + json::escape(record.shared_recipe.recipe_id) + "\"" +
@@ -2041,6 +2051,28 @@ bool IsCommunityRecipeId(std::string_view id) {
   return HyphenWords(rest.substr(hyphen + 1));
 }
 
+namespace {
+constexpr std::string_view kCommunityAliasPrefix = "community-h-";
+constexpr std::size_t kCommunityAliasHexBytes = 24;
+}  // namespace
+
+std::string InstalledRecipeId(std::string_view id) {
+  if (id.size() <= kInstalledRecipeIdMaxBytes) return std::string(id);
+  const auto digest = HashArtifactBytes(id).value_or(std::string());
+  return std::string(kCommunityAliasPrefix) + digest.substr(0, kCommunityAliasHexBytes);
+}
+
+bool IsCommunityRecipeAlias(std::string_view id) {
+  if (id.size() != kCommunityAliasPrefix.size() + kCommunityAliasHexBytes || id.substr(0, kCommunityAliasPrefix.size()) != kCommunityAliasPrefix)
+    return false;
+  const auto hex = id.substr(kCommunityAliasPrefix.size());
+  return std::all_of(hex.begin(), hex.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool IsInstalledCommunityRecipeId(std::string_view id) {
+  return (IsCommunityRecipeId(id) && id.size() <= kInstalledRecipeIdMaxBytes) || IsCommunityRecipeAlias(id);
+}
+
 bool IsValidCommunitySlug(std::string_view slug) {
   return slug.size() <= kCommunitySlugMaxBytes && HyphenWords(slug);
 }
@@ -2081,9 +2113,10 @@ std::string RecipeVersionTag(const GameRecipe& recipe) {
   return std::to_string(recipe.version);
 }
 
-void ChooseCommunityRecipe(GameSettingsRecord* record, std::string id, std::string revision) {
+void ChooseCommunityRecipe(GameSettingsRecord* record, std::string id, std::string revision, GameRef game) {
   record->preset_id.clear();
-  record->community_recipe = {std::move(id), std::move(revision)};
+  if (game.valid()) record->linked_game = game;
+  record->community_recipe = {std::move(id), std::move(revision), std::move(game)};
   ++record->revision;
 }
 
@@ -3534,7 +3567,8 @@ bool BuildSettingsLaunchPlan(const SettingsLaunchInput& input, SettingsLaunchPla
   }
   SettingsLaunchPlan out;
   out.app_id = input.recipe->app_id;
-  out.recipe_id = input.recipe->id;
+  // The title holds the id in 64 bytes: a longer community recipe id goes as its alias.
+  out.recipe_id = InstalledRecipeId(input.recipe->id);
   out.recipe_version = RecipeVersionTag(*input.recipe);
   EffectiveSettings settings;
   SettingsError error;
