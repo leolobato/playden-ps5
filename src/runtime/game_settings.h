@@ -407,7 +407,15 @@ bool ApplyGameSettings(const GameRecipe& recipe, const EffectiveSettings& settin
 // generated recipes are matched to a game by it, never by app_id alone.
 GameId RecipeGame(const GameRecipe& recipe);
 bool ParseGameRecipe(std::string_view json, GameRecipe* recipe, std::string* reason);
+// Refuses a preset whose id starts with "my-": that prefix is the player's own presets' (my_presets.h).
 bool ParseSettingsPresets(std::string_view json, std::vector<SettingsPreset>* presets, std::string* reason);
+// Rows this build no longer has. Settings data written for an earlier build (presets, recipes, the player's presets)
+// may still name them; they are dropped where read, so the file still loads.
+bool RetiredSetting(std::string_view id);
+// Whether a preset, built-in or the player's, may set id to value: a known setting that makes sense on any game.
+// Never launch_option, graphics, architecture, start_check or free text other than button.*; the value must pass
+// ValidateSettingValue. A retired setting (RetiredSetting) is refused here: callers drop those first.
+bool ValidatePresetSetting(std::string_view id, std::string_view value, std::string* reason);
 bool ParseGameSettingsRecord(std::string_view json, GameSettingsRecord* record, std::string* reason);
 // A Steam app ID as a steam_appid.txt or the "steam_app_id" setting holds it: canonical decimal
 // 1..UINT32_MAX (no sign, no leading zero) once surrounding whitespace is trimmed; nothing otherwise.

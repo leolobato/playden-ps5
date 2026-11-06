@@ -1694,6 +1694,21 @@ int main(int argc, char** argv) {
   }
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"graphics":"gdi"}}]})", &presets, &reason));
   CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"x","name":"X","settings":{"extra_arguments":"-a"}}]})", &presets, &reason));
+  // The "my-" prefix is the player's own presets'; a built-in one may not take it.
+  {
+    std::vector<SettingsPreset> mine;
+    CHECK(!ParseSettingsPresets(R"({"presets":[{"id":"my-3f9a0c1d2e4b5a69","name":"Mine","settings":{}}]})", &mine, &reason));
+    CHECK(reason.find("my-") != std::string::npos);
+    CHECK(ParseSettingsPresets(R"({"presets":[{"id":"mouse-my-way","name":"Mine","settings":{}}]})", &mine, &reason));
+  }
+  // The rule every preset's settings follow, built-in or the player's.
+  CHECK(ValidatePresetSetting("controller_preset", "mouse", &reason));
+  CHECK(ValidatePresetSetting("resolution", "1280x720", &reason));
+  CHECK(!ValidatePresetSetting("resolution", "huge", &reason));
+  for (const char* refused : {"launch_option", "graphics", "architecture", "start_check", "extra_arguments", "program",
+                              "no_such_setting", "opengl_thread"})
+    CHECK(!ValidatePresetSetting(refused, "x", &reason));
+  CHECK(RetiredSetting("opengl_thread") && !RetiredSetting("refresh"));
 
   // The per-game record round-trips and drops settings this build does not know.
   GameSettingsRecord record{"mouse-driven", {{"resolution", "1280x720"}, {"extra_arguments", "-a \"b c\"\\"}}, 7};

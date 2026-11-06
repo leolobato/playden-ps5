@@ -34,10 +34,6 @@ namespace storage_json = steam::json;
 using platform::DirectoryPolicy;
 using platform::ManagedDirectory;
 
-// Rows this build no longer has. Settings data written for an earlier build (presets, recipes) may still name them;
-// they are dropped where read, so the file still loads.
-bool RetiredSetting(std::string_view id) { return id == "opengl_thread"; }
-
 SettingDefinition Choice(std::string id, std::string label, std::string effect, std::string also_called,
                          SettingGroup group, std::vector<SettingChoice> choices, std::string playden_default,
                          int phase = 1, ApplyMode apply = ApplyMode::kNextLaunch) {
@@ -1705,6 +1701,21 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
   return true;
 }
 
+bool RetiredSetting(std::string_view id) { return id == "opengl_thread"; }
+
+bool ValidatePresetSetting(std::string_view id, std::string_view value, std::string* reason) {
+  // Presets bundle choices and button bindings; launch entries, graphics and free text belong to the recipe or the
+  // player.
+  const auto* definition = FindSetting(id);
+  const bool button = id.compare(0, 7, "button.") == 0;
+  if (!definition || id == "launch_option" || id == "graphics" || id == "architecture" || id == "start_check" ||
+      (definition->kind == SettingKind::kText && !button)) {
+    if (reason) *reason = "unsupported setting";
+    return false;
+  }
+  return ValidateSettingValue(GameRecipe{}, id, value, reason);
+}
+
 bool ParseSettingsPresets(std::string_view text, std::vector<SettingsPreset>* presets, std::string* reason) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);
@@ -1720,17 +1731,12 @@ bool ParseSettingsPresets(std::string_view text, std::vector<SettingsPreset>* pr
         !StringField(item, "try_when", &preset.try_when, false) ||
         !StringField(item, "short_hint", &preset.short_hint, false) || !StringMap(item.get("settings"), &preset.settings))
       return fail("preset needs id, name and string settings");
+    // The player's own presets (my_presets.h) take this prefix.
+    if (preset.id.compare(0, 3, "my-") == 0) return fail("preset " + preset.id + ": ids starting with my- are the player's");
     for (auto it = preset.settings.begin(); it != preset.settings.end();) it = RetiredSetting(it->first) ? preset.settings.erase(it) : std::next(it);
     for (const auto& [id, value] : preset.settings) {
-      // Presets bundle choices and button bindings; launch entries, graphics and free text
-      // belong to the recipe or the player.
-      const auto* definition = FindSetting(id);
-      const bool button = id.compare(0, 7, "button.") == 0;
-      if (!definition || id == "launch_option" || id == "graphics" || id == "architecture" || id == "start_check" ||
-          (definition->kind == SettingKind::kText && !button))
-        return fail("preset " + preset.id + " sets unsupported setting " + id);
       std::string why;
-      if (!ValidateSettingValue(GameRecipe{}, id, value, &why)) return fail("preset " + preset.id + " " + id + ": " + why);
+      if (!ValidatePresetSetting(id, value, &why)) return fail("preset " + preset.id + " " + id + ": " + why);
     }
     out.push_back(std::move(preset));
   }
