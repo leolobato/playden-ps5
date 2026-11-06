@@ -249,7 +249,7 @@ void share_and_vote(const std::filesystem::path& base) {
     check(!find_row(model, "share-choice-update") && find_row(model, "share-title") && find_row(model, "share-what"),
           "a new recipe asks nothing: title, name, rating, what is sent");
     check(contains(find_row(model, "share-what")->subtitle, "Darkwood.exe") ||
-              contains(find_row(model, "share-what")->subtitle, "game.exe"),
+              contains(find_row(model, "share-what")->subtitle, "Game.exe"),
           "what is sent names the program");
     activate(model, "share-title");
     check(model.state().editor.active && model.state().editor.purpose == "Recipe title", "the title opens the keyboard");

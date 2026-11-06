@@ -395,7 +395,7 @@ struct RuntimeSnapshot {
   std::map<std::uint32_t, SteamworksAppView> steamworks_apps;
   // Community recipes (docs/community-recipes.md), by runtime number:
   // - why the wanted community recipe was not used the last time the game was prepared or its
-  //   settings published, and Playden's own recipe was ("The recipe needs kit 0.13.",
+  //   settings published, and Playden's own recipe was ("The recipe needs runtime kit version 0.13 or newer.",
   //   runtime::kCommunityRecipeRemoved, runtime::kCommunityRecipeUnreadable); absent when it was
   //   used, or none is wanted;
   std::map<std::uint32_t, std::string> recipe_fallbacks;

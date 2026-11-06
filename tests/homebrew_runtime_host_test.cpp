@@ -7574,7 +7574,7 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
   // The recipe needs a newer kit: the generated recipe prepares the game, and the sheet learns why.
   ChooseCommunityRecipe(&saved, "community-4242-fast", rev_new);
   auto done = prepare();
-  CHECK(done.installs[0].recipe_id == "steam-4242-auto" && done.recipe_fallbacks.at(4242) == "The recipe needs kit 0.13.");
+  CHECK(done.installs[0].recipe_id == "steam-4242-auto" && done.recipe_fallbacks.at(4242) == "The recipe needs runtime kit version 0.13 or newer.");
   CHECK(has(Read(profile), "Game.exe"));
   remove();
   // Its object is missing from the cache: the same, with that reason.

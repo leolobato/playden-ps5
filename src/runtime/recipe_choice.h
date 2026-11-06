@@ -32,7 +32,7 @@ enum class CommunityObjectState { kLoaded, kMissing, kUnreadable };
 inline constexpr const char* kCommunityRecipeRemoved = "This recipe was removed.";
 inline constexpr const char* kCommunityRecipeUnreadable = "The recipe can't be read.";
 inline constexpr const char* kCommunityRecipeNeedsRuntimeUpdate =
-    " Update the game's runtime first: Play or Maintenance > Update runtime.";
+    " Update the game's runtime kit first: Play, or Maintenance › Update runtime kit.";
 
 // The recipes a game could run with.
 struct RecipeCandidates {
@@ -52,7 +52,7 @@ struct RecipeCandidates {
 struct RecipeSelection {
   const GameRecipe* recipe = nullptr;  // null: no recipe at all (the caller generates one)
   bool community = false;              // recipe is the wanted community recipe
-  // Why the wanted community recipe was not selected ("The recipe needs kit 0.13.",
+  // Why the wanted community recipe was not selected ("The recipe needs runtime kit version 0.13 or newer.",
   // kCommunityRecipeRemoved, kCommunityRecipeUnreadable); empty when it was, or none was wanted.
   std::string fallback_reason;
 };

@@ -274,13 +274,13 @@ void Fits() {
   CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12-dev.20261019.1")).empty());
   CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("1.0")).empty());
   community.min_kit = "0.13";
-  CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12")) == "The recipe needs kit 0.13.");
-  CHECK(CommunityRecipeFits(community, kit, std::nullopt) == "The recipe needs kit 0.13.");
+  CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12")) == "The recipe needs runtime kit version 0.13 or newer.");
+  CHECK(CommunityRecipeFits(community, kit, std::nullopt) == "The recipe needs runtime kit version 0.13 or newer.");
   community.min_kit = "0.13-dev.20261101.2";
   CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.13")).empty());
   community.min_kit.clear();
   community.recipe.requirements = {{"audio", "ps5"}};
-  CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12")) == "The kit lacks what this recipe needs (PS5 audio).");
+  CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12")) == "The runtime kit lacks what this recipe needs (PS5 audio).");
   kit.template_audio_ps5 = true;
   CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12")).empty());
 }

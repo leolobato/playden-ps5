@@ -918,7 +918,7 @@ struct State {
     std::map<std::string, SubmissionView> submissions;
     playden::community::VoteState vote_memory;
     bool vote_memory_loaded = false;
-    // Preferences: Recipe votes (Settings › Library), whether a share explained what it sends, and
+    // Preferences: Recipe votes (Settings › Community), whether a share explained what it sends, and
     // the name shared recipes credit.
     playden::RecipeVotesPreference recipe_votes = playden::RecipeVotesPreference::kUnset;
     bool sharing_explained = false;
@@ -1041,6 +1041,7 @@ struct ViewData {
         std::vector<std::array<std::string, 3>> rows;
         std::string note;
         std::string column = "This preset";  // the right column's heading
+        std::vector<std::string> starts;      // a community recipe's "Changes how the game starts" items
     };
     std::optional<Comparison> comparison;
 };
@@ -1446,8 +1447,6 @@ private:
     [[nodiscard]] std::string base_name(GameId id, const BaseChoice& base) const;
     // A newer revision of the game's chosen community recipe than the one it runs (or chose).
     [[nodiscard]] const CommunityRecipeOffer* updated_offer(GameId id) const;
-    // What a base changes from another, as "Resolution 3840×2160 · 120 Hz on · Touchpad → M".
-    [[nodiscard]] std::string base_changes(GameId id, const BaseChoice& from, const BaseChoice& to) const;
     [[nodiscard]] bool title_made(GameId id) const;  // the game has a PS5 title (live) or is installed (fixtures)
     [[nodiscard]] std::vector<std::string> install_sheet_actions(GameId id) const;
     void open_install_sheet(GameId id, std::vector<std::string> actions);
@@ -1487,7 +1486,7 @@ private:
         GameId game;
         playden::community::RecipeRef recipe;
         std::string recipe_title;
-        std::string vote = "up";  // up or down
+        std::string vote;         // up or down; empty until the player chooses
         std::string reason;       // down only
         bool after_play = false;  // the prompt after a session (Not now counts as asked)
         std::uint64_t ticket = 0;

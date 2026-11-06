@@ -3572,14 +3572,18 @@ class Render::Impl
         detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
         detail_cell("Location", location, right, facts_top + 76.0F, 240.0F);
         detail_cell("Compatibility", compat, left, facts_top + 152.0F, 240.0F);
-        // A game with community recipes: a "★ Recipe" mark beside its compatibility.
-        if (std::any_of(view.rows.begin(), view.rows.end(), [](const ViewRow &row) { return row.key == "details-recipe"; }))
+        // A game with community recipes: "Recipe available" (or "Recipe in use") beside its compatibility.
+        if (const auto recipe = std::find_if(view.rows.begin(), view.rows.end(),
+                                             [](const ViewRow &row) { return row.key == "details-recipe"; });
+            recipe != view.rows.end())
         {
+            const std::string tag = ui::upper(recipe->title);
             const float tag_x = left + std::min(240.0F, font_for(compat, fonts_.semibold).measure(compat, 26.0F)) + 14.0F;
-            const float tag_w = mark_width(15.0F) + fonts_.semibold.measure("RECIPE", 13.0F) + 22.0F;
+            // The measure leaves out the 1.2 letter spacing the text is drawn with.
+            const float tag_w = mark_width(15.0F) + fonts_.semibold.measure(tag, 13.0F) + 1.2F * static_cast<float>(tag.size()) + 22.0F;
             scene_.rounded_rect({tag_x, facts_top + 152.0F + 29.0F, tag_w, 26.0F}, 5.0F, kAccent.with_alpha(0.16F));
             draw_mark(scene_, 0x2605, tag_x + 6.0F, facts_top + 152.0F + 48.0F, 15.0F, kAccent);
-            ui::text(scene_, fonts_.semibold, "RECIPE", tag_x + 8.0F + mark_width(15.0F), facts_top + 152.0F + 47.0F, 13.0F,
+            ui::text(scene_, fonts_.semibold, tag, tag_x + 8.0F + mark_width(15.0F), facts_top + 152.0F + 47.0F, 13.0F,
                      kAccent, gfx::Align::left, 1.2F);
         }
         if (game->last_played && setup == view.rows.end())
@@ -4140,9 +4144,27 @@ class Render::Impl
         ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         y += 16.0F;
+        // A community recipe's start changes (program, arguments, registry) sit between the table and the note.
+        constexpr std::size_t kStartLines = 4;
+        constexpr float kStartLine = 28.0F;
+        const std::size_t start_lines = std::min(comparison.starts.size(), kStartLines);
+        const float starts_height = start_lines == 0 ? 0.0F : 44.0F + kStartLine * static_cast<float>(start_lines);
+        const float table_bottom = card.y + card.h - 80.0F - starts_height;
+        // Short of room, the rows that don't change go first, so every change stays listed.
+        std::vector<const std::array<std::string, 3> *> shown;
         for (const auto &row : comparison.rows)
+            shown.push_back(&row);
+        const auto capacity = static_cast<std::size_t>(std::max(0.0F, (table_bottom - y - 52.0F) / 56.0F + 1.0F));
+        for (auto it = shown.end(); shown.size() > capacity && it != shown.begin();)
         {
-            if (y + 52.0F > card.y + card.h - 80.0F)
+            --it;
+            if ((**it)[1] == (**it)[2])
+                it = shown.erase(it);
+        }
+        for (const auto *shown_row : shown)
+        {
+            const auto &row = *shown_row;
+            if (y + 52.0F > table_bottom)
                 break;
             overlay_.rounded_rect({card.x + 40.0F, y + 6.0F, card.w - 80.0F, 1.0F}, 0.0F, kText.with_alpha(0.10F));
             const bool changes = row[1] != row[2];
@@ -4161,6 +4183,21 @@ class Render::Impl
             ui::text(overlay_, fonts_.regular, fit(fonts_.regular, row[2], 20.0F, column_w), preset_x, y + 40.0F, 20.0F,
                      changes ? kAccent : kSecondary);
             y += 56.0F;
+        }
+        if (start_lines > 0)
+        {
+            float sy = table_bottom + 28.0F;
+            ui::text(overlay_, fonts_.semibold, "CHANGES HOW THE GAME STARTS", card.x + 48.0F, sy, 14.0F, kMuted,
+                     gfx::Align::left, 1.4F);
+            for (std::size_t line = 0; line < start_lines; ++line)
+            {
+                sy += kStartLine;
+                const bool last = line + 1 == start_lines && comparison.starts.size() > kStartLines;
+                const std::string text = last ? "and " + std::to_string(comparison.starts.size() - line) + " more"
+                                              : comparison.starts[line];
+                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, text, 19.0F, card.w - 96.0F), card.x + 48.0F, sy,
+                         19.0F, kSecondary);
+            }
         }
         // A note that starts with ⚠ (a recipe that can't apply) draws the mark, then the words.
         const std::string warning = "\u26a0 ";

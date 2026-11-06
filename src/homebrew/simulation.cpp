@@ -423,13 +423,6 @@ std::string change_item(const rt::SettingDefinition& definition, const rt::Effec
     return definition.label + " " + label;
 }
 
-// Rows that start the game (program, arguments, overrides): "Changes how the game starts" lists them.
-bool starts_the_game(const std::string& id) {
-    static const std::set<std::string> ids = {"launch_option", "program", "program_folder", "program_arguments", "arguments",
-                                              "architecture", "dll_overrides", "library_overrides", "start_check", "logging"};
-    return ids.count(id) > 0;
-}
-
 // Current → after for the chooser's side panel; the number of settings that change.
 int fill_comparison(const rt::EffectiveSettings& current, const rt::EffectiveSettings& after, ViewData::Comparison* comparison) {
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
@@ -5344,7 +5337,7 @@ void Simulation::seed_community_scenario(bool offline) {
         {900012, "mouse-on-right-stick", "Mouse on the right stick", "works", "sam", '4', 6, 0, "",
          {{"controller", "keyboard"}, {"controller_preset", "mouse"}, {"pointer_stick", "right_stick"}}},
         {900005, "zink-opengl", "OpenGL through Zink", "playable", "leolobato", '5', 2, 0,
-         "Needs the Zink runtime from kit 0.13.", {{"refresh", "60"}, {"resolution", "3840x2160"}}, "0.13"},
+         "Needs the Zink runtime from runtime kit 0.13.", {{"refresh", "60"}, {"resolution", "3840x2160"}}, "0.13"},
     };
     for (const auto& seed : seeds) {
         const auto id = GameId::Steam(seed.app);
@@ -6329,7 +6322,7 @@ void Simulation::rebuild_view() {
                 source = " Offline: community recipes as of " +
                          playden::app::FormatLogTimestamp(catalog.fetched_at).substr(0, 10) + ".";
             view_.subtitle = chooser_for_install_
-                ? "Playden's choice stays unless you pick another. Players share community recipes; I review each one." + source
+                ? "Playden's choice stays unless you pick another. Players share community recipes; we review each one." + source
                 : "One base for the game's settings. Your changes stay when you switch to or from a community recipe; between presets they are cleared." + source;
             if (chooser_for_install_) view_.eyebrow = "Install game";
         }
@@ -6468,12 +6461,12 @@ void Simulation::rebuild_view() {
                 view_.subtitle = in_review ? "Your update to your recipe" + quoted + " is still in review."
                                            : "An update to your recipe" + quoted + ", sent for review.";
             else
-                view_.subtitle = "Sent for review to Playden's recipe collection. Published after a maintainer approves it.";
+                view_.subtitle = "Sent for review to Playden's recipe collection. Published once we approve it.";
         } else if (modal.id == "vote-recipe" && vote_) {
             view_.eyebrow = "Community recipes";
             view_.subtitle = "With the recipe \u201c" + vote_->recipe_title + "\u201d. Your vote helps other players pick.";
             if (state_.recipe_votes == playden::RecipeVotesPreference::kUnset)
-                view_.subtitle += " A vote sends the recipe, your vote and reason, the kit, firmware and Playden versions and a random "
+                view_.subtitle += " A vote sends the recipe, your vote and reason, the runtime kit, firmware and Playden versions and a random "
                                   "sharing ID; no Steam ID or account name.";
         }
         for (const auto& action_key : modal.action_keys) {
@@ -6646,7 +6639,7 @@ void Simulation::rebuild_view() {
                 if (action_key == "share-vote") {
                     item.kind = RowKind::Action;
                     item.subtitle = state_.recipe_votes == playden::RecipeVotesPreference::kOff
-                        ? "Recipe votes are off. Turn them on in Settings › Library to vote."
+                        ? "Recipe votes are off. Turn them on in Settings › Community to vote."
                         : "Tells other players this recipe works for you.";
                 } else if (action_key == "share-choice-update" || action_key == "share-choice-new") {
                     const bool update = action_key == "share-choice-update";
@@ -6659,17 +6652,6 @@ void Simulation::rebuild_view() {
                                            : "Listed next to it as a separate recipe.";
                     item.selected = draft.answer == (update ? cm::ShareChoice::kUpdate : cm::ShareChoice::kNew);
                     item.value = item.selected ? "Selected" : "";
-                } else if (action_key == "share-update") {
-                    item.kind = RowKind::Status;
-                    const auto record = state_.game_settings.find(draft.game);
-                    const auto view = record == state_.game_settings.end() ? state_.submissions.end()
-                                                                          : state_.submissions.find(record->second.shared_recipe.submission_id);
-                    const bool in_review = view != state_.submissions.end() &&
-                                           (view->second.state == "in-review" || view->second.state == "provisioning");
-                    item.title = in_review ? "Update the pull request" : "A new revision of your recipe";
-                    item.subtitle = in_review ? "Replaces what you sent before; the reviewer sees \u201cRevised from Playden\u201d."
-                                              : "Opens a pull request that changes your recipe.";
-                    item.enabled = false;
                 } else if (action_key == "share-title") {
                     item.kind = RowKind::Text;
                     item.title = "Title";
@@ -6702,11 +6684,23 @@ void Simulation::rebuild_view() {
                     // Against the recipe it is based on: what the player changed.
                     if (draft.based_on)
                         item.lines.push_back("Your changes: " + (draft.changes.empty() ? std::string("none") : draft.changes));
-                    item.lines.push_back("Also the kit, firmware and Playden versions and a random sharing ID; no Steam ID.");
+                    item.lines.push_back("Also the runtime kit, firmware and Playden versions and a random sharing ID; no Steam ID.");
                     item.enabled = false;
                 } else if (action_key == "share-send") {
-                    item.title = draft.ticket != 0 ? "Sending…" : !draft.error.empty() && !draft.idempotency_key.empty() ? "Try again" : "Send";
-                    item.subtitle = !draft.error.empty() ? draft.error : "Sent for review. Published after a maintainer approves it.";
+                    // An update to this console's own recipe: Send says what it does to the pull request.
+                    std::string send = "Send", sent = "Sent for review. Published once we approve it.";
+                    if (draft.decision.kind == cm::ShareKind::kUpdateOwn) {
+                        const auto record = state_.game_settings.find(draft.game);
+                        const auto view = record == state_.game_settings.end() ? state_.submissions.end()
+                                                                              : state_.submissions.find(record->second.shared_recipe.submission_id);
+                        const bool in_review = view != state_.submissions.end() &&
+                                               (view->second.state == "in-review" || view->second.state == "provisioning");
+                        send = in_review ? "Update the pull request" : "Send a new revision";
+                        sent = in_review ? "Replaces what you sent before; the reviewer sees \u201cRevised from Playden\u201d."
+                                         : "Opens a pull request that changes your recipe.";
+                    }
+                    item.title = draft.ticket != 0 ? "Sending…" : !draft.error.empty() && !draft.idempotency_key.empty() ? "Try again" : send;
+                    item.subtitle = !draft.error.empty() ? draft.error : sent;
                     if (!draft.error.empty()) item.tone = "problem";
                     item.enabled = draft.ticket == 0;
                 } else if (action_key == "cancel") {
@@ -6727,12 +6721,14 @@ void Simulation::rebuild_view() {
                     item.selected = draft.reason == reason;
                     item.value = item.selected ? "Selected" : "";
                 } else if (action_key == "vote-send") {
+                    // Nothing is chosen for the player: Send waits for Good or Problems.
                     const bool first = state_.recipe_votes == playden::RecipeVotesPreference::kUnset;
-                    item.title = first ? "Turn on votes and send" : "Send";
-                    item.subtitle = first ? "Votes stay on for the next recipes; Settings › Library turns them off."
+                    item.enabled = !draft.vote.empty();
+                    item.subtitle = draft.vote.empty() ? "Choose Good or Problems first."
+                                  : first ? "Settings › Community turns votes off."
                                           : "Your vote replaces an earlier one for this recipe.";
                 } else if (action_key == "vote-never") {
-                    item.subtitle = "Turns Recipe votes off. Settings › Library turns them on again.";
+                    item.subtitle = "Turns Recipe votes off. Settings › Community turns them on again.";
                 } else if (action_key == "cancel") {
                     item.title = "Not now";
                     item.subtitle = draft.after_play ? "Playden won't ask about this recipe again; Game settings keeps your vote."
@@ -6766,9 +6762,16 @@ void Simulation::rebuild_view() {
                 item.enabled = settings_values.launch != nullptr;
             } else if (settings_ready && action_key == "preset-picker") {
                 item.kind = RowKind::Profile;
-                const std::string name = base_name(settings_game, base_of(settings_game));
+                const auto base = base_of(settings_game);
+                const std::string name = base_name(settings_game, base);
                 item.value = settings_custom ? "Custom · from " + name : name;
                 item.subtitle = "What the settings below start from.";
+                if (!base.community.id.empty()) {
+                    // A recipe's title is long: the value is the title alone, the subtitle says the rest.
+                    constexpr std::string_view prefix = "Community: ";
+                    item.value = name.rfind(prefix, 0) == 0 ? name.substr(prefix.size()) : name;
+                    item.subtitle = settings_custom ? "A community recipe, with your changes." : "A community recipe. The settings below start from it.";
+                }
             } else if (settings_ready && modal.id == "preset-picker" && action_key.rfind("preset-", 0) == 0) {
                 // The chooser: one base per game, radio-style.
                 item.kind = RowKind::Profile;
@@ -6792,16 +6795,9 @@ void Simulation::rebuild_view() {
                     item.tone = "community";
                     if (offer->has_votes)
                         item.value = "👍 " + std::to_string(offer->votes_up) + "  👎 " + std::to_string(offer->votes_down);
-                    std::vector<std::string> meta;
-                    meta.push_back(offer->author.empty() ? std::string("From the community") : offer->author);
-                    if (!offer->tested_kit.empty()) meta.push_back("tested on kit " + offer->tested_kit);
-                    if (!offer->tested_firmware.empty()) meta.push_back("fw " + offer->tested_firmware);
-                    if (!offer->tested_date.empty()) meta.push_back(offer->tested_date);
-                    item.subtitle = join_text(meta, " · ");
-                    const auto changes = base_changes(settings_game, current, BaseChoice{{}, {offer->id, offer->revision}});
-                    item.lines.push_back("Changes: " + (changes.empty() ? std::string("none") : changes));
-                    if (!offer->flags.empty()) item.lines.push_back("Changes how the game starts: " + join_text(offer->flags, " · "));
-                    if (!offer->notes.empty()) item.lines.push_back(offer->notes);
+                    // The row names it, its status, votes and author; the side panel beside the list has the rest
+                    // (where it was tested, what it changes, how it starts the game, its note).
+                    item.subtitle = offer->author.empty() ? std::string("From the community") : "By " + offer->author;
                     // A recipe that can't apply stays listed, greyed out, with the reason.
                     const auto refusal = community_refusal(settings_game, *offer);
                     if (!refusal.empty()) {
@@ -8045,10 +8041,12 @@ void Simulation::rebuild_view() {
             if (runtime && runtime->queued && runtime->uninstall_status.empty() && position > 1)
                 row("details-prepare-next", RowKind::Action, "Prepare next", "details-prepare-next").game_id = game->id;
         }
-        // An installed game with community recipes carries a "★ Recipe" mark; Game settings › Preset chooses one.
+        // An installed game with community recipes carries a "Recipe available" tag, or "Recipe in use" once one is
+        // chosen; Game settings › Preset chooses one.
         if (installed && game) {
             if (const auto offers = state_.community.games.find(game->id); offers != state_.community.games.end() && !offers->second.empty()) {
-                auto& mark = row("details-recipe", RowKind::Status, "★ Recipe", "");
+                auto& mark = row("details-recipe", RowKind::Status,
+                                 base_of(game->id).community.id.empty() ? "Recipe available" : "Recipe in use", "");
                 mark.value = base_name(game->id, base_of(game->id));
                 const auto count = offers->second.size();
                 mark.subtitle = std::to_string(count) + (count == 1 ? " community recipe" : " community recipes");
@@ -8262,7 +8260,8 @@ void Simulation::rebuild_view() {
             cloud.subtitle = state_.cloud_saves_auto ? "Before Play, after each game and when Playden starts."
                                                      : "Off: saves move only when you choose Sync in Saves.";
         }
-        if (live()) {
+        section = "Community";
+        {
             // Community recipes: votes are opt-in, and the sharing ID can be replaced.
             auto& votes = add("settings-recipe-votes", RowKind::Toggle, "Recipe votes", "toggle-recipe-votes");
             votes.selected = state_.recipe_votes == playden::RecipeVotesPreference::kOn;
@@ -11222,7 +11221,7 @@ void Simulation::activate() {
     else if (action_name == "share-vote" && share_ && share_->vote_offer) {
         if (state_.recipe_votes == playden::RecipeVotesPreference::kOff) {
             ModalEntry off{"confirmation", "Recipe votes are off", action_name, {"alert-ok"}, 0, false};
-            off.body = "Turn on Recipe votes in Settings, under Library, to vote for recipes.";
+            off.body = "Turn on Recipe votes in Settings, under Community, to vote for recipes.";
             open_modal(std::move(off));
         } else {
             const auto game = share_->game;
@@ -11255,13 +11254,13 @@ void Simulation::activate() {
         close_sheet("vote-recipe");
         vote_.reset();
         save_profile();
-        push_notice({"recipe-vote", "Recipe votes are off", "", false, kLiveNoticeSeconds, false, "Turn them on in Settings, under Library."});
+        push_notice({"recipe-vote", "Recipe votes are off", "", false, kLiveNoticeSeconds, false, "Turn them on in Settings, under Community."});
     }
     else if (action_name == "recipe-vote") {
         const auto game = state_.navigation.selected_game_id;
         if (state_.recipe_votes == playden::RecipeVotesPreference::kOff) {
             ModalEntry off{"confirmation", "Recipe votes are off", action_name, {"alert-ok"}, 0, false};
-            off.body = "Turn on Recipe votes in Settings, under Library, to vote for the recipe this game uses.";
+            off.body = "Turn on Recipe votes in Settings, under Community, to vote for the recipe this game uses.";
             open_modal(std::move(off));
         } else if (const auto target = VoteTargetFor(game)) {
             open_vote_sheet(game, *target, false);
@@ -12251,7 +12250,7 @@ const rt::GameRecipe& Simulation::own_recipe(GameId id) const {
         recipe.app_id = id.steam_app().value_or(0);
         if (!id.steam_app()) recipe.game = id;
         recipe.name = game ? game->title : "Game " + ToKey(id);
-        recipe.launch_entries = {{"game", recipe.name, "game.exe", ""}};
+        recipe.launch_entries = {{"game", recipe.name, "Game.exe", ""}};
         recipe.arguments = "{resolution}";
         recipe.graphics = "dxvk";
     }
@@ -12372,23 +12371,6 @@ const CommunityRecipeOffer* Simulation::updated_offer(GameId id) const {
         return &offer;
     }
     return nullptr;
-}
-
-std::string Simulation::base_changes(GameId id, const BaseChoice& from, const BaseChoice& to) const {
-    static const std::map<std::string, std::string> none;
-    rt::EffectiveSettings before, after;
-    rt::SettingsError error;
-    if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), none, kit_for(id), &before, &error) ||
-        !rt::BuildEffectiveSettings(candidate_recipe(id, to), preset_for_base(to), none, kit_for(id), &after, &error))
-        return {};
-    std::vector<std::string> items;
-    for (const auto& definition : rt::SettingsCatalogue()) {
-        if (starts_the_game(definition.id)) continue;
-        const auto& value = after.values.at(definition.id);
-        if (!value.available || rt::ChosenValue(before.values.at(definition.id)) == rt::ChosenValue(value)) continue;
-        items.push_back(change_item(definition, value));
-    }
-    return join_text(items, " · ");
 }
 
 bool Simulation::title_made(GameId id) const {
@@ -12621,10 +12603,13 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
     std::vector<std::string> meta;
     meta.push_back(offer.author.empty() ? std::string("Community recipe")
                    : "Community recipe by " + (offer.contributors.empty() ? offer.author : offer.author + " and others"));
-    if (!offer.tested_kit.empty()) meta.push_back("tested on kit " + offer.tested_kit);
-    if (!offer.tested_firmware.empty()) meta.push_back("fw " + offer.tested_firmware);
-    if (!offer.tested_date.empty()) meta.push_back(offer.tested_date);
+    std::vector<std::string> tested;
+    if (!offer.tested_kit.empty()) tested.push_back("runtime kit " + offer.tested_kit);
+    if (!offer.tested_firmware.empty()) tested.push_back("firmware " + offer.tested_firmware);
+    if (!offer.tested_date.empty()) tested.push_back(offer.tested_date);
+    if (!tested.empty()) meta.push_back("tested on " + join_text(tested, ", "));
     comparison.hint = join_text(meta, " · ");
+    comparison.starts = offer.flags;
     const int changes = fill_comparison(before, after, &comparison);
     const auto refusal = community_refusal(id, offer);
     comparison.note = !refusal.empty() ? "⚠ " + refusal
@@ -13263,7 +13248,6 @@ std::vector<std::string> Simulation::share_actions() const {
         actions.push_back("share-choice-update");
         actions.push_back("share-choice-new");
     }
-    if (share_->decision.kind == cm::ShareKind::kUpdateOwn) actions.push_back("share-update");
     for (const char* key : {"share-title", "share-name", "share-rating", "share-note", "share-what", "share-send", "cancel"}) actions.push_back(key);
     return actions;
 }
@@ -13349,8 +13333,8 @@ void Simulation::open_share_privacy() {
     // The first share says what is sent before anything is.
     ModalEntry privacy{"confirmation", "Before you share", "share-send", {"cancel", "share-send-confirm"}, 1, false};
     privacy.body = "Playden sends the recipe (these settings, the program, your rating and note), its title, your name if you "
-                   "give one, the kit, firmware and Playden versions, and a random sharing ID that lets this console update "
-                   "its own pull request. No Steam ID or account name is sent. I review every recipe before it's published.";
+                   "give one, the runtime kit, firmware and Playden versions, and a random sharing ID that lets this console update "
+                   "its own pull request. No Steam ID or account name is sent. We review every recipe before it's published.";
     open_modal(std::move(privacy));
 }
 
@@ -13465,7 +13449,7 @@ void Simulation::record_vote_locally(const cm::CastVote& vote) {
 }
 
 void Simulation::send_vote() {
-    if (!vote_ || state_.recipe_votes == playden::RecipeVotesPreference::kOff) return;
+    if (!vote_ || vote_->vote.empty() || state_.recipe_votes == playden::RecipeVotesPreference::kOff) return;
     const auto draft = *vote_;
     if (state_.recipe_votes == playden::RecipeVotesPreference::kUnset) {
         // The first prompt said what a vote sends; sending is the opt-in.

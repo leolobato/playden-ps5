@@ -824,6 +824,8 @@ void t13_settings_sections_rail(const std::filesystem::path& fixtures, const std
           "T13 Down on a section's last row stays in the section");
     simulation.action("left");
     simulation.action("down");
+    check(section() == "Community", "T13 Community follows Library on the rail");
+    simulation.action("down");
     simulation.action("right");
     check(section() == "Storage" && simulation.state().navigation.focus_key == "settings-storage",
           "T13 Storage starts with Games storage, Import games no longer in it");
@@ -1679,35 +1681,37 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     check((titles == std::vector<std::string>{"Liked", "Alpha", "Zeta", "Playable", "Broken", "Untested"}),
           "works, playable, broken, untested; then votes; then title");
 
-    // A recipe row: status, votes, who tested it where, what it changes, what changes how the game starts.
+    // A recipe row: status, votes and author only; the side panel has where it was tested and what it changes.
     check(simulation.scenario("recipes-three"), "recipes-three scenario loads again");
     const auto* row = find_row(simulation, "recipe-" + rev('1'));
     check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works" && row->value == "👍 14  👎 1" &&
-              row->subtitle == "leolobato · tested on kit 0.12 · fw 10.01 · 2026-10-20", "a recipe row shows status, votes and its tests");
-    check(!row->lines.empty() && row->lines[0].rfind("Changes: ", 0) == 0 &&
-              row->lines[0].find("Resolution 3840×2160") != std::string::npos &&
-              row->lines[0].find("120 Hz on") != std::string::npos && row->lines[0].find("Touchpad → M") != std::string::npos,
-          "Changes lists what differs from the current base");
-    const auto* windowed = find_row(simulation, "recipe-" + rev('3'));
-    check(windowed && std::any_of(windowed->lines.begin(), windowed->lines.end(), [](const std::string& line) {
-              return line.rfind("Changes how the game starts: ", 0) == 0 && line.find("d3d9=n,b") != std::string::npos; }),
-          "library overrides are listed apart, under Changes how the game starts");
+              row->subtitle == "By leolobato" && row->lines.empty(),
+          "a recipe row shows its status, votes and author");
     simulation.action("focus:recipe-" + rev('1'));
-    check(simulation.view().comparison && simulation.view().comparison->column == "This recipe",
-          "the side panel compares the focused recipe");
+    {
+        const auto& comparison = simulation.view().comparison;
+        check(comparison && comparison->column == "This recipe" &&
+                  comparison->hint == "Community recipe by leolobato · tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
+              "the side panel says where the focused recipe was tested");
+        check(comparison && std::any_of(comparison->rows.begin(), comparison->rows.end(),
+                                        [](const std::array<std::string, 3>& line) { return line[2] == "3840×2160"; }),
+              "the side panel lists what the recipe changes");
+    }
+    simulation.action("focus:recipe-" + rev('3'));
+    check(simulation.view().comparison &&
+              std::any_of(simulation.view().comparison->starts.begin(), simulation.view().comparison->starts.end(),
+                          [](const std::string& line) { return line.find("d3d9=n,b") != std::string::npos; }),
+          "library overrides are listed apart, under Changes how the game starts");
 
     // A recipe the kit can't run stays listed, disabled, with the reason.
     check(simulation.scenario("recipes-refused"), "recipes-refused scenario loads");
     const auto* refused = find_row(simulation, "recipe-" + rev('5'));
-    check(refused && !refused->enabled && !refused->lines.empty() && refused->lines.back() == "⚠ The recipe needs kit 0.13.",
+    check(refused && !refused->enabled && !refused->lines.empty() && refused->lines.back() == "⚠ The recipe needs runtime kit version 0.13 or newer.",
           "a recipe that needs a newer kit is greyed out with the reason");
-    // What it changes is its own settings, not those of the recipe Playden would fall back to.
-    check(refused && refused->lines[0].rfind("Changes: ", 0) == 0 && refused->lines[0].find("Resolution 3840×2160") != std::string::npos,
-          "a refused recipe's Changes line describes the recipe itself");
     simulation.action("focus:recipe-" + rev('5'));
     {
         const auto& comparison = simulation.view().comparison;
-        check(comparison && comparison->note == "⚠ The recipe needs kit 0.13." &&
+        check(comparison && comparison->note == "⚠ The recipe needs runtime kit version 0.13 or newer." &&
                   std::any_of(comparison->rows.begin(), comparison->rows.end(),
                               [](const std::array<std::string, 3>& line) { return line[2].find("3840×2160") != std::string::npos; }),
               "a refused recipe's comparison shows its own values, the refusal apart");
@@ -1743,7 +1747,7 @@ void community_recipes_one_base(const std::filesystem::path& fixtures, const std
     check(record.preset_id.empty() && record.community_recipe.id == "community-900012-mouse-on-right-stick" &&
               record.community_recipe.revision == rev('4'), "choosing a recipe clears the preset");
     check(simulation.RecipeFor(SteamId(900012)).id == "community-900012-mouse-on-right-stick", "the recipe is the game's base");
-    check(find_row(simulation, "preset-picker")->value == "Community: Mouse on the right stick", "the Preset row names the recipe");
+    check(find_row(simulation, "preset-picker")->value == "Mouse on the right stick", "the Preset row names the recipe");
     check(simulation.RecipeBaseFor(SteamId(900012)) &&
               simulation.RecipeBaseFor(SteamId(900012))->revision == rev('4'), "Share sees the recipe the game is based on");
     activate(simulation, "preset-picker");
@@ -1944,8 +1948,10 @@ void community_recipes_updates_and_fallback(const std::filesystem::path& fixture
     check(newer && !newer->selected && newer->badge.find("Updated") != std::string::npos &&
               newer->badge.find("Current") == std::string::npos && simulation.state().navigation.focus_key == "recipe-" + rev('1'),
           "the newer revision is marked Updated and focused");
-    check(newer && !newer->lines.empty() && newer->lines[0] != "Changes: none" && newer->lines[0].find("Touchpad") != std::string::npos,
-          "its Changes line compares the newer revision with the one in use");
+    check(simulation.view().comparison &&
+              std::any_of(simulation.view().comparison->rows.begin(), simulation.view().comparison->rows.end(),
+                          [](const std::array<std::string, 3>& line) { return line[0] == "Button mapping"; }),
+          "its comparison shows what the newer revision changes from the one in use");
     simulation.action("circle");
     check(simulation.RecipeFor(SteamId(900002)).revision == rev('0'), "the game keeps the revision it chose");
     activate(simulation, "recipe-update");
@@ -1968,10 +1974,10 @@ void community_recipes_updates_and_fallback(const std::filesystem::path& fixture
     // A chosen recipe the kit can't run: Playden's own recipe is used and the sheet says why.
     check(simulation.scenario("recipes-fallback"), "recipes-fallback scenario loads");
     const auto* status = find_row(simulation, "recipe-status");
-    check(status && status->title == "Playden's own recipe is used" && status->subtitle == "The recipe needs kit 0.13.",
+    check(status && status->title == "Playden's own recipe is used" && status->subtitle == "The recipe needs runtime kit version 0.13 or newer.",
           "the fallback reason is shown");
     check(simulation.RecipeFor(SteamId(900005)).id.rfind("community-", 0) != 0, "the game falls back to Playden's recipe");
-    check(find_row(simulation, "preset-picker")->value == "Community: OpenGL through Zink", "the Preset row keeps the choice");
+    check(find_row(simulation, "preset-picker")->value == "OpenGL through Zink", "the Preset row keeps the choice");
 }
 
 // Sharing and votes in fixtures: the decision table on the Share sheet, a second share with a saved
@@ -2017,7 +2023,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
           "a saved submission: the next share updates it");
     activate(simulation, "section-advanced");
     activate(simulation, "share-recipe");
-    check(find_row(simulation, "share-update") && find_row(simulation, "share-update")->title == "Update the pull request",
+    check(find_row(simulation, "share-send") && find_row(simulation, "share-send")->title == "Update the pull request",
           "an update to a share in review says it updates the pull request");
     activate(simulation, "share-send");
     check(simulation.state().game_settings.at(game).shared_recipe == first, "the same submission is revised");
@@ -2058,7 +2064,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     decision = simulation.ShareDecisionFor(game);
     check(decision.kind == cm::ShareKind::kUpdateOwn && decision.send_based_on && decision.send_submission_id,
           "based on this console's recipe: an update");
-    check(find_row(simulation, "share-update")->title == "Update the pull request" &&
+    check(find_row(simulation, "share-send")->title == "Update the pull request" &&
               simulation.view().subtitle.find("still in review") != std::string::npos,
           "it says the update replaces what is in review");
 

@@ -307,11 +307,11 @@ std::string CommunityRecipeFits(const CommunityRecipe& community, const Verified
                                 std::optional<KitVersion> title_kit_version) {
   if (!community.min_kit.empty()) {
     const auto needed = ParseKitVersion(community.min_kit);
-    if (!needed) return "The recipe asks for a kit this version of Playden doesn't know (" + community.min_kit + ").";
-    if (!title_kit_version || *title_kit_version < *needed) return "The recipe needs kit " + FormatKitVersion(*needed) + ".";
+    if (!needed) return "The recipe asks for a runtime kit version this Playden doesn't know (" + community.min_kit + ").";
+    if (!title_kit_version || *title_kit_version < *needed) return "The recipe needs runtime kit version " + FormatKitVersion(*needed) + " or newer.";
   }
   const auto unmet = UnmetRecipeRequirements(community.recipe.requirements, kit);
-  if (!unmet.empty()) return "The kit lacks what this recipe needs (" + unmet + ").";
+  if (!unmet.empty()) return "The runtime kit lacks what this recipe needs (" + unmet + ").";
   return {};
 }
 

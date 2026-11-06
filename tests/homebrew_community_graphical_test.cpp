@@ -1,6 +1,6 @@
 // homebrew_community_graphical_test.cpp - Community recipes on screen: the chooser (no recipe, one,
 // three, one the kit refuses, an offline copy), the Install sheet's Settings row, the switch
-// confirmation, Game settings with an updated recipe and a fallback, the "★ Recipe" mark, and sharing
+// confirmation, Game settings with an updated recipe and a fallback, the "Recipe available" tag, and sharing
 // and votes (the Share sheet's cases, the sent dialog with its QR code, the vote prompt).
 // Each scenario is drawn and captured as a PNG beside the checks of what it shows.
 // Copyright (c) 2026 Playden contributors
@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
         capture("recipes-fallback", "game-settings", "preset-picker");
         check(find_row(model, "recipe-status") != nullptr, "the fallback reason is in Game settings");
         capture("recipes-details", "details", "details");
-        check(find_row(model, "details-recipe") && find_row(model, "details-recipe")->title == "★ Recipe",
+        check(find_row(model, "details-recipe") && find_row(model, "details-recipe")->title == "Recipe available",
               "an installed game with recipes carries the mark");
         // The chooser with a recipe focused: its comparison beside the sheet.
         check(model.scenario("recipes-three") && model.action("focus:" + one), "focus the first recipe");
@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
         capture("share-ask", "share-recipe", "share-choice-update");
         check(find_row(model, "share-choice-update")->selected, "Suggest changes is pre-selected");
         capture("share-own", "share-recipe", "share-title");
-        check(find_row(model, "share-update") && find_row(model, "share-update")->title == "Update the pull request",
+        check(find_row(model, "share-send") && find_row(model, "share-send")->title == "Update the pull request",
               "an update to a share in review");
         capture("share-nothing", "share-recipe", "share-vote");
         check(model.action("circle") && model.view().surface == "game-settings" && model.action("focus:recipe-vote"),

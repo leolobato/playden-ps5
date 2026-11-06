@@ -2639,12 +2639,12 @@ int main(int argc, char** argv) {
     candidates.community = &ca;
     ca.min_kit = "0.13";
     selection = SelectRecipe(candidates);
-    CHECK(selection.recipe == &hl2 && selection.fallback_reason == "The recipe needs kit 0.13.");
+    CHECK(selection.recipe == &hl2 && selection.fallback_reason == "The recipe needs runtime kit version 0.13 or newer.");
     ca.min_kit = "0.12";
     CHECK(SelectRecipe(candidates).community);
     candidates.title_kit_version.reset();
     selection = SelectRecipe(candidates);
-    CHECK(!selection.community && selection.fallback_reason == std::string("The recipe needs kit 0.12.") + kCommunityRecipeNeedsRuntimeUpdate);
+    CHECK(!selection.community && selection.fallback_reason == std::string("The recipe needs runtime kit version 0.12 or newer.") + kCommunityRecipeNeedsRuntimeUpdate);
     candidates.title_kit_version = candidates.kit_version;
     ca.min_kit.clear();
     ca.recipe.requirements = {{"audio", "ps5"}};
