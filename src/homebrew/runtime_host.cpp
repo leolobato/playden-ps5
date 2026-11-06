@@ -109,15 +109,19 @@ std::string KitLacksForRecipe(const rt::GameRecipe& recipe, const rt::VerifiedKi
                        : "The installed runtime kit lacks what this game needs (" + unmet + "); install a newer runtime kit.";
 }
 
-// Whether a community recipe id names the record's game: the installer resolves such records
-// (FilesystemPackageInstaller::AcceptRecipes) whether or not the recipe's object is still cached, so
-// a game whose recipe left the cache stays inspectable and removable. A plan is only ever built from
-// a loaded, hash-checked object (RuntimeHost::RecipeOf).
+// Whether a record names a community recipe the installer may resolve (FilesystemPackageInstaller::AcceptRecipes)
+// whether or not the recipe's object is still cached, so a game whose recipe left the cache stays inspectable and
+// removable. An id is never split to find its game: a Steam game's record must name one made for its GameRef
+// (steam/<app>); another store's game may hold a recipe of its Steam app ID's, which the record doesn't carry, so
+// only the id's shape counts there. A plan is only ever built from a loaded, hash-checked object bound to the game
+// (RuntimeHost::RecipeOf).
 bool CommunityRecipeNamesGame(const rt::RuntimeInstall& record) {
-  std::uint32_t app = 0;
-  std::string slug;
-  return rt::SplitCommunityRecipeId(record.recipe_id, &app, &slug) && app == record.runtime_number &&
-         rt::IsCommunityRevisionPrefix(record.recipe_version);
+  if (!rt::IsCommunityRecipeId(record.recipe_id) || record.recipe_id.size() > rt::kInstalledRecipeIdMaxBytes ||
+      !rt::IsCommunityRevisionPrefix(record.recipe_version))
+    return false;
+  const auto game = GameOf(record);
+  if (const auto app = game.steam_app()) return rt::CommunityRecipeSlug(record.recipe_id, GameRef::Steam(*app)).has_value();
+  return true;
 }
 
 // Private runtime state files, one per game or install.
@@ -345,6 +349,8 @@ struct RuntimeHost::Composition {
   // Community recipes loaded from the cache this session, by full revision; their recipe.revision is
   // set. Pointers into the map stay valid (RecipeForPrepare hands them out).
   std::map<std::string, std::unique_ptr<rt::CommunityRecipe>> community;
+  // Those bound to an installed game (BindCommunityRecipe), by full revision and runtime number. Pointers stay valid.
+  std::map<std::pair<std::string, std::uint32_t>, std::unique_ptr<rt::CommunityRecipe>> bound_community;
   // The community revisions whose registry values are in a bottle (RecipeRegistryStep), by install id,
   // for RuntimeSnapshot::community_references.
   std::map<std::string, std::string> registry_revisions;
@@ -3298,10 +3304,37 @@ RuntimeHost::CommunityLoad RuntimeHost::LoadCommunityRecipe(Composition& c, std:
   return load;
 }
 
+const rt::CommunityRecipe* RuntimeHost::BoundCommunityRecipe(Composition& c, const rt::CommunityRecipe& loaded,
+                                                             const GameId& game, std::uint32_t runtime_number) {
+  auto& bound = c.bound_community[{loaded.recipe.revision, runtime_number}];
+  if (!bound) {
+    bound = std::make_unique<rt::CommunityRecipe>(loaded);
+    rt::BindCommunityRecipe(bound.get(), game, runtime_number);
+  }
+  return bound.get();
+}
+
+std::optional<GameRef> RuntimeHost::MatchingRefOf(const GameId& game, std::uint32_t runtime_number,
+                                                  const rt::GameSettingsRecord& saved) const {
+  // Another store's game: the Steam app ID its Steamworks emulator was given at its last preparation (its own
+  // steam_appid.txt wins), else the one in Game settings, as the game's page shows it.
+  std::uint32_t steam_app = saved.steam_app_id;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (const auto found = snapshot_.steamworks_apps.find(runtime_number);
+        found != snapshot_.steamworks_apps.end() && found->second.app_id)
+      steam_app = found->second.app_id;
+  }
+  return MatchingGameRef(game, steam_app);
+}
+
 const rt::CommunityRecipe* RuntimeHost::CommunityOf(Composition& c, const rt::RuntimeInstall& record) {
   if (!rt::IsCommunityRecipeId(record.recipe_id)) return nullptr;
   const auto load = LoadCommunityRecipe(c, record.recipe_version);
-  return load.recipe && rt::RecipeMatchesInstall(load.recipe->recipe, record) ? load.recipe : nullptr;
+  if (!load.recipe) return nullptr;
+  // What the title plays under: bound to the record's game whatever its GameRef is now (a changed Steam app ID).
+  const auto* bound = BoundCommunityRecipe(c, *load.recipe, GameOf(record), record.runtime_number);
+  return rt::RecipeMatchesInstall(bound->recipe, record) ? bound : nullptr;
 }
 
 const rt::GameRecipe* RuntimeHost::RecipeOf(Composition& c, const rt::RuntimeInstall& record) {
@@ -3328,9 +3361,10 @@ rt::RecipeSelection RuntimeHost::SelectRecipeFor(Composition& c, const GameId& g
     candidates.wanted = &saved.community_recipe;
     const auto load = LoadCommunityRecipe(c, saved.community_recipe.revision);
     candidates.community_state = load.state;
-    // The object must be this game's recipe; anything else reads as unreadable.
-    if (load.recipe && rt::RecipeGame(load.recipe->recipe) == game && load.recipe->recipe.app_id == runtime_number)
-      candidates.community = load.recipe;
+    // The object must be a recipe for this game's GameRef; anything else reads as unreadable.
+    const auto ref = load.recipe ? MatchingRefOf(game, runtime_number, saved) : std::nullopt;
+    if (load.recipe && ref && load.recipe->game == *ref)
+      candidates.community = BoundCommunityRecipe(c, *load.recipe, game, runtime_number);
     else if (load.recipe)
       candidates.community_state = rt::CommunityObjectState::kUnreadable;
   }

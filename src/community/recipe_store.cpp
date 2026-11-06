@@ -254,8 +254,8 @@ std::size_t RecipeStore::CollectGarbage(const std::set<std::string>& keep, const
     const auto index_json = ReadFile(ReleasePath(pointer->tag), kMaxIndexBytes);
     const auto index = index_json ? ParseRecipeIndex(*index_json, nullptr) : std::nullopt;
     if (!index) return 0;
-    for (const auto& [app, entries] : index->apps)
-      for (const auto& entry : entries) current.insert(entry.revision);
+    for (const auto& [game, listed] : index->games)
+      for (const auto& entry : listed.recipes) current.insert(entry.revision);
   } else {
     struct stat info{};
     auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kPrivate);

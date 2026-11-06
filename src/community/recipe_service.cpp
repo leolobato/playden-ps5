@@ -46,10 +46,20 @@ std::string Header(const steam::HttpResponse& response, const char* name) {
 
 }  // namespace
 
-const std::vector<RecipeSummary>* RecipeSnapshot::For(std::uint32_t app_id) const {
-  const auto found = apps.find(app_id);
-  return found == apps.end() ? nullptr : &found->second;
+const std::vector<RecipeSummary>* RecipeSnapshot::For(const GameRef& game) const {
+  const auto found = games.find(game);
+  return found == games.end() ? nullptr : &found->second;
 }
+
+namespace {
+// What search will show for each game (plan Phase E4).
+std::map<GameRef, std::string> IndexGameNames(const RecipeIndex& index) {
+  std::map<GameRef, std::string> names;
+  for (const auto& [game, listed] : index.games)
+    if (!listed.name.empty()) names[game] = listed.name;
+  return names;
+}
+}  // namespace
 
 std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, std::string* error) {
   runtime::CommunityRecipe community;
@@ -67,31 +77,28 @@ std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, 
     if (error) *error = "refused: " + refusals.front();
     return std::nullopt;
   }
-  std::uint32_t app_id = 0;
-  if (!runtime::SplitCommunityRecipeId(community.recipe.id, &app_id, nullptr) || app_id != community.recipe.app_id) {
-    if (error) *error = "its id and app ID differ";
-    return std::nullopt;
-  }
+  // ParseCommunityRecipe checked that the id is made from the file's game.
   return community;
 }
 
-std::map<std::uint32_t, std::vector<RecipeSummary>> BuildSummaries(
+std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
     const RecipeIndex& index, const RecipeStore& store, const VoteTotals* totals,
     const std::function<void(const std::string&)>& log) {
-  std::map<std::uint32_t, std::vector<RecipeSummary>> apps;
-  for (const auto& [app_id, entries] : index.apps) {
-    for (const auto& entry : entries) {
+  std::map<GameRef, std::vector<RecipeSummary>> games;
+  for (const auto& [game, listed] : index.games) {
+    for (const auto& entry : listed.recipes) {
       const auto bytes = store.ReadObject(entry.revision);
       if (!bytes) continue;  // dropped when it was fetched (logged then)
       std::string error;
       const auto community = CheckRecipeFile(*bytes, &error);
-      if (!community || community->recipe.id != entry.id || community->recipe.app_id != app_id) {
+      if (!community || community->recipe.id != entry.id || community->game != game) {
         if (log) log("community recipes: " + entry.id + " skipped: " + (community ? "not the recipe the index lists" : error));
         continue;
       }
       RecipeSummary summary;
       summary.id = entry.id;
-      summary.app_id = app_id;
+      summary.game = game;
+      summary.made_on = community->made_on;
       summary.title = community->title;
       summary.status = community->status;
       summary.author = community->author;
@@ -108,10 +115,10 @@ std::map<std::uint32_t, std::vector<RecipeSummary>> BuildSummaries(
           if (const auto votes = recipe->second.find(entry.revision); votes != recipe->second.end())
             summary.votes = votes->second;
       }
-      apps[app_id].push_back(std::move(summary));
+      games[game].push_back(std::move(summary));
     }
   }
-  return apps;
+  return games;
 }
 
 CommunityRecipeService::CommunityRecipeService(RecipeServiceConfig config)
@@ -229,12 +236,13 @@ void CommunityRecipeService::LoadFromDisk() {
   }
   std::optional<VoteTotals> totals;
   if (const auto votes = store_->ReadVotes()) totals = ParseVoteSummary(*votes, nullptr);
-  auto apps = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
+  auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
   std::size_t count = 0;
-  for (const auto& [app, list] : apps) count += list.size();
+  for (const auto& [game, list] : games) count += list.size();
   Log("community recipes: loaded " + current->tag + " from disk (" + std::to_string(count) + " recipes)");
   Publish([&](RecipeSnapshot& s) {
-    s.apps = std::move(apps);
+    s.games = std::move(games);
+    s.game_names = IndexGameNames(*index);
     s.release_tag = current->tag;
     s.fetched_at = current->fetched_at;
   });
@@ -391,7 +399,7 @@ bool CommunityRecipeService::Refresh(std::string* error) {
     for (const auto& file : *files) {
       std::string why;
       const auto community = CheckRecipeFile(file.bytes, &why);
-      if (!community || community->recipe.id != file.entry->id || community->recipe.app_id != file.entry->app_id) {
+      if (!community || community->recipe.id != file.entry->id || community->game != file.entry->game) {
         Log("community recipes: " + file.entry->id + " dropped: " + (community ? "its id differs from its path" : why));
         continue;
       }
@@ -444,9 +452,10 @@ bool CommunityRecipeService::Refresh(std::string* error) {
 
   if (!totals)
     if (const auto stored = store_->ReadVotes()) totals = ParseVoteSummary(*stored, nullptr);
-  auto apps = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
+  auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
   Publish([&](RecipeSnapshot& s) {
-    s.apps = std::move(apps);
+    s.games = std::move(games);
+    s.game_names = IndexGameNames(*index);
     s.release_tag = release->tag;
     s.fetched_at = fetched_at;
   });

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "library/game_ref.h"
 #include "library/store.h"
 #include "runtime/prospero_profile.h"
 
@@ -417,21 +418,25 @@ bool IsGeneratedRecipeId(std::string_view id);
 // changed is kept apart from the recipe, so it still wins. False when nothing changed, also when the program can't be
 // read now (a drive not plugged in): the next Play tries again.
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
-// A community recipe (docs/community-recipes.md): community-<app id>-<slug>, or community-<app id>
-// as Export as recipe writes it before the author picks a slug (CommunityRecipeRefusals refuses that
-// form). Like a generated one, it is not a shipped recipe, so it does not force the game's own Steam
-// library.
+// A community recipe (docs/community-recipes.md): community-<store>-<key>-<slug>, or community-<store>-<key> as Export
+// as recipe writes it before the author picks a slug (CommunityRecipeRefusals refuses that form). Only the shape is
+// checked (^community-(steam|epic|gog|imported)-[a-z0-9]+(-[a-z0-9]+)*$, at most 128 bytes): an id is only compared
+// with one made from a game (CommunityRecipeIdFor), never split to find its game. Like a generated one, it is not a
+// shipped recipe, so it does not force the game's own Steam library.
 bool IsCommunityRecipeId(std::string_view id);
 // A slug: lowercase ASCII letters, digits and single hyphens, 1-32 characters, no hyphen first or last.
 inline constexpr std::size_t kCommunitySlugMaxBytes = 32;
-// The installed-game record holds a recipe id in 64 bytes (settings_publication_journal.cpp).
-inline constexpr std::size_t kCommunityRecipeIdMaxBytes = 64;
+inline constexpr std::size_t kCommunityRecipeIdMaxBytes = 128;
+// The installed-game record and the game's title hold a recipe id in 64 bytes (settings_publication_journal.cpp,
+// prospero-win's pw_title_launch.h): a longer community recipe id can't be applied to a game yet (SelectRecipe).
+// Every Steam game's fits: community-steam-<10 digits>-<32-byte slug> is 59 bytes.
+inline constexpr std::size_t kInstalledRecipeIdMaxBytes = 64;
 bool IsValidCommunitySlug(std::string_view slug);
-// "community-<app id>-<slug>"; "community-<app id>" for an empty slug (the export's form).
-std::string CommunityRecipeIdFor(std::uint32_t app_id, std::string_view slug);
-// Splits community-<app id>-<slug> with a canonical app ID and a valid slug; false for anything
-// else, the export's slugless form included.
-bool SplitCommunityRecipeId(std::string_view id, std::uint32_t* app_id, std::string* slug);
+// "community-<store>-<key>-<slug>"; "community-<store>-<key>" for an empty slug (the export's form).
+std::string CommunityRecipeIdFor(const GameRef& game, std::string_view slug);
+// The slug of an id made for game (CommunityRecipeIdFor with a valid slug); nothing for anything else, the export's
+// slugless form included.
+std::optional<std::string> CommunityRecipeSlug(std::string_view id, const GameRef& game);
 // What the player chose in Game settings that changes how the recipe is generated.
 struct RecipeChoices {
   std::string program;      // game-relative .exe to start (entry kProgramEntryId, first); empty: Steam's
@@ -596,7 +601,14 @@ bool ParseProfileSidecar(std::string_view json, CommunityPreset* community, std:
 // A game's effective settings in the community recipe format (docs/community-recipes.md):
 // a Playden recipe that ParseGameRecipe reads, plus who tested it where.
 struct CommunityRecipe {
-  GameRecipe recipe;  // id community-<app id>-<slug>; the effective program, arguments, overrides and settings
+  // id community-<store>-<key>-<slug>; the effective program, arguments, overrides and settings. app_id and game are
+  // not in the file: they name the installed game it is applied to (BindCommunityRecipe), 0 and none until then.
+  GameRecipe recipe;
+  GameRef game;                 // the game it is for ("game": {"store", "key", "name"})
+  std::string game_name;        // that game's name as the sharer's store or folder showed it (IsGameName)
+  // The store of the copy it was made with, when not game.store ("imported" for an imported copy shared under its
+  // Steam app ID); empty otherwise.
+  std::string made_on;
   std::string executable;       // identity: the program, relative to the install root
   std::string title;            // what the chooser shows, 1-60 printable characters; empty in an export
   // The kit version it was tested with ("0.12", "0.12-dev.20261022.1"): information, not a requirement.
@@ -618,7 +630,11 @@ struct CommunityRecipe {
 // The recipe the effective settings describe. Only values that differ from Playden's default
 // and rows the runtime applies become defaults; rows the recipe locks stay locked unless the
 // player changed them anyway.
-CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings);
+// game, game_name and made_on name the game it is shared for (SharingGameRef); the id is the export's slugless form.
+CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings, const GameRef& game,
+                                     std::string game_name, std::string made_on = {});
+// A community recipe as the recipe of one installed game: recipe.app_id its runtime number, recipe.game the game.
+void BindCommunityRecipe(CommunityRecipe* community, const GameId& game, std::uint32_t runtime_number);
 std::string SerializeCommunityRecipe(const CommunityRecipe& community);
 // Reads a community recipe leniently: an export (no slug, no title, locks) and older files (a kit
 // id in min_kit) read too. CommunityRecipeRefusals (runtime/community_rules.h) holds the strict

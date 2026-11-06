@@ -23,7 +23,8 @@ struct CommunityCheckOptions {};
 
 // Every strict rule a parsed community recipe breaks, one sentence each; empty when it may be
 // published and offered. On top of ParseCommunityRecipe:
-// - identity: recipe_id community-<app id>-<slug> for app_id (not the export's slugless form), at most 64 bytes;
+// - identity: recipe_id community-<store>-<key>-<slug> for the game object (not the export's slugless form), at most
+//   128 bytes; game.name 1-120 printable characters (IsGameName); made_on only when not game.store;
 // - title optional (1-60 printable characters when set), author optional, contributors named once each; no text field holds
 //   invalid UTF-8, control, bidirectional or surrogate characters (notes may hold new lines and tabs), and names and
 //   titles have no space or invisible character at either end;

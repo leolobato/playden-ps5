@@ -1554,19 +1554,29 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
   GameRecipe out;
   const auto* version = root->get("recipe_version");
   const auto* app = root->get("app_id");
+  const auto* store = root->get("store");
+  const auto* game = root->get("game");
+  // A community recipe names its game with a game object ({store, key, name}, ParseCommunityRecipe) and has no app
+  // ID: the game it is applied to binds it (BindCommunityRecipe).
+  const bool community = game && game->object();
   std::uint64_t parsed_version = 0;
   std::uint64_t parsed_app = 0;
-  if (!StringField(*root, "recipe_id", &out.id) ||
-      !ExactUnsigned(version, static_cast<std::uint64_t>(std::numeric_limits<int>::max()), &parsed_version, false) ||
-      !ExactUnsigned(app, std::numeric_limits<std::uint32_t>::max(), &parsed_app, false))
+  if (community) {
+    if (app || root->get("steam_appid")) return fail("app_id and steam_appid are obsolete: the game object names the game");
+    if (store) return fail("a community recipe names its store in the game object");
+    if (!StringField(*root, "recipe_id", &out.id) ||
+        !ExactUnsigned(version, static_cast<std::uint64_t>(std::numeric_limits<int>::max()), &parsed_version, false))
+      return fail("recipe needs recipe_id and recipe_version");
+  } else if (!StringField(*root, "recipe_id", &out.id) ||
+             !ExactUnsigned(version, static_cast<std::uint64_t>(std::numeric_limits<int>::max()), &parsed_version, false) ||
+             !ExactUnsigned(app, std::numeric_limits<std::uint32_t>::max(), &parsed_app, false)) {
     return fail("recipe needs recipe_id, recipe_version and app_id");
+  }
   out.version = static_cast<int>(parsed_version);
   out.app_id = static_cast<std::uint32_t>(parsed_app);
   // Games from other stores name their store and game; absent, the recipe is for Steam's app_id.
-  const auto* store = root->get("store");
-  const auto* game = root->get("game");
-  if ((store == nullptr) != (game == nullptr)) return fail("recipe needs both store and game, or neither");
-  if (store) {
+  if (!community && (store == nullptr) != (game == nullptr)) return fail("recipe needs both store and game, or neither");
+  if (store && !community) {
     const auto parsed_store = store->string() ? ParseStoreKey(*store->string()) : std::nullopt;
     if (!parsed_store || !game->string()) return fail("recipe names an unknown store");
     out.game = GameId{*parsed_store, *game->string()};
@@ -2001,47 +2011,13 @@ namespace {
 
 constexpr std::string_view kCommunityPrefix = "community-";
 
-// A Steam app ID as a recipe id spells it: canonical decimal 1..UINT32_MAX.
-bool CanonicalAppId(std::string_view text, std::uint32_t* app_id) {
-  if (text.empty() || text.size() > 10 || text.front() == '0') return false;
-  std::uint64_t value = 0;
-  for (const char c : text) {
-    if (c < '0' || c > '9') return false;
-    value = value * 10 + static_cast<std::uint64_t>(c - '0');
-  }
-  if (value > std::numeric_limits<std::uint32_t>::max()) return false;
-  if (app_id) *app_id = static_cast<std::uint32_t>(value);
-  return true;
-}
-
-// community-<app id>[-<slug>]: the app ID, and the slug (empty when there is none).
-bool ParseCommunityId(std::string_view id, std::uint32_t* app_id, std::string_view* slug) {
-  if (id.size() > kCommunityRecipeIdMaxBytes || id.substr(0, kCommunityPrefix.size()) != kCommunityPrefix) return false;
-  const auto rest = id.substr(kCommunityPrefix.size());
-  const auto hyphen = rest.find('-');
-  if (!CanonicalAppId(rest.substr(0, hyphen), app_id)) return false;
-  if (hyphen == std::string_view::npos) {
-    *slug = {};
-    return true;
-  }
-  *slug = rest.substr(hyphen + 1);
-  return IsValidCommunitySlug(*slug);
-}
-
-}  // namespace
-
-bool IsCommunityRecipeId(std::string_view id) {
-  std::uint32_t app_id = 0;
-  std::string_view slug;
-  return ParseCommunityId(id, &app_id, &slug);
-}
-
-bool IsValidCommunitySlug(std::string_view slug) {
-  if (slug.empty() || slug.size() > kCommunitySlugMaxBytes || slug.front() == '-' || slug.back() == '-') return false;
-  for (std::size_t index = 0; index < slug.size(); ++index) {
-    const char c = slug[index];
+// ^[a-z0-9]+(-[a-z0-9]+)*$
+bool HyphenWords(std::string_view text) {
+  if (text.empty() || text.front() == '-' || text.back() == '-') return false;
+  for (std::size_t index = 0; index < text.size(); ++index) {
+    const char c = text[index];
     if (c == '-') {
-      if (slug[index - 1] == '-') return false;
+      if (text[index - 1] == '-') return false;
     } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
       return false;
     }
@@ -2049,19 +2025,33 @@ bool IsValidCommunitySlug(std::string_view slug) {
   return true;
 }
 
-std::string CommunityRecipeIdFor(std::uint32_t app_id, std::string_view slug) {
-  std::string id = std::string(kCommunityPrefix) + std::to_string(app_id);
+}  // namespace
+
+bool IsCommunityRecipeId(std::string_view id) {
+  if (id.size() > kCommunityRecipeIdMaxBytes || id.substr(0, kCommunityPrefix.size()) != kCommunityPrefix) return false;
+  const auto rest = id.substr(kCommunityPrefix.size());
+  const auto hyphen = rest.find('-');
+  if (hyphen == std::string_view::npos || !IsRecipeStore(rest.substr(0, hyphen))) return false;
+  return HyphenWords(rest.substr(hyphen + 1));
+}
+
+bool IsValidCommunitySlug(std::string_view slug) {
+  return slug.size() <= kCommunitySlugMaxBytes && HyphenWords(slug);
+}
+
+std::string CommunityRecipeIdFor(const GameRef& game, std::string_view slug) {
+  std::string id = std::string(kCommunityPrefix) + game.store + "-" + game.key;
   if (!slug.empty()) id += "-" + std::string(slug);
   return id;
 }
 
-bool SplitCommunityRecipeId(std::string_view id, std::uint32_t* app_id, std::string* slug) {
-  std::uint32_t parsed_app = 0;
-  std::string_view parsed_slug;
-  if (!ParseCommunityId(id, &parsed_app, &parsed_slug) || parsed_slug.empty()) return false;
-  if (app_id) *app_id = parsed_app;
-  if (slug) *slug = std::string(parsed_slug);
-  return true;
+std::optional<std::string> CommunityRecipeSlug(std::string_view id, const GameRef& game) {
+  if (!game.valid()) return std::nullopt;
+  const auto prefix = CommunityRecipeIdFor(game, {}) + "-";
+  if (id.size() > kCommunityRecipeIdMaxBytes || id.substr(0, prefix.size()) != prefix) return std::nullopt;
+  const auto slug = id.substr(prefix.size());
+  if (!IsValidCommunitySlug(slug)) return std::nullopt;
+  return std::string(slug);
 }
 
 namespace {
@@ -3625,13 +3615,16 @@ bool ApplySettingsFiles(const SettingsLaunchPlan& plan, const std::string& insta
 
 namespace playden::runtime {
 
-CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings) {
+CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings, const GameRef& game,
+                                     std::string game_name, std::string made_on) {
   CommunityRecipe out;
   auto& shared = out.recipe;
+  out.game = game;
+  out.game_name = std::move(game_name);
+  if (made_on != game.store) out.made_on = std::move(made_on);
   // The author picks the slug (and the title): the export leaves both empty.
-  shared.id = CommunityRecipeIdFor(recipe.app_id, {});
+  shared.id = CommunityRecipeIdFor(game, {});
   shared.version = 1;
-  shared.app_id = recipe.app_id;
   shared.name = recipe.name;
   if (settings.launch) {
     shared.launch_entries = {*settings.launch};
@@ -3673,7 +3666,9 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
   const auto& recipe = community.recipe;
   // One field per line, so a change to a shared recipe reads well in a pull request.
   std::string text = "{\n  \"recipe_id\": " + quoted(recipe.id) + ",\n  \"recipe_version\": " +
-                     std::to_string(recipe.version) + ",\n  \"app_id\": " + std::to_string(recipe.app_id) +
+                     std::to_string(recipe.version) + ",\n  \"game\": {\"store\": " + quoted(community.game.store) +
+                     ", \"key\": " + quoted(community.game.key) + ", \"name\": " + quoted(community.game_name) + "}" +
+                     (community.made_on.empty() ? std::string() : ",\n  \"made_on\": " + quoted(community.made_on)) +
                      ",\n  \"name\": " + quoted(recipe.name) + ",\n  \"launch_entries\": [";
   for (std::size_t index = 0; index < recipe.launch_entries.size(); ++index) {
     const auto& entry = recipe.launch_entries[index];
@@ -3726,7 +3721,7 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
     text += "\n  }";
   }
   if (!recipe.ini.empty()) text += ",\n  \"ini\": " + SerializeIniValues(recipe.ini, "\n    ", "\n  ");
-  text += ",\n  \"steam_appid\": " + std::to_string(recipe.app_id) + ",\n  \"executable\": " +
+  text += ",\n  \"executable\": " +
           quoted(community.executable) + ",\n  \"community\": {\n    \"format_version\": 1,\n    \"title\": " +
           quoted(community.title) + ",\n    \"tested_kit\": " + quoted(community.tested_kit) +
           // min_kit is a requirement someone sets by hand; an empty one is left out.
@@ -3754,20 +3749,29 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
   if (!out.recipe.steam_api_copies.empty()) return fail("a community recipe can't carry steam_api_copies");
   if (!out.recipe.game_files.empty()) return fail("a community recipe can't carry game_files");
   const auto root = json::parse(text);
-  std::uint64_t appid = 0;
-  if (!ExactUnsigned(root->get("steam_appid"), std::numeric_limits<std::uint32_t>::max(), &appid, false) ||
-      appid != out.recipe.app_id)
-    return fail("steam_appid must match app_id");
+  // ParseGameRecipe read the game object's shape; app_id and steam_appid are refused there.
+  const auto* game = root->get("game");
+  if (!game || !game->object()) return fail("community recipe needs \"game\": {\"store\", \"key\", \"name\"}");
+  for (const auto& [key, value] : *game->object())
+    if (key != "store" && key != "key" && key != "name") return fail("game." + key + " is not a game field (store, key, name)");
+  if (!StringField(*game, "store", &out.game.store) || !IsRecipeStore(out.game.store))
+    return fail("game.store must be steam, epic, gog or imported");
+  if (!StringField(*game, "key", &out.game.key) || !IsStoreKey(out.game.store, out.game.key))
+    return fail("game.key is not a key of store " + out.game.store);
+  if (!StringField(*game, "name", &out.game_name)) return fail("game.name must be a string");
+  if (const auto* made_on = root->get("made_on")) {
+    if (!made_on->string() || !IsRecipeStore(*made_on->string()))
+      return fail("made_on must be steam, epic, gog or imported");
+    out.made_on = *made_on->string();
+  }
   if (!StringField(*root, "executable", &out.executable)) return fail("community recipe needs executable");
   const auto* meta = root->get("community");
   std::uint64_t format = 0;
   if (!meta || !meta->object() || !ExactUnsigned(meta->get("format_version"), 1000, &format) || format != 1)
     return fail("community recipe needs community.format_version 1");
-  std::uint32_t id_app = 0;
-  std::string_view slug;
-  if (!ParseCommunityId(out.recipe.id, &id_app, &slug) || id_app != out.recipe.app_id)
-    return fail("recipe_id must be community-<app id>-<slug> for this app_id, at most 64 bytes, with a slug of 1-32 "
-                "lowercase letters, digits and single hyphens");
+  if (out.recipe.id != CommunityRecipeIdFor(out.game, {}) && !CommunityRecipeSlug(out.recipe.id, out.game))
+    return fail("recipe_id must be community-<store>-<key>-<slug> for the game object's store and key, at most 128 "
+                "bytes, with a slug of 1-32 lowercase letters, digits and single hyphens");
   if (!StringField(*meta, "title", &out.title, false) || !StringField(*meta, "tested_kit", &out.tested_kit, false) ||
       !StringField(*meta, "min_kit", &out.min_kit, false) ||
       !StringField(*meta, "tested_firmware", &out.tested_firmware, false) ||
@@ -3794,6 +3798,11 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
       return true;
     }
   return fail("executable must be one of the launch entries");
+}
+
+void BindCommunityRecipe(CommunityRecipe* community, const GameId& game, std::uint32_t runtime_number) {
+  community->recipe.app_id = runtime_number;
+  community->recipe.game = game;
 }
 
 bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabilities& kit) {

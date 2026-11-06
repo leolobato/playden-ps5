@@ -609,6 +609,13 @@ class RuntimeHost {
   // Playden no longer has it.
   const runtime::GameRecipe* RecipeOf(Composition& composition, const runtime::RuntimeInstall& record);
   const runtime::CommunityRecipe* CommunityOf(Composition& composition, const runtime::RuntimeInstall& record);
+  // A loaded community recipe bound to one game (runtime::BindCommunityRecipe), kept for the session.
+  const runtime::CommunityRecipe* BoundCommunityRecipe(Composition& composition, const runtime::CommunityRecipe& loaded,
+                                                       const GameId& game, std::uint32_t runtime_number);
+  // The GameRef whose community recipes a game takes (MatchingGameRef); nothing for another store's game without a
+  // Steam app ID.
+  std::optional<GameRef> MatchingRefOf(const GameId& game, std::uint32_t runtime_number,
+                                       const runtime::GameSettingsRecord& saved) const;
   // The kit version a game's title runs with: the installed kit's when the title runs its runtime (or
   // the title is not made yet), otherwise unknown (CommunityRecipeFits then refuses a min_kit).
   std::optional<runtime::KitVersion> TitleKitVersion(const Composition& composition,

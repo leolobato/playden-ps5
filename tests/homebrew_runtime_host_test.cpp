@@ -7132,12 +7132,14 @@ std::string CommunityHl2(const std::string& slug, std::vector<RegistryValue> reg
   GameRecipe recipe;
   std::string reason;
   CHECK(ParseGameRecipe(Read(fs::path(g_runtime_dir) / "recipes/steam-220-hl2-v1.json"), &recipe, &reason));
-  recipe.id = "community-220-" + slug;
+  recipe.id = "community-steam-220-" + slug;
   recipe.locked.clear();
   recipe.requirements.clear();
   recipe.registry = std::move(registry);
   CommunityRecipe community;
   community.recipe = recipe;
+  community.game = playden::GameRef::Steam(220);
+  community.game_name = "Half-Life 2";
   community.executable = "hl2.exe";
   community.title = "Fast " + slug;
   community.status = "works";
@@ -7180,7 +7182,7 @@ void CommunityRecipeSwitches() {
   auto config = CommunityConfig(fixture, kit, &uuids, &now);
   RecipeCache cache;
   cache.Wire(config);
-  const std::string id = "community-220-fast";
+  const std::string id = "community-steam-220-fast";
   const auto text_a = CommunityHl2("fast", {{"Software\\Wine\\AppDefaults\\hl2.exe\\Direct3D", "VideoMemorySize", "\"4096\""},
                                             {"Software\\Valve\\Test", "A", "\"1\""}});
   const auto text_b = CommunityHl2("fast", {{"Software\\Wine\\AppDefaults\\hl2.exe\\Direct3D", "VideoMemorySize", "\"2048\""},
@@ -7457,7 +7459,7 @@ void AppliedCommunityRecipeSurvivesKitSwap() {
   cache.Wire(config);
   const auto revision = cache.Add(CommunityHl2("fast", {{"Software\\Valve\\Test", "A", "\"1\""}}, "0.12"));
   GameSettingsRecord saved;
-  ChooseCommunityRecipe(&saved, "community-220-fast", revision);
+  ChooseCommunityRecipe(&saved, "community-steam-220-fast", revision);
   config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
   Write(game / "hl2.exe", "existing-game", 0644);
@@ -7471,7 +7473,7 @@ void AppliedCommunityRecipeSurvivesKitSwap() {
       return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
     }, 60);
     if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
-    CHECK(!done.refusals.count(220) && done.installs[0].recipe_id == "community-220-fast" && !done.recipe_fallbacks.count(220));
+    CHECK(!done.refusals.count(220) && done.installs[0].recipe_id == "community-steam-220-fast" && !done.recipe_fallbacks.count(220));
     host.Shutdown();
   }
   // Another build of the same kit version: the title is not current, but runs a 0.12 runtime.
@@ -7488,7 +7490,7 @@ void AppliedCommunityRecipeSurvivesKitSwap() {
   const auto result = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
   if (!result.maintenance.at(220).ok) std::fprintf(stderr, "after kit swap: %s\n", result.maintenance.at(220).message.c_str());
   CHECK(result.maintenance.at(220).ok && result.maintenance.at(220).message == "Settings are up to date.");
-  CHECK(result.installs[0].recipe_id == "community-220-fast" && !result.recipe_fallbacks.count(220));
+  CHECK(result.installs[0].recipe_id == "community-steam-220-fast" && !result.recipe_fallbacks.count(220));
   host.Shutdown();
 }
 
@@ -7521,9 +7523,8 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
   CHECK(chmod(game.c_str(), 0755) == 0);
   const auto community = [&](const std::string& min_kit) {
     GameRecipe recipe;
-    recipe.id = "community-4242-fast";
+    recipe.id = "community-steam-4242-fast";
     recipe.version = 1;
-    recipe.app_id = 4242;
     recipe.name = "Example Game";
     recipe.launch_entries = {{"game", "Fast", "Bin/Fast.exe", ""}};
     recipe.architecture = "pe64";
@@ -7532,6 +7533,8 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
     recipe.registry = {{"Software\\Wine\\AppDefaults\\Fast.exe\\Direct3D", "VideoMemorySize", "\"4096\""}};
     CommunityRecipe out;
     out.recipe = recipe;
+    out.game = playden::GameRef::Steam(4242);
+    out.game_name = "Example Game";
     out.executable = "Bin/Fast.exe";
     out.title = "Fast";
     out.status = "works";
@@ -7572,20 +7575,20 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
     CHECK(removed.installs.empty());
   };
   // The recipe needs a newer kit: the generated recipe prepares the game, and the sheet learns why.
-  ChooseCommunityRecipe(&saved, "community-4242-fast", rev_new);
+  ChooseCommunityRecipe(&saved, "community-steam-4242-fast", rev_new);
   auto done = prepare();
   CHECK(done.installs[0].recipe_id == "steam-4242-auto" && done.recipe_fallbacks.at(4242) == "The recipe needs runtime kit version 0.13 or newer.");
   CHECK(has(Read(profile), "Game.exe"));
   remove();
   // Its object is missing from the cache: the same, with that reason.
-  ChooseCommunityRecipe(&saved, "community-4242-fast", rev_gone);
+  ChooseCommunityRecipe(&saved, "community-steam-4242-fast", rev_gone);
   done = prepare();
   CHECK(done.installs[0].recipe_id == "steam-4242-auto" && done.recipe_fallbacks.at(4242) == kCommunityRecipeRemoved);
   remove();
   // A recipe the kit runs: it wins over the generated one, which is kept beside it.
-  ChooseCommunityRecipe(&saved, "community-4242-fast", rev_fit);
+  ChooseCommunityRecipe(&saved, "community-steam-4242-fast", rev_fit);
   done = prepare();
-  CHECK(done.installs[0].recipe_id == "community-4242-fast" && done.installs[0].recipe_version == rev_fit.substr(0, 32));
+  CHECK(done.installs[0].recipe_id == "community-steam-4242-fast" && done.installs[0].recipe_version == rev_fit.substr(0, 32));
   CHECK(!done.recipe_fallbacks.count(4242) && has(Read(profile), "Fast.exe") && done.installs[0].launch_path == "Bin/Fast.exe");
   CHECK(fs::is_regular_file(generated_file) && done.generated_recipes.size() == 1 && done.generated_recipes[0].id == "steam-4242-auto");
   const auto user_reg = fixture.root / "data/playden/games/steam-4242/library/prefixes/game/user.reg";
@@ -7605,6 +7608,104 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
   CHECK(restarted.Start());
   const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
   CHECK(reloaded.generated_recipes[0].id == "steam-4242-auto" && reloaded.installs[0].state == PreparationState::kReady);
+  restarted.Shutdown();
+}
+
+// An imported game takes the community recipes of its Steam app ID (Game settings here, or its steam_appid.txt): the
+// chosen recipe is bound to the imported game's own runtime number and game. A recipe of another game reads as
+// unreadable, and without a Steam app ID nothing matches (searching by name comes later).
+void ImportedGameTakesItsSteamAppIdsRecipe() {
+  const auto local = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  RecipeCache cache;
+  cache.Wire(config);
+  const auto game = fixture.root / "data/playden-import/Imported";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Bin/Game.exe", pe, 0644);
+  Write(game / "Bin/Fast.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto recipe_for = [](std::uint32_t app) {
+    CommunityRecipe out;
+    out.recipe.id = CommunityRecipeIdFor(playden::GameRef::Steam(app), "fast");
+    out.recipe.version = 1;
+    out.recipe.name = "Imported";
+    out.recipe.launch_entries = {{"game", "Fast", "Bin/Fast.exe", ""}};
+    out.recipe.architecture = "pe64";
+    out.recipe.graphics = "dxvk";
+    out.game = playden::GameRef::Steam(app);
+    out.game_name = "Imported";
+    out.executable = "Bin/Fast.exe";
+    out.title = "Fast";
+    out.status = "works";
+    out.tested_kit = "0.12";
+    out.author = "Ana";
+    return SerializeCommunityRecipe(out);
+  };
+  const auto rev_own = cache.Add(recipe_for(4000));
+  const auto rev_other = cache.Add(recipe_for(4001));
+  std::mutex settings_mutex;
+  GameSettingsRecord saved;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    return saved;
+  };
+  const auto set = [&](std::uint32_t app, const std::string& revision) {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.steam_app_id = app;
+    ChooseCommunityRecipe(&saved, CommunityRecipeIdFor(playden::GameRef::Steam(revision == rev_own ? 4000 : 4001), "fast"),
+                          revision);
+  };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto number = *host.RuntimeNumberFor(local);
+  RuntimePrepareRequest request{number, "/data/playden-import/Imported", "internal", "Imported"};
+  request.launches = {{"", "", "Bin/Game.exe", "", ""}};
+  request.game = local;
+  const auto prepare = [&] {
+    host.Prepare(request);
+    const auto done = WaitFor(host, [number](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(number).c_str());
+    CHECK(!done.refusals.count(number) && done.installs.size() == 1);
+    return done;
+  };
+  const auto apply = [&] {
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(number, RuntimeMaintenance::kApplySettings);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  };
+  // No Steam app ID: its own generated recipe, and the chosen one reads as another game's.
+  set(0, rev_own);
+  auto done = prepare();
+  CHECK(done.installs[0].recipe_id == playden::GeneratedRecipeId(local) &&
+        done.recipe_fallbacks.at(number) == kCommunityRecipeUnreadable);
+  // Its Steam app ID in Game settings: steam/4000's recipe applies, bound to the imported game.
+  set(4000, rev_own);
+  done = apply();
+  if (!done.maintenance.at(number).ok) std::fprintf(stderr, "apply: %s\n", done.maintenance.at(number).message.c_str());
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-steam-4000-fast" &&
+        done.installs[0].recipe_version == rev_own.substr(0, 32) && done.installs[0].launch_path == "Bin/Fast.exe" &&
+        done.installs[0].game == local && !done.recipe_fallbacks.count(number));
+  // Another Steam game's recipe is not this game's: Playden keeps the applied one and says why.
+  set(4000, rev_other);
+  done = apply();
+  CHECK(done.installs[0].recipe_id == "community-steam-4000-fast" &&
+        done.recipe_fallbacks.at(number) == kCommunityRecipeUnreadable);
+  host.Shutdown();
+  // After a restart the applied recipe resolves again for the imported game.
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.installs.empty(); });
+  CHECK(reloaded.installs[0].recipe_id == "community-steam-4000-fast" && reloaded.installs[0].state == PreparationState::kReady);
   restarted.Shutdown();
 }
 
@@ -7710,6 +7811,7 @@ int main(int argc, char** argv) {
   CommunityRecipeSwitches();
   AppliedCommunityRecipeSurvivesKitSwap();
   CommunityRecipeOverGeneratedAndKitFallback();
+  ImportedGameTakesItsSteamAppIdsRecipe();
   std::puts("runtime host tests passed");
   return 0;
 }

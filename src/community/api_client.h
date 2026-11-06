@@ -58,9 +58,12 @@ struct ApiError {
 };
 
 struct SubmissionRequest {
-  std::uint32_t app_id = 0;
+  // The game the recipe is for (SharingGameRef: an imported game without a Steam app ID shares under its name key)
+  // and its name as the store or folder shows it (IsGameName); sent as "game": {"store", "key", "name"}.
+  GameRef game;
+  std::string game_name;
   // The recipe as SerializeCommunityRecipe writes it (see RecipeJsonForSubmission): it must parse
-  // with ParseCommunityRecipe for app_id, use only the accepted keys, lock nothing and fit 16 KB.
+  // with ParseCommunityRecipe for game, use only the accepted keys, lock nothing and fit 16 KB.
   std::string recipe_json;
   std::string title;  // optional: 0-60 characters IsSubmissionText accepts; empty is left out
   std::string name;   // 0-40 such characters; empty: left out (the recipe has no author: "from the community")
@@ -99,7 +102,6 @@ struct SubmissionStatus {
 };
 
 struct VoteRequest {
-  std::uint32_t app_id = 0;
   std::string recipe_id;
   std::string revision;  // 64 hex, a published revision
   std::string vote;      // up or down
@@ -132,7 +134,7 @@ struct ReportRequest {
   std::string installed_on;  // console, m2, usb, imported or other
   std::vector<std::string> controls;  // dualsense, mouse-preset, arrow-keys-preset, usb-mouse-keyboard
   std::string settings;      // the changed settings as Playden lists them, 0-2000 characters; empty: default
-  std::string recipe_json;   // optional: the recipe export (Steam games), at most 16 KB
+  std::string recipe_json;   // optional: the recipe export, at most 16 KB
   std::optional<RecipeRef> based_on;  // the community recipe in use
   std::vector<std::pair<std::string, std::string>> versions;  // summary.md's facts, at most 24
   std::string author;        // optional: the player's name, 1-40 printable characters

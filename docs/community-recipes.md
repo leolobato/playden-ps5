@@ -1,6 +1,7 @@
 # Community recipes
 
-A community recipe tells Playden how to start one Steam game on the PS5. It is a
+A community recipe tells Playden how to start one game on the PS5: a Steam game, or a game imported from a folder
+(GOG and Epic games once Playden has those stores). It is a
 Playden recipe (the same JSON as `runtime/recipes/*.json`) with a few more fields
 that say who tested it, where and how well. Playden reads the recipe part with
 `ParseGameRecipe` and the whole file with `ParseCommunityRecipe`
@@ -37,15 +38,15 @@ and a star by the name of an author the maintainers trust.
    overrides, other rows).
 2. Set the game's rating and note under **Compatibility and note**.
 3. In **Game settings > Advanced**, choose **Export as recipe**. Playden writes
-   `recipe-<app id>.json` next to its logs (`/data/playden/logs` on the console, `logs/`
+   `recipe-<game>.json` (`recipe-274520.json`, `recipe-local-<uuid>.json`) next to its logs (`/data/playden/logs` on the console, `logs/`
    in the data folder on a Mac). `tools/collect_logs.py` puts it in the zip for a test report.
 4. Fill in what the export leaves for you:
-   - a slug, added to `recipe_id`: `community-<app id>` becomes `community-<app id>-<slug>`;
+   - a slug, added to `recipe_id`: `community-<store>-<key>` becomes `community-<store>-<key>-<slug>`;
    - `community.title`, the name players see when they choose a recipe (optional);
    - `community.author`, your name (optional);
    - `locked`: empty it if the export listed rows there (see [Rules](#rules-for-community-recipes)).
 5. Check it with `community_recipe_check` (built with Playden, see below), then send it as a pull
-   request to playden-ps5-recipes as `recipes/<app id>/<slug>.json`.
+   request to playden-ps5-recipes as `recipes/<store>/<key>/<slug>.json`.
 
 A game can have several recipes, for example "120 Hz, pointer on left stick" and "Mouse preset": each is
 its own file with its own slug.
@@ -54,9 +55,9 @@ its own file with its own slug.
 
 ```json
 {
-  "recipe_id": "community-274520-120hz-left-stick-pointer",
+  "recipe_id": "community-steam-274520-120hz-left-stick-pointer",
   "recipe_version": 1,
-  "app_id": 274520,
+  "game": {"store": "steam", "key": "274520", "name": "Darkwood"},
   "name": "Darkwood",
   "launch_entries": [
     {"id": "game", "label": "Darkwood.exe", "executable": "Darkwood.exe", "working_directory": "", "arguments": ""}
@@ -74,7 +75,6 @@ its own file with its own slug.
     "resolution": "3840x2160"
   },
   "locked": [],
-  "steam_appid": 274520,
   "executable": "Darkwood.exe",
   "community": {
     "format_version": 1,
@@ -94,7 +94,9 @@ Recipe fields:
 
 | Field | Meaning |
 |---|---|
-| `recipe_id` | `community-<app id>-<slug>`. See [Ids and file names](#ids-and-file-names). |
+| `recipe_id` | `community-<store>-<key>-<slug>`. See [Ids and file names](#ids-and-file-names). |
+| `game` | The game it is for: `{"store", "key", "name"}`. See [Games](#games). |
+| `made_on` | Optional. The store of the copy it was made with, when that isn't `game.store`: `"imported"` for an imported copy shared under its Steam app ID. |
 | `recipe_version` | Always `1` in a community recipe. A recipe's revision is the SHA-256 of its file. |
 | `launch_entries` | The program that starts, relative to the game folder; its `working_directory` (empty: the program's folder) and its own `arguments`. |
 | `arguments` | Arguments the game needs. `{resolution}` is replaced by `resolution_arguments`, with `{w}` and `{h}` from the Resolution setting. |
@@ -113,7 +115,7 @@ Community fields:
 
 | Field | Meaning |
 |---|---|
-| `steam_appid`, `executable` | Identity: must match `app_id` and a launch entry's `executable`. |
+| `executable` | Identity: must match a launch entry's `executable`. |
 | `community.title` | Optional. The name players see in the list of recipes: 1–60 printable characters. Without one, Playden shows "Recipe from <author>". Older Playden versions ignore it. |
 | `community.tested_kit` | The kit version it was tested with, like `0.12` or a development kit such as `0.12-dev.20261022.1`. Export as recipe fills it in. It is information, not a requirement: testing on 0.12 doesn't prove 0.11 fails. |
 | `community.min_kit` | Optional. The oldest kit version the recipe needs, set by hand only when it really needs a newer kit (a capability, a fix). Playden doesn't offer the recipe on an older kit. The export never fills it. |
@@ -127,20 +129,61 @@ Community fields:
 Kit versions are `<generation>.<revision>` and compare as numbers: `0.9` is older than `0.12`. A
 development kit counts as the release it leads to, so `0.12-dev.20261022.1` is `0.12`.
 
-Unknown fields are ignored. A file whose `format_version` isn't 1, whose `status` is another word, or whose
-`steam_appid` doesn't match `app_id` doesn't load.
+Unknown fields are ignored. A file whose `format_version` isn't 1, whose `status` is another word, whose `game` isn't
+a store and its key, or whose `recipe_id` isn't made from its `game` doesn't load. The `app_id` and `steam_appid` of
+earlier files are refused: the `game` object replaced them.
+
+## Games
+
+A recipe belongs to one store's game, its `store` and `key`:
+
+| `store` | `key` |
+|---|---|
+| `steam` | The Steam app ID: digits, no leading zero, at most 4294967295. |
+| `gog` | The GOG product ID: 1–20 digits, no leading zero. |
+| `epic` | The Epic catalog item ID: 32 lowercase hex digits. |
+| `imported` | A name key made from the game's name: 1–48 of `a-z` and `0-9`, single hyphens, no hyphen at either end. |
+
+Playden makes a name key (`NameKey`, `src/library/game_ref.h`) the same way as the recipes repository's checker and the
+Playden API: the name in Unicode NFKD with every mark (category M) dropped, lowercased, every run of other characters
+than `a-z` and `0-9` made one `-`, `-` trimmed at both ends, cut to 48 bytes and trimmed again, and `game` when
+nothing is left. "TMNT: Mutant Melee" is `tmnt-mutant-melee`, "Crème Brûlée & Clockwork — déjà vu" is
+`creme-brulee-clockwork-deja-vu`, "ＦＵＬＬ　ＷＩＤＴＨ" is `full-width`. A maintainer may rename an imported game's
+key in review until it has a published recipe.
+
+`game.name` is the game's name as the sharer's store or folder shows it: 1–120 characters with at least one visible
+character, and no control, format, private-use or unassigned characters and no line breaks. Spaces of any width are
+fine.
+
+Which recipes a game gets, matched only by ID:
+
+- A Steam game: those of `steam/<its app ID>`.
+- An imported game with a Steam app ID (its `steam_appid.txt`, or the **Steam app ID** in Game settings): those of
+  `steam/<that ID>`. Without one, none: an imported game is never matched by its name. Searching recipes by name is
+  planned.
+
+What a share or an export is for: the same `steam/<ID>`, with `"made_on": "imported"` for an imported copy, or for an
+imported game without a Steam app ID `imported/<name key of its title>`.
 
 ## Ids and file names
 
-- `recipe_id` is `community-<app id>-<slug>`.
+- `recipe_id` is `community-<store>-<key>-<slug>`: `community-steam-274520-120hz-left-stick-pointer`,
+  `community-imported-tmnt-mutant-melee-arrow-keys`.
 - The slug uses lowercase ASCII letters, digits and single hyphens, 1–32 characters, without a hyphen
   first or last: `120hz-left-stick-pointer`, `mouse-preset`.
-- The whole id fits in 64 bytes (a 10-digit app ID and a 32-character slug make 53).
-- A slug is unique for its app ID and is never used again, even after its recipe is removed.
-- The file is `recipes/<app id>/<slug>.json` in playden-ps5-recipes.
+- The whole id fits in 128 bytes.
+- An id is only ever made from the game and the slug and compared; nothing splits it to find its game (a name key has
+  hyphens too). The store and key come from the file's path or its `game`.
+- A slug is unique for its game and is never used again, even after its recipe is removed.
+- The file is `recipes/<store>/<key>/<slug>.json` in playden-ps5-recipes; its `recipe_id` and `game` must agree with
+  the path.
 
-Export as recipe writes `community-<app id>`, without a slug, because the slug is the author's choice.
+Export as recipe writes `community-<store>-<key>`, without a slug, because the slug is the author's choice.
 Playden reads such a file, but the checker refuses it until it has a slug.
+
+An installed game's title holds its recipe id in 64 bytes. Every Steam game's id fits (at most 59 bytes); an imported
+game's can be longer, and Playden doesn't apply such a recipe yet: the game keeps Playden's own recipe and Game
+settings says why.
 
 ## Rules for community recipes
 
@@ -149,6 +192,7 @@ stricter rules than a recipe on your own console. Pull requests are checked agai
 Playden checks them again on the console:
 
 - **Title and author:** both are optional. When set, they follow the text rules below.
+- **Game:** `game.name` follows the game name rule in [Games](#games); `made_on` is left out when it is `game.store`.
 - **Text:** every text field (`title`, `author`, `contributors`, `notes`, `tested_firmware`, `tested_date`, `status`
   and the recipe's `name`) is valid UTF-8 without control characters, lone surrogates or bidirectional controls
   (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). Only `notes` may hold new lines and tabs. Title, author and
@@ -184,7 +228,7 @@ Playden's own parser, applies the rules above, works out the game's settings on 
 capability, and writes the full prospero-win profile, because some refusals only happen there:
 
 ```sh
-build/homebrew-host/community_recipe_check recipes/274520/120hz-left-stick-pointer.json
+build/homebrew-host/community_recipe_check recipes/steam/274520/120hz-left-stick-pointer.json
 ```
 
 For each file it prints `ok <path> <revision> <recipe_id>` or a `refused <path>: <reason>` line for
@@ -196,7 +240,7 @@ one object for the whole run instead, for CI:
 {
   "ok": true,
   "files": [
-    {"path": "…", "revision": "<sha256 of the file>", "recipe_id": "…", "app_id": 274520, "slug": "…",
+    {"path": "…", "revision": "<sha256 of the file>", "recipe_id": "…", "store": "steam", "key": "274520", "slug": "…",
      "title": "…", "status": "works", "author": "…", "contributors": [], "tested_kit": "0.12",
      "min_kit": "", "tested_firmware": "13.60", "tested_date": "2026-10-22", "ok": true,
      "refusals": [], "flags": ["program: Darkwood.exe", "…"], "command": "Darkwood.exe -force-d3d11 …"}
@@ -206,20 +250,19 @@ one object for the whole run instead, for CI:
 
 Applying community recipes from the preset chooser is planned.
 
-## Other stores
+## Recipes for imported games on this console
 
-A recipe can name a game that is not from Steam, with two more fields:
+A recipe Playden makes for one console's imported game (not a community recipe) names it with two more fields:
 
 ```json
 "store": "local",
 "game": "local-<uuid>"
 ```
 
-Give both or neither; a file with only one is refused, as is an unknown `store`. `local` is the only store so far: it
-is a game imported from a folder. Without them, the recipe is for the Steam game `app_id`, as before.
-
-An imported game is keyed by its local ID, which Playden makes when you add it, so a recipe for one only fits the
-console that exported it. Community recipes still target Steam games.
+Give both or neither; a file with only one is refused, as is an unknown `store`. `local` is the only store so far.
+Without them, the recipe is for the Steam game `app_id`. An imported game is keyed by its local ID, which Playden makes
+when you add it, so such a recipe only fits that console. A community recipe has neither field nor `app_id`: its
+`game` object names its game on every console.
 
 ## Registry values
 

@@ -1,7 +1,7 @@
 {
-  "recipe_id": "community-220-120hz-left-stick-pointer",
+  "recipe_id": "community-steam-274520-120hz-left-stick-pointer",
   "recipe_version": 1,
-  "app_id": 274520,
+  "game": {"store": "steam", "key": "274520", "name": "\u3000\u034f"},
   "name": "Darkwood",
   "launch_entries": [
     {
@@ -29,7 +29,6 @@
     "steam_features": "emulate"
   },
   "locked": [],
-  "steam_appid": 274520,
   "executable": "Darkwood.exe",
   "community": {
     "format_version": 1,

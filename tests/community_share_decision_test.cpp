@@ -20,8 +20,8 @@ int failures = 0;
     }                                                                               \
   } while (0)
 
-const RecipeRef kTheirs{"community-274520-120hz-left-stick-pointer", std::string(64, 'a')};
-const RecipeRef kMine{"community-274520-mouse-preset", std::string(64, 'b')};
+const RecipeRef kTheirs{"community-steam-274520-120hz-left-stick-pointer", std::string(64, 'a')};
+const RecipeRef kMine{"community-steam-274520-mouse-preset", std::string(64, 'b')};
 
 }  // namespace
 
@@ -42,7 +42,7 @@ int main() {
   {
     ShareInputs inputs;
     inputs.saved_submission_id = "s1";
-    inputs.saved_recipe_id = "community-274520-darkwood";
+    inputs.saved_recipe_id = "community-steam-274520-darkwood";
     inputs.differs_from_base = true;
     const auto decision = DecideShare(inputs);
     CHECK(decision.kind == ShareKind::kUpdateOwn);

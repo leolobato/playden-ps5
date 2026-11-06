@@ -1627,10 +1627,10 @@ int main(int argc, char** argv) {
                             R"(["A/steam_api.dll","B/steam_api.dll","C/steam_api.dll","D/steam_api.dll","E/steam_api.dll"])"})
       CHECK(!ParseGameRecipe(with_copies(bad), &parsed, &reason));
     // A community recipe can't place a file in the game folder.
-    CHECK(!ParseGameRecipe(with_copies(R"(["Game/steam_api64.dll"])", "community-1903340-test"), &parsed, &reason));
+    CHECK(!ParseGameRecipe(with_copies(R"(["Game/steam_api64.dll"])", "community-steam-1903340-test"), &parsed, &reason));
     CommunityRecipe community;
     auto shared = with_copies(R"(["Game/steam_api64.dll"])");
-    shared.replace(shared.size() - 1, 1, R"(,"steam_appid":1903340,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
+    shared.replace(shared.size() - 1, 1, R"(,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
     CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("steam_api_copies") != std::string::npos);
   }
   // Project Zomboid runs out of open files watching its folders, so Playden ships a watcher that watches nothing.
@@ -1655,10 +1655,10 @@ int main(int argc, char** argv) {
                             R"([""])", R"([1])", R"(["a.class","A.CLASS"])", R"(["a","b","c","d","e"])"})
       CHECK(!ParseGameRecipe(with_files(bad), &parsed, &reason));
     // A community recipe can't place a file in the game folder.
-    CHECK(!ParseGameRecipe(with_files(R"(["a.class"])", "community-108600-test"), &parsed, &reason));
+    CHECK(!ParseGameRecipe(with_files(R"(["a.class"])", "community-steam-108600-test"), &parsed, &reason));
     CommunityRecipe community;
     auto shared = with_files(R"(["a.class"])");
-    shared.replace(shared.size() - 1, 1, R"(,"steam_appid":108600,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
+    shared.replace(shared.size() - 1, 1, R"(,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
     CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("game_files") != std::string::npos);
   }
   // Batman: Arkham City is Asylum's sibling: BatmanAC.exe starts BmLauncher.exe and exits too while UserEngine.ini has
@@ -2446,15 +2446,16 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(empty, nullptr, {{"program", "Game.exe"}}, KitCapabilities{}, &settings, &error) && settings.launch);
 
     // Export as recipe: the effective settings as a community recipe, read back as a recipe and as one.
+    const auto kHalfLife2 = playden::GameRef::Steam(220);
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"resolution", "1280x720"}, {"program", "hl2_win64.exe"},
                                  {"architecture", "pe64"}, {"unlock.graphics", "on"}, {"graphics", "opengl"},
                                  {"arguments", "-game hl2 {resolution}"}, {"dll_overrides", "d3d9=n;xinput1_3=n"}},
                                  KitCapabilities{}, &settings, &error));
-    auto community = BuildCommunityRecipe(hl2, settings);
+    auto community = BuildCommunityRecipe(hl2, settings, kHalfLife2, "Half-Life 2");
     {  // What the files showed travels without the graphics value, which has its own field (#67).
       auto detected = hl2;
       detected.detected = "d3d9 graphics=dxvk";
-      CHECK(BuildCommunityRecipe(detected, settings).recipe.detected == "d3d9");
+      CHECK(BuildCommunityRecipe(detected, settings, kHalfLife2, "Half-Life 2").recipe.detected == "d3d9");
     }
     community.min_kit = "kit-h";
     community.tested_date = "2026-10-10";
@@ -2465,7 +2466,9 @@ int main(int argc, char** argv) {
     const auto text = SerializeCommunityRecipe(community);
     GameRecipe as_recipe;
     CHECK(ParseGameRecipe(text, &as_recipe, &reason));
-    CHECK(as_recipe.id == "community-220" && as_recipe.launch_entries.size() == 1 &&
+    // The game object stands for app_id: the recipe reads back unbound, for the game it is applied to.
+    CHECK(as_recipe.app_id == 0 && as_recipe.game == playden::GameId{});
+    CHECK(as_recipe.id == "community-steam-220" && as_recipe.launch_entries.size() == 1 &&
           as_recipe.launch_entries[0].executable == "hl2_win64.exe" && as_recipe.architecture == "pe64" &&
           as_recipe.graphics == "opengl" && as_recipe.arguments == "-game hl2 {resolution}" &&
           as_recipe.resolution_arguments == hl2.resolution_arguments && as_recipe.dll_overrides == "d3d9=n;xinput1_3=n");
@@ -2473,6 +2476,10 @@ int main(int argc, char** argv) {
     CHECK(!as_recipe.defaults.count("controller") && as_recipe.locked.empty());  // xinput is Playden's default too
     CommunityRecipe parsed;
     CHECK(ParseCommunityRecipe(text, &parsed, &reason));
+    CHECK(parsed.game == kHalfLife2 && parsed.game_name == "Half-Life 2" && parsed.made_on.empty());
+    CHECK(text.find("\"game\": {\"store\": \"steam\", \"key\": \"220\", \"name\": \"Half-Life 2\"}") != std::string::npos &&
+          text.find("app_id") == std::string::npos && text.find("steam_appid") == std::string::npos &&
+          text.find("made_on") == std::string::npos);
     CHECK(parsed.executable == "hl2_win64.exe" && parsed.status == "works" && parsed.notes == "Starts \"fine\"." &&
           parsed.base_path == "profiles/hl2.profile" && SerializeCommunityRecipe(parsed) == text);
     // The same game started from the exported recipe gets the same command.
@@ -2484,7 +2491,7 @@ int main(int argc, char** argv) {
     from_generated.defaults["steam_features"] = "emulate";
     CHECK(BuildEffectiveSettings(from_generated, nullptr, {}, KitCapabilities{}, &settings, &error));
     GameRecipe exported;
-    CHECK(ParseGameRecipe(SerializeCommunityRecipe(BuildCommunityRecipe(from_generated, settings)), &exported, &reason));
+    CHECK(ParseGameRecipe(SerializeCommunityRecipe(BuildCommunityRecipe(from_generated, settings, kHalfLife2, "Half-Life 2")), &exported, &reason));
     CHECK(exported.defaults.at("steam_features") == "emulate" && IsCommunityRecipeId(exported.id));
     CHECK(BuildEffectiveSettings(exported, nullptr, {}, KitCapabilities{}, &again, &error));
     CHECK(again.values.at("steam_features").value == "emulate" && !again.values.at("steam_features").locked);
@@ -2495,7 +2502,7 @@ int main(int argc, char** argv) {
                             {"Software\\Studio\\Game", "Language", "\"en\""}};
     with_extras.requirements = {{"audio", "ps5"}};
     with_extras.ini = {{"BmGame/Config/UserEngine.ini", "Engine.Engine", "Language", "int"}};
-    CHECK(ParseGameRecipe(SerializeCommunityRecipe(BuildCommunityRecipe(with_extras, settings)), &exported, &reason));
+    CHECK(ParseGameRecipe(SerializeCommunityRecipe(BuildCommunityRecipe(with_extras, settings, kHalfLife2, "Half-Life 2")), &exported, &reason));
     CHECK(exported.requirements == with_extras.requirements && exported.registry.size() == 2);
     CHECK(exported.ini == with_extras.ini);
     for (const auto& value : with_extras.registry)
@@ -2508,8 +2515,8 @@ int main(int argc, char** argv) {
 
     // The export leaves the slug, title and contributors for the author: community-<app id>, which reads back
     // here but the community rules refuse.
-    const auto exported_text = SerializeCommunityRecipe(BuildCommunityRecipe(hl2, settings));
-    CHECK(exported_text.find("\"recipe_id\": \"community-220\"") != std::string::npos &&
+    const auto exported_text = SerializeCommunityRecipe(BuildCommunityRecipe(hl2, settings, kHalfLife2, "Half-Life 2"));
+    CHECK(exported_text.find("\"recipe_id\": \"community-steam-220\"") != std::string::npos &&
           exported_text.find("\"title\": \"\"") != std::string::npos &&
           exported_text.find("\"tested_kit\": \"\"") != std::string::npos &&
           exported_text.find("\"contributors\": []") != std::string::npos &&
@@ -2517,7 +2524,7 @@ int main(int argc, char** argv) {
     CHECK(ParseCommunityRecipe(exported_text, &parsed, &reason) && parsed.title.empty() && parsed.contributors.empty());
     // Named by the author: the id with its slug, the title, the kit it was tested on and who helped.
     auto named = community;
-    named.recipe.id = CommunityRecipeIdFor(220, "opengl-1280");
+    named.recipe.id = CommunityRecipeIdFor(kHalfLife2, "opengl-1280");
     named.title = "OpenGL at 1280×720";
     named.tested_kit = "0.12-dev.20261022.1";
     named.min_kit = "0.12";
@@ -2525,18 +2532,38 @@ int main(int argc, char** argv) {
     named.contributors = {"Bo", "Cy \"the tester\""};
     const auto named_text = SerializeCommunityRecipe(named);
     CHECK(ParseCommunityRecipe(named_text, &parsed, &reason));
-    CHECK(parsed.recipe.id == "community-220-opengl-1280" && parsed.title == "OpenGL at 1280×720" &&
+    CHECK(parsed.recipe.id == "community-steam-220-opengl-1280" && parsed.title == "OpenGL at 1280×720" &&
           parsed.tested_kit == "0.12-dev.20261022.1" && parsed.min_kit == "0.12" && parsed.author == "Ana" &&
           parsed.contributors == named.contributors && SerializeCommunityRecipe(parsed) == named_text);
-    // A recipe_id for another app, or with a slug the rules refuse, does not read.
-    for (const char* id : {"community-221-opengl-1280", "community-220-OpenGL", "community-220-", "steam-220-auto"}) {
+    // A recipe_id for another game, or with a slug the rules refuse, does not read.
+    for (const char* id : {"community-steam-221-opengl-1280", "community-steam-220-OpenGL", "community-steam-220-",
+                           "community-imported-220-opengl-1280", "community-220-opengl-1280", "steam-220-auto",
+                           "community-steam-22-0-opengl-1280"}) {
       auto other = named_text;
-      other.replace(other.find("community-220-opengl-1280"), std::strlen("community-220-opengl-1280"), id);
+      other.replace(other.find("community-steam-220-opengl-1280"), std::strlen("community-steam-220-opengl-1280"), id);
       CHECK(!ParseCommunityRecipe(other, &parsed, &reason) && reason.find("recipe_id") != std::string::npos);
     }
     auto listed = named_text;
     listed.replace(listed.find("[\"Bo\""), 5, "[7");
     CHECK(!ParseCommunityRecipe(listed, &parsed, &reason) && reason.find("contributors") != std::string::npos);
+
+    // An imported copy shares under its Steam app ID and says it was made on an imported copy; without one, under its
+    // name key. made_on is left out when it is the game's own store.
+    auto imported = SerializeCommunityRecipe(BuildCommunityRecipe(hl2, settings, kHalfLife2, "Half-Life 2", "imported"));
+    CHECK(imported.find("\"made_on\": \"imported\"") != std::string::npos);
+    CHECK(ParseCommunityRecipe(imported, &parsed, &reason) && parsed.made_on == "imported" && parsed.game == kHalfLife2);
+    CHECK(BuildCommunityRecipe(hl2, settings, kHalfLife2, "Half-Life 2", "steam").made_on.empty());
+    const playden::GameRef night_sky{"imported", "night-sky"};
+    const auto own = BuildCommunityRecipe(hl2, settings, night_sky, "Night Sky", "imported");
+    CHECK(own.recipe.id == "community-imported-night-sky" && own.made_on.empty());
+    CHECK(ParseCommunityRecipe(SerializeCommunityRecipe(own), &parsed, &reason) && parsed.game == night_sky);
+    // Bound to the installed game it is applied to: then it is that game's recipe.
+    RuntimeInstall installed;
+    installed.runtime_number = 0xF0000001u;
+    installed.game = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    CHECK(!RecipeForGame(parsed.recipe, installed));
+    BindCommunityRecipe(&parsed, installed.game, installed.runtime_number);
+    CHECK(RecipeForGame(parsed.recipe, installed) && parsed.recipe.app_id == 0xF0000001u);
   }
 
   // Community recipes in use: identity by revision, the player's one base (preset or recipe), which
@@ -2544,7 +2571,7 @@ int main(int argc, char** argv) {
   {
     const std::string rev_a(64, 'a'), rev_b(64, 'b');
     GameRecipe a = hl2;
-    a.id = "community-220-fast";
+    a.id = "community-steam-220-fast";
     a.revision = rev_a;
     a.locked.clear();
     a.registry = {{"Software\\Wine\\AppDefaults\\hl2.exe", "Version", "\"win7\""}, {"Software\\Playden\\Test", "A", "\"1\""}};
@@ -2577,7 +2604,7 @@ int main(int argc, char** argv) {
           choice.revision == 4 && choice.overrides.size() == 1);
     GameSettingsRecord reread;
     CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice);
-    CHECK(SerializeGameSettingsRecord(choice).find("\"community_recipe\":{\"id\":\"community-220-fast\",\"revision\":\"" + rev_a + "\"}") !=
+    CHECK(SerializeGameSettingsRecord(choice).find("\"community_recipe\":{\"id\":\"community-steam-220-fast\",\"revision\":\"" + rev_a + "\"}") !=
           std::string::npos);
     ChoosePreset(&choice, "mouse-driven");
     CHECK(choice.preset_id == "mouse-driven" && choice.community_recipe.id.empty() && choice.community_recipe.revision.empty() &&
@@ -2587,14 +2614,14 @@ int main(int argc, char** argv) {
     CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice &&
           reread.shared_recipe.submission_id == "sub-1");
     // A malformed choice is dropped, not the record.
-    CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"community-220-fast\",\"revision\":\"abc\"}}", &reread, &reason) &&
+    CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"community-steam-220-fast\",\"revision\":\"abc\"}}", &reread, &reason) &&
           reread.community_recipe.id.empty());
     CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"steam-220-auto\",\"revision\":\"" + rev_a + "\"}}", &reread, &reason) &&
           reread.community_recipe.id.empty());
     // A file naming both a preset and a recipe loads as the recipe alone: one base, never stacked.
-    CHECK(ParseGameSettingsRecord("{\"preset\":\"mouse-driven\",\"community_recipe\":{\"id\":\"community-220-fast\",\"revision\":\"" +
+    CHECK(ParseGameSettingsRecord("{\"preset\":\"mouse-driven\",\"community_recipe\":{\"id\":\"community-steam-220-fast\",\"revision\":\"" +
                                       rev_a + "\"}}", &reread, &reason) &&
-          reread.preset_id.empty() && reread.community_recipe.id == "community-220-fast");
+          reread.preset_id.empty() && reread.community_recipe.id == "community-steam-220-fast");
 
     // Precedence: the wanted community recipe when it loaded and fits, else shipped, else generated.
     CommunityRecipe ca;
@@ -2635,6 +2662,15 @@ int main(int argc, char** argv) {
     candidates.community = &cb;
     candidates.community_state = CommunityObjectState::kLoaded;
     CHECK(SelectRecipe(candidates).fallback_reason == kCommunityRecipeUnreadable);
+    // An id longer than the game's title holds (another store's) falls back and says why.
+    auto long_id = ca;
+    long_id.recipe.id = CommunityRecipeIdFor({"imported", std::string(48, 'a')}, "fast");
+    const CommunityRecipeChoice long_wanted{long_id.recipe.id, rev_a};
+    candidates.wanted = &long_wanted;
+    candidates.community = &long_id;
+    selection = SelectRecipe(candidates);
+    CHECK(selection.recipe == &hl2 && !selection.community && selection.fallback_reason == kCommunityRecipeIdTooLong);
+    candidates.wanted = &wanted;
     // The kit: a min_kit newer than the kit, and one the kit has but the game's title (older runtime) doesn't.
     candidates.community = &ca;
     ca.min_kit = "0.13";

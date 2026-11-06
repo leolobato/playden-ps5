@@ -17,7 +17,8 @@
 
 namespace playden::runtime {
 
-// Whether a recipe is the record's game's: the same game (Steam: the app ID) and runtime number. A
+// Whether a recipe is the record's game's: the same game (Steam: the app ID) and runtime number. A community recipe
+// is the game's once it is bound to it (BindCommunityRecipe), after its game matched the game's GameRef. A
 // record copy that doesn't carry its game (read back from a journal) relies on the number, which the
 // repository keeps to one game.
 bool RecipeForGame(const GameRecipe& recipe, const RuntimeInstall& record);
@@ -31,6 +32,8 @@ enum class CommunityObjectState { kLoaded, kMissing, kUnreadable };
 
 inline constexpr const char* kCommunityRecipeRemoved = "This recipe was removed.";
 inline constexpr const char* kCommunityRecipeUnreadable = "The recipe can't be read.";
+// Its id is longer than a game's title holds (kInstalledRecipeIdMaxBytes): only another store's recipe can be.
+inline constexpr const char* kCommunityRecipeIdTooLong = "Playden can't use this recipe yet: its ID is too long for the game's title.";
 inline constexpr const char* kCommunityRecipeNeedsRuntimeUpdate =
     " Update the game's runtime kit first: Play, or Maintenance › Update runtime kit.";
 

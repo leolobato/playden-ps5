@@ -307,7 +307,9 @@ game's title to Home when Playden quits. Importing a game later keeps its saves.
 - Cloud saves are only for Steam games.
 
 **Steam games copied from a PC** usually run without Steam. If a game needs Steam, Playden uses the game's
-`steam_appid.txt`, or the **Steam app ID** in Game settings. Most games run without either.
+`steam_appid.txt`, or the **Steam app ID** in Game settings. Most games run without either. With a Steam app ID, the
+game also gets that Steam game's community recipes, and a recipe you share from it is filed under it. Without one, a
+shared recipe is filed under the game's name.
 
 Games that need their own launcher, or DRM beyond SteamStub (Denuvo, or the Ubisoft, EA or Rockstar launchers), won't
 run.

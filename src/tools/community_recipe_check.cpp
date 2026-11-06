@@ -6,7 +6,7 @@
 //   community_recipe_check [--json] <file>...
 //
 // For each file: Playden's parser, the strict community rules (CommunityRecipeRefusals, author
-// required), the file name (recipes/<app id>/<slug>.json, when the path has a recipes folder),
+// required), the file name (recipes/<store>/<key>/<slug>.json, when the path has a recipes folder),
 // the effective settings on a kit with every capability, and the full prospero-win profile. It
 // prints "ok <path> <revision> <recipe_id>" or a "refused <path>: <reason>" line per refusal,
 // the command the game starts with, and a "flag <path>: <item>" line for each thing that changes
@@ -14,6 +14,7 @@
 // refused, 2 on a usage error.
 #include "runtime/artifact_hash.h"
 #include "runtime/community_rules.h"
+#include "runtime/game_install.h"
 #include "runtime/game_settings.h"
 #include "runtime/prospero_profile.h"
 
@@ -78,17 +79,18 @@ std::vector<std::string> PathParts(const std::string& path) {
   return parts;
 }
 
-// A path with a recipes folder must end recipes/<app id>/<slug>.json, naming the recipe's own id.
+// A path with a recipes folder must end recipes/<store>/<key>/<slug>.json, naming the recipe's own game and id.
 void CheckLayout(Result* result) {
   const auto parts = PathParts(result->path);
   bool in_recipes = false;
   for (std::size_t index = 0; index + 1 < parts.size(); ++index) in_recipes |= parts[index] == "recipes";
   if (!in_recipes) return;
   const auto& id = result->community.recipe.id;
-  const auto expected = "recipes/" + std::to_string(result->community.recipe.app_id) + "/" +
+  const auto& game = result->community.game;
+  const auto expected = "recipes/" + game.store + "/" + game.key + "/" +
                         (result->slug.empty() ? std::string("<slug>") : result->slug) + ".json";
-  const bool matches = parts.size() >= 3 && parts[parts.size() - 3] == "recipes" &&
-                       parts[parts.size() - 2] == std::to_string(result->community.recipe.app_id) &&
+  const bool matches = parts.size() >= 4 && parts[parts.size() - 4] == "recipes" &&
+                       parts[parts.size() - 3] == game.store && parts[parts.size() - 2] == game.key &&
                        !result->slug.empty() && parts.back() == result->slug + ".json";
   if (!matches) result->refusals.push_back("The file must be " + expected + " for recipe_id " + id + ".");
 }
@@ -106,7 +108,12 @@ void Check(Result* result) {
   }
   result->parsed = true;
   auto& community = result->community;
-  rt::SplitCommunityRecipeId(community.recipe.id, nullptr, &result->slug);
+  result->slug = rt::CommunityRecipeSlug(community.recipe.id, community.game).value_or(std::string());
+  // Bound as the console binds it: a Steam game's runtime number is its app ID, another store's game one of theirs.
+  std::uint32_t number = playden::runtime::kFirstRuntimeNumber;
+  if (community.game.store == playden::kRecipeStoreSteam)
+    number = static_cast<std::uint32_t>(std::stoul(community.game.key));  // checked: at most 4294967295
+  rt::BindCommunityRecipe(&community, {}, number);
   rt::CommunityCheckOptions options;
   result->refusals = rt::CommunityRecipeRefusals(community, options);
   CheckLayout(result);
@@ -185,7 +192,8 @@ std::string Json(const std::vector<Result>& results, bool ok) {
     const auto& community = result.community;
     out += std::string(index ? "," : "") + "\n    {\"path\": " + Quoted(result.path) +
            ", \"revision\": " + Quoted(result.revision) + ", \"recipe_id\": " + Quoted(community.recipe.id) +
-           ", \"app_id\": " + std::to_string(community.recipe.app_id) + ", \"slug\": " + Quoted(result.slug) +
+           ", \"store\": " + Quoted(community.game.store) + ", \"key\": " + Quoted(community.game.key) +
+           ", \"slug\": " + Quoted(result.slug) +
            ", \"title\": " + Quoted(community.title) + ", \"status\": " + Quoted(community.status) +
            ", \"author\": " + Quoted(community.author) + ", \"contributors\": " + List(community.contributors) +
            ", \"tested_kit\": " + Quoted(community.tested_kit) + ", \"min_kit\": " + Quoted(community.min_kit) +

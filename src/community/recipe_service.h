@@ -46,8 +46,9 @@ struct RecipeServiceConfig {
 };
 
 struct RecipeSummary {
-  std::string id;  // community-<app id>-<slug>
-  std::uint32_t app_id = 0;
+  std::string id;  // community-<store>-<key>-<slug>
+  GameRef game;    // the game it is for
+  std::string made_on;  // the store of the copy it was made with, when not game.store
   std::string title, status, author;
   std::vector<std::string> contributors;
   std::string tested_kit, min_kit, tested_firmware, tested_date, notes;
@@ -58,12 +59,13 @@ struct RecipeSummary {
 
 struct RecipeSnapshot {
   std::uint64_t revision = 0;  // changes whenever anything below changes
-  std::map<std::uint32_t, std::vector<RecipeSummary>> apps;  // index order per app
+  std::map<GameRef, std::vector<RecipeSummary>> games;  // index order per game
+  std::map<GameRef, std::string> game_names;            // the index's name of each game that has one
   std::string release_tag;     // empty: no copy yet
   std::int64_t fetched_at = 0;  // the copy's last successful refresh (unix seconds)
   bool refreshing = false;
   std::string last_error;      // the last refresh's failure, one short sentence; empty after success
-  const std::vector<RecipeSummary>* For(std::uint32_t app_id) const;
+  const std::vector<RecipeSummary>* For(const GameRef& game) const;
 };
 
 class CommunityRecipeService {
@@ -123,13 +125,14 @@ class CommunityRecipeService {
 };
 
 // The summaries of a release: every index entry whose object is in the store and passes the
-// checks, in index order, with votes when totals has them. Used at load and after a refresh.
-std::map<std::uint32_t, std::vector<RecipeSummary>> BuildSummaries(
+// checks (its file's game the one it is listed under), in index order, with votes when totals has them. Used at load
+// and after a refresh.
+std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
     const RecipeIndex& index, const RecipeStore& store, const VoteTotals* totals,
     const std::function<void(const std::string&)>& log);
 
-// ParseCommunityRecipe and CommunityRecipeRefusals (console options) on bytes, checking the id
-// and app ID; the reason in *error.
+// ParseCommunityRecipe and CommunityRecipeRefusals (console options) on bytes (the id made from the file's game);
+// the reason in *error. The caller compares the game with the path or index entry it came from.
 std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, std::string* error);
 
 }  // namespace playden::community

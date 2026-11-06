@@ -100,7 +100,8 @@ runtime::CommunityRecipe ExportRecipe() {
 
 SubmissionRequest MinimalRequest() {
   SubmissionRequest request;
-  request.app_id = 274520;
+  request.game = GameRef::Steam(274520);
+  request.game_name = "Darkwood";
   request.recipe_json = RecipeJsonForSubmission(ExportRecipe(), "120 Hz, pointer on left stick");
   request.title = "120 Hz, pointer on left stick";
   request.kit = "0.12";
@@ -128,7 +129,7 @@ void ExportKeysAccepted() {
   runtime::CommunityRecipe community;
   std::string reason;
   CHECK(runtime::ParseCommunityRecipe(
-      Slurp(fixtures + "/recipes/274520/120hz-left-stick-pointer.json"), &community, &reason));
+      Slurp(fixtures + "/recipes/steam/274520/120hz-left-stick-pointer.json"), &community, &reason));
   community.recipe.detected = "unity";
   community.recipe.requirements["audio"] = "ps5";
   runtime::RegistryValue value;
@@ -143,6 +144,7 @@ void ExportKeysAccepted() {
   community.base_repository = "https://github.com/x/prospero-win-profiles";
   community.base_path = "profiles/darkwood.ini";
   community.base_revision = std::string(40, 'c');
+  community.made_on = "imported";  // shared from an imported copy with the Steam app ID
   const std::string text = runtime::SerializeCommunityRecipe(community);
   const auto doc = steam::json::Parse(text);
   CHECK(doc && doc->is_object());
@@ -163,7 +165,9 @@ void ExportKeysAccepted() {
       CHECK(AcceptedCommunityKeys().count(key));
     }
   CHECK(meta && meta->Find("base") && meta->Find("min_kit"));
-  CHECK(!AcceptedRecipeKeys().count("store") && !AcceptedRecipeKeys().count("game"));
+  // The game object replaced app_id and steam_appid (the API's RECIPE_KEYS).
+  CHECK(!AcceptedRecipeKeys().count("store") && AcceptedRecipeKeys().count("game") && AcceptedRecipeKeys().count("made_on") &&
+        !AcceptedRecipeKeys().count("app_id") && !AcceptedRecipeKeys().count("steam_appid"));
 
   // Made ready to share: titled, no locks, and accepted locally.
   const std::string shared = RecipeJsonForSubmission(community, "A title");
@@ -183,17 +187,17 @@ void SubmissionBodies() {
   auto request = MinimalRequest();
   const std::string recipe = TrimmedRecipe(request.recipe_json);
   CHECK(SubmissionBody(request) ==
-        "{\"app_id\":274520,\"recipe\":" + recipe +
+        "{\"game\":{\"store\":\"steam\",\"key\":\"274520\",\"name\":\"Darkwood\"},\"recipe\":" + recipe +
             ",\"title\":\"120 Hz, pointer on left stick\",\"kit\":\"0.12\",\"firmware\":\"13.60\","
             "\"playden_version\":\"0.6.0\"}");
   request.name = "Todor \"TP\"";
-  request.based_on = RecipeRef{"community-274520-120hz-left-stick-pointer", kRevision};
+  request.based_on = RecipeRef{"community-steam-274520-120hz-left-stick-pointer", kRevision};
   request.choice = ShareChoice::kUpdate;
   request.submission_id = "sub_123";
   CHECK(SubmissionBody(request) ==
-        "{\"app_id\":274520,\"recipe\":" + recipe +
+        "{\"game\":{\"store\":\"steam\",\"key\":\"274520\",\"name\":\"Darkwood\"},\"recipe\":" + recipe +
             ",\"title\":\"120 Hz, pointer on left stick\",\"name\":\"Todor \\\"TP\\\"\",\"based_on\":{\"recipe_id\":"
-            "\"community-274520-120hz-left-stick-pointer\",\"revision\":\"" +
+            "\"community-steam-274520-120hz-left-stick-pointer\",\"revision\":\"" +
             kRevision +
             "\"},\"choice\":\"update\",\"submission_id\":\"sub_123\",\"kit\":\"0.12\",\"firmware\":\"13.60\","
             "\"playden_version\":\"0.6.0\"}");
@@ -203,6 +207,25 @@ void SubmissionBodies() {
   const auto doc = steam::json::Parse(SubmissionBody(request));
   CHECK(doc && doc->Find("recipe") && doc->Find("recipe")->is_object());
   CHECK(SubmissionBody(request).find(kSecret) == std::string::npos);
+  CHECK(SubmissionBody(request).find("app_id") == std::string::npos);
+
+  // An imported game without a Steam app ID shares under the name key Playden made from its name.
+  auto community = ExportRecipe();
+  community.game = GameRef{"imported", NameKey("Night Sky: Director's Cut")};
+  community.game_name = "Night Sky: Director's Cut";
+  community.recipe.id = runtime::CommunityRecipeIdFor(community.game, "");
+  auto imported = MinimalRequest();
+  imported.game = community.game;
+  imported.game_name = community.game_name;
+  imported.recipe_json = RecipeJsonForSubmission(community, "Arrow keys");
+  CHECK(SubmissionRequestProblem(imported).empty());
+  const auto body = SubmissionBody(imported);
+  CHECK(body.rfind("{\"game\":{\"store\":\"imported\",\"key\":\"night-sky-director-s-cut\",\"name\":"
+                   "\"Night Sky: Director's Cut\"},\"recipe\":{", 0) == 0);
+  CHECK(body.find("\"recipe_id\": \"community-imported-night-sky-director-s-cut\"") != std::string::npos);
+  // The recipe's own game must be the share's.
+  imported.game = GameRef::Steam(274520);
+  CHECK(SubmissionRequestProblem(imported).find("another game") != std::string::npos && SubmissionBody(imported).empty());
 }
 
 void LocalRefusals() {
@@ -260,11 +283,26 @@ void LocalRefusals() {
   CHECK(refused(request));
   request.idempotency_key = "has space ok";
   CHECK(refused(request));
+  // The share's game must be the recipe's, a store and its key, with a printable name.
   request = MinimalRequest();
-  request.app_id = 10;
+  request.game = GameRef::Steam(10);
   CHECK(refused(request));
   request = MinimalRequest();
-  request.based_on = RecipeRef{"community-274520-x", "abc"};
+  request.game = GameRef{};
+  CHECK(refused(request));
+  request = MinimalRequest();
+  request.game = GameRef{"imported", "darkwood"};
+  CHECK(refused(request));
+  for (const char* name : {"", "Dark\nwood", "\u3000", "Dark\u2028wood"}) {
+    request = MinimalRequest();
+    request.game_name = name;
+    CHECK(refused(request));
+  }
+  request = MinimalRequest();
+  request.game_name = "\uff24\uff41\uff52\uff4b\u3000wood";  // a full-width name and space are fine
+  CHECK(SubmissionRequestProblem(request).empty());
+  request = MinimalRequest();
+  request.based_on = RecipeRef{"community-steam-274520-x", "abc"};
   CHECK(refused(request));
   request = MinimalRequest();
   request.submission_id = "../../x";
@@ -294,10 +332,10 @@ void SubmitAnswers() {
   std::atomic<bool> cancel{false};
   auto request = MinimalRequest();
 
-  api.answers = {Answer(201, R"({"id":"s1","recipe_id":"community-274520","state":"provisioning","pr_url":null})")};
+  api.answers = {Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})")};
   auto result = SubmitRecipe(context, kSecret, request, cancel);
   CHECK(result.outcome == SubmissionOutcome::kCreated);
-  CHECK(result.id == "s1" && result.recipe_id == "community-274520" && result.state == "provisioning" &&
+  CHECK(result.id == "s1" && result.recipe_id == "community-steam-274520" && result.state == "provisioning" &&
         result.pr_url.empty());
   CHECK(api.requests.size() == 1);
   const auto& sent = api.requests.back();
@@ -310,33 +348,33 @@ void SubmitAnswers() {
   CHECK(!sent.allow_plain_http);
   CHECK(!SecretOutsideAuthorization(sent));
 
-  api.answers = {Answer(201, R"({"id":"s2","recipe_id":"community-274520-darkwood-120","state":"in-review",)"
+  api.answers = {Answer(201, R"({"id":"s2","recipe_id":"community-steam-274520-darkwood-120","state":"in-review",)"
                              R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/7"})")};
   result = SubmitRecipe(context, kSecret, request, cancel);
   CHECK(result.outcome == SubmissionOutcome::kCreated && result.state == "in-review" &&
         result.pr_url == "https://github.com/leolobato/playden-ps5-recipes/pull/7");
 
-  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-274520-120hz-left-stick-pointer","revision":")" +
+  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-120hz-left-stick-pointer","revision":")" +
                                  kRevision + "\"}")};
   result = SubmitRecipe(context, kSecret, request, cancel);
   CHECK(result.outcome == SubmissionOutcome::kDuplicatePublished && result.revision == kRevision &&
-        result.recipe_id == "community-274520-120hz-left-stick-pointer");
+        result.recipe_id == "community-steam-274520-120hz-left-stick-pointer");
 
-  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-274520-x","pr_url":"https://github.com/p/r/pull/9"})")};
+  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-x","pr_url":"https://github.com/p/r/pull/9"})")};
   result = SubmitRecipe(context, kSecret, request, cancel);
   CHECK(result.outcome == SubmissionOutcome::kDuplicateInReview && result.revision.empty() &&
         result.pr_url == "https://github.com/p/r/pull/9");
 
   // Answers that don't fit the contract.
   for (const auto& bad : std::vector<steam::HttpResponse>{
-           Answer(201, R"({"recipe_id":"community-274520","state":"provisioning","pr_url":null})"),
-           Answer(201, R"({"id":"s1","recipe_id":"community-274520","state":"published","pr_url":null})"),
-           Answer(201, R"({"id":"s/1","recipe_id":"community-274520","state":"provisioning","pr_url":null})"),
+           Answer(201, R"({"recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})"),
+           Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"published","pr_url":null})"),
+           Answer(201, R"({"id":"s/1","recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})"),
            Answer(201, R"({"id":"s1","recipe_id":"steam-274520-auto","state":"provisioning","pr_url":null})"),
-           Answer(201, R"({"id":"s1","recipe_id":"community-274520","state":"in-review","pr_url":"javascript:x"})"),
-           Answer(200, R"({"state":"duplicate","recipe_id":"community-274520-x"})"),
-           Answer(200, R"({"state":"duplicate","recipe_id":"community-274520-x","revision":"short"})"),
-           Answer(200, R"({"state":"created","recipe_id":"community-274520-x"})"),
+           Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"in-review","pr_url":"javascript:x"})"),
+           Answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-x"})"),
+           Answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-x","revision":"short"})"),
+           Answer(200, R"({"state":"created","recipe_id":"community-steam-274520-x"})"),
            Answer(200, "not json"),
        }) {
     api.answers = {bad};
@@ -424,7 +462,7 @@ void IdempotencyKeys() {
   request.idempotency_key = *key;
   steam::HttpResponse failed;
   failed.error = steam::HttpError::kConnectionFailed;
-  api.answers = {failed, Answer(201, R"({"id":"s1","recipe_id":"community-274520","state":"provisioning","pr_url":null})")};
+  api.answers = {failed, Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})")};
   CHECK(SubmitRecipe(context, kSecret, request, cancel).error.code == "network");
   CHECK(SubmitRecipe(context, kSecret, request, cancel).outcome == SubmissionOutcome::kCreated);
   CHECK(api.requests.size() == 2);
@@ -439,9 +477,9 @@ void Submissions() {
   FakeApi api;
   const auto context = Context(&api);
   std::atomic<bool> cancel{false};
-  api.answers = {Answer(200, R"({"id":"s1","state":"published","recipe_id":"community-274520-a","pr_url":"https://github.com/p/r/pull/1"})")};
+  api.answers = {Answer(200, R"({"id":"s1","state":"published","recipe_id":"community-steam-274520-a","pr_url":"https://github.com/p/r/pull/1"})")};
   auto status = GetSubmission(context, "s1", cancel);
-  CHECK(status.ok && status.id == "s1" && status.state == "published" && status.recipe_id == "community-274520-a" &&
+  CHECK(status.ok && status.id == "s1" && status.state == "published" && status.recipe_id == "community-steam-274520-a" &&
         status.pr_url == "https://github.com/p/r/pull/1");
   CHECK(api.requests.size() == 1);
   CHECK(api.requests.back().method == steam::HttpMethod::kGet);
@@ -449,13 +487,13 @@ void Submissions() {
   CHECK(!HasHeader(api.requests.back(), "Authorization"));
   CHECK(api.requests.back().body.empty());
   for (const char* state : {"provisioning", "in-review", "closed", "duplicate"}) {
-    api.answers = {Answer(200, std::string(R"({"id":"s1","state":")") + state + R"(","recipe_id":"community-274520-a","pr_url":null})")};
+    api.answers = {Answer(200, std::string(R"({"id":"s1","state":")") + state + R"(","recipe_id":"community-steam-274520-a","pr_url":null})")};
     status = GetSubmission(context, "s1", cancel);
     CHECK(status.ok && status.state == state && status.pr_url.empty());
   }
-  api.answers = {Answer(200, R"({"id":"s1","state":"merged","recipe_id":"community-274520-a","pr_url":null})")};
+  api.answers = {Answer(200, R"({"id":"s1","state":"merged","recipe_id":"community-steam-274520-a","pr_url":null})")};
   CHECK(GetSubmission(context, "s1", cancel).error.code == "bad_response");
-  api.answers = {Answer(200, R"({"id":"s2","state":"closed","recipe_id":"community-274520-a","pr_url":null})")};
+  api.answers = {Answer(200, R"({"id":"s2","state":"closed","recipe_id":"community-steam-274520-a","pr_url":null})")};
   CHECK(GetSubmission(context, "s1", cancel).error.code == "bad_response");
   api.answers = {Answer(404, R"({"error":"unknown_submission","message":"No such submission."})")};
   status = GetSubmission(context, "s1", cancel);
@@ -478,23 +516,23 @@ void SecretEchoes() {
   };
   const std::string pr = "https://github.com/p/r/pull/1";
   for (const std::string& body : {
-           R"({"id":")" + kSecret + R"(","recipe_id":"community-274520-a","state":"in-review","pr_url":null})",
-           R"({"id":"s1","recipe_id":"community-274520-)" + kSecret + R"(","state":"in-review","pr_url":null})",
-           R"({"id":"s1","recipe_id":"community-274520-a","state":"in-review","pr_url":")" + pr + "?x=" + kSecret + R"("})",
+           R"({"id":")" + kSecret + R"(","recipe_id":"community-steam-274520-a","state":"in-review","pr_url":null})",
+           R"({"id":"s1","recipe_id":"community-steam-274520-)" + kSecret + R"(","state":"in-review","pr_url":null})",
+           R"({"id":"s1","recipe_id":"community-steam-274520-a","state":"in-review","pr_url":")" + pr + "?x=" + kSecret + R"("})",
            // Escaped: found once unescaped.
-           std::string(R"({"id":"s1","recipe_id":"community-274520-a","state":"in-review","pr_url":null,"x":"\u0030123456789abcdef0123456789abcdef"})"),
+           std::string(R"({"id":"s1","recipe_id":"community-steam-274520-a","state":"in-review","pr_url":null,"x":"\u0030123456789abcdef0123456789abcdef"})"),
        }) {
     api.answers = {Answer(201, body)};
     CHECK(clean(SubmitRecipe(context, kSecret, request, cancel)));
   }
-  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-274520-a","revision":")" + kSecret + kSecret + R"("})")};
+  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-a","revision":")" + kSecret + kSecret + R"("})")};
   CHECK(clean(SubmitRecipe(context, kSecret, request, cancel)));
   // An error code that is the secret (it passes the code's character check).
   api.answers = {Answer(400, R"({"error":")" + kSecret + R"(","message":"x"})")};
   auto result = SubmitRecipe(context, kSecret, request, cancel);
   CHECK(clean(result) && result.error.http_status == 400);
   // The status call (no Authorization) refuses it too when it knows the secret.
-  api.answers = {Answer(200, R"({"id":"s1","state":"published","recipe_id":"community-274520-a","pr_url":")" + pr + "/" + kSecret + R"("})")};
+  api.answers = {Answer(200, R"({"id":"s1","state":"published","recipe_id":"community-steam-274520-a","pr_url":")" + pr + "/" + kSecret + R"("})")};
   auto status = GetSubmission(context, "s1", cancel, kSecret);
   CHECK(!status.ok && status.error.code == "bad_response" && status.pr_url.empty() && status.recipe_id.empty());
   api.answers = {Answer(404, R"({"error":")" + kSecret + R"(","message":"x"})")};
@@ -502,8 +540,7 @@ void SecretEchoes() {
   CHECK(!status.ok && status.error.code == "bad_response");
   // Votes.
   VoteRequest vote;
-  vote.app_id = 274520;
-  vote.recipe_id = "community-274520-120hz-left-stick-pointer";
+  vote.recipe_id = "community-steam-274520-120hz-left-stick-pointer";
   vote.revision = kRevision;
   vote.vote = "up";
   vote.kit = "0.12";
@@ -516,8 +553,7 @@ void SecretEchoes() {
 
 VoteRequest Vote() {
   VoteRequest vote;
-  vote.app_id = 274520;
-  vote.recipe_id = "community-274520-120hz-left-stick-pointer";
+  vote.recipe_id = "community-steam-274520-120hz-left-stick-pointer";
   vote.revision = kRevision;
   vote.vote = "up";
   vote.kit = "0.12";
@@ -529,12 +565,12 @@ VoteRequest Vote() {
 void Votes() {
   auto vote = Vote();
   CHECK(VoteBody(vote) ==
-        "{\"app_id\":274520,\"recipe_id\":\"community-274520-120hz-left-stick-pointer\",\"revision\":\"" + kRevision +
+        "{\"recipe_id\":\"community-steam-274520-120hz-left-stick-pointer\",\"revision\":\"" + kRevision +
             "\",\"vote\":\"up\",\"kit\":\"0.12\",\"firmware\":\"13.60\",\"playden_version\":\"0.6.0\"}");
   vote.vote = "down";
   vote.reason = "no-start";
   CHECK(VoteBody(vote) ==
-        "{\"app_id\":274520,\"recipe_id\":\"community-274520-120hz-left-stick-pointer\",\"revision\":\"" + kRevision +
+        "{\"recipe_id\":\"community-steam-274520-120hz-left-stick-pointer\",\"revision\":\"" + kRevision +
             "\",\"vote\":\"down\",\"reason\":\"no-start\",\"kit\":\"0.12\",\"firmware\":\"13.60\","
             "\"playden_version\":\"0.6.0\"}");
   vote.reason.clear();
@@ -576,12 +612,16 @@ void Votes() {
   vote = Vote();
   vote.revision = kRevision.substr(0, 32);
   CHECK(refused(vote));
+  // Only the id's shape: the vote names no game (the API knows each published revision's).
+  for (const char* id : {"community-steam-274520-", "community-local-1-a", "community-274520-a", "community-steam-274520-a\n",
+                         "steam-274520-auto"}) {
+    vote = Vote();
+    vote.recipe_id = id;
+    CHECK(refused(vote));
+  }
   vote = Vote();
-  vote.recipe_id = "community-10-other-game";
-  CHECK(refused(vote));
-  vote = Vote();
-  vote.recipe_id = "community-274520";  // the export's slugless id is never published
-  CHECK(refused(vote));
+  vote.recipe_id = "community-imported-tmnt-mutant-melee-arrow-keys";
+  CHECK(VoteRequestProblem(vote).empty() && VoteBody(vote).find("app_id") == std::string::npos);
   vote = Vote();
   vote.kit.clear();
   CHECK(refused(vote));
@@ -605,7 +645,7 @@ ReportRequest Report() {
   report.installed_on = "usb";
   report.controls = {"dualsense", "mouse-preset"};
   report.settings = "Resolution 3840×2160 · 120 Hz on";
-  report.based_on = RecipeRef{"community-274520-120hz-left-stick-pointer", kRevision};
+  report.based_on = RecipeRef{"community-steam-274520-120hz-left-stick-pointer", kRevision};
   report.versions = {{"Playden version", "0.10.0"}, {"firmware", "13.60"}};
   report.author = "TodorPenchev";
   report.attachment = "att_1";
@@ -621,7 +661,7 @@ void Reports() {
   CHECK(ReportBody(Report()) ==
         "{\"game\":{\"store\":\"steam\",\"store_id\":\"274520\",\"name\":\"Darkwood\"},\"result\":\"partial\",\"reason\":\"slow\","
         "\"details\":\"Drops to 20 fps in the forest.\",\"installed_on\":\"usb\",\"controls\":[\"dualsense\",\"mouse-preset\"],"
-        "\"settings\":\"Resolution 3840×2160 · 120 Hz on\",\"based_on\":{\"recipe_id\":\"community-274520-120hz-left-stick-pointer\","
+        "\"settings\":\"Resolution 3840×2160 · 120 Hz on\",\"based_on\":{\"recipe_id\":\"community-steam-274520-120hz-left-stick-pointer\","
         "\"revision\":\"" + kRevision + "\"},\"versions\":[[\"Playden version\",\"0.10.0\"],[\"firmware\",\"13.60\"]],"
         "\"name\":\"TodorPenchev\",\"attachment\":\"att_1\",\"kit\":\"0.19\",\"firmware\":\"13.60\",\"playden_version\":\"0.10.0\"}");
   auto imported = Report();
@@ -654,7 +694,8 @@ void Reports() {
   CHECK(problem([](ReportRequest& r) { r.installed_on = "cloud"; }));
   CHECK(problem([](ReportRequest& r) { r.controls = {"wheel"}; }));
   CHECK(problem([](ReportRequest& r) { r.recipe_json = "[]"; }));
-  CHECK(problem([](ReportRequest& r) { r.store = "gog"; r.recipe_json = "{}"; }));  // recipes are Steam-only
+  // Any store's game may send its recipe.
+  CHECK(!problem([](ReportRequest& r) { r.store = "imported"; r.store_id.clear(); r.recipe_json = "{}"; }));
   CHECK(problem([](ReportRequest& r) { r.versions.assign(25, {"a", "b"}); }));
   CHECK(problem([](ReportRequest& r) { r.attachment = "a b"; }));
   CHECK(problem([](ReportRequest& r) { r.kit.clear(); }));
@@ -750,9 +791,9 @@ void PlainHttp() {
   std::atomic<bool> cancel{false};
   api.answers = {Answer(204, "")};
   const auto vote = SendVote(context, kSecret, Vote(), cancel);
-  api.answers = {Answer(201, R"({"id":"s1","recipe_id":"community-274520","state":"provisioning","pr_url":null})")};
+  api.answers = {Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})")};
   const auto share = SubmitRecipe(context, kSecret, MinimalRequest(), cancel);
-  api.answers = {Answer(200, R"({"id":"s1","state":"closed","recipe_id":"community-274520-a","pr_url":"http://10.0.1.9:3000/p/r/pulls/1"})")};
+  api.answers = {Answer(200, R"({"id":"s1","state":"closed","recipe_id":"community-steam-274520-a","pr_url":"http://10.0.1.9:3000/p/r/pulls/1"})")};
   const auto status = GetSubmission(context, "s1", cancel);
   if (DevEndpointsCompiledIn()) {
     CHECK(vote.ok && share.outcome == SubmissionOutcome::kCreated && status.ok);

@@ -68,25 +68,41 @@ void Ids() {
   CHECK(IsValidCommunitySlug(std::string(32, 'a')) && !IsValidCommunitySlug(std::string(33, 'a')));
   for (const char* bad : {"", "-a", "a-", "a--b", "A", "a_b", "a b", "a.b", "é", "a/b", "mouse-Preset"})
     CHECK(!IsValidCommunitySlug(bad));
-  CHECK(CommunityRecipeIdFor(274520, "mouse") == "community-274520-mouse");
-  CHECK(CommunityRecipeIdFor(274520, "") == "community-274520");
-  // 64 bytes is the limit; a 7-digit app ID and a 32-character slug make 50.
-  const auto longest = CommunityRecipeIdFor(4294967295u, std::string(32, 'z'));
-  CHECK(longest.size() == 53 && IsCommunityRecipeId(longest));
-  CHECK(CommunityRecipeIdFor(1234567, std::string(32, 'a')).size() == 50);
-  std::uint32_t app = 0;
-  std::string slug;
-  CHECK(SplitCommunityRecipeId("community-274520-120hz-left-stick-pointer", &app, &slug) && app == 274520 &&
-        slug == "120hz-left-stick-pointer");
-  CHECK(SplitCommunityRecipeId("community-1234567-" + std::string(32, 'a'), &app, &slug) && app == 1234567);
-  CHECK(!SplitCommunityRecipeId("community-1234567-" + std::string(33, 'a'), &app, &slug));
-  CHECK(!SplitCommunityRecipeId("community-274520", &app, &slug));  // the export's form has no slug
-  CHECK(IsCommunityRecipeId("community-274520"));                   // but is a community recipe
-  for (const char* bad : {"community-", "community-0-a", "community-0274520-a", "community-4294967296-a",
-                          "community-274520-", "community-274520--a", "community-274520-A", "community-abc",
-                          "community-274520-a-", "steam-274520-auto", "community274520"})
+  const auto darkwood = playden::GameRef::Steam(274520);
+  const playden::GameRef tmnt{"imported", "tmnt-mutant-melee"};
+  CHECK(CommunityRecipeIdFor(darkwood, "mouse") == "community-steam-274520-mouse");
+  CHECK(CommunityRecipeIdFor(darkwood, "") == "community-steam-274520");
+  CHECK(CommunityRecipeIdFor(tmnt, "arrow-keys") == "community-imported-tmnt-mutant-melee-arrow-keys");
+  CHECK(CommunityRecipeIdFor({"epic", std::string(32, 'f')}, "a") == "community-epic-" + std::string(32, 'f') + "-a");
+  CHECK(CommunityRecipeIdFor({"gog", "1207658924"}, "a") == "community-gog-1207658924-a");
+  // Every Steam game's id fits the installed-game record's 64 bytes; the longest imported one doesn't.
+  const auto longest_steam = CommunityRecipeIdFor(playden::GameRef::Steam(4294967295u), std::string(32, 'z'));
+  CHECK(longest_steam.size() == 59 && longest_steam.size() <= kInstalledRecipeIdMaxBytes && IsCommunityRecipeId(longest_steam));
+  const auto longest_imported = CommunityRecipeIdFor({"imported", std::string(48, 'a')}, std::string(32, 'z'));
+  CHECK(longest_imported.size() == 100 && longest_imported.size() > kInstalledRecipeIdMaxBytes &&
+        IsCommunityRecipeId(longest_imported));
+  // The slug comes only from comparing with an id made from the game; nothing splits an id.
+  CHECK(CommunityRecipeSlug("community-steam-274520-120hz-left-stick-pointer", darkwood) == "120hz-left-stick-pointer");
+  CHECK(CommunityRecipeSlug("community-imported-tmnt-mutant-melee-arrow-keys", tmnt) == "arrow-keys");
+  // A name key with hyphens: the same id is another game's slug, so only the game decides.
+  CHECK(CommunityRecipeSlug("community-imported-tmnt-mutant-melee-arrow-keys", playden::GameRef{"imported", "tmnt"}) ==
+        "mutant-melee-arrow-keys");
+  CHECK(!CommunityRecipeSlug("community-steam-274520-120hz-left-stick-pointer", playden::GameRef::Steam(27452)));
+  CHECK(!CommunityRecipeSlug("community-steam-274520", darkwood));  // the export's form has no slug
+  CHECK(!CommunityRecipeSlug("community-steam-274520-" + std::string(33, 'a'), darkwood));
+  CHECK(!CommunityRecipeSlug("community-steam-274520-a\n", darkwood));
+  CHECK(!CommunityRecipeSlug("community-steam-274520-a", playden::GameRef{}));
+  CHECK(IsCommunityRecipeId("community-steam-274520"));  // but the export's form is a community recipe id
+  for (const char* good : {"community-steam-274520-a", "community-epic-a-b", "community-gog-1-a", "community-imported-a",
+                           "community-imported-tmnt-mutant-melee-arrow-keys"})
+    CHECK(IsCommunityRecipeId(good));
+  for (const char* bad : {"community-", "community-steam", "community-steam-", "community-local-a", "community-274520-a",
+                          "community-steam-274520-", "community-steam-274520--a", "community-steam-274520-A",
+                          "community-steam-274520-a\n", "community-Steam-1-a", "community-steam-274520-a-",
+                          "steam-274520-auto", "community274520"})
     CHECK(!IsCommunityRecipeId(bad));
-  CHECK(!IsCommunityRecipeId("community-274520-" + std::string(48, 'a')));  // 65 bytes
+  CHECK(IsCommunityRecipeId("community-imported-" + std::string(109, 'a')));   // 128 bytes
+  CHECK(!IsCommunityRecipeId("community-imported-" + std::string(110, 'a')));  // 129 bytes
 }
 
 CommunityRecipe Load(const std::string& path) {
@@ -98,8 +114,11 @@ CommunityRecipe Load(const std::string& path) {
 
 void Rules(const std::string& fixtures) {
   CommunityCheckOptions ci;
-  const auto good = Load(fixtures + "/recipes/274520/120hz-left-stick-pointer.json");
-  CHECK(good.recipe.id == "community-274520-120hz-left-stick-pointer" && good.title == "120 Hz, pointer on left stick");
+  const auto good = Load(fixtures + "/recipes/steam/274520/120hz-left-stick-pointer.json");
+  CHECK(good.recipe.id == "community-steam-274520-120hz-left-stick-pointer" && good.title == "120 Hz, pointer on left stick");
+  CHECK(good.game == playden::GameRef::Steam(274520) && good.game_name == "Darkwood" && good.made_on.empty());
+  // Not bound to a game yet: the game it is applied to binds it.
+  CHECK(good.recipe.app_id == 0 && good.recipe.game == playden::GameId{});
   CHECK(good.tested_kit == "0.12" && good.min_kit.empty() && good.contributors.empty());
   CHECK(CommunityRecipeRefusals(good, ci).empty());
   const auto flags = CommunityRecipeFlags(good);
@@ -147,13 +166,36 @@ void Rules(const std::string& fixtures) {
                  "registry: Software\\Wine\\AppDefaults\\msiexec.exe"));
   // A recipe shared without a name has no author: it shows as "from the community", in CI and on the console.
   CHECK(CommunityRecipeRefusals(Load(fixtures + "/accepted/no-author.json"), ci).empty());
-  // Ids the parser can't take at all: too long, or for another app.
+  // An imported game's recipe under its name key, and one shared from an imported copy under its Steam app ID.
+  const auto imported = Load(fixtures + "/recipes/imported/tmnt-mutant-melee/arrow-keys.json");
+  CHECK(imported.game == (playden::GameRef{"imported", "tmnt-mutant-melee"}) && imported.game_name == "TMNT: Mutant Melee");
+  CHECK(CommunityRecipeRefusals(imported, ci).empty());
+  const auto made_on = Load(fixtures + "/accepted/made-on-imported.json");
+  CHECK(made_on.made_on == "imported" && CommunityRecipeRefusals(made_on, ci).empty());
+  refused("game-name-line-break.json", "game.name must be 1-120 printable characters");
+  refused("game-name-invisible.json", "game.name must be 1-120 printable characters");
+  refused("made-on-same-store.json", "made_on is only for a copy from another store");
+  // Ids and games the parser can't take at all: too long, for another game, a key with a new line, the old app_id.
   CommunityRecipe ignored;
   std::string reason;
-  CHECK(!ParseCommunityRecipe(Read(fixtures + "/hostile/id-65-bytes.json"), &ignored, &reason) &&
-        reason.find("64 bytes") != std::string::npos);
-  CHECK(!ParseCommunityRecipe(Read(fixtures + "/hostile/id-other-app.json"), &ignored, &reason) &&
+  CHECK(!ParseCommunityRecipe(Read(fixtures + "/hostile/id-129-bytes.json"), &ignored, &reason) &&
+        reason.find("128 bytes") != std::string::npos);
+  CHECK(!ParseCommunityRecipe(Read(fixtures + "/hostile/id-other-game.json"), &ignored, &reason) &&
         reason.find("recipe_id") != std::string::npos);
+  CHECK(!ParseCommunityRecipe(Read(fixtures + "/hostile/game-key-newline.json"), &ignored, &reason) &&
+        reason.find("game.key") != std::string::npos);
+  CHECK(!ParseCommunityRecipe(Read(fixtures + "/hostile/obsolete-app-id.json"), &ignored, &reason) &&
+        reason.find("obsolete") != std::string::npos);
+  for (const char* game : {R"("game": {"store": "local", "key": "274520", "name": "Darkwood"})",
+                           R"("game": {"store": "steam", "key": 274520, "name": "Darkwood"})",
+                           R"("game": {"store": "steam", "key": "274520"})",
+                           R"("game": {"store": "steam", "key": "274520", "name": "Darkwood", "app_id": 1})",
+                           R"("game": "274520", "store": "local")"}) {
+    auto text = Read(fixtures + "/recipes/steam/274520/120hz-left-stick-pointer.json");
+    const std::string own = R"("game": {"store": "steam", "key": "274520", "name": "Darkwood"})";
+    text.replace(text.find(own), own.size(), game);
+    CHECK(!ParseCommunityRecipe(text, &ignored, &reason));
+  }
 
   // Built by hand: ids, titles and names the parser lets through.
   auto community = good;
@@ -201,9 +243,17 @@ void Rules(const std::string& fixtures) {
     CHECK(Mentions(CommunityRecipeRefusals(community), "must be valid UTF-8"));
   }
   community = good;
-  community.recipe.id = "community-274520-" + std::string(48, 'a');
-  CHECK(Mentions(CommunityRecipeRefusals(community), "longer than 64 bytes") &&
-        Mentions(CommunityRecipeRefusals(community), "a slug of 1-32"));
+  community.recipe.id = "community-steam-274520-" + std::string(48, 'a');
+  CHECK(Mentions(CommunityRecipeRefusals(community), "must be community-steam-274520-<slug>: a slug of 1-32"));
+  community.recipe.id = "community-steam-274520-" + std::string(106, 'a');
+  CHECK(Mentions(CommunityRecipeRefusals(community), "longer than 128 bytes"));
+  community = good;
+  community.game_name = "\u3000";
+  CHECK(Mentions(CommunityRecipeRefusals(community), "game.name must be 1-120"));
+  community.game_name = std::string(121, 'a');
+  CHECK(Mentions(CommunityRecipeRefusals(community), "game.name must be 1-120"));
+  community.game_name = "\uff26\uff35\uff2c\uff2c\u3000\uff37\uff29\uff24\uff34\uff28";
+  CHECK(CommunityRecipeRefusals(community).empty());
   community = good;
   community.title = std::string(60, 'x');
   CHECK(CommunityRecipeRefusals(community).empty());
@@ -265,7 +315,7 @@ void Rules(const std::string& fixtures) {
 
 void Fits() {
   auto community = CommunityRecipe{};
-  community.recipe.id = "community-274520-a";
+  community.recipe.id = "community-steam-274520-a";
   VerifiedKitView kit;
   CHECK(CommunityRecipeFits(community, kit, ParseKitVersion("0.12")).empty());
   CHECK(CommunityRecipeFits(community, kit, std::nullopt).empty());  // no min_kit: any kit

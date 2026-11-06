@@ -12,7 +12,8 @@ import tempfile
 
 CHECKER = sys.argv[1]
 FIXTURES = Path(sys.argv[2])
-GOOD = FIXTURES / "recipes/274520/120hz-left-stick-pointer.json"
+GOOD = FIXTURES / "recipes/steam/274520/120hz-left-stick-pointer.json"
+IMPORTED = FIXTURES / "recipes/imported/tmnt-mutant-melee/arrow-keys.json"
 FLAGGED = FIXTURES / "flagged/publisher-key.json"
 failures = []
 
@@ -30,7 +31,7 @@ def run(*arguments):
 good = run(GOOD)
 revision = hashlib.sha256(GOOD.read_bytes()).hexdigest()
 check(good.returncode == 0, f"good recipe exits 0: {good.returncode} {good.stdout}{good.stderr}")
-check(f"ok {GOOD} {revision} community-274520-120hz-left-stick-pointer\n" in good.stdout, "good recipe line: " + good.stdout)
+check(f"ok {GOOD} {revision} community-steam-274520-120hz-left-stick-pointer\n" in good.stdout, "good recipe line: " + good.stdout)
 check(f"command {GOOD}: Darkwood.exe -force-d3d11 -screen-width 3840 -screen-height 2160\n" in good.stdout,
       "good recipe command: " + good.stdout)
 check(f"flag {GOOD}: program: Darkwood.exe\n" in good.stdout, "good recipe flags the program")
@@ -50,8 +51,13 @@ expected = {
     "wildcard-override.json": "without a wildcard",
     "unknown-environment.json": "DXVK_CONFIG_FILE is not one Playden sets",
     "registry-other-program.json": "not one of the recipe's programs",
-    "id-65-bytes.json": "at most 64 bytes",
-    "id-other-app.json": "recipe_id must be community-<app id>-<slug>",
+    "id-129-bytes.json": "at most 128 bytes",
+    "id-other-game.json": "recipe_id must be community-<store>-<key>-<slug>",
+    "game-key-newline.json": "game.key is not a key of store steam",
+    "game-name-line-break.json": "game.name must be 1-120 printable characters",
+    "game-name-invisible.json": "game.name must be 1-120 printable characters",
+    "made-on-same-store.json": "made_on is only for a copy from another store",
+    "obsolete-app-id.json": "app_id and steam_appid are obsolete",
     "locked.json": "locked must be empty",
     "export-no-slug-no-title.json": "has no slug",
     "kit-not-a-version.json": "tested_kit is not a kit version",
@@ -78,6 +84,13 @@ for path in hostile:
           f"{path.name} refused for its reason: {result.stdout}")
     check(f"ok {path}" not in result.stdout, f"{path.name} is not ok")
 
+# An imported game's recipe under its name key, and an imported copy's under its Steam app ID (made_on), pass.
+imported = run(IMPORTED)
+check(imported.returncode == 0 and "ok " in imported.stdout and "community-imported-tmnt-mutant-melee-arrow-keys" in imported.stdout,
+      "an imported game's recipe passes: " + imported.stdout)
+made_on = run(FIXTURES / "accepted" / "made-on-imported.json")
+check(made_on.returncode == 0 and "ok " in made_on.stdout, "made_on imported passes: " + made_on.stdout)
+
 # A recipe shared without a name has no author and is accepted.
 nameless = run(FIXTURES / "accepted" / "no-author.json")
 check(nameless.returncode == 0 and "ok " in nameless.stdout, "a recipe without an author passes: " + nameless.stdout)
@@ -91,16 +104,20 @@ check(second.returncode == 0 and "starts the program config, not the first one" 
 
 # A recipe filed under the wrong name in a recipes folder is refused.
 with tempfile.TemporaryDirectory() as directory:
-    wrong = Path(directory) / "recipes" / "274520" / "darkwood.json"
+    wrong = Path(directory) / "recipes" / "steam" / "274520" / "darkwood.json"
     wrong.parent.mkdir(parents=True)
     wrong.write_bytes(GOOD.read_bytes())
     result = run(wrong)
-    check(result.returncode == 1 and "must be recipes/274520/120hz-left-stick-pointer.json" in result.stdout,
+    check(result.returncode == 1 and "must be recipes/steam/274520/120hz-left-stick-pointer.json" in result.stdout,
           "misplaced file refused: " + result.stdout)
-    flat = Path(directory) / "recipes" / "274520-darkwood.json"
-    flat.write_bytes(GOOD.read_bytes())
-    result = run(flat)
-    check(result.returncode == 1 and "must be recipes/274520/" in result.stdout, "old flat layout refused: " + result.stdout)
+    for old in (Path(directory) / "recipes" / "274520-darkwood.json",
+                Path(directory) / "recipes" / "274520" / "120hz-left-stick-pointer.json",
+                Path(directory) / "recipes" / "imported" / "274520" / "120hz-left-stick-pointer.json"):
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_bytes(GOOD.read_bytes())
+        result = run(old)
+        check(result.returncode == 1 and "must be recipes/steam/274520/" in result.stdout,
+              "old layout or another store's folder refused: " + result.stdout)
     duplicate = Path(directory) / "copy.json"
     duplicate.write_bytes(GOOD.read_bytes())
     result = run(GOOD, duplicate)
@@ -121,7 +138,7 @@ except ValueError as error:
 if report:
     check(report["ok"] is False and len(report["files"]) == 2, "json lists both files")
     first, second = report["files"]
-    check(first["ok"] is True and first["revision"] == revision and first["app_id"] == 274520 and
+    check(first["ok"] is True and first["revision"] == revision and first["store"] == "steam" and first["key"] == "274520" and
           first["slug"] == "120hz-left-stick-pointer" and first["title"] == "120 Hz, pointer on left stick" and
           first["status"] == "works" and first["author"] == "TodorPenchev" and first["contributors"] == [] and
           first["tested_kit"] == "0.12" and first["min_kit"] == "" and first["tested_firmware"] == "13.60" and

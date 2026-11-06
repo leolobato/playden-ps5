@@ -164,16 +164,16 @@ int main(int argc, char** argv) {
     // as the record's only values.
     const std::string revision(64, 'c');
     GameSettingsRecord only_recipe;
-    only_recipe.community_recipe = {"community-274520-fast", revision};
+    only_recipe.community_recipe = {"community-steam-274520-fast", revision};
     GameSettingsRecord only_shared;
-    only_shared.shared_recipe = {"sub-7", "community-274520-fast"};
+    only_shared.shared_recipe = {"sub-7", "community-steam-274520-fast"};
     const auto recipes = root / "recipes.json";
     CHECK(SaveGameSettingsFile(recipes.string(), {{SteamId(274520), only_recipe}, {SteamId(220), only_shared}, {SteamId(3), {}}},
                                &reason));
     const auto recipes_text = Read(recipes);
-    CHECK(recipes_text.find("\"community_recipe\":{\"id\":\"community-274520-fast\",\"revision\":\"" + revision + "\"}") !=
+    CHECK(recipes_text.find("\"community_recipe\":{\"id\":\"community-steam-274520-fast\",\"revision\":\"" + revision + "\"}") !=
           std::string::npos);
-    CHECK(recipes_text.find("\"shared_recipe\":{\"submission_id\":\"sub-7\",\"recipe_id\":\"community-274520-fast\"}") !=
+    CHECK(recipes_text.find("\"shared_recipe\":{\"submission_id\":\"sub-7\",\"recipe_id\":\"community-steam-274520-fast\"}") !=
           std::string::npos);
     CHECK(recipes_text.find("\"3\":") == std::string::npos);
     std::map<playden::GameId, GameSettingsRecord> recipes_loaded;

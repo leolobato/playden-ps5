@@ -19,6 +19,7 @@ add_library(playden_library STATIC
     "${CMAKE_SOURCE_DIR}/src/library/cache.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/organization.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/store.cpp"
+    "${CMAKE_SOURCE_DIR}/src/library/game_ref.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/update_check.cpp")
 target_include_directories(playden_library PUBLIC "${CMAKE_SOURCE_DIR}/src"
     PRIVATE "${CMAKE_SOURCE_DIR}/third_party/utf8proc")

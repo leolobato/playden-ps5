@@ -63,15 +63,16 @@ unsigned Mode(const fs::path& path) {
   return lstat(path.c_str(), &info) == 0 ? static_cast<unsigned>(info.st_mode & 07777) : 0;
 }
 
-// An index listing the given revisions as recipes of app 10.
+// An index (format 2) listing the given revisions as recipes of Steam app 10.
 std::string Index(const std::vector<std::string>& revisions) {
-  std::string apps;
+  std::string recipes;
   int n = 0;
   for (const auto& revision : revisions) {
-    if (!apps.empty()) apps += ",";
-    apps += R"({"id":"community-10-r)" + std::to_string(n++) + R"(","revision":")" + revision + R"("})";
+    if (!recipes.empty()) recipes += ",";
+    recipes += R"({"id":"community-steam-10-r)" + std::to_string(n++) + R"(","revision":")" + revision + R"("})";
   }
-  return R"({"format_version":1,"zip_sha256":")" + std::string(64, 'a') + R"(","apps":{"10":[)" + apps + "]}}";
+  return R"({"format_version":2,"zip_sha256":")" + std::string(64, 'a') +
+         R"(","games":[{"store":"steam","key":"10","name":"Ten","recipes":[)" + recipes + "]}]}";
 }
 
 }  // namespace

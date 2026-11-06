@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "library/game_ref.h"
+
 namespace playden::community {
 
 inline constexpr std::size_t kMaxReleaseJsonBytes = 64 << 10;
@@ -26,30 +28,38 @@ inline constexpr const char* kZipAsset = "recipes.zip";
 
 // One recipe as index.json lists it.
 struct IndexEntry {
-  std::string id;        // community-<app id>-<slug>
+  std::string id;        // community-<store>-<key>-<slug>
   std::string slug;
-  std::uint32_t app_id = 0;
+  GameRef game;          // the game it is listed under
   std::string revision;  // sha256 hex of the file
   std::string title, status, author, tested_kit, min_kit, tested_firmware, tested_date;
+  std::string made_on;   // the store of the copy it was made with, when not game.store
   std::vector<std::string> contributors;
+};
+
+// A game index.json lists: its name (the newest recipe's game.name; empty when not a game name) and its recipes.
+struct IndexGame {
+  std::string name;
+  std::vector<IndexEntry> recipes;  // in the index's order
 };
 
 struct RecipeIndex {
   std::string generated_at;
   std::string zip_sha256;
-  std::map<std::uint32_t, std::vector<IndexEntry>> apps;  // in the index's order per app
+  std::map<GameRef, IndexGame> games;
   std::size_t count = 0;
-  const IndexEntry* Find(std::uint32_t app_id, std::string_view id) const;
+  const IndexEntry* Find(const GameRef& game, std::string_view id) const;
 };
 
-// index.json, format_version 1. The whole index is refused for another format, a missing or bad
-// zip_sha256, more than kMaxZipEntries recipes or bad JSON; a single bad entry (an app ID that is
-// not canonical, an id that is not community-<that app>-<slug>, a revision that is not sha256 hex,
-// an id listed twice) is dropped and reported through log.
+// index.json, format_version 2: {"games": [{"store", "key", "name", "recipes": [entries]}]}. The whole index is
+// refused for another format (version 1 included), a missing or bad zip_sha256, more than kMaxZipEntries recipes or
+// bad JSON; a game that is not a store and its key, or listed twice, and a single bad entry (an id that is not
+// community-<store>-<key>-<slug> for its game, a revision that is not sha256 hex, an id listed twice) are dropped and
+// reported through log.
 std::optional<RecipeIndex> ParseRecipeIndex(std::string_view json, std::string* error,
                                             const std::function<void(const std::string&)>& log = {});
 
-// A recipe file taken from the zip: its path matched recipes/<app id>/<slug>.json for an index
+// A recipe file taken from the zip: its path matched recipes/<store>/<key>/<slug>.json for an index
 // entry and its bytes hash to that entry's revision. Not parsed yet.
 struct ZipRecipe {
   const IndexEntry* entry = nullptr;  // into the index passed to ReadRecipesZip
@@ -57,7 +67,7 @@ struct ZipRecipe {
 };
 
 // Reads recipes.zip in memory. Refused whole (nullopt) when it is not a zip or holds more than
-// kMaxZipEntries entries. Each entry must be a file named exactly recipes/<canonical app id>/<valid
+// kMaxZipEntries entries. Each entry must be a file named exactly recipes/<store>/<key>/<valid
 // slug>.json, at most kMaxRecipeBytes (checked before and after extracting), listed in the index
 // with the revision its bytes hash to, and not seen before; anything else is dropped and logged.
 std::optional<std::vector<ZipRecipe>> ReadRecipesZip(std::string_view zip, const RecipeIndex& index,

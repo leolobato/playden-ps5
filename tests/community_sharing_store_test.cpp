@@ -68,7 +68,7 @@ unsigned Mode(const fs::path& path) {
 
 const std::string kRevA(64, 'a');
 const std::string kRevB(64, 'b');
-const std::string kId = "community-274520-120hz-left-stick-pointer";
+const std::string kId = "community-steam-274520-120hz-left-stick-pointer";
 
 void Secret(const fs::path& base) {
   const std::string root = (base / "community-recipes").string();
@@ -179,8 +179,8 @@ void Votes(const fs::path& base) {
   state->Record(CastVote{kId, kRevA, "up", ""});
   state->Record(CastVote{kId, kRevA, "down", "slow"});
   state->Record(CastVote{kId, kRevB, "up", ""});
-  state->MarkAsked("community-10-other", kRevA);
-  state->MarkAsked("community-10-other", kRevA);
+  state->MarkAsked("community-steam-10-other", kRevA);
+  state->MarkAsked("community-steam-10-other", kRevA);
   state->NoteFeedback("steam-10", "0.19", settings, false);
   CHECK(state->votes.size() == 2);
   CHECK(state->Find(kId, kRevA) && state->Find(kId, kRevA)->vote == "down" && state->Find(kId, kRevA)->reason == "slow");
@@ -193,7 +193,7 @@ void Votes(const fs::path& base) {
                      kRevA + "\",\"vote\":\"down\",\"reason\":\"slow\"},{\"recipe_id\":\"" + kId +
                      "\",\"revision\":\"" + kRevB + "\",\"vote\":\"up\"}],\"asked\":[{\"recipe_id\":\"" + kId +
                      "\",\"revision\":\"" + kRevA + "\"},{\"recipe_id\":\"" + kId + "\",\"revision\":\"" + kRevB +
-                     "\"},{\"recipe_id\":\"community-10-other\",\"revision\":\"" + kRevA + "\"}],\"feedback\":[{\"game\":"
+                     "\"},{\"recipe_id\":\"community-steam-10-other\",\"revision\":\"" + kRevA + "\"}],\"feedback\":[{\"game\":"
                      "\"steam-10\",\"kit\":\"0.19\",\"settings\":\"" + settings + "\",\"prompts\":1,\"answered\":false}]}\n");
   const auto back = LoadVoteState(root, &error);
   CHECK(back && back->voting == VotingPreference::kOn && back->votes.size() == 2 && back->asked.size() == 3 &&

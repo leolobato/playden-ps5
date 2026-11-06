@@ -145,11 +145,11 @@ class CollectLogsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / 'bundle.zip'
             collect_logs.write_bundle(out, '| Field | Value |\n', {'runtime.log': 'started\n'},
-                                      {'recipe-274520.json': '{"recipe_id": "community-274520"}\n'})
+                                      {'recipe-274520.json': '{"recipe_id": "community-steam-274520"}\n'})
             with zipfile.ZipFile(out) as archive:
                 self.assertEqual(sorted(archive.namelist()),
                                  ['logs/runtime.log', 'recipes/recipe-274520.json', 'summary.md'])
-                self.assertIn('community-274520', archive.read('recipes/recipe-274520.json').decode())
+                self.assertIn('community-steam-274520', archive.read('recipes/recipe-274520.json').decode())
 
 
 class StubPlayden(http.server.BaseHTTPRequestHandler):

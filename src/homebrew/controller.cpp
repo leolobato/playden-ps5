@@ -478,8 +478,10 @@ void Controller::TickCommunity() {
     catalog.fetched_at = snapshot->fetched_at;
     catalog.refreshing = snapshot->refreshing;
     catalog.last_error = snapshot->last_error;
-    for (const auto& [app, summaries] : snapshot->apps) {
-      auto& offers = catalog.games[GameId::Steam(app)];
+    // By the game they are for: the model gives each library game the recipes of its GameRef (a Steam game's app ID,
+    // an imported game's Steam app ID), so a Steam app ID set later finds them without a new catalog.
+    for (const auto& [game, summaries] : snapshot->games) {
+      auto& offers = catalog.games[game];
       for (const auto& summary : summaries) {
         CommunityRecipeOffer offer;
         offer.id = summary.id;

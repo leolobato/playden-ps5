@@ -29,43 +29,30 @@ bool LowerHex(std::string_view text, std::size_t size) {
   return true;
 }
 
-// A canonical decimal app ID: digits, no leading zero, 1 to 4294967295.
-std::optional<std::uint32_t> CanonicalAppId(std::string_view text) {
-  if (text.empty() || text.size() > 10 || text.front() == '0') return std::nullopt;
-  std::uint64_t value = 0;
-  for (char c : text) {
-    if (c < '0' || c > '9') return std::nullopt;
-    value = value * 10 + static_cast<std::uint64_t>(c - '0');
-  }
-  if (value == 0 || value > 0xffffffffull) return std::nullopt;
-  return static_cast<std::uint32_t>(value);
-}
-
 std::string Text(const Json& object, std::string_view key) {
   const auto* value = object.Find(key);
   if (!value || !value->is_string() || value->text().size() > 1024) return {};
   return value->text();
 }
 
-// recipes/<app id>/<slug>.json -> the recipe id it must hold, or empty.
-std::string IdForPath(std::string_view name, std::uint32_t* app_id, std::string* slug) {
+// recipes/<store>/<key>/<slug>.json -> the recipe id it must hold (made from the path), or empty.
+std::string IdForPath(std::string_view name, GameRef* game, std::string* slug) {
   constexpr std::string_view kPrefix = "recipes/";
   constexpr std::string_view kSuffix = ".json";
   if (name.size() <= kPrefix.size() + kSuffix.size() || name.substr(0, kPrefix.size()) != kPrefix ||
       name.substr(name.size() - kSuffix.size()) != kSuffix)
     return {};
   const auto rest = name.substr(kPrefix.size(), name.size() - kPrefix.size() - kSuffix.size());
-  const auto slash = rest.find('/');
-  if (slash == std::string_view::npos || rest.find('/', slash + 1) != std::string_view::npos) return {};
-  const auto app = CanonicalAppId(rest.substr(0, slash));
-  const std::string file_slug(rest.substr(slash + 1));
-  if (!app || !runtime::IsValidCommunitySlug(file_slug)) return {};
-  const std::string id = runtime::CommunityRecipeIdFor(*app, file_slug);
-  std::uint32_t split_app = 0;
-  std::string split_slug;
-  if (!runtime::SplitCommunityRecipeId(id, &split_app, &split_slug) || split_app != *app || split_slug != file_slug)
-    return {};
-  *app_id = *app;
+  const auto first = rest.find('/');
+  if (first == std::string_view::npos) return {};
+  const auto second = rest.find('/', first + 1);
+  if (second == std::string_view::npos || rest.find('/', second + 1) != std::string_view::npos) return {};
+  GameRef path_game{std::string(rest.substr(0, first)), std::string(rest.substr(first + 1, second - first - 1))};
+  const std::string file_slug(rest.substr(second + 1));
+  if (!path_game.valid() || !runtime::IsValidCommunitySlug(file_slug)) return {};
+  const std::string id = runtime::CommunityRecipeIdFor(path_game, file_slug);
+  if (id.size() > runtime::kCommunityRecipeIdMaxBytes) return {};
+  *game = std::move(path_game);
   *slug = file_slug;
   return id;
 }
@@ -84,10 +71,10 @@ std::string Sha256Hex(std::string_view bytes) { return runtime::HashArtifactByte
 bool IsRevision(std::string_view text) { return LowerHex(text, 64); }
 bool IsRevisionPrefix(std::string_view text) { return LowerHex(text, 32); }
 
-const IndexEntry* RecipeIndex::Find(std::uint32_t app_id, std::string_view id) const {
-  const auto app = apps.find(app_id);
-  if (app == apps.end()) return nullptr;
-  for (const auto& entry : app->second)
+const IndexEntry* RecipeIndex::Find(const GameRef& game, std::string_view id) const {
+  const auto found = games.find(game);
+  if (found == games.end()) return nullptr;
+  for (const auto& entry : found->second.recipes)
     if (entry.id == id) return &entry;
   return nullptr;
 }
@@ -106,54 +93,68 @@ std::optional<RecipeIndex> ParseRecipeIndex(std::string_view json, std::string* 
   const auto doc = steam::json::Parse(json, limits);
   if (!doc || !doc->is_object()) return refuse("index.json is not a JSON object");
   const auto* format = doc->Find("format_version");
-  if (!format || format->AsUint64() != 1u) return refuse("index.json has an unknown format_version");
+  // Version 1 (recipes by Steam app ID) was never released: only version 2 is read.
+  if (!format || format->AsUint64() != 2u) return refuse("index.json has an unknown format_version");
   RecipeIndex index;
   index.zip_sha256 = Text(*doc, "zip_sha256");
   if (!IsRevision(index.zip_sha256)) return refuse("index.json has no zip_sha256");
   index.generated_at = Text(*doc, "generated_at");
   if (index.generated_at.size() > 64) index.generated_at.clear();
-  const auto* apps = doc->Find("apps");
-  if (!apps || !apps->is_object()) return refuse("index.json has no apps");
+  const auto* games = doc->Find("games");
+  if (!games || !games->is_array()) return refuse("index.json has no games");
   std::size_t listed = 0;
-  for (const auto& [key, list] : apps->object()) {
-    if (list.is_array()) listed += list.array().size();
+  for (const auto& game : games->array()) {
+    const auto* recipes = game.is_object() ? game.Find("recipes") : nullptr;
+    if (recipes && recipes->is_array()) listed += recipes->array().size();
   }
   if (listed > kMaxZipEntries) return refuse("index.json lists too many recipes");
   std::set<std::string> ids;
-  for (const auto& [key, list] : apps->object()) {
-    const auto app_id = CanonicalAppId(key);
-    if (!app_id || !list.is_array()) {
-      Log(log, "community recipes: index app \"" + key.substr(0, 16) + "\" dropped: not a canonical app ID");
+  for (const auto& item : games->array()) {
+    if (!item.is_object()) continue;
+    GameRef game{Text(item, "store"), Text(item, "key")};
+    const auto* recipes = item.Find("recipes");
+    const auto shown = (game.store + "/" + game.key).substr(0, 96);
+    if (!game.valid() || !recipes || !recipes->is_array()) {
+      Log(log, "community recipes: index game \"" + shown + "\" dropped: not a store and its key");
       continue;
     }
-    for (const auto& item : list.array()) {
-      if (!item.is_object()) continue;
+    if (index.games.count(game)) {
+      Log(log, "community recipes: index game " + shown + " dropped: listed twice");
+      continue;
+    }
+    auto& listed_game = index.games[game];
+    listed_game.name = Text(item, "name");
+    if (!IsGameName(listed_game.name)) listed_game.name.clear();
+    for (const auto& recipe : recipes->array()) {
+      if (!recipe.is_object()) continue;
       IndexEntry entry;
-      entry.id = Text(item, "id");
-      entry.app_id = *app_id;
-      entry.revision = Text(item, "revision");
-      std::uint32_t id_app = 0;
-      const bool id_ok = runtime::SplitCommunityRecipeId(entry.id, &id_app, &entry.slug) && id_app == *app_id &&
-                         runtime::CommunityRecipeIdFor(*app_id, entry.slug) == entry.id;
-      if (!id_ok || !IsRevision(entry.revision)) {
-        Log(log, "community recipes: index entry under " + key + " dropped: bad id or revision");
+      entry.id = Text(recipe, "id");
+      entry.game = game;
+      entry.revision = Text(recipe, "revision");
+      // The id must be the one made from the game and a slug; nothing splits it.
+      const auto slug = runtime::CommunityRecipeSlug(entry.id, game);
+      if (!slug || !IsRevision(entry.revision)) {
+        Log(log, "community recipes: index entry under " + shown + " dropped: bad id or revision");
         continue;
       }
+      entry.slug = *slug;
       if (!ids.insert(entry.id).second) {
         Log(log, "community recipes: index entry " + entry.id + " dropped: listed twice");
         continue;
       }
-      entry.title = Text(item, "title");
-      entry.status = Text(item, "status");
-      entry.author = Text(item, "author");
-      entry.tested_kit = Text(item, "tested_kit");
-      entry.min_kit = Text(item, "min_kit");
-      entry.tested_firmware = Text(item, "tested_firmware");
-      entry.tested_date = Text(item, "tested_date");
-      if (const auto* contributors = item.Find("contributors"); contributors && contributors->is_array())
+      entry.title = Text(recipe, "title");
+      entry.status = Text(recipe, "status");
+      entry.author = Text(recipe, "author");
+      entry.tested_kit = Text(recipe, "tested_kit");
+      entry.min_kit = Text(recipe, "min_kit");
+      entry.tested_firmware = Text(recipe, "tested_firmware");
+      entry.tested_date = Text(recipe, "tested_date");
+      entry.made_on = Text(recipe, "made_on");
+      if (!IsRecipeStore(entry.made_on)) entry.made_on.clear();
+      if (const auto* contributors = recipe.Find("contributors"); contributors && contributors->is_array())
         for (const auto& name : contributors->array())
           if (name.is_string() && name.text().size() <= 256) entry.contributors.push_back(name.text());
-      index.apps[*app_id].push_back(std::move(entry));
+      listed_game.recipes.push_back(std::move(entry));
       ++index.count;
     }
   }
@@ -191,18 +192,18 @@ std::optional<std::vector<ZipRecipe>> ReadRecipesZip(std::string_view zip, const
       drop("not a recipe file");
       continue;
     }
-    std::uint32_t app_id = 0;
+    GameRef game;
     std::string slug;
-    const std::string id = IdForPath(name, &app_id, &slug);
+    const std::string id = IdForPath(name, &game, &slug);
     if (id.empty()) {
-      drop("not recipes/<app id>/<slug>.json");
+      drop("not recipes/<store>/<key>/<slug>.json");
       continue;
     }
     if (!seen.insert(name).second) {
       drop("in the zip twice");
       continue;
     }
-    const IndexEntry* entry = index.Find(app_id, id);
+    const IndexEntry* entry = index.Find(game, id);
     if (!entry) {
       drop("not listed in index.json");
       continue;
@@ -254,7 +255,7 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
   };
   VoteTotals totals;
   for (const auto& [id, revisions] : recipes->object()) {
-    if (!runtime::SplitCommunityRecipeId(id, nullptr, nullptr) || !revisions.is_object()) continue;
+    if (!runtime::IsCommunityRecipeId(id) || !revisions.is_object()) continue;
     for (const auto& [revision, value] : revisions.object()) {
       if (!IsRevision(revision) || !value.is_object()) continue;
       RecipeVotes votes;

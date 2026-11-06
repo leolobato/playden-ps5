@@ -259,7 +259,7 @@ std::string RecipeProblem(const SubmissionRequest& request) {
   runtime::CommunityRecipe community;
   std::string reason;
   if (!runtime::ParseCommunityRecipe(text, &community, &reason)) return "the recipe does not parse: " + reason;
-  if (community.recipe.app_id != request.app_id) return "the recipe is for another app ID";
+  if (community.game != request.game) return "the recipe is for another game";
   if (!community.recipe.locked.empty()) return "the recipe locks rows (community recipes lock nothing)";
   const auto doc = steam::json::Parse(text);
   if (!doc || !doc->is_object()) return "the recipe is not a JSON object";
@@ -281,9 +281,9 @@ std::string RecipeProblem(const SubmissionRequest& request) {
 
 const std::set<std::string>& AcceptedRecipeKeys() {
   static const std::set<std::string> keys = {
-      "recipe_id", "recipe_version", "app_id",   "name",       "launch_entries", "arguments",   "resolution_arguments",
-      "dll_overrides", "architecture", "runtime", "prefix",    "graphics",       "detected",    "defaults",
-      "locked",    "requirements",   "registry", "steam_appid", "executable",    "community"};
+      "recipe_id", "recipe_version", "game",     "made_on",    "name",           "launch_entries", "arguments",
+      "resolution_arguments", "dll_overrides", "architecture", "runtime", "prefix", "graphics",  "detected",
+      "defaults",  "locked",         "requirements", "registry", "executable",   "community"};
   return keys;
 }
 
@@ -304,7 +304,8 @@ bool IsSubmissionId(std::string_view id) { return KeyCharacters(id, 1, 128); }
 bool IsIdempotencyKey(std::string_view key) { return KeyCharacters(key, 8, 128); }
 
 std::string SubmissionRequestProblem(const SubmissionRequest& request) {
-  if (request.app_id == 0) return "no app ID";
+  if (!request.game.valid()) return "no game: a store and its key";
+  if (!IsGameName(request.game_name)) return "the game's name must be 1-120 printable characters";
   if (auto problem = RecipeProblem(request); !problem.empty()) return problem;
   if (!request.title.empty() && !PrintableText(request.title, 1, kSubmissionTitleMaxCharacters))
     return "the title must be at most 60 printable characters";
@@ -324,12 +325,7 @@ std::string SubmissionRequestProblem(const SubmissionRequest& request) {
 }
 
 std::string VoteRequestProblem(const VoteRequest& request) {
-  if (request.app_id == 0) return "no app ID";
   if (!RecipeIdText(request.recipe_id)) return "not a community recipe id";
-  std::uint32_t id_app = 0;
-  std::string slug;
-  if (!runtime::SplitCommunityRecipeId(request.recipe_id, &id_app, &slug) || id_app != request.app_id)
-    return "the recipe id is not for this app ID";
   if (!IsRevision(request.revision)) return "the revision must be 64 lowercase hex";
   if (!IsValidVote(request.vote, request.reason)) return "the vote must be up, or down with an optional known reason";
   if (!ShortAscii(request.kit, 64) || !ShortAscii(request.firmware, 64) || !ShortAscii(request.playden_version, 64))
@@ -341,7 +337,8 @@ std::string SubmissionBody(const SubmissionRequest& request) {
   if (!SubmissionRequestProblem(request).empty()) return {};
   std::string recipe = request.recipe_json;
   while (!recipe.empty() && (recipe.back() == '\n' || recipe.back() == ' ' || recipe.back() == '\r')) recipe.pop_back();
-  std::string body = "{\"app_id\":" + std::to_string(request.app_id) + ",\"recipe\":" + recipe;
+  std::string body = "{\"game\":{\"store\":" + Quoted(request.game.store) + ",\"key\":" + Quoted(request.game.key) +
+                     ",\"name\":" + Quoted(request.game_name) + "},\"recipe\":" + recipe;
   if (!request.title.empty()) body += ",\"title\":" + Quoted(request.title);
   if (!request.name.empty()) body += ",\"name\":" + Quoted(request.name);
   if (request.based_on)
@@ -356,7 +353,7 @@ std::string SubmissionBody(const SubmissionRequest& request) {
 
 std::string VoteBody(const VoteRequest& request) {
   if (!VoteRequestProblem(request).empty()) return {};
-  std::string body = "{\"app_id\":" + std::to_string(request.app_id) + ",\"recipe_id\":" + Quoted(request.recipe_id) +
+  std::string body = "{\"recipe_id\":" + Quoted(request.recipe_id) +
                      ",\"revision\":" + Quoted(request.revision) + ",\"vote\":" + Quoted(request.vote);
   if (!request.reason.empty()) body += ",\"reason\":" + Quoted(request.reason);
   body += ",\"kit\":" + Quoted(request.kit) + ",\"firmware\":" + Quoted(request.firmware) +
@@ -574,7 +571,6 @@ std::string ReportRequestProblem(const ReportRequest& request) {
     if (!OneOf(control, {"dualsense", "mouse-preset", "arrow-keys-preset", "usb-mouse-keyboard"})) return "unknown controls";
   if (!MultilineText(request.settings, kReportSettingsMaxCharacters)) return "the settings list is too long or not printable";
   if (!request.recipe_json.empty()) {
-    if (request.store != "steam") return "only a Steam game's report carries its recipe";
     if (request.recipe_json.size() > kMaxSubmissionRecipeBytes) return "the recipe is larger than 16 KB";
     const auto doc = steam::json::Parse(request.recipe_json);
     if (!doc || !doc->is_object()) return "the recipe is not a JSON object";

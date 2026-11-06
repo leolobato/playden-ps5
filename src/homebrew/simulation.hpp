@@ -292,7 +292,7 @@ struct LiveRuntimeGame {
 };
 // Live: a community recipe the chooser offers for a game (community::RecipeSummary, projected).
 struct CommunityRecipeOffer {
-    std::string id;  // community-<app id>-<slug>
+    std::string id;  // community-<store>-<key>-<slug>
     std::string title, status, author;
     std::vector<std::string> contributors;
     std::string tested_kit, min_kit, tested_firmware, tested_date, notes;
@@ -313,9 +313,10 @@ inline std::string CommunityRecipeLabel(const std::string& title, const std::str
 }
 inline std::string CommunityRecipeLabel(const CommunityRecipeOffer& offer) { return CommunityRecipeLabel(offer.title, offer.author); }
 
-// Live: the community recipes Playden has (community::RecipeSnapshot, projected), by game.
+// Live: the community recipes Playden has (community::RecipeSnapshot, projected), by the game they are for. A library
+// game gets those of its GameRef (Simulation::community_ref: a Steam game's app ID, an imported game's Steam app ID).
 struct CommunityCatalog {
-    std::map<GameId, std::vector<CommunityRecipeOffer>> games;
+    std::map<GameRef, std::vector<CommunityRecipeOffer>> games;
     std::string release_tag;      // empty: no copy yet
     std::int64_t fetched_at = 0;  // the copy's last successful refresh (Unix seconds)
     bool refreshing = false;
@@ -1484,6 +1485,15 @@ private:
     [[nodiscard]] const playden::runtime::SettingsPreset* preset_for_base(const BaseChoice& base) const;
     [[nodiscard]] const CommunityRecipeOffer* community_offer(GameId id, const std::string& recipe_id,
                                                               const std::string& revision = {}) const;
+    // The Steam app ID another store's game uses for Steamworks: its own steam_appid.txt's (as the runtime last saw
+    // it), else the one in Game settings; 0 when none. A Steam game's own app ID.
+    [[nodiscard]] std::uint32_t steam_app_of(GameId id) const;
+    // The GameRef whose community recipes the game gets (MatchingGameRef), and the one its shares are for
+    // (SharingGameRef: an imported game without a Steam app ID shares under imported/<name key>).
+    [[nodiscard]] std::optional<GameRef> community_ref(GameId id) const;
+    [[nodiscard]] std::optional<GameRef> sharing_ref(GameId id) const;
+    // The catalog's offers for the game's community_ref; null when none.
+    [[nodiscard]] const std::vector<CommunityRecipeOffer>* community_offers(GameId id) const;
     // Why a community recipe can't apply to the game now (CommunityRecipeFits with the title's kit); empty when it can.
     [[nodiscard]] std::string community_refusal(GameId id, const CommunityRecipeOffer& offer) const;
     // "Playden default", a preset's name, or "Community: <title>".

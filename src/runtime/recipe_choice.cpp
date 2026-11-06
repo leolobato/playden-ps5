@@ -32,6 +32,9 @@ RecipeSelection SelectRecipe(const RecipeCandidates& candidates) {
     if (!loaded) {
       reason = candidates.community_state == CommunityObjectState::kMissing ? kCommunityRecipeRemoved
                                                                             : kCommunityRecipeUnreadable;
+    } else if (community->recipe.id.size() > kInstalledRecipeIdMaxBytes) {
+      // The game's title holds a recipe id in 64 bytes; only another store's longer ids can be longer.
+      reason = kCommunityRecipeIdTooLong;
     } else if (!candidates.kit) {
       reason = "No verified runtime kit is installed.";
     } else {

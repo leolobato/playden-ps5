@@ -169,23 +169,20 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
   const auto refuse = [&](std::string why) { refusals.push_back(std::move(why)); };
   const auto& recipe = community.recipe;
 
-  // Identity.
+  // Identity: made from the game object, never split.
+  const auto export_id = CommunityRecipeIdFor(community.game, {});
   if (recipe.id.size() > kCommunityRecipeIdMaxBytes)
     refuse("recipe_id is longer than " + std::to_string(kCommunityRecipeIdMaxBytes) + " bytes.");
-  std::uint32_t id_app = 0;
-  std::string slug;
-  if (SplitCommunityRecipeId(recipe.id, &id_app, &slug)) {
-    if (id_app != recipe.app_id) refuse("recipe_id names app " + std::to_string(id_app) + ", not app_id " +
-                                        std::to_string(recipe.app_id) + ".");
-  } else if (recipe.id == CommunityRecipeIdFor(recipe.app_id, {})) {
-    refuse("recipe_id has no slug: name it community-" + std::to_string(recipe.app_id) +
-           "-<slug>, with lowercase letters, digits and single hyphens.");
-  } else {
-    refuse("recipe_id must be community-" + std::to_string(recipe.app_id) +
+  else if (recipe.id == export_id)
+    refuse("recipe_id has no slug: name it " + export_id + "-<slug>, with lowercase letters, digits and single hyphens.");
+  else if (!CommunityRecipeSlug(recipe.id, community.game))
+    refuse("recipe_id must be " + export_id +
            "-<slug>: a slug of 1-32 lowercase letters, digits and single hyphens, no hyphen first or last.");
-  }
-  if (recipe.game.valid() && recipe.game != GameId::Steam(recipe.app_id))
-    refuse("Community recipes are for Steam games: leave out store and game.");
+  if (!IsStoreKey(community.game.store, community.game.key))
+    refuse("game names no store and key: \"game\": {\"store\", \"key\", \"name\"}.");
+  if (!IsGameName(community.game_name)) refuse("game.name must be 1-120 printable characters.");
+  if (!community.made_on.empty() && community.made_on == community.game.store)
+    refuse("made_on is only for a copy from another store; leave it out when it is " + community.made_on + ".");
 
   // Who and what.
   const auto title = PrintableCharacters(community.title, {false, true});

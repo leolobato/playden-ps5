@@ -19,9 +19,9 @@ bool IsRevisionText(std::string_view text) {
   return true;
 }
 
-// A recipe id as the file keeps it: printable ASCII without quotes or backslashes, at most 64 bytes.
+// A recipe id as the file keeps it: printable ASCII without quotes or backslashes, at most 128 bytes.
 bool IsRecipeIdText(std::string_view text) {
-  if (text.empty() || text.size() > 64) return false;
+  if (text.empty() || text.size() > 128) return false;
   for (char c : text)
     if (static_cast<unsigned char>(c) < 0x21 || static_cast<unsigned char>(c) > 0x7e || c == '"' || c == '\\')
       return false;

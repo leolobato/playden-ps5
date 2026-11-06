@@ -75,6 +75,12 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
         add_test(NAME ${ctest_name} COMMAND ${test_name} "${CMAKE_SOURCE_DIR}/tests/fixtures/community-recipes")
     endforeach()
 
+    # What a recipe is for: stores, keys, name keys and game names, as the recipes repository's check makes them.
+    add_executable(community_game_ref_test "${CMAKE_SOURCE_DIR}/tests/community_game_ref_test.cpp")
+    target_link_libraries(community_game_ref_test PRIVATE playden_library)
+    target_compile_features(community_game_ref_test PRIVATE cxx_std_20)
+    add_test(NAME community_game_ref COMMAND community_game_ref_test)
+
     add_executable(community_share_decision_test "${CMAKE_SOURCE_DIR}/tests/community_share_decision_test.cpp")
     target_link_libraries(community_share_decision_test PRIVATE playden_community)
     add_test(NAME community_share_decision COMMAND community_share_decision_test)

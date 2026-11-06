@@ -1104,17 +1104,17 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     check(community.tested_kit == "0.12-dev.20261022.1" && community.min_kit.empty() &&
               exported_text.find("hl2-fw1360-dev1") == std::string::npos,
           "T52 the export says which kit version it was tested on");
-    check(community.recipe.id == "community-900001" && community.title.empty() && community.contributors.empty() &&
+    check(community.recipe.id == "community-steam-900001" && community.title.empty() && community.contributors.empty() &&
               exported_text.find("\"contributors\": []") != std::string::npos,
           "T52 the export leaves the slug, title and contributors to the author");
     // Named by the author, it reads back with its slug and title.
     auto named = community;
-    named.recipe.id = rt::CommunityRecipeIdFor(900001, "dxvk-mouse");
+    named.recipe.id = rt::CommunityRecipeIdFor(playden::GameRef::Steam(900001), "dxvk-mouse");
     named.title = "DXVK with the mouse preset";
     named.contributors = {"Bo"};
     rt::CommunityRecipe reread;
     check(rt::ParseCommunityRecipe(rt::SerializeCommunityRecipe(named), &reread, &reason) &&
-              reread.recipe.id == "community-900001-dxvk-mouse" && reread.title == named.title &&
+              reread.recipe.id == "community-steam-900001-dxvk-mouse" && reread.title == named.title &&
               reread.contributors == named.contributors,
           "T52 a named export round-trips");
     // A kit before 0.10 has no version: tested_kit stays empty.
@@ -1662,7 +1662,7 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     playden::homebrew::CommunityCatalog catalog = simulation.state().community;
     auto make = [](std::string title, std::string status, std::uint32_t up, std::uint32_t down, char digit) {
         CommunityRecipeOffer offer;
-        offer.id = "community-900002-" + std::string(1, digit);
+        offer.id = "community-steam-900002-" + std::string(1, digit);
         offer.title = std::move(title);
         offer.status = std::move(status);
         offer.revision = rev(digit);
@@ -1671,7 +1671,7 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
         offer.votes_down = down;
         return offer;
     };
-    catalog.games[SteamId(900002)] = {make("Untested", "untested", 50, 0, 'a'), make("Broken", "broken", 9, 0, 'b'),
+    catalog.games[playden::GameRef::Steam(900002)] = {make("Untested", "untested", 50, 0, 'a'), make("Broken", "broken", 9, 0, 'b'),
                                        make("Zeta", "works", 2, 1, 'c'), make("Alpha", "works", 2, 1, 'd'),
                                        make("Playable", "playable", 0, 0, 'e'), make("Liked", "works", 10, 0, 'f')};
     simulation.UpdateCommunityCatalog(catalog);
@@ -1737,6 +1737,73 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
           "an offline copy is still offered, with its date");
 }
 
+// An imported game gets the recipes of its Steam app ID; without one it gets none (no matching by name), and it still
+// shares and exports: under its Steam app ID (made_on imported), else under the name key of its title.
+void community_recipes_imported(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    const auto top = [](playden::homebrew::Simulation& simulation) -> const playden::homebrew::ModalEntry& {
+        return simulation.state().navigation.modals.back();
+    };
+    const auto directory = std::filesystem::temp_directory_path() / ("playden-imported-recipes-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(directory);
+    const auto exported = [&](playden::homebrew::Simulation& simulation) {
+        while (!simulation.state().navigation.modals.empty() && top(simulation).id != "game-settings") simulation.action("circle");
+        if (!has_row(simulation, "export-recipe")) activate(simulation, "section-advanced");
+        activate(simulation, "export-recipe");
+        rt::CommunityRecipe community;
+        std::string reason;
+        const auto text = read_text(directory / ("recipe-" + playden::ToKey(night_sky) + ".json"));
+        check(rt::ParseCommunityRecipe(text, &community, &reason), "the imported game's export reads back");
+        return community;
+    };
+    {
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        load_settings_data(simulation, fixtures);
+        simulation.SetRecipeExportTarget(directory, "13.60");
+        check(simulation.scenario("recipes-imported"), "recipes-imported scenario loads");
+        // Matched by its Steam app ID (Game settings): 900002's three recipes, in the chooser.
+        const auto offers = simulation.CommunityOffersFor(night_sky);
+        check(offers.size() == 3 && offers[0].id == "community-steam-900002-120hz-left-stick-pointer",
+              "an imported game gets the recipes of its Steam app ID");
+        check(top(simulation).id == "preset-picker" && has_row(simulation, "recipe-" + rev('1')) &&
+                  !has_row(simulation, "recipes-none"),
+              "the chooser offers them");
+        // Its share and export are for the Steam game, made on an imported copy.
+        const auto community = exported(simulation);
+        check(community.game == playden::GameRef::Steam(900002) && community.made_on == "imported" &&
+                  community.game_name == "Night Sky" && community.recipe.id == "community-steam-900002",
+              "an imported copy with a Steam app ID exports for that Steam game, made on imported");
+        while (!simulation.state().navigation.modals.empty() && top(simulation).id != "game-settings") simulation.action("circle");
+        check(has_row(simulation, "share-recipe"), "it can be shared");
+    }
+    {
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        load_settings_data(simulation, fixtures);
+        simulation.SetRecipeExportTarget(directory, "13.60");
+        check(simulation.scenario("share-imported"), "share-imported scenario loads");
+        // No Steam app ID: no recipes by name.
+        check(simulation.CommunityOffersFor(night_sky).empty(), "without a Steam app ID an imported game matches nothing");
+        check(top(simulation).id == "share-recipe", "an imported game without a Steam app ID shares");
+        activate(simulation, "share-send");
+        const auto shared = simulation.state().game_settings.at(night_sky).shared_recipe;
+        check(shared.recipe_id.rfind("community-imported-night-sky-shared-", 0) == 0,
+              "it is shared under the name key of its title");
+        activate(simulation, "alert-ok");
+        const auto community = exported(simulation);
+        check(community.game == (playden::GameRef{"imported", "night-sky"}) && community.made_on.empty() &&
+                  community.game_name == "Night Sky" && community.recipe.id == "community-imported-night-sky",
+              "it exports under its name key");
+        // The chooser says why there are none.
+        while (!simulation.state().navigation.modals.empty() && top(simulation).id != "game-settings") simulation.action("circle");
+        activate(simulation, "preset-picker");
+        check(find_row(simulation, "recipes-none") &&
+                  find_row(simulation, "recipes-none")->subtitle.find("by its Steam app ID") != std::string::npos,
+              "the chooser says an imported game's recipes come by its Steam app ID");
+    }
+    std::filesystem::remove_all(directory);
+}
+
 void community_recipes_one_base(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
     playden::homebrew::Simulation simulation(fixtures, profile);
@@ -1752,9 +1819,9 @@ void community_recipes_one_base(const std::filesystem::path& fixtures, const std
     activate(simulation, "preset-picker");
     activate(simulation, "recipe-" + rev('4'));
     auto record = simulation.state().game_settings.at(SteamId(900012));
-    check(record.preset_id.empty() && record.community_recipe.id == "community-900012-mouse-on-right-stick" &&
+    check(record.preset_id.empty() && record.community_recipe.id == "community-steam-900012-mouse-on-right-stick" &&
               record.community_recipe.revision == rev('4'), "choosing a recipe clears the preset");
-    check(simulation.RecipeFor(SteamId(900012)).id == "community-900012-mouse-on-right-stick", "the recipe is the game's base");
+    check(simulation.RecipeFor(SteamId(900012)).id == "community-steam-900012-mouse-on-right-stick", "the recipe is the game's base");
     check(find_row(simulation, "preset-picker")->value == "Mouse on the right stick", "the Preset row names the recipe");
     check(simulation.RecipeBaseFor(SteamId(900012)) &&
               simulation.RecipeBaseFor(SteamId(900012))->revision == rev('4'), "Share sees the recipe the game is based on");
@@ -1883,7 +1950,7 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
               "without recipes the Install sheet has no Settings row, and asks for a refresh");
         activate(live, "cancel");
         playden::runtime::CommunityRecipe object;
-        object.recipe.id = "community-42-pad";
+        object.recipe.id = "community-steam-42-pad";
         object.recipe.version = 1;
         object.recipe.app_id = 42;
         object.recipe.name = "Recipe game";
@@ -1900,11 +1967,11 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
         CommunityCatalog catalog;
         catalog.release_tag = "r1";
         CommunityRecipeOffer offer;
-        offer.id = "community-42-pad";
+        offer.id = "community-steam-42-pad";
         offer.title = "Pad";
         offer.status = "works";
         offer.revision = rev('7');
-        catalog.games[SteamId(42)] = {offer};
+        catalog.games[playden::GameRef::Steam(42)] = {offer};
         live.UpdateCommunityCatalog(catalog);
         activate(live, "details-install");
         check(live.TakeInstallRequests().empty() && live.state().navigation.modals.back().id == "install",
@@ -1926,7 +1993,7 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
         activate(live, "recipe-" + rev('7'));
         activate(live, "install-confirm");
         requests = live.TakeInstallRequests();
-        check(requests.size() == 1 && live.state().game_settings.at(SteamId(42)).community_recipe.id == "community-42-pad",
+        check(requests.size() == 1 && live.state().game_settings.at(SteamId(42)).community_recipe.id == "community-steam-42-pad",
               "the recipe chosen at Install is saved with the request");
         check(live.CommunityChoicesInUse() == std::set<std::string>{rev('7')}, "the cache keeps the saved choice");
     }
@@ -2143,7 +2210,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(find_row(simulation, "feedback-result")->value == "Broken", "Result switches to Broken");
     activate(simulation, "feedback-send");
     check(top().title == "Test report sent" && !top().link.empty(), "the report is sent, its issue as a QR code");
-    const auto* down = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1'));
+    const auto* down = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(playden::GameRef::Steam(900002), "120hz-left-stick-pointer"), rev('1'));
     check(down && down->vote == "down" && down->reason == "slow", "the recipe's thumbs down goes with it");
     // Other: chosen at once, then the keyboard asks what it was; the text shows under it, cancelling keeps Other.
     check(simulation.scenario("feedback-problems"), "feedback-problems scenario loads for Other");
@@ -2220,7 +2287,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
               find_row(simulation, "vote-reason-slow")->selected && !has_row(simulation, "vote-never"),
           "Your vote: a thumbs down, the reasons, Slow chosen; votes on asks nothing more");
     activate(simulation, "vote-send");
-    const auto* cast = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1'));
+    const auto* cast = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(playden::GameRef::Steam(900002), "120hz-left-stick-pointer"), rev('1'));
     check(cast && cast->vote == "down" && cast->reason == "slow", "the vote and its reason are remembered");
     check(simulation.snapshot().find("sharing-id") == std::string::npos, "the snapshot holds no sharing ID");
 }
@@ -2258,6 +2325,8 @@ int main(int argc, char** argv) {
     settings_save_failure_does_not_claim_success(fixtures, profile);
     clean();
     community_recipes_chooser(fixtures, profile);
+    clean();
+    community_recipes_imported(fixtures, profile);
     clean();
     community_recipes_one_base(fixtures, profile);
     clean();

@@ -239,7 +239,7 @@ void SharingService::Handle(SharingRequest request) {
           result.submission = community::SubmitRecipe(context, *secret, submission, shared_->cancel,
                                                       request.use_account ? AccountToken() : std::string());
           const auto& answer = result.submission;
-          Log("sharing: share app=" + std::to_string(submission.app_id) + " attempt=" + std::to_string(attempt) +
+          Log("sharing: share game=" + ToText(submission.game) + " attempt=" + std::to_string(attempt) +
               " outcome=" + OutcomeName(answer.outcome) + " status=" + std::to_string(answer.error.http_status) +
               " code=" + answer.error.code + " id=" + answer.id + " recipe=" + answer.recipe_id + " state=" + answer.state);
           if (answer.outcome != community::SubmissionOutcome::kError || !Retryable(answer.error) || attempt == attempts ||

@@ -46,7 +46,8 @@ void check(bool condition, const char* message) {
 }
 
 const GameId kGame = GameId::Steam(274520);
-const std::string kRecipeId = "community-274520-darkwood-120";
+const playden::GameRef kGameRef = playden::GameRef::Steam(274520);
+const std::string kRecipeId = "community-steam-274520-darkwood-120";
 const std::string kRevision(64, 'c');
 const std::string kNewerRevision(64, 'd');
 
@@ -117,7 +118,8 @@ rt::CommunityRecipe community_recipe(const std::string& revision) {
     auto& recipe = community.recipe;
     recipe.id = kRecipeId;
     recipe.version = 1;
-    recipe.app_id = 274520;
+    community.game = kGameRef;
+    community.game_name = "Darkwood";
     recipe.name = "Darkwood";
     recipe.launch_entries = {{"game", "Darkwood", "Darkwood.exe", ""}};
     recipe.arguments = "{resolution}";
@@ -177,7 +179,7 @@ void set_up(Simulation& model, const std::filesystem::path& base) {
     model.UpdateRuntime(RuntimeState::Ready, {runtime});
     playden::homebrew::CommunityCatalog catalog;
     catalog.release_tag = "r20261022.1";
-    catalog.games[kGame] = {offer(kRevision)};
+    catalog.games[kGameRef] = {offer(kRevision)};
     model.UpdateCommunityCatalog(catalog);
     model.SetCommunityRecipeLoader([](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
         if (revision == kRevision || revision == kNewerRevision) return community_recipe(revision);
@@ -283,13 +285,13 @@ void share_and_vote(const std::filesystem::path& base) {
 
     // The worker gets the whole request; the model has no sharing ID, the worker makes the key.
     api.answer_with({lost(), answer(503, R"({"error":"try_again","message":"again"})"),
-                     answer(201, R"({"id":"sub-1","recipe_id":"community-274520-darkwood-4k","state":"in-review",)"
+                     answer(201, R"({"id":"sub-1","recipe_id":"community-steam-274520-darkwood-4k","state":"in-review",)"
                                  R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/12"})")});
     std::vector<SharingRequest> sent;
     pump(model, service, &sent);
     check(sent.size() == 1 && sent[0].kind == SharingRequestKind::Submit, "Send hands one share to the worker");
     const auto& request = sent[0].submission;
-    check(request.app_id == 274520 && request.title == "Darkwood 4K" && request.name == "Todor" && request.kit == "0.12" &&
+    check(request.game == kGameRef && request.game_name == "Darkwood" && request.title == "Darkwood 4K" && request.name == "Todor" && request.kit == "0.12" &&
               request.firmware == "10.01" && request.playden_version == "0.6.0" && !request.based_on &&
               request.choice == cm::ShareChoice::kNone && request.submission_id.empty() && request.idempotency_key.empty(),
           "the request carries the recipe, title, name and versions; no base, no choice, no key yet");
@@ -320,7 +322,7 @@ void share_and_vote(const std::filesystem::path& base) {
               model.state().navigation.modals.back().link_caption == "Scan to follow the pull request",
           "the sent dialog shows the pull request as a QR code");
     const auto& shared = model.state().game_settings.at(kGame).shared_recipe;
-    check(shared.submission_id == "sub-1" && shared.recipe_id == "community-274520-darkwood-4k", "the share is saved per game");
+    check(shared.submission_id == "sub-1" && shared.recipe_id == "community-steam-274520-darkwood-4k", "the share is saved per game");
     std::map<GameId, rt::GameSettingsRecord> saved;
     std::string reason;
     check(rt::LoadGameSettingsFile((base / "game-settings.json").string(), &saved, &reason) &&
@@ -339,7 +341,7 @@ void share_and_vote(const std::filesystem::path& base) {
     check(status_requests.size() == 1 && status_requests[0].kind == SharingRequestKind::Status &&
               status_requests[0].submission_id == "sub-1",
           "opening Game settings later asks for the shared recipe's state");
-    api.answer_with({answer(200, R"({"id":"sub-1","state":"published","recipe_id":"community-274520-darkwood-4k",)"
+    api.answer_with({answer(200, R"({"id":"sub-1","state":"published","recipe_id":"community-steam-274520-darkwood-4k",)"
                                  R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/12"})")});
     for (auto& status : status_requests) service.Submit(std::move(status));
     service.Wait();
@@ -410,7 +412,7 @@ void share_and_vote(const std::filesystem::path& base) {
         activate(model, "share-title");
         model.SubmitEditorText("Darkwood 4K");
     }
-    api.answer_with({answer(200, R"({"state":"duplicate","recipe_id":"community-274520-x","pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/9"})")});
+    api.answer_with({answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-x","pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/9"})")});
     activate(model, "share-send");
     pump(model, service);
     check(model.state().navigation.modals.back().title == "Already in review" &&
@@ -500,7 +502,7 @@ void share_and_vote(const std::filesystem::path& base) {
     check(model.state().navigation.modals.empty(), "once a report was sent for these settings, Playden doesn't ask again");
     // A newer revision: new settings ask again; Not now twice, then no more.
     auto catalog = model.state().community;
-    catalog.games[kGame] = {offer(kNewerRevision)};
+    catalog.games[kGameRef] = {offer(kNewerRevision)};
     model.UpdateCommunityCatalog(catalog);
     open_game_settings(model);
     activate(model, "recipe-update");
@@ -542,7 +544,7 @@ void share_and_vote(const std::filesystem::path& base) {
         return std::nullopt;
     });
     auto later = model.state().community;
-    later.games[kGame] = {offer(third)};
+    later.games[kGameRef] = {offer(third)};
     model.UpdateCommunityCatalog(later);
     open_game_settings(model);
     activate(model, "recipe-update");
@@ -590,7 +592,7 @@ void share_and_vote(const std::filesystem::path& base) {
         status.ticket = 9001;
         status.game_id = kGame;
         status.submission_id = "sub-1";
-        api.answer_with({answer(200, R"({"id":"sub-1","state":"published","recipe_id":"community-274520-darkwood-4k",)"
+        api.answer_with({answer(200, R"({"id":"sub-1","state":"published","recipe_id":"community-steam-274520-darkwood-4k",)"
                                      R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/)" + echoed + R"("})")});
         service.Submit(std::move(status));
         service.Wait();
@@ -612,7 +614,7 @@ void share_and_vote(const std::filesystem::path& base) {
     check(model.state().recipe_votes == playden::RecipeVotesPreference::kOff, "votes are off");
     check(model.ExportPreferences().recipe_votes == playden::RecipeVotesPreference::kOff, "the preference is saved");
     auto newest = model.state().community;
-    newest.games[kGame] = {offer(std::string(64, 'e'))};
+    newest.games[kGameRef] = {offer(std::string(64, 'e'))};
     runtime.recipe_version = std::string(32, 'e');
     model.UpdateCommunityCatalog(newest);
     model.UpdateRuntime(RuntimeState::Ready, {runtime});

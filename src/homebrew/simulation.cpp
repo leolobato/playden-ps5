@@ -944,6 +944,23 @@ std::vector<LiveImportCandidate> fixture_import_candidates() {
 // The fixture's imported game (Night Sky, already added from the USB drive).
 GameId fixture_imported_game() { return GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11"); }
 
+// Adds the fixture's imported game to the library, on the USB drive, when it isn't there yet.
+void add_fixture_imported_game(State& state) {
+    const auto id = fixture_imported_game();
+    if (!find_game(state, id)) {
+        Game game;
+        game.id = id;
+        game.title = "Night Sky";
+        game.source = "Imported";
+        game.install_bytes = 412'000'000;
+        game.description = "A quiet night drive under the stars.";
+        state.games.push_back(std::move(game));
+    }
+    if (std::none_of(state.external_games.begin(), state.external_games.end(),
+                     [&](const LiveExternalGame& external) { return external.game_id == id; }))
+        state.external_games.push_back({id, "usb0", true, ""});
+}
+
 struct StartupProblem {
     std::string title;
     std::string subtitle;
@@ -3949,7 +3966,7 @@ std::vector<std::string> Simulation::live_install_sheet_actions(GameId id) const
     const auto* game = find_game(state_, id);
     std::vector<std::string> actions{"install-confirm"};
     // Only a game with community recipes gets the Settings row; Playden's choice stays selected.
-    if (const auto found = state_.community.games.find(id); found != state_.community.games.end() && !found->second.empty())
+    if (const auto* offers = community_offers(id); offers && !offers->empty())
         actions.push_back("install-settings");
     if (game && game->versions.size() >= 2) actions.push_back("install-version");
     if (game && game->content_languages.size() >= 2) actions.push_back("install-language");
@@ -5362,10 +5379,11 @@ void Simulation::seed_community_scenario(bool offline) {
         const auto* game = find_game(state_, id);
         rt::CommunityRecipe community;
         auto& recipe = community.recipe;
-        recipe.id = rt::CommunityRecipeIdFor(seed.app, seed.slug);
+        community.game = GameRef::Steam(seed.app);
+        recipe.id = rt::CommunityRecipeIdFor(community.game, seed.slug);
         recipe.version = 1;
-        recipe.app_id = seed.app;
         recipe.name = game ? game->title : seed.title;
+        community.game_name = recipe.name;
         recipe.launch_entries = {{"game", recipe.name, "Game.exe", ""}};
         recipe.arguments = std::string("{resolution}") + (*seed.arguments ? std::string(" ") + seed.arguments : std::string());
         recipe.resolution_arguments = "-width {w} -height {h}";
@@ -5401,7 +5419,7 @@ void Simulation::seed_community_scenario(bool offline) {
         // The fixture's first recipe comes from a trusted account (Verified, a star); Windowed 1080p from an account.
         offer.verified = offer.author_trusted = offer.author_account = std::string(seed.slug) == "120hz-left-stick-pointer";
         if (std::string(seed.slug) == "windowed-1080p") offer.author_account = true;
-        catalog.games[id].push_back(std::move(offer));
+        catalog.games[community.game].push_back(std::move(offer));
         synthetic_community_[recipe.revision] = std::move(community);
     }
     // An older revision of the first recipe that a game may still be on.
@@ -5901,7 +5919,10 @@ bool Simulation::scenario(const std::string& name) {
         seed_community_scenario(name == "recipes-offline");
         const std::uint32_t app = name == "recipes-one" ? 900012 : name == "recipes-refused" || name == "recipes-fallback" ? 900005
                                 : name == "recipes-none" ? 900004 : 900002;
-        const auto id = GameId::Steam(app);
+        // recipes-imported: the imported Night Sky, whose Steam app ID (set in Game settings) is 900002's, gets its recipes.
+        const bool imported = name == "recipes-imported";
+        if (imported) add_fixture_imported_game(state_);
+        const auto id = imported ? fixture_imported_game() : GameId::Steam(app);
         state_.account().authentication = AuthState::SignedIn;
         state_.navigation.modals.clear();
         state_.navigation.route = Route::Details;
@@ -5913,13 +5934,16 @@ bool Simulation::scenario(const std::string& name) {
         generated_recipes_.erase(id);
         install_choice_.reset();
         pending_switch_.reset();
+        if (imported) state_.game_settings[id].steam_app_id = 900002;
         if (name == "recipes-settings") {
             // On the older revision of its recipe, with one change of the player's.
             auto& record = state_.game_settings[id];
-            rt::ChooseCommunityRecipe(&record, rt::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), std::string(64, '0'));
+            rt::ChooseCommunityRecipe(&record, rt::CommunityRecipeIdFor(GameRef::Steam(900002), "120hz-left-stick-pointer"),
+                                      std::string(64, '0'));
             record.overrides["volume"] = "80";
         } else if (name == "recipes-fallback") {
-            rt::ChooseCommunityRecipe(&state_.game_settings[id], rt::CommunityRecipeIdFor(900005, "zink-opengl"), std::string(64, '5'));
+            rt::ChooseCommunityRecipe(&state_.game_settings[id], rt::CommunityRecipeIdFor(GameRef::Steam(900005), "zink-opengl"),
+                                      std::string(64, '5'));
         } else if (name == "recipes-switch") {
             // Playden's own recipe has a level editor to start; the community recipe doesn't.
             rt::GameRecipe own;
@@ -5951,7 +5975,10 @@ bool Simulation::scenario(const std::string& name) {
         // Sharing, votes and feedback (synthetic, no network): the Share sheet's cases, the sent dialog, the vote
         // sheet and the prompt after a game with its test report.
         seed_community_scenario(false);
-        const auto id = GameId::Steam(900002);
+        // share-imported: the imported Night Sky, which has no Steam app ID, shares under its name key.
+        const bool imported = name == "share-imported";
+        if (imported) add_fixture_imported_game(state_);
+        const auto id = imported ? fixture_imported_game() : GameId::Steam(900002);
         state_.account().authentication = AuthState::SignedIn;
         state_.navigation.modals.clear();
         state_.navigation.route = Route::Details;
@@ -5979,9 +6006,10 @@ bool Simulation::scenario(const std::string& name) {
         state_.library.ratings[id] = Compatibility::Works;
         state_.library.notes[id] = "Turn on 120 Hz output in the PS5's screen settings first.";
         auto& record = state_.game_settings[id];
-        const auto recipe_id = rt::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer");
+        const auto recipe_id = rt::CommunityRecipeIdFor(GameRef::Steam(900002), "120hz-left-stick-pointer");
         const std::string revision(64, '1');
-        const bool own_changes = name == "share-new" || name == "share-sent" || name == "share-privacy" || name == "share-error" ||
+        const bool own_changes = name == "share-new" || name == "share-imported" || name == "share-sent" ||
+                                 name == "share-privacy" || name == "share-error" ||
                                  name == "feedback-start" || name == "feedback-good" || name == "feedback-sent" ||
                                  name == "feedback-privacy";
         if (own_changes) {
@@ -6177,16 +6205,7 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.modals.clear();
         if (name != "import-empty") {
             const auto id = fixture_imported_game();
-            if (!find_game(state_, id)) {
-                Game game;
-                game.id = id;
-                game.title = "Night Sky";
-                game.source = "Imported";
-                game.install_bytes = 412'000'000;
-                game.description = "A quiet night drive under the stars.";
-                state_.games.push_back(std::move(game));
-            }
-            if (!external_game(id)) state_.external_games.push_back({id, "usb0", true, ""});
+            add_fixture_imported_game(state_);
             std::erase_if(state_.jobs, [id](const Job& job) { return job.game_id == id; });
             state_.import_candidates = fixture_import_candidates();
             state_.import_candidates.front().imported = id;
@@ -6391,7 +6410,7 @@ void Simulation::rebuild_view() {
             // Where the community recipes come from, when the copy is old or missing.
             const auto& catalog = state_.community;
             std::string source;
-            if (!settings_game.steam_app()) source = "";
+            if (!community_ref(settings_game)) source = "";
             else if (catalog.release_tag.empty())
                 source = catalog.refreshing ? " Looking for community recipes…"
                        : catalog.last_error.empty() ? "" : " Community recipes can't be loaded now.";
@@ -7013,7 +7032,8 @@ void Simulation::rebuild_view() {
                 item.kind = RowKind::Status;
                 item.title = "None yet";
                 const auto& catalog = state_.community;
-                item.subtitle = !settings_game.steam_app() ? "Community recipes are for Steam games."
+                // An imported game gets the recipes of its Steam app ID; searching them by name comes later.
+                item.subtitle = !community_ref(settings_game) ? "Playden finds recipes for this game by its Steam app ID, and it has none."
                               : catalog.release_tag.empty() && catalog.refreshing ? "Looking for community recipes…"
                               : catalog.release_tag.empty() ? "None yet: Playden couldn't load the community recipes."
                                                             : "No player has shared one for this game yet.";
@@ -7579,8 +7599,8 @@ void Simulation::rebuild_view() {
                 item.title = "Settings";
                 const bool chosen = install_choice_ && install_choice_game_ == id;
                 item.value = (chosen ? base_name(id, *install_choice_) : std::string("Playden default")) + " ›";
-                const auto offers = state_.community.games.find(id);
-                const auto count = offers == state_.community.games.end() ? 0 : offers->second.size();
+                const auto* offers = community_offers(id);
+                const auto count = offers ? offers->size() : 0;
                 item.subtitle = "★ " + std::to_string(count) + (count == 1 ? " community recipe available" : " community recipes available");
                 item.selected = chosen;
             }
@@ -8238,11 +8258,11 @@ void Simulation::rebuild_view() {
         // An installed game with community recipes carries a "Recipe available" tag, or "Recipe in use" once one is
         // chosen; Game settings › Preset chooses one.
         if (installed && game) {
-            if (const auto offers = state_.community.games.find(game->id); offers != state_.community.games.end() && !offers->second.empty()) {
+            if (const auto* offers = community_offers(game->id); offers && !offers->empty()) {
                 auto& mark = row("details-recipe", RowKind::Status,
                                  base_of(game->id).community.id.empty() ? "Recipe available" : "Recipe in use", "");
                 mark.value = base_name(game->id, base_of(game->id));
-                const auto count = offers->second.size();
+                const auto count = offers->size();
                 mark.subtitle = std::to_string(count) + (count == 1 ? " community recipe" : " community recipes");
                 mark.enabled = false;
             }
@@ -12711,10 +12731,32 @@ const rt::SettingsPreset* Simulation::preset_for_base(const BaseChoice& base) co
     return nullptr;
 }
 
+std::uint32_t Simulation::steam_app_of(GameId id) const {
+    if (const auto app = id.steam_app()) return *app;
+    if (const auto runtime = state_.runtime_games.find(id); runtime != state_.runtime_games.end() && runtime->second.steam_app_id)
+        return runtime->second.steam_app_id;
+    const auto record = state_.game_settings.find(id);
+    return record == state_.game_settings.end() ? 0 : record->second.steam_app_id;
+}
+
+std::optional<GameRef> Simulation::community_ref(GameId id) const { return MatchingGameRef(id, steam_app_of(id)); }
+
+std::optional<GameRef> Simulation::sharing_ref(GameId id) const {
+    const auto* game = find_game(state_, id);
+    return SharingGameRef(id, steam_app_of(id), game ? game->title : std::string());
+}
+
+const std::vector<CommunityRecipeOffer>* Simulation::community_offers(GameId id) const {
+    const auto ref = community_ref(id);
+    if (!ref) return nullptr;
+    const auto found = state_.community.games.find(*ref);
+    return found == state_.community.games.end() ? nullptr : &found->second;
+}
+
 const CommunityRecipeOffer* Simulation::community_offer(GameId id, const std::string& recipe_id, const std::string& revision) const {
-    const auto found = state_.community.games.find(id);
-    if (found == state_.community.games.end()) return nullptr;
-    for (const auto& offer : found->second)
+    const auto* offers = community_offers(id);
+    if (!offers) return nullptr;
+    for (const auto& offer : *offers)
         if (offer.id == recipe_id && (revision.empty() || offer.revision == revision)) return &offer;
     return nullptr;
 }
@@ -12745,9 +12787,9 @@ const CommunityRecipeOffer* Simulation::updated_offer(GameId id) const {
     if (const auto runtime = state_.runtime_games.find(id);
         runtime != state_.runtime_games.end() && runtime->second.recipe_id == base.community.id)
         applied = runtime->second.recipe_version;
-    const auto found = state_.community.games.find(id);
-    if (found == state_.community.games.end()) return nullptr;
-    for (const auto& offer : found->second) {
+    const auto* offers = community_offers(id);
+    if (!offers) return nullptr;
+    for (const auto& offer : *offers) {
         if (offer.id != base.community.id || offer.revision == base.community.revision) continue;
         if (!applied.empty() && rt::RevisionHasTag(offer.revision, applied)) continue;
         return &offer;
@@ -12763,7 +12805,7 @@ bool Simulation::title_made(GameId id) const {
 
 std::vector<CommunityRecipeOffer> Simulation::CommunityOffersFor(GameId id) const {
     std::vector<CommunityRecipeOffer> offers;
-    if (const auto found = state_.community.games.find(id); found != state_.community.games.end()) offers = found->second;
+    if (const auto* found = community_offers(id)) offers = *found;
     std::stable_sort(offers.begin(), offers.end(), [](const CommunityRecipeOffer& left, const CommunityRecipeOffer& right) {
         const int left_rank = community_status_rank(left.status), right_rank = community_status_rank(right.status);
         if (left_rank != right_rank) return left_rank < right_rank;
@@ -12776,8 +12818,8 @@ std::vector<CommunityRecipeOffer> Simulation::CommunityOffersFor(GameId id) cons
 }
 
 std::optional<CommunityRecipeOffer> Simulation::chooser_offer(GameId id, const std::string& revision) const {
-    if (const auto found = state_.community.games.find(id); found != state_.community.games.end())
-        for (const auto& offer : found->second)
+    if (const auto* offers = community_offers(id))
+        for (const auto& offer : *offers)
             if (offer.revision == revision) return offer;
     // A chosen revision the catalog no longer lists (an older one, or removed): its object still names it.
     rt::CommunityObjectState state;
@@ -12845,7 +12887,7 @@ std::vector<std::string> Simulation::install_sheet_actions(GameId id) const {
     if (live()) return live_install_sheet_actions(id);
     std::vector<std::string> actions = {"install-confirm"};
     // Only a game with community recipes gets the Settings row; Playden's choice stays selected.
-    if (const auto found = state_.community.games.find(id); found != state_.community.games.end() && !found->second.empty())
+    if (const auto* offers = community_offers(id); offers && !offers->empty())
         actions.push_back("install-settings");
     if (!live()) actions.push_back("install-estimate-retry");
     actions.push_back("storage-picker");
@@ -13156,8 +13198,8 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     if (expanded_settings_sections_.count("section-advanced")) {
         rows(G::kAdvanced);
         actions.push_back("effective-command");
-        // Share recipe sends Steam games' settings for review; the file export stays for FTP.
-        if (game.steam_app() && !share_on_top) actions.push_back("share-recipe");
+        // Share recipe sends the game's settings for review; the file export stays for FTP.
+        if (sharing_ref(game) && !share_on_top) actions.push_back("share-recipe");
         actions.push_back("export-recipe");
     }
     actions.push_back("reset-settings");
@@ -13501,12 +13543,18 @@ void Simulation::export_recipe(GameId id) {
 // ---- Sharing recipes and votes (plan Phases 5 and 6) ----
 
 std::optional<rt::CommunityRecipe> Simulation::build_community_recipe(GameId id) const {
-    // Community recipes name a Steam app (steam_appid); other games have none to share.
-    if (!id.steam_app()) return std::nullopt;
+    // A recipe is for the game's GameRef: a Steam game's app ID, an imported game's Steam app ID or else its name key.
+    const auto ref = sharing_ref(id);
+    if (!ref) return std::nullopt;
     rt::EffectiveSettings values;
     if (!EffectiveSettingsFor(id, &values) || !values.launch) return std::nullopt;
-    auto community = rt::BuildCommunityRecipe(RecipeFor(id), values);
-    if (const auto* game = find_game(state_, id)) community.recipe.name = game->title;
+    const auto* game = find_game(state_, id);
+    // The game's name as the library shows it; its key when the title has nothing printable.
+    auto name = GameNameFromTitle(game ? game->title : std::string());
+    if (name.empty()) name = ref->key;
+    // An imported copy shared under its Steam app ID says so (made_on); BuildCommunityRecipe leaves out the same store.
+    auto community = rt::BuildCommunityRecipe(RecipeFor(id), values, *ref, name, std::string(RecipeStoreOf(id.store)));
+    if (game) community.recipe.name = game->title;
     // Locks are for recipes Playden ships: a community recipe never stops the player from changing a row.
     community.recipe.locked.clear();
     // The kit version it was tested on, as information; min_kit stays for the author to set when it is needed.
@@ -13601,13 +13649,13 @@ std::optional<cm::RecipeRef> Simulation::AppliedCommunityRecipe(GameId id) const
     }
     const auto& recipe_id = runtime->second.recipe_id;
     const auto& tag = runtime->second.recipe_version;
-    if (recipe_id.rfind("community-", 0) != 0 || tag.empty()) return std::nullopt;
+    if (!rt::IsCommunityRecipeId(recipe_id) || tag.empty()) return std::nullopt;
     // The title records the revision's first 32 hex: the full one is the chosen revision's, or the catalog's.
     const auto base = base_of(id);
     if (base.community.id == recipe_id && rt::RevisionHasTag(base.community.revision, tag))
         return cm::RecipeRef{recipe_id, base.community.revision};
-    if (const auto found = state_.community.games.find(id); found != state_.community.games.end())
-        for (const auto& offer : found->second)
+    if (const auto* offers = community_offers(id))
+        for (const auto& offer : *offers)
             if (offer.id == recipe_id && rt::RevisionHasTag(offer.revision, tag)) return cm::RecipeRef{recipe_id, offer.revision};
     // The catalog moved on and another revision is chosen: an object read before (named by its full
     // revision), or a vote cast for it.
@@ -13661,7 +13709,7 @@ std::vector<std::string> Simulation::vote_actions() const {
 }
 
 void Simulation::open_share_sheet(GameId id) {
-    if (!id.steam_app()) return;
+    if (!sharing_ref(id)) return;
     ShareDraft draft;
     draft.game = id;
     if (const auto base = RecipeBaseFor(id)) {
@@ -13695,7 +13743,7 @@ void Simulation::open_share_sheet(GameId id) {
     } else if (draft.decision.kind == cm::ShareKind::kAskPlayer && draft.answer == cm::ShareChoice::kUpdate) {
         draft.title = draft.base_title;
     }
-    if (draft.title == "community-" + ToKey(id) || !cm::IsSubmissionText(draft.title, 1, cm::kSubmissionTitleMaxCharacters))
+    if (rt::IsCommunityRecipeId(draft.title) || !cm::IsSubmissionText(draft.title, 1, cm::kSubmissionTitleMaxCharacters))
         draft.title.clear();
     if (draft.decision.kind == cm::ShareKind::kNoChangesOfferVote) {
         draft.nothing_new = true;
@@ -13756,7 +13804,9 @@ void Simulation::send_share() {
         return;
     }
     cm::SubmissionRequest request;
-    request.app_id = *id.steam_app();
+    // The game the recipe is for; the API checks that the recipe names the same one.
+    request.game = community->game;
+    request.game_name = community->game_name;
     // The API needs all three; a console that can't tell sends "unknown" rather than nothing.
     request.kit = state_.kit.version.empty() ? std::string("unknown") : state_.kit.version;
     request.firmware = console_firmware_.empty() ? std::string("unknown") : console_firmware_;
@@ -13812,7 +13862,7 @@ void Simulation::send_share() {
         answer.id = "simulated-" + std::to_string(number);
         answer.recipe_id = request.choice == cm::ShareChoice::kUpdate && request.based_on ? request.based_on->recipe_id
                          : !saved.recipe_id.empty() ? saved.recipe_id
-                         : "community-" + ToKey(id) + "-shared-" + std::to_string(number);
+                         : rt::CommunityRecipeIdFor(request.game, "shared-" + std::to_string(number));
         answer.pr_url = "https://github.com/leolobato/playden-ps5-recipes/pull/" + std::to_string(number);
     }
     answer.state = "in-review";
@@ -13849,7 +13899,6 @@ void Simulation::send_vote() {
         save_profile();
     }
     cm::VoteRequest request;
-    request.app_id = draft.game.steam_app().value_or(0);
     request.recipe_id = draft.recipe.recipe_id;
     request.revision = draft.recipe.revision;
     request.vote = draft.vote;
@@ -13947,7 +13996,7 @@ bool Simulation::changes_worth_sharing(GameId id) const {
     // The player changed more than their own preferences (decision 2): the program, arguments, libraries, controls
     // or graphics, not only the resolution, refresh rate or overlay.
     const auto record = state_.game_settings.find(id);
-    if (!id.steam_app() || record == state_.game_settings.end()) return false;
+    if (!sharing_ref(id) || record == state_.game_settings.end()) return false;
     static const std::set<std::string> preferences = {"resolution", "refresh", "framegen", "frame_limit",
                                                       "performance_overlay", "overlay_detail", "vsync", "scaling",
                                                       "text_scale", "volume", "rumble", "logging", "locale"};
@@ -14084,12 +14133,11 @@ void Simulation::send_feedback() {
     bool differs = false, launch = false;
     request.settings = share_changes(id, std::nullopt, &differs, &launch);
     if (request.settings.size() > cm::kReportSettingsMaxCharacters) request.settings.resize(cm::kReportSettingsMaxCharacters);
-    if (id.steam_app())
-        if (const auto community = build_community_recipe(id)) {
+    if (const auto community = build_community_recipe(id)) {
             auto shared = *community;
             request.recipe_json = cm::RecipeJsonForSubmission(std::move(shared), "");
             if (request.recipe_json.size() > cm::kMaxSubmissionRecipeBytes) request.recipe_json.clear();
-        }
+    }
     if (draft.recipe) request.based_on = draft.recipe;
     request.author = share_as_effective() == playden::ShareAs::kName ? state_.share_name : std::string();
     request.kit = state_.kit.version.empty() ? std::string("unknown") : state_.kit.version;
@@ -14111,7 +14159,6 @@ void Simulation::send_feedback() {
             save_profile();
         }
         cm::VoteRequest vote;
-        vote.app_id = id.steam_app().value_or(0);
         vote.recipe_id = draft.recipe->recipe_id;
         vote.revision = draft.recipe->revision;
         vote.vote = draft.result == "works" ? "up" : "down";
