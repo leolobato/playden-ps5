@@ -267,6 +267,8 @@ std::string RecipeProblem(const SubmissionRequest& request) {
   if (!community.recipe.locked.empty()) return "the recipe locks rows (community recipes lock nothing)";
   const auto doc = steam::json::Parse(text);
   if (!doc || !doc->is_object()) return "the recipe is not a JSON object";
+  // The API doesn't take INI values yet (a recipe such as Batman: Arkham Asylum's sets them).
+  if (doc->Find("ini")) return "the recipe service doesn't take recipes that change the game's INI files yet";
   for (const auto& [key, value] : doc->object())
     if (!AcceptedRecipeKeys().count(key)) return "the recipe has a field the API refuses: " + key;
   const auto* meta = doc->Find("community");

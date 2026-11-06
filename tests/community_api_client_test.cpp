@@ -181,6 +181,12 @@ void ExportKeysAccepted() {
   // The same with its locks kept is refused before sending.
   request.recipe_json = text;
   CHECK(SubmissionRequestProblem(request).find("locks") != std::string::npos);
+  // A recipe with INI values (Batman: Arkham Asylum's) isn't taken by the recipe service yet: refused before sending, in
+  // words a player understands.
+  auto with_ini = community;
+  with_ini.recipe.ini.push_back({"BmGame/Config/UserEngine.ini", "Engine.Engine", "bSmoothFrameRate", "False"});
+  request.recipe_json = RecipeJsonForSubmission(with_ini, "A title");
+  CHECK(SubmissionRequestProblem(request) == "the recipe service doesn't take recipes that change the game's INI files yet");
 }
 
 void SubmissionBodies() {
