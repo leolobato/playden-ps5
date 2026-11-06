@@ -417,7 +417,10 @@ SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secr
     bool pr_null = false;
     const auto id = StringField(*doc, "id");
     const auto pr_url = StringField(*doc, "pr_url", &pr_null);
-    if (!id || !IsSubmissionId(*id) || (*state != "provisioning" && *state != "in-review") ||
+    // A replay of the same Idempotency-Key answers with the share's state now: its pull request may be merged or
+    // closed since the answer that was lost.
+    if (!id || !IsSubmissionId(*id) ||
+        (*state != "provisioning" && *state != "in-review" && *state != "published" && *state != "closed") ||
         (!pr_null && (!pr_url || !PrUrl(*pr_url)))) {
       result.error = BadResponse(status);
       return result;
@@ -446,14 +449,16 @@ SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secr
     result.revision = *revision;
     return result;
   }
-  const auto pr_url = StringField(*doc, "pr_url");
-  if (!pr_url || !PrUrl(*pr_url)) {
+  // Another console's share whose pull request isn't open yet has none: null.
+  bool pr_null = false;
+  const auto pr_url = StringField(*doc, "pr_url", &pr_null);
+  if (!pr_null && (!pr_url || !PrUrl(*pr_url))) {
     result.error = BadResponse(status);
     result.recipe_id.clear();
     return result;
   }
   result.outcome = SubmissionOutcome::kDuplicateInReview;
-  result.pr_url = *pr_url;
+  result.pr_url = pr_url.value_or("");
   return result;
 }
 

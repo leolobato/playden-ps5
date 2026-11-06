@@ -365,10 +365,23 @@ void SubmitAnswers() {
   CHECK(result.outcome == SubmissionOutcome::kDuplicateInReview && result.revision.empty() &&
         result.pr_url == "https://github.com/p/r/pull/9");
 
+  // Another console's share whose pull request isn't open yet: no link.
+  api.answers = {Answer(200, R"({"state":"duplicate","recipe_id":"community-steam-274520-x","pr_url":null})")};
+  result = SubmitRecipe(context, kSecret, request, cancel);
+  CHECK(result.outcome == SubmissionOutcome::kDuplicateInReview && result.pr_url.empty() &&
+        result.recipe_id == "community-steam-274520-x");
+  // A replay of a share whose answer was lost: its state now, merged or closed since.
+  for (const char* now : {"published", "closed"}) {
+    api.answers = {Answer(201, std::string(R"({"id":"s1","recipe_id":"community-steam-274520","state":")") + now +
+                                   R"(","pr_url":"https://github.com/p/r/pull/7"})")};
+    result = SubmitRecipe(context, kSecret, request, cancel);
+    CHECK(result.outcome == SubmissionOutcome::kCreated && result.state == now && result.id == "s1");
+  }
+
   // Answers that don't fit the contract.
   for (const auto& bad : std::vector<steam::HttpResponse>{
            Answer(201, R"({"recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})"),
-           Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"published","pr_url":null})"),
+           Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"duplicate","pr_url":null})"),
            Answer(201, R"({"id":"s/1","recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})"),
            Answer(201, R"({"id":"s1","recipe_id":"steam-274520-auto","state":"provisioning","pr_url":null})"),
            Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"in-review","pr_url":"javascript:x"})"),

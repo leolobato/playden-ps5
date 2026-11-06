@@ -81,9 +81,10 @@ struct SubmissionRequest {
 };
 
 enum class SubmissionOutcome {
-  kCreated,             // 201: id, recipe_id, state (provisioning or in-review), pr_url (empty while provisioning)
+  kCreated,             // 201: id, recipe_id, state (provisioning or in-review; a replay: also published or closed), pr_url
+                        // (empty while provisioning)
   kDuplicatePublished,  // 200: recipe_id and revision; Playden may offer a thumbs up
-  kDuplicateInReview,   // 200: recipe_id and pr_url of another console's open PR; no vote to offer
+  kDuplicateInReview,   // 200: recipe_id and pr_url of another console's open PR (empty while it has none); no vote
   kError,
 };
 
