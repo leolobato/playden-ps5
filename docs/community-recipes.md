@@ -13,7 +13,25 @@ contributed there are released under [CC0 1.0](https://creativecommons.org/publi
 sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) are CC0 1.0 too
 ([LICENSE](../runtime/recipes/LICENSE)).
 
-## Make one
+## Share one from Playden
+
+Get the game running well from **Game settings**, then choose **Share recipe** (at the top of Game settings once
+your changes go beyond display preferences, otherwise under Advanced), or answer "It ran well" when Playden asks
+how the game ran. Playden sends the recipe to the Playden API, which opens the pull request on
+playden-ps5-recipes for review. No GitHub account is needed.
+
+Who a recipe credits:
+
+- **Nobody**: shown as "from the community".
+- **A typed name**: the Share sheet's **Your name**.
+- **A Playden account**: link one in Settings › Community › **Playden account** (scan the code, sign in with Discord,
+  GitHub, Google or an email link, approve the code). Shares then carry the account's name, and the chooser marks it
+  as an account.
+
+A recipe revision is **Verified** when the maintainers marked it so, or when a trusted account shared it. The chooser
+shows it beside the recipe's status.
+
+## Make one by hand
 
 1. Get the game to start from **Game settings** (program, arguments, library
    overrides, other rows).
@@ -314,7 +332,7 @@ A recipe Playden ships lives in `runtime/recipes/` and is used for that game
 instead of the one Playden makes from Steam's launch options. To add one:
 
 1. Get the game working from Game settings and export it as a recipe (see
-   [Make one](#make-one)).
+   [Make one by hand](#make-one-by-hand)).
 2. Name the file and its `recipe_id` `steam-<app id>-<short name>-v<version>`,
    for example `steam-292120-ffxiii-v1`, and leave out the `community` block.
    Change the version only when a change needs the game prepared again.

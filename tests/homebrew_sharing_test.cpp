@@ -777,6 +777,11 @@ void account_link(const std::filesystem::path& base) {
                std::filesystem::perms::group_all) == std::filesystem::perms::none,
           "the token is kept privately by the worker");
     check(find_row(model, "settings-account-link")->value == "Rina", "Settings shows the account");
+    open_share(model);
+    check(find_row(model, "share-name") && find_row(model, "share-name")->value == "Rina" &&
+              find_row(model, "share-name")->kind == playden::homebrew::RowKind::Status,
+          "the Share sheet shows the account's name, not a name to type");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
     // A report carries the account; an ended link is forgotten and said.
     SharingRequest report;
     report.kind = SharingRequestKind::Report;

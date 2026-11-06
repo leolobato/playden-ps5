@@ -1573,6 +1573,7 @@ private:
     void note_feedback(const FeedbackDraft& draft, bool answered);
     [[nodiscard]] std::string feedback_settings(GameId id) const;
     [[nodiscard]] std::string feedback_kit() const;
+    [[nodiscard]] bool changes_worth_sharing(GameId id) const;
     void request_submission_status(GameId id, bool force);
     std::optional<playden::runtime::CommunityRecipe> build_community_recipe(GameId id) const;
     // The Changes list between the game's base (Playden default without one) and its effective settings,

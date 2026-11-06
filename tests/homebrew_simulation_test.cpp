@@ -2133,6 +2133,26 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(down && down->vote == "down" && down->reason == "slow", "the recipe's thumbs down goes with it");
     check(simulation.scenario("feedback-privacy"), "feedback-privacy scenario loads");
     check(top().title == "Before you send", "the first report says what it sends");
+    // Changes worth sharing put Share recipe by the preset, out of Advanced.
+    check(simulation.scenario("share-new"), "share-new scenario loads for Game settings");
+    simulation.action("circle");
+    {
+        const auto& keys = top().action_keys;
+        const auto share = std::find(keys.begin(), keys.end(), "share-recipe");
+        const auto advanced = std::find(keys.begin(), keys.end(), "section-advanced");
+        check(top().id == "game-settings" && share != keys.end() && share < advanced, "Share recipe is at the top with changes to share");
+    }
+    // The prompt can come up away from the game's page: Change settings still opens that game's settings.
+    check(simulation.scenario("share-new"), "share-new scenario loads to leave the game's page");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    simulation.action("circle");
+    check(simulation.state().navigation.route != playden::homebrew::Route::Details, "away from the game's page");
+    simulation.NotifySessionEnded(game, 600);
+    check(top().id == "feedback", "the prompt comes up there");
+    activate(simulation, "feedback-problems");
+    activate(simulation, "feedback-change-settings");
+    check(top().id == "game-settings" && simulation.state().navigation.selected_game_id == game && has_row(simulation, "preset-picker"),
+          "Change settings opens the game's settings from anywhere");
     // Share feedback… in the game's actions opens the same sheet any time.
     check(simulation.scenario("share-new"), "share-new scenario loads for the game actions");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");

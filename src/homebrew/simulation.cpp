@@ -6733,6 +6733,12 @@ void Simulation::rebuild_view() {
                     item.title = "Your name";
                     item.value = state_.share_name.empty() ? std::string("Optional") : state_.share_name;
                     item.subtitle = "Shown on the report";
+                    if (state_.account_link.state == "linked") {
+                        // A linked account's name is the one shown; the typed name isn't sent.
+                        item.kind = RowKind::Status;
+                        item.value = state_.account_link.name;
+                        item.subtitle = "From your Playden account (Settings › Community)";
+                    }
                 } else if (action_key == "feedback-change-settings") {
                     item.subtitle = "Opens Game settings. Playden asks again after the next session.";
                 } else if (action_key == "feedback-send") {
@@ -6778,6 +6784,11 @@ void Simulation::rebuild_view() {
                     item.title = "Your name";
                     item.value = state_.share_name.empty() ? std::string("Optional") : state_.share_name;
                     item.subtitle = "Shown as author";
+                    if (state_.account_link.state == "linked") {
+                        item.kind = RowKind::Status;
+                        item.value = state_.account_link.name;
+                        item.subtitle = "From your Playden account (Settings › Community)";
+                    }
                 } else if (action_key == "share-rating") {
                     item.kind = RowKind::Choice;
                     item.title = "Compatibility";
@@ -11339,7 +11350,10 @@ void Simulation::activate() {
         refresh_share_sheet();
     }
     else if (action_name == "share-title" && share_) start_editor("Recipe title", share_->title);
-    else if (action_name == "share-name") start_editor("Your name", state_.share_name);
+    else if (action_name == "share-name") {
+        // Linked: the account's name is used, there is nothing to type.
+        if (state_.account_link.state != "linked") start_editor("Your name", state_.share_name);
+    }
     else if (action_name == "share-rating" && share_)
         open_modal({"compatibility", "Compatibility", "share-rating",
                     {"rating-untested", "rating-works", "rating-playable", "rating-broken", "cancel"}, 0, false});
@@ -12973,6 +12987,9 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     if (const auto record = state_.game_settings.find(game);
         record != state_.game_settings.end() && !record->second.shared_recipe.submission_id.empty())
         actions.push_back("shared-recipe");
+    // Changes worth sharing put Share recipe up here, by the preset; otherwise it waits in Advanced.
+    const bool share_on_top = changes_worth_sharing(game);
+    if (share_on_top) actions.push_back("share-recipe");
     const auto rows = [&](G group) {
         for (const auto& definition : rt::SettingsCatalogue())
             if (definition.group == group && game_settings_row_shown(definition, game)) actions.push_back("setting-" + definition.id);
@@ -13006,7 +13023,7 @@ std::vector<std::string> Simulation::game_settings_actions() const {
         rows(G::kAdvanced);
         actions.push_back("effective-command");
         // Share recipe sends Steam games' settings for review; the file export stays for FTP.
-        if (game.steam_app()) actions.push_back("share-recipe");
+        if (game.steam_app() && !share_on_top) actions.push_back("share-recipe");
         actions.push_back("export-recipe");
     }
     actions.push_back("reset-settings");
@@ -13745,6 +13762,18 @@ void Simulation::NotifySessionEnded(GameId id, std::int64_t played_seconds) {
     rebuild_view();
 }
 
+bool Simulation::changes_worth_sharing(GameId id) const {
+    // The player changed more than their own preferences (decision 2): the program, arguments, libraries, controls
+    // or graphics, not only the resolution, refresh rate or overlay.
+    const auto record = state_.game_settings.find(id);
+    if (!id.steam_app() || record == state_.game_settings.end()) return false;
+    static const std::set<std::string> preferences = {"resolution", "refresh", "framegen", "frame_limit",
+                                                      "performance_overlay", "overlay_detail", "vsync", "scaling",
+                                                      "text_scale", "volume", "rumble", "logging", "locale"};
+    return std::any_of(record->second.overrides.begin(), record->second.overrides.end(),
+                       [](const auto& item) { return !preferences.count(item.first); });
+}
+
 std::string Simulation::feedback_kit() const {
     std::string kit;
     for (const char c : state_.kit.version)
@@ -13787,15 +13816,7 @@ void Simulation::open_feedback(GameId id, bool short_session, bool after_play) {
         draft.recipe = applied;
         draft.recipe_title = community_title(id, applied->recipe_id, applied->revision);
     }
-    // Shared as a recipe only when the player changed more than their own preferences (decision 2): the
-    // program, arguments, libraries, controls or graphics, not only the resolution, refresh rate or overlay.
-    if (const auto record = state_.game_settings.find(id); id.steam_app() && record != state_.game_settings.end()) {
-        static const std::set<std::string> preferences = {"resolution", "refresh", "framegen", "frame_limit",
-                                                          "performance_overlay", "overlay_detail", "vsync", "scaling",
-                                                          "text_scale", "volume", "rumble", "logging", "locale"};
-        draft.recipe_offer = std::any_of(record->second.overrides.begin(), record->second.overrides.end(),
-                                         [](const auto& item) { return !preferences.count(item.first); });
-    }
+    draft.recipe_offer = changes_worth_sharing(id);
     // Shown counts as asked; a second session may ask once more (kFeedbackMaxPrompts).
     if (after_play) note_feedback(draft, false);
     feedback_ = std::move(draft);
