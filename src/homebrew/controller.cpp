@@ -476,6 +476,7 @@ void Controller::TickCommunity() {
     CommunityCatalog catalog;
     catalog.release_tag = snapshot->release_tag;
     catalog.fetched_at = snapshot->fetched_at;
+    catalog.votes_generated_at = snapshot->votes_generated_at;
     catalog.refreshing = snapshot->refreshing;
     catalog.last_error = snapshot->last_error;
     catalog.names = snapshot->game_names;

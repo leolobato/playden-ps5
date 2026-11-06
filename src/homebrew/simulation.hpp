@@ -321,6 +321,7 @@ struct CommunityCatalog {
     std::map<GameRef, std::string> names;  // each game's name as the release's index has it
     std::string release_tag;      // empty: no copy yet
     std::int64_t fetched_at = 0;  // the copy's last successful refresh (Unix seconds)
+    std::int64_t votes_generated_at = 0;  // when the API made the vote totals (Unix seconds); 0 unknown
     bool refreshing = false;
     std::string last_error;       // the last refresh's failure; empty after a success
     bool operator==(const CommunityCatalog&) const = default;
@@ -1555,6 +1556,8 @@ private:
     [[nodiscard]] std::vector<std::string> chooser_actions(GameId id, bool install, int* focused) const;
     // A chooser row's recipe: from the catalog, or from its object (a chosen revision the catalog no longer lists).
     [[nodiscard]] std::optional<CommunityRecipeOffer> chooser_offer(GameId id, const std::string& revision) const;
+    // The offer's thumbs with this console's own accepted vote counted while the catalog's totals predate it.
+    void add_own_vote(CommunityRecipeOffer* offer) const;
     [[nodiscard]] BaseChoice chooser_current(GameId id) const;
     // Makes base the game's (or the Install sheet's) choice; a switch on an installed game that involves a
     // community recipe asks first, unless confirmed.

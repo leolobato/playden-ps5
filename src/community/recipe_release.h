@@ -85,9 +85,14 @@ struct RecipeVotes {
   bool author_trusted = false;  // the author's account is trusted (a star by the name), apart from verified
 };
 
-// summary.json: recipe id -> revision -> votes. Unusable entries are skipped.
+// summary.json: recipe id -> revision -> votes. Unusable entries are skipped. *generated_at: when the API made it (Unix
+// seconds, its "generated_at"); 0 when it doesn't say.
 using VoteTotals = std::map<std::string, std::map<std::string, RecipeVotes>>;
-std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* error);
+std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* error, std::int64_t* generated_at = nullptr);
+
+// Unix seconds of a UTC time as "2026-11-07T10:00:00Z" (ISO 8601, what summary.json says) or
+// "Sat, 07 Nov 2026 10:00:00 GMT" (an HTTP Date header); nothing for anything else.
+std::optional<std::int64_t> ParseUtcTime(std::string_view text);
 
 // sha256 hex of bytes.
 std::string Sha256Hex(std::string_view bytes);

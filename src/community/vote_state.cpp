@@ -81,12 +81,21 @@ bool VoteState::WasAsked(std::string_view recipe_id, std::string_view revision) 
 }
 
 void VoteState::Record(const CastVote& vote) {
+  CastVote recorded = vote;
   for (auto it = votes.begin(); it != votes.end(); ++it)
     if (it->recipe_id == vote.recipe_id && it->revision == vote.revision) {
+      if (it->vote == vote.vote) {
+        recorded.at = it->at;
+        recorded.previous = it->previous;
+        recorded.previous_at = it->previous_at;
+      } else if (recorded.at > 0) {
+        recorded.previous = it->vote;
+        recorded.previous_at = it->at;
+      }
       votes.erase(it);
       break;
     }
-  votes.push_back(vote);
+  votes.push_back(std::move(recorded));
   KeepNewest(&votes);
   MarkAsked(vote.recipe_id, vote.revision);
 }
@@ -95,6 +104,19 @@ void VoteState::MarkAsked(std::string_view recipe_id, std::string_view revision)
   if (WasAsked(recipe_id, revision)) return;
   asked.emplace_back(std::string(recipe_id), std::string(revision));
   KeepNewest(&asked);
+}
+
+ShownVotes VotesWithOwn(std::uint32_t up, std::uint32_t down, const CastVote* own, std::int64_t generated_at) {
+  ShownVotes shown{up, down};
+  if (!own || generated_at <= 0 || own->at <= 0 || own->at <= generated_at) return shown;
+  // The totals predate this vote: count it, and take out the one it replaced if they have that.
+  if (own->vote == "up") ++shown.up;
+  else if (own->vote == "down") ++shown.down;
+  if (own->previous_at <= generated_at) {
+    if (own->previous == "up" && shown.up > 0) --shown.up;
+    else if (own->previous == "down" && shown.down > 0) --shown.down;
+  }
+  return shown;
 }
 
 bool IsValidVote(std::string_view vote, std::string_view reason) {
@@ -154,7 +176,12 @@ std::string SerializeVoteState(const VoteState& state) {
       continue;
     text += std::string(first ? "" : ",") + "{\"recipe_id\":\"" + vote.recipe_id + "\",\"revision\":\"" +
             vote.revision + "\",\"vote\":\"" + vote.vote + "\"" +
-            (vote.reason.empty() ? std::string() : ",\"reason\":\"" + vote.reason + "\"") + "}";
+            (vote.reason.empty() ? std::string() : ",\"reason\":\"" + vote.reason + "\"") +
+            (vote.at > 0 ? ",\"at\":" + std::to_string(vote.at) : std::string()) +
+            ((vote.previous == "up" || vote.previous == "down") && vote.previous != vote.vote
+                 ? ",\"previous\":\"" + vote.previous + "\",\"previous_at\":" + std::to_string(std::max<std::int64_t>(vote.previous_at, 0))
+                 : std::string()) +
+            "}";
     first = false;
   }
   text += "],\"asked\":[";
@@ -198,6 +225,22 @@ std::optional<VoteState> ParseVoteState(std::string_view json) {
       CastVote vote{text(item, "recipe_id"), text(item, "revision"), text(item, "vote"), text(item, "reason")};
       if (!IsRecipeIdText(vote.recipe_id) || !IsRevisionText(vote.revision) || !IsValidVote(vote.vote, vote.reason))
         continue;
+      const auto seconds = [&item](const char* key) -> std::int64_t {
+        const auto* value = item.Find(key);
+        const auto number = value && value->is_number() ? value->AsUint64() : std::nullopt;
+        return number && *number < (1ull << 40) ? static_cast<std::int64_t>(*number) : 0;
+      };
+      vote.at = seconds("at");
+      if (const std::string previous = text(item, "previous"); (previous == "up" || previous == "down") && previous != vote.vote) {
+        vote.previous = previous;
+        vote.previous_at = seconds("previous_at");
+      }
+      // One entry per revision in the file: kept as it is (Record would merge a repeated one).
+      for (auto it = state.votes.begin(); it != state.votes.end(); ++it)
+        if (it->recipe_id == vote.recipe_id && it->revision == vote.revision) {
+          state.votes.erase(it);
+          break;
+        }
       state.Record(vote);
     }
   if (const auto* asked = doc->Find("asked"); asked && asked->is_array())

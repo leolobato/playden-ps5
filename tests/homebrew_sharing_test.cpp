@@ -413,6 +413,8 @@ void share_and_vote(const std::filesystem::path& base) {
           "the thumbs up goes to the worker");
     check(model.state().vote_memory.Find(kRecipeId, kRevision) && model.state().vote_memory.Find(kRecipeId, kRevision)->vote == "up",
           "the vote is remembered");
+    check(model.state().vote_memory.Find(kRecipeId, kRevision)->at > 1'700'000'000,
+          "with when the API took it (an answer without a Date: the console's clock), for the counts the chooser shows");
     check(contains(read_text(base / "community-recipes" / cm::kVoteStateFileName), kRevision), "and saved by the worker");
 
     // Duplicate of another console's pull request: no vote, its QR code.

@@ -310,9 +310,15 @@ void SharingService::Handle(SharingRequest request) {
           Sleep(config_.retry_delay_ms * attempt);
         }
       }
-      // Answered either way: the revision was asked about. A vote is remembered once the API took it.
+      // Answered either way: the revision was asked about. A vote is remembered once the API took it, with when.
       memory_.MarkAsked(vote.recipe_id, vote.revision);
-      if (result.vote.ok) memory_.Record({vote.recipe_id, vote.revision, vote.vote, vote.reason});
+      if (result.vote.ok) {
+        if (result.vote.accepted_at <= 0)
+          result.vote.accepted_at = config_.now ? config_.now() : static_cast<std::int64_t>(::time(nullptr));
+        community::CastVote cast{vote.recipe_id, vote.revision, vote.vote, vote.reason};
+        cast.at = result.vote.accepted_at;
+        memory_.Record(cast);
+      }
       SaveMemory();
       break;
     }

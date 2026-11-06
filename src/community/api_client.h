@@ -117,6 +117,9 @@ struct VoteRequest {
 
 struct VoteResult {
   bool ok = false;
+  // When the API took it: its answer's Date (Unix seconds), so it compares with summary.json's generated_at on the
+  // same clock; 0 when the answer had none (SharingService then uses the console's clock).
+  std::int64_t accepted_at = 0;
   ApiError error;
 };
 

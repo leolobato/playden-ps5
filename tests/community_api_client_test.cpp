@@ -599,9 +599,9 @@ void Votes() {
   FakeApi api;
   const auto context = Context(&api);
   std::atomic<bool> cancel{false};
-  api.answers = {Answer(204, "")};
+  api.answers = {Answer(204, "", {{"Date", "Sat, 07 Nov 2026 10:00:00 GMT"}})};
   auto result = SendVote(context, kSecret, Vote(), cancel);
-  CHECK(result.ok);
+  CHECK(result.ok && result.accepted_at == 1794045600);  // the API's clock, as summary.json's generated_at
   CHECK(api.requests.size() == 1 && api.requests.back().url == "https://api.playden.club/v1/votes");
   CHECK(api.requests.back().method == steam::HttpMethod::kPost);
   CHECK(HeaderOf(api.requests.back(), "Authorization") == "Bearer " + kSecret);

@@ -234,7 +234,57 @@ std::optional<std::vector<ZipRecipe>> ReadRecipesZip(std::string_view zip, const
   return recipes;
 }
 
-std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* error) {
+namespace {
+
+// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil).
+std::int64_t DaysFromCivil(std::int64_t year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+  const auto year_of_era = static_cast<unsigned>(year - era * 400);
+  const unsigned day_of_year = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+  return era * 146097 + static_cast<std::int64_t>(day_of_era) - 719468;
+}
+
+// The digits at text[at, at + count) as a number, or -1.
+int Digits(std::string_view text, std::size_t at, std::size_t count) {
+  if (at + count > text.size()) return -1;
+  int value = 0;
+  for (std::size_t i = at; i < at + count; ++i) {
+    if (text[i] < '0' || text[i] > '9') return -1;
+    value = value * 10 + (text[i] - '0');
+  }
+  return value;
+}
+
+}  // namespace
+
+std::optional<std::int64_t> ParseUtcTime(std::string_view text) {
+  int year = -1, month = -1, day = -1, hour = -1, minute = -1, second = -1;
+  if (text.size() == 20 && text[4] == '-' && text[7] == '-' && text[10] == 'T' && text[13] == ':' && text[16] == ':' &&
+      text[19] == 'Z') {
+    year = Digits(text, 0, 4), month = Digits(text, 5, 2), day = Digits(text, 8, 2);
+    hour = Digits(text, 11, 2), minute = Digits(text, 14, 2), second = Digits(text, 17, 2);
+  } else if (text.size() == 29 && text[3] == ',' && text[4] == ' ' && text[7] == ' ' && text[11] == ' ' &&
+             text[16] == ' ' && text[19] == ':' && text[22] == ':' && text.substr(25) == " GMT") {
+    static constexpr std::string_view kMonths = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const auto found = kMonths.find(text.substr(8, 3));
+    if (found == std::string_view::npos || found % 3 != 0) return std::nullopt;
+    month = static_cast<int>(found / 3) + 1;
+    day = Digits(text, 5, 2), year = Digits(text, 12, 4);
+    hour = Digits(text, 17, 2), minute = Digits(text, 20, 2), second = Digits(text, 23, 2);
+  } else {
+    return std::nullopt;
+  }
+  if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 ||
+      minute > 59 || second < 0 || second > 60)
+    return std::nullopt;
+  return DaysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400 + hour * 3600 +
+         minute * 60 + second;
+}
+
+std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* error, std::int64_t* generated_at) {
+  if (generated_at) *generated_at = 0;
   if (json.size() > kMaxSummaryBytes) {
     if (error) *error = "summary.json is too large";
     return std::nullopt;
@@ -249,6 +299,8 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
     if (error) *error = "summary.json has no recipes";
     return std::nullopt;
   }
+  if (const auto* made = doc->Find("generated_at"); generated_at && made && made->is_string())
+    *generated_at = ParseUtcTime(made->text()).value_or(0);
   auto count = [](const Json* value) -> std::uint32_t {
     const auto number = value ? value->AsUint64() : std::nullopt;
     return number ? static_cast<std::uint32_t>(std::min<std::uint64_t>(*number, 0xffffffffu)) : 0;

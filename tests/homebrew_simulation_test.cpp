@@ -1688,6 +1688,38 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
               row->subtitle == "By leolobato \u2605" && row->author == "leolobato" && row->author_style == "trusted" &&
               row->lines.empty(),
           "a recipe row shows its status, Verified, votes and author; a trusted account's name has a star");
+    {
+        // The player's own vote shows in the counts until the API's totals have it (summary.json is cached and the copy
+        // refreshes once a day), and a changed vote moves from one thumb to the other; never counted twice.
+        const auto recipe_id = simulation.CommunityOffersFor(SteamId(900002)).front().id;
+        auto dated = simulation.state().community;
+        dated.votes_generated_at = 1'000;
+        simulation.UpdateCommunityCatalog(dated);
+        playden::community::VoteState memory;
+        playden::community::CastVote first{recipe_id, rev('1'), "up", ""};
+        first.at = 900;  // before the totals: in them
+        memory.Record(first);
+        simulation.UpdateVoteMemory(memory);
+        check(find_row(simulation, "recipe-" + rev('1'))->value == "👍 14  👎 1", "a vote the totals have is not counted again");
+        playden::community::CastVote changed{recipe_id, rev('1'), "down", "slow"};
+        changed.at = 2'000;  // after the totals
+        memory.Record(changed);
+        simulation.UpdateVoteMemory(memory);
+        check(find_row(simulation, "recipe-" + rev('1'))->value == "👍 13  👎 2",
+              "a changed vote moves to the other thumb until the totals have it");
+        check(simulation.CommunityOffersFor(SteamId(900002)).front().votes_down == 2, "the chooser's offers count it too");
+        playden::community::VoteState fresh;
+        playden::community::CastVote later{recipe_id, rev('1'), "up", ""};
+        later.at = 2'000;
+        fresh.Record(later);
+        simulation.UpdateVoteMemory(fresh);
+        check(find_row(simulation, "recipe-" + rev('1'))->value == "👍 15  👎 1", "a new vote is added to the totals");
+        dated.votes_generated_at = 3'000;
+        simulation.UpdateCommunityCatalog(dated);
+        check(find_row(simulation, "recipe-" + rev('1'))->value == "👍 14  👎 1", "totals made after the vote already have it");
+        simulation.UpdateVoteMemory({});
+        check(simulation.scenario("recipes-three"), "recipes-three scenario loads once more");
+    }
     check(find_row(simulation, "recipe-" + rev('2'))->subtitle == "By rina" &&
               find_row(simulation, "recipe-" + rev('2'))->author_style.empty() &&
               find_row(simulation, "recipe-" + rev('2'))->badge == "Works",

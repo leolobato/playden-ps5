@@ -431,7 +431,7 @@ int main(int argc, char** argv) {
   const auto r1 = Publish(h.network, h.site, "r20261022.1", release1, outside);
   {
     h.network.routes[h.site.summary] = Route{
-        200, R"({"generated_at":"x","recipes":{")" + good_id + R"(":{")" + Sha256Hex(good) +
+        200, R"({"generated_at":"2026-11-07T10:00:00Z","recipes":{")" + good_id + R"(":{")" + Sha256Hex(good) +
                  R"(":{"up":42,"down":3,"reasons":{"slow":1,"crash":2},"kits":{},"verified":true,"author":"account","author_trusted":true}}}})", {}};
     auto service = h.Make(root);
     service->Start();
@@ -441,6 +441,7 @@ int main(int argc, char** argv) {
     CHECK(snapshot->last_error.empty());
     CHECK(!snapshot->refreshing);
     CHECK(snapshot->fetched_at == 1'000'000);
+    CHECK(snapshot->votes_generated_at == 1794045600);  // when the API made the totals
     const auto* list = snapshot->For(GameRef::Steam(274520));
     CHECK(list && list->size() == 3);
     const auto* first = Find(*snapshot, GameRef::Steam(274520), good_id);
@@ -667,6 +668,8 @@ int main(int argc, char** argv) {
     const auto snapshot = service->Snapshot();
     CHECK(snapshot->release_tag == "r20261025.1" && snapshot->last_error.empty());
     CHECK(h.Logged("vote totals unavailable"));
+    CHECK(snapshot->votes_generated_at == 1794045600);  // the stored totals, with their time
+
   }
 
   // A refresh writing objects (parked on a latch under the store's write lock) doesn't hold up

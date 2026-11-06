@@ -5,6 +5,7 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "community/install_secret.h"
+#include "community/recipe_release.h"
 #include "community/vote_state.h"
 #include "diagnostics/redaction.h"
 
@@ -247,6 +248,61 @@ void Votes(const fs::path& base) {
   CHECK(!LoadVoteState("relative", &error) && !SaveVoteState("relative", VoteState{}, &error));
 }
 
+// The player's own vote in the counts the chooser shows (summary.json is cached, the copy refreshes once a day).
+void OwnVoteInCounts() {
+  const std::string id = "community-steam-10-left-stick";
+  const std::string revision(64, 'a');
+  // The API's clocks: summary.json's generated_at and a vote answer's Date.
+  CHECK(ParseUtcTime("2026-11-07T10:00:00Z") == 1794045600);
+  CHECK(ParseUtcTime("Sat, 07 Nov 2026 10:00:00 GMT") == 1794045600);
+  CHECK(ParseUtcTime("2024-02-29T23:59:59Z") == 1709251199 && ParseUtcTime("1970-01-01T00:00:00Z") == 0);
+  CHECK(!ParseUtcTime("x") && !ParseUtcTime("2026-13-07T10:00:00Z") && !ParseUtcTime("2026-11-07T10:00:00") &&
+        !ParseUtcTime("Sat, 07 Foo 2026 10:00:00 GMT") && !ParseUtcTime(""));
+  std::int64_t generated_at = -1;
+  CHECK(ParseVoteSummary(R"({"generated_at":"2026-11-07T10:00:00Z","recipes":{}})", nullptr, &generated_at) &&
+        generated_at == 1794045600);
+  CHECK(ParseVoteSummary(R"({"recipes":{}})", nullptr, &generated_at) && generated_at == 0);
+
+  const auto shown = [](std::uint32_t up, std::uint32_t down, const CastVote* own, std::int64_t at) {
+    const auto votes = VotesWithOwn(up, down, own, at);
+    return std::to_string(votes.up) + "/" + std::to_string(votes.down);
+  };
+  CastVote up{id, revision, "up", ""};
+  up.at = 2000;
+  CHECK(shown(3, 1, nullptr, 1000) == "3/1");
+  CHECK(shown(3, 1, &up, 1000) == "4/1");   // after the totals: counted
+  CHECK(shown(3, 1, &up, 2000) == "3/1");   // the totals have it
+  CHECK(shown(3, 1, &up, 0) == "3/1");      // when the totals were made is unknown: as they are
+  CastVote untimed{id, revision, "up", ""};
+  CHECK(shown(3, 1, &untimed, 1000) == "3/1");  // a vote from before Playden kept its time
+
+  // A changed vote: the other thumb, its time, and the one it replaced.
+  VoteState state;
+  state.Record(up);
+  CastVote down{id, revision, "down", "slow"};
+  down.at = 3000;
+  state.Record(down);
+  const auto* cast = state.Find(id, revision);
+  CHECK(cast && cast->vote == "down" && cast->at == 3000 && cast->previous == "up" && cast->previous_at == 2000);
+  CHECK(shown(3, 1, cast, 2500) == "2/2");  // the totals have the thumbs up: it moves
+  CHECK(shown(3, 1, cast, 1000) == "3/2");  // they have neither
+  CHECK(shown(0, 0, cast, 2500) == "0/1");  // never below zero
+  CHECK(shown(3, 1, cast, 3000) == "3/1");
+  // The same thumb with another reason keeps the time the API counted it at.
+  CastVote crash{id, revision, "down", "crash"};
+  crash.at = 4000;
+  state.Record(crash);
+  cast = state.Find(id, revision);
+  CHECK(cast && cast->reason == "crash" && cast->at == 3000 && cast->previous == "up" && cast->previous_at == 2000);
+  // Kept across a restart.
+  const std::string text = SerializeVoteState(state);
+  CHECK(text.find(R"("at":3000,"previous":"up","previous_at":2000)") != std::string::npos);
+  const auto back = ParseVoteState(text);
+  CHECK(back && back->Find(id, revision) && back->Find(id, revision)->at == 3000 &&
+        back->Find(id, revision)->previous == "up" && back->Find(id, revision)->previous_at == 2000);
+  CHECK(back && SerializeVoteState(*back) == text);
+}
+
 }  // namespace
 
 int main() {
@@ -258,6 +314,7 @@ int main() {
   Secret(base);
   Redaction();
   Votes(base);
+  OwnVoteInCounts();
   std::error_code ignored;
   fs::remove_all(base, ignored);
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);

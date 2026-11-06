@@ -524,6 +524,7 @@ VoteResult SendVote(const ApiContext& context, const std::string& secret, const 
     return result;
   }
   result.ok = true;
+  result.accepted_at = ParseUtcTime(Header(exchange.response, "date")).value_or(0);
   return result;
 }
 

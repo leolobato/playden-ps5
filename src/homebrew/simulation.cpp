@@ -13129,9 +13129,18 @@ namespace {
 void sort_offers(std::vector<CommunityRecipeOffer>* offers);
 }  // namespace
 
+void Simulation::add_own_vote(CommunityRecipeOffer* offer) const {
+    const auto shown = cm::VotesWithOwn(offer->votes_up, offer->votes_down, state_.vote_memory.Find(offer->id, offer->revision),
+                                        state_.community.votes_generated_at);
+    offer->votes_up = shown.up;
+    offer->votes_down = shown.down;
+    offer->has_votes = shown.up + shown.down > 0;
+}
+
 std::vector<CommunityRecipeOffer> Simulation::CommunityOffersFor(GameId id) const {
     std::vector<CommunityRecipeOffer> offers;
     if (const auto* found = community_offers(id)) offers = *found;
+    for (auto& offer : offers) add_own_vote(&offer);
     sort_offers(&offers);
     return offers;
 }
@@ -13139,6 +13148,7 @@ std::vector<CommunityRecipeOffer> Simulation::CommunityOffersFor(GameId id) cons
 std::vector<CommunityRecipeOffer> Simulation::CommunityOffersOf(const GameRef& game) const {
     std::vector<CommunityRecipeOffer> offers;
     if (const auto found = state_.community.games.find(game); found != state_.community.games.end()) offers = found->second;
+    for (auto& offer : offers) add_own_vote(&offer);
     sort_offers(&offers);
     return offers;
 }
@@ -13189,7 +13199,11 @@ std::optional<CommunityRecipeOffer> Simulation::chooser_offer(GameId id, const s
     (void)id;
     for (const auto& [game, offers] : state_.community.games)
         for (const auto& offer : offers)
-            if (offer.revision == revision) return offer;
+            if (offer.revision == revision) {
+                auto shown = offer;
+                add_own_vote(&shown);
+                return shown;
+            }
     // A chosen revision the catalog no longer lists (an older one, or removed): its object still names it.
     rt::CommunityObjectState state;
     const auto* object = community_object(revision, &state);
@@ -14360,7 +14374,10 @@ void Simulation::open_vote_sheet(GameId id, const cm::RecipeRef& recipe) {
 }
 
 void Simulation::record_vote_locally(const cm::CastVote& vote) {
-    state_.vote_memory.Record(vote);
+    // Fixtures (no API) take the vote now, on the model's clock.
+    auto taken = vote;
+    if (taken.at <= 0 && !live()) taken.at = state_.clock_ticks;
+    state_.vote_memory.Record(taken);
 }
 
 void Simulation::send_vote() {
@@ -14865,7 +14882,11 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
         if (mine) vote_->ticket = 0;
         if (!with_report) vote_status_.erase(result.game_id);
         if (result.vote.ok) {
-            if (cast != votes_in_flight_.end()) record_vote_locally(cast->second);
+            if (cast != votes_in_flight_.end()) {
+                auto taken = cast->second;
+                taken.at = result.vote.accepted_at;
+                record_vote_locally(taken);
+            }
             if (showing) {
                 close_sheet("vote-recipe");
                 vote_.reset();

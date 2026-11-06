@@ -63,6 +63,9 @@ struct RecipeSnapshot {
   std::map<GameRef, std::string> game_names;            // the index's name of each game that has one
   std::string release_tag;     // empty: no copy yet
   std::int64_t fetched_at = 0;  // the copy's last successful refresh (unix seconds)
+  // When the API made the vote totals (summary.json's generated_at, unix seconds): votes this console cast later are
+  // not in them yet. 0: unknown.
+  std::int64_t votes_generated_at = 0;
   bool refreshing = false;
   std::string last_error;      // the last refresh's failure, one short sentence; empty after success
   const std::vector<RecipeSummary>* For(const GameRef& game) const;

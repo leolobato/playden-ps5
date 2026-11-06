@@ -4,7 +4,8 @@
 // player turned voting on or off, and which games it asked "How did it run?" about. Kept in
 // <community store root>/votes-cast.json (0600, durable write through platform::Storage):
 //   {"format_version":1,"voting":"unset"|"on"|"off",
-//    "votes":[{"recipe_id":"...","revision":"<64 hex>","vote":"up"|"down","reason":"slow"}],
+//    "votes":[{"recipe_id":"...","revision":"<64 hex>","vote":"up"|"down","reason":"slow","at":1762500000,
+//              "previous":"up","previous_at":1762400000}],
 //    "asked":[{"recipe_id":"...","revision":"<64 hex>"}],
 //    "feedback":[{"game":"steam-440","kit":"0.19","settings":"<16 hex>","prompts":1,"answered":false}]}
 // "feedback" came later in the same format_version: older Playden versions skip it.
@@ -35,7 +36,21 @@ struct CastVote {
   std::string revision;  // 64 hex
   std::string vote;      // "up" or "down"
   std::string reason;    // down only, optional: no-start, crash, slow, controls, other
+  // When the API took it (Unix seconds, the API's clock when it said; 0 unknown: a vote from before Playden kept it).
+  std::int64_t at = 0;
+  // The vote it replaced with the other thumb ("" none) and when that one was taken: the API counts only the newest.
+  std::string previous;
+  std::int64_t previous_at = 0;
 };
+
+// The thumbs to show for a recipe revision: the API's totals (summary.json, made at generated_at), with this console's
+// own vote counted when the totals predate it (summary.json is cached, and the copy refreshes once a day), and the vote
+// it replaced taken out when the totals had that one. Nothing changes when generated_at is 0 (unknown) or the vote's
+// time is.
+struct ShownVotes {
+  std::uint32_t up = 0, down = 0;
+};
+ShownVotes VotesWithOwn(std::uint32_t up, std::uint32_t down, const CastVote* own, std::int64_t generated_at);
 
 // The feedback prompts for one game on one runtime kit version, with the settings last asked about.
 struct FeedbackSeen {
@@ -55,7 +70,8 @@ struct VoteState {
 
   const CastVote* Find(std::string_view recipe_id, std::string_view revision) const;
   bool WasAsked(std::string_view recipe_id, std::string_view revision) const;
-  // Records (or replaces) the vote for its revision, and counts the revision as asked.
+  // Records (or replaces) the vote for its revision, and counts the revision as asked. Replacing a vote with the other
+  // thumb keeps the old one as previous; the same thumb keeps the old one's time (the API's totals don't change).
   void Record(const CastVote& vote);
   // The prompt was shown (answered or dismissed).
   void MarkAsked(std::string_view recipe_id, std::string_view revision);
