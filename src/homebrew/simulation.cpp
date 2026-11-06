@@ -14865,8 +14865,9 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             // Still on the sheet: the reason goes on Send, which now tries again.
             vote_->error = sharing_error_words(result.vote.error, SharingWhat::kVote);
             refresh_share_sheet();
-        } else {
-            if (!with_report) vote_status_[result.game_id] = "failed";
+        } else if (!with_report) {
+            // A vote that went with a test report says nothing of its own: the report's answer covers both.
+            vote_status_[result.game_id] = "failed";
             push_notice({"recipe-vote", "The vote wasn't sent", "", false, kLiveNoticeSeconds, true,
                          sharing_error_words(result.vote.error, SharingWhat::kVote)});
         }

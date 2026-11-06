@@ -509,6 +509,34 @@ void share_and_vote(const std::filesystem::path& base) {
     while (!model.state().navigation.modals.empty()) model.action("circle");
     model.NotifySessionEnded(kGame, 900);
     check(model.state().navigation.modals.empty(), "once a report was sent for these settings, Playden doesn't ask again");
+    // A report with the recipe's vote, sent while nothing answers and left before it ends: one message, the report's.
+    {
+        check(model.action("details:274520"), "Darkwood's page opens for a failing report");
+        activate(model, "details-more");
+        activate(model, "share-feedback");
+        activate(model, "feedback-problems");
+        activate(model, "feedback-reason-slow");
+        activate(model, "feedback-send");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        api.answer_with({unreachable()});
+        std::vector<SharingRequest> failing;
+        pump(model, service, &failing);
+        check(std::count_if(failing.begin(), failing.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Vote; }) == 1 &&
+                  std::count_if(failing.begin(), failing.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; }) == 1,
+              "the report goes with the recipe's vote");
+        // Failure dialogs come one at a time: dismiss each and count them all.
+        int messages = 0, report_messages = 0;
+        for (int guard = 0; guard < 10 && !model.state().navigation.modals.empty(); ++guard) {
+            const auto title = model.state().navigation.modals.back().title;
+            if (contains(title, "wasn't sent")) ++messages;
+            if (contains(title, "test report")) ++report_messages;
+            model.action("circle");
+        }
+        for (const auto& notice : model.state().notices)
+            if (contains(notice.message, "wasn't sent")) ++messages;
+        check(messages == 1 && report_messages == 1, "a failed report and its vote say so once, as the report");
+        model.TakeSharingRequests();
+    }
     // A newer revision: new settings ask again; Not now twice, then no more.
     auto catalog = model.state().community;
     catalog.games[kGameRef] = {offer(kNewerRevision)};
