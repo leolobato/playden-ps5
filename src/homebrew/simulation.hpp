@@ -973,6 +973,8 @@ struct State {
         std::int64_t interval = 5, next_poll = 0, expires_at = 0;
         bool waiting = false;  // a request is with the worker
         bool checked = false;  // the worker was asked once since start
+        // The saved link couldn't be checked (the API didn't answer): counted as linked, checked again at next_poll.
+        bool unverified = false;
         bool operator==(const AccountLink&) const = default;
     } account_link;
     std::string share_name;

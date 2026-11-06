@@ -338,6 +338,8 @@ std::string community_status_label(const std::string& status) {
 
 // Game settings asks for a shared recipe's state at most this often.
 constexpr std::int64_t kSubmissionRecheckSeconds = 180;
+// A saved account link the API couldn't check at start is checked again this often (seconds).
+constexpr std::int64_t kAccountRecheckSeconds = 300;
 
 const std::vector<std::pair<std::string, std::string>>& vote_reasons() {
     static const std::vector<std::pair<std::string, std::string>> reasons = {
@@ -15030,6 +15032,7 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
     };
     if (answer.state == "linked") {
         link.state = "linked";
+        link.unverified = false;
         link.name = answer.name;
         link.trusted = answer.trusted;
         if (showing) close_dialog();
@@ -15064,7 +15067,13 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
     } else if (answer.state == "pending" || answer.state == "slow") {
         if (answer.state == "slow") link.interval += 5;
         link.next_poll = state_.clock_ticks + link.interval;
-    } else if (kind != SharingRequestKind::AccountCheck) {
+    } else if (kind == SharingRequestKind::AccountCheck) {
+        // The console has a saved link the API didn't confirm (unreachable, or it failed): still linked, so shares and
+        // reports keep crediting it (the API says when a link ended), and checked again later for its name.
+        if (link.state != "linking") link.state = "linked";
+        link.unverified = true;
+        link.next_poll = state_.clock_ticks + kAccountRecheckSeconds;
+    } else {
         // expired, denied or error: the dialog says so; Link again makes a new code.
         link.state = "";
         pending_share_as_.reset();
@@ -15082,6 +15091,14 @@ void Simulation::account_link_tick() {
     if (!live()) return;
     if (!link.checked && !link.waiting && state_.vote_memory_loaded) {
         // Once per start: whether the saved link still works, and its name.
+        SharingRequest request;
+        request.kind = SharingRequestKind::AccountCheck;
+        request.ticket = ++next_sharing_ticket_;
+        link.waiting = true;
+        pending_sharing_requests_.push_back(std::move(request));
+        return;
+    }
+    if (link.unverified && link.state == "linked" && !link.waiting && state_.clock_ticks >= link.next_poll) {
         SharingRequest request;
         request.kind = SharingRequestKind::AccountCheck;
         request.ticket = ++next_sharing_ticket_;

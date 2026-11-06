@@ -932,6 +932,28 @@ void account_link(const std::filesystem::path& base) {
     check(find_row(model, "share-as") && find_row(model, "share-as")->value == "Rina · Playden account",
           "the Share sheet shows the account");
     while (!model.state().navigation.modals.empty()) model.action("circle");
+    {
+        // Playden starts while the API doesn't answer: the saved link still counts (shares and reports keep crediting
+        // it; the API says when a link ended), and it is checked again later for its name.
+        playden::homebrew::SharingService again(config);
+        again.Start();
+        again.Wait();
+        Simulation restarted("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+        set_up(restarted, base);
+        pump(restarted, again);
+        api.answer_with({answer(503, R"({"error":"try_again","message":"busy"})")});
+        restarted.SetWallClock(2'000'000);
+        pump(restarted, again);
+        const auto& link = restarted.state().account_link;
+        check(link.state == "linked" && link.unverified, "a saved link the API couldn't check still counts as linked");
+        restarted.SetWallClock(2'000'100);
+        check(restarted.TakeSharingRequests().empty(), "it isn't checked again at once");
+        api.answer_with({answer(200, R"({"name":"Rina","trusted":true})")});
+        restarted.SetWallClock(2'000'300);
+        pump(restarted, again);
+        check(link.state == "linked" && !link.unverified && link.name == "Rina", "checked again later: its name");
+        again.Shutdown();
+    }
     // A report carries the account; an ended link is forgotten and said.
     SharingRequest report;
     report.kind = SharingRequestKind::Report;
