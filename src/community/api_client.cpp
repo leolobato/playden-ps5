@@ -564,6 +564,9 @@ std::string ReportRequestProblem(const ReportRequest& request) {
   if (!request.reason.empty() &&
       (request.result == "works" || !OneOf(request.reason, {"no-start", "crash", "slow", "controls", "other"})))
     return "a reason is one of the five, and only for a problem";
+  if (!request.reason_text.empty() &&
+      (request.reason != "other" || !PrintableText(request.reason_text, 1, kReportReasonTextMaxCharacters)))
+    return "what Other was must be at most 120 printable characters, with the reason other";
   if (!request.details.empty() && !PrintableText(request.details, 1, kReportDetailsMaxCharacters))
     return "what happened must be at most 500 printable characters";
   if (!OneOf(request.installed_on, {"console", "m2", "usb", "imported", "other"})) return "where the game is installed is missing";
@@ -596,6 +599,7 @@ std::string ReportBody(const ReportRequest& request) {
                      ",\"store_id\":" + (request.store_id.empty() ? std::string("null") : Quoted(request.store_id)) +
                      ",\"name\":" + Quoted(request.name) + "},\"result\":" + Quoted(request.result);
   if (!request.reason.empty()) body += ",\"reason\":" + Quoted(request.reason);
+  if (!request.reason_text.empty()) body += ",\"reason_text\":" + Quoted(request.reason_text);
   if (!request.details.empty()) body += ",\"details\":" + Quoted(request.details);
   body += ",\"installed_on\":" + Quoted(request.installed_on) + ",\"controls\":[";
   for (std::size_t i = 0; i < request.controls.size(); ++i) body += (i ? "," : "") + Quoted(request.controls[i]);

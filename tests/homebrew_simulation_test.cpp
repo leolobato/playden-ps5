@@ -1685,16 +1685,21 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     check(simulation.scenario("recipes-three"), "recipes-three scenario loads again");
     const auto* row = find_row(simulation, "recipe-" + rev('1'));
     check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works · Verified" && row->value == "👍 14  👎 1" &&
-              row->subtitle == "By leolobato · Playden account" && row->lines.empty(),
-          "a recipe row shows its status, Verified, votes and author, an account's marked");
+              row->subtitle == "By leolobato \u2605" && row->author == "leolobato" && row->author_style == "trusted" &&
+              row->lines.empty(),
+          "a recipe row shows its status, Verified, votes and author; a trusted account's name has a star");
     check(find_row(simulation, "recipe-" + rev('2'))->subtitle == "By rina" &&
+              find_row(simulation, "recipe-" + rev('2'))->author_style.empty() &&
               find_row(simulation, "recipe-" + rev('2'))->badge == "Works",
-          "a typed name has no account mark, an unverified recipe no Verified");
+          "a typed name has no account colour, an unverified recipe no Verified");
+    check(find_row(simulation, "recipe-" + rev('3'))->subtitle == "By tomas" &&
+              find_row(simulation, "recipe-" + rev('3'))->author_style == "account",
+          "an account's name is drawn in the account colour, without words for it or a star");
     simulation.action("focus:recipe-" + rev('1'));
     {
         const auto& comparison = simulation.view().comparison;
         check(comparison && comparison->column == "This recipe" &&
-                  comparison->hint == "Verified · Community recipe by leolobato (Playden account) · tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
+                  comparison->hint == "Verified · Community recipe by leolobato \u2605 · tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
               "the side panel says where the focused recipe was tested");
         check(comparison && std::any_of(comparison->rows.begin(), comparison->rows.end(),
                                         [](const std::array<std::string, 3>& line) { return line[2] == "3840×2160"; }),
@@ -2140,8 +2145,45 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(top().title == "Test report sent" && !top().link.empty(), "the report is sent, its issue as a QR code");
     const auto* down = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1'));
     check(down && down->vote == "down" && down->reason == "slow", "the recipe's thumbs down goes with it");
+    // Other: chosen at once, then the keyboard asks what it was; the text shows under it, cancelling keeps Other.
+    check(simulation.scenario("feedback-problems"), "feedback-problems scenario loads for Other");
+    activate(simulation, "feedback-reason-other");
+    check(simulation.state().editor.active, "Other opens the keyboard");
+    simulation.SubmitEditorText("Music stutters");
+    check(!simulation.state().editor.active && find_row(simulation, "feedback-reason-other")->selected &&
+              !find_row(simulation, "feedback-reason-slow")->selected &&
+              find_row(simulation, "feedback-reason-other")->subtitle == "Music stutters",
+          "Other is chosen and shows what was typed");
+    activate(simulation, "feedback-reason-other");
+    check(simulation.state().editor.active && simulation.state().editor.value == "Music stutters", "choosing Other again edits it");
+    simulation.action("circle");
+    check(!simulation.state().editor.active && find_row(simulation, "feedback-reason-other")->selected &&
+              find_row(simulation, "feedback-reason-other")->subtitle == "Music stutters",
+          "cancelling the keyboard keeps Other and its text");
+    // A trusted account is never told so: no Verified pitch, and the row says whether shares credit the account.
+    check(simulation.scenario("account-linked"), "account-linked scenario loads");
+    {
+        const auto* account = find_row(simulation, "settings-account-link");
+        check(account && account->value == "Rina" && account->subtitle.find("Verified") == std::string::npos &&
+                  account->subtitle.find("Share as") != std::string::npos,
+              "a linked trusted account: no Verified, and Share as decides the credit");
+        activate(simulation, "settings-share-as");
+        check(find_row(simulation, "share-as-account") &&
+                  find_row(simulation, "share-as-account")->subtitle.find("Verified") == std::string::npos,
+              "the Share as picker doesn't mention Verified");
+    }
     check(simulation.scenario("feedback-privacy"), "feedback-privacy scenario loads");
     check(top().title == "Before you send", "the first report says what it sends");
+    // A send that got no answer: the sheet stays with the reason, and Send retries the same share or report.
+    check(simulation.scenario("share-error"), "share-error scenario loads");
+    check(top().id == "share-recipe" && find_row(simulation, "share-send")->title == "Try again" &&
+              find_row(simulation, "share-send")->tone == "problem" &&
+              find_row(simulation, "share-send")->subtitle.find("couldn't reach") != std::string::npos,
+          "a failed share says why and offers Try again");
+    check(simulation.scenario("feedback-error"), "feedback-error scenario loads");
+    check(top().id == "feedback" && find_row(simulation, "feedback-send")->title == "Try again" &&
+              find_row(simulation, "feedback-send")->subtitle.find("couldn't reach") != std::string::npos,
+          "a failed report says why and offers Try again");
     // Changes worth sharing put Share recipe by the preset, out of Advanced.
     check(simulation.scenario("share-new"), "share-new scenario loads for Game settings");
     simulation.action("circle");

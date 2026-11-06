@@ -4739,6 +4739,22 @@ class Render::Impl
             else if (described && program_list)
                 ui::paragraph(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 74.0F, 19.0F, hint_width,
                               26.0F, row.enabled ? kSecondary : kMuted);
+            else if (described && !row.author_style.empty() && row.enabled)
+            {
+                // A recipe by a Playden account: "By" as usual, the name in the account colour, a trusted account's
+                // star in gold after it.
+                const float x = rect.x + 24.0F;
+                const float y = rect.y + 74.0F;
+                const std::string by = "By ";
+                ui::text(overlay_, fonts_.regular, by, x, y, 19.0F, kSecondary);
+                const float name_left = x + fonts_.regular.measure(by, 19.0F);
+                const float star = row.author_style == "trusted" ? mark_width(19.0F) + 6.0F : 0.0F;
+                // marked_text, as for any subtitle: a name may hold a mark the fonts lack.
+                const float drawn = marked_text(overlay_, fonts_.regular, row.author, name_left, y, 19.0F, kBlue, gfx::Align::left,
+                                                rect.w - 72.0F - value_width - (name_left - x) - star);
+                if (star > 0.0F)
+                    draw_mark(overlay_, 0x2605, name_left + drawn + 6.0F, y, 19.0F, kAmber);
+            }
             else if (described)
                 marked_text(overlay_, fonts_.regular, row.subtitle, checkbox ? name_x : rect.x + 24.0F, rect.y + 74.0F, 19.0F,
                             row.tone == "problem" ? kRed : row.tone == "good" ? kGreen : row.tone == "attention" ? kAmber

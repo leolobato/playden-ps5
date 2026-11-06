@@ -302,6 +302,7 @@ struct CommunityRecipeOffer {
     std::uint32_t votes_up = 0, votes_down = 0;
     bool verified = false;           // marked Verified, or shared by a trusted account (summary.json)
     bool author_account = false;     // the author is a Playden account, not only a typed name
+    bool author_trusted = false;     // that account is trusted: a star by the name (summary.json author_trusted)
     bool operator==(const CommunityRecipeOffer&) const = default;
 };
 // What the chooser and Game settings call a recipe: its title, or for one shared without a title "Recipe from
@@ -1036,6 +1037,9 @@ struct ViewRow {
     std::string qr;          // Settings: a link drawn as a QR code beside the row's text (Web access)
     // Recipe chooser: more lines under the subtitle (what changes, what changes how the game starts, notes).
     std::vector<std::string> lines;
+    // Recipe chooser: the author's name drawn in the account colour ("account"), with a star when trusted ("trusted").
+    std::string author;
+    std::string author_style;
 };
 
 // A read-only label and value above a sheet's rows; the focus never goes there.
@@ -1538,6 +1542,7 @@ private:
         std::string step = "ask";    // ask, good or problems
         std::string result;          // works, partial, broken or no-start
         std::string reason;          // a problem's reason (the vote reasons)
+        std::string reason_text;     // what "Other" was, typed by the player (optional; sent with Other only)
         std::string details;         // What happened, optional
         bool attach_logs = false;
         bool recipe_offer = false;   // the settings count as a recipe (program, arguments, controls...)

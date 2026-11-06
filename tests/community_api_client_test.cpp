@@ -642,6 +642,15 @@ void Reports() {
   CHECK(problem([](ReportRequest& r) { r.result = "works"; }));  // a reason only for a problem
   CHECK(problem([](ReportRequest& r) { r.details = std::string(501, 'a'); }));
   CHECK(problem([](ReportRequest& r) { r.details = "two\nlines"; }));
+  CHECK(problem([](ReportRequest& r) { r.reason_text = "fps drops"; }));  // only with the reason other
+  CHECK(problem([](ReportRequest& r) { r.reason = "other"; r.reason_text = std::string(121, 'a'); }));
+  {
+    auto other = Report();
+    other.reason = "other";
+    other.reason_text = "Music stutters";
+    CHECK(ReportRequestProblem(other).empty());
+    CHECK(ReportBody(other).find("\"reason\":\"other\",\"reason_text\":\"Music stutters\"") != std::string::npos);
+  }
   CHECK(problem([](ReportRequest& r) { r.installed_on = "cloud"; }));
   CHECK(problem([](ReportRequest& r) { r.controls = {"wheel"}; }));
   CHECK(problem([](ReportRequest& r) { r.recipe_json = "[]"; }));

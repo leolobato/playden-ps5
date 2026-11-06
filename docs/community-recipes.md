@@ -26,10 +26,10 @@ in Settings › Community › **Share as**:
 - **No name**: shown as "from the community".
 - **Your name**: a name you type, no account needed.
 - **Playden account**: link one (scan the code, sign in with Discord, GitHub, Google or an email link, approve the
-  code). Shares then carry the account's name, and the chooser marks it as an account.
+  code). Shares then carry the account's name, and the chooser draws it in the account colour.
 
-A recipe revision is **Verified** when the maintainers marked it so, or when a trusted account shared it. The chooser
-shows it beside the recipe's status.
+A recipe revision is **Verified** when the maintainers vouch for it. The chooser shows it beside the recipe's status,
+and a star by the name of an author the maintainers trust.
 
 ## Make one by hand
 

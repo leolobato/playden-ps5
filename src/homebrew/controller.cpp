@@ -500,6 +500,7 @@ void Controller::TickCommunity() {
           offer.votes_down = summary.votes->down;
           offer.verified = summary.votes->verified;
           offer.author_account = summary.votes->author == "account";
+          offer.author_trusted = offer.author_account && summary.votes->author_trusted;
         }
         offers.push_back(std::move(offer));
       }

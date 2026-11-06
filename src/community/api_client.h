@@ -116,6 +116,7 @@ struct VoteResult {
 inline constexpr std::size_t kMaxAttachmentBytes = 8 << 20;  // the API's attachment limit
 inline constexpr std::size_t kMaxReportBodyBytes = 48 << 10;  // the API's report body limit
 inline constexpr std::size_t kReportDetailsMaxCharacters = 500;
+inline constexpr std::size_t kReportReasonTextMaxCharacters = 120;
 inline constexpr std::size_t kReportGameNameMaxCharacters = 120;
 inline constexpr std::size_t kReportSettingsMaxCharacters = 2000;
 inline constexpr std::size_t kReportMaxVersionRows = 24;
@@ -126,6 +127,7 @@ struct ReportRequest {
   std::string name;          // the game's name, 1-120 printable characters
   std::string result;        // works, partial, broken or no-start
   std::string reason;        // optional: no-start, crash, slow, controls, other (not with works)
+  std::string reason_text;   // optional, with reason "other" only: what it was, 1-120 printable characters on one line
   std::string details;       // optional: what happened, 0-500 printable characters on one line
   std::string installed_on;  // console, m2, usb, imported or other
   std::vector<std::string> controls;  // dualsense, mouse-preset, arrow-keys-preset, usb-mouse-keyboard

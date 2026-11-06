@@ -634,6 +634,29 @@ void share_and_vote(const std::filesystem::path& base) {
     const auto fresh = read_text(base / "community-recipes" / cm::kInstallSecretFileName).substr(0, 32);
     check(cm::IsInstallSecret(fresh) && fresh != secret, "the worker made a new sharing ID");
 
+    // Share feedback… still works with asking off: Other with what it was goes as reason_text; while the report is
+    // sending, Other doesn't open the keyboard again (the sheet may close under it).
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(model.action("details:274520"), "Darkwood's page opens for Share feedback…");
+    activate(model, "details-more");
+    activate(model, "share-feedback");
+    activate(model, "feedback-problems");
+    activate(model, "feedback-reason-other");
+    check(model.state().editor.active, "Other opens the keyboard");
+    model.SubmitEditorText("Music stutters");
+    activate(model, "feedback-send");
+    check(find_row(model, "feedback-send") && find_row(model, "feedback-send")->title == "Sending\u2026", "the report is sending");
+    activate(model, "feedback-reason-other");
+    check(!model.state().editor.active, "while it sends, Other doesn't open the keyboard");
+    {
+        const auto requests = model.TakeSharingRequests();
+        const auto report = std::find_if(requests.begin(), requests.end(),
+                                         [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; });
+        check(report != requests.end() && report->report.reason == "other" && report->report.reason_text == "Music stutters",
+              "the report carries Other and what it was");
+    }
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+
     // The sharing ID never reached the model, its snapshot, the settings file or a log line.
     for (const auto& id : {secret, fresh}) {
         check(!contains(model.snapshot(), id), "the snapshot has no sharing ID");

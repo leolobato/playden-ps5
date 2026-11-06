@@ -72,6 +72,7 @@ struct RecipeVotes {
   // and who the author is: "account", "named" or "anonymous" ("" when the API didn't say).
   bool verified = false;
   std::string author;
+  bool author_trusted = false;  // the author's account is trusted (a star by the name), apart from verified
 };
 
 // summary.json: recipe id -> revision -> votes. Unusable entries are skipped.

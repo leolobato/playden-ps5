@@ -274,6 +274,8 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
       if (const auto* author = value.Find("author"); author && author->is_string() &&
           (author->text() == "account" || author->text() == "named" || author->text() == "anonymous"))
         votes.author = author->text();
+      if (const auto* trusted = value.Find("author_trusted"); trusted && trusted->is_bool() && votes.author == "account")
+        votes.author_trusted = trusted->boolean();
       totals[id][revision] = std::move(votes);
     }
   }

@@ -5398,8 +5398,9 @@ void Simulation::seed_community_scenario(bool offline) {
         offer.has_votes = seed.up + seed.down > 0;
         offer.votes_up = seed.up;
         offer.votes_down = seed.down;
-        // The fixture's first recipe comes from a trusted account: Verified, the author an account.
-        offer.verified = offer.author_account = std::string(seed.slug) == "120hz-left-stick-pointer";
+        // The fixture's first recipe comes from a trusted account (Verified, a star); Windowed 1080p from an account.
+        offer.verified = offer.author_trusted = offer.author_account = std::string(seed.slug) == "120hz-left-stick-pointer";
+        if (std::string(seed.slug) == "windowed-1080p") offer.author_account = true;
         catalog.games[id].push_back(std::move(offer));
         synthetic_community_[recipe.revision] = std::move(community);
     }
@@ -5980,7 +5981,7 @@ bool Simulation::scenario(const std::string& name) {
         auto& record = state_.game_settings[id];
         const auto recipe_id = rt::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer");
         const std::string revision(64, '1');
-        const bool own_changes = name == "share-new" || name == "share-sent" || name == "share-privacy" ||
+        const bool own_changes = name == "share-new" || name == "share-sent" || name == "share-privacy" || name == "share-error" ||
                                  name == "feedback-start" || name == "feedback-good" || name == "feedback-sent" ||
                                  name == "feedback-privacy";
         if (own_changes) {
@@ -6015,6 +6016,15 @@ bool Simulation::scenario(const std::string& name) {
                 activate_key("feedback-reason-slow");
             }
             if (name == "feedback-sent" || name == "feedback-privacy") activate_key("feedback-send");
+            if (name == "feedback-error" && feedback_) {
+                // A report the API never answered: the sheet stays, says why, and Send becomes Try again.
+                activate_key("feedback-problems");
+                activate_key("feedback-reason-crash");
+                feedback_->idempotency_key = "simulated-report-retry";
+                feedback_->error = sharing_error_words(cm::ApiError{0, "network", "", 0}, true);
+                refresh_share_sheet();
+                action("focus:feedback-send");
+            }
         } else if (name.rfind("vote-", 0) == 0) {
             // Your vote, from Game settings: the recipe in use.
             open_game_settings();
@@ -6036,6 +6046,13 @@ bool Simulation::scenario(const std::string& name) {
                 send_share();
             } else if (name == "share-privacy") {
                 open_share_privacy();
+            } else if (name == "share-error" && share_) {
+                // A share the API never answered: the sheet stays, says why, and Send becomes Try again (same share).
+                share_->title = "4K at 120 Hz, M on the touchpad";
+                share_->idempotency_key = "simulated-share-retry";
+                share_->error = sharing_error_words(cm::ApiError{0, "network", "", 0}, false);
+                refresh_share_sheet();
+                action("focus:share-send");
             }
         }
     } else if (name == "storage-disconnect") {
@@ -6738,8 +6755,8 @@ void Simulation::rebuild_view() {
                 } else if (action_key == "share-as-account") {
                     item.kind = RowKind::Choice;
                     const bool linked = state_.account_link.state == "linked";
-                    item.subtitle = linked ? "Shown as " + state_.account_link.name + ", marked as an account. Your recipes can be Verified."
-                                           : "Link one on your phone (Discord, GitHub, Google or email). Your recipes can be Verified.";
+                    item.subtitle = linked ? "Shown as " + state_.account_link.name + "."
+                                           : "Link one on your phone (Discord, GitHub, Google or email).";
                     if (!linked) item.title = "Playden account: link one…";
                     item.selected = chosen == playden::ShareAs::kAccount;
                 } else if (action_key == "cancel") {
@@ -6762,6 +6779,9 @@ void Simulation::rebuild_view() {
                     item.title = vote_reason_label(reason);
                     item.selected = draft.reason == reason;
                     item.value = item.selected ? "Selected" : "";
+                    // Other carries what the player typed, shown under it; choosing it again edits that.
+                    if (reason == "other")
+                        item.subtitle = draft.reason_text.empty() ? std::string("Say what went wrong (optional)") : draft.reason_text;
                 } else if (action_key == "feedback-result") {
                     item.kind = RowKind::Choice;
                     item.value = draft.result == "broken" ? "Broken" : "Partial";
@@ -6791,6 +6811,11 @@ void Simulation::rebuild_view() {
                     item.subtitle = "Opens a public test report on GitHub. We review every report.";
                     item.enabled = draft.ticket == 0 && (draft.step != "problems" || !draft.reason.empty());
                     if (draft.step == "problems" && draft.reason.empty()) item.subtitle = "Choose what went wrong first.";
+                    // As on the Share sheet: why the last send failed, on the row that sends again.
+                    if (!draft.error.empty()) {
+                        item.subtitle = draft.error;
+                        item.tone = "problem";
+                    }
                 } else if (action_key == "feedback-never") {
                     item.subtitle = "Playden stops asking after games. Settings › Community turns it on again.";
                 } else if (action_key == "cancel") {
@@ -6957,9 +6982,14 @@ void Simulation::rebuild_view() {
                         item.value = "👍 " + std::to_string(offer->votes_up) + "  👎 " + std::to_string(offer->votes_down);
                     // The row names it, its status, votes and author; the side panel beside the list has the rest
                     // (where it was tested, what it changes, how it starts the game, its note).
+                    // An account's name is drawn in its own colour, a trusted account's with a star; no words for it.
                     item.subtitle = offer->author.empty() ? std::string("From the community")
-                                  : offer->author_account ? "By " + offer->author + " · Playden account"
+                                  : offer->author_trusted ? "By " + offer->author + " \u2605"
                                                           : "By " + offer->author;
+                    if (!offer->author.empty() && offer->author_account) {
+                        item.author = offer->author;
+                        item.author_style = offer->author_trusted ? "trusted" : "account";
+                    }
                     // A recipe that can't apply stays listed, greyed out, with the reason.
                     const auto refusal = community_refusal(settings_game, *offer);
                     if (!refusal.empty()) {
@@ -8448,10 +8478,11 @@ void Simulation::rebuild_view() {
             const auto& link = state_.account_link;
             account_row.value = link.state == "linked" ? (link.name.empty() ? std::string("Linked") : link.name)
                               : link.state == "linking" ? std::string("Waiting for approval…") : std::string("Not linked");
-            account_row.subtitle = link.state == "linked"
-                ? (link.trusted ? "Your recipes are Verified. Shares and reports show your account's name."
-                                : "Shares and reports show your account's name.")
-                : "Link one to put your account's name on what you share. Without one, a typed name or none.";
+            // Credit follows Share as; whether the account is trusted is never said here (offered to players directly).
+            account_row.subtitle = link.state != "linked"
+                ? "Link one to put your account's name on what you share. Without one, a typed name or none."
+                : state_.share_as == playden::ShareAs::kAccount ? "Shares and reports show your account's name."
+                                                               : "Choose it under Share as to put its name on what you share.";
             auto& reset = add("settings-sharing-reset", RowKind::Action, "Reset sharing ID", "sharing-reset");
             reset.subtitle = "The random ID that shared recipes and votes come from";
         }
@@ -9237,6 +9268,19 @@ void Simulation::commit_editor() {
         std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
         share_->title = value;
         share_->error.clear();
+        state_.editor.active = false;
+        state_.navigation.focus_key = state_.editor.opener_focus_key;
+        refresh_share_sheet();
+        return;
+    }
+    else if (state_.editor.purpose == "Other problem" && feedback_) {
+        const auto value = trimmed(state_.editor.value);
+        if (!value.empty() && !cm::IsSubmissionText(value, 1, cm::kReportReasonTextMaxCharacters)) {
+            show_setting_validation("Other problem", "Up to 120 characters on one line.");
+            return;
+        }
+        std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
+        feedback_->reason_text = value;
         state_.editor.active = false;
         state_.navigation.focus_key = state_.editor.opener_focus_key;
         refresh_share_sheet();
@@ -11492,7 +11536,14 @@ void Simulation::activate() {
         feedback_->error.clear();
         refresh_share_sheet();
     }
-    else if (feedback_ && action_name.rfind("feedback-reason-", 0) == 0) {
+    else if (feedback_ && action_name == "feedback-reason-other" && feedback_->ticket == 0) {
+        // Other is chosen at once; the keyboard then asks what it was (optional: cancelling keeps Other).
+        feedback_->reason = "other";
+        if (feedback_->result == "no-start") feedback_->result = "partial";
+        refresh_share_sheet();
+        start_editor("Other problem", feedback_->reason_text);
+    }
+    else if (feedback_ && action_name.rfind("feedback-reason-", 0) == 0 && feedback_->ticket == 0) {
         feedback_->reason = action_name.substr(16);
         if (feedback_->reason == "no-start") feedback_->result = "no-start";
         else if (feedback_->result == "no-start") feedback_->result = "partial";
@@ -12933,8 +12984,8 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
     comparison.column = "This recipe";
     std::vector<std::string> meta;
     meta.push_back(offer.author.empty() ? std::string("Community recipe")
-                   : "Community recipe by " + (offer.contributors.empty() ? offer.author : offer.author + " and others") +
-                         (offer.author_account ? " (Playden account)" : ""));
+                   : "Community recipe by " + offer.author + (offer.author_trusted ? " \u2605" : "") +
+                         (offer.contributors.empty() ? std::string() : std::string(" and others")));
     if (offer.verified) meta.insert(meta.begin(), "Verified");
     std::vector<std::string> tested;
     if (!offer.tested_kit.empty()) tested.push_back("runtime kit " + offer.tested_kit);
@@ -14010,6 +14061,7 @@ void Simulation::send_feedback() {
     request.name = game ? game->title : ToKey(id);
     request.result = draft.result;
     request.reason = draft.result == "works" ? std::string() : draft.reason;
+    if (request.reason == "other") request.reason_text = draft.reason_text;
     request.details = draft.details;
     // Where it is installed, from its drive's name.
     request.installed_on = id.store == Store::kLocal ? "imported" : "other";
