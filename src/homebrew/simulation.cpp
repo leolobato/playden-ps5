@@ -365,11 +365,6 @@ std::string file_name(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-cm::VotingPreference voting_of(playden::RecipeVotesPreference preference) {
-    return preference == playden::RecipeVotesPreference::kOn ? cm::VotingPreference::kOn
-         : preference == playden::RecipeVotesPreference::kOff ? cm::VotingPreference::kOff : cm::VotingPreference::kUnset;
-}
-
 std::string minutes_words(std::int64_t seconds) {
     const auto minutes = std::max<std::int64_t>(1, (seconds + 59) / 60);
     return minutes == 1 ? std::string("a minute") : std::to_string(minutes) + " minutes";
@@ -4372,7 +4367,7 @@ playden::Preferences Simulation::ExportPreferences() const {
             state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
             state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help,
             state_.runtime_prompt_kit, state_.recipe_votes, state_.sharing_explained, state_.share_name,
-            state_.reports_explained, state_.share_as};
+            state_.reports_explained, state_.share_as, state_.ask_after_games};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -4611,6 +4606,7 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.sharing_explained = loaded.preferences.sharing_explained;
         state_.reports_explained = loaded.preferences.reports_explained;
         state_.share_as = loaded.preferences.share_as;
+        state_.ask_after_games = loaded.preferences.ask_after_games;
         state_.share_name = loaded.preferences.share_name;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
@@ -4884,7 +4880,8 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.sharing_explained != captured_preferences_.sharing_explained ||
                                       after_preferences.share_name != captured_preferences_.share_name ||
                                       after_preferences.reports_explained != captured_preferences_.reports_explained ||
-                                      after_preferences.share_as != captured_preferences_.share_as);
+                                      after_preferences.share_as != captured_preferences_.share_as ||
+                                      after_preferences.ask_after_games != captured_preferences_.ask_after_games);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
         apply_organization_snapshot(captured_organization_);
@@ -4920,6 +4917,7 @@ bool Simulation::record_live_persistence() {
                 state_.share_name = captured_preferences_.share_name;
                 state_.reports_explained = captured_preferences_.reports_explained;
                 state_.share_as = captured_preferences_.share_as;
+                state_.ask_after_games = captured_preferences_.ask_after_games;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -5974,6 +5972,7 @@ bool Simulation::scenario(const std::string& name) {
         state_.reports_explained = name != "feedback-privacy";
         state_.share_name = "TodorPenchev";
         state_.share_as = playden::ShareAs::kName;
+        state_.ask_after_games = true;
         state_.recipe_votes = name == "votes-off" ? playden::RecipeVotesPreference::kOff
                             : name == "vote-reason" ? playden::RecipeVotesPreference::kOn : playden::RecipeVotesPreference::kUnset;
         state_.library.ratings[id] = Compatibility::Works;
@@ -8427,15 +8426,19 @@ void Simulation::rebuild_view() {
         }
         section = "Community";
         {
-            // Community recipes: votes are opt-in, and the sharing ID can be replaced.
-            // Stored as recipe_votes: the prompt after a game also rates the community recipe in use.
-            auto& votes = add("settings-recipe-votes", RowKind::Toggle, "Ask how games ran", "toggle-recipe-votes");
+            // Community recipes: the question after a game, votes (opt-in), and the sharing ID can be replaced.
+            // Asking and voting are apart: "Don't ask again" stops the question, and votes still work.
+            auto& ask = add("settings-ask-after-games", RowKind::Toggle, "Ask how games ran", "toggle-ask-after-games");
+            ask.selected = state_.ask_after_games;
+            ask.subtitle = state_.ask_after_games ? "After you play, Playden asks how the game ran. Nothing is sent until you choose Send."
+                                                  : "Off: Playden doesn't ask. Share feedback… in a game's actions still works.";
+            auto& votes = add("settings-recipe-votes", RowKind::Toggle, "Recipe votes", "toggle-recipe-votes");
             votes.selected = state_.recipe_votes == playden::RecipeVotesPreference::kOn;
             votes.subtitle = state_.recipe_votes == playden::RecipeVotesPreference::kOn
-                ? "After you play, Playden asks how the game ran. With a community recipe, your answer is its vote."
+                ? "Your votes, and how a game ran with a community recipe, count for that recipe."
                 : state_.recipe_votes == playden::RecipeVotesPreference::kOff
-                ? "Off: Playden never asks and sends no votes. Share feedback… still works."
-                : "Asked after you play. Nothing is sent until you choose Send.";
+                ? "Off: Playden sends no votes. Test reports still work."
+                : "Turned on the first time you vote or send a report about a community recipe.";
             // The default for who shares and reports credit; the sheets change it too.
             auto& share_as_row = add("settings-share-as", RowKind::Action, "Share as", "share-as");
             share_as_row.value = share_as_label();
@@ -11374,7 +11377,11 @@ void Simulation::activate() {
     else if (action_name == "toggle-recipe-votes") {
         state_.recipe_votes = state_.recipe_votes == playden::RecipeVotesPreference::kOn ? playden::RecipeVotesPreference::kOff
                                                                                           : playden::RecipeVotesPreference::kOn;
-        if (state_.recipe_votes == playden::RecipeVotesPreference::kOff) feedback_prompts_.clear();
+        save_profile();
+    }
+    else if (action_name == "toggle-ask-after-games") {
+        state_.ask_after_games = !state_.ask_after_games;
+        if (!state_.ask_after_games) feedback_prompts_.clear();
         save_profile();
     }
     else if (action_name == "sharing-reset") {
@@ -11522,7 +11529,8 @@ void Simulation::activate() {
         send_feedback();
     }
     else if (action_name == "feedback-never") {
-        state_.recipe_votes = playden::RecipeVotesPreference::kOff;
+        // Only the question stops: votes and Share feedback… still work.
+        state_.ask_after_games = false;
         feedback_prompts_.clear();
         close_sheet("feedback");
         feedback_.reset();
@@ -11574,7 +11582,6 @@ void Simulation::activate() {
     else if (action_name == "vote-send") send_vote();
     else if (action_name == "vote-never") {
         state_.recipe_votes = playden::RecipeVotesPreference::kOff;
-        feedback_prompts_.clear();
         close_sheet("vote-recipe");
         vote_.reset();
         save_profile();
@@ -13823,7 +13830,7 @@ void Simulation::send_vote() {
 }
 
 void Simulation::show_feedback_prompt() {
-    if (state_.recipe_votes == playden::RecipeVotesPreference::kOff) {
+    if (!state_.ask_after_games) {
         feedback_prompts_.clear();
         return;
     }
@@ -13839,7 +13846,7 @@ void Simulation::show_feedback_prompt() {
         feedback_prompts_.erase(feedback_prompts_.begin());
         const auto question = cm::NextFeedbackQuestion(state_.vote_memory, ToInstallId(prompt.game), feedback_kit(),
                                                        feedback_settings(prompt.game), prompt.played_seconds,
-                                                       voting_of(state_.recipe_votes));
+                                                       state_.ask_after_games);
         if (question == cm::FeedbackQuestion::kNone) continue;
         open_feedback(prompt.game, question == cm::FeedbackQuestion::kDidItStart, true);
         return;
@@ -14415,7 +14422,10 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
         }
         if (kind == SharingRequestKind::AccountPoll)
             push_notice({"account-link", "Account linked", "", false, kLiveNoticeSeconds, false,
-                         answer.name.empty() ? std::string("Shares and reports show your account's name.") : answer.name});
+                         (answer.name.empty() ? std::string("Your account") : answer.name) +
+                             (state_.share_as == playden::ShareAs::kAccount
+                                  ? std::string(". Shares and reports credit it.")
+                                  : std::string(". Choose it under Share as to credit shares and reports."))});
     } else if (answer.state == "none") {
         const bool was = link.state == "linked";
         link = {};

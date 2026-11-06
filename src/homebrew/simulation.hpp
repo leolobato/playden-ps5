@@ -949,6 +949,7 @@ struct State {
     bool sharing_explained = false;
     bool reports_explained = false;  // the first report said what it sends
     playden::ShareAs share_as = playden::ShareAs::kNone;  // who shares and reports credit (Settings › Community)
+    bool ask_after_games = true;  // Settings › Community › Ask how games ran; "Don't ask again" turns it off
     // The Playden account this console is linked to (Settings › Community › Account), as the sharing worker last said.
     struct AccountLink {
         std::string state;  // "" not linked (or not known yet), "linking" (a code shown), "linked"

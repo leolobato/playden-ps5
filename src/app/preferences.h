@@ -63,6 +63,9 @@ struct Preferences {
   bool reports_explained = false;
   // How shares and test reports credit the player (version 14): no name, the typed name, or the linked Playden account.
   ShareAs share_as = ShareAs::kNone;
+  // Whether Playden asks how a game ran after it ends (version 14). Separate from recipe_votes: "Don't ask again"
+  // stops the question, not votes. Older files: asked unless recipe votes were off.
+  bool ask_after_games = true;
 };
 
 enum class PreferencesLoadStatus {

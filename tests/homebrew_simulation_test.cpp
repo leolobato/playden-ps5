@@ -2079,14 +2079,23 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     activate(simulation, "share-vote");
     check(top().id == "vote-recipe" && find_row(simulation, "vote-up")->selected, "votes not asked yet: the vote sheet explains first");
 
-    // Votes off: the offer explains how to turn them on, and nothing asks after play.
+    // Votes off: the offer explains how to turn them on; Playden still asks how the game ran.
     check(simulation.scenario("votes-off"), "votes-off scenario loads");
     check(find_row(simulation, "share-vote")->subtitle.find("Recipe votes are off") != std::string::npos, "the offer says votes are off");
     activate(simulation, "share-vote");
     check(top().title == "Recipe votes are off", "voting off: no vote, how to turn it on");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
     simulation.NotifySessionEnded(game, 3600);
-    check(simulation.state().navigation.modals.empty(), "with votes off nothing asks after play");
+    check(top().id == "feedback", "with votes off Playden still asks how the game ran");
+    // Don't ask again stops the question only: votes stay as they were.
+    check(simulation.scenario("feedback-prompt"), "feedback-prompt scenario loads for Don't ask again");
+    const auto votes_before = simulation.state().recipe_votes;
+    activate(simulation, "feedback-never");
+    check(!simulation.state().ask_after_games && !simulation.ExportPreferences().ask_after_games &&
+              simulation.state().recipe_votes == votes_before,
+          "Don't ask again turns asking off and leaves votes alone");
+    simulation.NotifySessionEnded(game, 3600);
+    check(simulation.state().navigation.modals.empty(), "then nothing asks after play");
 
     // After a game: how it ran (any game), with the recipe in use; Not now counts, twice at most.
     check(simulation.scenario("feedback-prompt"), "feedback-prompt scenario loads");

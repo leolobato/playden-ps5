@@ -125,8 +125,8 @@ void VoteState::NoteFeedback(std::string_view game, std::string_view kit, std::s
 }
 
 FeedbackQuestion NextFeedbackQuestion(const VoteState& state, std::string_view game, std::string_view kit,
-                                      std::string_view settings, std::int64_t played_seconds, VotingPreference voting) {
-  if (voting == VotingPreference::kOff || game.empty()) return FeedbackQuestion::kNone;
+                                      std::string_view settings, std::int64_t played_seconds, bool ask) {
+  if (!ask || game.empty()) return FeedbackQuestion::kNone;
   if (const auto* seen = state.FindFeedback(game, kit); seen && seen->settings == settings &&
                                                         (seen->answered || seen->prompts >= kFeedbackMaxPrompts))
     return FeedbackQuestion::kNone;

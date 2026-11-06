@@ -159,20 +159,20 @@ void Votes(const fs::path& base) {
   const std::string changed = FeedbackSettingsFingerprint("base=playden-default\nresolution=1280x720");
   CHECK(settings.size() == 16 && settings != changed && settings == FeedbackSettingsFingerprint("base=playden-default"));
   VoteState fresh;
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 180, VotingPreference::kUnset) == FeedbackQuestion::kHowDidItRun);
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 179, VotingPreference::kOn) == FeedbackQuestion::kDidItStart);
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, VotingPreference::kOff) == FeedbackQuestion::kNone);
-  CHECK(NextFeedbackQuestion(fresh, "", "0.19", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kNone);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 180, true) == FeedbackQuestion::kHowDidItRun);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 179, true) == FeedbackQuestion::kDidItStart);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, false) == FeedbackQuestion::kNone);
+  CHECK(NextFeedbackQuestion(fresh, "", "0.19", settings, 3600, true) == FeedbackQuestion::kNone);
   fresh.NoteFeedback("steam-10", "0.19", settings, false);  // Not now
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kHowDidItRun);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, true) == FeedbackQuestion::kHowDidItRun);
   fresh.NoteFeedback("steam-10", "0.19", settings, false);
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kNone);
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", changed, 30, VotingPreference::kOn) == FeedbackQuestion::kDidItStart);
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.20", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kHowDidItRun);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, true) == FeedbackQuestion::kNone);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", changed, 30, true) == FeedbackQuestion::kDidItStart);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.20", settings, 3600, true) == FeedbackQuestion::kHowDidItRun);
   fresh.NoteFeedback("steam-10", "0.19", changed, true);  // a report for the new settings
   CHECK(fresh.feedback.size() == 1 && fresh.feedback[0].settings == changed && fresh.feedback[0].prompts == 0 &&
         fresh.feedback[0].answered);
-  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", changed, 3600, VotingPreference::kOn) == FeedbackQuestion::kNone);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", changed, 3600, true) == FeedbackQuestion::kNone);
 
   // Record replaces the revision's vote and counts as asked.
   state->voting = VotingPreference::kOn;

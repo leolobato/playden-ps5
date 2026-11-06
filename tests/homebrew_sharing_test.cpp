@@ -617,7 +617,14 @@ void share_and_vote(const std::filesystem::path& base) {
     model.UpdateCommunityCatalog(newest);
     model.UpdateRuntime(RuntimeState::Ready, {runtime});
     model.NotifySessionEnded(kGame, 3600);
-    check(model.state().navigation.modals.empty() && model.TakeSharingRequests().empty(), "with votes off nothing asks or is sent");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "feedback",
+          "with votes off Playden still asks how the game ran");
+    model.action("circle");
+    model.TakeSharingRequests();
+    check(model.action("focus:settings-ask-after-games") && model.action("cross"), "Settings › Ask how games ran toggles");
+    check(!model.ExportPreferences().ask_after_games, "asking off is saved");
+    model.NotifySessionEnded(kGame, 3600);
+    check(model.state().navigation.modals.empty() && model.TakeSharingRequests().empty(), "with asking off nothing asks or is sent");
 
     // Reset sharing ID: confirmed, then done on the worker.
     check(model.action("focus:settings-sharing-reset") && model.action("cross"), "Reset sharing ID asks first");

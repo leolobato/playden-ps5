@@ -423,7 +423,8 @@ Every test helps, including games that work.
 actions). Choose whether it ran well or had problems, and Playden sends a test report for you: the game, its
 settings, your versions and, when it had problems, its logs with your Steam account name, IDs, PS5 user and home
 network addresses removed. The report is a public issue on this repository. With a community recipe in use, your
-answer is also its vote. Settings › Community › **Ask how games ran** turns the question off.
+answer is also its vote (unless **Recipe votes** is off). Settings › Community › **Ask how games ran** turns the
+question off; votes and **Share feedback…** still work.
 
 **By hand**, for anything Playden can't send:
 

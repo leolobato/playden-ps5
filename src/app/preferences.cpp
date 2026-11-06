@@ -24,13 +24,14 @@ std::string ToString(const Bytes& bytes) {
 // whose "Update your games" prompt was shown (none in older files, so they are offered it), version 13 the
 // community recipe fields (votes unasked, sharing not explained, no share name in older files), version 14 whether
 // the first test report said what it sends (not in older files) and how shares credit the player (share_as: none,
-// name or account; older files: their name when they kept one, else none).
+// name or account; older files: their name when they kept one, else none) and whether Playden asks how a game ran
+// (ask_after_games; older files: unless recipe votes were off).
 constexpr const char* kKeys[] = {"reduce_motion", "title_store_suffix", "cloud_saves_auto",
                                           "steam_sign_in_password", "downloads_slow_network", "steam_stay_signed_in",
                                           "beta_updates", "download_server", "web_access", "content_language",
                                           "hide_run_once_help", "hide_launcher_help", "runtime_prompt_kit",
                                           "recipe_votes", "sharing_explained", "share_name", "reports_explained",
-                                          "share_as"};
+                                          "share_as", "ask_after_games"};
 
 bool ParseFlag(const std::string& value, bool* flag) {
   if (value != "0" && value != "1") return false;
@@ -45,14 +46,14 @@ bool ValidDownloadServer(const std::string& host) {
   });
 }
 
-bool ParseKeyed(const std::string& serialized, int version, Preferences* preferences, bool without_share_as = false) {
+// missing: version 14 fields a development build's file ends without (2: share_as and ask_after_games, 1: ask_after_games).
+bool ParseKeyed(const std::string& serialized, int version, Preferences* preferences, int missing = 0) {
   const std::string header = "version=" + std::to_string(version) + "\n";
   if (serialized.compare(0, header.size(), header) != 0 || serialized.back() != '\n') return false;
   std::vector<std::string> values;
   std::size_t start = header.size();
-  // Version 11 added two fields, version 13 three and version 14 two; the others one each from version 8's eight.
-  // A version 14 file from before share_as (a development build) has one field less; it reads as version 13 did.
-  const std::size_t count = static_cast<std::size_t>(version >= 14 ? version + (without_share_as ? 3 : 4)
+  // Version 11 added two fields, version 13 three and version 14 three; the others one each from version 8's eight.
+  const std::size_t count = static_cast<std::size_t>(version >= 14 ? version + 5 - missing
                                                      : version >= 13 ? version + 3 : version >= 11 ? version + 1 : version);
   for (std::size_t field = 0; field < count; ++field) {
     const char* key = kKeys[field];
@@ -90,18 +91,18 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
     else return false;
     // A name the current rule refuses (an older, looser check let it in) is dropped, not the file.
     if (IsShareName(values[15])) parsed.share_name = values[15];
+    parsed.ask_after_games = parsed.recipe_votes != RecipeVotesPreference::kOff;
   }
   parsed.share_as = parsed.share_name.empty() ? ShareAs::kNone : ShareAs::kName;
   if (version >= 14) {
     if (!ParseFlag(values[16], &parsed.reports_explained)) return false;
-    if (without_share_as) {
-      *preferences = std::move(parsed);
-      return true;
+    if (missing < 2) {
+      if (values[17] == "none") parsed.share_as = ShareAs::kNone;
+      else if (values[17] == "name") parsed.share_as = ShareAs::kName;
+      else if (values[17] == "account") parsed.share_as = ShareAs::kAccount;
+      else return false;
     }
-    if (values[17] == "none") parsed.share_as = ShareAs::kNone;
-    else if (values[17] == "name") parsed.share_as = ShareAs::kName;
-    else if (values[17] == "account") parsed.share_as = ShareAs::kAccount;
-    else return false;
+    if (missing < 1 && !ParseFlag(values[18], &parsed.ask_after_games)) return false;
   }
   *preferences = std::move(parsed);
   return true;
@@ -132,7 +133,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
 
   std::string serialized = ToString(read.value());
   Preferences keyed;
-  if (ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, true) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
+  if (ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, 1) || ParseKeyed(serialized, 14, &keyed, 2) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};
   bool beta_updates = false;
   if (serialized.rfind("version=7\n", 0) == 0) {
@@ -256,7 +257,8 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
                            "\nshare_name=" + name +
                            "\nreports_explained=" + (preferences.reports_explained ? "1" : "0") +
                            "\nshare_as=" + (preferences.share_as == ShareAs::kAccount ? "account"
-                                            : preferences.share_as == ShareAs::kName ? "name" : "none") + "\n";
+                                            : preferences.share_as == ShareAs::kName ? "name" : "none") +
+                           "\nask_after_games=" + (preferences.ask_after_games ? "1" : "0") + "\n";
   return storage_.WriteAtomic(kPreferencesPath, Bytes(text.begin(), text.end()));
 }
 

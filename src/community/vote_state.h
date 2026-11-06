@@ -70,12 +70,12 @@ struct VoteState {
 // "up" or "down", and a reason that fits it ("" or one of the five, down only).
 bool IsValidVote(std::string_view vote, std::string_view reason);
 
-// What to ask after the player quits a game Playden started: nothing with voting off, nothing once a
+// What to ask after the player quits a game Playden started: nothing when the player turned asking off, nothing once a
 // report was sent for these settings or after kFeedbackMaxPrompts prompts; otherwise "How did it
 // run?" after kFeedbackMinPlayedSeconds, "Did it start?" after a shorter session. New settings (or a
-// new runtime kit version) ask again. kUnset asks: the first prompt says what is sent.
+// new runtime kit version) ask again. Recipe votes don't matter here: with them off the answer is a report only.
 FeedbackQuestion NextFeedbackQuestion(const VoteState& state, std::string_view game, std::string_view kit,
-                                      std::string_view settings, std::int64_t played_seconds, VotingPreference voting);
+                                      std::string_view settings, std::int64_t played_seconds, bool ask);
 // 16 lowercase hex characters (FNV-1a 64) of a text that describes a game's settings.
 std::string FeedbackSettingsFingerprint(std::string_view settings_text);
 
