@@ -427,6 +427,26 @@ void share_and_vote(const std::filesystem::path& base) {
           "with when the API took it (an answer without a Date: the console's clock), for the counts the chooser shows");
     check(contains(read_text(base / "community-recipes" / cm::kVoteStateFileName), kRevision), "and saved by the worker");
 
+    // Playden can't tell the version of the runtime kit: a recipe must name the one it ran on (the API refuses
+    // "unknown" there), so the Share sheet says so and nothing is sent.
+    {
+        playden::homebrew::LiveKitInfo unknown;
+        model.SetKitInfo(unknown);
+        open_share(model);
+        if (find_row(model, "share-title")->value == "Optional") {
+            activate(model, "share-title");
+            model.SubmitEditorText("Darkwood 4K");
+        }
+        activate(model, "share-send");
+        const auto refused = model.TakeSharingRequests();
+        check(std::none_of(refused.begin(), refused.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Submit; }),
+              "a recipe without a version of the runtime kit it ran on isn't sent");
+        check(contains(find_row(model, "share-send")->subtitle, "version of the runtime kit"), "the Share sheet says why");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        playden::homebrew::LiveKitInfo info;
+        info.version = "0.12";
+        model.SetKitInfo(info);
+    }
     // Duplicate of another console's pull request: no vote, its QR code.
     open_share(model);
     if (find_row(model, "share-title")->value == "Optional") {

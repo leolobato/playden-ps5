@@ -417,6 +417,34 @@ std::string sharing_error_words(const cm::ApiError& error, SharingWhat what) {
 }
 
 
+// What the Playden API accepts as a recipe's community.tested_kit (and min_kit): 0.19 or 0.10-dev.20261016.1.
+bool RecipeKitVersionText(std::string_view text) {
+    const auto digits = [&text](std::size_t at, std::size_t min, std::size_t max) {
+        std::size_t count = 0;
+        while (at + count < text.size() && text[at + count] >= '0' && text[at + count] <= '9') ++count;
+        return count >= min && count <= max ? count : std::size_t{0};
+    };
+    std::size_t at = digits(0, 1, 64);
+    if (at == 0 || at >= text.size() || text[at] != '.') return false;
+    const auto minor = digits(++at, 1, 64);
+    if (minor == 0) return false;
+    at += minor;
+    if (at == text.size()) return true;
+    if (text.substr(at, 5) != "-dev." || digits(at + 5, 8, 8) == 0) return false;
+    at += 13;
+    if (at >= text.size() || text[at] != '.') return false;
+    const auto build = digits(++at, 1, 64);
+    return build != 0 && at + build == text.size();
+}
+
+// A recipe's community.tested_firmware as the API accepts it: 10.01.
+bool RecipeFirmwareText(std::string_view text) {
+    const auto dot = text.find('.');
+    if (dot == std::string_view::npos || dot < 1 || dot > 2 || text.size() != dot + 3) return false;
+    return std::all_of(text.begin(), text.end(), [](char c) { return c == '.' || (c >= '0' && c <= '9'); }) &&
+           text.find('.', dot + 1) == std::string_view::npos;
+}
+
 std::string join_text(const std::vector<std::string>& items, const char* separator) {
     std::string text;
     for (const auto& item : items) text += (text.empty() ? "" : separator) + item;
@@ -14306,6 +14334,16 @@ void Simulation::send_share() {
     auto shared = *community;
     if (shared.tested_kit.empty()) shared.tested_kit = request.kit;
     if (shared.tested_firmware.empty()) shared.tested_firmware = request.firmware;
+    // A recipe names the runtime kit and firmware it ran on; the API refuses one that says "unknown" (fixtures have no
+    // firmware and no API).
+    if (live() && !RecipeKitVersionText(shared.tested_kit)) {
+        share_->error = "Playden can't tell the version of the runtime kit, which a shared recipe names.";
+        return;
+    }
+    if (live() && !RecipeFirmwareText(shared.tested_firmware)) {
+        share_->error = "Playden can't tell the console's firmware version, which a shared recipe names.";
+        return;
+    }
     request.recipe_json = cm::RecipeJsonForSubmission(std::move(shared), share_->title);
     request.title = share_->title;
     const auto share_as = share_as_effective();
