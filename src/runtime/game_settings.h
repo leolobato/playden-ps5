@@ -597,6 +597,9 @@ inline constexpr const char* kKitVkd3dProton = "vkd3d-proton";
 // system threads do, so a game's TLS callback can't stop its start in Xbox controller mode (NW.js).
 inline constexpr const char* kKitDriverThreads = "wine-driver-threads";
 inline constexpr const char* kKitGameRootUsbSearch = "game-root-usb-search";
+// The kit's libvulkan.prx keeps 120 Hz output on a display with variable refresh, so Playden may declare a game's PS5
+// title VRR-supported (param.json attribute3 0x40000). Older runtimes fall back to 60 Hz under VRR: they get no such title.
+inline constexpr const char* kKitDisplayVrr = "display-vrr";
 // The runtime honors [display] refresh = 60|120 on every graphics path (Wine reports the rate it asked for) and
 // [display] frame_rate = 0|120|60|40|30, which the display paces. Runtimes without it refuse a profile with frame_rate.
 inline constexpr const char* kKitDisplay120Hz = "display-120hz";

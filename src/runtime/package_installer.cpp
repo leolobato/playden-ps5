@@ -1650,7 +1650,8 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
       RespinIdentity(new_title, kit_.kit_id) != RespinIdentity(*title_marker, kit_.kit_id) ||
       RespinIdentity(new_bottle, kit_.kit_id) != RespinIdentity(*bottle_marker, kit_.kit_id))
     return Failed("refresh-ownership", "installed title and bottle are not this install's from a compatible kit");
-  if (title_digest == kit_.files_sha256 && TitleMatches(record, *paths)) return Complete();
+  // TitleMatches checks sizes and modes only: new metadata of the same size (an attribute3 bit) still needs copying.
+  if (title_digest == kit_.files_sha256 && TitleMatches(record, *paths) && TitleMetadataCurrent(record)) return Complete();
   std::vector<char> buffer(kCopyBufferBytes);  // heap: console worker stacks are small
   const auto mappings = TitleMappings(record);
   // Progress: the title's bytes, checked or copied; a file already current counts as done.

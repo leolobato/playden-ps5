@@ -54,11 +54,11 @@ RuntimeKit WithoutUnownedRoots(RuntimeKit kit) {
   return kit;
 }
 // The same kit with one shell for every game: its own param.json names the template title.
-RuntimeKit AnyTitleKit(const fs::path& kit) {
+RuntimeKit AnyTitleKit(const fs::path& kit, const std::string& attribute3 = "64") {
   auto admitted = SyntheticKit(kit);
   const auto param = kit / "titles/variant/sce_sys/param.json";
   Write(param,
-        "{\n  \"conceptId\": \"78000\",\n  \"contentId\": \"UP9000-FAKE78000_00-PROSPEROWIN00001\",\n"
+        "{\n  \"attribute3\": " + attribute3 + ",\n  \"conceptId\": \"78000\",\n  \"contentId\": \"UP9000-FAKE78000_00-PROSPEROWIN00001\",\n"
         "  \"localizedParameters\": {\n    \"en-US\": {\n      \"titleName\": \"Prospero Win\"\n    }\n  },\n"
         "  \"titleId\": \"FAKE78000\"\n}\n", 0644);
   for (auto& file : admitted.view.files)
@@ -71,6 +71,73 @@ RuntimeKit AnyTitleKit(const fs::path& kit) {
   return admitted;
 }
 }  // namespace
+
+// A kit whose libvulkan.prx keeps 120 Hz under VRR (display-vrr) makes the game's title VRR-supported. A title made
+// before it has the kit's attribute3 only: it is out of date until Update writes the bit with the new runtime.
+// first_vrr: the first kit has display-vrr and the second not (a downgrade), else the other way round.
+void TitleAttribute3FollowsTheKit(const std::string& kit_value, bool first_vrr, const std::string& first,
+                                  const std::string& second) {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = AnyTitleKit(fixture.root / "kit", kit_value);
+  auto vrr = kit;
+  vrr.capabilities.push_back(kKitDisplayVrr);
+  std::sort(vrr.capabilities.begin(), vrr.capabilities.end());
+  const auto& first_kit = first_vrr ? vrr : kit;
+  const auto& second_kit = first_vrr ? kit : vrr;
+  config.admit_kit = [&first_kit](std::string*) { return std::optional<RuntimeKit>(first_kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.write_title_allow_list = [](const std::string&, std::string*) { return true; };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  const auto param = fixture.root / "data/homebrew/FAKE78001/sce_sys/param.json";
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) ||
+          (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    CHECK(!done.refusals.count(220) && done.installs[0].title_id == "FAKE78001" && done.installs[0].title_current);
+    CHECK(Read(param).find("\"attribute3\": " + first + ",") != std::string::npos);
+    host.Shutdown();
+  }
+  config.admit_kit = [&second_kit](std::string*) { return std::optional<RuntimeKit>(second_kit); };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(!started.installs[0].title_current);
+  host.Prepare(Hl2());
+  const auto updated = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.installs[0].title_current || s.refusals.count(220));
+  }, 60);
+  if (updated.refusals.count(220)) std::fprintf(stderr, "Update refused: %s\n", updated.refusals.at(220).c_str());
+  CHECK(!updated.refusals.count(220) && updated.installs[0].title_current);
+  const auto written = Read(param);
+  CHECK(written.find("\"attribute3\": " + second + ",") != std::string::npos);
+  CHECK(written.find(R"("titleName": "Half-Life \"2\"")") != std::string::npos);
+  host.Shutdown();
+}
+
+void DisplayVrrKitDeclaresTheTitleVrrSupported() {
+  TitleAttribute3FollowsTheKit("64", false, "64", "262208");
+  // Without display-vrr the bit goes again. The value keeps its length, so only the title's contents tell it changed.
+  TitleAttribute3FollowsTheKit("1048640", true, "1310784", "1048640");
+}
 
 // One shell for every game: the game gets a new title of its own (the lowest free FAKE78xxx),
 // stamped with its own title ID, and its helper's allow-list names it before the title exists.
@@ -7075,6 +7142,7 @@ int main(int argc, char** argv) {
   PrepareNamesUnfixableFolder();
   TitleRefusalNamesTheSourceThatCannotAnswer();
   AnyTitleKitMakesTheGameItsOwnTitle();
+  DisplayVrrKitDeclaresTheTitleVrrSupported();
   PreparationEndsAwaitingRegistration();
   PreparesGameWithoutShippedRecipe();
   for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);

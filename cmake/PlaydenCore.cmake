@@ -83,7 +83,8 @@ target_include_directories(playden_game_paths PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_game_paths PUBLIC cxx_std_17)
 
 add_library(playden_runtime_installs STATIC "${CMAKE_SOURCE_DIR}/src/runtime/game_install.cpp"
-    "${CMAKE_SOURCE_DIR}/src/runtime/leftover_titles.cpp")
+    "${CMAKE_SOURCE_DIR}/src/runtime/leftover_titles.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/title_parameters.cpp")
 target_include_directories(playden_runtime_installs PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_runtime_installs PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_installs PUBLIC playden_library playden_storage playden_steam_protocol playden_game_paths)
@@ -257,6 +258,9 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(runtime_leftover_titles_test "${CMAKE_SOURCE_DIR}/tests/runtime_leftover_titles_test.cpp")
     target_link_libraries(runtime_leftover_titles_test PRIVATE playden_runtime_installs)
     add_test(NAME runtime_leftover_titles COMMAND runtime_leftover_titles_test)
+    add_executable(runtime_title_parameters_test "${CMAKE_SOURCE_DIR}/tests/runtime_title_parameters_test.cpp")
+    target_link_libraries(runtime_title_parameters_test PRIVATE playden_runtime_installs)
+    add_test(NAME runtime_title_parameters COMMAND runtime_title_parameters_test)
     add_executable(runtime_leftover_titles_native_policy_test
         "${CMAKE_SOURCE_DIR}/tests/runtime_leftover_titles_test.cpp"
         "${CMAKE_SOURCE_DIR}/src/runtime/leftover_titles.cpp")

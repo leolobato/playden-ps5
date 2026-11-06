@@ -25,6 +25,7 @@
 #include "runtime/steamworks.h"
 #include "runtime/self_heal.h"
 #include "runtime/writable_folders.h"
+#include "runtime/title_parameters.h"
 #include "platform/managed_file_lock.h"
 #include "steam/backend/cloud_mapping.h"
 #include "steam/backend/json.h"
@@ -1576,7 +1577,8 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
       std::tie(view.title_current, view.runtime_current, view.setup_other_kit) = kept->second;
     } else if (record.state == rt::PreparationState::kReady && composition.kit) {
       const bool files_current = composition.installer->TitleCurrent(record);
-      view.title_current = files_current && composition.installer->TitleMetadataCurrent(record) && TitleNameCurrent(record);
+      view.title_current = files_current && composition.installer->TitleMetadataCurrent(record) && TitleNameCurrent(record) &&
+                           TitleVariableRefreshCurrent(composition, record);
       view.runtime_current = files_current && ArtifactsBound(composition.kit->view.artifacts, record);
     } else if (composition.kit && SetupRestarts(record) && !view.moving) {
       view.setup_other_kit = composition.installer->SetupFromOtherKit(record);
@@ -2931,7 +2933,7 @@ std::optional<std::string> TitleNameOf(const std::string& param) {
 }
 }  // namespace
 
-std::optional<std::string> RuntimeHost::InstalledTitleName(const rt::RuntimeInstall& record) const {
+std::optional<std::string> RuntimeHost::InstalledTitleParameters(const rt::RuntimeInstall& record) const {
   if (record.data_root.empty()) return std::nullopt;
   const auto root = config_.host_namespace_prefix.empty()
       ? std::filesystem::path(record.data_root)
@@ -2944,7 +2946,25 @@ std::optional<std::string> RuntimeHost::InstalledTitleName(const rt::RuntimeInst
   for (ssize_t count; (count = read(fd, chunk, sizeof(chunk))) > 0 && bytes.size() < 64 * 1024;)
     bytes.append(chunk, static_cast<std::size_t>(count));
   close(fd);
-  return TitleNameOf(bytes);
+  return bytes;
+}
+
+std::optional<std::string> RuntimeHost::InstalledTitleName(const rt::RuntimeInstall& record) const {
+  const auto param = InstalledTitleParameters(record);
+  return param ? TitleNameOf(*param) : std::nullopt;
+}
+
+bool RuntimeHost::KitDeclaresVariableRefresh(const Composition& c) {
+  return c.kit && std::find(c.kit->capabilities.begin(), c.kit->capabilities.end(), rt::kKitDisplayVrr) !=
+                      c.kit->capabilities.end();
+}
+
+bool RuntimeHost::TitleVariableRefreshCurrent(const Composition& c, const rt::RuntimeInstall& record) const {
+  const auto param = InstalledTitleParameters(record);
+  const auto attribute3 = param ? rt::TitleAttribute3(*param) : std::nullopt;
+  // Writing again would not change a layout Playden can't edit.
+  if (!attribute3) return true;
+  return ((*attribute3 & rt::kTitleAttribute3VariableRefresh) != 0) == KitDeclaresVariableRefresh(c);
 }
 
 bool RuntimeHost::TitleNameCurrent(const rt::RuntimeInstall& record) const {
@@ -3000,6 +3020,10 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   const std::string name = title_name.empty() ? "Steam game " + std::to_string(record.runtime_number) : title_name;
   if (!replace_value("titleName", JsonEscaped(name)))
     Log("title metadata app=" + std::to_string(record.runtime_number) + " keeps the kit's name: unexpected layout");
+  // VRR support only with a runtime that keeps 120 Hz under VRR: older ones would cap a VRR display at 60 Hz.
+  const bool variable_refresh = KitDeclaresVariableRefresh(c);
+  if (!rt::SetTitleVariableRefresh(&param, variable_refresh))
+    Log("title metadata app=" + std::to_string(record.runtime_number) + " keeps the kit's attribute3: unexpected layout");
   std::filesystem::path program;
   if (auto launch = record.launch_path; !launch.empty() && !record.install_path.empty()) {
     std::replace(launch.begin(), launch.end(), '\\', '/');
@@ -3007,7 +3031,7 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   }
   const auto icon = config_.title_icon ? config_.title_icon(GameOf(record), program) : std::nullopt;
   Log("title metadata app=" + std::to_string(record.runtime_number) + " name=" + name + " icon=" +
-      (icon ? std::to_string(icon->size()) + "B" : std::string("kit")));
+      (icon ? std::to_string(icon->size()) + "B" : std::string("kit")) + " vrr=" + (variable_refresh ? "1" : "0"));
   return c.installer->WriteTitleMetadata(record, param, icon);
 }
 
@@ -3385,7 +3409,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       const auto bound = c.repository.Update(record);
       if (!bound.ok()) return "The runtime kit artifacts could not be recorded: " + bound.message();
     }
-    if (!c.installer->TitleMetadataCurrent(record)) {
+    if (!c.installer->TitleMetadataCurrent(record) || !TitleVariableRefreshCurrent(c, record)) {
       const auto written = WriteTitleMetadata(c, record, request.title_name);
       if (written.state != rt::PackageActionState::kComplete) return written.message;
     }
@@ -3412,7 +3436,8 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       bool changed = false;
       // Older titles carry the kit's generic name and icon: give them the game's.
       const bool metadata_current = c.installer->TitleMetadataCurrent(*existing) &&
-                                    (request.title_name.empty() || InstalledTitleName(*existing) == request.title_name);
+                                    (request.title_name.empty() || InstalledTitleName(*existing) == request.title_name) &&
+                                    TitleVariableRefreshCurrent(c, *existing);
       if (!metadata_current) {
         const auto written = WriteTitleMetadata(c, *existing, request.title_name);
         if (written.state != rt::PackageActionState::kComplete) return written.message;

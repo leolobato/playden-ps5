@@ -745,8 +745,14 @@ class RuntimeHost {
   // titles may start; empty on success (or with no such kit), otherwise why not.
   std::string SyncTitleAllowList(Composition& composition);
   std::filesystem::path HostPath(const std::string& console_path) const;
+  // The param.json Playden wrote for the game's title, or nothing.
+  std::optional<std::string> InstalledTitleParameters(const runtime::RuntimeInstall& record) const;
   std::optional<std::string> InstalledTitleName(const runtime::RuntimeInstall& record) const;
   bool TitleNameCurrent(const runtime::RuntimeInstall& record) const;
+  // The kit can declare a title VRR-supported (display-vrr).
+  static bool KitDeclaresVariableRefresh(const Composition& composition);
+  // The title's written parameters declare VRR support exactly when the kit can (an unreadable layout counts as current).
+  bool TitleVariableRefreshCurrent(const Composition& composition, const runtime::RuntimeInstall& record) const;
   // Writes the game's own title name (and icon) for its PS5 title.
   runtime::PackageActionResult WriteTitleMetadata(Composition& composition, const runtime::RuntimeInstall& record,
                                                   const std::string& title_name);
