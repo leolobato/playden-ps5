@@ -10384,8 +10384,9 @@ void Simulation::activate() {
         // The Settings row's choice is saved before the download (and so the preparation) starts.
         const auto save_install_choice = [&] {
             if (!install_choice_ || install_choice_game_ != id || !id.valid()) return;
-            // Playden default with nothing saved: nothing to save.
-            if (*install_choice_ == BaseChoice{} && base_of(id) == BaseChoice{}) {
+            // The choice the game already has (Playden default with nothing saved, or its saved settings untouched): nothing
+            // to save, and its settings don't change.
+            if (*install_choice_ == base_of(id)) {
                 install_choice_.reset();
                 return;
             }

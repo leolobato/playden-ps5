@@ -2224,6 +2224,15 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
         activate(live, "details-install");
         check(find_row(live, "install-settings") && find_row(live, "install-settings")->value == "Community: Pad ›",
               "the Install sheet shows the settings saved for the game");
+        {
+            const auto before = live.state().game_settings.at(SteamId(42)).revision;
+            activate(live, "install-confirm");
+            (void)live.TakeInstallRequests();
+            check(live.state().game_settings.at(SteamId(42)).revision == before &&
+                      live.state().game_settings.at(SteamId(42)).community_recipe.id == "community-steam-42-pad",
+                  "installed with them untouched, the settings don't change");
+            activate(live, "details-install");
+        }
         activate(live, "install-settings");
         check(find_row(live, "recipe-" + rev('7')) && find_row(live, "recipe-" + rev('7'))->selected &&
                   find_row(live, "preset-playden-default") && !find_row(live, "preset-playden-default")->selected,
