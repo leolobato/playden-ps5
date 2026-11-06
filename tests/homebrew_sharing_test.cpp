@@ -392,6 +392,16 @@ void share_and_vote(const std::filesystem::path& base) {
     pump(model, service, &sent);
     check(sent.size() == 1 && sent[0].submission.idempotency_key == first_key, "Try again is the same share: the same key");
     check(contains(find_row(model, "share-send")->subtitle, "Try again in 10 minutes"), "a rate limit says when to try again");
+    // The API doesn't know the saved share any more: it is forgotten, and the next Send shares a new recipe.
+    api.answer_with({answer(404, R"({"error":"unknown_submission","message":"no such submission"})")});
+    activate(model, "share-send");
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].submission.submission_id == "sub-1", "the share named the saved submission");
+    check(model.state().game_settings.at(kGame).shared_recipe.submission_id.empty() &&
+              model.ShareDecisionFor(kGame).kind != cm::ShareKind::kUpdateOwn,
+          "a share the API doesn't know is forgotten");
+    check(model.view().surface == "share-recipe" && contains(find_row(model, "share-send")->subtitle, "share it as a new recipe"),
+          "the Share sheet says so");
     // A refused attempt starts over with a new key; this answer matches a published revision.
     api.answer_with({answer(200, R"({"state":"duplicate","recipe_id":")" + kRecipeId + R"(","revision":")" + kRevision + R"("})")});
     activate(model, "share-send");

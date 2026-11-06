@@ -394,6 +394,9 @@ std::string sharing_error_words(const cm::ApiError& error, SharingWhat what) {
     if (error.code == "not_yours")
         return "The earlier share of this game was made from another console, or before the sharing ID was reset. "
                "Send it again to share it as a new recipe.";
+    if (error.code == "unknown_submission" && what == SharingWhat::kShare)
+        return "The recipe service doesn't know the earlier share of this game any more. Send it again to share it as a new "
+               "recipe.";
     if (error.code == "idempotency_conflict") return "The recipe service refused this attempt. Send it again.";
     if (error.code == "choice_required") return "Choose whether to suggest changes or share a new recipe.";
     if (error.code == "unknown_recipe" || error.code == "unknown_revision")
@@ -14833,7 +14836,9 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             open_modal(std::move(review));
         } else {
             const auto words = sharing_error_words(answer.error, SharingWhat::kShare);
-            if (answer.error.code == "not_yours") {
+            // The saved share is another sharing ID's, or the API doesn't know it any more: forgotten either way.
+            const bool forget = answer.error.code == "not_yours" || answer.error.code == "unknown_submission";
+            if (forget) {
                 // The saved share belongs to another sharing ID: the next Send shares a new recipe.
                 if (auto record = state_.game_settings.find(result.game_id); record != state_.game_settings.end()) {
                     record->second.shared_recipe = {};
@@ -14850,7 +14855,7 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
                 push_notice({"recipe-shared", "The recipe wasn't sent", "", false, kLiveNoticeSeconds, true, words});
                 break;
             }
-            if (answer.error.code == "not_yours") {
+            if (forget) {
                 const auto keep_title = share_->title;
                 close_sheet("share-recipe");
                 open_share_sheet(result.game_id);
