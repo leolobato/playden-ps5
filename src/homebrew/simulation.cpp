@@ -14664,6 +14664,7 @@ void Simulation::send_feedback() {
         vote.revision = draft.recipe->revision;
         vote.vote = draft.result == "works" ? "up" : "down";
         vote.reason = draft.result == "works" ? std::string() : draft.reason;
+        if (vote.reason == "other") vote.reason_text = request.reason_text;
         vote.kit = request.kit;
         vote.firmware = request.firmware;
         vote.playden_version = request.playden_version;

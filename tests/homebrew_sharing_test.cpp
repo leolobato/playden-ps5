@@ -539,6 +539,23 @@ void share_and_vote(const std::filesystem::path& base) {
         check(messages == 1 && report_messages == 1, "a failed report and its vote say so once, as the report");
         model.TakeSharingRequests();
     }
+    // Other, in the player's words, goes with the report and with its vote.
+    {
+        check(model.action("details:274520"), "Darkwood's page opens for a report about Other");
+        activate(model, "details-more");
+        activate(model, "share-feedback");
+        activate(model, "feedback-problems");
+        activate(model, "feedback-reason-other");
+        model.SubmitEditorText("The map screen flickers");
+        activate(model, "feedback-send");
+        const auto other = model.TakeSharingRequests();
+        const auto vote = std::find_if(other.begin(), other.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Vote; });
+        const auto report = std::find_if(other.begin(), other.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; });
+        check(report != other.end() && report->report.reason_text == "The map screen flickers", "the report says what Other was");
+        check(vote != other.end() && vote->vote.reason == "other" && vote->vote.reason_text == "The map screen flickers",
+              "and so does its vote");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+    }
     // A newer revision: new settings ask again; Not now twice, then no more.
     auto catalog = model.state().community;
     catalog.games[kGameRef] = {offer(kNewerRevision)};
