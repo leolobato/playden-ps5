@@ -1079,6 +1079,7 @@ void Simulation::SetWallClock(std::int64_t unix_seconds) {
     // Notifications only count down while they can be seen, so none expires behind a dialog.
     const auto elapsed = state_.clock_ticks == 0 ? 0 : std::clamp<std::int64_t>(unix_seconds - state_.clock_ticks, 0, 60);
     state_.clock_ticks = unix_seconds;
+    account_link_tick();
     if (elapsed > 0 && live_notices_visible()) {
         for (auto& notice : state_.notices)
             if (!notice.persistent) notice.remaining_ticks -= static_cast<int>(elapsed);
@@ -5389,6 +5390,8 @@ void Simulation::seed_community_scenario(bool offline) {
         offer.has_votes = seed.up + seed.down > 0;
         offer.votes_up = seed.up;
         offer.votes_down = seed.down;
+        // The fixture's first recipe comes from a trusted account: Verified, the author an account.
+        offer.verified = offer.author_account = std::string(seed.slug) == "120hz-left-stick-pointer";
         catalog.games[id].push_back(std::move(offer));
         synthetic_community_[recipe.revision] = std::move(community);
     }
@@ -5402,6 +5405,24 @@ void Simulation::seed_community_scenario(bool offline) {
 
 bool Simulation::scenario(const std::string& name) {
     if (live()) return false;
+    if (name == "account-link" || name == "account-linked") {
+        // Settings › Community › Playden account: linking (a code and its QR code), or linked to a trusted account.
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-account-link";
+        state_.account_link = {};
+        state_.account_link.checked = true;
+        if (name == "account-linked") {
+            state_.account_link.state = "linked";
+            state_.account_link.name = "Rina";
+            state_.account_link.trusted = true;
+        } else {
+            start_account_link();
+        }
+        rebuild_view();
+        return true;
+    }
     if (name == "leftover-titles") {
         state_.account().authentication = AuthState::SignedIn;
         state_.navigation.modals.clear();
@@ -6884,13 +6905,16 @@ void Simulation::rebuild_view() {
                     const auto current = chooser_current(settings_game);
                     item.title = CommunityRecipeLabel(*offer);
                     item.badge = community_status_label(offer->status);
+                    if (offer->verified) item.badge += " · Verified";
                     // Drawn with a Community tag in front, so a player's recipe never reads as Playden's own.
                     item.tone = "community";
                     if (offer->has_votes)
                         item.value = "👍 " + std::to_string(offer->votes_up) + "  👎 " + std::to_string(offer->votes_down);
                     // The row names it, its status, votes and author; the side panel beside the list has the rest
                     // (where it was tested, what it changes, how it starts the game, its note).
-                    item.subtitle = offer->author.empty() ? std::string("From the community") : "By " + offer->author;
+                    item.subtitle = offer->author.empty() ? std::string("From the community")
+                                  : offer->author_account ? "By " + offer->author + " · Playden account"
+                                                          : "By " + offer->author;
                     // A recipe that can't apply stays listed, greyed out, with the reason.
                     const auto refusal = community_refusal(settings_game, *offer);
                     if (!refusal.empty()) {
@@ -8365,6 +8389,15 @@ void Simulation::rebuild_view() {
                 : state_.recipe_votes == playden::RecipeVotesPreference::kOff
                 ? "Off: Playden never asks and sends no votes. Share feedback… still works."
                 : "Asked after you play. Nothing is sent until you choose Send.";
+            // The Playden account shares and reports credit (plan 2026-11-06 Phase D).
+            auto& account_row = add("settings-account-link", RowKind::Action, "Playden account", "account-link");
+            const auto& link = state_.account_link;
+            account_row.value = link.state == "linked" ? (link.name.empty() ? std::string("Linked") : link.name)
+                              : link.state == "linking" ? std::string("Waiting for approval…") : std::string("Not linked");
+            account_row.subtitle = link.state == "linked"
+                ? (link.trusted ? "Your recipes are Verified. Shares and reports show your account's name."
+                                : "Shares and reports show your account's name.")
+                : "Link one to put your account's name on what you share. Without one, a typed name or none.";
             auto& reset = add("settings-sharing-reset", RowKind::Action, "Reset sharing ID", "sharing-reset");
             reset.subtitle = "The random ID that shared recipes and votes come from";
         }
@@ -11407,6 +11440,31 @@ void Simulation::activate() {
         push_notice({"feedback", "Playden won't ask after games", "", false, kLiveNoticeSeconds, false,
                      "Turn it on again in Settings, under Community."});
     }
+    else if (action_name == "account-link") {
+        if (state_.account_link.state == "linked") {
+            ModalEntry confirm{"confirmation", "Unlink your Playden account?", action_name, {"cancel", "account-unlink-confirm"}, 0, true};
+            confirm.body = "Shares and reports from this console no longer show " +
+                           (state_.account_link.name.empty() ? std::string("your account's name") : state_.account_link.name) +
+                           ". What you already shared keeps it.";
+            open_modal(std::move(confirm));
+        } else {
+            start_account_link();
+        }
+    }
+    else if (action_name == "account-unlink-confirm") {
+        close_modal();
+        if (live()) {
+            SharingRequest request;
+            request.kind = SharingRequestKind::AccountUnlink;
+            request.ticket = ++next_sharing_ticket_;
+            state_.account_link.waiting = true;
+            pending_sharing_requests_.push_back(std::move(request));
+        } else {
+            state_.account_link = {};
+            state_.account_link.checked = true;
+            push_notice({"account-link", "Account unlinked", "", false, kLiveNoticeSeconds, false, "Simulated"});
+        }
+    }
     else if (action_name == "share-feedback") {
         const auto game = state_.navigation.selected_game_id;
         close_modal();
@@ -12778,7 +12836,9 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
     comparison.column = "This recipe";
     std::vector<std::string> meta;
     meta.push_back(offer.author.empty() ? std::string("Community recipe")
-                   : "Community recipe by " + (offer.contributors.empty() ? offer.author : offer.author + " and others"));
+                   : "Community recipe by " + (offer.contributors.empty() ? offer.author : offer.author + " and others") +
+                         (offer.author_account ? " (Playden account)" : ""));
+    if (offer.verified) meta.insert(meta.begin(), "Verified");
     std::vector<std::string> tested;
     if (!offer.tested_kit.empty()) tested.push_back("runtime kit " + offer.tested_kit);
     if (!offer.tested_firmware.empty()) tested.push_back("firmware " + offer.tested_firmware);
@@ -14140,8 +14200,129 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
     case SharingRequestKind::MarkAsked:
     case SharingRequestKind::FeedbackSeen:
         break;
+    case SharingRequestKind::AccountStart:
+    case SharingRequestKind::AccountPoll:
+    case SharingRequestKind::AccountCheck:
+    case SharingRequestKind::AccountUnlink:
+        apply_account_answer(result.kind, result.account);
+        break;
+    }
+    if (result.account_unlinked) {
+        state_.account_link = {};
+        state_.account_link.checked = true;
+        push_notice({"account-link", "Your Playden account was unlinked", "", false, kLiveNoticeSeconds, true,
+                     "Link it again in Settings › Community, or send without it."});
     }
     rebuild_view();
+}
+
+// The linking dialog is a confirmation known by its title (setting_id is for Game settings pickers).
+constexpr const char* kAccountLinkTitle = "Link a Playden account";
+static bool is_account_link_dialog(const ModalEntry& modal) { return modal.id == "confirmation" && modal.title == kAccountLinkTitle; }
+
+void Simulation::start_account_link() {
+    auto& link = state_.account_link;
+    link = {};
+    link.checked = true;
+    link.state = "linking";
+    ModalEntry dialog{"confirmation", kAccountLinkTitle, "settings-account-link", {"cancel"}, 0, false};
+    dialog.body = "Getting a code…";
+    open_modal(std::move(dialog));
+    if (!live()) {
+        // The fixture's code, as the account page would show it.
+        SharingResult::AccountAnswer answer;
+        answer.state = "started";
+        answer.user_code = "WDJB-MJHT";
+        answer.verification_uri = "https://account.playden.club/device?user_code=WDJB-MJHT";
+        apply_account_answer(SharingRequestKind::AccountStart, answer);
+        return;
+    }
+    SharingRequest request;
+    request.kind = SharingRequestKind::AccountStart;
+    request.ticket = ++next_sharing_ticket_;
+    link.waiting = true;
+    pending_sharing_requests_.push_back(std::move(request));
+}
+
+void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResult::AccountAnswer& answer) {
+    auto& link = state_.account_link;
+    link.waiting = false;
+    link.checked = true;
+    const auto dialog = std::find_if(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                                     [](const ModalEntry& modal) { return is_account_link_dialog(modal); });
+    const bool showing = dialog != state_.navigation.modals.end();
+    const auto close_dialog = [this] {
+        std::erase_if(state_.navigation.modals, [](const ModalEntry& modal) { return is_account_link_dialog(modal); });
+        if (!state_.navigation.modals.empty())
+            state_.navigation.focus_key = state_.navigation.modals.back().action_keys[static_cast<std::size_t>(state_.navigation.modals.back().focused_action)];
+        else state_.navigation.focus_key = "settings-account-link";
+    };
+    if (answer.state == "linked") {
+        link.state = "linked";
+        link.name = answer.name;
+        link.trusted = answer.trusted;
+        if (showing) close_dialog();
+        if (kind == SharingRequestKind::AccountPoll)
+            push_notice({"account-link", "Account linked", "", false, kLiveNoticeSeconds, false,
+                         answer.name.empty() ? std::string("Shares and reports show your account's name.") : answer.name});
+    } else if (answer.state == "none") {
+        const bool was = link.state == "linked";
+        link = {};
+        link.checked = true;
+        if (kind == SharingRequestKind::AccountUnlink || was)
+            push_notice({"account-link", "Account unlinked", "", false, kLiveNoticeSeconds, false,
+                         "Shares and reports no longer show its name."});
+    } else if (answer.state == "started") {
+        if (!showing || link.state != "linking") return;  // cancelled meanwhile
+        link.user_code = answer.user_code;
+        link.verification_uri = answer.verification_uri;
+        link.interval = std::max<std::int64_t>(answer.interval, 5);
+        link.next_poll = state_.clock_ticks + link.interval;
+        link.expires_at = state_.clock_ticks + answer.expires_in;
+        dialog->body = "Scan the code with your phone, sign in, and approve the code " + answer.user_code +
+                       ". Playden waits here until you do.";
+        dialog->link = answer.verification_uri;
+        dialog->link_caption = "Scan to link your account · code " + answer.user_code;
+    } else if (answer.state == "pending" || answer.state == "slow") {
+        if (answer.state == "slow") link.interval += 5;
+        link.next_poll = state_.clock_ticks + link.interval;
+    } else if (kind != SharingRequestKind::AccountCheck) {
+        // expired, denied or error: the dialog says so; Link again makes a new code.
+        link.state = "";
+        if (showing) {
+            dialog->body = answer.state == "expired" ? "The code expired. Close this and choose Playden account again for a new one."
+                         : answer.state == "denied" ? "The link was declined on the account page."
+                         : "Playden couldn't reach your account: " + (answer.error.empty() ? std::string("try again later.") : answer.error);
+            dialog->link.clear();
+        }
+    }
+}
+
+void Simulation::account_link_tick() {
+    auto& link = state_.account_link;
+    if (!live()) return;
+    if (!link.checked && !link.waiting && state_.vote_memory_loaded) {
+        // Once per start: whether the saved link still works, and its name.
+        SharingRequest request;
+        request.kind = SharingRequestKind::AccountCheck;
+        request.ticket = ++next_sharing_ticket_;
+        link.waiting = true;
+        pending_sharing_requests_.push_back(std::move(request));
+        return;
+    }
+    if (link.state != "linking" || link.waiting || link.user_code.empty()) return;
+    const bool showing = std::any_of(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                                     [](const ModalEntry& modal) { return is_account_link_dialog(modal); });
+    if (!showing) {
+        link.state = "";  // closed: stop waiting
+        return;
+    }
+    if (state_.clock_ticks < link.next_poll) return;
+    SharingRequest request;
+    request.kind = SharingRequestKind::AccountPoll;
+    request.ticket = ++next_sharing_ticket_;
+    link.waiting = true;
+    pending_sharing_requests_.push_back(std::move(request));
 }
 
 std::string Simulation::vote_words(const cm::CastVote* vote) const {

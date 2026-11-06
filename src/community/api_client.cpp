@@ -128,7 +128,8 @@ struct Exchange {
 // when the URL is on the API's own origin.
 Exchange Perform(const ApiContext& context, steam::HttpMethod method, const std::string& path, std::string body,
                  const std::string* secret, const std::string& idempotency_key, const std::atomic<bool>& cancel,
-                 const char* content_type = "application/json", std::uint32_t timeout_ms = 0) {
+                 const char* content_type = "application/json", std::uint32_t timeout_ms = 0,
+                 const std::string& account_token = {}) {
   Exchange exchange;
   const std::string url = context.endpoints.api_base_url + path;
   const std::string origin = UrlOrigin(url);
@@ -160,6 +161,7 @@ Exchange Perform(const ApiContext& context, steam::HttpMethod method, const std:
   if (method == steam::HttpMethod::kPost) request.headers.emplace_back("Content-Type", content_type);
   if (secret) request.headers.emplace_back("Authorization", "Bearer " + *secret);
   if (!idempotency_key.empty()) request.headers.emplace_back("Idempotency-Key", idempotency_key);
+  if (!account_token.empty()) request.headers.emplace_back("X-Playden-Account", account_token);
   request.body.assign(body.begin(), body.end());
   request.timeout_ms = timeout_ms != 0 ? timeout_ms : context.timeout_ms;
   request.max_response_bytes = kMaxResponseBytes;
@@ -363,7 +365,7 @@ std::string VoteBody(const VoteRequest& request) {
 }
 
 SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secret, const SubmissionRequest& request,
-                              const std::atomic<bool>& cancel) {
+                              const std::atomic<bool>& cancel, const std::string& account_token) {
   SubmissionResult result;
   if (!IsInstallSecret(secret)) {
     result.error = LocalError("invalid_request", "no valid sharing ID");
@@ -379,14 +381,14 @@ SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secr
     return result;
   }
   auto exchange = Perform(context, steam::HttpMethod::kPost, "/v1/submissions", std::move(body), &secret,
-                          request.idempotency_key, cancel);
+                          request.idempotency_key, cancel, "application/json", 0, account_token);
   if (!exchange.sent) {
     result.error = exchange.error;
     return result;
   }
   const auto& response = exchange.response;
   const long status = response.status_code;
-  if (EchoesSecret(response, secret)) {
+  if (EchoesSecret(response, secret) || EchoesSecret(response, account_token)) {
     result.error = BadResponse(status);
     return result;
   }
@@ -527,11 +529,12 @@ bool OneOf(std::string_view value, std::initializer_list<std::string_view> names
   return false;
 }
 
-// Digits only, 1-20: a store's game ID.
+// A store's game ID: 1-64 of A-Z a-z 0-9 . _ - (Steam's and GOG's are digits; Epic's are not).
 bool StoreIdText(std::string_view id) {
-  if (id.empty() || id.size() > 20) return false;
+  if (id.empty() || id.size() > 64) return false;
   for (const char c : id)
-    if (c < '0' || c > '9') return false;
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '_' || c == '-'))
+      return false;
   return true;
 }
 
@@ -661,7 +664,7 @@ AttachmentResult UploadAttachment(const ApiContext& context, const std::string& 
 }
 
 ReportResult SendReport(const ApiContext& context, const std::string& secret, const ReportRequest& request,
-                        const std::atomic<bool>& cancel) {
+                        const std::atomic<bool>& cancel, const std::string& account_token) {
   ReportResult result;
   if (!IsInstallSecret(secret)) {
     result.error = LocalError("invalid_request", "no valid sharing ID");
@@ -677,14 +680,14 @@ ReportResult SendReport(const ApiContext& context, const std::string& secret, co
     return result;
   }
   auto exchange = Perform(context, steam::HttpMethod::kPost, "/v1/reports", std::move(body), &secret,
-                          request.idempotency_key, cancel);
+                          request.idempotency_key, cancel, "application/json", 0, account_token);
   if (!exchange.sent) {
     result.error = exchange.error;
     return result;
   }
   const auto& response = exchange.response;
   const long status = response.status_code;
-  if (EchoesSecret(response, secret)) {
+  if (EchoesSecret(response, secret) || EchoesSecret(response, account_token)) {
     result.error = BadResponse(status);
     return result;
   }
@@ -710,6 +713,123 @@ ReportResult SendReport(const ApiContext& context, const std::string& secret, co
   result.issue_url = issue_url.value_or("");
   result.updated = updated && updated->boolean();
   return result;
+}
+
+AccountLinkStart StartAccountLink(const ApiContext& context, const std::atomic<bool>& cancel) {
+  AccountLinkStart result;
+  auto exchange = Perform(context, steam::HttpMethod::kPost, "/api/auth/device/code",
+                          std::string("{\"client_id\":\"") + kAccountClientId + "\"}", nullptr, {}, cancel);
+  if (!exchange.sent) {
+    result.error = exchange.error;
+    return result;
+  }
+  const auto& response = exchange.response;
+  if (response.status_code != 200) {
+    result.error = ErrorFrom(response, {});
+    return result;
+  }
+  const auto doc = JsonBody(response);
+  const auto device = doc ? StringField(*doc, "device_code") : std::nullopt;
+  const auto user = doc ? StringField(*doc, "user_code") : std::nullopt;
+  const auto uri = doc ? StringField(*doc, "verification_uri_complete") : std::nullopt;
+  const auto number = [&](const char* key, std::int64_t fallback) {
+    const auto* value = doc ? doc->Find(key) : nullptr;
+    const auto parsed = value ? value->AsUint64() : std::nullopt;
+    return parsed && *parsed > 0 && *parsed < 86400 ? static_cast<std::int64_t>(*parsed) : fallback;
+  };
+  if (!device || !IsAccountToken(*device) || !user || !ShortAscii(*user, 16) || user->empty() || !uri || !PrUrl(*uri)) {
+    result.error = BadResponse(response.status_code);
+    return result;
+  }
+  result.ok = true;
+  result.device_code = *device;
+  result.user_code = *user;
+  result.verification_uri_complete = *uri;
+  result.interval = number("interval", 5);
+  result.expires_in = number("expires_in", 900);
+  return result;
+}
+
+AccountLinkPoll PollAccountLink(const ApiContext& context, const std::string& device_code, const std::atomic<bool>& cancel) {
+  AccountLinkPoll result;
+  if (!IsAccountToken(device_code)) {
+    result.error = LocalError("invalid_request", "no device code");
+    return result;
+  }
+  const std::string body = std::string("{\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\",\"device_code\":") +
+                           Quoted(device_code) + ",\"client_id\":\"" + kAccountClientId + "\"}";
+  auto exchange = Perform(context, steam::HttpMethod::kPost, "/api/auth/device/token", body, nullptr, {}, cancel);
+  if (!exchange.sent) {
+    result.error = exchange.error;
+    return result;
+  }
+  const auto& response = exchange.response;
+  const auto doc = JsonBody(response);
+  if (response.status_code == 200) {
+    const auto token = doc ? StringField(*doc, "access_token") : std::nullopt;
+    if (!token || !IsAccountToken(*token)) {
+      result.error = BadResponse(200);
+      return result;
+    }
+    result.state = AccountLinkState::kLinked;
+    result.token = *token;
+    return result;
+  }
+  // RFC 8628 errors: keep polling, slower, or stop.
+  const auto error = doc ? StringField(*doc, "error") : std::nullopt;
+  if (error && *error == "authorization_pending") result.state = AccountLinkState::kPending;
+  else if (error && *error == "slow_down") result.state = AccountLinkState::kSlowDown;
+  else if (error && *error == "expired_token") result.state = AccountLinkState::kExpired;
+  else if (error && *error == "access_denied") result.state = AccountLinkState::kDenied;
+  else result.error = ErrorFrom(response, device_code);
+  return result;
+}
+
+LinkedAccount GetLinkedAccount(const ApiContext& context, const std::string& token, const std::atomic<bool>& cancel) {
+  LinkedAccount result;
+  if (!IsAccountToken(token)) {
+    result.error = LocalError("invalid_request", "no account token");
+    return result;
+  }
+  auto exchange = Perform(context, steam::HttpMethod::kGet, "/v1/account", {}, nullptr, {}, cancel, "application/json", 0, token);
+  if (!exchange.sent) {
+    result.error = exchange.error;
+    return result;
+  }
+  const auto& response = exchange.response;
+  if (EchoesSecret(response, token)) {
+    result.error = BadResponse(response.status_code);
+    return result;
+  }
+  if (response.status_code == 401) {
+    result.unlinked = true;
+    result.error = ErrorFrom(response, token);
+    return result;
+  }
+  const auto doc = response.status_code == 200 ? JsonBody(response) : std::nullopt;
+  const auto name = doc ? StringField(*doc, "name") : std::nullopt;
+  const auto* trusted = doc ? doc->Find("trusted") : nullptr;
+  if (!name || (!name->empty() && !PrintableText(*name, 1, kSubmissionNameMaxCharacters)) || !trusted || !trusted->is_bool()) {
+    result.error = response.status_code == 200 ? BadResponse(200) : ErrorFrom(response, token);
+    return result;
+  }
+  result.ok = true;
+  result.name = *name;
+  result.trusted = trusted->boolean();
+  return result;
+}
+
+bool UnlinkAccount(const ApiContext& context, const std::string& token, const std::atomic<bool>& cancel, ApiError* error) {
+  if (!IsAccountToken(token)) return true;
+  auto exchange = Perform(context, steam::HttpMethod::kPost, "/v1/account/unlink", "{}", nullptr, {}, cancel, "application/json", 0, token);
+  if (!exchange.sent) {
+    if (error) *error = exchange.error;
+    return false;
+  }
+  // Already unlinked counts as done.
+  if (exchange.response.status_code == 204 || exchange.response.status_code == 401) return true;
+  if (error) *error = ErrorFrom(exchange.response, token);
+  return false;
 }
 
 }  // namespace playden::community

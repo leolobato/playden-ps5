@@ -495,9 +495,11 @@ void Controller::TickCommunity() {
         offer.revision = summary.revision;
         offer.flags = summary.flags;
         if (summary.votes) {
-          offer.has_votes = true;
+          offer.has_votes = summary.votes->up + summary.votes->down > 0;
           offer.votes_up = summary.votes->up;
           offer.votes_down = summary.votes->down;
+          offer.verified = summary.votes->verified;
+          offer.author_account = summary.votes->author == "account";
         }
         offers.push_back(std::move(offer));
       }

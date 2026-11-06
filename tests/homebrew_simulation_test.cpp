@@ -1684,14 +1684,17 @@ void community_recipes_chooser(const std::filesystem::path& fixtures, const std:
     // A recipe row: status, votes and author only; the side panel has where it was tested and what it changes.
     check(simulation.scenario("recipes-three"), "recipes-three scenario loads again");
     const auto* row = find_row(simulation, "recipe-" + rev('1'));
-    check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works" && row->value == "👍 14  👎 1" &&
-              row->subtitle == "By leolobato" && row->lines.empty(),
-          "a recipe row shows its status, votes and author");
+    check(row && row->title == "120 Hz, pointer on left stick" && row->badge == "Works · Verified" && row->value == "👍 14  👎 1" &&
+              row->subtitle == "By leolobato · Playden account" && row->lines.empty(),
+          "a recipe row shows its status, Verified, votes and author, an account's marked");
+    check(find_row(simulation, "recipe-" + rev('2'))->subtitle == "By rina" &&
+              find_row(simulation, "recipe-" + rev('2'))->badge == "Works",
+          "a typed name has no account mark, an unverified recipe no Verified");
     simulation.action("focus:recipe-" + rev('1'));
     {
         const auto& comparison = simulation.view().comparison;
         check(comparison && comparison->column == "This recipe" &&
-                  comparison->hint == "Community recipe by leolobato · tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
+                  comparison->hint == "Verified · Community recipe by leolobato (Playden account) · tested on runtime kit 0.12, firmware 10.01, 2026-10-20",
               "the side panel says where the focused recipe was tested");
         check(comparison && std::any_of(comparison->rows.begin(), comparison->rows.end(),
                                         [](const std::array<std::string, 3>& line) { return line[2] == "3840×2160"; }),

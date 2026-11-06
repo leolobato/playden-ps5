@@ -637,7 +637,7 @@ void Reports() {
   CHECK(ReportRequestProblem(Report()).empty());
   CHECK(problem([](ReportRequest& r) { r.store = "itch"; }));
   CHECK(problem([](ReportRequest& r) { r.store = "imported"; }));  // an imported game has no store ID
-  CHECK(problem([](ReportRequest& r) { r.store_id = "27x"; }));
+  CHECK(problem([](ReportRequest& r) { r.store_id = "27 x"; }));
   CHECK(problem([](ReportRequest& r) { r.result = "fine"; }));
   CHECK(problem([](ReportRequest& r) { r.result = "works"; }));  // a reason only for a problem
   CHECK(problem([](ReportRequest& r) { r.details = std::string(501, 'a'); }));
@@ -688,6 +688,48 @@ void Reports() {
                          "report-key-1-logs", cancel).error.code == "invalid_request");
   CHECK(UploadAttachment(context, "nope", zip, "report-key-1-logs", cancel).error.code == "invalid_request");
   CHECK(api.requests.size() == 1);
+}
+
+// Linking an account: the device flow's two calls, the account, unlinking, and the header on shares and reports.
+void AccountLink() {
+  FakeApi api;
+  const auto context = Context(&api);
+  std::atomic<bool> cancel{false};
+  api.answers = {Answer(200, R"({"device_code":"dev_code_0123456789","user_code":"WDJB-MJHT","verification_uri":"https://account.playden.club/device","verification_uri_complete":"https://account.playden.club/device?user_code=WDJB-MJHT","expires_in":900,"interval":5})")};
+  const auto start = StartAccountLink(context, cancel);
+  CHECK(start.ok && start.user_code == "WDJB-MJHT" && start.interval == 5 && start.expires_in == 900 &&
+        start.verification_uri_complete == "https://account.playden.club/device?user_code=WDJB-MJHT");
+  CHECK(api.requests.back().url == "https://api.playden.club/api/auth/device/code" && Body(api.requests.back()) == R"({"client_id":"playden-ps5"})" &&
+        !HasHeader(api.requests.back(), "Authorization"));
+  api.answers = {Answer(400, R"({"error":"authorization_pending","error_description":"wait"})")};
+  CHECK(PollAccountLink(context, start.device_code, cancel).state == AccountLinkState::kPending);
+  CHECK(Body(api.requests.back()).find("urn:ietf:params:oauth:grant-type:device_code") != std::string::npos);
+  api.answers = {Answer(400, R"({"error":"slow_down"})")};
+  CHECK(PollAccountLink(context, start.device_code, cancel).state == AccountLinkState::kSlowDown);
+  api.answers = {Answer(400, R"({"error":"expired_token"})")};
+  CHECK(PollAccountLink(context, start.device_code, cancel).state == AccountLinkState::kExpired);
+  api.answers = {Answer(400, R"({"error":"access_denied"})")};
+  CHECK(PollAccountLink(context, start.device_code, cancel).state == AccountLinkState::kDenied);
+  const std::string token = "tok_rina_0123456789abcdef";
+  api.answers = {Answer(200, R"({"access_token":")" + token + R"(","token_type":"Bearer","expires_in":7776000})")};
+  const auto linked = PollAccountLink(context, start.device_code, cancel);
+  CHECK(linked.state == AccountLinkState::kLinked && linked.token == token);
+  api.answers = {Answer(200, R"({"name":"Rina","trusted":true})")};
+  const auto account = GetLinkedAccount(context, token, cancel);
+  CHECK(account.ok && account.name == "Rina" && account.trusted && HeaderOf(api.requests.back(), "X-Playden-Account") == token);
+  api.answers = {Answer(401, R"({"error":"account_unlinked","message":"ended"})")};
+  CHECK(GetLinkedAccount(context, token, cancel).unlinked);
+  api.answers = {Answer(200, R"({"name":")" + token + R"(","trusted":false})")};
+  CHECK(!GetLinkedAccount(context, token, cancel).ok);  // an answer echoing the token is refused
+  api.answers = {Answer(204, "")};
+  CHECK(UnlinkAccount(context, token, cancel, nullptr) && api.requests.back().url == "https://api.playden.club/v1/account/unlink");
+  // Shares and reports carry the account beside the install secret.
+  api.answers = {Answer(201, R"({"id":"r_7","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/801"})")};
+  CHECK(SendReport(context, kSecret, Report(), cancel, token).ok);
+  CHECK(HeaderOf(api.requests.back(), "X-Playden-Account") == token && HeaderOf(api.requests.back(), "Authorization") == "Bearer " + kSecret);
+  api.answers = {Answer(401, R"({"error":"account_unlinked","message":"ended"})")};
+  CHECK(SendReport(context, kSecret, Report(), cancel, token).error.code == "account_unlinked");
+  CHECK(IsAccountToken(token) && !IsAccountToken("short") && !IsAccountToken("has space in it 0123"));
 }
 
 // Plain http: only a dev build, only to the configured API.
@@ -747,6 +789,7 @@ int main(int argc, char** argv) {
   SecretEchoes();
   Votes();
   Reports();
+  AccountLink();
   PlainHttp();
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
   return failures ? 1 : 0;

@@ -298,8 +298,10 @@ struct CommunityRecipeOffer {
     std::string tested_kit, min_kit, tested_firmware, tested_date, notes;
     std::string revision;            // sha256 of the file (64 hex)
     std::vector<std::string> flags;  // what changes how the game starts (runtime::CommunityRecipeFlags)
-    bool has_votes = false;          // the API had totals for this revision
+    bool has_votes = false;          // the API had votes for this revision
     std::uint32_t votes_up = 0, votes_down = 0;
+    bool verified = false;           // marked Verified, or shared by a trusted account (summary.json)
+    bool author_account = false;     // the author is a Playden account, not only a typed name
     bool operator==(const CommunityRecipeOffer&) const = default;
 };
 // What the chooser and Game settings call a recipe: its title, or for one shared without a title "Recipe from
@@ -322,7 +324,8 @@ struct CommunityCatalog {
 // Sharing recipes and voting (community recipes, plan Phases 5 and 6). The model hands these to the
 // sharing worker (homebrew/sharing_service.hpp) and gets its answers back; it never holds the
 // console's sharing ID (the install secret), which only that worker reads and sends.
-enum class SharingRequestKind { Submit, Status, Vote, MarkAsked, ResetSharingId, Report, FeedbackSeen };
+enum class SharingRequestKind { Submit, Status, Vote, MarkAsked, ResetSharingId, Report, FeedbackSeen, AccountStart, AccountPoll,
+                                AccountCheck, AccountUnlink };
 struct SharingRequest {
     SharingRequestKind kind = SharingRequestKind::Submit;
     std::uint64_t ticket = 0;   // matches the result to the request
@@ -352,6 +355,17 @@ struct SharingResult {
     playden::community::SubmissionStatus status;      // Status (its id is the submission asked about)
     playden::community::VoteResult vote;              // Vote
     playden::community::ReportResult report;          // Report
+    // Account*: what the link is now. state: none, started (user_code and verification_uri to show), pending, slow,
+    // linked (name, trusted), expired, denied or error. The token never leaves the worker.
+    struct AccountAnswer {
+        std::string state;
+        std::string user_code, verification_uri;
+        std::int64_t interval = 5, expires_in = 900;
+        std::string name;
+        bool trusted = false;
+        std::string error;
+    } account;
+    bool account_unlinked = false;  // Submit, Report: the API said the account link ended (the token is forgotten)
     bool ok = false;                                  // ResetSharingId
     std::string error;                                // ResetSharingId: why it failed
 };
@@ -933,6 +947,17 @@ struct State {
     playden::RecipeVotesPreference recipe_votes = playden::RecipeVotesPreference::kUnset;
     bool sharing_explained = false;
     bool reports_explained = false;  // the first report said what it sends
+    // The Playden account this console is linked to (Settings › Community › Account), as the sharing worker last said.
+    struct AccountLink {
+        std::string state;  // "" not linked (or not known yet), "linking" (a code shown), "linked"
+        std::string name;
+        bool trusted = false;
+        std::string user_code, verification_uri, error;
+        std::int64_t interval = 5, next_poll = 0, expires_at = 0;
+        bool waiting = false;  // a request is with the worker
+        bool checked = false;  // the worker was asked once since start
+        bool operator==(const AccountLink&) const = default;
+    } account_link;
     std::string share_name;
     std::map<GameId, std::uint64_t> save_sizes;         // live: Windows user folders of games without Steam Cloud
     Navigation navigation;
@@ -1538,6 +1563,9 @@ private:
     void send_vote();
     void dismiss_vote();
     void show_feedback_prompt();
+    void start_account_link();
+    void apply_account_answer(SharingRequestKind kind, const SharingResult::AccountAnswer& answer);
+    void account_link_tick();
     void open_feedback(GameId id, bool short_session, bool after_play);
     [[nodiscard]] std::vector<std::string> feedback_actions() const;
     void send_feedback();

@@ -43,4 +43,16 @@ std::optional<std::string> LoadOrCreateInstallSecret(const std::string& store_ro
 // no longer be changed, and earlier submissions are no longer this console's.
 std::optional<std::string> ResetInstallSecret(const std::string& store_root, std::string* error);
 
+// The linked account's session token (plan 2026-11-06 Phase D), kept beside the sharing ID in
+// <community store root>/account-token (0600). Sent only as X-Playden-Account to the Playden API,
+// never logged and never handed to the model.
+inline constexpr const char* kAccountTokenFileName = "account-token";
+// 16-512 of A-Z a-z 0-9 . _ ~ + / = - (a Better Auth session token).
+bool IsAccountToken(std::string_view text);
+// The token, or nothing: *error stays empty when no account is linked.
+std::optional<std::string> LoadAccountToken(const std::string& store_root, std::string* error);
+bool SaveAccountToken(const std::string& store_root, const std::string& token, std::string* error);
+// Forgets the link (no file is fine).
+bool DeleteAccountToken(const std::string& store_root, std::string* error);
+
 }  // namespace playden::community

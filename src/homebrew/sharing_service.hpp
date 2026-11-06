@@ -95,6 +95,11 @@ class SharingService {
   // Worker-only state.
   std::optional<std::string> secret_;
   community::VoteState memory_;
+  std::string device_code_;  // the account link being approved
+  // The linked account's token: loaded once (nullopt: not loaded yet; "": none).
+  std::optional<std::string> account_token_;
+  const std::string& AccountToken();
+  void ForgetAccount();
 };
 
 }  // namespace playden::homebrew

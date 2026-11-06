@@ -324,6 +324,8 @@ void share_and_vote(const std::filesystem::path& base) {
     model.SetWallClock(1'000'000 + 400);
     open_game_settings(model);
     status_requests = model.TakeSharingRequests();
+    // The first clock tick also asks once whether an account is linked.
+    std::erase_if(status_requests, [](const SharingRequest& request) { return request.kind == SharingRequestKind::AccountCheck; });
     check(status_requests.size() == 1 && status_requests[0].kind == SharingRequestKind::Status &&
               status_requests[0].submission_id == "sub-1",
           "opening Game settings later asks for the shared recipe's state");
@@ -719,6 +721,90 @@ void report_with_logs(const std::filesystem::path& base) {
     service.Shutdown();
 }
 
+// Settings › Community › Playden account: a code and QR code, polled until approved; the token stays with the
+// worker (0600), shares and reports carry it, and an ended link is forgotten.
+void account_link(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    FakeApi api;
+    playden::homebrew::SharingServiceConfig config;
+    config.store_root = (base / "community-recipes").string();
+    config.fetch = api.fetch();
+    config.sleep = [](std::uint32_t, const std::atomic<bool>&) {};
+    playden::homebrew::SharingService service(config);
+    service.Start();
+    service.Wait();
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up(model, base);
+    pump(model, service);
+    model.SetWallClock(1'000'001);
+    auto checked = model.TakeSharingRequests();
+    check(checked.size() == 1 && checked[0].kind == SharingRequestKind::AccountCheck, "Playden asks once whether an account is linked");
+    for (auto& request : checked) service.Submit(std::move(request));
+    service.Wait();
+    for (const auto& result : service.TakeResults()) model.ApplySharingResult(result);
+    check(model.state().account_link.checked && model.state().account_link.state.empty(), "no account linked yet");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    model.action("circle");
+    model.action("l1");
+    check(model.state().navigation.route == playden::homebrew::Route::Settings, "Settings opens");
+    model.SetWallClock(1'000'002);
+    const std::string token = "tok_rina_0123456789abcdef";
+    api.answer_with({answer(200, R"({"device_code":"dev_code_0123456789","user_code":"WDJB-MJHT","verification_uri_complete":"https://account.playden.club/device?user_code=WDJB-MJHT","expires_in":900,"interval":5})")});
+    check(model.action("focus:settings-account-link") && model.action("cross"), "Playden account opens linking");
+    pump(model, service);
+    {
+        const auto& dialog = model.state().navigation.modals.back();
+        check(dialog.title == "Link a Playden account" && contains(dialog.body, "WDJB-MJHT") &&
+                  dialog.link == "https://account.playden.club/device?user_code=WDJB-MJHT",
+              "the dialog shows the code and its QR code");
+    }
+    api.answer_with({answer(400, R"({"error":"authorization_pending"})")});
+    model.SetWallClock(1'000'004);
+    check(model.TakeSharingRequests().empty(), "it waits the interval before polling");
+    model.SetWallClock(1'000'008);
+    pump(model, service);
+    check(model.state().account_link.state == "linking", "still waiting for approval");
+    api.answer_with({answer(200, R"({"access_token":")" + token + R"(","token_type":"Bearer","expires_in":7776000})"),
+                     answer(200, R"({"name":"Rina","trusted":true})")});
+    model.SetWallClock(1'000'014);
+    pump(model, service);
+    check(model.state().account_link.state == "linked" && model.state().account_link.name == "Rina" &&
+              model.state().account_link.trusted && model.state().navigation.modals.empty(),
+          "approved: linked to Rina, the dialog closed");
+    check(read_text(base / "community-recipes" / cm::kAccountTokenFileName) == token + "\n" &&
+              (std::filesystem::status(base / "community-recipes" / cm::kAccountTokenFileName).permissions() &
+               std::filesystem::perms::group_all) == std::filesystem::perms::none,
+          "the token is kept privately by the worker");
+    check(find_row(model, "settings-account-link")->value == "Rina", "Settings shows the account");
+    // A report carries the account; an ended link is forgotten and said.
+    SharingRequest report;
+    report.kind = SharingRequestKind::Report;
+    report.ticket = 99;
+    report.game_id = kGame;
+    report.report.store = "steam";
+    report.report.store_id = "274520";
+    report.report.name = "Darkwood";
+    report.report.result = "works";
+    report.report.installed_on = "console";
+    report.report.kit = report.report.firmware = report.report.playden_version = "unknown";
+    api.answer_with({answer(401, R"({"error":"account_unlinked","message":"ended"})")});
+    service.Submit(report);
+    service.Wait();
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        check(!api.requests.empty() && [&] {
+            for (const auto& [name, value] : api.requests.back().headers)
+                if (name == "X-Playden-Account") return value == token;
+            return false;
+        }(), "the report carries the account");
+    }
+    for (const auto& result : service.TakeResults()) model.ApplySharingResult(result);
+    check(model.state().account_link.state.empty() && !std::filesystem::exists(base / "community-recipes" / cm::kAccountTokenFileName),
+          "an ended link is forgotten");
+    service.Shutdown();
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -727,6 +813,7 @@ int main() {
     share_and_vote(base);
     community_keep(base / "keep");
     report_with_logs(base / "report");
+    account_link(base / "account");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;

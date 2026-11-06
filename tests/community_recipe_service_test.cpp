@@ -360,7 +360,7 @@ int main(int argc, char** argv) {
   {
     h.network.routes[h.site.summary] = Route{
         200, R"({"generated_at":"x","recipes":{")" + good_id + R"(":{")" + Sha256Hex(good) +
-                 R"(":{"up":42,"down":3,"reasons":{"slow":1,"crash":2},"kits":{}}}}})", {}};
+                 R"(":{"up":42,"down":3,"reasons":{"slow":1,"crash":2},"kits":{},"verified":true,"author":"account"}}}})", {}};
     auto service = h.Make(root);
     service->Start();
     service->Wait();
@@ -377,6 +377,7 @@ int main(int argc, char** argv) {
     CHECK(first && !first->notes.empty() && !first->flags.empty());
     CHECK(first && first->votes && first->votes->up == 42 && first->votes->down == 3);
     CHECK(first && first->votes && first->votes->reasons.size() == 2 && first->votes->reasons[0].first == "crash");
+    CHECK(first && first->votes && first->votes->verified && first->votes->author == "account");
     CHECK(Find(*snapshot, 274520, "community-274520-second") && !Find(*snapshot, 274520, "community-274520-second")->votes);
     CHECK(Find(*snapshot, 274520, "community-274520-publisher-key"));
     CHECK(Find(*snapshot, 10, "community-10-other"));

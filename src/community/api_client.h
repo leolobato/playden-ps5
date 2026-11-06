@@ -122,7 +122,7 @@ inline constexpr std::size_t kReportMaxVersionRows = 24;
 
 struct ReportRequest {
   std::string store;         // steam, epic, gog or imported
-  std::string store_id;      // the store's game ID ("274520"); empty for an imported game
+  std::string store_id;      // the store's game ID ("274520"), 1-64 of A-Z a-z 0-9 . _ -; empty for an imported game
   std::string name;          // the game's name, 1-120 printable characters
   std::string result;        // works, partial, broken or no-start
   std::string reason;        // optional: no-start, crash, slow, controls, other (not with works)
@@ -161,7 +161,37 @@ std::string ReportBody(const ReportRequest& request);
 AttachmentResult UploadAttachment(const ApiContext& context, const std::string& secret, const std::string& zip,
                                   const std::string& idempotency_key, const std::atomic<bool>& cancel);
 ReportResult SendReport(const ApiContext& context, const std::string& secret, const ReportRequest& request,
-                        const std::atomic<bool>& cancel);
+                        const std::atomic<bool>& cancel, const std::string& account_token = {});
+
+// Linking an account (the OAuth device flow on the API host): Playden asks for a code, shows it with
+// a QR code of verification_uri_complete, and polls until the player approved it on the account page.
+inline constexpr const char* kAccountClientId = "playden-ps5";
+struct AccountLinkStart {
+  bool ok = false;
+  std::string device_code;  // kept by the worker only
+  std::string user_code;    // shown on screen, e.g. "WDJB-MJHT"
+  std::string verification_uri_complete;
+  std::int64_t interval = 5;     // seconds between polls
+  std::int64_t expires_in = 900;
+  ApiError error;
+};
+AccountLinkStart StartAccountLink(const ApiContext& context, const std::atomic<bool>& cancel);
+enum class AccountLinkState { kPending, kSlowDown, kLinked, kExpired, kDenied, kError };
+struct AccountLinkPoll {
+  AccountLinkState state = AccountLinkState::kError;
+  std::string token;  // kLinked: the session token, kept by the worker only
+  ApiError error;
+};
+AccountLinkPoll PollAccountLink(const ApiContext& context, const std::string& device_code, const std::atomic<bool>& cancel);
+struct LinkedAccount {
+  bool ok = false;
+  bool unlinked = false;  // 401 account_unlinked: the link ended (the token is forgotten)
+  std::string name;
+  bool trusted = false;
+  ApiError error;
+};
+LinkedAccount GetLinkedAccount(const ApiContext& context, const std::string& token, const std::atomic<bool>& cancel);
+bool UnlinkAccount(const ApiContext& context, const std::string& token, const std::atomic<bool>& cancel, ApiError* error);
 
 // The export of a game's effective settings made ready to share: its title set and its locks
 // dropped (the API refuses locked rows; a recipe's defaults still apply, the player can change them).
@@ -181,8 +211,9 @@ bool IsSubmissionId(std::string_view id);
 // An Idempotency-Key: 8-128 of A-Z a-z 0-9 _ -.
 bool IsIdempotencyKey(std::string_view key);
 
+// account_token (optional): the linked account, sent as X-Playden-Account (plan 2026-11-06 Phase D).
 SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secret, const SubmissionRequest& request,
-                              const std::atomic<bool>& cancel);
+                              const std::atomic<bool>& cancel, const std::string& account_token = {});
 // known_secret is never sent: an answer holding it is refused (bad_response).
 SubmissionStatus GetSubmission(const ApiContext& context, const std::string& id, const std::atomic<bool>& cancel,
                                std::string_view known_secret = {});

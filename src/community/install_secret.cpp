@@ -106,4 +106,52 @@ std::optional<std::string> ResetInstallSecret(const std::string& store_root, std
   return WriteNew(store_root, error);
 }
 
+bool IsAccountToken(std::string_view text) {
+  if (text.size() < 16 || text.size() > 512) return false;
+  for (const char c : text)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '~' ||
+          c == '+' || c == '/' || c == '=' || c == '-'))
+      return false;
+  return true;
+}
+
+std::optional<std::string> LoadAccountToken(const std::string& store_root, std::string* error) {
+  if (error) error->clear();
+  if (!PrepareCommunityRoot(store_root, error)) return std::nullopt;
+  const auto read = Storage(store_root).ReadDurable(kAccountTokenFileName, 1024);
+  if (!read.ok()) {
+    if (read.error() != StorageError::kNotFound && error) *error = std::string("cannot read the account link: ") + read.message();
+    return std::nullopt;
+  }
+  std::string text(read.value().begin(), read.value().end());
+  if (!text.empty() && text.back() == '\n') text.pop_back();
+  if (!IsAccountToken(text)) return std::nullopt;
+  return text;
+}
+
+bool SaveAccountToken(const std::string& store_root, const std::string& token, std::string* error) {
+  if (!IsAccountToken(token)) {
+    if (error) *error = "not an account token";
+    return false;
+  }
+  if (!PrepareCommunityRoot(store_root, error)) return false;
+  const std::string text = token + "\n";
+  const auto written = Storage(store_root).WriteDurable(kAccountTokenFileName, Bytes(text.begin(), text.end()));
+  if (!written.ok()) {
+    if (error) *error = std::string("cannot save the account link: ") + written.message();
+    return false;
+  }
+  return true;
+}
+
+bool DeleteAccountToken(const std::string& store_root, std::string* error) {
+  if (!PrepareCommunityRoot(store_root, error)) return false;
+  const auto removed = Storage(store_root).Remove(kAccountTokenFileName);
+  if (!removed.ok() && removed.error() != StorageError::kNotFound) {
+    if (error) *error = std::string("cannot forget the account link: ") + removed.message();
+    return false;
+  }
+  return true;
+}
+
 }  // namespace playden::community

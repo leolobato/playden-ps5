@@ -68,6 +68,10 @@ struct RecipeVotes {
   std::uint32_t up = 0;
   std::uint32_t down = 0;
   std::vector<std::pair<std::string, std::uint32_t>> reasons;  // thumbs-down reasons, most first
+  // Published revisions (plan 2026-11-06): marked Verified by the team or shared by a trusted account,
+  // and who the author is: "account", "named" or "anonymous" ("" when the API didn't say).
+  bool verified = false;
+  std::string author;
 };
 
 // summary.json: recipe id -> revision -> votes. Unusable entries are skipped.

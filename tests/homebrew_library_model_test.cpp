@@ -1874,8 +1874,8 @@ void live_storage_section_and_installed_games() {
           "Library starts with Import games, then its toggles");
     std::vector<std::string> community;
     for (const auto& row : model.view().rows) if (row.section == "Community") community.push_back(row.key);
-    check(community == std::vector<std::string>{"settings-recipe-votes", "settings-sharing-reset"},
-          "Community holds Recipe votes and Reset sharing ID");
+    check(community == std::vector<std::string>{"settings-recipe-votes", "settings-account-link", "settings-sharing-reset"},
+          "Community holds the feedback toggle, the Playden account and Reset sharing ID");
     check(find_row(model, "settings-storage")->action == "storage-picker", "Games storage opens the drive picker");
     std::vector<std::string> order;
     for (const auto& row : model.view().rows) if (row.section == "Storage") order.push_back(row.key);

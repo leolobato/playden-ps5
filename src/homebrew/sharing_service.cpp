@@ -236,7 +236,7 @@ void SharingService::Handle(SharingRequest request) {
         result.submission.error = LocalError("sharing_id", "The sharing ID can't be read on this console.");
       } else {
         for (std::uint32_t attempt = 1; attempt <= attempts; ++attempt) {
-          result.submission = community::SubmitRecipe(context, *secret, submission, shared_->cancel);
+          result.submission = community::SubmitRecipe(context, *secret, submission, shared_->cancel, AccountToken());
           const auto& answer = result.submission;
           Log("sharing: share app=" + std::to_string(submission.app_id) + " attempt=" + std::to_string(attempt) +
               " outcome=" + OutcomeName(answer.outcome) + " status=" + std::to_string(answer.error.http_status) +
@@ -336,7 +336,7 @@ void SharingService::Handle(SharingRequest request) {
         report.attachment = attachment.id;
       }
       for (std::uint32_t attempt = 1; attempt <= attempts; ++attempt) {
-        result.report = community::SendReport(context, *secret, report, shared_->cancel);
+        result.report = community::SendReport(context, *secret, report, shared_->cancel, AccountToken());
         Log("sharing: report store=" + report.store + " id=" + report.store_id + " result=" + report.result +
             " attempt=" + std::to_string(attempt) + " ok=" + std::to_string(result.report.ok) + " status=" +
             std::to_string(result.report.error.http_status) + " code=" + result.report.error.code + " state=" +
@@ -344,6 +344,68 @@ void SharingService::Handle(SharingRequest request) {
         if (result.report.ok || !Retryable(result.report.error) || attempt == attempts || shared_->cancel) break;
         Sleep(config_.retry_delay_ms * attempt);
       }
+      break;
+    }
+    case SharingRequestKind::AccountStart: {
+      const auto start = community::StartAccountLink(context, shared_->cancel);
+      device_code_ = start.ok ? start.device_code : std::string();
+      result.account.state = start.ok ? "started" : "error";
+      result.account.user_code = start.user_code;
+      result.account.verification_uri = start.verification_uri_complete;
+      result.account.interval = start.interval;
+      result.account.expires_in = start.expires_in;
+      result.account.error = start.ok ? std::string() : start.error.message;
+      Log("sharing: account link start ok=" + std::to_string(start.ok) + " code=" + start.error.code);
+      break;
+    }
+    case SharingRequestKind::AccountPoll: {
+      const auto poll = community::PollAccountLink(context, device_code_, shared_->cancel);
+      using community::AccountLinkState;
+      result.account.state = poll.state == AccountLinkState::kPending ? "pending" : poll.state == AccountLinkState::kSlowDown ? "slow"
+                           : poll.state == AccountLinkState::kExpired ? "expired" : poll.state == AccountLinkState::kDenied ? "denied"
+                           : poll.state == AccountLinkState::kLinked ? "linked" : "error";
+      if (poll.state == AccountLinkState::kLinked) {
+        device_code_.clear();
+        std::string error;
+        if (!community::SaveAccountToken(config_.store_root, poll.token, &error)) {
+          result.account.state = "error";
+          result.account.error = "The account link could not be saved on this console.";
+          Log("sharing: account link not saved: " + error);
+          break;
+        }
+        account_token_ = poll.token;
+        const auto account = community::GetLinkedAccount(context, poll.token, shared_->cancel);
+        result.account.name = account.name;
+        result.account.trusted = account.trusted;
+      } else if (poll.state != AccountLinkState::kPending && poll.state != AccountLinkState::kSlowDown) {
+        device_code_.clear();
+        result.account.error = poll.error.message;
+      }
+      Log("sharing: account link poll state=" + result.account.state);
+      break;
+    }
+    case SharingRequestKind::AccountCheck: {
+      const auto& token = AccountToken();
+      if (token.empty()) {
+        result.account.state = "none";
+        break;
+      }
+      const auto account = community::GetLinkedAccount(context, token, shared_->cancel);
+      if (account.unlinked) ForgetAccount();
+      result.account.state = account.ok ? "linked" : account.unlinked ? "none" : "error";
+      result.account.name = account.name;
+      result.account.trusted = account.trusted;
+      result.account.error = account.ok ? std::string() : account.error.message;
+      Log("sharing: account check state=" + result.account.state);
+      break;
+    }
+    case SharingRequestKind::AccountUnlink: {
+      community::ApiError error;
+      const auto& token = AccountToken();
+      if (!token.empty() && !community::UnlinkAccount(context, token, shared_->cancel, &error))
+        Log("sharing: account unlink on the API failed: " + error.code);
+      ForgetAccount();
+      result.account.state = "none";
       break;
     }
     case SharingRequestKind::FeedbackSeen:
@@ -361,8 +423,29 @@ void SharingService::Handle(SharingRequest request) {
     }
   }
   if (request.kind == SharingRequestKind::MarkAsked || request.kind == SharingRequestKind::FeedbackSeen) return;
+  // A share or report the API refused because the account link ended: forget it, and say so.
+  if ((request.kind == SharingRequestKind::Submit && result.submission.error.code == "account_unlinked") ||
+      (request.kind == SharingRequestKind::Report && result.report.error.code == "account_unlinked")) {
+    ForgetAccount();
+    result.account_unlinked = true;
+  }
   std::lock_guard<std::mutex> lock(shared_->mutex);
   shared_->results.push_back(std::move(result));
+}
+
+const std::string& SharingService::AccountToken() {
+  if (!account_token_) {
+    std::string error;
+    account_token_ = community::LoadAccountToken(config_.store_root, &error).value_or(std::string());
+    if (!error.empty()) Log("sharing: " + error);
+  }
+  return *account_token_;
+}
+
+void SharingService::ForgetAccount() {
+  std::string error;
+  if (!community::DeleteAccountToken(config_.store_root, &error)) Log("sharing: " + error);
+  account_token_ = std::string();
 }
 
 void SharingService::SetAccount(web::Redaction account) {
@@ -402,7 +485,10 @@ bool SharingService::ReportLogs(std::uint32_t app, const std::string& name, std:
 
 void SharingService::Log(const std::string& line) const {
   // The host's sink redacts too; only this worker knows the sharing ID itself.
-  if (config_.log) config_.log(diagnostics::RedactSecrets(line, secret_ ? std::string_view(*secret_) : std::string_view()));
+  if (!config_.log) return;
+  auto clean = diagnostics::RedactSecrets(line, secret_ ? std::string_view(*secret_) : std::string_view());
+  if (account_token_ && account_token_->size() >= 8) clean = diagnostics::RedactSecrets(clean, *account_token_);
+  config_.log(clean);
 }
 
 }  // namespace playden::homebrew

@@ -270,6 +270,10 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
         std::stable_sort(votes.reasons.begin(), votes.reasons.end(),
                          [](const auto& a, const auto& b) { return a.second > b.second; });
       }
+      if (const auto* verified = value.Find("verified"); verified && verified->is_bool()) votes.verified = verified->boolean();
+      if (const auto* author = value.Find("author"); author && author->is_string() &&
+          (author->text() == "account" || author->text() == "named" || author->text() == "anonymous"))
+        votes.author = author->text();
       totals[id][revision] = std::move(votes);
     }
   }
