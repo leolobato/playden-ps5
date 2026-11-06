@@ -1376,6 +1376,7 @@ public:
     [[nodiscard]] std::vector<CommunityRecipeOffer> CommunityOffersOf(const GameRef& game) const;
     // Search by game name (docs/community-recipes.md): the games with community recipes whose name matches the query
     // (playden::NameMatchesSearch), the game's own GameRef left out; by name, then store.
+    bool SearchMatchesOwnGame(GameId id, std::string_view query) const;  // the game's own recipes match the search
     [[nodiscard]] std::vector<RecipeSearchResult> SearchRecipeGames(GameId id, std::string_view query) const;
     // The other game whose recipes the chooser lists beside the game's own (GameSettingsRecord::linked_game).
     [[nodiscard]] std::optional<GameRef> LinkedGameFor(GameId id) const;

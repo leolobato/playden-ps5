@@ -7156,8 +7156,11 @@ void Simulation::rebuild_view() {
                 if (ref && LinkedGameFor(settings_game) == *ref) item.badge = "Linked";
             } else if (settings_ready && modal.id == "preset-picker" && action_key == "search-none") {
                 item.kind = RowKind::Status;
-                item.title = chooser_browse_ ? "No recipes" : "No game found";
+                // The game's own recipes aren't search results: they are on the first page already.
+                const bool only_own = !chooser_browse_ && chooser_query_ && SearchMatchesOwnGame(settings_game, *chooser_query_);
+                item.title = chooser_browse_ ? "No recipes" : only_own ? "Only this game matches" : "No game found";
                 item.subtitle = chooser_browse_ ? "This game has no recipes now."
+                                : only_own      ? "Its recipes are on the first page of Choose settings. Search finds other games."
                                                 : "Only games with community recipes are found. Try fewer or shorter words.";
                 item.enabled = false;
             } else if (settings_ready && action_key.rfind("setting-", 0) == 0) {
@@ -13138,6 +13141,15 @@ std::vector<CommunityRecipeOffer> Simulation::CommunityOffersOf(const GameRef& g
     if (const auto found = state_.community.games.find(game); found != state_.community.games.end()) offers = found->second;
     sort_offers(&offers);
     return offers;
+}
+
+bool Simulation::SearchMatchesOwnGame(GameId id, std::string_view query) const {
+    const auto own = community_ref(id);
+    if (!own) return false;
+    const auto offers = state_.community.games.find(*own);
+    const auto name = state_.community.names.find(*own);
+    return offers != state_.community.games.end() && !offers->second.empty() && name != state_.community.names.end() &&
+           NameMatchesSearch(name->second, query);
 }
 
 std::vector<RecipeSearchResult> Simulation::SearchRecipeGames(GameId id, std::string_view query) const {

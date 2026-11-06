@@ -1797,6 +1797,10 @@ void community_recipes_search_and_link(const std::filesystem::path& fixtures, co
     activate(simulation, "recipes-search");
     simulation.SubmitEditorText("zzz");
     check(listed(simulation, "search-none") && simulation.state().navigation.focus_key == "recipes-search", "nothing found says so");
+    check(find_row(simulation, "search-none")->title == "No game found", "nothing found names no game");
+    check(simulation.SearchMatchesOwnGame(SteamId(900002), "creme") && !simulation.SearchMatchesOwnGame(SteamId(900002), "zzz") &&
+              !simulation.SearchMatchesOwnGame(night_sky, "night sky"),
+          "the search knows when the game's own recipes match, so an empty result can say they're on the first page");
     activate(simulation, "recipes-search");
     simulation.SubmitEditorText("Night Sky");
     // One result's recipes, with the program note for the one whose program isn't in this copy.
