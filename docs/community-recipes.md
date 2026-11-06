@@ -20,13 +20,13 @@ your changes go beyond display preferences, otherwise under Advanced), or answer
 how the game ran. Playden sends the recipe to the Playden API, which opens the pull request on
 playden-ps5-recipes for review. No GitHub account is needed.
 
-Who a recipe credits:
+Who a recipe (or a test report) credits is the **Shared as** row on the Share and feedback sheets, and its default
+in Settings › Community › **Share as**:
 
-- **Nobody**: shown as "from the community".
-- **A typed name**: the Share sheet's **Your name**.
-- **A Playden account**: link one in Settings › Community › **Playden account** (scan the code, sign in with Discord,
-  GitHub, Google or an email link, approve the code). Shares then carry the account's name, and the chooser marks it
-  as an account.
+- **No name**: shown as "from the community".
+- **Your name**: a name you type, no account needed.
+- **Playden account**: link one (scan the code, sign in with Discord, GitHub, Google or an email link, approve the
+  code). Shares then carry the account's name, and the chooser marks it as an account.
 
 A recipe revision is **Verified** when the maintainers marked it so, or when a trusted account shared it. The chooser
 shows it beside the recipe's status.

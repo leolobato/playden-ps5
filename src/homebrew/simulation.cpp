@@ -673,6 +673,10 @@ std::uint32_t parse_dlc_action(std::string_view action) {
 }
 
 // A sheet row that only sets the others apart: a section heading ("heading-sort") or an untitled divider.
+// The linking dialog is a confirmation known by its title (setting_id is for Game settings pickers).
+constexpr const char* kAccountLinkTitle = "Link a Playden account";
+static bool is_account_link_dialog(const ModalEntry& modal) { return modal.id == "confirmation" && modal.title == kAccountLinkTitle; }
+
 bool SheetDecoration(const std::string& key) { return key.rfind("heading-", 0) == 0 || key == "divider"; }
 
 std::string action_label(const std::string& key) {
@@ -696,6 +700,9 @@ std::string action_label(const std::string& key) {
         {"feedback-logs", "Include logs"}, {"feedback-recipe", "Also share these settings as a recipe"},
         {"feedback-result", "Result"}, {"feedback-change-settings", "Change settings"}, {"feedback-send", "Send report"},
         {"feedback-send-confirm", "Send"}, {"share-feedback", "Share feedback…"},
+        {"share-as", "Shared as"}, {"share-as-none", "No name"}, {"share-as-name", "Your name"},
+        {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
+        {"heading-reason", "What went wrong"}, {"heading-report", "Report"}, {"heading-recipe", "Recipe"},
         {"shared-recipe", "Shared recipe"}, {"sharing-reset-confirm", "Reset"}, {"program-scan", "Looking for programs…"},
         {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
@@ -4365,7 +4372,7 @@ playden::Preferences Simulation::ExportPreferences() const {
             state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
             state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help,
             state_.runtime_prompt_kit, state_.recipe_votes, state_.sharing_explained, state_.share_name,
-            state_.reports_explained};
+            state_.reports_explained, state_.share_as};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -4603,6 +4610,7 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.recipe_votes = loaded.preferences.recipe_votes;
         state_.sharing_explained = loaded.preferences.sharing_explained;
         state_.reports_explained = loaded.preferences.reports_explained;
+        state_.share_as = loaded.preferences.share_as;
         state_.share_name = loaded.preferences.share_name;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
@@ -4875,7 +4883,8 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.recipe_votes != captured_preferences_.recipe_votes ||
                                       after_preferences.sharing_explained != captured_preferences_.sharing_explained ||
                                       after_preferences.share_name != captured_preferences_.share_name ||
-                                      after_preferences.reports_explained != captured_preferences_.reports_explained);
+                                      after_preferences.reports_explained != captured_preferences_.reports_explained ||
+                                      after_preferences.share_as != captured_preferences_.share_as);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
         apply_organization_snapshot(captured_organization_);
@@ -4910,6 +4919,7 @@ bool Simulation::record_live_persistence() {
                 state_.sharing_explained = captured_preferences_.sharing_explained;
                 state_.share_name = captured_preferences_.share_name;
                 state_.reports_explained = captured_preferences_.reports_explained;
+                state_.share_as = captured_preferences_.share_as;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -5963,6 +5973,7 @@ bool Simulation::scenario(const std::string& name) {
         state_.sharing_explained = name != "share-privacy";
         state_.reports_explained = name != "feedback-privacy";
         state_.share_name = "TodorPenchev";
+        state_.share_as = playden::ShareAs::kName;
         state_.recipe_votes = name == "votes-off" ? playden::RecipeVotesPreference::kOff
                             : name == "vote-reason" ? playden::RecipeVotesPreference::kOn : playden::RecipeVotesPreference::kUnset;
         state_.library.ratings[id] = Compatibility::Works;
@@ -6013,8 +6024,10 @@ bool Simulation::scenario(const std::string& name) {
                 vote_->vote = "down";
                 vote_->reason = "slow";
                 refresh_share_sheet();
-                state_.navigation.modals.back().focused_action = 4;
-                state_.navigation.focus_key = state_.navigation.modals.back().action_keys[4];
+                auto& modal = state_.navigation.modals.back();
+                const auto slow = std::find(modal.action_keys.begin(), modal.action_keys.end(), "vote-reason-slow");
+                modal.focused_action = static_cast<int>(slow - modal.action_keys.begin());
+                state_.navigation.focus_key = "vote-reason-slow";
             }
         } else {
             open_game_settings();
@@ -6510,6 +6523,10 @@ void Simulation::rebuild_view() {
                                            : "An update to your recipe" + quoted + ", sent for review.";
             else
                 view_.subtitle = "Sent for review to Playden's recipe collection. Published once we approve it.";
+        } else if (modal.id == "share-as") {
+            view_.eyebrow = "Community";
+            view_.subtitle = "How recipes and test reports you send credit you. This is the default for the next ones too; "
+                             "change it any time here or in Settings, under Community.";
         } else if (modal.id == "feedback" && feedback_) {
             const auto& draft = *feedback_;
             view_.eyebrow = "Feedback";
@@ -6692,6 +6709,45 @@ void Simulation::rebuild_view() {
             if (modal.id == "context" && action_key == "favorite")
                 item.title = state_.library.favorites.contains(state_.navigation.selected_game_id) ? "Remove from Favorites"
                                                                                                  : "Add to Favorites";
+            // Headings and dividers in the sharing sheets (their own branches below don't draw them).
+            if (SheetDecoration(action_key) && (modal.id == "share-recipe" || modal.id == "vote-recipe" ||
+                                                modal.id == "feedback" || modal.id == "share-as")) {
+                item.kind = RowKind::Separator;
+                item.action.clear();
+                item.enabled = false;
+            }
+            // Shared as: on the Share and feedback sheets, and the picker it opens (with Settings › Community's default).
+            if (action_key == "share-as") {
+                item.kind = RowKind::Choice;
+                item.value = share_as_label();
+                item.subtitle = "Who this credits. You can change the default later in Settings › Community.";
+            } else if (modal.id == "share-as") {
+                const auto chosen = share_as_effective();
+                if (action_key == "share-as-none") {
+                    item.kind = RowKind::Choice;
+                    item.subtitle = "Shown as \u201cfrom the community\u201d.";
+                    item.selected = chosen == playden::ShareAs::kNone;
+                } else if (action_key == "share-as-name") {
+                    item.kind = RowKind::Choice;
+                    item.subtitle = state_.share_name.empty() ? "Type a name to show; no account needed."
+                                                              : "Shown as " + state_.share_name + ". No account needed.";
+                    item.selected = chosen == playden::ShareAs::kName;
+                } else if (action_key == "share-as-name-edit") {
+                    item.kind = RowKind::Text;
+                    item.value = state_.share_name;
+                    item.subtitle = "At most 40 characters";
+                } else if (action_key == "share-as-account") {
+                    item.kind = RowKind::Choice;
+                    const bool linked = state_.account_link.state == "linked";
+                    item.subtitle = linked ? "Shown as " + state_.account_link.name + ", marked as an account. Your recipes can be Verified."
+                                           : "Link one on your phone (Discord, GitHub, Google or email). Your recipes can be Verified.";
+                    if (!linked) item.title = "Playden account: link one…";
+                    item.selected = chosen == playden::ShareAs::kAccount;
+                } else if (action_key == "cancel") {
+                    item.title = "Close";
+                }
+                if (item.selected) item.value = "Selected";
+            }
             if (modal.id == "feedback" && feedback_) {
                 const auto& draft = *feedback_;
                 if (action_key == "feedback-good" || action_key == "feedback-started") {
@@ -6728,17 +6784,6 @@ void Simulation::rebuild_view() {
                     item.selected = draft.share_recipe;
                     item.value = draft.share_recipe ? "On" : "Off";
                     item.subtitle = "Your changes to how the game starts or plays. The Share sheet opens after the report.";
-                } else if (action_key == "share-name") {
-                    item.kind = RowKind::Text;
-                    item.title = "Your name";
-                    item.value = state_.share_name.empty() ? std::string("Optional") : state_.share_name;
-                    item.subtitle = "Shown on the report";
-                    if (state_.account_link.state == "linked") {
-                        // A linked account's name is the one shown; the typed name isn't sent.
-                        item.kind = RowKind::Status;
-                        item.value = state_.account_link.name;
-                        item.subtitle = "From your Playden account (Settings › Community)";
-                    }
                 } else if (action_key == "feedback-change-settings") {
                     item.subtitle = "Opens Game settings. Playden asks again after the next session.";
                 } else if (action_key == "feedback-send") {
@@ -6768,7 +6813,7 @@ void Simulation::rebuild_view() {
                     item.kind = RowKind::Choice;
                     item.title = update ? "Suggest changes to \u201c" + draft.base_title + "\u201d" : std::string("Share as a new recipe");
                     // Only a name is credited: without one, the change comes "from the community".
-                    item.subtitle = update ? (state_.share_name.empty()
+                    item.subtitle = update ? (share_as_effective() == playden::ShareAs::kNone
                                                   ? std::string("Its players get your changes once approved.")
                                                   : "Its players get your changes once approved; you're added as a contributor.")
                                            : "Listed next to it as a separate recipe.";
@@ -6779,16 +6824,6 @@ void Simulation::rebuild_view() {
                     item.title = "Title";
                     item.value = draft.title.empty() ? std::string("Optional") : draft.title;
                     item.subtitle = "What the recipe list shows";
-                } else if (action_key == "share-name") {
-                    item.kind = RowKind::Text;
-                    item.title = "Your name";
-                    item.value = state_.share_name.empty() ? std::string("Optional") : state_.share_name;
-                    item.subtitle = "Shown as author";
-                    if (state_.account_link.state == "linked") {
-                        item.kind = RowKind::Status;
-                        item.value = state_.account_link.name;
-                        item.subtitle = "From your Playden account (Settings › Community)";
-                    }
                 } else if (action_key == "share-rating") {
                     item.kind = RowKind::Choice;
                     item.title = "Compatibility";
@@ -7625,6 +7660,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
         else if (modal.id == "feedback") view_.legends = {"Cross Select", "Circle Not now"};
+        else if (modal.id == "share-as") view_.legends = {"Cross Choose", "Circle Close"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
         else if (!modal.setting_id.empty()) view_.legends = {"Cross Select", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
@@ -8400,6 +8436,10 @@ void Simulation::rebuild_view() {
                 : state_.recipe_votes == playden::RecipeVotesPreference::kOff
                 ? "Off: Playden never asks and sends no votes. Share feedback… still works."
                 : "Asked after you play. Nothing is sent until you choose Send.";
+            // The default for who shares and reports credit; the sheets change it too.
+            auto& share_as_row = add("settings-share-as", RowKind::Action, "Share as", "share-as");
+            share_as_row.value = share_as_label();
+            share_as_row.subtitle = "Who recipes and test reports you send credit: no name, your name or your Playden account.";
             // The Playden account shares and reports credit (plan 2026-11-06 Phase D).
             auto& account_row = add("settings-account-link", RowKind::Action, "Playden account", "account-link");
             const auto& link = state_.account_link;
@@ -8842,6 +8882,11 @@ void Simulation::close_modal() {
         (state_.navigation.modals.size() < 2 || state_.navigation.modals[state_.navigation.modals.size() - 2].id != "import-choice"))
         import_choice_game_ = {};
     if (state_.navigation.modals.back().id == "move-storage") move_picker_game_ = {};
+    // Closing the account link dialog cancels the link, and with it a "share as the account" waiting for it.
+    if (is_account_link_dialog(state_.navigation.modals.back())) {
+        pending_share_as_.reset();
+        if (state_.account_link.state == "linking") state_.account_link.state.clear();
+    }
     state_.navigation.modals.pop_back();
     state_.navigation.focus_key = opener;
 }
@@ -9215,6 +9260,14 @@ void Simulation::commit_editor() {
         }
         std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
         state_.share_name = value;  // remembered for the next share (Preferences)
+        if (pending_share_as_ == playden::ShareAs::kName && !value.empty()) state_.share_as = playden::ShareAs::kName;
+        if (value.empty() && state_.share_as == playden::ShareAs::kName) state_.share_as = playden::ShareAs::kNone;
+        pending_share_as_.reset();
+        state_.editor.active = false;
+        state_.navigation.focus_key = state_.editor.opener_focus_key;
+        refresh_share_sheet();
+        save_profile();
+        return;
     }
     else if (state_.editor.purpose == "Note") state_.library.notes[state_.navigation.selected_game_id] = state_.editor.value;
     else if (state_.editor.purpose == "Collection name") {
@@ -11350,10 +11403,33 @@ void Simulation::activate() {
         refresh_share_sheet();
     }
     else if (action_name == "share-title" && share_) start_editor("Recipe title", share_->title);
-    else if (action_name == "share-name") {
-        // Linked: the account's name is used, there is nothing to type.
-        if (state_.account_link.state != "linked") start_editor("Your name", state_.share_name);
+    else if (action_name == "share-as") {
+        const auto actions = share_as_actions();
+        const auto chosen = share_as_effective();
+        const std::string key = chosen == playden::ShareAs::kAccount ? "share-as-account"
+                              : chosen == playden::ShareAs::kName ? "share-as-name" : "share-as-none";
+        const auto found = std::find(actions.begin(), actions.end(), key);
+        open_modal({"share-as", "Shared as", state_.navigation.focus_key, actions,
+                    found == actions.end() ? 0 : static_cast<int>(found - actions.begin()), false});
     }
+    else if (action_name == "share-as-none" || action_name == "share-as-name" || action_name == "share-as-account") {
+        pending_share_as_.reset();
+        if (action_name == "share-as-none") set_share_as(playden::ShareAs::kNone);
+        else if (action_name == "share-as-name") {
+            if (state_.share_name.empty()) {
+                pending_share_as_ = playden::ShareAs::kName;  // chosen once a name is typed
+                start_editor("Your name", "");
+            } else {
+                set_share_as(playden::ShareAs::kName);
+            }
+        } else if (state_.account_link.state == "linked") {
+            set_share_as(playden::ShareAs::kAccount);
+        } else {
+            pending_share_as_ = playden::ShareAs::kAccount;  // chosen once the account is linked
+            start_account_link();
+        }
+    }
+    else if (action_name == "share-as-name-edit") start_editor("Your name", state_.share_name);
     else if (action_name == "share-rating" && share_)
         open_modal({"compatibility", "Compatibility", "share-rating",
                     {"rating-untested", "rating-works", "rating-playable", "rating-broken", "cancel"}, 0, false});
@@ -13506,14 +13582,20 @@ std::vector<std::string> Simulation::share_actions() const {
         actions.push_back("share-choice-update");
         actions.push_back("share-choice-new");
     }
-    for (const char* key : {"share-title", "share-name", "share-rating", "share-note", "share-what", "share-send", "cancel"}) actions.push_back(key);
+    // The recipe's details, then who it credits, then Send apart from them.
+    if (share_->decision.kind == cm::ShareKind::kAskPlayer) actions.push_back("heading-recipe");
+    for (const char* key : {"share-title", "share-as", "share-rating", "share-note", "share-what", "divider", "share-send", "cancel"})
+        actions.push_back(key);
     return actions;
 }
 
 std::vector<std::string> Simulation::vote_actions() const {
     std::vector<std::string> actions = {"vote-up", "vote-down"};
-    if (vote_ && vote_->vote == "down")
+    if (vote_ && vote_->vote == "down") {
+        actions.push_back("heading-reason");
         for (const auto& [id, label] : vote_reasons()) actions.push_back("vote-reason-" + id);
+    }
+    actions.push_back("divider");
     actions.push_back("vote-send");
     if (state_.recipe_votes == playden::RecipeVotesPreference::kUnset) actions.push_back("vote-never");
     actions.push_back("cancel");
@@ -13577,12 +13659,19 @@ void Simulation::open_share_sheet(GameId id) {
 
 void Simulation::refresh_share_sheet() {
     for (auto& modal : state_.navigation.modals) {
-        if (modal.id != "share-recipe" && modal.id != "vote-recipe" && !(modal.id == "feedback" && feedback_)) continue;
+        if (modal.id != "share-recipe" && modal.id != "vote-recipe" && modal.id != "share-as" && !(modal.id == "feedback" && feedback_)) continue;
+        if (modal.id == "share-recipe" && !share_) continue;
+        if (modal.id == "vote-recipe" && !vote_) continue;
         const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
-        modal.action_keys = modal.id == "share-recipe" ? share_actions() : modal.id == "feedback" ? feedback_actions() : vote_actions();
+        modal.action_keys = modal.id == "share-recipe" ? share_actions() : modal.id == "feedback" ? feedback_actions()
+                          : modal.id == "share-as" ? share_as_actions() : vote_actions();
         if (modal.id == "share-recipe" && share_) modal.title = share_->nothing_new ? "Nothing new to share" : "Share recipe";
         const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), focused);
         modal.focused_action = found == modal.action_keys.end() ? 0 : static_cast<int>(found - modal.action_keys.begin());
+        // Never on a heading or divider (the rows changed under the focus).
+        const int last = static_cast<int>(modal.action_keys.size()) - 1;
+        while (modal.focused_action < last && SheetDecoration(modal.action_keys[static_cast<std::size_t>(modal.focused_action)]))
+            ++modal.focused_action;
         if (&modal == &state_.navigation.modals.back()) state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
     }
 }
@@ -13590,8 +13679,8 @@ void Simulation::refresh_share_sheet() {
 void Simulation::open_share_privacy() {
     // The first share says what is sent before anything is.
     ModalEntry privacy{"confirmation", "Before you share", "share-send", {"cancel", "share-send-confirm"}, 1, false};
-    privacy.body = "Playden sends the recipe (these settings, the program, your rating and note), its title, your name if you "
-                   "give one, the runtime kit, firmware and Playden versions, and a random sharing ID that lets this console update "
+    privacy.body = "Playden sends the recipe (these settings, the program, your rating and note), its title, the name you "
+                   "share as (if any), the runtime kit, firmware and Playden versions, and a random sharing ID that lets this console update "
                    "its own pull request. No Steam ID or account name is sent. We review every recipe before it's published.";
     open_modal(std::move(privacy));
 }
@@ -13620,7 +13709,8 @@ void Simulation::send_share() {
     if (shared.tested_firmware.empty()) shared.tested_firmware = request.firmware;
     request.recipe_json = cm::RecipeJsonForSubmission(std::move(shared), share_->title);
     request.title = share_->title;
-    request.name = state_.share_name;
+    const auto share_as = share_as_effective();
+    request.name = share_as == playden::ShareAs::kName ? state_.share_name : std::string();
     if (share_->decision.send_based_on && share_->based_on) request.based_on = share_->based_on;
     request.choice = cm::ChoiceToSend(share_->decision, share_->answer);
     const auto record = state_.game_settings.find(id);
@@ -13640,6 +13730,7 @@ void Simulation::send_share() {
         sharing.kind = SharingRequestKind::Submit;
         sharing.ticket = share_->ticket;
         sharing.game_id = id;
+        sharing.use_account = share_as == playden::ShareAs::kAccount;
         sharing.submission = std::move(request);
         pending_sharing_requests_.push_back(std::move(sharing));
         return;
@@ -13762,6 +13853,38 @@ void Simulation::NotifySessionEnded(GameId id, std::int64_t played_seconds) {
     rebuild_view();
 }
 
+playden::ShareAs Simulation::share_as_effective() const {
+    // An account that isn't linked, or a name that is empty, credits nobody.
+    if (state_.share_as == playden::ShareAs::kAccount)
+        return state_.account_link.state == "linked" ? playden::ShareAs::kAccount : playden::ShareAs::kNone;
+    if (state_.share_as == playden::ShareAs::kName && state_.share_name.empty()) return playden::ShareAs::kNone;
+    return state_.share_as;
+}
+
+std::string Simulation::share_as_label() const {
+    if (state_.share_as == playden::ShareAs::kAccount && state_.account_link.state != "linked") return "No name (account not linked)";
+    switch (share_as_effective()) {
+    case playden::ShareAs::kAccount:
+        return (state_.account_link.name.empty() ? std::string("Your account") : state_.account_link.name) + " · Playden account";
+    case playden::ShareAs::kName: return state_.share_name;
+    default: return "No name";
+    }
+}
+
+std::vector<std::string> Simulation::share_as_actions() const {
+    std::vector<std::string> actions = {"share-as-none", "share-as-name"};
+    if (!state_.share_name.empty()) actions.push_back("share-as-name-edit");
+    actions.insert(actions.end(), {"share-as-account", "divider", "cancel"});
+    return actions;
+}
+
+void Simulation::set_share_as(playden::ShareAs share_as) {
+    state_.share_as = share_as;
+    save_profile();
+    refresh_share_sheet();
+    rebuild_view();
+}
+
 bool Simulation::changes_worth_sharing(GameId id) const {
     // The player changed more than their own preferences (decision 2): the program, arguments, libraries, controls
     // or graphics, not only the resolution, refresh rate or overlay.
@@ -13830,20 +13953,25 @@ std::vector<std::string> Simulation::feedback_actions() const {
     if (!feedback_) return {"cancel"};
     const auto& draft = *feedback_;
     std::vector<std::string> actions;
+    // Groups: the answer, the report's details, then the actions apart.
     if (draft.step == "ask") {
         if (draft.short_session) actions = {"feedback-started", "feedback-no-start"};
         else actions = {"feedback-good", "feedback-problems"};
+        actions.push_back("divider");
         if (draft.after_play) actions.push_back("feedback-never");
     } else if (draft.step == "good") {
         actions = {"feedback-details", "feedback-logs"};
         if (draft.recipe_offer) actions.push_back("feedback-recipe");
-        actions.insert(actions.end(), {"share-name", "feedback-send"});
+        actions.insert(actions.end(), {"share-as", "divider", "feedback-send"});
     } else {
-        if (draft.result != "no-start")
+        if (draft.result != "no-start") {
+            actions.push_back("heading-reason");
             for (const auto& [id, label] : vote_reasons())
                 if (id != "no-start") actions.push_back("feedback-reason-" + id);
-        if (draft.result != "no-start") actions.push_back("feedback-result");
-        actions.insert(actions.end(), {"feedback-details", "feedback-logs", "share-name", "feedback-change-settings", "feedback-send"});
+            actions.push_back("feedback-result");
+        }
+        actions.insert(actions.end(), {"heading-report", "feedback-details", "feedback-logs", "share-as", "divider",
+                                       "feedback-change-settings", "feedback-send"});
     }
     actions.push_back("cancel");
     return actions;
@@ -13851,8 +13979,8 @@ std::vector<std::string> Simulation::feedback_actions() const {
 
 void Simulation::open_feedback_privacy() {
     ModalEntry privacy{"confirmation", "Before you send", "feedback-send", {"cancel", "feedback-send-confirm"}, 1, false};
-    privacy.body = "Playden sends the game's name, how it ran, what happened if you wrote it, the game's settings, your name if "
-                   "you give one, the runtime kit, firmware and Playden versions, and the logs when you include them. Logs "
+    privacy.body = "Playden sends the game's name, how it ran, what happened if you wrote it, the game's settings, the name you "
+                   "share as (if any), the runtime kit, firmware and Playden versions, and the logs when you include them. Logs "
                    "have the Steam account name, IDs, PS5 user and home network addresses removed. We publish the report as "
                    "an issue on GitHub and review it there. By sending, you confirm that you own this game.";
     open_modal(std::move(privacy));
@@ -13904,7 +14032,7 @@ void Simulation::send_feedback() {
             if (request.recipe_json.size() > cm::kMaxSubmissionRecipeBytes) request.recipe_json.clear();
         }
     if (draft.recipe) request.based_on = draft.recipe;
-    request.author = state_.share_name;
+    request.author = share_as_effective() == playden::ShareAs::kName ? state_.share_name : std::string();
     request.kit = state_.kit.version.empty() ? std::string("unknown") : state_.kit.version;
     request.firmware = console_firmware_.empty() ? std::string("unknown") : console_firmware_;
     request.playden_version = !sharing_playden_version_.empty() ? sharing_playden_version_
@@ -13955,6 +14083,7 @@ void Simulation::send_feedback() {
         sharing.kind = SharingRequestKind::Report;
         sharing.ticket = draft.ticket;
         sharing.game_id = id;
+        sharing.use_account = share_as_effective() == playden::ShareAs::kAccount;
         sharing.attach_logs = draft.attach_logs || draft.result != "works";
         sharing.logs_app = id.steam_app().value_or(0);
         sharing.logs_name = request.name;
@@ -14237,9 +14366,6 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
     rebuild_view();
 }
 
-// The linking dialog is a confirmation known by its title (setting_id is for Game settings pickers).
-constexpr const char* kAccountLinkTitle = "Link a Playden account";
-static bool is_account_link_dialog(const ModalEntry& modal) { return modal.id == "confirmation" && modal.title == kAccountLinkTitle; }
 
 void Simulation::start_account_link() {
     auto& link = state_.account_link;
@@ -14283,6 +14409,10 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
         link.name = answer.name;
         link.trusted = answer.trusted;
         if (showing) close_dialog();
+        if (pending_share_as_ == playden::ShareAs::kAccount) {
+            pending_share_as_.reset();
+            set_share_as(playden::ShareAs::kAccount);
+        }
         if (kind == SharingRequestKind::AccountPoll)
             push_notice({"account-link", "Account linked", "", false, kLiveNoticeSeconds, false,
                          answer.name.empty() ? std::string("Shares and reports show your account's name.") : answer.name});
@@ -14310,6 +14440,7 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
     } else if (kind != SharingRequestKind::AccountCheck) {
         // expired, denied or error: the dialog says so; Link again makes a new code.
         link.state = "";
+        pending_share_as_.reset();
         if (showing) {
             dialog->body = answer.state == "expired" ? "The code expired. Close this and choose Playden account again for a new one."
                          : answer.state == "denied" ? "The link was declined on the account page."

@@ -19,6 +19,8 @@ bool IsPrintableText(std::string_view text, std::size_t max_characters);
 // A name Playden keeps and sends: empty, or 1-40 such characters.
 inline bool IsShareName(std::string_view name) { return IsPrintableText(name, kShareNameMaxCharacters); }
 
+enum class ShareAs { kNone, kName, kAccount };
+
 struct Preferences {
   bool reduce_motion = false;
   // PS5 titles made for games are named "<game> (<store>)", e.g. "Half-Life 2 (Steam)".
@@ -59,6 +61,8 @@ struct Preferences {
   std::string share_name;
   // The first game test report showed what a report sends (version 14).
   bool reports_explained = false;
+  // How shares and test reports credit the player (version 14): no name, the typed name, or the linked Playden account.
+  ShareAs share_as = ShareAs::kNone;
 };
 
 enum class PreferencesLoadStatus {

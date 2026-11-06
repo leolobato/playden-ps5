@@ -258,11 +258,21 @@ void share_and_vote(const std::filesystem::path& base) {
     check(model.state().editor.active, "a title with a zero-width space is refused");
     model.SubmitEditorText("Darkwood 4K");
     check(!model.state().editor.active && find_row(model, "share-title")->value == "Darkwood 4K", "the system keyboard sets the title");
-    activate(model, "share-name");
+    // Shared as: a picker of no name, a typed name or the Playden account; its choice is the default afterwards.
+    check(find_row(model, "share-as") && find_row(model, "share-as")->value == "No name", "a share credits nobody by default");
+    activate(model, "share-as");
+    check(model.view().surface == "share-as" && find_row(model, "share-as-none")->selected &&
+              contains(model.view().subtitle, "Settings, under Community"),
+          "the picker opens on No name and says where the default lives");
+    activate(model, "share-as-name");
     model.SubmitEditorText("\u3000Todor\u3000");  // ideographic spaces survive the trim, the API refuses them
     check(model.state().editor.active && model.state().share_name.empty(), "a name padded with U+3000 is refused");
     model.SubmitEditorText("Todor");
-    check(model.state().share_name == "Todor" && model.ExportPreferences().share_name == "Todor", "the name is remembered");
+    check(model.state().share_name == "Todor" && model.ExportPreferences().share_name == "Todor" &&
+              model.ExportPreferences().share_as == playden::ShareAs::kName && find_row(model, "share-as-name")->selected,
+          "typing a name chooses it, and both are remembered");
+    model.action("circle");
+    check(model.view().surface == "share-recipe" && find_row(model, "share-as")->value == "Todor", "the Share sheet shows the name");
     // The first share says what is sent before anything is.
     activate(model, "share-send");
     check(model.state().navigation.modals.back().title == "Before you share" && model.TakeSharingRequests().empty(),
@@ -744,6 +754,15 @@ void account_link(const std::filesystem::path& base) {
     service.Wait();
     for (const auto& result : service.TakeResults()) model.ApplySharingResult(result);
     check(model.state().account_link.checked && model.state().account_link.state.empty(), "no account linked yet");
+    // Choosing the account in the picker starts a link; cancelling it must not choose the account later.
+    open_share(model);
+    activate(model, "share-as");
+    api.answer_with({answer(200, R"({"device_code":"dev_code_cancelled01","user_code":"AAAA-BBBB","verification_uri_complete":"https://account.playden.club/device?user_code=AAAA-BBBB","expires_in":900,"interval":5})")});
+    activate(model, "share-as-account");
+    pump(model, service);
+    check(model.state().navigation.modals.back().title == "Link a Playden account", "the account choice opens linking");
+    model.action("circle");
+    check(model.state().account_link.state.empty(), "closing the dialog stops linking");
     while (!model.state().navigation.modals.empty()) model.action("circle");
     model.action("circle");
     model.action("l1");
@@ -777,15 +796,22 @@ void account_link(const std::filesystem::path& base) {
                std::filesystem::perms::group_all) == std::filesystem::perms::none,
           "the token is kept privately by the worker");
     check(find_row(model, "settings-account-link")->value == "Rina", "Settings shows the account");
+    check(model.ExportPreferences().share_as == playden::ShareAs::kNone,
+          "linking from Settings after a cancelled account choice doesn't share as the account");
     open_share(model);
-    check(find_row(model, "share-name") && find_row(model, "share-name")->value == "Rina" &&
-              find_row(model, "share-name")->kind == playden::homebrew::RowKind::Status,
-          "the Share sheet shows the account's name, not a name to type");
+    check(find_row(model, "share-as")->value == "No name", "linking alone doesn't change who a share credits");
+    activate(model, "share-as");
+    activate(model, "share-as-account");
+    check(model.ExportPreferences().share_as == playden::ShareAs::kAccount, "choosing the linked account makes it the default");
+    model.action("circle");
+    check(find_row(model, "share-as") && find_row(model, "share-as")->value == "Rina · Playden account",
+          "the Share sheet shows the account");
     while (!model.state().navigation.modals.empty()) model.action("circle");
     // A report carries the account; an ended link is forgotten and said.
     SharingRequest report;
     report.kind = SharingRequestKind::Report;
     report.ticket = 99;
+    report.use_account = true;
     report.game_id = kGame;
     report.report.store = "steam";
     report.report.store_id = "274520";

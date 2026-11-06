@@ -236,7 +236,8 @@ void SharingService::Handle(SharingRequest request) {
         result.submission.error = LocalError("sharing_id", "The sharing ID can't be read on this console.");
       } else {
         for (std::uint32_t attempt = 1; attempt <= attempts; ++attempt) {
-          result.submission = community::SubmitRecipe(context, *secret, submission, shared_->cancel, AccountToken());
+          result.submission = community::SubmitRecipe(context, *secret, submission, shared_->cancel,
+                                                      request.use_account ? AccountToken() : std::string());
           const auto& answer = result.submission;
           Log("sharing: share app=" + std::to_string(submission.app_id) + " attempt=" + std::to_string(attempt) +
               " outcome=" + OutcomeName(answer.outcome) + " status=" + std::to_string(answer.error.http_status) +
@@ -336,7 +337,8 @@ void SharingService::Handle(SharingRequest request) {
         report.attachment = attachment.id;
       }
       for (std::uint32_t attempt = 1; attempt <= attempts; ++attempt) {
-        result.report = community::SendReport(context, *secret, report, shared_->cancel, AccountToken());
+        result.report = community::SendReport(context, *secret, report, shared_->cancel,
+                                              request.use_account ? AccountToken() : std::string());
         Log("sharing: report store=" + report.store + " id=" + report.store_id + " result=" + report.result +
             " attempt=" + std::to_string(attempt) + " ok=" + std::to_string(result.report.ok) + " status=" +
             std::to_string(result.report.error.http_status) + " code=" + result.report.error.code + " state=" +

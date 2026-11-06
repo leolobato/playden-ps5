@@ -1999,7 +1999,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(!has_row(simulation, "share-choice-update") && !has_row(simulation, "share-update") &&
               find_row(simulation, "share-title")->value == "Optional",
           "a new recipe asks nothing, and its title is optional");
-    check(find_row(simulation, "share-name")->value == "TodorPenchev" && find_row(simulation, "share-rating")->value == "Works",
+    check(find_row(simulation, "share-as")->value == "TodorPenchev" && find_row(simulation, "share-rating")->value == "Works",
           "the name and the Compatibility rating are shown");
     check(find_row(simulation, "share-what")->subtitle.find("Resolution 3840×2160") != std::string::npos,
           "what is sent lists the changes from Playden's default");
@@ -2150,6 +2150,8 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     simulation.NotifySessionEnded(game, 600);
     check(top().id == "feedback", "the prompt comes up there");
     activate(simulation, "feedback-problems");
+    check(simulation.state().navigation.focus_key.rfind("heading-", 0) != 0 && simulation.state().navigation.focus_key != "divider",
+          "after It had problems the focus is on a row it can take, not a heading");
     activate(simulation, "feedback-change-settings");
     check(top().id == "game-settings" && simulation.state().navigation.selected_game_id == game && has_row(simulation, "preset-picker"),
           "Change settings opens the game's settings from anywhere");

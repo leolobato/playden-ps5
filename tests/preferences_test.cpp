@@ -189,7 +189,7 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
                           "version=14\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
                           "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
                           "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\nruntime_prompt_kit=\n"
-                          "recipe_votes=0\nsharing_explained=0\nshare_name=\nreports_explained=0\n",
+                          "recipe_votes=0\nsharing_explained=0\nshare_name=\nreports_explained=0\nshare_as=none\n",
         "version 14 format includes Automatic download server, web access, English, the community fields and reports");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
@@ -309,6 +309,21 @@ void CommunityPreferencesPersistAndVersionSixStillLoads() {
           "a name the API refuses is dropped, the other preferences load");
   }
   Check(!store.Load().preferences.reports_explained, "a version 13 file has not explained reports yet");
+  Check(store.Load().preferences.share_as == playden::ShareAs::kNone, "a version 13 file without a usable name shares as nobody");
+  {
+    // A development build's version 14 file from before share_as: kept, sharing as the name it has.
+    const std::string early = "version=14\nreduce_motion=1\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                              "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                              "beta_updates=0\ndownload_server=\nweb_access=1\ncontent_language=english\nhide_run_once_help=0\n"
+                              "hide_launcher_help=0\nruntime_prompt_kit=\nrecipe_votes=1\nsharing_explained=1\nshare_name=Leo\n"
+                              "reports_explained=1\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(early.begin(), early.end())).ok(), "early v14 fixture is written");
+    const auto kept = store.Load();
+    Check(kept.status == playden::PreferencesLoadStatus::kLoaded && kept.preferences.reduce_motion &&
+              kept.preferences.reports_explained && kept.preferences.share_name == "Leo" &&
+              kept.preferences.share_as == playden::ShareAs::kName,
+          "a version 14 file from before share_as loads, sharing as its name");
+  }
   {
     // Version 8 (download server) still loads, with votes not asked yet.
     const std::string version_eight = "version=8\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\n"

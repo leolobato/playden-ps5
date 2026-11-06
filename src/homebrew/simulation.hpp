@@ -345,6 +345,7 @@ struct SharingRequest {
     // FeedbackSeen: a feedback prompt was shown (or a report sent: answered) for the game's settings.
     std::string feedback_game, feedback_kit, feedback_settings;
     bool feedback_answered = false;
+    bool use_account = false;  // Submit, Report: send the linked account (the player shares as it)
 };
 struct SharingResult {
     SharingRequestKind kind = SharingRequestKind::Submit;
@@ -947,6 +948,7 @@ struct State {
     playden::RecipeVotesPreference recipe_votes = playden::RecipeVotesPreference::kUnset;
     bool sharing_explained = false;
     bool reports_explained = false;  // the first report said what it sends
+    playden::ShareAs share_as = playden::ShareAs::kNone;  // who shares and reports credit (Settings › Community)
     // The Playden account this console is linked to (Settings › Community › Account), as the sharing worker last said.
     struct AccountLink {
         std::string state;  // "" not linked (or not known yet), "linking" (a code shown), "linked"
@@ -1574,6 +1576,12 @@ private:
     [[nodiscard]] std::string feedback_settings(GameId id) const;
     [[nodiscard]] std::string feedback_kit() const;
     [[nodiscard]] bool changes_worth_sharing(GameId id) const;
+    // Shared as: what is credited now (an unlinked account or an empty name credits nobody), its label, the picker.
+    [[nodiscard]] playden::ShareAs share_as_effective() const;
+    [[nodiscard]] std::string share_as_label() const;
+    [[nodiscard]] std::vector<std::string> share_as_actions() const;
+    void set_share_as(playden::ShareAs share_as);
+    std::optional<playden::ShareAs> pending_share_as_;  // chosen once its name is typed or its account linked
     void request_submission_status(GameId id, bool force);
     std::optional<playden::runtime::CommunityRecipe> build_community_recipe(GameId id) const;
     // The Changes list between the game's base (Playden default without one) and its effective settings,
