@@ -194,6 +194,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Into the Breach](https://store.steampowered.com/app/590380) | ✅ Works | 0.10 | — · OpenGL · 32-bit | Menu, new game and island map with the DualSense, at about 60 fps through Zink. |
 | [IT Specialist Simulator](https://store.steampowered.com/app/3266090) | ✅ Works | 0.10 | — | USB mouse and keyboard; controller untested. ([#21](https://github.com/leolobato/playden-ps5/issues/21), firmware 9.40) |
 | [Jotunnslayer: Hordes of Hel](https://store.steampowered.com/app/2820820) | ✅ Works | 0.17 | — | Default settings, DualSense. Steam Cloud sync downloaded 2 of 3 saves, then failed on the last one. ([#87](https://github.com/leolobato/playden-ps5/issues/87), firmware 13.40; [#367](https://github.com/leolobato/playden-ps5/issues/367), firmware 10.01) |
+| [Just Cause 3](https://store.steampowered.com/app/225540) | ✅ Works | 0.19 | — | Default settings, DualSense. (firmware 13.60) |
 | [Katana ZERO](https://store.steampowered.com/app/460950) | ✅ Works | 0.10 | GameMaker · D3D11 · 32-bit | Plays with the DualSense. |
 | [Keylocker](https://store.steampowered.com/app/1325040) | ✅ Works | 0.12 | — | Default settings, DualSense. The first 20 minutes. ([#125](https://github.com/leolobato/playden-ps5/issues/125), firmware 13.60) |
 | [Kholat](https://store.steampowered.com/app/343710) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#501](https://github.com/leolobato/playden-ps5/pull/501), firmware 12.40) |
