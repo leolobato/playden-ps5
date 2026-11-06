@@ -708,6 +708,21 @@ void Reports() {
     return !ReportRequestProblem(report).empty();
   };
   CHECK(ReportRequestProblem(Report()).empty());
+  {
+    // The settings list: at most 2000 characters in all, line breaks included, as the API counts them; Playden cuts a
+    // longer one between characters, never inside one.
+    std::string settings = "xxxx";  // so that 2000 bytes would end inside an arrow
+    while (settings.size() < 3000) settings += "Touchpad \u2192 M \u00b7 ";
+    auto cut = Report();
+    cut.settings = ReportSettingsText(settings);
+    CHECK(cut.settings.size() < settings.size() && settings.compare(0, cut.settings.size(), cut.settings) == 0);
+    CHECK(ReportRequestProblem(cut).empty());
+    CHECK(ReportSettingsText("short \u00b7 list") == "short \u00b7 list");
+    auto lines = Report();
+    lines.settings.clear();
+    for (int i = 0; i < 1100; ++i) lines.settings += "ab\n";  // 3300 characters on short lines
+    CHECK(!ReportRequestProblem(lines).empty());
+  }
   CHECK(problem([](ReportRequest& r) { r.store = "itch"; }));
   CHECK(problem([](ReportRequest& r) { r.store = "imported"; }));  // an imported game has no store ID
   CHECK(problem([](ReportRequest& r) { r.store_id = "27 x"; }));

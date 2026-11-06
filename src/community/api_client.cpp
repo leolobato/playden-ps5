@@ -550,22 +550,37 @@ bool StoreIdText(std::string_view id) {
   return true;
 }
 
-// Printable text that may hold line breaks (the settings list): each line printable on its own.
+// UTF-8 characters (code points) in text: every byte that doesn't continue one.
+std::size_t Characters(std::string_view text) {
+  return static_cast<std::size_t>(
+      std::count_if(text.begin(), text.end(), [](char c) { return (static_cast<unsigned char>(c) & 0xc0) != 0x80; }));
+}
+
+// Printable text that may hold line breaks (the settings list): each line printable on its own, at most max characters
+// in all, line breaks included (the API counts them so).
 bool MultilineText(std::string_view text, std::size_t max) {
-  if (text.size() > max * 4) return false;
-  std::size_t start = 0, characters = 0;
+  if (text.size() > max * 4 || Characters(text) > max) return false;
+  std::size_t start = 0;
   while (start <= text.size()) {
     const auto end = std::min(text.find('\n', start), text.size());
     const auto line = text.substr(start, end - start);
     if (!line.empty() && !PrintableText(line, 1, max)) return false;
-    characters += line.size() + 1;
     if (end == text.size()) break;
     start = end + 1;
   }
-  return characters <= max * 4;
+  return true;
 }
 
 }  // namespace
+
+std::string ReportSettingsText(std::string_view settings) {
+  std::size_t characters = 0;
+  for (std::size_t i = 0; i < settings.size(); ++i) {
+    if ((static_cast<unsigned char>(settings[i]) & 0xc0) == 0x80) continue;  // continues the character before
+    if (++characters > kReportSettingsMaxCharacters) return std::string(settings.substr(0, i));
+  }
+  return std::string(settings);
+}
 
 std::string ReportRequestProblem(const ReportRequest& request) {
   if (!OneOf(request.store, {"steam", "epic", "gog", "imported"})) return "the store must be steam, epic, gog or imported";

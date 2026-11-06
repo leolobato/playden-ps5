@@ -14674,7 +14674,7 @@ void Simulation::send_feedback() {
     else if (base.preset_id == "arrows") request.controls.push_back("arrow-keys-preset");
     bool differs = false, launch = false;
     request.settings = share_changes(id, std::nullopt, &differs, &launch);
-    if (request.settings.size() > cm::kReportSettingsMaxCharacters) request.settings.resize(cm::kReportSettingsMaxCharacters);
+    request.settings = cm::ReportSettingsText(request.settings);
     if (const auto community = build_community_recipe(id)) {
             auto shared = *community;
             request.recipe_json = cm::RecipeJsonForSubmission(std::move(shared), "");

@@ -170,6 +170,8 @@ struct AttachmentResult {
 };
 
 std::string ReportRequestProblem(const ReportRequest& request);
+// A game's settings list cut to what a report takes: at most kReportSettingsMaxCharacters characters, never inside one.
+std::string ReportSettingsText(std::string_view settings);
 std::string ReportBody(const ReportRequest& request);
 // zip: a report zip (LogsSource::WriteReport), at most kMaxAttachmentBytes.
 AttachmentResult UploadAttachment(const ApiContext& context, const std::string& secret, const std::string& zip,
