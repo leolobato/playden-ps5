@@ -2218,6 +2218,23 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
         check(requests.size() == 1 && live.state().game_settings.at(SteamId(42)).community_recipe.id == "community-steam-42-pad",
               "the recipe chosen at Install is saved with the request");
         check(live.CommunityChoicesInUse() == std::set<std::string>{rev('7')}, "the cache keeps the saved choice");
+        // Installed again later (uninstalling keeps a game's settings): the sheet shows the saved recipe, which the install
+        // uses, and Playden default chosen there replaces it.
+        live.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+        activate(live, "details-install");
+        check(find_row(live, "install-settings") && find_row(live, "install-settings")->value == "Community: Pad ›",
+              "the Install sheet shows the settings saved for the game");
+        activate(live, "install-settings");
+        check(find_row(live, "recipe-" + rev('7')) && find_row(live, "recipe-" + rev('7'))->selected &&
+                  find_row(live, "preset-playden-default") && !find_row(live, "preset-playden-default")->selected,
+              "the chooser has the saved recipe selected");
+        activate(live, "preset-playden-default");
+        check(find_row(live, "install-settings") && find_row(live, "install-settings")->value == "Playden default ›",
+              "Playden default is chosen on the sheet");
+        activate(live, "install-confirm");
+        (void)live.TakeInstallRequests();
+        check(live.state().game_settings.count(SteamId(42)) && live.state().game_settings.at(SteamId(42)).community_recipe.id.empty(),
+              "and saved at Install, replacing the recipe");
     }
     {
         // Game settings that can't be read: what is in use is unknown, so the cache keeps everything.

@@ -7755,7 +7755,7 @@ void Simulation::rebuild_view() {
                 const auto id = install_choice_game_;
                 item.kind = RowKind::Choice;
                 item.title = "Settings";
-                const bool chosen = install_choice_ && install_choice_game_ == id;
+                const bool chosen = install_choice_ && install_choice_game_ == id && *install_choice_ != BaseChoice{};
                 item.value = (chosen ? base_name(id, *install_choice_) : std::string("Playden default")) + " ›";
                 const auto* offers = community_offers(id);
                 const auto count = offers ? offers->size() : 0;
@@ -10384,6 +10384,11 @@ void Simulation::activate() {
         // The Settings row's choice is saved before the download (and so the preparation) starts.
         const auto save_install_choice = [&] {
             if (!install_choice_ || install_choice_game_ != id || !id.valid()) return;
+            // Playden default with nothing saved: nothing to save.
+            if (*install_choice_ == BaseChoice{} && base_of(id) == BaseChoice{}) {
+                install_choice_.reset();
+                return;
+            }
             auto& record = state_.game_settings[id];
             if (!install_choice_->community.id.empty())
                 rt::ChooseCommunityRecipe(&record, install_choice_->community.id, install_choice_->community.revision,
@@ -13378,8 +13383,10 @@ std::vector<std::string> Simulation::install_sheet_actions(GameId id) const {
 }
 
 void Simulation::open_install_sheet(GameId id, std::vector<std::string> actions) {
-    // Each opening starts from Playden's choice.
+    // Each opening starts from Playden's choice, or from the settings the game kept (uninstalling keeps them), which the
+    // install uses.
     install_choice_.reset();
+    if (const auto saved = base_of(id); saved != BaseChoice{}) install_choice_ = saved;
     install_choice_game_ = id;
     community_refresh_requested_ = true;
     open_modal({"install", "Install game", "details-install", std::move(actions), 0, false});
@@ -13388,9 +13395,8 @@ void Simulation::open_install_sheet(GameId id, std::vector<std::string> actions)
 void Simulation::choose_base(GameId id, const BaseChoice& base, bool confirmed) {
     const bool chooser_open = !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "preset-picker";
     if (chooser_for_install_ && chooser_open && !confirmed) {
-        // The Install sheet's choice is saved when Install is pressed.
-        if (base == BaseChoice{}) install_choice_.reset();
-        else install_choice_ = base;
+        // The Install sheet's choice is saved when Install is pressed; Playden default too, over saved settings.
+        install_choice_ = base;
         install_choice_game_ = id;
         chooser_for_install_ = false;
         close_modal();
