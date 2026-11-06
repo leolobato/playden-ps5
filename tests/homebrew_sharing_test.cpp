@@ -86,8 +86,17 @@ playden::steam::HttpResponse answer(long status, const std::string& body,
 }
 
 playden::steam::HttpResponse lost() {
+    // Connected, then the answer never came: the worker tries again with the same key.
     playden::steam::HttpResponse response;
-    response.error = playden::steam::HttpError::kConnectionFailed;
+    response.error = playden::steam::HttpError::kTimeout;
+    response.timing.connected = true;
+    return response;
+}
+
+playden::steam::HttpResponse unreachable() {
+    // Nothing answered the connection: no retry, the player gets Try again at once.
+    playden::steam::HttpResponse response;
+    response.error = playden::steam::HttpError::kTimeout;
     return response;
 }
 
@@ -557,20 +566,59 @@ void share_and_vote(const std::filesystem::path& base) {
     open_game_settings(model);
     check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "👎 Slow",
           "Your vote shows the vote for the prepared revision, not the chosen one");
+    check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->title == "How did this recipe run?" &&
+              contains(find_row(model, "recipe-vote")->subtitle, "the recipe in Preset"),
+          "Game settings asks how the recipe ran, tied to Preset");
     activate(model, "recipe-vote");
     activate(model, "vote-up");
     activate(model, "vote-send");
+    check(model.view().surface == "vote-recipe" && find_row(model, "vote-send") &&
+              find_row(model, "vote-send")->title == "Sending\u2026" && !find_row(model, "vote-send")->enabled,
+          "the vote sheet waits while the vote sends");
     api.answer_with({answer(400, R"({"error":"rule","message":"no"})")});
     pump(model, service, &sent);
     check(sent.size() == 1 && sent[0].vote.revision == kNewerRevision, "the vote goes to the prepared revision");
+    check(model.view().surface == "vote-recipe" && find_row(model, "vote-send")->title == "Try again" &&
+              find_row(model, "vote-send")->tone == "problem" && !find_row(model, "vote-send")->subtitle.empty(),
+          "a failed send stays on the sheet and says why on Try again");
+    model.action("circle");
     check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "👎 Slow", "a failed send changes nothing");
-    // The failure waits in a dialog until Game settings closes.
-    while (!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title != "The vote wasn't sent")
-        model.action("circle");
-    check(!model.state().navigation.modals.empty(), "a failed send says so");
+    // Leaving while it sends: the row says Sending…, then Not sent; nothing answers, so it isn't tried again.
+    activate(model, "recipe-vote");
+    activate(model, "vote-up");
+    activate(model, "vote-send");
+    model.action("circle");
+    check(find_row(model, "recipe-vote")->value == "Sending\u2026", "left while sending, the row says so");
+    api.answer_with({unreachable()});
+    {
+        std::vector<SharingRequest> unsent;
+        pump(model, service, &unsent);
+        std::lock_guard<std::mutex> lock(api.mutex);
+        check(api.requests.size() == 1, "a server that doesn't answer isn't tried again at once");
+    }
+    check(find_row(model, "recipe-vote")->value == "Not sent" && find_row(model, "recipe-vote")->tone == "problem",
+          "then it says the vote wasn't sent");
+    activate(model, "recipe-vote");
+    check(model.view().surface == "vote-recipe", "the vote sheet opens again after a failed send");
+    // Other: chosen at once, the keyboard asks what it was, and it goes with the vote.
+    activate(model, "vote-down");
+    activate(model, "vote-reason-other");
+    check(model.state().editor.active, "Other opens the keyboard");
+    model.SubmitEditorText("Music stutters");
+    check(find_row(model, "vote-reason-other")->selected && find_row(model, "vote-reason-other")->subtitle == "Music stutters",
+          "Other is chosen and shows what was typed");
+    activate(model, "vote-send");
+    api.answer_with({answer(204, "")});
+    pump(model, service, &sent);
+    check(sent.size() == 1 && sent[0].vote.reason == "other" && sent[0].vote.reason_text == "Music stutters",
+          "the vote carries Other and what it was");
+    {
+        std::lock_guard<std::mutex> lock(api.mutex);
+        const std::string body(api.requests.back().body.begin(), api.requests.back().body.end());
+        check(contains(body, "\"reason_text\":\"Music stutters\""), "the body has the text");
+    }
     open_game_settings(model);
     activate(model, "recipe-vote");
-    check(model.view().surface == "vote-recipe", "Your vote opens again after a failed send");
     activate(model, "vote-up");
     activate(model, "vote-send");
     api.answer_with({answer(204, "")});

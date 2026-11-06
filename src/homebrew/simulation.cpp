@@ -376,7 +376,8 @@ std::string sharing_error_words(const cm::ApiError& error, bool vote) {
     if (error.http_status == 429 || error.code == "rate_limited")
         return std::string(vote ? "Too many votes" : "Too many shares") + " from this console or network for now. Try again in " +
                (error.retry_after > 0 ? minutes_words(error.retry_after) : std::string("a while")) + ".";
-    if (error.code == "network" || error.code == "redirect" || error.code == "bad_response" || error.http_status == 503 ||
+    if (error.code == "network" || error.code == "unreachable" || error.code == "redirect" || error.code == "bad_response" ||
+        error.http_status == 503 ||
         error.code == "try_again" || error.http_status >= 500)
         return "Playden couldn't reach the recipe service. " + retry;
     if (error.code == "cancelled") return "Stopped before an answer came.";
@@ -689,11 +690,11 @@ std::string action_label(const std::string& key) {
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as file"}, {"share-recipe", "Share recipe"},
         {"share-send", "Send"}, {"share-send-confirm", "Send"}, {"share-vote", "👍 Vote for it instead"}, {"vote-up", "👍 Good"},
-        {"vote-down", "👎 Problems"}, {"vote-send", "Send"}, {"vote-never", "Don't ask again"}, {"recipe-vote", "Your vote"},
+        {"vote-down", "👎 Problems"}, {"vote-send", "Send"}, {"vote-never", "Don't ask again"}, {"recipe-vote", "How did this recipe run?"},
         {"feedback-good", "👍 It ran well"}, {"feedback-problems", "👎 It had problems"}, {"feedback-started", "👍 Yes, it started"},
         {"feedback-no-start", "👎 No, it didn't start"}, {"feedback-never", "Don't ask again"}, {"feedback-details", "What happened"},
         {"feedback-logs", "Include logs"}, {"feedback-recipe", "Also share these settings as a recipe"},
-        {"feedback-result", "Result"}, {"feedback-change-settings", "Change settings"}, {"feedback-send", "Send report"},
+        {"heading-result", "Result"}, {"feedback-result-partial", "Partial"}, {"feedback-result-broken", "Broken"}, {"feedback-change-settings", "Change settings"}, {"feedback-send", "Send report"},
         {"feedback-send-confirm", "Send"}, {"share-feedback", "Share feedback…"},
         {"share-as", "Shared as"}, {"share-as-none", "No name"}, {"share-as-name", "Your name"},
         {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
@@ -6084,7 +6085,7 @@ bool Simulation::scenario(const std::string& name) {
                 action("focus:feedback-send");
             }
         } else if (name.rfind("vote-", 0) == 0) {
-            // Your vote, from Game settings: the recipe in use.
+            // How did this recipe run?, from Game settings: the recipe in use.
             open_game_settings();
             open_vote_sheet(id, cm::RecipeRef{recipe_id, revision});
             if (name == "vote-reason" && vote_) {
@@ -6841,10 +6842,12 @@ void Simulation::rebuild_view() {
                     // Other carries what the player typed, shown under it; choosing it again edits that.
                     if (reason == "other")
                         item.subtitle = draft.reason_text.empty() ? std::string("Say what went wrong (optional)") : draft.reason_text;
-                } else if (action_key == "feedback-result") {
-                    item.kind = RowKind::Choice;
-                    item.value = draft.result == "broken" ? "Broken" : "Partial";
-                    item.subtitle = draft.result == "broken" ? "It starts, but isn't playable." : "It plays, with a problem that gets in the way.";
+                } else if (action_key == "feedback-result-partial" || action_key == "feedback-result-broken") {
+                    // Pick one of two, ticked as the design system's pick-one rows are.
+                    const bool broken = action_key == "feedback-result-broken";
+                    item.kind = RowKind::Action;
+                    item.checked = draft.result == (broken ? "broken" : "partial");
+                    item.subtitle = broken ? "It starts, but isn't playable." : "It plays, with a problem that gets in the way.";
                 } else if (action_key == "feedback-details") {
                     item.kind = RowKind::Text;
                     item.value = draft.details.empty() ? std::string("Optional") : draft.details;
@@ -6965,13 +6968,21 @@ void Simulation::rebuild_view() {
                     item.title = vote_reason_label(reason);
                     item.selected = draft.reason == reason;
                     item.value = item.selected ? "Selected" : "";
+                    if (reason == "other")
+                        item.subtitle = draft.reason_text.empty() ? std::string("Say what went wrong (optional)") : draft.reason_text;
                 } else if (action_key == "vote-send") {
-                    // Nothing is chosen for the player: Send waits for Good or Problems.
+                    // Nothing is chosen for the player: Send waits for Good or Problems. While it sends, the sheet
+                    // waits; a failure says why here, and Send tries again.
                     const bool first = state_.recipe_votes == playden::RecipeVotesPreference::kUnset;
-                    item.enabled = !draft.vote.empty();
+                    item.title = draft.ticket != 0 ? "Sending\u2026" : !draft.error.empty() ? "Try again" : "Send";
+                    item.enabled = !draft.vote.empty() && draft.ticket == 0;
                     item.subtitle = draft.vote.empty() ? "Choose Good or Problems first."
                                   : first ? "Settings › Community turns votes off."
                                           : "Your vote replaces an earlier one for this recipe.";
+                    if (!draft.error.empty() && draft.ticket == 0) {
+                        item.subtitle = draft.error;
+                        item.tone = "problem";
+                    }
                 } else if (action_key == "vote-never") {
                     item.subtitle = "Turns Recipe votes off. Settings › Community turns them on again.";
                 } else if (action_key == "cancel") {
@@ -6979,13 +6990,19 @@ void Simulation::rebuild_view() {
                 }
             } else if (settings_ready && action_key == "recipe-vote") {
                 item.kind = RowKind::Choice;
-                item.title = "Your vote";
+                // Named for what it asks, so it reads as part of the recipe in Preset.
+                item.title = "How did this recipe run?";
                 const auto target = VoteTargetFor(settings_game);
                 const auto* cast = target ? state_.vote_memory.Find(target->recipe_id, target->revision) : nullptr;
-                item.value = state_.recipe_votes == playden::RecipeVotesPreference::kOff ? std::string("Votes off") : vote_words(cast);
-                item.subtitle = target ? "For \u201c" + community_title(settings_game, target->recipe_id, target->revision) +
-                                             "\u201d. Vote or change it."
-                                       : std::string("For the recipe in use.");
+                const auto status = vote_status_.find(settings_game);
+                item.value = state_.recipe_votes == playden::RecipeVotesPreference::kOff ? std::string("Votes off")
+                           : status != vote_status_.end() && status->second == "sending" ? std::string("Sending\u2026")
+                           : status != vote_status_.end() && status->second == "failed" ? std::string("Not sent")
+                                                                                        : vote_words(cast);
+                if (status != vote_status_.end() && status->second == "failed") item.tone = "problem";
+                item.subtitle = target ? "Your vote for \u201c" + community_title(settings_game, target->recipe_id, target->revision) +
+                                             "\u201d, the recipe in Preset."
+                                       : std::string("Your vote for the recipe in Preset.");
             } else if (settings_ready && action_key == "shared-recipe") {
                 item.kind = RowKind::Choice;
                 item.title = "Shared recipe";
@@ -9397,6 +9414,20 @@ void Simulation::commit_editor() {
         refresh_share_sheet();
         return;
     }
+    else if (state_.editor.purpose == "Other problem" && vote_ && sheet_open("vote-recipe") &&
+             !(feedback_ && sheet_open("feedback"))) {
+        const auto value = trimmed(state_.editor.value);
+        if (!value.empty() && !cm::IsSubmissionText(value, 1, cm::kReportReasonTextMaxCharacters)) {
+            show_setting_validation("Other problem", "Up to 120 characters on one line.");
+            return;
+        }
+        std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
+        vote_->reason_text = value;
+        state_.editor.active = false;
+        state_.navigation.focus_key = state_.editor.opener_focus_key;
+        refresh_share_sheet();
+        return;
+    }
     else if (state_.editor.purpose == "Other problem" && feedback_) {
         const auto value = trimmed(state_.editor.value);
         if (!value.empty() && !cm::IsSubmissionText(value, 1, cm::kReportReasonTextMaxCharacters)) {
@@ -11710,8 +11741,9 @@ void Simulation::activate() {
         else if (feedback_->result == "no-start") feedback_->result = "partial";
         refresh_share_sheet();
     }
-    else if (feedback_ && action_name == "feedback-result") {
-        feedback_->result = feedback_->result == "broken" ? "partial" : "broken";
+    else if (feedback_ && feedback_->ticket == 0 &&
+             (action_name == "feedback-result-partial" || action_name == "feedback-result-broken")) {
+        feedback_->result = action_name == "feedback-result-broken" ? "broken" : "partial";
         refresh_share_sheet();
     }
     else if (feedback_ && action_name == "feedback-details") start_editor("What happened", feedback_->details);
@@ -11781,14 +11813,28 @@ void Simulation::activate() {
         open_feedback(game, false, false);
     }
     else if (action_name == "vote-up" || action_name == "vote-down") {
-        if (vote_) {
+        // Nothing changes while the vote is sending.
+        if (vote_ && vote_->ticket == 0) {
             vote_->vote = action_name == "vote-up" ? "up" : "down";
             if (vote_->vote == "up") vote_->reason.clear();
+            vote_->error.clear();
         }
         refresh_share_sheet();
     }
+    else if (action_name == "vote-reason-other") {
+        // As on the test report sheet: Other is chosen at once, then the keyboard asks what it was (optional).
+        if (vote_ && vote_->ticket == 0) {
+            vote_->reason = "other";
+            vote_->error.clear();
+            refresh_share_sheet();
+            start_editor("Other problem", vote_->reason_text);
+        }
+    }
     else if (action_name.rfind("vote-reason-", 0) == 0) {
-        if (vote_) vote_->reason = vote_->reason == action_name.substr(12) ? std::string() : action_name.substr(12);
+        if (vote_ && vote_->ticket == 0) {
+            vote_->reason = vote_->reason == action_name.substr(12) ? std::string() : action_name.substr(12);
+            vote_->error.clear();
+        }
         refresh_share_sheet();
     }
     else if (action_name == "vote-send") send_vote();
@@ -14292,7 +14338,8 @@ void Simulation::record_vote_locally(const cm::CastVote& vote) {
 }
 
 void Simulation::send_vote() {
-    if (!vote_ || vote_->vote.empty() || state_.recipe_votes == playden::RecipeVotesPreference::kOff) return;
+    if (!vote_ || vote_->vote.empty() || vote_->ticket != 0 || state_.recipe_votes == playden::RecipeVotesPreference::kOff)
+        return;
     const auto draft = *vote_;
     if (state_.recipe_votes == playden::RecipeVotesPreference::kUnset) {
         // The first prompt said what a vote sends; sending is the opt-in.
@@ -14304,18 +14351,20 @@ void Simulation::send_vote() {
     request.revision = draft.recipe.revision;
     request.vote = draft.vote;
     request.reason = draft.vote == "down" ? draft.reason : std::string();
+    if (request.reason == "other") request.reason_text = draft.reason_text;
     request.kit = state_.kit.version.empty() ? std::string("unknown") : state_.kit.version;
     request.firmware = console_firmware_.empty() ? std::string("unknown") : console_firmware_;
     request.playden_version = !sharing_playden_version_.empty() ? sharing_playden_version_
                             : !state_.self_update.current.empty() ? state_.self_update.current : std::string("unknown");
-    close_sheet("vote-recipe");
-    vote_.reset();
     if (const auto problem = cm::VoteRequestProblem(request); !problem.empty()) {
-        push_notice({"recipe-vote", "The vote can't be sent", "", false, kLiveNoticeSeconds, true, problem});
+        vote_->error = "The vote can't be sent: " + problem + ".";
+        refresh_share_sheet();
         return;
     }
     const cm::CastVote cast{request.recipe_id, request.revision, request.vote, request.reason};
     if (!live()) {
+        close_sheet("vote-recipe");
+        vote_.reset();
         record_vote_locally(cast);
         push_notice({"recipe-vote", "Vote saved · thanks", "", false, kLiveNoticeSeconds, false, "Simulated"});
         refresh_game_settings();
@@ -14327,7 +14376,12 @@ void Simulation::send_vote() {
     sharing.game_id = draft.game;
     sharing.vote = std::move(request);
     votes_in_flight_[sharing.ticket] = cast;
+    // The sheet waits for the answer (Sending…); left meanwhile, Game settings says so.
+    vote_->ticket = sharing.ticket;
+    vote_->error.clear();
+    vote_status_[draft.game] = "sending";
     pending_sharing_requests_.push_back(std::move(sharing));
+    refresh_share_sheet();
 }
 
 void Simulation::show_feedback_prompt() {
@@ -14472,11 +14526,12 @@ std::vector<std::string> Simulation::feedback_actions() const {
         if (draft.recipe_offer) actions.push_back("feedback-recipe");
         actions.insert(actions.end(), {"share-as", "divider", "feedback-send"});
     } else {
+        // The result first (pick one of two), then what went wrong. "Didn't start" is its own result: neither.
         if (draft.result != "no-start") {
-            actions.push_back("heading-reason");
+            actions.insert(actions.end(), {"heading-result", "feedback-result-partial", "feedback-result-broken",
+                                           "heading-reason"});
             for (const auto& [id, label] : vote_reasons())
                 if (id != "no-start") actions.push_back("feedback-reason-" + id);
-            actions.push_back("feedback-result");
         }
         actions.insert(actions.end(), {"heading-report", "feedback-details", "feedback-logs", "share-as", "divider",
                                        "feedback-change-settings", "feedback-send"});
@@ -14740,7 +14795,8 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
                 }
             }
             // A refused attempt starts over with a new key; a lost answer keeps it, so the retry is the same share.
-            const bool same_attempt = answer.error.code == "network" || answer.error.code == "try_again" ||
+            const bool same_attempt = answer.error.code == "network" || answer.error.code == "unreachable" ||
+                                      answer.error.code == "try_again" ||
                                       answer.error.http_status == 503 || answer.error.http_status >= 500 ||
                                       answer.error.code == "cancelled" || answer.error.code == "bad_response";
             if (share_ && !same_attempt) share_->idempotency_key.clear();
@@ -14778,12 +14834,25 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
     case SharingRequestKind::Vote: {
         const auto cast = votes_in_flight_.find(result.ticket);
         const bool with_report = feedback_votes_.erase(result.ticket) > 0;  // the report's notice thanks for both
+        const bool mine = vote_ && vote_->ticket == result.ticket;
+        const bool showing = mine && sheet_open("vote-recipe");
+        if (mine) vote_->ticket = 0;
+        if (!with_report) vote_status_.erase(result.game_id);
         if (result.vote.ok) {
             if (cast != votes_in_flight_.end()) record_vote_locally(cast->second);
+            if (showing) {
+                close_sheet("vote-recipe");
+                vote_.reset();
+            }
             if (!with_report)
                 push_notice({"recipe-vote", "Vote sent · thanks", "", false, kLiveNoticeSeconds, false,
                              "It helps other players pick a recipe."});
+        } else if (showing) {
+            // Still on the sheet: the reason goes on Send, which now tries again.
+            vote_->error = sharing_error_words(result.vote.error, true);
+            refresh_share_sheet();
         } else {
+            if (!with_report) vote_status_[result.game_id] = "failed";
             push_notice({"recipe-vote", "The vote wasn't sent", "", false, kLiveNoticeSeconds, true,
                          sharing_error_words(result.vote.error, true)});
         }
@@ -14842,7 +14911,8 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             const auto words = answer.error.http_status == 429 || answer.error.code == "rate_limited"
                                    ? std::string("Too many reports from this console or network for now. Try again later.")
                                    : sharing_error_words(answer.error, true);
-            const bool same_attempt = answer.error.code == "network" || answer.error.code == "try_again" ||
+            const bool same_attempt = answer.error.code == "network" || answer.error.code == "unreachable" ||
+                                      answer.error.code == "try_again" ||
                                       answer.error.http_status >= 500 || answer.error.code == "cancelled" ||
                                       answer.error.code == "bad_response";
             if (mine && !same_attempt) feedback_->idempotency_key.clear();

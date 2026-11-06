@@ -9,6 +9,7 @@
 #include <ctime>
 #include <utility>
 
+#include "community/api_client.h"
 #include "runtime/community_rules.h"
 #include "update/release.h"
 
@@ -300,6 +301,7 @@ std::optional<std::string> CommunityRecipeService::GetFrom(const std::string& ur
       request.headers.emplace_back("Authorization", config_.endpoints.recipes_auth_header);
     request.allow_plain_http = EndpointPlainHttpAllowed(config_.endpoints, target);
     request.timeout_ms = 60000;
+    request.connect_timeout_ms = kApiConnectTimeoutMs;  // a server that doesn't answer fails fast
     request.max_response_bytes = limit;
     const auto response = config_.fetch(request, shared_->cancel);
     if (shared_->cancel) {

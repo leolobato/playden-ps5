@@ -434,7 +434,12 @@ void SubmitAnswers() {
   failed.error = steam::HttpError::kTimeout;
   api.answers = {failed};
   result = SubmitRecipe(context, kSecret, request, cancel);
-  CHECK(result.error.code == "network" && result.error.http_status == 0);
+  CHECK(result.error.code == "unreachable" && result.error.http_status == 0);  // nothing connected
+  failed.timing.connected = true;
+  api.answers = {failed};
+  result = SubmitRecipe(context, kSecret, request, cancel);
+  CHECK(result.error.code == "network" && result.error.http_status == 0);  // connected, the answer was lost
+  CHECK(!api.requests.empty() && api.requests.back().connect_timeout_ms == kApiConnectTimeoutMs);
   api.requests.clear();
   api.answers = {Answer(307, "", {{"Location", "https://evil.example/v1/submissions"}})};
   result = SubmitRecipe(context, kSecret, request, cancel);
@@ -462,6 +467,7 @@ void IdempotencyKeys() {
   request.idempotency_key = *key;
   steam::HttpResponse failed;
   failed.error = steam::HttpError::kConnectionFailed;
+  failed.timing.connected = true;
   api.answers = {failed, Answer(201, R"({"id":"s1","recipe_id":"community-steam-274520","state":"provisioning","pr_url":null})")};
   CHECK(SubmitRecipe(context, kSecret, request, cancel).error.code == "network");
   CHECK(SubmitRecipe(context, kSecret, request, cancel).outcome == SubmissionOutcome::kCreated);
@@ -575,6 +581,20 @@ void Votes() {
             "\"playden_version\":\"0.6.0\"}");
   vote.reason.clear();
   CHECK(VoteRequestProblem(vote).empty());
+  // What Other was: only with a thumbs down for Other, 1-120 printable characters.
+  vote.reason = "other";
+  vote.reason_text = "Music stutters";
+  CHECK(VoteRequestProblem(vote).empty());
+  CHECK(VoteBody(vote).find("\"reason\":\"other\",\"reason_text\":\"Music stutters\"") != std::string::npos);
+  vote.reason = "slow";
+  CHECK(!VoteRequestProblem(vote).empty());
+  vote.reason = "other";
+  vote.reason_text = std::string(121, 'a');
+  CHECK(!VoteRequestProblem(vote).empty());
+  vote.reason_text = "two\nlines";
+  CHECK(!VoteRequestProblem(vote).empty());
+  vote.reason.clear();
+  vote.reason_text.clear();
 
   FakeApi api;
   const auto context = Context(&api);

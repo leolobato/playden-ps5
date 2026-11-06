@@ -38,17 +38,22 @@ inline constexpr std::size_t kSubmissionNameMaxCharacters = 40;
 const std::set<std::string>& AcceptedRecipeKeys();
 const std::set<std::string>& AcceptedCommunityKeys();
 
+inline constexpr std::uint32_t kApiConnectTimeoutMs = 8000;
+
 struct ApiContext {
   Endpoints endpoints = ReleaseEndpoints();
   update::Fetch fetch;
   std::string user_agent = "Playden";
   std::uint32_t timeout_ms = 30000;
+  // An API that doesn't answer fails after this, not after timeout_ms: the player is waiting on a sheet.
+  std::uint32_t connect_timeout_ms = kApiConnectTimeoutMs;
 };
 
 // An answer that is not a success. http_status 0: nothing came back, or the request was refused
 // before sending. code is the API's error code (bad_json, rule, choice_required, rate_limited, ...)
 // or one of Playden's own: invalid_request (refused locally, message says why), not_allowed (the
-// endpoint's URL), network, cancelled, redirect, bad_response. message is short printable ASCII,
+// endpoint's URL), network (the answer was lost), unreachable (nothing connected: the server doesn't answer),
+// cancelled, redirect, bad_response. message is short printable ASCII,
 // never holding the secret.
 struct ApiError {
   long http_status = 0;
@@ -106,6 +111,7 @@ struct VoteRequest {
   std::string revision;  // 64 hex, a published revision
   std::string vote;      // up or down
   std::string reason;    // down only, optional: no-start, crash, slow, controls, other
+  std::string reason_text;  // optional, with reason "other" only: what it was, 1-120 printable characters on one line
   std::string kit, firmware, playden_version;  // required
 };
 

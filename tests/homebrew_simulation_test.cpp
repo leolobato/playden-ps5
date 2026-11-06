@@ -2375,7 +2375,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
               has_row(simulation, "feedback-no-start"),
           "a short session asks whether the game started");
     activate(simulation, "feedback-no-start");
-    check(!has_row(simulation, "feedback-reason-slow") && !has_row(simulation, "feedback-result") &&
+    check(!has_row(simulation, "feedback-reason-slow") && !has_row(simulation, "feedback-result-partial") &&
               find_row(simulation, "feedback-logs")->value == "Included" &&
               has_row(simulation, "feedback-change-settings"),
           "it didn't start: logs are required, Change settings is offered");
@@ -2389,11 +2389,22 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     activate(simulation, "feedback-send");
     check(top().id == "share-recipe", "the Share sheet follows the report");
     check(simulation.scenario("feedback-problems"), "feedback-problems scenario loads");
-    check(find_row(simulation, "feedback-reason-slow")->selected && find_row(simulation, "feedback-result")->value == "Partial" &&
+    {
+        // Result first, as two ticked choices, then what went wrong, then the report.
+        const auto& keys = top().action_keys;
+        const auto at = [&](const char* key) { return std::find(keys.begin(), keys.end(), key) - keys.begin(); };
+        check(at("heading-result") < at("feedback-result-partial") && at("feedback-result-partial") < at("feedback-result-broken") &&
+                  at("feedback-result-broken") < at("heading-reason") && at("heading-reason") < at("feedback-reason-crash") &&
+                  at("feedback-reason-other") < at("heading-report"),
+              "problems: Result, then What went wrong, then Report");
+    }
+    check(find_row(simulation, "feedback-reason-slow")->selected && find_row(simulation, "feedback-result-partial")->checked &&
+              !find_row(simulation, "feedback-result-broken")->checked &&
               find_row(simulation, "feedback-send")->enabled,
           "problems: the reason chosen, Partial by default, Send ready");
-    activate(simulation, "feedback-result");
-    check(find_row(simulation, "feedback-result")->value == "Broken", "Result switches to Broken");
+    activate(simulation, "feedback-result-broken");
+    check(find_row(simulation, "feedback-result-broken")->checked && !find_row(simulation, "feedback-result-partial")->checked,
+          "choosing Broken ticks it instead of Partial");
     activate(simulation, "feedback-send");
     check(top().title == "Test report sent" && !top().link.empty(), "the report is sent, its issue as a QR code");
     const auto* down = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(playden::GameRef::Steam(900002), "120hz-left-stick-pointer"), rev('1'));
@@ -2456,6 +2467,7 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     activate(simulation, "feedback-problems");
     check(simulation.state().navigation.focus_key.rfind("heading-", 0) != 0 && simulation.state().navigation.focus_key != "divider",
           "after It had problems the focus is on a row it can take, not a heading");
+    check(simulation.state().navigation.focus_key == "feedback-result-partial", "and that row is Partial, the first choice");
     activate(simulation, "feedback-change-settings");
     check(top().id == "game-settings" && simulation.state().navigation.selected_game_id == game && has_row(simulation, "preset-picker"),
           "Change settings opens the game's settings from anywhere");

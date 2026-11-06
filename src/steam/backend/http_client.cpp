@@ -334,8 +334,10 @@ class HttpClient::Impl {
         result = CURLE_OPERATION_TIMEDOUT;
         goto cleanup;
       }
-      if (curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(remaining)) !=
-              CURLE_OK ||
+      const long connect_ms = request.connect_timeout_ms != 0
+                                  ? std::min<long>(static_cast<long>(request.connect_timeout_ms), static_cast<long>(remaining))
+                                  : static_cast<long>(remaining);
+      if (curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, connect_ms) != CURLE_OK ||
           curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, static_cast<long>(remaining)) != CURLE_OK)
         goto cleanup;
     }
@@ -384,6 +386,7 @@ class HttpClient::Impl {
       curl_easy_getinfo(easy, CURLINFO_NUM_CONNECTS, &connections);
       const auto ms = [](curl_off_t us) { return static_cast<std::uint32_t>(std::max<curl_off_t>(0, us) / 1000); };
       transfer.response.timing.connect_ms = ms(connect - lookup);
+      transfer.response.timing.connected = connect > 0;
       transfer.response.timing.tls_ms = ms(tls - connect);
       transfer.response.timing.first_byte_ms = ms(first);
       transfer.response.timing.new_connections = static_cast<std::uint32_t>(std::max(0L, connections));

@@ -164,6 +164,7 @@ Exchange Perform(const ApiContext& context, steam::HttpMethod method, const std:
   if (!account_token.empty()) request.headers.emplace_back("X-Playden-Account", account_token);
   request.body.assign(body.begin(), body.end());
   request.timeout_ms = timeout_ms != 0 ? timeout_ms : context.timeout_ms;
+  request.connect_timeout_ms = context.connect_timeout_ms;
   request.max_response_bytes = kMaxResponseBytes;
   request.allow_plain_http = plain;
   exchange.response = context.fetch(request, cancel);
@@ -172,7 +173,10 @@ Exchange Perform(const ApiContext& context, steam::HttpMethod method, const std:
     return exchange;
   }
   if (!exchange.response.ok()) {
-    exchange.error = LocalError("network", steam::HttpErrorName(exchange.response.error));
+    // Never connected: the server doesn't answer and nothing was sent. The worker doesn't try again at once (the
+    // player can), so a missing server fails in seconds.
+    exchange.error = LocalError(exchange.response.timing.connected ? "network" : "unreachable",
+                                steam::HttpErrorName(exchange.response.error));
     return exchange;
   }
   const long status = exchange.response.status_code;
@@ -328,6 +332,10 @@ std::string VoteRequestProblem(const VoteRequest& request) {
   if (!RecipeIdText(request.recipe_id)) return "not a community recipe id";
   if (!IsRevision(request.revision)) return "the revision must be 64 lowercase hex";
   if (!IsValidVote(request.vote, request.reason)) return "the vote must be up, or down with an optional known reason";
+  if (!request.reason_text.empty() &&
+      (request.vote != "down" || request.reason != "other" ||
+       !PrintableText(request.reason_text, 1, kReportReasonTextMaxCharacters)))
+    return "what Other was must be at most 120 printable characters, with a thumbs down for Other";
   if (!ShortAscii(request.kit, 64) || !ShortAscii(request.firmware, 64) || !ShortAscii(request.playden_version, 64))
     return "kit, firmware and Playden version are required";
   return {};
@@ -356,6 +364,7 @@ std::string VoteBody(const VoteRequest& request) {
   std::string body = "{\"recipe_id\":" + Quoted(request.recipe_id) +
                      ",\"revision\":" + Quoted(request.revision) + ",\"vote\":" + Quoted(request.vote);
   if (!request.reason.empty()) body += ",\"reason\":" + Quoted(request.reason);
+  if (!request.reason_text.empty()) body += ",\"reason_text\":" + Quoted(request.reason_text);
   body += ",\"kit\":" + Quoted(request.kit) + ",\"firmware\":" + Quoted(request.firmware) +
           ",\"playden_version\":" + Quoted(request.playden_version) + "}";
   return body;

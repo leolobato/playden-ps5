@@ -1587,9 +1587,13 @@ private:
         std::string recipe_title;
         std::string vote;         // up or down; empty until the player chooses
         std::string reason;       // down only
-        std::uint64_t ticket = 0;
+        std::string reason_text;  // what "Other" was, typed by the player (sent with Other only)
+        std::uint64_t ticket = 0; // the vote is sending: the sheet waits for its answer
+        std::string error;        // why the last send failed: Send reads Try again
     };
     std::optional<VoteDraft> vote_;
+    // Game settings › How did this recipe run?: a vote still sending ("sending") or that failed ("failed"), per game.
+    std::map<GameId, std::string> vote_status_;
     // The feedback sheet: "How did it run?" (or "Did it start?") and the test report it sends.
     struct FeedbackDraft {
         GameId game;
