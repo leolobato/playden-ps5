@@ -885,6 +885,19 @@ int main() {
       CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Launcher.exe", "", ""}}, guncraft.string(), &recipe,
                                &reason, mono));
       CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "Guncraft.exe");
+      // The swap is logged with why, and the game page names the program that starts until the player picks another.
+      GameRecipeDiagnostics swap;
+      CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Launcher.exe", "", ""}}, guncraft.string(), &recipe,
+                               &reason, mono, {}, nullptr, &swap));
+      CHECK(swap.steam_default == "Launcher.exe" && swap.steam_default_skipped_because == "dotnet-launcher" &&
+            swap.game_instead == "Guncraft.exe");
+      CHECK(ProgramInsteadOfSteamDefault(recipe, nullptr) == std::optional<std::string>("Guncraft.exe"));
+      CHECK(ProgramInsteadOfSteamDefault(recipe, &recipe.launch_entries[0]).has_value());
+      CHECK(!ProgramInsteadOfSteamDefault(recipe, &recipe.launch_entries[1]));
+      GameRecipeDiagnostics none;
+      CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Guncraft.exe", "", ""}}, guncraft.string(), &recipe,
+                               &reason, mono, {}, nullptr, &none));
+      CHECK(none.steam_default.empty() && !ProgramInsteadOfSteamDefault(recipe, nullptr));
     }
     // A program that draws, or the player's choice, is started as listed.
     CHECK(GenerateGameRecipe(1, "Game", {{"", "", "Tools/Viewer.exe", "", ""}}, root.string(), &recipe, &reason));

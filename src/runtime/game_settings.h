@@ -386,11 +386,19 @@ RecipeChoices RecipeChoicesFrom(const GameSettingsRecord& record);
 // replaced by its *-Shipping.exe. The player's program comes first and Steam's entries stay
 // as suggestions. On failure, reason is a short sentence for the player and refusal_soft
 // says whether "Try anyway" or another program could get past it.
-// What a refused recipe saw, for logs: the first SteamStub program and why it was not unpacked.
+// What a recipe saw, for logs: the first SteamStub program and why it was not unpacked, and when Steam's default
+// program only starts the game (a launcher, a .NET launcher, an installer), why and which program starts instead.
 struct GameRecipeDiagnostics {
   std::string steam_stub_program;
   std::string steam_stub_detail;
+  std::string steam_default;                  // Steam's default program, when it only starts the game
+  std::string steam_default_skipped_because;  // installer, dotnet-launcher or name-<word> (launch, updater, ...)
+  std::string game_instead;                   // the game's own program put first; empty: none found, the default stays
 };
+// The program Play starts when Playden found it in the game's files because Steam's default only starts the game
+// (GameRecipeDiagnostics). current is the entry Play starts (EffectiveSettings::launch); null means the recipe's first.
+// Nullopt when Play starts one of Steam's options or the player's program.
+std::optional<std::string> ProgramInsteadOfSteamDefault(const GameRecipe& recipe, const LaunchEntry* current);
 bool GenerateGameRecipe(std::uint32_t app_id, const std::string& name, const std::vector<LaunchEntry>& launches,
                         const std::string& install_root, GameRecipe* recipe, std::string* reason,
                         const KitCapabilities& kit = {}, const RecipeChoices& choices = {},

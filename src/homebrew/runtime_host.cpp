@@ -3126,6 +3126,11 @@ const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const Runtim
     Log("steamstub app=" + std::to_string(request.runtime_number) + " found=" + diagnostics.steam_stub_program +
         " changed=- " + (made ? std::string("skipped") : "failed=" + *reason) + " (" +
         (diagnostics.steam_stub_detail.empty() ? "unknown" : diagnostics.steam_stub_detail) + ")");
+  // Steam's default only starts the game: which program starts instead and why, so a report shows the choice.
+  if (!diagnostics.steam_default.empty())
+    Log("steam default skipped app=" + std::to_string(request.runtime_number) + " default=" + diagnostics.steam_default +
+        " why=" + diagnostics.steam_default_skipped_because + " instead=" +
+        (diagnostics.game_instead.empty() ? "-" : diagnostics.game_instead));
   if (!made && launches.empty() && choices.program.empty())
     *reason = request.launch_reason.empty() ? "Steam lists no Windows program this console can start for this game."
                                             : request.launch_reason;

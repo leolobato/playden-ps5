@@ -662,6 +662,56 @@ void live_program_change_applies_like_other_settings(const std::filesystem::path
           "program: the reset applies the same way");
 }
 
+// Steam's default only starts the game, so Playden starts a program found in the game's files: the game page says which
+// and where to change it, and the note goes once the player picks Steam's option.
+void live_names_program_found_instead_of_steam_default(const std::filesystem::path& base) {
+    using playden::homebrew::GameId;
+    using playden::homebrew::TitleActivity;
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    model.SetGameSettingsFile(base / "swap-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(241720);
+    game.title = "Guncraft";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "swap: library delivered");
+    model.UpdateInstalls({}, {{SteamId(241720), 1024, "internal", true}});
+    playden::runtime::GameRecipe recipe;
+    recipe.id = playden::runtime::GeneratedRecipeId(241720);
+    recipe.version = 2;
+    recipe.app_id = 241720;
+    recipe.name = game.title;
+    recipe.launch_entries = {{"game", "Guncraft.exe", "Bin/Guncraft.exe", "", ""},
+                             {"launch-1", "Guncraft", "Launcher.exe", "", ""}};
+    model.SetGeneratedRecipes({recipe});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(241720);
+    runtime.status = "Ready";
+    runtime.ready = runtime.prepared = runtime.has_title = runtime.can_play = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(model.action("details:241720"), "swap: open details");
+    const auto* hint = find_row(model, "details-hint");
+    check(hint && hint->title == "Starts Guncraft.exe because Steam's default program only starts the game. "
+                                 "You can change it in Game settings.",
+          "swap: the game page names the program that starts");
+
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    (void)model.TakeActivityRequests();
+    check(find_row(model, "setting-launch_option")->subtitle ==
+              "Found in the game's files: Steam's default program only starts the game.",
+          "swap: the Program row says why");
+    activate(model, "setting-launch_option");
+    activate(model, "choice-1");
+    check(find_row(model, "setting-launch_option")->subtitle.rfind("Which program starts when you press Play.", 0) == 0,
+          "swap: Steam's option has the usual description");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(!find_row(model, "details-hint"), "swap: no note once the player picks Steam's option");
+}
+
 // Run launcher or setup (Game actions): a program from the game folder, its settings launcher, starts once through
 // Play's own request, which carries the program; Game settings and the next Play stay the game's.
 void live_runs_setup_program_once(const std::filesystem::path& base) {
@@ -2586,6 +2636,7 @@ int main() {
     live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");
     live_update_runtime_from_maintenance(base / "update-runtime");
     live_program_change_applies_like_other_settings(base);
+    live_names_program_found_instead_of_steam_default(base);
     live_runs_setup_program_once(base);
     live_imported_game_steam_app_id(base);
     live_imported_program_seeds_once(base);

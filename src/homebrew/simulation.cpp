@@ -6256,6 +6256,8 @@ void Simulation::rebuild_view() {
                     item.value = settings_values.launch ? settings_values.launch->label : "Choose a program";
                     if (settings_values.launch && settings_values.launch->id == rt::kProgramEntryId)
                         item.subtitle = "From the game folder: " + settings_values.launch->executable + ".";
+                    else if (rt::ProgramInsteadOfSteamDefault(RecipeFor(settings_game), settings_values.launch))
+                        item.subtitle = "Found in the game's files: Steam's default program only starts the game.";
                     else if (!settings_values.launch) item.subtitle = "Pick the game's program from its folder.";
                 }
                 else if (id.rfind("button.", 0) == 0) item.value = binding_label(value.value);
@@ -7393,9 +7395,21 @@ void Simulation::rebuild_view() {
                     hint = stopped ? "Setup stopped early: console storage was full." : "Setup failed: console storage was full.";
                 else hint = stopped ? "Setup stopped early." : "Setup failed.";
             }
+            // Playden starts another program than Steam's default, which only starts the game: say which, and where to
+            // change it, so a wrong guess is easy to spot and undo (#576).
+            bool program_note = false;
+            if (hint.empty() && status == "Ready") {
+                rt::EffectiveSettings values;
+                if (EffectiveSettingsFor(game->id, &values))
+                    if (const auto program = rt::ProgramInsteadOfSteamDefault(RecipeFor(game->id), values.launch)) {
+                        hint = "Starts " + program->substr(program->rfind('/') + 1) +
+                               " because Steam's default program only starts the game. You can change it in Game settings.";
+                        program_note = true;
+                    }
+            }
             if (!hint.empty()) {
                 auto& note = row("details-hint", RowKind::Status, hint, "");
-                note.tone = setup.tone;
+                note.tone = program_note ? "quiet" : setup.tone;
                 note.enabled = false;
             }
             // Waiting behind other games: move it to the front; the game being set up now finishes first.

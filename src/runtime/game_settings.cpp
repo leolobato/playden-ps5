@@ -1981,16 +1981,21 @@ namespace {
 // A program that draws or has a known engine is the game. A .NET program is the game only when it names XNA itself
 // (Guncraft): its graphics libraries and most engines are found from the folder (UnityPlayer.dll, a DLL that imports
 // Direct3D), which a .NET launcher beside the game shares.
-bool StartsTheGameOnly(const std::string& program, const GameProbe& probe) {
+// Why the program only starts the game, for the log; empty when it is the game.
+std::string WhyStartsTheGameOnly(const std::string& program, const GameProbe& probe) {
   auto name = LowerAscii(program.substr(program.rfind('/') == std::string::npos ? 0 : program.rfind('/') + 1));
   // Redistributable installers and uninstallers are never the game, whatever they import (UE3Redist.exe draws a dialog with D3D9).
   for (const char* word : {"redist", "dxsetup", "uninst"})
-    if (name.find(word) != std::string::npos) return true;
-  if (probe.dotnet) return probe.engine != "xna";
-  if (!probe.apis.empty() || !probe.engine.empty()) return false;
+    if (name.find(word) != std::string::npos) return "installer";
+  if (probe.dotnet) return probe.engine != "xna" ? "dotnet-launcher" : "";
+  if (!probe.apis.empty() || !probe.engine.empty()) return "";
   for (const char* word : {"launch", "updater", "config", "setup", "settings"})
-    if (name.find(word) != std::string::npos) return true;
-  return false;
+    if (name.find(word) != std::string::npos) return std::string("name-") + word;
+  return "";
+}
+
+bool StartsTheGameOnly(const std::string& program, const GameProbe& probe) {
+  return !WhyStartsTheGameOnly(program, probe).empty();
 }
 
 bool DrawsGraphics(const std::string& summary) {
@@ -2077,12 +2082,21 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
   if (choices.program.empty() && !launches.empty()) {
     const auto relative = steam::RelativeGamePath(launches.front().executable);
     const auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
-    if (on_disk && LowerAscii(on_disk->substr(on_disk->size() - std::min<std::size_t>(4, on_disk->size()))) == ".exe" &&
-        StartsTheGameOnly(*on_disk, ProbeGame(install_root, *on_disk)))
-      if (const auto game = GameInsteadOf(install_root, *on_disk, kit)) {
+    const auto why = on_disk && LowerAscii(on_disk->substr(on_disk->size() - std::min<std::size_t>(4, on_disk->size()))) == ".exe"
+        ? WhyStartsTheGameOnly(*on_disk, ProbeGame(install_root, *on_disk))
+        : std::string();
+    if (!why.empty()) {
+      const auto game = GameInsteadOf(install_root, *on_disk, kit);
+      if (game) {
         game_program = *game;
         candidates.insert(candidates.begin(), {LaunchEntry{"", "", *game, "", ""}, false});
       }
+      if (diagnostics) {
+        diagnostics->steam_default = *on_disk;
+        diagnostics->steam_default_skipped_because = why;
+        diagnostics->game_instead = game.value_or("");
+      }
+    }
   }
   int steam_entries = 0;
   // Steam's own entries are the last ones; the player's program and the game found instead of a
@@ -2182,6 +2196,12 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
     return fail("Playden could not set up this game: " + why, false);
   *recipe = std::move(checked);
   return true;
+}
+
+std::optional<std::string> ProgramInsteadOfSteamDefault(const GameRecipe& recipe, const LaunchEntry* current) {
+  if (!current) current = recipe.launch_entries.empty() ? nullptr : &recipe.launch_entries.front();
+  if (!IsGeneratedRecipeId(recipe.id) || !current || current->id != "game") return std::nullopt;
+  return current->executable;
 }
 
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
