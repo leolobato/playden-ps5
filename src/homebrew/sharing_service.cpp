@@ -14,6 +14,36 @@
 #include "diagnostics/redaction.h"
 
 namespace playden::homebrew {
+namespace {
+
+// A report's version row holds at most this many characters (the API's rule): the summary's long facts (the kit's
+// capabilities) are cut, with an ellipsis, instead of refusing the report.
+constexpr std::size_t kReportFactMaxCharacters = 200;
+
+std::string ShortenedFact(const std::string& text, std::size_t max_characters) {
+  std::size_t characters = 0, cut = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if ((static_cast<unsigned char>(text[i]) & 0xc0) == 0x80) continue;  // a UTF-8 continuation byte
+    if (characters == max_characters - 1) cut = i;
+    if (++characters > max_characters) return text.substr(0, cut) + "\u2026";
+  }
+  return text;
+}
+
+// The files a test report's zip takes from the logs folder: Playden's logs (name.log) and their rotated copies
+// (name.log.1), nothing else.
+bool ReportLogName(const std::string& name) {
+  const auto at = name.rfind(".log");
+  if (at == std::string::npos || at == 0) return false;
+  const auto rest = std::string_view(name).substr(at + 4);
+  if (rest.empty()) return true;
+  if (rest.size() < 2 || rest[0] != '.') return false;
+  for (const char c : rest.substr(1)) if (c < '0' || c > '9') return false;
+  return true;
+}
+
+}  // namespace
+
 
 struct SharingService::Shared {
   mutable std::mutex mutex;
@@ -313,7 +343,8 @@ void SharingService::Handle(SharingRequest request) {
       const bool have_logs = ReportLogs(request.logs_app, request.logs_name, request.attach_logs ? &zip : nullptr, &facts);
       if (report.versions.empty())
         for (const auto& fact : facts)
-          if (report.versions.size() < community::kReportMaxVersionRows) report.versions.push_back(fact);
+          if (report.versions.size() < community::kReportMaxVersionRows)
+            report.versions.emplace_back(ShortenedFact(fact.first, 40), ShortenedFact(fact.second, kReportFactMaxCharacters));
       if (request.attach_logs) {
         if (!have_logs) {
           result.report.error = LocalError("logs", "The logs could not be collected on this console.");
@@ -468,7 +499,9 @@ bool SharingService::ReportLogs(std::uint32_t app, const std::string& name, std:
   for (auto& fact : source.Facts(now))
     if (fact.first != "collected") facts->push_back(std::move(fact));
   if (!zip) return true;
-  const auto index = source.Index();
+  auto index = source.Index();
+  // A report carries logs only: not screenshots or dumps another tool left in the folder (web access keeps them).
+  std::erase_if(index.playden, [](const web::PlaydenLog& log) { return !ReportLogName(log.name); });
   // The game's own log; a title no log has gives Playden's logs only (never another game's).
   std::string title = "none";
   for (const auto& game : index.games)
@@ -476,13 +509,24 @@ bool SharingService::ReportLogs(std::uint32_t app, const std::string& name, std:
       title = game.title;
       break;
     }
-  zip->clear();
-  const bool written = source.WriteReport(index, title, account, now, [zip](const char* data, std::size_t size) {
-    if (zip->size() + size > community::kMaxAttachmentBytes) return false;
-    zip->append(data, size);
+  const auto write = [&]() {
+    zip->clear();
+    const bool written = source.WriteReport(index, title, account, now, [zip](const char* data, std::size_t size) {
+      if (zip->size() + size > community::kMaxAttachmentBytes) return false;
+      zip->append(data, size);
+      return true;
+    });
+    return written && !zip->empty();
+  };
+  if (write()) return true;
+  // Over the API's limit: without the older, rotated logs (runtime.log.1 ...), the current ones still fit.
+  const auto before = index.playden.size();
+  std::erase_if(index.playden, [](const web::PlaydenLog& log) { return log.name.find(".log.") != std::string::npos; });
+  if (index.playden.size() != before && write()) {
+    Log("sharing: report logs over " + std::to_string(community::kMaxAttachmentBytes) + " bytes; sent without rotated logs");
     return true;
-  });
-  return written && !zip->empty();
+  }
+  return false;
 }
 
 void SharingService::Log(const std::string& line) const {

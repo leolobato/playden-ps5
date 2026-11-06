@@ -2446,8 +2446,10 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
           "a failed share says why and offers Try again");
     check(simulation.scenario("feedback-error"), "feedback-error scenario loads");
     check(top().id == "feedback" && find_row(simulation, "feedback-send")->title == "Try again" &&
-              find_row(simulation, "feedback-send")->subtitle.find("couldn't reach") != std::string::npos,
-          "a failed report says why and offers Try again");
+              find_row(simulation, "feedback-send")->subtitle.find("couldn't reach") != std::string::npos &&
+              find_row(simulation, "feedback-send")->subtitle.find("second report") != std::string::npos &&
+              find_row(simulation, "feedback-send")->subtitle.find("vote") == std::string::npos,
+          "a failed report says why in a report's words and offers Try again");
     // Changes worth sharing put Share recipe by the preset, out of Advanced.
     check(simulation.scenario("share-new"), "share-new scenario loads for Game settings");
     simulation.action("circle");

@@ -758,6 +758,17 @@ void report_with_logs(const std::filesystem::path& base) {
           "== session-1.log\nPW_REPORT/1 build=abc profile=playden-steam-274520 time=1000\nuser L\"SteamUser\" L\"leoaccount\"\n");
     write(base / "logs" / "title-FAKE78012.log", "== session-1.log\nPW_REPORT/1 profile=playden-steam-220 time=2000\nother game\n");
     write(base / "logs" / "playden.log", "signed in as leoaccount 76561198000000001\nconsole_firmware=13.60\n");
+    // Not logs: a screenshot another tool left there stays out of a report.
+    write(base / "logs" / "shot.png", std::string(1024, 'p'));
+    // A rotated log too big for the API's 8 MB: the report goes without the rotated logs rather than without logs.
+    write(base / "logs" / "runtime.log.1", std::string(9u << 20, 'r'));
+    // A kit with many capabilities: the summary's fact is longer than a version row may be (200 characters).
+    std::filesystem::create_directories(base / "kits" / "playden-kit");
+    {
+        std::string caps;
+        for (int i = 0; i < 40; ++i) caps += std::string(caps.empty() ? "" : ",") + "\"capability-number-" + std::to_string(i) + "\"";
+        write(base / "kits" / "playden-kit" / "manifest.json", "{\"runtime\":{\"artifact_revision\":\"abc\"},\"capabilities\":[" + caps + "]}");
+    }
     FakeApi api;
     playden::homebrew::SharingServiceConfig config;
     config.store_root = (base / "community-recipes").string();
@@ -803,11 +814,15 @@ void report_with_logs(const std::filesystem::path& base) {
     check(zip.rfind("PK", 0) == 0 && contains(zip, "title-FAKE78011.log") && !contains(zip, "title-FAKE78012.log") &&
               contains(zip, "playden.log") && contains(zip, "summary.md"),
           "the zip holds Playden's logs and this game's, not another game's");
+    check(!contains(zip, "shot.png") && !contains(zip, "runtime.log.1") && zip.size() < (8u << 20),
+          "only logs go in the zip, and rotated logs stay out when it would be too large");
     check(!contains(zip, "leoaccount") && !contains(zip, "76561198000000001") && contains(zip, "<steam-user>"),
           "the account name and SteamID are removed");
     const std::string body(api.requests[1].body.begin(), api.requests[1].body.end());
     check(contains(body, "\"attachment\":\"att_9\"") && contains(body, "\"versions\":[[") && !contains(body, "leoaccount"),
           "the report names the logs and carries the versions");
+    check(contains(body, "capability-number-1") && !contains(body, "capability-number-39") && contains(body, "\u2026"),
+          "a long fact is shortened to fit a version row, not refused");
     service.Shutdown();
 }
 

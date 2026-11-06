@@ -371,10 +371,17 @@ std::string minutes_words(std::int64_t seconds) {
 }
 
 // A share or vote that failed, in words the player can act on (never the sharing ID: errors never hold it).
-std::string sharing_error_words(const cm::ApiError& error, bool vote) {
-    const std::string retry = vote ? "Try again later." : "Try again: it won't open a second pull request.";
+// What a vote, a share or a test report says when it wasn't sent: each in its own words.
+enum class SharingWhat { kVote, kShare, kReport };
+
+std::string sharing_error_words(const cm::ApiError& error, SharingWhat what) {
+    const bool vote = what == SharingWhat::kVote, report = what == SharingWhat::kReport;
+    const std::string retry = vote ? "Try again later."
+                            : report ? "Try again: it won't open a second report."
+                                     : "Try again: it won't open a second pull request.";
     if (error.http_status == 429 || error.code == "rate_limited")
-        return std::string(vote ? "Too many votes" : "Too many shares") + " from this console or network for now. Try again in " +
+        return std::string(vote ? "Too many votes" : report ? "Too many reports" : "Too many shares") +
+               " from this console or network for now. Try again in " +
                (error.retry_after > 0 ? minutes_words(error.retry_after) : std::string("a while")) + ".";
     if (error.code == "network" || error.code == "unreachable" || error.code == "redirect" || error.code == "bad_response" ||
         error.http_status == 503 ||
@@ -389,12 +396,19 @@ std::string sharing_error_words(const cm::ApiError& error, bool vote) {
     if (error.code == "choice_required") return "Choose whether to suggest changes or share a new recipe.";
     if (error.code == "unknown_recipe" || error.code == "unknown_revision")
         return vote ? "This recipe revision isn't published, so it can't take votes."
-                    : "The recipe these settings are based on isn't published any more.";
-    if (error.code == "too_large") return "These settings are too large to share (16 KB at most).";
+             : report ? "The recipe in use isn't published any more. Send the report without it from Game settings › Preset."
+                      : "The recipe these settings are based on isn't published any more.";
+    if (error.code == "too_large") return report ? "The logs are too large to send (8 MB at most)."
+                                                 : "These settings are too large to share (16 KB at most).";
     if (error.code == "no_free_slug") return "That title is taken too often. Choose another title.";
     if (error.code == "unauthorized") return "The recipe service didn't accept this console's sharing ID.";
-    const std::string detail = !error.message.empty() ? error.message : !error.code.empty() ? error.code : "no answer";
-    return std::string(vote ? "The vote" : "The recipe") + " was refused: " + detail + ".";
+    std::string detail = !error.message.empty() ? error.message : !error.code.empty() ? error.code : "no answer";
+    while (!detail.empty() && detail.back() == '.') detail.pop_back();  // the sentence adds its own full stop
+    const std::string subject = vote ? "The vote" : report ? "The report" : "The recipe";
+    // Refused here, before anything was sent (the request didn't pass Playden's own checks), or by the service.
+    const bool local = error.http_status == 0 && (error.code == "invalid_request" || error.code == "logs" ||
+                                                  error.code == "sharing_id");
+    return subject + (local ? " can't be sent: " : " was refused: ") + detail + ".";
 }
 
 
@@ -6080,7 +6094,7 @@ bool Simulation::scenario(const std::string& name) {
                 activate_key("feedback-problems");
                 activate_key("feedback-reason-crash");
                 feedback_->idempotency_key = "simulated-report-retry";
-                feedback_->error = sharing_error_words(cm::ApiError{0, "network", "", 0}, true);
+                feedback_->error = sharing_error_words(cm::ApiError{0, "network", "", 0}, SharingWhat::kReport);
                 refresh_share_sheet();
                 action("focus:feedback-send");
             }
@@ -6109,7 +6123,7 @@ bool Simulation::scenario(const std::string& name) {
                 // A share the API never answered: the sheet stays, says why, and Send becomes Try again (same share).
                 share_->title = "4K at 120 Hz, M on the touchpad";
                 share_->idempotency_key = "simulated-share-retry";
-                share_->error = sharing_error_words(cm::ApiError{0, "network", "", 0}, false);
+                share_->error = sharing_error_words(cm::ApiError{0, "network", "", 0}, SharingWhat::kShare);
                 refresh_share_sheet();
                 action("focus:share-send");
             }
@@ -14786,7 +14800,7 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             }
             open_modal(std::move(review));
         } else {
-            const auto words = sharing_error_words(answer.error, false);
+            const auto words = sharing_error_words(answer.error, SharingWhat::kShare);
             if (answer.error.code == "not_yours") {
                 // The saved share belongs to another sharing ID: the next Send shares a new recipe.
                 if (auto record = state_.game_settings.find(result.game_id); record != state_.game_settings.end()) {
@@ -14826,7 +14840,7 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             view.error.clear();
         } else {
             view.error = result.status.error.http_status == 404 ? "The recipe service doesn't know this share any more."
-                                                                 : sharing_error_words(result.status.error, true);
+                                                                 : sharing_error_words(result.status.error, SharingWhat::kVote);
         }
         refresh_game_settings();
         break;
@@ -14849,12 +14863,12 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
                              "It helps other players pick a recipe."});
         } else if (showing) {
             // Still on the sheet: the reason goes on Send, which now tries again.
-            vote_->error = sharing_error_words(result.vote.error, true);
+            vote_->error = sharing_error_words(result.vote.error, SharingWhat::kVote);
             refresh_share_sheet();
         } else {
             if (!with_report) vote_status_[result.game_id] = "failed";
             push_notice({"recipe-vote", "The vote wasn't sent", "", false, kLiveNoticeSeconds, true,
-                         sharing_error_words(result.vote.error, true)});
+                         sharing_error_words(result.vote.error, SharingWhat::kVote)});
         }
         if (cast != votes_in_flight_.end()) votes_in_flight_.erase(cast);
         refresh_game_settings();
@@ -14908,9 +14922,7 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             }
             open_modal(std::move(sent));
         } else {
-            const auto words = answer.error.http_status == 429 || answer.error.code == "rate_limited"
-                                   ? std::string("Too many reports from this console or network for now. Try again later.")
-                                   : sharing_error_words(answer.error, true);
+            const auto words = sharing_error_words(answer.error, SharingWhat::kReport);
             const bool same_attempt = answer.error.code == "network" || answer.error.code == "unreachable" ||
                                       answer.error.code == "try_again" ||
                                       answer.error.http_status >= 500 || answer.error.code == "cancelled" ||
