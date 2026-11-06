@@ -195,6 +195,27 @@ std::vector<std::string> SearchWords(std::string_view text) {
   return words;
 }
 
+std::string FoldedName(std::string_view name) {
+  utf8proc_uint8_t* mapped = nullptr;
+  const auto count = utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(name.data()),
+                                  static_cast<utf8proc_ssize_t>(name.size()), &mapped,
+                                  static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPAT | UTF8PROC_DECOMPOSE |
+                                                                 UTF8PROC_CASEFOLD));
+  if (count < 0) return std::string(name);
+  std::string folded;
+  const std::string_view decomposed(reinterpret_cast<const char*>(mapped), static_cast<std::size_t>(count));
+  ForEachCodePoint(decomposed, [&](utf8proc_int32_t code_point) {
+    // Every mark, as NameKey drops them.
+    if (Mark(utf8proc_category(code_point))) return true;
+    utf8proc_uint8_t encoded[4];
+    const auto used = utf8proc_encode_char(code_point, encoded);
+    folded.append(reinterpret_cast<const char*>(encoded), static_cast<std::size_t>(used));
+    return true;
+  });
+  std::free(mapped);
+  return folded;
+}
+
 bool NameMatchesSearch(std::string_view name, std::string_view query) {
   const auto names = SearchWords(name);
   for (const auto& word : SearchWords(query)) {

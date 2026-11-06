@@ -56,6 +56,9 @@ std::string NameKey(std::string_view name);
 // NFKD with every mark dropped and case folded, but letters and digits of every script are kept: each run of letters
 // and digits is a word, everything else separates words. For an ASCII name they are the words NameKey joins with "-".
 std::vector<std::string> SearchWords(std::string_view text);
+// A name as two names are compared for "the same name" (the player's presets): Unicode NFKD with every mark dropped and
+// case folded; every other character, spaces and punctuation included, is kept. Invalid UTF-8 comes back unchanged.
+std::string FoldedName(std::string_view name);
 // Whether a game's name matches a search: every word of the query begins a word of the name, in any order ("brulee
 // cr" matches "Crème Brûlée & Clockwork"). A query without words matches every name.
 bool NameMatchesSearch(std::string_view name, std::string_view query);

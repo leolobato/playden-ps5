@@ -68,6 +68,7 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/prospero_profile.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/game_settings.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/my_presets.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_ini.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_files.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/kit_version.cpp"
@@ -648,6 +649,17 @@ if(BUILD_TESTING)
         fsync=playden_test_fsync rename=playden_test_rename unlink=playden_test_unlink
         renameat=playden_test_renameat unlinkat=playden_test_unlinkat)
     add_test(NAME game_settings_io COMMAND game_settings_io_test "${CMAKE_SOURCE_DIR}")
+    add_executable(my_presets_test tests/my_presets_test.cpp)
+    target_link_libraries(my_presets_test PRIVATE playden_steam_cm_codec)
+    target_compile_features(my_presets_test PRIVATE cxx_std_20)
+    add_test(NAME my_presets COMMAND my_presets_test)
+    # The same file handling through the console's managed-directory backend.
+    add_executable(my_presets_native_policy_test tests/my_presets_test.cpp src/runtime/my_presets.cpp
+        src/runtime/game_settings.cpp src/runtime/game_probe.cpp src/platform/managed_directory.cpp src/library/store.cpp)
+    target_link_libraries(my_presets_native_policy_test PRIVATE playden_steam_cm_codec)
+    target_compile_features(my_presets_native_policy_test PRIVATE cxx_std_20)
+    target_compile_definitions(my_presets_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    add_test(NAME my_presets_native_policy COMMAND my_presets_native_policy_test)
     add_executable(steam_depot_chunk_test "${CMAKE_SOURCE_DIR}/tests/steam_depot_chunk_test.cpp")
     target_link_libraries(steam_depot_chunk_test PRIVATE playden_depot_codec)
     target_compile_features(steam_depot_chunk_test PRIVATE cxx_std_20)
