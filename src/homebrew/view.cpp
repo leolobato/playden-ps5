@@ -3562,7 +3562,12 @@ class Render::Impl
                 setup_step.resize(dot);
             }
         }
-        const float facts_top = setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F;
+        const auto recipe = std::find_if(view.rows.begin(), view.rows.end(),
+                                         [](const ViewRow &row) { return row.key == "details-recipe"; });
+        // "Recipe available" takes its own line under Compatibility; Setup (and the facts above it) make room.
+        const float recipe_line = recipe != view.rows.end() ? 38.0F : 0.0F;
+        const float facts_top = (setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F) -
+                                (setup == view.rows.end() ? 0.0F : recipe_line);
         detail_cell("Playtime", playtime, left, facts_top, 240.0F);
         detail_cell("Size", size, right, facts_top, 240.0F);
         // A game a Steam family member shares comes from Steam Families, not the account's own library.
@@ -3572,18 +3577,18 @@ class Render::Impl
         detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
         detail_cell("Location", location, right, facts_top + 76.0F, 240.0F);
         detail_cell("Compatibility", compat, left, facts_top + 152.0F, 240.0F);
-        // A game with community recipes: "Recipe available" (or "Recipe in use") beside its compatibility.
-        if (const auto recipe = std::find_if(view.rows.begin(), view.rows.end(),
-                                             [](const ViewRow &row) { return row.key == "details-recipe"; });
-            recipe != view.rows.end())
+        // A game with community recipes: "Recipe available" (or "Recipe in use") on its own line under its
+        // compatibility, so it never runs into the Controller column.
+        if (recipe != view.rows.end())
         {
             const std::string tag = ui::upper(recipe->title);
-            const float tag_x = left + std::min(240.0F, font_for(compat, fonts_.semibold).measure(compat, 26.0F)) + 14.0F;
+            const float tag_x = left;
+            const float tag_top = facts_top + 152.0F + 66.0F;
             // The measure leaves out the 1.2 letter spacing the text is drawn with.
             const float tag_w = mark_width(15.0F) + fonts_.semibold.measure(tag, 13.0F) + 1.2F * static_cast<float>(tag.size()) + 22.0F;
-            scene_.rounded_rect({tag_x, facts_top + 152.0F + 29.0F, tag_w, 26.0F}, 5.0F, kAccent.with_alpha(0.16F));
-            draw_mark(scene_, 0x2605, tag_x + 6.0F, facts_top + 152.0F + 48.0F, 15.0F, kAccent);
-            ui::text(scene_, fonts_.semibold, tag, tag_x + 8.0F + mark_width(15.0F), facts_top + 152.0F + 47.0F, 13.0F,
+            scene_.rounded_rect({tag_x, tag_top, tag_w, 26.0F}, 5.0F, kAccent.with_alpha(0.16F));
+            draw_mark(scene_, 0x2605, tag_x + 6.0F, tag_top + 19.0F, 15.0F, kAccent);
+            ui::text(scene_, fonts_.semibold, tag, tag_x + 8.0F + mark_width(15.0F), tag_top + 18.0F, 13.0F,
                      kAccent, gfx::Align::left, 1.2F);
         }
         if (game->last_played && setup == view.rows.end())
@@ -3593,10 +3598,10 @@ class Render::Impl
             detail_cell("Controller", controller, right, facts_top + 152.0F, 240.0F);
         if (setup != view.rows.end()) {
             const gfx::Color tone = setup->tone.empty() || setup->tone == "quiet" ? kText : save_tone(setup->tone);
-            detail_cell("Setup", setup_step, left, facts_top + 228.0F, 520.0F, tone);
+            detail_cell("Setup", setup_step, left, facts_top + 228.0F + recipe_line, 520.0F, tone);
             if (!setup_detail.empty()) {
                 const ui::FontRef &face = font_for(setup_detail, fonts_.regular);
-                ui::text(scene_, face, face.font->fit(setup_detail, 24.0F, 520.0F), left, facts_top + 228.0F + 84.0F,
+                ui::text(scene_, face, face.font->fit(setup_detail, 24.0F, 520.0F), left, facts_top + 228.0F + recipe_line + 84.0F,
                          24.0F, kSecondary);
             }
         }
