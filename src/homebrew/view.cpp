@@ -3985,7 +3985,7 @@ class Render::Impl
             {"game-settings", "Playden"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
             {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
-            {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"},
+            {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"},
             {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
             {"filters", "Library"}, {"logs-controls", "Logs"}, {"setting-value", "Settings"}, {"diagnostics", "Settings"},
             {"notices", "Notifications"}, {"qr-controls", "Sign in"}, {"session-controls", "Simulation"},
@@ -4035,7 +4035,8 @@ class Render::Impl
                           view.surface == "download-server" ||
                           view.surface == "import-games" ||
                           view.surface == "import-programs" || view.surface == "steam-programs" ||
-                          view.surface == "setup-programs" || view.surface == "share-recipe" || view.surface == "vote-recipe";
+                          view.surface == "setup-programs" || view.surface == "share-recipe" || view.surface == "vote-recipe" ||
+                          view.surface == "feedback";
         const float width = overlay_transition_.panel_width(wide ? 960.0F : 640.0F);
         const gfx::Rect panel{kWidth - width + (1.0F - ease) * width, 0.0F, width, kHeight};
         overlay_.shadow({panel.x - 18.0F, 0.0F, panel.w + 18.0F, panel.h}, 0.0F, 36.0F,
@@ -4521,7 +4522,7 @@ class Render::Impl
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
                                     view.surface == "controller-tuning" ||
                                     view.surface == "game-maintenance" || view.surface == "share-recipe" ||
-                                    view.surface == "vote-recipe";
+                                    view.surface == "vote-recipe" || view.surface == "feedback";
         // The Import sheets: each folder's path (or why it can't be added) under its name.
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||
                                   view.surface == "import-choice" || view.surface == "steam-programs" ||

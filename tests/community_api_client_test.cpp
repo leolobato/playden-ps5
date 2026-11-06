@@ -594,6 +594,102 @@ void Votes() {
   }
 }
 
+ReportRequest Report() {
+  ReportRequest report;
+  report.store = "steam";
+  report.store_id = "274520";
+  report.name = "Darkwood";
+  report.result = "partial";
+  report.reason = "slow";
+  report.details = "Drops to 20 fps in the forest.";
+  report.installed_on = "usb";
+  report.controls = {"dualsense", "mouse-preset"};
+  report.settings = "Resolution 3840×2160 · 120 Hz on";
+  report.based_on = RecipeRef{"community-274520-120hz-left-stick-pointer", kRevision};
+  report.versions = {{"Playden version", "0.10.0"}, {"firmware", "13.60"}};
+  report.author = "TodorPenchev";
+  report.attachment = "att_1";
+  report.kit = "0.19";
+  report.firmware = "13.60";
+  report.playden_version = "0.10.0";
+  report.idempotency_key = "report-key-1";
+  return report;
+}
+
+// Test reports and their logs (plan 2026-11-06 Phase B): the contract in playden-api's README.
+void Reports() {
+  CHECK(ReportBody(Report()) ==
+        "{\"game\":{\"store\":\"steam\",\"store_id\":\"274520\",\"name\":\"Darkwood\"},\"result\":\"partial\",\"reason\":\"slow\","
+        "\"details\":\"Drops to 20 fps in the forest.\",\"installed_on\":\"usb\",\"controls\":[\"dualsense\",\"mouse-preset\"],"
+        "\"settings\":\"Resolution 3840×2160 · 120 Hz on\",\"based_on\":{\"recipe_id\":\"community-274520-120hz-left-stick-pointer\","
+        "\"revision\":\"" + kRevision + "\"},\"versions\":[[\"Playden version\",\"0.10.0\"],[\"firmware\",\"13.60\"]],"
+        "\"name\":\"TodorPenchev\",\"attachment\":\"att_1\",\"kit\":\"0.19\",\"firmware\":\"13.60\",\"playden_version\":\"0.10.0\"}");
+  auto imported = Report();
+  imported.store = "imported";
+  imported.store_id.clear();
+  imported.based_on.reset();
+  CHECK(ReportBody(imported).find("\"store_id\":null") != std::string::npos);
+  const auto problem = [](auto change) {
+    auto report = Report();
+    change(report);
+    return !ReportRequestProblem(report).empty();
+  };
+  CHECK(ReportRequestProblem(Report()).empty());
+  CHECK(problem([](ReportRequest& r) { r.store = "itch"; }));
+  CHECK(problem([](ReportRequest& r) { r.store = "imported"; }));  // an imported game has no store ID
+  CHECK(problem([](ReportRequest& r) { r.store_id = "27x"; }));
+  CHECK(problem([](ReportRequest& r) { r.result = "fine"; }));
+  CHECK(problem([](ReportRequest& r) { r.result = "works"; }));  // a reason only for a problem
+  CHECK(problem([](ReportRequest& r) { r.details = std::string(501, 'a'); }));
+  CHECK(problem([](ReportRequest& r) { r.details = "two\nlines"; }));
+  CHECK(problem([](ReportRequest& r) { r.installed_on = "cloud"; }));
+  CHECK(problem([](ReportRequest& r) { r.controls = {"wheel"}; }));
+  CHECK(problem([](ReportRequest& r) { r.recipe_json = "[]"; }));
+  CHECK(problem([](ReportRequest& r) { r.store = "gog"; r.recipe_json = "{}"; }));  // recipes are Steam-only
+  CHECK(problem([](ReportRequest& r) { r.versions.assign(25, {"a", "b"}); }));
+  CHECK(problem([](ReportRequest& r) { r.attachment = "a b"; }));
+  CHECK(problem([](ReportRequest& r) { r.kit.clear(); }));
+  CHECK(problem([](ReportRequest& r) { r.idempotency_key = "short"; }));
+
+  FakeApi api;
+  const auto context = Context(&api);
+  std::atomic<bool> cancel{false};
+  api.answers = {Answer(201, R"({"id":"r_7","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/801","updated":false})")};
+  auto result = SendReport(context, kSecret, Report(), cancel);
+  CHECK(result.ok && result.id == "r_7" && result.state == "open" && !result.updated &&
+        result.issue_url == "https://github.com/leolobato/playden-ps5/issues/801");
+  CHECK(api.requests.size() == 1 && api.requests.back().url == "https://api.playden.club/v1/reports");
+  CHECK(HeaderOf(api.requests.back(), "Idempotency-Key") == "report-key-1" && HeaderOf(api.requests.back(), "Content-Type") == "application/json");
+  CHECK(Body(api.requests.back()) == ReportBody(Report()) && !SecretOutsideAuthorization(api.requests.back()));
+  api.answers = {Answer(200, R"({"id":"r_7","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/801","updated":true})")};
+  CHECK(SendReport(context, kSecret, Report(), cancel).updated);
+  api.answers = {Answer(201, R"({"id":"r_8","state":"provisioning","issue_url":null})")};
+  result = SendReport(context, kSecret, Report(), cancel);
+  CHECK(result.ok && result.state == "provisioning" && result.issue_url.empty());
+  api.answers = {Answer(201, R"({"id":"r_8","state":"open","issue_url":null})")};  // open needs its issue
+  CHECK(SendReport(context, kSecret, Report(), cancel).error.code == "bad_response");
+  api.answers = {Answer(201, R"({"id":"r_8","state":"open","issue_url":"https://x/)" + kSecret + R"("})")};
+  CHECK(SendReport(context, kSecret, Report(), cancel).error.code == "bad_response");
+  api.answers = {Answer(429, R"({"error":"rate_limited","message":"x"})", {{"Retry-After", "30"}})};
+  result = SendReport(context, kSecret, Report(), cancel);
+  CHECK(!result.ok && result.error.code == "rate_limited" && result.error.retry_after == 30);
+
+  // The logs: a zip of at most 8 MB, its own content type and key.
+  api.requests.clear();
+  std::string zip = std::string("PK\x03\x04", 4) + "rest";
+  api.answers = {Answer(201, R"({"id":"att_1","url":"https://attachments.playden.club/att_1/playden-logs.zip"})")};
+  const auto uploaded = UploadAttachment(context, kSecret, zip, "report-key-1-logs", cancel);
+  CHECK(uploaded.ok && uploaded.id == "att_1" && uploaded.url == "https://attachments.playden.club/att_1/playden-logs.zip");
+  CHECK(api.requests.size() == 1 && api.requests.back().url == "https://api.playden.club/v1/attachments" &&
+        HeaderOf(api.requests.back(), "Content-Type") == "application/zip" && Body(api.requests.back()) == zip &&
+        HeaderOf(api.requests.back(), "Idempotency-Key") == "report-key-1-logs");
+  CHECK(UploadAttachment(context, kSecret, "not a zip", "report-key-1-logs", cancel).error.code == "invalid_request");
+  CHECK(UploadAttachment(context, kSecret, std::string("PK\x03\x04", 4) + std::string(kMaxAttachmentBytes, 'x'),
+                         "report-key-1-logs", cancel).error.code == "invalid_request");
+  CHECK(UploadAttachment(context, "nope", zip, "report-key-1-logs", cancel).error.code == "invalid_request");
+  CHECK(api.requests.size() == 1);
+}
+
 // Plain http: only a dev build, only to the configured API.
 void PlainHttp() {
   FakeApi api;
@@ -650,6 +746,7 @@ int main(int argc, char** argv) {
   Submissions();
   SecretEchoes();
   Votes();
+  Reports();
   PlainHttp();
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
   return failures ? 1 : 0;

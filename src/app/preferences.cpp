@@ -22,12 +22,13 @@ std::string ToString(const Bytes& bytes) {
 // web_access (on in older files), version 10 content_language (English in older files, which is what they
 // downloaded), version 11 the launcher dialogs' "Don't show this again" (shown in older files), version 12 the kit
 // whose "Update your games" prompt was shown (none in older files, so they are offered it), version 13 the
-// community recipe fields (votes unasked, sharing not explained, no share name in older files).
+// community recipe fields (votes unasked, sharing not explained, no share name in older files), version 14 whether
+// the first test report said what it sends (not in older files).
 constexpr const char* kKeys[] = {"reduce_motion", "title_store_suffix", "cloud_saves_auto",
                                           "steam_sign_in_password", "downloads_slow_network", "steam_stay_signed_in",
                                           "beta_updates", "download_server", "web_access", "content_language",
                                           "hide_run_once_help", "hide_launcher_help", "runtime_prompt_kit",
-                                          "recipe_votes", "sharing_explained", "share_name"};
+                                          "recipe_votes", "sharing_explained", "share_name", "reports_explained"};
 
 bool ParseFlag(const std::string& value, bool* flag) {
   if (value != "0" && value != "1") return false;
@@ -86,6 +87,7 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
     // A name the current rule refuses (an older, looser check let it in) is dropped, not the file.
     if (IsShareName(values[15])) parsed.share_name = values[15];
   }
+  if (version >= 14 && !ParseFlag(values[16], &parsed.reports_explained)) return false;
   *preferences = std::move(parsed);
   return true;
 }
@@ -115,7 +117,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
 
   std::string serialized = ToString(read.value());
   Preferences keyed;
-  if (ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
+  if (ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};
   bool beta_updates = false;
   if (serialized.rfind("version=7\n", 0) == 0) {
@@ -220,7 +222,7 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
   const std::string name = IsShareName(preferences.share_name) ? preferences.share_name : std::string();
   const char* votes = preferences.recipe_votes == RecipeVotesPreference::kOn ? "1"
                     : preferences.recipe_votes == RecipeVotesPreference::kOff ? "2" : "0";
-  const std::string text = std::string("version=13\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
+  const std::string text = std::string("version=14\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
                            "\ntitle_store_suffix=" + (preferences.title_store_suffix ? "1" : "0") +
                            "\ncloud_saves_auto=" + (preferences.cloud_saves_auto ? "1" : "0") +
                            "\nsteam_sign_in_password=" + (preferences.steam_sign_in_password ? "1" : "0") +
@@ -236,7 +238,8 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
                            "\nhide_launcher_help=" + (preferences.hide_launcher_help ? "1" : "0") +
                            "\nruntime_prompt_kit=" + preferences.runtime_prompt_kit + "\nrecipe_votes=" + votes +
                            "\nsharing_explained=" + (preferences.sharing_explained ? "1" : "0") +
-                           "\nshare_name=" + name + "\n";
+                           "\nshare_name=" + name +
+                           "\nreports_explained=" + (preferences.reports_explained ? "1" : "0") + "\n";
   return storage_.WriteAtomic(kPreferencesPath, Bytes(text.begin(), text.end()));
 }
 

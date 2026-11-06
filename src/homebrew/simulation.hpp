@@ -322,7 +322,7 @@ struct CommunityCatalog {
 // Sharing recipes and voting (community recipes, plan Phases 5 and 6). The model hands these to the
 // sharing worker (homebrew/sharing_service.hpp) and gets its answers back; it never holds the
 // console's sharing ID (the install secret), which only that worker reads and sends.
-enum class SharingRequestKind { Submit, Status, Vote, MarkAsked, ResetSharingId };
+enum class SharingRequestKind { Submit, Status, Vote, MarkAsked, ResetSharingId, Report, FeedbackSeen };
 struct SharingRequest {
     SharingRequestKind kind = SharingRequestKind::Submit;
     std::uint64_t ticket = 0;   // matches the result to the request
@@ -333,15 +333,25 @@ struct SharingRequest {
     std::string submission_id;  // Status
     // Vote: the whole request; MarkAsked: recipe_id and revision only.
     playden::community::VoteRequest vote;
+    // Report: the whole request (the worker adds the versions and, when asked, the redacted logs of
+    // the game's title found by logs_app or logs_name). An empty idempotency_key asks for a new one.
+    playden::community::ReportRequest report;
+    bool attach_logs = false;
+    std::uint32_t logs_app = 0;
+    std::string logs_name;
+    // FeedbackSeen: a feedback prompt was shown (or a report sent: answered) for the game's settings.
+    std::string feedback_game, feedback_kit, feedback_settings;
+    bool feedback_answered = false;
 };
 struct SharingResult {
     SharingRequestKind kind = SharingRequestKind::Submit;
     std::uint64_t ticket = 0;
     GameId game_id;
     playden::community::SubmissionResult submission;  // Submit
-    std::string idempotency_key;                      // Submit: the key the attempt used
+    std::string idempotency_key;                      // Submit, Report: the key the attempt used
     playden::community::SubmissionStatus status;      // Status (its id is the submission asked about)
     playden::community::VoteResult vote;              // Vote
+    playden::community::ReportResult report;          // Report
     bool ok = false;                                  // ResetSharingId
     std::string error;                                // ResetSharingId: why it failed
 };
@@ -922,6 +932,7 @@ struct State {
     // the name shared recipes credit.
     playden::RecipeVotesPreference recipe_votes = playden::RecipeVotesPreference::kUnset;
     bool sharing_explained = false;
+    bool reports_explained = false;  // the first report said what it sends
     std::string share_name;
     std::map<GameId, std::uint64_t> save_sizes;         // live: Windows user folders of games without Steam Cloud
     Navigation navigation;
@@ -1325,8 +1336,8 @@ public:
     void UpdateVoteMemory(playden::community::VoteState memory);
     // The console's firmware and Playden's version, sent with every share and vote.
     void SetSharingContext(std::string firmware, std::string playden_version);
-    // A session of the game ended after played_seconds of play: a game that used a community
-    // recipe may ask for a vote (once per recipe revision, at least five minutes played).
+    // A session of a game Playden started ended after played_seconds: Playden may ask how it ran
+    // (community::NextFeedbackQuestion); with a community recipe in use the answer is also its vote.
     void NotifySessionEnded(GameId id, std::int64_t played_seconds);
     // The community recipe revision (64 hex) the game's title plays with, by the runtime's
     // recipe_id and recipe_version; nothing for Playden's own.
@@ -1488,14 +1499,34 @@ private:
         std::string recipe_title;
         std::string vote;         // up or down; empty until the player chooses
         std::string reason;       // down only
-        bool after_play = false;  // the prompt after a session (Not now counts as asked)
         std::uint64_t ticket = 0;
     };
     std::optional<VoteDraft> vote_;
-    struct VotePrompt { GameId game; std::int64_t played_seconds = 0; };
-    std::vector<VotePrompt> vote_prompts_;  // sessions that may ask, oldest first
+    // The feedback sheet: "How did it run?" (or "Did it start?") and the test report it sends.
+    struct FeedbackDraft {
+        GameId game;
+        bool short_session = false;  // asks "Did it start?"
+        bool after_play = false;     // the prompt after a session, not Share feedback…
+        std::string step = "ask";    // ask, good or problems
+        std::string result;          // works, partial, broken or no-start
+        std::string reason;          // a problem's reason (the vote reasons)
+        std::string details;         // What happened, optional
+        bool attach_logs = false;
+        bool recipe_offer = false;   // the settings count as a recipe (program, arguments, controls...)
+        bool share_recipe = false;   // and the player wants them shared after the report
+        std::optional<playden::community::RecipeRef> recipe;  // the community recipe in use: the answer votes for it
+        std::string recipe_title;
+        std::string kit, settings;   // the feedback memory's keys
+        std::uint64_t ticket = 0;
+        std::string error;
+        std::string idempotency_key;
+    };
+    std::optional<FeedbackDraft> feedback_;
+    struct FeedbackPrompt { GameId game; std::int64_t played_seconds = 0; };
+    std::vector<FeedbackPrompt> feedback_prompts_;  // sessions that may ask, oldest first
     std::vector<SharingRequest> pending_sharing_requests_;
     std::map<std::uint64_t, playden::community::CastVote> votes_in_flight_;  // by ticket
+    std::set<std::uint64_t> feedback_votes_;  // votes sent with a report: no notice of their own
     std::uint64_t next_sharing_ticket_ = 0;
     std::string sharing_playden_version_;
     std::uint64_t simulated_submissions_ = 0;
@@ -1503,10 +1534,17 @@ private:
     void refresh_share_sheet();
     void send_share();
     void open_share_privacy();
-    void open_vote_sheet(GameId id, const playden::community::RecipeRef& recipe, bool after_play);
+    void open_vote_sheet(GameId id, const playden::community::RecipeRef& recipe);
     void send_vote();
     void dismiss_vote();
-    void show_vote_prompt();
+    void show_feedback_prompt();
+    void open_feedback(GameId id, bool short_session, bool after_play);
+    [[nodiscard]] std::vector<std::string> feedback_actions() const;
+    void send_feedback();
+    void open_feedback_privacy();
+    void note_feedback(const FeedbackDraft& draft, bool answered);
+    [[nodiscard]] std::string feedback_settings(GameId id) const;
+    [[nodiscard]] std::string feedback_kit() const;
     void request_submission_status(GameId id, bool force);
     std::optional<playden::runtime::CommunityRecipe> build_community_recipe(GameId id) const;
     // The Changes list between the game's base (Playden default without one) and its effective settings,

@@ -3014,9 +3014,10 @@ bool RuntimeHost::PollLaunch(Composition& c) {
     }
   }
   if (pending && (snapshot.state == rt::LaunchState::kExited || snapshot.state == rt::LaunchState::kFailed)) {
-    // How long it played, for the vote prompt: from the handoff to now (the end was seen now).
+    // How long it played, for the feedback prompt: from the handoff to now (the end was seen now). A
+    // launch that failed counts too: a game that doesn't start is what "Did it start?" asks about.
     std::optional<std::int64_t> played_seconds;
-    if (snapshot.state == rt::LaunchState::kExited && handoff_ms > 0)
+    if (handoff_ms > 0)
       if (const auto now = config_.now_ms(); now >= handoff_ms) played_seconds = (now - handoff_ms) / 1000;
     const auto finished = c.launch->Finish();
     // The saves the game just wrote are Wine's (0600): opened to FTP again.

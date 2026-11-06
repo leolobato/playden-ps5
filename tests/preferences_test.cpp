@@ -186,11 +186,11 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   Check(store.Save(preferences).ok(), "sign-in method preference saves");
   const auto saved = storage.Read("preferences.conf");
   Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()) ==
-                          "version=13\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
+                          "version=14\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
                           "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
                           "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\nruntime_prompt_kit=\n"
-                          "recipe_votes=0\nsharing_explained=0\nshare_name=\n",
-        "version 13 format includes Automatic download server, web access, English and the community fields");
+                          "recipe_votes=0\nsharing_explained=0\nshare_name=\nreports_explained=0\n",
+        "version 14 format includes Automatic download server, web access, English, the community fields and reports");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
             loaded.preferences.cloud_saves_auto,
@@ -281,6 +281,8 @@ void CommunityPreferencesPersistAndVersionSixStillLoads() {
   preferences.recipe_votes = playden::RecipeVotesPreference::kOn;
   Check(store.Save(preferences).ok() && store.Load().preferences.recipe_votes == playden::RecipeVotesPreference::kOn,
         "votes on survives restart");
+  preferences.reports_explained = true;
+  Check(store.Save(preferences).ok() && store.Load().preferences.reports_explained, "the explained report survives restart");
   // A name that can't be read back is not written.
   preferences.share_name = "two\nlines";
   Check(store.Save(preferences).ok() && store.Load().status == playden::PreferencesLoadStatus::kLoaded &&
@@ -306,6 +308,7 @@ void CommunityPreferencesPersistAndVersionSixStillLoads() {
               kept.preferences.share_name.empty(),
           "a name the API refuses is dropped, the other preferences load");
   }
+  Check(!store.Load().preferences.reports_explained, "a version 13 file has not explained reports yet");
   {
     // Version 8 (download server) still loads, with votes not asked yet.
     const std::string version_eight = "version=8\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
@@ -478,8 +481,8 @@ void OlderPreferencesUseAutomaticDownloadServer() {
           "migration retains old fields and defaults later fields");
     Check(store.Save(loaded.preferences).ok(), "migrated preferences save");
     const auto saved = storage.Read("preferences.conf");
-    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=13\n", 0) == 0,
-          "saving a migrated file writes version 13");
+    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=14\n", 0) == 0,
+          "saving a migrated file writes version 14");
     Check(loaded.preferences.web_access, "every older preference version has web access on");
     Check(loaded.preferences.content_language == "english", "every older preference version downloads English");
   }

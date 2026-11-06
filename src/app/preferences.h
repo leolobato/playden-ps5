@@ -57,6 +57,8 @@ struct Preferences {
   bool sharing_explained = false;
   // "Your name" on the Share sheet, remembered for the next share; empty: the recipe has no author ("from the community").
   std::string share_name;
+  // The first game test report showed what a report sends (version 14).
+  bool reports_explained = false;
 };
 
 enum class PreferencesLoadStatus {

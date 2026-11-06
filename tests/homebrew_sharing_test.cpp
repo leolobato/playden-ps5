@@ -427,12 +427,66 @@ void share_and_vote(const std::filesystem::path& base) {
     model.UpdateRuntime(RuntimeState::Ready, {runtime});
     check(model.AppliedCommunityRecipe(kGame) && model.AppliedCommunityRecipe(kGame)->revision == kRevision,
           "the title's 32-hex tag gives the full revision");
+    // After a game: "Did it start?" for a short session, "How did it run?" after three minutes; two prompts at most
+    // for the same settings, and none once a report was sent.
+    (void)model.TakeSharingRequests();
     model.NotifySessionEnded(kGame, 120);
-    check(model.state().navigation.modals.empty(), "two minutes of play don't ask");
-    // Already voted for this revision (the thumbs up above): no prompt either.
+    check(model.view().surface == "feedback" && model.view().title == "Did Darkwood start?" &&
+              find_row(model, "feedback-started") && find_row(model, "feedback-no-start"),
+          "two minutes of play ask whether it started");
+    auto seen = model.TakeSharingRequests();
+    check(seen.size() == 1 && seen[0].kind == SharingRequestKind::FeedbackSeen && seen[0].feedback_game == "steam-274520" &&
+              seen[0].feedback_kit == "0.12" && !seen[0].feedback_answered,
+          "showing the prompt notes it for the worker");
+    model.action("circle");
+    for (auto& request : seen) service.Submit(std::move(request));
+    service.Wait();
+    if (auto memory = service.Memory()) model.UpdateVoteMemory(*memory);
+    check(contains(read_text(base / "community-recipes" / cm::kVoteStateFileName), "\"game\":\"steam-274520\""),
+          "the worker saves the prompt");
     model.NotifySessionEnded(kGame, 900);
-    check(model.state().navigation.modals.empty(), "a revision already voted for doesn't ask");
-    // A newer revision: asked once; Not now counts as asked.
+    check(model.view().surface == "feedback" && model.view().title == "How did Darkwood run?" &&
+              contains(model.view().subtitle, "Darkwood at 4K"),
+          "ten minutes ask how it ran, and say the answer rates the recipe");
+    activate(model, "feedback-good");
+    check(find_row(model, "feedback-send") && find_row(model, "feedback-logs") && !find_row(model, "feedback-logs")->selected &&
+              !find_row(model, "feedback-recipe"),
+          "it ran well: a report without logs, and no recipe to share for unchanged settings");
+    activate(model, "feedback-details");
+    model.SubmitEditorText("Played the first day, no problems.");
+    activate(model, "feedback-send");
+    check(model.state().navigation.modals.back().title == "Before you send" &&
+              contains(model.state().navigation.modals.back().body, "you own this game"),
+          "the first report says what it sends");
+    activate(model, "feedback-send-confirm");
+    check(model.state().reports_explained && model.ExportPreferences().reports_explained, "and only the first time");
+    api.answer_with({answer(204, ""), answer(201, R"({"id":"r-1","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/801","updated":false})")});
+    pump(model, service, &sent);
+    check(sent.size() == 3 && sent[0].kind == SharingRequestKind::FeedbackSeen && sent[1].kind == SharingRequestKind::Vote &&
+              sent[1].vote.vote == "up" && sent[1].vote.revision == kRevision && sent[2].kind == SharingRequestKind::Report,
+          "the report goes with the recipe's thumbs up");
+    {
+        const auto& report = sent[2].report;
+        check(report.store == "steam" && report.store_id == "274520" && report.name == "Darkwood" && report.result == "works" &&
+                  report.details == "Played the first day, no problems." && report.based_on &&
+                  report.based_on->revision == kRevision && report.installed_on == "console" && !sent[2].attach_logs,
+              "the report names the game, the result, the recipe and where it is installed");
+        std::lock_guard<std::mutex> lock(api.mutex);
+        check(api.requests.size() == 2 && api.requests[1].url.find("/v1/reports") != std::string::npos,
+              "a report that works sends no logs");
+        const std::string body(api.requests[1].body.begin(), api.requests[1].body.end());
+        check(contains(body, "\"result\":\"works\"") && contains(body, "\"store_id\":\"274520\"") && !contains(body, kRevision + "x"),
+              "the body is the contract's");
+    }
+    check(model.state().navigation.modals.back().title == "Test report sent" &&
+              model.state().navigation.modals.back().link == "https://github.com/leolobato/playden-ps5/issues/801",
+          "the report's issue shows as a QR code");
+    check(model.state().vote_memory.Find(kRecipeId, kRevision) && model.state().vote_memory.Find(kRecipeId, kRevision)->vote == "up",
+          "the thumbs up is remembered");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    model.NotifySessionEnded(kGame, 900);
+    check(model.state().navigation.modals.empty(), "once a report was sent for these settings, Playden doesn't ask again");
+    // A newer revision: new settings ask again; Not now twice, then no more.
     auto catalog = model.state().community;
     catalog.games[kGame] = {offer(kNewerRevision)};
     model.UpdateCommunityCatalog(catalog);
@@ -444,20 +498,16 @@ void share_and_vote(const std::filesystem::path& base) {
     (void)model.TakeSharingRequests();
     runtime.recipe_version = kNewerRevision.substr(0, 32);
     model.UpdateRuntime(RuntimeState::Ready, {runtime});
-    model.NotifySessionEnded(kGame, 900);
-    check(model.view().surface == "vote-recipe" && model.view().title == "How did Darkwood run?" &&
-              contains(model.view().subtitle, "Darkwood at 4K"),
-          "after ten minutes with a new revision Playden asks how it ran");
-    auto asked = model.TakeSharingRequests();
-    check(asked.size() == 1 && asked[0].kind == SharingRequestKind::MarkAsked && asked[0].vote.revision == kNewerRevision,
-          "showing the prompt marks the revision as asked");
-    model.action("circle");
+    for (int prompt = 0; prompt < 2; ++prompt) {
+        model.NotifySessionEnded(kGame, 900);
+        check(model.view().surface == "feedback" && model.view().title == "How did Darkwood run?",
+              "after ten minutes with a new revision Playden asks how it ran");
+        model.action("circle");
+        pump(model, service);
+    }
     check(model.state().navigation.modals.empty(), "Not now closes the prompt");
-    for (auto& request : asked) service.Submit(std::move(request));
-    service.Wait();
-    if (auto memory = service.Memory()) model.UpdateVoteMemory(*memory);
     model.NotifySessionEnded(kGame, 900);
-    check(model.state().navigation.modals.empty(), "a dismissed prompt doesn't ask about the revision again");
+    check(model.state().navigation.modals.empty(), "two dismissed prompts don't ask about these settings again");
     // Game settings keeps the vote: a thumbs down with a reason.
     open_game_settings(model);
     check(find_row(model, "recipe-vote") && find_row(model, "recipe-vote")->value == "Not yet", "Your vote: not yet");
@@ -603,6 +653,72 @@ void community_keep(const std::filesystem::path& base) {
 
 }  // namespace
 
+// A report that didn't work: the worker uploads the game's logs, redacted, then the report naming them.
+void report_with_logs(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base / "logs");
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const auto write = [](const std::filesystem::path& path, const std::string& text) {
+        std::FILE* file = std::fopen(path.c_str(), "wb");
+        std::fwrite(text.data(), 1, text.size(), file);
+        std::fclose(file);
+    };
+    write(base / "logs" / "title-FAKE78011.log",
+          "== session-1.log\nPW_REPORT/1 build=abc profile=playden-steam-274520 time=1000\nuser L\"SteamUser\" L\"leoaccount\"\n");
+    write(base / "logs" / "title-FAKE78012.log", "== session-1.log\nPW_REPORT/1 profile=playden-steam-220 time=2000\nother game\n");
+    write(base / "logs" / "playden.log", "signed in as leoaccount 76561198000000001\nconsole_firmware=13.60\n");
+    FakeApi api;
+    playden::homebrew::SharingServiceConfig config;
+    config.store_root = (base / "community-recipes").string();
+    config.fetch = api.fetch();
+    config.sleep = [](std::uint32_t, const std::atomic<bool>&) {};
+    config.logs = playden::web::LogsPaths{(base / "logs").string(), (base / "homebrew").string(), (base / "kits").string(),
+                                          (base / "app").string()};
+    config.now = [] { return std::int64_t{1'762'000'000}; };
+    playden::homebrew::SharingService service(config);
+    service.Start();
+    service.SetAccount({"leoaccount", 76561198000000001ull});
+    api.answer_with({answer(201, R"({"id":"att_9","url":"https://attachments.playden.club/att_9/playden-logs.zip"})"),
+                     answer(201, R"({"id":"r_9","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/809"})")});
+    SharingRequest request;
+    request.kind = SharingRequestKind::Report;
+    request.ticket = 1;
+    request.game_id = kGame;
+    request.attach_logs = true;
+    request.logs_app = 274520;
+    request.logs_name = "Darkwood";
+    auto& report = request.report;
+    report.store = "steam";
+    report.store_id = "274520";
+    report.name = "Darkwood";
+    report.result = "no-start";
+    report.reason = "no-start";
+    report.installed_on = "console";
+    report.controls = {"dualsense"};
+    report.kit = "0.19";
+    report.firmware = "13.60";
+    report.playden_version = "0.10.0";
+    service.Submit(std::move(request));
+    service.Wait();
+    const auto results = service.TakeResults();
+    check(results.size() == 1 && results[0].report.ok && results[0].report.issue_url.find("/issues/809") != std::string::npos &&
+              !results[0].idempotency_key.empty(),
+          "the report with logs is sent");
+    std::lock_guard<std::mutex> lock(api.mutex);
+    check(api.requests.size() == 2 && api.requests[0].url.find("/v1/attachments") != std::string::npos &&
+              api.requests[1].url.find("/v1/reports") != std::string::npos,
+          "the logs go first, then the report");
+    const std::string zip(api.requests[0].body.begin(), api.requests[0].body.end());
+    check(zip.rfind("PK", 0) == 0 && contains(zip, "title-FAKE78011.log") && !contains(zip, "title-FAKE78012.log") &&
+              contains(zip, "playden.log") && contains(zip, "summary.md"),
+          "the zip holds Playden's logs and this game's, not another game's");
+    check(!contains(zip, "leoaccount") && !contains(zip, "76561198000000001") && contains(zip, "<steam-user>"),
+          "the account name and SteamID are removed");
+    const std::string body(api.requests[1].body.begin(), api.requests[1].body.end());
+    check(contains(body, "\"attachment\":\"att_9\"") && contains(body, "\"versions\":[[") && !contains(body, "leoaccount"),
+          "the report names the logs and carries the versions");
+    service.Shutdown();
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -610,6 +726,7 @@ int main() {
     std::filesystem::remove_all(base, ignored);
     share_and_vote(base);
     community_keep(base / "keep");
+    report_with_logs(base / "report");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;

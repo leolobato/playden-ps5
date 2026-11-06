@@ -154,19 +154,25 @@ void Votes(const fs::path& base) {
   CHECK(state && state->voting == VotingPreference::kUnset && state->votes.empty() && state->asked.empty());
   CHECK(note.empty());
 
-  // When to ask.
+  // When to ask how a game ran: any game, three minutes or a shorter "Did it start?", two prompts at most.
+  const std::string settings = FeedbackSettingsFingerprint("base=playden-default");
+  const std::string changed = FeedbackSettingsFingerprint("base=playden-default\nresolution=1280x720");
+  CHECK(settings.size() == 16 && settings != changed && settings == FeedbackSettingsFingerprint("base=playden-default"));
   VoteState fresh;
-  CHECK(ShouldAskForVote(fresh, kId, kRevA, 300, VotingPreference::kUnset));
-  CHECK(ShouldAskForVote(fresh, kId, kRevA, 3600, VotingPreference::kOn));
-  CHECK(!ShouldAskForVote(fresh, kId, kRevA, 299, VotingPreference::kOn));
-  CHECK(!ShouldAskForVote(fresh, kId, kRevA, 3600, VotingPreference::kOff));
-  CHECK(!ShouldAskForVote(fresh, "", kRevA, 3600, VotingPreference::kOn));
-  fresh.MarkAsked(kId, kRevA);  // dismissed counts as asked
-  CHECK(!ShouldAskForVote(fresh, kId, kRevA, 3600, VotingPreference::kOn));
-  CHECK(ShouldAskForVote(fresh, kId, kRevB, 3600, VotingPreference::kOn));  // a new revision asks again
-  VoteState voted;
-  voted.votes.push_back(CastVote{kId, kRevB, "up", ""});  // cast from Game settings
-  CHECK(!ShouldAskForVote(voted, kId, kRevB, 3600, VotingPreference::kOn));
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 180, VotingPreference::kUnset) == FeedbackQuestion::kHowDidItRun);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 179, VotingPreference::kOn) == FeedbackQuestion::kDidItStart);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, VotingPreference::kOff) == FeedbackQuestion::kNone);
+  CHECK(NextFeedbackQuestion(fresh, "", "0.19", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kNone);
+  fresh.NoteFeedback("steam-10", "0.19", settings, false);  // Not now
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kHowDidItRun);
+  fresh.NoteFeedback("steam-10", "0.19", settings, false);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kNone);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", changed, 30, VotingPreference::kOn) == FeedbackQuestion::kDidItStart);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.20", settings, 3600, VotingPreference::kOn) == FeedbackQuestion::kHowDidItRun);
+  fresh.NoteFeedback("steam-10", "0.19", changed, true);  // a report for the new settings
+  CHECK(fresh.feedback.size() == 1 && fresh.feedback[0].settings == changed && fresh.feedback[0].prompts == 0 &&
+        fresh.feedback[0].answered);
+  CHECK(NextFeedbackQuestion(fresh, "steam-10", "0.19", changed, 3600, VotingPreference::kOn) == FeedbackQuestion::kNone);
 
   // Record replaces the revision's vote and counts as asked.
   state->voting = VotingPreference::kOn;
@@ -175,6 +181,7 @@ void Votes(const fs::path& base) {
   state->Record(CastVote{kId, kRevB, "up", ""});
   state->MarkAsked("community-10-other", kRevA);
   state->MarkAsked("community-10-other", kRevA);
+  state->NoteFeedback("steam-10", "0.19", settings, false);
   CHECK(state->votes.size() == 2);
   CHECK(state->Find(kId, kRevA) && state->Find(kId, kRevA)->vote == "down" && state->Find(kId, kRevA)->reason == "slow");
   CHECK(state->WasAsked(kId, kRevA) && state->WasAsked(kId, kRevB) && state->asked.size() == 3);
@@ -186,9 +193,11 @@ void Votes(const fs::path& base) {
                      kRevA + "\",\"vote\":\"down\",\"reason\":\"slow\"},{\"recipe_id\":\"" + kId +
                      "\",\"revision\":\"" + kRevB + "\",\"vote\":\"up\"}],\"asked\":[{\"recipe_id\":\"" + kId +
                      "\",\"revision\":\"" + kRevA + "\"},{\"recipe_id\":\"" + kId + "\",\"revision\":\"" + kRevB +
-                     "\"},{\"recipe_id\":\"community-10-other\",\"revision\":\"" + kRevA + "\"}]}\n");
+                     "\"},{\"recipe_id\":\"community-10-other\",\"revision\":\"" + kRevA + "\"}],\"feedback\":[{\"game\":"
+                     "\"steam-10\",\"kit\":\"0.19\",\"settings\":\"" + settings + "\",\"prompts\":1,\"answered\":false}]}\n");
   const auto back = LoadVoteState(root, &error);
-  CHECK(back && back->voting == VotingPreference::kOn && back->votes.size() == 2 && back->asked.size() == 3);
+  CHECK(back && back->voting == VotingPreference::kOn && back->votes.size() == 2 && back->asked.size() == 3 &&
+        back->feedback.size() == 1 && back->feedback[0].prompts == 1);
   CHECK(back && SerializeVoteState(*back) == saved);
 
   state->voting = VotingPreference::kOff;
@@ -206,7 +215,10 @@ void Votes(const fs::path& base) {
   VoteState dirty;
   dirty.votes.push_back(CastVote{"bad\"id", kRevA, "up", ""});
   dirty.asked.emplace_back(kId, "nothex");
-  CHECK(SerializeVoteState(dirty) == "{\"format_version\":1,\"voting\":\"unset\",\"votes\":[],\"asked\":[]}\n");
+  dirty.feedback.push_back(FeedbackSeen{"Steam 10", "0.19", settings, 1, false});
+  CHECK(SerializeVoteState(dirty) == "{\"format_version\":1,\"voting\":\"unset\",\"votes\":[],\"asked\":[],\"feedback\":[]}\n");
+  // A file from before feedback reads with none.
+  CHECK(ParseVoteState("{\"format_version\":1,\"voting\":\"on\",\"votes\":[],\"asked\":[]}")->feedback.empty());
   CHECK(!ParseVoteState("[]") && !ParseVoteState("{\"format_version\":2}") && !ParseVoteState("nope"));
 
   // A malformed file reads as empty, with a note.

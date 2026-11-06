@@ -2085,28 +2085,64 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     simulation.NotifySessionEnded(game, 3600);
     check(simulation.state().navigation.modals.empty(), "with votes off nothing asks after play");
 
-    // The vote prompt: once per revision, at least five minutes, Not now counts as asked.
-    check(simulation.scenario("vote-prompt"), "vote-prompt scenario loads");
-    check(top().id == "vote-recipe" && top().title.find("How did") == 0 &&
+    // After a game: how it ran (any game), with the recipe in use; Not now counts, twice at most.
+    check(simulation.scenario("feedback-prompt"), "feedback-prompt scenario loads");
+    check(top().id == "feedback" && top().title.find("How did") == 0 &&
               simulation.view().subtitle.find("120 Hz, pointer on left stick") != std::string::npos &&
-              simulation.view().subtitle.find("no Steam ID or account name") != std::string::npos,
-          "after play: how did it run, with the recipe, and what a vote sends");
-    check(simulation.state().vote_memory.WasAsked(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1')),
-          "the prompt marks the revision as asked");
+              has_row(simulation, "feedback-good") && has_row(simulation, "feedback-problems") && has_row(simulation, "feedback-never"),
+          "after play: how did it run, and the answer rates the recipe in use");
+    check(!simulation.state().vote_memory.feedback.empty() && simulation.state().vote_memory.feedback.back().prompts == 1,
+          "the prompt is noted");
     simulation.action("circle");
     check(simulation.state().navigation.modals.empty(), "Not now closes it");
     simulation.NotifySessionEnded(game, 900);
-    check(simulation.state().navigation.modals.empty(), "a dismissed revision doesn't ask again");
-    check(simulation.scenario("vote-prompt"), "vote-prompt scenario loads again");
+    check(top().id == "feedback", "a second session asks once more");
     simulation.action("circle");
-    simulation.NotifySessionEnded(game, 120);
-    check(simulation.state().navigation.modals.empty(), "under five minutes nothing asks");
+    simulation.NotifySessionEnded(game, 900);
+    check(simulation.state().navigation.modals.empty(), "then Playden stops asking about these settings");
+    check(simulation.scenario("feedback-start"), "feedback-start scenario loads");
+    check(top().id == "feedback" && top().title.find("Did ") == 0 && has_row(simulation, "feedback-started") &&
+              has_row(simulation, "feedback-no-start"),
+          "a short session asks whether the game started");
+    activate(simulation, "feedback-no-start");
+    check(!has_row(simulation, "feedback-reason-slow") && !has_row(simulation, "feedback-result") &&
+              find_row(simulation, "feedback-logs")->value == "Included" &&
+              has_row(simulation, "feedback-change-settings"),
+          "it didn't start: logs are required, Change settings is offered");
+    activate(simulation, "feedback-change-settings");
+    check(top().id == "game-settings", "Change settings opens Game settings");
+    // It ran well with the player's own changes: a report, and the offer to share them as a recipe.
+    check(simulation.scenario("feedback-good"), "feedback-good scenario loads");
+    check(has_row(simulation, "feedback-recipe") && !find_row(simulation, "feedback-logs")->selected,
+          "changes beyond display settings offer a recipe; logs are optional");
+    activate(simulation, "feedback-recipe");
+    activate(simulation, "feedback-send");
+    check(top().id == "share-recipe", "the Share sheet follows the report");
+    check(simulation.scenario("feedback-problems"), "feedback-problems scenario loads");
+    check(find_row(simulation, "feedback-reason-slow")->selected && find_row(simulation, "feedback-result")->value == "Partial" &&
+              find_row(simulation, "feedback-send")->enabled,
+          "problems: the reason chosen, Partial by default, Send ready");
+    activate(simulation, "feedback-result");
+    check(find_row(simulation, "feedback-result")->value == "Broken", "Result switches to Broken");
+    activate(simulation, "feedback-send");
+    check(top().title == "Test report sent" && !top().link.empty(), "the report is sent, its issue as a QR code");
+    const auto* down = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1'));
+    check(down && down->vote == "down" && down->reason == "slow", "the recipe's thumbs down goes with it");
+    check(simulation.scenario("feedback-privacy"), "feedback-privacy scenario loads");
+    check(top().title == "Before you send", "the first report says what it sends");
+    // Share feedback… in the game's actions opens the same sheet any time.
+    check(simulation.scenario("share-new"), "share-new scenario loads for the game actions");
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    activate(simulation, "details-more");
+    check(has_row(simulation, "share-feedback"), "Game actions offer Share feedback…");
+    activate(simulation, "share-feedback");
+    check(top().id == "feedback" && !has_row(simulation, "feedback-never"), "Share feedback… asks how it ran, without Don't ask again");
 
     // A thumbs down with a reason; votes are on.
     check(simulation.scenario("vote-reason"), "vote-reason scenario loads");
-    check(has_row(simulation, "vote-reason-no-start") && find_row(simulation, "vote-reason-slow")->selected &&
-              !has_row(simulation, "vote-never"),
-          "thumbs down: the reasons, Slow chosen; votes on asks nothing more");
+    check(top().id == "vote-recipe" && has_row(simulation, "vote-reason-no-start") &&
+              find_row(simulation, "vote-reason-slow")->selected && !has_row(simulation, "vote-never"),
+          "Your vote: a thumbs down, the reasons, Slow chosen; votes on asks nothing more");
     activate(simulation, "vote-send");
     const auto* cast = simulation.state().vote_memory.Find(playden::runtime::CommunityRecipeIdFor(900002, "120hz-left-stick-pointer"), rev('1'));
     check(cast && cast->vote == "down" && cast->reason == "slow", "the vote and its reason are remembered");

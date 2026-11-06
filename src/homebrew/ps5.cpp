@@ -745,6 +745,10 @@ int main() {
         sharing_config.log = [](const std::string& line) {
             playden::app::AppendLogLine(log_root, "community.log", playden::diagnostics::RedactSecrets(line));
         };
+        // A test report's logs: what web access serves, read and redacted the same way.
+        sharing_config.logs = playden::web::LogsPaths{log_root, "/data/homebrew",
+                                                      paths.runtime_data_root.empty() ? std::string() : paths.runtime_data_root + "/kits",
+                                                      "/data/homebrew/" PLAYDEN_PS5_TITLE_ID};
         playden::homebrew::SharingService sharing(std::move(sharing_config));
         sharing.Start();
         simulation.SetSharingContext(playden::ps5::ConsoleFirmwareVersion().value_or(""),

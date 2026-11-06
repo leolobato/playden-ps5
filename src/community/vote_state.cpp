@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "community/vote_state.h"
 
+#include <algorithm>
+
 #include "community/install_secret.h"
 #include "platform/storage.h"
 #include "steam/backend/json.h"
@@ -23,6 +25,29 @@ bool IsRecipeIdText(std::string_view text) {
   for (char c : text)
     if (static_cast<unsigned char>(c) < 0x21 || static_cast<unsigned char>(c) > 0x7e || c == '"' || c == '\\')
       return false;
+  return true;
+}
+
+// ToInstallId's alphabet: [a-z0-9-], at most 64 bytes.
+bool IsFeedbackKey(std::string_view text) {
+  if (text.empty() || text.size() > 64) return false;
+  for (char c : text)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+  return true;
+}
+
+// A runtime kit version ("0.19", "0.10-dev.20261016.1") or "unknown".
+bool IsKitText(std::string_view text) {
+  if (text.empty() || text.size() > 40) return false;
+  for (char c : text)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
+  return true;
+}
+
+bool IsFingerprintText(std::string_view text) {
+  if (text.size() != 16) return false;
+  for (char c : text)
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
   return true;
 }
 
@@ -79,12 +104,45 @@ bool IsValidVote(std::string_view vote, std::string_view reason) {
          reason == "other";
 }
 
-bool ShouldAskForVote(const VoteState& state, std::string_view recipe_id, std::string_view revision,
-                      std::int64_t played_seconds, VotingPreference voting) {
-  if (voting == VotingPreference::kOff) return false;
-  if (recipe_id.empty() || revision.empty()) return false;
-  if (played_seconds < kVotePromptMinPlayedSeconds) return false;
-  return !state.WasAsked(recipe_id, revision) && !state.Find(recipe_id, revision);
+const FeedbackSeen* VoteState::FindFeedback(std::string_view game, std::string_view kit) const {
+  for (const auto& seen : feedback)
+    if (seen.game == game && seen.kit == kit) return &seen;
+  return nullptr;
+}
+
+void VoteState::NoteFeedback(std::string_view game, std::string_view kit, std::string_view settings, bool answered) {
+  FeedbackSeen seen{std::string(game), std::string(kit), std::string(settings), 0, false};
+  for (auto it = feedback.begin(); it != feedback.end(); ++it)
+    if (it->game == game && it->kit == kit) {
+      if (it->settings == settings) seen = *it;
+      feedback.erase(it);
+      break;
+    }
+  if (answered) seen.answered = true;
+  else ++seen.prompts;
+  feedback.push_back(std::move(seen));
+  KeepNewest(&feedback);
+}
+
+FeedbackQuestion NextFeedbackQuestion(const VoteState& state, std::string_view game, std::string_view kit,
+                                      std::string_view settings, std::int64_t played_seconds, VotingPreference voting) {
+  if (voting == VotingPreference::kOff || game.empty()) return FeedbackQuestion::kNone;
+  if (const auto* seen = state.FindFeedback(game, kit); seen && seen->settings == settings &&
+                                                        (seen->answered || seen->prompts >= kFeedbackMaxPrompts))
+    return FeedbackQuestion::kNone;
+  return played_seconds >= kFeedbackMinPlayedSeconds ? FeedbackQuestion::kHowDidItRun : FeedbackQuestion::kDidItStart;
+}
+
+std::string FeedbackSettingsFingerprint(std::string_view settings_text) {
+  std::uint64_t hash = 14695981039346656037ull;
+  for (const char c : settings_text) {
+    hash ^= static_cast<unsigned char>(c);
+    hash *= 1099511628211ull;
+  }
+  static const char* digits = "0123456789abcdef";
+  std::string text(16, '0');
+  for (int i = 15; i >= 0; --i, hash >>= 4) text[static_cast<std::size_t>(i)] = digits[hash & 0xF];
+  return text;
 }
 
 std::string SerializeVoteState(const VoteState& state) {
@@ -104,6 +162,15 @@ std::string SerializeVoteState(const VoteState& state) {
   for (const auto& [id, revision] : state.asked) {
     if (!IsRecipeIdText(id) || !IsRevisionText(revision)) continue;
     text += std::string(first ? "" : ",") + "{\"recipe_id\":\"" + id + "\",\"revision\":\"" + revision + "\"}";
+    first = false;
+  }
+  text += "],\"feedback\":[";
+  first = true;
+  for (const auto& seen : state.feedback) {
+    if (!IsFeedbackKey(seen.game) || !IsKitText(seen.kit) || !IsFingerprintText(seen.settings) || seen.prompts < 0) continue;
+    text += std::string(first ? "" : ",") + "{\"game\":\"" + seen.game + "\",\"kit\":\"" + seen.kit + "\",\"settings\":\"" +
+            seen.settings + "\",\"prompts\":" + std::to_string(std::min(seen.prompts, 99)) +
+            ",\"answered\":" + (seen.answered ? "true" : "false") + "}";
     first = false;
   }
   return text + "]}\n";
@@ -138,6 +205,17 @@ std::optional<VoteState> ParseVoteState(std::string_view json) {
       if (!item.is_object()) continue;
       const std::string id = text(item, "recipe_id"), revision = text(item, "revision");
       if (IsRecipeIdText(id) && IsRevisionText(revision)) state.MarkAsked(id, revision);
+    }
+  if (const auto* feedback = doc->Find("feedback"); feedback && feedback->is_array())
+    for (const auto& item : feedback->array()) {
+      if (!item.is_object()) continue;
+      FeedbackSeen seen{text(item, "game"), text(item, "kit"), text(item, "settings"), 0, false};
+      if (const auto* prompts = item.Find("prompts"); prompts && prompts->is_number())
+        seen.prompts = static_cast<int>(std::min<std::uint64_t>(prompts->AsUint64().value_or(0), 99));
+      if (const auto* answered = item.Find("answered"); answered && answered->is_bool()) seen.answered = answered->boolean();
+      if (!IsFeedbackKey(seen.game) || !IsKitText(seen.kit) || !IsFingerprintText(seen.settings)) continue;
+      state.feedback.push_back(std::move(seen));
+      KeepNewest(&state.feedback);
     }
   return state;
 }

@@ -5,7 +5,9 @@
 
 #include <strings.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <initializer_list>
 
 #include "community/install_secret.h"
 #include "community/printable_text.h"
@@ -125,7 +127,8 @@ struct Exchange {
 // One request to <api base><path>, never redirected. Authorization only with a secret, and only
 // when the URL is on the API's own origin.
 Exchange Perform(const ApiContext& context, steam::HttpMethod method, const std::string& path, std::string body,
-                 const std::string* secret, const std::string& idempotency_key, const std::atomic<bool>& cancel) {
+                 const std::string* secret, const std::string& idempotency_key, const std::atomic<bool>& cancel,
+                 const char* content_type = "application/json", std::uint32_t timeout_ms = 0) {
   Exchange exchange;
   const std::string url = context.endpoints.api_base_url + path;
   const std::string origin = UrlOrigin(url);
@@ -154,11 +157,11 @@ Exchange Perform(const ApiContext& context, steam::HttpMethod method, const std:
   request.method = method;
   request.url = url;
   request.headers = {{"User-Agent", context.user_agent}, {"Accept", "application/json"}};
-  if (method == steam::HttpMethod::kPost) request.headers.emplace_back("Content-Type", "application/json");
+  if (method == steam::HttpMethod::kPost) request.headers.emplace_back("Content-Type", content_type);
   if (secret) request.headers.emplace_back("Authorization", "Bearer " + *secret);
   if (!idempotency_key.empty()) request.headers.emplace_back("Idempotency-Key", idempotency_key);
   request.body.assign(body.begin(), body.end());
-  request.timeout_ms = context.timeout_ms;
+  request.timeout_ms = timeout_ms != 0 ? timeout_ms : context.timeout_ms;
   request.max_response_bytes = kMaxResponseBytes;
   request.allow_plain_http = plain;
   exchange.response = context.fetch(request, cancel);
@@ -513,6 +516,199 @@ VoteResult SendVote(const ApiContext& context, const std::string& secret, const 
     return result;
   }
   result.ok = true;
+  return result;
+}
+
+namespace {
+
+bool OneOf(std::string_view value, std::initializer_list<std::string_view> names) {
+  for (const auto name : names)
+    if (value == name) return true;
+  return false;
+}
+
+// Digits only, 1-20: a store's game ID.
+bool StoreIdText(std::string_view id) {
+  if (id.empty() || id.size() > 20) return false;
+  for (const char c : id)
+    if (c < '0' || c > '9') return false;
+  return true;
+}
+
+// Printable text that may hold line breaks (the settings list): each line printable on its own.
+bool MultilineText(std::string_view text, std::size_t max) {
+  if (text.size() > max * 4) return false;
+  std::size_t start = 0, characters = 0;
+  while (start <= text.size()) {
+    const auto end = std::min(text.find('\n', start), text.size());
+    const auto line = text.substr(start, end - start);
+    if (!line.empty() && !PrintableText(line, 1, max)) return false;
+    characters += line.size() + 1;
+    if (end == text.size()) break;
+    start = end + 1;
+  }
+  return characters <= max * 4;
+}
+
+}  // namespace
+
+std::string ReportRequestProblem(const ReportRequest& request) {
+  if (!OneOf(request.store, {"steam", "epic", "gog", "imported"})) return "the store must be steam, epic, gog or imported";
+  if (request.store == "imported" ? !request.store_id.empty() : !StoreIdText(request.store_id))
+    return "a store game needs its ID, an imported game none";
+  if (!PrintableText(request.name, 1, kReportGameNameMaxCharacters)) return "the game's name must be 1-120 printable characters";
+  if (!OneOf(request.result, {"works", "partial", "broken", "no-start"})) return "the result must be works, partial, broken or no-start";
+  if (!request.reason.empty() &&
+      (request.result == "works" || !OneOf(request.reason, {"no-start", "crash", "slow", "controls", "other"})))
+    return "a reason is one of the five, and only for a problem";
+  if (!request.details.empty() && !PrintableText(request.details, 1, kReportDetailsMaxCharacters))
+    return "what happened must be at most 500 printable characters";
+  if (!OneOf(request.installed_on, {"console", "m2", "usb", "imported", "other"})) return "where the game is installed is missing";
+  for (const auto& control : request.controls)
+    if (!OneOf(control, {"dualsense", "mouse-preset", "arrow-keys-preset", "usb-mouse-keyboard"})) return "unknown controls";
+  if (!MultilineText(request.settings, kReportSettingsMaxCharacters)) return "the settings list is too long or not printable";
+  if (!request.recipe_json.empty()) {
+    if (request.store != "steam") return "only a Steam game's report carries its recipe";
+    if (request.recipe_json.size() > kMaxSubmissionRecipeBytes) return "the recipe is larger than 16 KB";
+    const auto doc = steam::json::Parse(request.recipe_json);
+    if (!doc || !doc->is_object()) return "the recipe is not a JSON object";
+  }
+  if (request.based_on && (!RecipeIdText(request.based_on->recipe_id) || !IsRevision(request.based_on->revision)))
+    return "based_on needs a community recipe id and a 64-hex revision";
+  if (request.versions.size() > kReportMaxVersionRows) return "too many version rows";
+  for (const auto& [field, value] : request.versions)
+    if (!PrintableText(field, 1, 40) || (!value.empty() && !PrintableText(value, 1, 200))) return "a version row is not printable";
+  if (!request.author.empty() && !PrintableText(request.author, 1, kSubmissionNameMaxCharacters))
+    return "the name must be at most 40 printable characters";
+  if (!request.attachment.empty() && !IsSubmissionId(request.attachment)) return "bad attachment id";
+  if (!ShortAscii(request.kit, 64) || !ShortAscii(request.firmware, 64) || !ShortAscii(request.playden_version, 64))
+    return "kit, firmware and Playden version are required";
+  if (!IsIdempotencyKey(request.idempotency_key)) return "the Idempotency-Key must be 8-128 of A-Z a-z 0-9 _ -";
+  return {};
+}
+
+std::string ReportBody(const ReportRequest& request) {
+  if (!ReportRequestProblem(request).empty()) return {};
+  std::string body = "{\"game\":{\"store\":" + Quoted(request.store) +
+                     ",\"store_id\":" + (request.store_id.empty() ? std::string("null") : Quoted(request.store_id)) +
+                     ",\"name\":" + Quoted(request.name) + "},\"result\":" + Quoted(request.result);
+  if (!request.reason.empty()) body += ",\"reason\":" + Quoted(request.reason);
+  if (!request.details.empty()) body += ",\"details\":" + Quoted(request.details);
+  body += ",\"installed_on\":" + Quoted(request.installed_on) + ",\"controls\":[";
+  for (std::size_t i = 0; i < request.controls.size(); ++i) body += (i ? "," : "") + Quoted(request.controls[i]);
+  body += "],\"settings\":" + Quoted(request.settings);
+  if (!request.recipe_json.empty()) {
+    std::string recipe = request.recipe_json;
+    while (!recipe.empty() && (recipe.back() == '\n' || recipe.back() == ' ' || recipe.back() == '\r')) recipe.pop_back();
+    body += ",\"recipe\":" + recipe;
+  }
+  if (request.based_on)
+    body += ",\"based_on\":{\"recipe_id\":" + Quoted(request.based_on->recipe_id) +
+            ",\"revision\":" + Quoted(request.based_on->revision) + "}";
+  body += ",\"versions\":[";
+  for (std::size_t i = 0; i < request.versions.size(); ++i)
+    body += std::string(i ? "," : "") + "[" + Quoted(request.versions[i].first) + "," + Quoted(request.versions[i].second) + "]";
+  body += "]";
+  if (!request.author.empty()) body += ",\"name\":" + Quoted(request.author);
+  if (!request.attachment.empty()) body += ",\"attachment\":" + Quoted(request.attachment);
+  body += ",\"kit\":" + Quoted(request.kit) + ",\"firmware\":" + Quoted(request.firmware) +
+          ",\"playden_version\":" + Quoted(request.playden_version) + "}";
+  return body;
+}
+
+AttachmentResult UploadAttachment(const ApiContext& context, const std::string& secret, const std::string& zip,
+                                  const std::string& idempotency_key, const std::atomic<bool>& cancel) {
+  AttachmentResult result;
+  if (!IsInstallSecret(secret)) {
+    result.error = LocalError("invalid_request", "no valid sharing ID");
+    return result;
+  }
+  if (zip.size() < 4 || zip.compare(0, 4, "PK\x03\x04") != 0 || zip.size() > kMaxAttachmentBytes) {
+    result.error = LocalError("invalid_request", "the logs are not a zip of at most 8 MB");
+    return result;
+  }
+  if (!IsIdempotencyKey(idempotency_key)) {
+    result.error = LocalError("invalid_request", "the Idempotency-Key must be 8-128 of A-Z a-z 0-9 _ -");
+    return result;
+  }
+  // Uploads can be slow on a console's network: two minutes, not the usual 30 s.
+  auto exchange = Perform(context, steam::HttpMethod::kPost, "/v1/attachments", zip, &secret, idempotency_key, cancel,
+                          "application/zip", 120000);
+  if (!exchange.sent) {
+    result.error = exchange.error;
+    return result;
+  }
+  const auto& response = exchange.response;
+  if (EchoesSecret(response, secret)) {
+    result.error = BadResponse(response.status_code);
+    return result;
+  }
+  if (response.status_code != 200 && response.status_code != 201) {
+    result.error = ErrorFrom(response, secret);
+    return result;
+  }
+  const auto doc = JsonBody(response);
+  const auto id = doc ? StringField(*doc, "id") : std::nullopt;
+  const auto url = doc ? StringField(*doc, "url") : std::nullopt;
+  if (!id || !IsSubmissionId(*id) || !url || !PrUrl(*url)) {
+    result.error = BadResponse(response.status_code);
+    return result;
+  }
+  result.ok = true;
+  result.id = *id;
+  result.url = *url;
+  return result;
+}
+
+ReportResult SendReport(const ApiContext& context, const std::string& secret, const ReportRequest& request,
+                        const std::atomic<bool>& cancel) {
+  ReportResult result;
+  if (!IsInstallSecret(secret)) {
+    result.error = LocalError("invalid_request", "no valid sharing ID");
+    return result;
+  }
+  if (auto problem = ReportRequestProblem(request); !problem.empty()) {
+    result.error = LocalError("invalid_request", problem);
+    return result;
+  }
+  std::string body = ReportBody(request);
+  if (body.size() > kMaxReportBodyBytes) {
+    result.error = LocalError("invalid_request", "the report is larger than 48 KB");
+    return result;
+  }
+  auto exchange = Perform(context, steam::HttpMethod::kPost, "/v1/reports", std::move(body), &secret,
+                          request.idempotency_key, cancel);
+  if (!exchange.sent) {
+    result.error = exchange.error;
+    return result;
+  }
+  const auto& response = exchange.response;
+  const long status = response.status_code;
+  if (EchoesSecret(response, secret)) {
+    result.error = BadResponse(status);
+    return result;
+  }
+  if (status != 200 && status != 201) {
+    result.error = ErrorFrom(response, secret);
+    return result;
+  }
+  const auto doc = JsonBody(response);
+  bool issue_null = false;
+  const auto id = doc ? StringField(*doc, "id") : std::nullopt;
+  const auto state = doc ? StringField(*doc, "state") : std::nullopt;
+  const auto issue_url = doc ? StringField(*doc, "issue_url", &issue_null) : std::nullopt;
+  const auto* updated = doc ? doc->Find("updated") : nullptr;
+  if (!id || !IsSubmissionId(*id) || !state || (*state != "provisioning" && *state != "open") ||
+      (!issue_null && (!issue_url || !PrUrl(*issue_url))) || (*state == "open" && issue_null) ||
+      (updated && !updated->is_bool())) {
+    result.error = BadResponse(status);
+    return result;
+  }
+  result.ok = true;
+  result.id = *id;
+  result.state = *state;
+  result.issue_url = issue_url.value_or("");
+  result.updated = updated && updated->boolean();
   return result;
 }
 

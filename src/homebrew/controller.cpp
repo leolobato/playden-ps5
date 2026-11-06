@@ -1385,12 +1385,15 @@ void Controller::TickRuntime() {
   if (snapshot.plays_handled >= plays_requested_) play_queued_.clear();
   if (snapshot.launch) {
     const std::pair<GameId, runtime::LaunchState> current{snapshot.launch->game, snapshot.launch->state};
+    // A launch that failed after the handoff may ask "Did it start?" (it never syncs or retries updates).
+    if (current.second == runtime::LaunchState::kFailed && last_launch_ != current && snapshot.launch->played_seconds)
+      model_.NotifySessionEnded(current.first, *snapshot.launch->played_seconds);
     if (current.second == runtime::LaunchState::kExited && last_launch_ != current) {
       if (CloudCapable(current.first)) sync_after_session_.insert(current.first);
-      // A game played with a community recipe may ask for a vote (the runtime measured the session).
-      // played_seconds runs from the handoff to when the runtime noticed the exit, so it includes time
-      // Playden was suspended or closed while the game ran: an upper bound. Neither RuntimeLaunchView
-      // nor the launch journal records when the game itself ended, so nothing here can narrow it.
+      // Playden asks how the game ran (the runtime measured the session). played_seconds runs from the
+      // handoff to when the runtime noticed the exit, so it includes time Playden was suspended or
+      // closed while the game ran: an upper bound. Neither RuntimeLaunchView nor the launch journal
+      // records when the game itself ended, so nothing here can narrow it.
       if (snapshot.launch->played_seconds) model_.NotifySessionEnded(current.first, *snapshot.launch->played_seconds);
       // An update waiting for the game to close tries again now rather than after its wait.
       if (installs_) installs_->RetryWaiting(current.first.store);
@@ -2720,6 +2723,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       if(persistence_) persistence_->Activate(event.steam_id);
       if(runtime_) runtime_->SetSteamAccount(event.account_name, event.steam_id);
       if(web_) web_->SetAccount({event.account_name, event.steam_id});
+      if(sharing_) sharing_->SetAccount({event.account_name, event.steam_id});
       if(library_) library_->Activate(event.steam_id,offline);
       // Steam downloads that waited for a sign-in start now, not after their wait (up to a minute).
       if(installs_ && !offline) installs_->RetryWaiting(Store::kSteam);
@@ -2732,6 +2736,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       if(persistence_) persistence_->Reset();
       if(runtime_) runtime_->SetSteamAccount({}, 0);
       if(web_) web_->SetAccount({});
+      if(sharing_) sharing_->SetAccount({});
       const bool begin = begin_after_clear_; begin_after_clear_ = false;
       Update(AuthState::SignedOut,{},true);
       if (begin) Begin(begin_password_after_clear_);

@@ -5,6 +5,8 @@
 //   POST /v1/submissions  share a recipe (Authorization: Bearer <install secret>, Idempotency-Key)
 //   GET  /v1/submissions/<id>  a submission's state (no Authorization)
 //   POST /v1/votes        a thumbs up or down on a published recipe revision (Authorization)
+//   POST /v1/attachments  a report's redacted logs zip (Authorization, Idempotency-Key)
+//   POST /v1/reports      a game test report, opened as an issue (Authorization, Idempotency-Key)
 // The install secret goes only in the Authorization header, only to the API's own origin, and never
 // into a body, a URL, a result or an error message. An answer that holds the secret anywhere (a
 // hostile or broken API echoing it) is refused whole as bad_response. Redirects are never followed.
@@ -16,6 +18,8 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "community/endpoints.h"
 #include "community/printable_text.h"
@@ -107,6 +111,57 @@ struct VoteResult {
   bool ok = false;
   ApiError error;
 };
+
+// Game test reports (plan 2026-11-06 Phase B). The API opens an issue in the issue form's layout.
+inline constexpr std::size_t kMaxAttachmentBytes = 8 << 20;  // the API's attachment limit
+inline constexpr std::size_t kMaxReportBodyBytes = 48 << 10;  // the API's report body limit
+inline constexpr std::size_t kReportDetailsMaxCharacters = 500;
+inline constexpr std::size_t kReportGameNameMaxCharacters = 120;
+inline constexpr std::size_t kReportSettingsMaxCharacters = 2000;
+inline constexpr std::size_t kReportMaxVersionRows = 24;
+
+struct ReportRequest {
+  std::string store;         // steam, epic, gog or imported
+  std::string store_id;      // the store's game ID ("274520"); empty for an imported game
+  std::string name;          // the game's name, 1-120 printable characters
+  std::string result;        // works, partial, broken or no-start
+  std::string reason;        // optional: no-start, crash, slow, controls, other (not with works)
+  std::string details;       // optional: what happened, 0-500 printable characters on one line
+  std::string installed_on;  // console, m2, usb, imported or other
+  std::vector<std::string> controls;  // dualsense, mouse-preset, arrow-keys-preset, usb-mouse-keyboard
+  std::string settings;      // the changed settings as Playden lists them, 0-2000 characters; empty: default
+  std::string recipe_json;   // optional: the recipe export (Steam games), at most 16 KB
+  std::optional<RecipeRef> based_on;  // the community recipe in use
+  std::vector<std::pair<std::string, std::string>> versions;  // summary.md's facts, at most 24
+  std::string author;        // optional: the player's name, 1-40 printable characters
+  std::string attachment;    // optional: an id UploadAttachment returned
+  std::string kit, firmware, playden_version;  // required
+  std::string idempotency_key;  // one per report attempt (NewIdempotencyKey)
+};
+
+struct ReportResult {
+  bool ok = false;
+  std::string id;         // the report's id (1-128 of A-Z a-z 0-9 _ -)
+  std::string state;      // provisioning (no issue yet) or open
+  std::string issue_url;  // empty while provisioning
+  bool updated = false;   // added to this console's earlier report for the game and runtime kit version
+  ApiError error;
+};
+
+struct AttachmentResult {
+  bool ok = false;
+  std::string id;
+  std::string url;  // where the issue links it
+  ApiError error;
+};
+
+std::string ReportRequestProblem(const ReportRequest& request);
+std::string ReportBody(const ReportRequest& request);
+// zip: a report zip (LogsSource::WriteReport), at most kMaxAttachmentBytes.
+AttachmentResult UploadAttachment(const ApiContext& context, const std::string& secret, const std::string& zip,
+                                  const std::string& idempotency_key, const std::atomic<bool>& cancel);
+ReportResult SendReport(const ApiContext& context, const std::string& secret, const ReportRequest& request,
+                        const std::atomic<bool>& cancel);
 
 // The export of a game's effective settings made ready to share: its title set and its locks
 // dropped (the API refuses locked rows; a recipe's defaults still apply, the player can change them).

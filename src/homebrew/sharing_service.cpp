@@ -27,6 +27,7 @@ struct SharingService::Shared {
   pthread_t thread{};
   std::optional<community::VoteState> memory;
   std::uint64_t memory_revision = 0;
+  web::Redaction account;
 };
 
 namespace {
@@ -290,6 +291,65 @@ void SharingService::Handle(SharingRequest request) {
         SaveMemory();
       }
       break;
+    case SharingRequestKind::Report: {
+      auto& report = request.report;
+      if (report.idempotency_key.empty())
+        if (const auto key = community::NewIdempotencyKey()) report.idempotency_key = *key;
+      result.idempotency_key = report.idempotency_key;
+      std::string error;
+      const auto secret = Secret(&error);
+      if (report.idempotency_key.empty()) {
+        result.report.error = LocalError("invalid_request", "no random bytes for the request key");
+        break;
+      }
+      if (!secret) {
+        Log("sharing: the sharing ID can't be read: " + error);
+        result.report.error = LocalError("sharing_id", "The sharing ID can't be read on this console.");
+        break;
+      }
+      std::string zip;
+      std::vector<std::pair<std::string, std::string>> facts;
+      const bool have_logs = ReportLogs(request.logs_app, request.logs_name, request.attach_logs ? &zip : nullptr, &facts);
+      if (report.versions.empty())
+        for (const auto& fact : facts)
+          if (report.versions.size() < community::kReportMaxVersionRows) report.versions.push_back(fact);
+      if (request.attach_logs) {
+        if (!have_logs) {
+          result.report.error = LocalError("logs", "The logs could not be collected on this console.");
+          break;
+        }
+        // The upload's own key, made from the report's so a retry sends the same attachment.
+        const auto key = report.idempotency_key.size() <= 123 ? report.idempotency_key + "-logs" : report.idempotency_key;
+        community::AttachmentResult attachment;
+        for (std::uint32_t attempt = 1; attempt <= attempts; ++attempt) {
+          attachment = community::UploadAttachment(context, *secret, zip, key, shared_->cancel);
+          Log("sharing: report logs bytes=" + std::to_string(zip.size()) + " attempt=" + std::to_string(attempt) +
+              " ok=" + std::to_string(attachment.ok) + " status=" + std::to_string(attachment.error.http_status) +
+              " code=" + attachment.error.code);
+          if (attachment.ok || !Retryable(attachment.error) || attempt == attempts || shared_->cancel) break;
+          Sleep(config_.retry_delay_ms * attempt);
+        }
+        if (!attachment.ok) {
+          result.report.error = attachment.error;
+          break;
+        }
+        report.attachment = attachment.id;
+      }
+      for (std::uint32_t attempt = 1; attempt <= attempts; ++attempt) {
+        result.report = community::SendReport(context, *secret, report, shared_->cancel);
+        Log("sharing: report store=" + report.store + " id=" + report.store_id + " result=" + report.result +
+            " attempt=" + std::to_string(attempt) + " ok=" + std::to_string(result.report.ok) + " status=" +
+            std::to_string(result.report.error.http_status) + " code=" + result.report.error.code + " state=" +
+            result.report.state + " updated=" + std::to_string(result.report.updated));
+        if (result.report.ok || !Retryable(result.report.error) || attempt == attempts || shared_->cancel) break;
+        Sleep(config_.retry_delay_ms * attempt);
+      }
+      break;
+    }
+    case SharingRequestKind::FeedbackSeen:
+      memory_.NoteFeedback(request.feedback_game, request.feedback_kit, request.feedback_settings, request.feedback_answered);
+      SaveMemory();
+      break;
     case SharingRequestKind::ResetSharingId: {
       std::string error;
       auto fresh = community::ResetInstallSecret(config_.store_root, &error);
@@ -300,9 +360,44 @@ void SharingService::Handle(SharingRequest request) {
       break;
     }
   }
-  if (request.kind == SharingRequestKind::MarkAsked) return;
+  if (request.kind == SharingRequestKind::MarkAsked || request.kind == SharingRequestKind::FeedbackSeen) return;
   std::lock_guard<std::mutex> lock(shared_->mutex);
   shared_->results.push_back(std::move(result));
+}
+
+void SharingService::SetAccount(web::Redaction account) {
+  std::lock_guard<std::mutex> lock(shared_->mutex);
+  shared_->account = std::move(account);
+}
+
+bool SharingService::ReportLogs(std::uint32_t app, const std::string& name, std::string* zip,
+                                std::vector<std::pair<std::string, std::string>>* facts) {
+  if (!config_.logs) return false;
+  web::Redaction account;
+  {
+    std::lock_guard<std::mutex> lock(shared_->mutex);
+    account = shared_->account;
+  }
+  const std::int64_t now = config_.now ? config_.now() : static_cast<std::int64_t>(::time(nullptr));
+  const web::LogsSource source(*config_.logs);
+  for (auto& fact : source.Facts(now))
+    if (fact.first != "collected") facts->push_back(std::move(fact));
+  if (!zip) return true;
+  const auto index = source.Index();
+  // The game's own log; a title no log has gives Playden's logs only (never another game's).
+  std::string title = "none";
+  for (const auto& game : index.games)
+    if ((app != 0 && game.app == app) || (app == 0 && !name.empty() && game.name == name)) {
+      title = game.title;
+      break;
+    }
+  zip->clear();
+  const bool written = source.WriteReport(index, title, account, now, [zip](const char* data, std::size_t size) {
+    if (zip->size() + size > community::kMaxAttachmentBytes) return false;
+    zip->append(data, size);
+    return true;
+  });
+  return written && !zip->empty();
 }
 
 void SharingService::Log(const std::string& line) const {

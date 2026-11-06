@@ -808,6 +808,9 @@ int main(int argc, char** argv) {
                 return client->Perform(request, cancel);
             };
             sharing_config.log = community_log;
+            sharing_config.logs = playden::web::LogsPaths{log_directory, (options->data_directory / "homebrew").string(),
+                                                          (options->data_directory / "kits").string(),
+                                                          options->data_directory.string()};
             sharing = std::make_unique<playden::homebrew::SharingService>(std::move(sharing_config));
             sharing->Start();
             services->SetSharing(sharing.get());
