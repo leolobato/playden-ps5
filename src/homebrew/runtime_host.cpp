@@ -3322,7 +3322,8 @@ std::optional<GameRef> RuntimeHost::MatchingRefOf(const GameId& game, std::uint3
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (const auto found = snapshot_.steamworks_apps.find(runtime_number);
-        found != snapshot_.steamworks_apps.end() && found->second.app_id)
+        found != snapshot_.steamworks_apps.end() && found->second.app_id &&
+        found->second.source == SteamworksAppView::Source::kGameFile)
       steam_app = found->second.app_id;
   }
   return MatchingGameRef(game, steam_app);

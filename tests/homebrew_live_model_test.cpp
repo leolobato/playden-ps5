@@ -1487,8 +1487,37 @@ void live_imported_game_steam_app_id(const std::filesystem::path& base) {
               std::none_of(model.state().notices.begin(), model.state().notices.end(),
                            [](const auto& notice) { return notice.id == "setting-validation"; }),
           "a plain Steam app ID is saved");
+    // The chooser's recipes come by the game's Steam app ID: one the settings gave at the last prepare follows them when
+    // they change or are cleared; only the game's own steam_appid.txt overrides them.
+    playden::homebrew::CommunityCatalog catalog;
+    for (const std::uint32_t app : {440u, 456u, 620u}) {
+        playden::homebrew::CommunityRecipeOffer offer;
+        offer.id = "community-steam-" + std::to_string(app) + "-fast";
+        offer.title = "Fast " + std::to_string(app);
+        offer.status = "works";
+        offer.revision = std::string(64, 'a');
+        catalog.games[playden::GameRef::Steam(app)] = {offer};
+    }
+    model.UpdateCommunityCatalog(catalog);
+    const auto offered = [&] {
+        const auto offers = model.CommunityOffersFor(id);
+        return offers.empty() ? std::string("none") : offers.front().id;
+    };
+    runtime.steam_app_id = 440;  // as the runtime read it from the settings when it prepared
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(offered() == "community-steam-440-fast", "the settings' Steam app ID picks the recipes");
+    activate(model, "steam-app-id");
+    model.SubmitEditorText("456");
+    check(offered() == "community-steam-456-fast", "a changed Steam app ID in Game settings wins over the one cached at the last prepare");
+    activate(model, "steam-app-id");
+    model.SubmitEditorText("");
+    check(offered() == "none", "a cleared Steam app ID leaves no Steam game");
+    activate(model, "steam-app-id");
+    model.SubmitEditorText("440");
     runtime.steam_app_id = 620;
     runtime.steam_app_from_game_file = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(offered() == "community-steam-620-fast", "the game's own steam_appid.txt wins over the settings");
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     row = find_view_row(model, "steam-app-id");
     check(row && row->value == "620" && row->subtitle == "From the game's steam_appid.txt",

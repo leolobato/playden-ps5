@@ -1800,6 +1800,20 @@ void community_recipes_imported(const std::filesystem::path& fixtures, const std
         check(find_row(simulation, "recipes-none") &&
                   find_row(simulation, "recipes-none")->subtitle.find("by its Steam app ID") != std::string::npos,
               "the chooser says an imported game's recipes come by its Steam app ID");
+        // The share was made for imported/night-sky; a Steam app ID from Game settings changes the game's ref, so the
+        // next share is a new one, not an update of that submission.
+        check(shared.game == (playden::GameRef{"imported", "night-sky"}), "a saved share records the game it was made for");
+        const auto set_app = [&](const char* text) {
+            while (!simulation.state().navigation.modals.empty() && top(simulation).id != "game-settings") simulation.action("circle");
+            activate(simulation, "steam-app-id");
+            simulation.SubmitEditorText(text);
+        };
+        namespace cm = playden::community;
+        check(simulation.ShareDecisionFor(night_sky).kind == cm::ShareKind::kUpdateOwn, "still the same game: updates its share");
+        set_app("123");
+        auto decision = simulation.ShareDecisionFor(night_sky);
+        check(decision.kind == cm::ShareKind::kNewRecipe && !decision.send_submission_id,
+              "a changed game ref: the earlier share is not updated, the next is new");
     }
     std::filesystem::remove_all(directory);
 }

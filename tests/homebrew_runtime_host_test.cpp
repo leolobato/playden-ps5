@@ -7695,6 +7695,14 @@ void ImportedGameTakesItsSteamAppIdsRecipe() {
   CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-steam-4000-fast" &&
         done.installs[0].recipe_version == rev_own.substr(0, 32) && done.installs[0].launch_path == "Bin/Fast.exe" &&
         done.installs[0].game == local && !done.recipe_fallbacks.count(number));
+  // A Steam app ID the settings gave at the last preparation does not outlive them: changed, the new one decides.
+  set(4001, rev_other);
+  done = apply();
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-steam-4001-fast" &&
+        !done.recipe_fallbacks.count(number));
+  set(4000, rev_own);
+  done = apply();
+  CHECK(done.maintenance.at(number).ok && done.installs[0].recipe_id == "community-steam-4000-fast");
   // Another Steam game's recipe is not this game's: Playden keeps the applied one and says why.
   set(4000, rev_other);
   done = apply();

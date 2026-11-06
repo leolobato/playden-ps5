@@ -238,13 +238,15 @@ inline bool operator==(const CommunityRecipeChoice& left, const CommunityRecipeC
 }
 inline bool operator!=(const CommunityRecipeChoice& left, const CommunityRecipeChoice& right) { return !(left == right); }
 // The recipe a game's shared settings were sent as (Phase 5): the submission the service answered
-// with and the recipe id it belongs to, so a later share updates it instead of making a new one.
+// with and the recipe id it belongs to, so a later share updates it instead of making a new one. game is the
+// GameRef the share was made for (invalid when unknown: an older record); a share is only updated for the same one.
 struct SharedRecipeRef {
   std::string submission_id;
   std::string recipe_id;
+  GameRef game;
 };
 inline bool operator==(const SharedRecipeRef& left, const SharedRecipeRef& right) {
-  return left.submission_id == right.submission_id && left.recipe_id == right.recipe_id;
+  return left.submission_id == right.submission_id && left.recipe_id == right.recipe_id && left.game == right.game;
 }
 inline bool operator!=(const SharedRecipeRef& left, const SharedRecipeRef& right) { return !(left == right); }
 

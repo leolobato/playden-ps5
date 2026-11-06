@@ -6025,7 +6025,8 @@ bool Simulation::scenario(const std::string& name) {
             // This console's own recipe, its pull request still in review, changed since.
             rt::ChooseCommunityRecipe(&record, recipe_id, revision);
             record.overrides["resolution"] = "1920x1080";
-            record.shared_recipe = {"simulated-7", recipe_id};
+            const auto ref = sharing_ref(id);
+            record.shared_recipe = {"simulated-7", recipe_id, ref ? *ref : GameRef{}};
             state_.submissions["simulated-7"] = {"in-review", recipe_id, "https://github.com/leolobato/playden-ps5-recipes/pull/7",
                                                  state_.clock_ticks, false, ""};
         } else {
@@ -12733,7 +12734,9 @@ const rt::SettingsPreset* Simulation::preset_for_base(const BaseChoice& base) co
 
 std::uint32_t Simulation::steam_app_of(GameId id) const {
     if (const auto app = id.steam_app()) return *app;
-    if (const auto runtime = state_.runtime_games.find(id); runtime != state_.runtime_games.end() && runtime->second.steam_app_id)
+    // Only the game's own steam_appid.txt wins over Game settings; an ID that came from settings is stale once they change.
+    if (const auto runtime = state_.runtime_games.find(id);
+        runtime != state_.runtime_games.end() && runtime->second.steam_app_from_game_file && runtime->second.steam_app_id)
         return runtime->second.steam_app_id;
     const auto record = state_.game_settings.find(id);
     return record == state_.game_settings.end() ? 0 : record->second.steam_app_id;
@@ -13621,9 +13624,13 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
 cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
     cm::ShareInputs inputs;
     if (const auto base = RecipeBaseFor(id)) inputs.based_on = cm::RecipeRef{base->id, base->revision};
+    // The saved share counts only for the game it was made for: a changed GameRef starts a new share.
     if (const auto record = state_.game_settings.find(id); record != state_.game_settings.end()) {
-        inputs.saved_submission_id = record->second.shared_recipe.submission_id;
-        inputs.saved_recipe_id = record->second.shared_recipe.recipe_id;
+        const auto ref = sharing_ref(id);
+        if (ref && record->second.shared_recipe.game == *ref) {
+            inputs.saved_submission_id = record->second.shared_recipe.submission_id;
+            inputs.saved_recipe_id = record->second.shared_recipe.recipe_id;
+        }
     }
     share_changes(id, inputs.based_on, &inputs.differs_from_base, &inputs.program_or_graphics_differ);
     return cm::DecideShare(inputs);
@@ -13851,7 +13858,8 @@ void Simulation::send_share() {
     result.idempotency_key = request.idempotency_key.empty() ? "simulated-" + std::to_string(share_->ticket) : request.idempotency_key;
     auto& answer = result.submission;
     answer.outcome = cm::SubmissionOutcome::kCreated;
-    const auto saved = record != state_.game_settings.end() ? record->second.shared_recipe : rt::SharedRecipeRef{};
+    auto saved = record != state_.game_settings.end() ? record->second.shared_recipe : rt::SharedRecipeRef{};
+    if (saved.game != request.game) saved = {};
     const auto view = state_.submissions.find(saved.submission_id);
     if (!request.submission_id.empty() && view != state_.submissions.end() && view->second.state == "in-review") {
         answer.id = saved.submission_id;
@@ -14277,7 +14285,8 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
         if (answer.outcome == cm::SubmissionOutcome::kCreated) {
             // Saved per game, so the next share of it updates this one.
             auto& record = state_.game_settings[result.game_id];
-            record.shared_recipe = {answer.id, answer.recipe_id};
+            const auto ref = sharing_ref(result.game_id);
+            record.shared_recipe = {answer.id, answer.recipe_id, ref ? *ref : GameRef{}};
             state_.submissions[answer.id] = SubmissionView{answer.state, answer.recipe_id, answer.pr_url, state_.clock_ticks, false, ""};
             save_profile();
             refresh_game_settings();

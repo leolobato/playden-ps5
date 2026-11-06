@@ -1783,7 +1783,11 @@ bool RecordFromValue(const storage_json::Value& root, GameSettingsRecord* out) {
     const auto* id = shared->Find("recipe_id");
     if (submission && submission->is_string() && id && id->is_string() && !submission->text().empty() &&
         IsCommunityRecipeId(id->text()))
-      out->shared_recipe = {submission->text(), id->text()};
+      out->shared_recipe = {submission->text(), id->text(), GameRef{}};
+    // The game it was made for; missing or unreadable is unknown, never matched.
+    if (!out->shared_recipe.submission_id.empty())
+      if (const auto* game = shared->Find("game"); game && game->is_string())
+        if (const auto ref = ParseGameRefText(game->text())) out->shared_recipe.game = *ref;
   }
   // Settings this build does not know are dropped so an older record still loads.
   for (auto it = out->overrides.begin(); it != out->overrides.end();)
@@ -1828,7 +1832,9 @@ std::string SerializeGameSettingsRecord(const GameSettingsRecord& record) {
             json::escape(record.community_recipe.revision) + "\"}";
   if (!record.shared_recipe.submission_id.empty())
     text += ",\"shared_recipe\":{\"submission_id\":\"" + json::escape(record.shared_recipe.submission_id) +
-            "\",\"recipe_id\":\"" + json::escape(record.shared_recipe.recipe_id) + "\"}";
+            "\",\"recipe_id\":\"" + json::escape(record.shared_recipe.recipe_id) + "\"" +
+            (record.shared_recipe.game.valid() ? ",\"game\":\"" + json::escape(ToText(record.shared_recipe.game)) + "\"" : "") +
+            "}";
   return text + "}";
 }
 

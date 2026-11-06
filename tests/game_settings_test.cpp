@@ -2613,6 +2613,13 @@ int main(int argc, char** argv) {
     choice.shared_recipe = {"sub-1", a.id};
     CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice &&
           reread.shared_recipe.submission_id == "sub-1");
+    // The game a share was made for is kept; an older record without it reads back as unknown.
+    CHECK(!reread.shared_recipe.game.valid() &&
+          SerializeGameSettingsRecord(choice).find("\"game\"") == std::string::npos);
+    choice.shared_recipe = {"sub-1", a.id, playden::GameRef{"imported", "night-sky"}};
+    CHECK(SerializeGameSettingsRecord(choice).find(",\"game\":\"imported/night-sky\"}") != std::string::npos);
+    CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(choice), &reread, &reason) && reread == choice &&
+          reread.shared_recipe.game == (playden::GameRef{"imported", "night-sky"}));
     // A malformed choice is dropped, not the record.
     CHECK(ParseGameSettingsRecord("{\"community_recipe\":{\"id\":\"community-steam-220-fast\",\"revision\":\"abc\"}}", &reread, &reason) &&
           reread.community_recipe.id.empty());
