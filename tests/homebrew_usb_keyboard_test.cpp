@@ -68,6 +68,15 @@ int main() {
     CHECK(Typed(input.Update(Keys({0x06}, 0x01), true, now += 20000)).empty());
     CHECK(Typed(input.Update(Keys({}), true, now += 20000)).empty());
 
+    // A held arrow's repeats say they are repeats, so a side menu stops at its ends.
+    {
+        const auto first = input.Update(Keys({0x51}), false, now += 20000);
+        CHECK(first.size() == 1 && first[0].action == "down" && !first[0].repeat);
+        const auto held = input.Update(Keys({0x51}), false, now += 500000);
+        CHECK(held.size() == 1 && held[0].action == "down" && held[0].repeat);
+        CHECK(input.Update(Keys({}), false, now += 20000).empty());
+    }
+
     // A held key repeats after a delay; Enter does not.
     CHECK(Typed(input.Update(Keys({0x07}), true, now += 20000)) == "d");
     CHECK(Typed(input.Update(Keys({0x07}), true, now += 100000)).empty());

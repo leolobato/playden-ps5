@@ -1532,8 +1532,12 @@ void live_filters_sheet_sections() {
     check(!model.action("focus:heading-sort") && !model.action("focus:divider") && model.state().navigation.focus_key=="sort-name",
           "a heading or the divider can't be focused directly");
     // The last action can be reached, past everything else.
-    for(int step=0;step<12;++step) model.action("down");
-    check(model.state().navigation.focus_key=="cancel","down ends on the last action");
+    // Held, Down stops on the last action; a new press goes round to the first sort, and Up held stops there.
+    for(int step=0;step<12;++step) model.action("down",true);
+    check(model.state().navigation.focus_key=="cancel","held down stops on the last action");
+    check(model.action("down") && model.state().navigation.focus_key=="sort-name","down from the last action goes to the first sort");
+    check(model.action("up",true) && model.state().navigation.focus_key=="sort-name","held up stops on the first sort");
+    check(model.action("down",true) && model.action("focus:cancel"),"back on the last action");
 
     activate(model,"filter-compat-playable");
     check(model.action("triangle"),"filter modal opens again");

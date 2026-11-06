@@ -358,10 +358,10 @@ const char* action_name(hui::Action action) {
 
 void apply_input(playden::homebrew::Simulation& simulation, const hui::InputFrame& frame) {
     switch (frame.nav) {
-    case hui::Direction::up: simulation.action("up"); break;
-    case hui::Direction::down: simulation.action("down"); break;
-    case hui::Direction::left: simulation.action("left"); break;
-    case hui::Direction::right: simulation.action("right"); break;
+    case hui::Direction::up: simulation.action("up", frame.nav_repeat); break;
+    case hui::Direction::down: simulation.action("down", frame.nav_repeat); break;
+    case hui::Direction::left: simulation.action("left", frame.nav_repeat); break;
+    case hui::Direction::right: simulation.action("right", frame.nav_repeat); break;
     case hui::Direction::none: break;
     }
     for (unsigned index = static_cast<unsigned>(hui::Action::confirm);

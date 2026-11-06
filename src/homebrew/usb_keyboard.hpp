@@ -26,6 +26,7 @@ KeyboardReport ParseKeyboardState(const std::uint8_t* state);
 struct KeyboardCommand {
     std::string text;
     std::string action;
+    bool repeat = false;  // a held key's repeat, not a new press
 };
 
 // Turns successive reports into commands: a key acts when it goes down, and a held key repeats

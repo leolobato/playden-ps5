@@ -122,8 +122,10 @@ std::vector<KeyboardCommand> KeyboardInput::Update(const KeyboardReport& report,
     }
     if (repeating_ != 0 && std::find(keys.begin(), keys.end(), repeating_) == keys.end()) repeating_ = 0;
     if (repeating_ != 0 && commands.empty() && now_us >= next_repeat_us_) {
-        if (auto command = KeyCommand(repeating_, report.modifiers, editing); !command.text.empty() || !command.action.empty())
+        if (auto command = KeyCommand(repeating_, report.modifiers, editing); !command.text.empty() || !command.action.empty()) {
+            command.repeat = true;
             commands.push_back(std::move(command));
+        }
         next_repeat_us_ = now_us + kRepeatIntervalUs;
     }
     held_ = keys;

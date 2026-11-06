@@ -971,7 +971,8 @@ public:
                ModelMode mode = ModelMode::Simulation);
 
     bool scenario(const std::string& name);
-    bool action(const std::string& logical_action);
+    // repeat: the step comes from a held direction, not a new press (a side menu stops at its ends).
+    bool action(const std::string& logical_action, bool repeat = false);
     void controller_sample(ControllerState sample);
     void text(const std::string& utf8);
     // The PS5 system keyboard's accepted text replaces the open editor's value and commits it, as Done does.
@@ -1445,7 +1446,7 @@ private:
     void rebuild_view();
     void activate();
     void cancel();
-    void move(int delta_x, int delta_y);
+    void move(int delta_x, int delta_y, bool repeat = false);
     void move_content(int delta_x, int delta_y);
     [[nodiscard]] bool tab_bar_shown() const;
     bool move_settings(int delta_x, int delta_y);

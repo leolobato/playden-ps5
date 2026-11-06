@@ -8515,7 +8515,7 @@ int route_tab(Route route) {
 }
 }  // namespace
 
-void Simulation::move(int delta_x, int delta_y) {
+void Simulation::move(int delta_x, int delta_y, bool repeat) {
     if (state_.editor.active) {
         state_.editor.focus_row = std::clamp(state_.editor.focus_row + delta_y, 0, 4);
         // A password's bottom row has a Show key between space and backspace.
@@ -8530,20 +8530,24 @@ void Simulation::move(int delta_x, int delta_y) {
             state_.log_offset = std::clamp(state_.log_offset + delta, 0, std::max(0, static_cast<int>(state_.log_lines.size()) - 8));
             return;
         }
-        // Up from a side menu's top row goes round to its last row (a jump stops at the top); a dialog's buttons stay
-        // where they are.
-        if (delta_y == -1 && !modal.destructive && modal.id != "confirmation" && !modal.action_keys.empty()) {
+        // Up from a side menu's top row goes round to its last row, and Down from its last row to its top row. A held
+        // direction stops at the end first, and a new press goes round; a jump stops at the end. A dialog's buttons
+        // stay where they are.
+        if ((delta_y == -1 || delta_y == 1) && !modal.destructive && modal.id != "confirmation" && !modal.action_keys.empty()) {
             const auto passed_over = [&modal](int index) {
                 const auto& key = modal.action_keys[static_cast<std::size_t>(index)];
                 return SheetDecoration(key) || (modal.id == "import-games" && key.rfind("import-group-", 0) == 0);
             };
-            bool above = false;
-            for (int index = 0; index < modal.focused_action; ++index) above = above || !passed_over(index);
-            if (!above) {
-                int bottom = static_cast<int>(modal.action_keys.size()) - 1;
-                while (bottom > modal.focused_action && passed_over(bottom)) --bottom;
-                modal.focused_action = bottom;
-                state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(bottom)];
+            const int count = static_cast<int>(modal.action_keys.size());
+            bool beyond = false;
+            for (int index = modal.focused_action + delta_y; index >= 0 && index < count; index += delta_y)
+                beyond = beyond || !passed_over(index);
+            if (!beyond) {
+                if (repeat) return;
+                int other_end = delta_y < 0 ? count - 1 : 0;
+                while (other_end != modal.focused_action && passed_over(other_end)) other_end -= delta_y;
+                modal.focused_action = other_end;
+                state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(other_end)];
                 return;
             }
         }
@@ -10625,7 +10629,7 @@ void Simulation::activate() {
     else if (action_name == "account-switch") { pending_destructive_action_ = "account-switch"; open_modal({"confirmation", "Switch account? Current account cache will be cleared.", state_.navigation.focus_key, {"cancel", "confirm-destructive"}, 0, true}); }
 }
 
-bool Simulation::action(const std::string& logical_action) {
+bool Simulation::action(const std::string& logical_action, bool repeat) {
     // Any input settles Details focus where the user put it.
     details_primary_pending_ = false;
     state_.controller = {};
@@ -10867,8 +10871,8 @@ bool Simulation::action(const std::string& logical_action) {
         offset = std::clamp(offset + (logical_action == "l2" ? -1 : 1), 0, last_page);
         rebuild_view(); return true;
     }
-    if (logical_action == "up") move(0, -1);
-    else if (logical_action == "down") move(0, 1);
+    if (logical_action == "up") move(0, -1, repeat);
+    else if (logical_action == "down") move(0, 1, repeat);
     else if (logical_action == "left") move(-1, 0);
     else if (logical_action == "right") move(1, 0);
     else if (logical_action == "l2") move(0, -4);

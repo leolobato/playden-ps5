@@ -854,7 +854,8 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     model.NotifyLauncherHint(SteamId(35140), "Binaries/BatmanAC.exe");
     check(model.state().navigation.modals.empty(), "launcher hint: not offered with the setting on");
 
-    // Up from a side menu's top row goes round to its last row, and carries on from there.
+    // Up from a side menu's top row goes round to its last row, and carries on from there; Down from the last row
+    // goes round to the top. A held direction stops at the end first.
     {
         activate(model, "details-more");
         const auto keys = model.state().navigation.modals.back().action_keys;
@@ -863,9 +864,13 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
         check(model.state().navigation.focus_key == keys.back(), "side menu: Up from the top goes to the last row");
         model.action("up");
         check(model.state().navigation.focus_key == keys[keys.size() - 2], "side menu: Up carries on from the bottom");
+        model.action("down", true);
+        model.action("down", true);
+        check(model.state().navigation.focus_key == keys.back(), "side menu: a held Down stops on the last row");
         model.action("down");
-        model.action("down");
-        check(model.state().navigation.focus_key == keys.back(), "side menu: Down stops on the last row");
+        check(model.state().navigation.focus_key == keys.front(), "side menu: Down from the last row goes to the top");
+        model.action("up", true);
+        check(model.state().navigation.focus_key == keys.front(), "side menu: a held Up stops on the top row");
         while (!model.state().navigation.modals.empty()) model.action("circle");
     }
 

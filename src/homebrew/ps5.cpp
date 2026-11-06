@@ -75,10 +75,10 @@ extern "C" void hui_release_splash(void) { playden_release_splash(); }
 namespace {
 void dispatch(playden::homebrew::Simulation& simulation, const hui::InputFrame& input) {
     switch (input.nav) {
-        case hui::Direction::up: simulation.action("up"); break;
-        case hui::Direction::down: simulation.action("down"); break;
-        case hui::Direction::left: simulation.action("left"); break;
-        case hui::Direction::right: simulation.action("right"); break;
+        case hui::Direction::up: simulation.action("up", input.nav_repeat); break;
+        case hui::Direction::down: simulation.action("down", input.nav_repeat); break;
+        case hui::Direction::left: simulation.action("left", input.nav_repeat); break;
+        case hui::Direction::right: simulation.action("right", input.nav_repeat); break;
         default: break;
     }
     const std::array<std::pair<hui::Action, const char*>, 10> actions{{
@@ -1015,7 +1015,7 @@ int main() {
                 // A USB keyboard types into the open text box and also moves around Playden.
                 for (const auto& command : keyboard_input.Update(keyboard.read(), simulation.state().editor.active, now)) {
                     if (!command.text.empty()) simulation.text(command.text);
-                    else simulation.action(command.action);
+                    else simulation.action(command.action, command.repeat);
                 }
             }
             simulation.controller_sample(playden::homebrew::diagnostic_sample(input));
