@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-05.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-06.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -360,6 +360,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Warhammer 40,000: Boltgun](https://store.steampowered.com/app/2005010) | ✅ Works | 0.14 | — | Default settings, DualSense. ([#390](https://github.com/leolobato/playden-ps5/issues/390), firmware 13.60) |
 | [Warhammer 40,000: Boltgun 2](https://store.steampowered.com/app/3115160) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#645](https://github.com/leolobato/playden-ps5/issues/645), firmware 10.01) |
 | [Wartales](https://store.steampowered.com/app/1527950) | ✅ Works | 0.13 | — | Default settings, DualSense; some stutter. ([#154](https://github.com/leolobato/playden-ps5/issues/154), firmware 13.42) |
+| WendyQuest | ✅ Works | 0.19 | — | Default settings. |
 | [What Remains of Edith Finch](https://store.steampowered.com/app/501300) | ✅ Works | 0.12 | Unreal 4 · D3D11 · DXVK · 64-bit | Default settings, direct `FinchGame/Binaries/Win64/FinchGame.exe` selected by Playden. Opening ferry scene, looking around and opening the journal with the controller, then walking on the path toward the house verified. Tested from USB storage; later stories not tested. |
 | [WitchSpring R](https://store.steampowered.com/app/1958220) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#220](https://github.com/leolobato/playden-ps5/issues/220), firmware 13.60) |
 | [Wobbly Life](https://store.steampowered.com/app/1211020) | ✅ Works | 0.10 | — | Single-player with DualSense or USB mouse and keyboard; multiplayer does not work. Loading takes about a minute. ([#25](https://github.com/leolobato/playden-ps5/issues/25), firmware 9.40) |
