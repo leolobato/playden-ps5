@@ -101,6 +101,55 @@ std::vector<SettingsPreset> MyPresetsAsSettingsPresets(const std::vector<MyPrese
   return out;
 }
 
+std::string MyPresetSummary(const std::map<std::string, std::string>& settings, std::size_t items) {
+  const auto value_of = [&](const char* id) {
+    const auto found = settings.find(id);
+    return found == settings.end() ? std::string() : found->second;
+  };
+  // Rows the chosen controller preset brings with these very values go without saying.
+  const auto& inputs = ControllerPresetInputs();
+  const auto controller_preset = inputs.find(value_of("controller_preset"));
+  const auto implied = [&](const std::string& id, const std::string& value) {
+    if (controller_preset == inputs.end()) return false;
+    const auto found = controller_preset->second.find(id);
+    return found != controller_preset->second.end() && found->second == value;
+  };
+  // A choice that names itself ("Mouse", "1280×720", "60 Hz") stands alone; others take the row's name.
+  static const std::set<std::string> self_named = {"controller_preset", "controller", "resolution", "refresh",
+                                                   "steam_features", "windows_version"};
+  const auto item = [&](const SettingDefinition& definition, const std::string& value) {
+    std::string label = value;
+    for (const auto& choice : definition.choices)
+      if (choice.value == value) label = choice.label;
+    if (definition.id == "controller_preset" && value == "none") return std::string("No controller preset");
+    if (self_named.count(definition.id)) return label;
+    if (label == "On" || label == "Off") label = label == "On" ? "on" : "off";
+    return definition.label + " " + label;
+  };
+  std::vector<std::string> parts;
+  // The rows players recognise a preset by lead, as in the chooser's comparison; then the rest in sheet order.
+  static const std::vector<std::string> leading = {"controller_preset", "controller", "resolution", "refresh",
+                                                   "performance_overlay"};
+  for (const auto& id : leading)
+    if (const auto* definition = FindSetting(id); definition && settings.count(id) && !implied(id, settings.at(id)))
+      parts.push_back(item(*definition, settings.at(id)));
+  std::size_t buttons = 0;
+  for (const auto& definition : SettingsCatalogue()) {
+    const auto found = settings.find(definition.id);
+    if (found == settings.end() || std::find(leading.begin(), leading.end(), definition.id) != leading.end() ||
+        implied(definition.id, found->second))
+      continue;
+    if (definition.id.rfind("button.", 0) == 0) ++buttons;
+    else parts.push_back(item(definition, found->second));
+  }
+  if (buttons) parts.push_back(std::to_string(buttons) + (buttons == 1 ? " button" : " buttons"));
+  std::string text;
+  const std::size_t shown = parts.size() > items ? items : parts.size();
+  for (std::size_t index = 0; index < shown; ++index) text += (index ? " \u00b7 " : "") + parts[index];
+  if (parts.size() > shown) text += " \u00b7 +" + std::to_string(parts.size() - shown) + " more";
+  return text;
+}
+
 std::optional<SettingsPreset> ResolveRecordPreset(const std::vector<SettingsPreset>& built_in,
                                                   const std::vector<MyPreset>& mine, GameSettingsRecord* record,
                                                   bool* gone) {

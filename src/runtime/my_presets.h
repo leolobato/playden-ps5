@@ -40,6 +40,12 @@ const MyPreset* FindMyPreset(const std::vector<MyPreset>& presets, std::string_v
 // The presets as SettingsPreset, to add to the built-in ones.
 std::vector<SettingsPreset> MyPresetsAsSettingsPresets(const std::vector<MyPreset>& presets);
 
+// A short line for what a preset sets, for its row in Choose settings: "Mouse · 1280×720 · Performance overlay on".
+// The rows players know a preset by come first (controller preset, controller, resolution, refresh, overlay), then the
+// rest in the sheet's order with the choice's label; button bindings count as "N buttons", and rows the controller
+// preset brings with the same value are left out. After `items` parts, "+N more". Empty for no settings.
+std::string MyPresetSummary(const std::map<std::string, std::string>& settings, std::size_t items = 3);
+
 // The preset a record's preset_id names, among the built-in presets and the player's. One of the player's that is gone
 // (deleted, or my-presets.json unreadable) plays as Playden default: *record loses its preset_id, keeps its overrides,
 // and *gone is set. An empty preset_id or a missing built-in preset gives nothing and leaves the record as it is (a

@@ -380,11 +380,33 @@ void Resolve() {
 
 }  // namespace
 
+// The line under a player preset's row in Choose settings.
+void Summary() {
+  CHECK(MyPresetSummary({}).empty());
+  // The rows a preset is known by lead; Mouse brings its own controller and pointer stick, so those go unsaid.
+  const auto& mouse = ControllerPresetInputs().at("mouse");
+  Settings settings = {{"performance_overlay", "on"}, {"resolution", "1280x720"}, {"controller_preset", "mouse"}};
+  for (const auto& [id, value] : mouse) settings[id] = value;
+  CHECK(MyPresetSummary(settings) == "Mouse \u00b7 1280\u00d7720 \u00b7 Performance overlay on");
+  // A row set apart from the controller preset is named, with its value.
+  settings["controller"] = mouse.at("controller") == "xinput" ? "keyboard" : "xinput";
+  CHECK(MyPresetSummary(settings, 10).find(settings["controller"] == "xinput" ? "Xbox controller" : "Keyboard and mouse mapping") !=
+        std::string::npos);
+  // Buttons count as one part; past the limit, how many more.
+  CHECK(MyPresetSummary({{"button.cross", "space"}, {"button.circle", "escape"}, {"rumble", "50"}}) ==
+        "Rumble 50% \u00b7 2 buttons");
+  CHECK(MyPresetSummary({{"button.cross", "space"}}) == "1 button");
+  CHECK(MyPresetSummary({{"refresh", "60"}, {"rumble", "0"}, {"volume", "50"}, {"stick_deadzone", "10"}}) ==
+        "60 Hz \u00b7 Stick dead zone 10% \u00b7 Rumble off \u00b7 +1 more");
+  CHECK(MyPresetSummary({{"controller_preset", "none"}}) == "No controller preset");
+}
+
 int main() {
   Resolve();
   Ids();
   Changes();
   Format();
   Storage();
+  Summary();
   std::puts("my presets tests passed");
 }
