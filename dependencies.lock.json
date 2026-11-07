@@ -177,7 +177,7 @@
     }
   },
   "prospero_win": {
-    "revision": "7537eb0113b438e8dc0730e594fa0743203bc7c9",
+    "revision": "86d19170cbe251794c3a286f2864492edd6803a4",
     "url": "https://github.com/leolobato/prospero-win.git",
     "default_source": "third_party/prospero-win",
     "published": false,
@@ -185,7 +185,7 @@
     "retained_runtime_artifact_revision": "bceed2d-kit-h-r1",
     "upstream_url": "https://github.com/mpereiraesaa/prospero-win.git",
     "branch": "main",
-    "note": "Before kit 0.18: see this file's git history. 44ccf5a to 2b53efa add the exec chain and launcher mode: Wine patches 0994-0997, the profile's [launcher] section (kit capability launcher-mode), the touchpad preset swap, OpenAL Soft from win/openal-soft, and a chained program's own architecture and graphics. 008d3f7 pins the packager to the kit 0.18 runtime built from 2b53efa. d610e32 (Wine 0998) reports video memory above 4 GiB correctly, 24fdf79 adds the driver frame rate counter ([display] fps_counter), c290606 finds the title's sandbox, ba1455c adds the WAV, MP3 and ID3 parsers (Wine 0999), and e7582e9 releases a failed media graph once (Wine 0485). 0036091 pins the packager to the rebuilt kit 0.18. f33828e and a20e7dc take upstream 957d987 and 0e7b6b4 (Wine 0471, the other signed-in users' DualSenses as XInput controllers 1 to 3); 0d5a98d keeps the fork's rumble scaling, launcher presets and device-change notice on them, and 94222f8 adds Wine 0966 (those controllers as HID gamepads while connected, listed after controller 0, asked for when a program opens a HID device, waited for at a hosted start). c650ce5 adds Wine 0990-0992 and 3f1da26 the title's [input] mode = playstation (kit capability input-playstation): each controller as a DualShock 4 on the HID bus, and no XInput controllers. 7cccb5d pins the runtime built from 3f1da26 in the packager. 38f0998 adds Wine patch 0967 (a waiting send to the desktop window from another thread gets 0 at once); a kit with it needs win32u.prx from 38f0998, and kit 0.18 and its runtime are unchanged until a kit is built from it. fe8db51 tunes the rumble by feel: at least 20 ms per rumble (with the sink's peak, pw_wine_rumble_peak_at in ntdll.prx), 128 runs the motors at 140, L2 and R2 no longer vibrate; it takes effect from the next kit, which needs a new shell and ntdll.prx. bbf712b follows a virtual link when a path ends in a slash, so a drive root reaches Wine (ntdll.prx and wineserver.prx), 3f00982 adds Wine patch 0977 (GetLogicalDrives opens each letter's root when nothing is published; kernelbase.dll) and 37576d0 Wine patch 0979 (a title's root directory reports /data's free space; ntdll). They take effect from the next kit. 3b87bca adds Wine patch 0968 (the pointer stays on the image under a display mode; win32u.prx), from the next kit too. 53c454f and 7537eb0 add the USB drive search and its wait screen to the title shell (capability game-root-usb-search), from the next kit too."
+    "note": "Before kit 0.18: see this file's git history. 44ccf5a to 2b53efa add the exec chain and launcher mode: Wine patches 0994-0997, the profile's [launcher] section (kit capability launcher-mode), the touchpad preset swap, OpenAL Soft from win/openal-soft, and a chained program's own architecture and graphics. 008d3f7 pins the packager to the kit 0.18 runtime built from 2b53efa. d610e32 (Wine 0998) reports video memory above 4 GiB correctly, 24fdf79 adds the driver frame rate counter ([display] fps_counter), c290606 finds the title's sandbox, ba1455c adds the WAV, MP3 and ID3 parsers (Wine 0999), and e7582e9 releases a failed media graph once (Wine 0485). 0036091 pins the packager to the rebuilt kit 0.18. f33828e and a20e7dc take upstream 957d987 and 0e7b6b4 (Wine 0471, the other signed-in users' DualSenses as XInput controllers 1 to 3); 0d5a98d keeps the fork's rumble scaling, launcher presets and device-change notice on them, and 94222f8 adds Wine 0966 (those controllers as HID gamepads while connected, listed after controller 0, asked for when a program opens a HID device, waited for at a hosted start). c650ce5 adds Wine 0990-0992 and 3f1da26 the title's [input] mode = playstation (kit capability input-playstation): each controller as a DualShock 4 on the HID bus, and no XInput controllers. 7cccb5d pins the runtime built from 3f1da26 in the packager. 38f0998 adds Wine patch 0967 (a waiting send to the desktop window from another thread gets 0 at once); a kit with it needs win32u.prx from 38f0998, and kit 0.18 and its runtime are unchanged until a kit is built from it. fe8db51 tunes the rumble by feel: at least 20 ms per rumble (with the sink's peak, pw_wine_rumble_peak_at in ntdll.prx), 128 runs the motors at 140, L2 and R2 no longer vibrate; it takes effect from the next kit, which needs a new shell and ntdll.prx. bbf712b follows a virtual link when a path ends in a slash, so a drive root reaches Wine (ntdll.prx and wineserver.prx), 3f00982 adds Wine patch 0977 (GetLogicalDrives opens each letter's root when nothing is published; kernelbase.dll) and 37576d0 Wine patch 0979 (a title's root directory reports /data's free space; ntdll). They take effect from the next kit. 3b87bca adds Wine patch 0968 (the pointer stays on the image under a display mode; win32u.prx), from the next kit too. 53c454f and 7537eb0 add the USB drive search and its wait screen to the title shell (capability game-root-usb-search), from the next kit too. fc7f6ba adds Wine patch 0969 (msvcp80 and msvcp90 export ctype<char>::narrow as native's jump through the vtable, so Spider-Man: Web of Shadows no longer crashes after Press Start; msvcp80.dll and msvcp90.dll, now built with the kit), and 86d1917 adds Wine patch 0978 and changes 0995 (a display mode smaller than the desktop is shown and pointed at where win32u puts it, so an 800x600 DirectDraw game's pointer reaches the right edge; win32u.prx). Kit 0.20 carries both."
   },
   "prospero_bottle_preparation": {
     "hl2-fresh-v16": {
@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.19, installed as playden-kit. Kit 0.18 with ntdll.prx, win32u.prx, wineserver.prx, ntdll.dll and kernelbase.dll from prospero-win 7537eb0 (the 37576d0 build with win32u.prx from the 7537eb0 cross build kit-h/wine-ps5-019-1), the any-title shell from 7537eb0 (USB drive search, wait screen), and capabilities wine-driver-threads and game-root-usb-search.",
-    "manifest_sha256": "cde54d4f842e83b21638d7fb10594b32e5ab4d2db48e1e561138d586876d361e",
-    "files_sha256": "988fbb27b33652899378a8532cdc5c24714a0001144a834868c534866b3e190d",
+    "status": "Kit 0.20, installed as playden-kit. Kit 0.19 with libvulkan.prx (RADV from PS5_Mesa 56bd594: 120 Hz output kept on a display with variable refresh), win32u.prx, and msvcp80.dll and msvcp90.dll (i386 and x86_64) from the prospero-win 86d1917 cross build kit-h/wine-ps5-020-1, and capability display-vrr. The app shell, the template and every other module are 0.19's, so bottles need no Recreate.",
+    "manifest_sha256": "1c0773b5a5a78bdfbe4be2333c429dfa2653a6b945fcbea0b1a8920e2fc7d6ee",
+    "files_sha256": "12b9df9c6452b792acfd740ff099efbc09090be5fda71d59dca97b59f594142f",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -238,6 +238,7 @@
       "display-120hz",
       "display-fps-counter",
       "display-framegen",
+      "display-vrr",
       "dxvk",
       "game-root-unowned",
       "game-root-usb-search",
@@ -257,8 +258,8 @@
       "wow64_i386"
     ],
     "wrapper_revision": "7537eb0113b438e8dc0730e594fa0743203bc7c9",
-    "runtime_artifact_revision": "7537eb0-kit-0.19",
-    "runtime_inventory_source": "Kit 0.19: staged by build/kit-0.19/stage.py from kit-0.19-dev.20261105.3, itself the released 0.18 zip with the five modules above. Earlier kits: see this file's git history.",
+    "runtime_artifact_revision": "86d1917-kit-0.20",
+    "runtime_inventory_source": "Kit 0.20: staged by build/kit-0.20/stage.py from the kit 0.19 inputs with the six modules above (the PE modules stripped as build_host_wine.sh does; the cross build's other PRX modules came out byte-identical to 0.19's). Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
