@@ -6920,7 +6920,10 @@ void Simulation::rebuild_view() {
             if (action_key == "share-as") {
                 item.kind = RowKind::Choice;
                 item.value = share_as_label();
-                item.subtitle = "Who this credits. You can change the default later in Settings › Community.";
+                item.subtitle = state_.share_as == playden::ShareAs::kAccount && state_.account_link.state != "linked"
+                    ? "Your Playden account isn't linked, so this credits " +
+                          (state_.share_name.empty() ? std::string("nobody") : state_.share_name) + "."
+                    : std::string("Who this credits. The default is in Settings › Community.");
             } else if (modal.id == "share-as") {
                 const auto chosen = share_as_effective();
                 if (action_key == "share-as-none") {
@@ -15060,15 +15063,16 @@ void Simulation::NotifySessionEnded(GameId id, std::int64_t played_seconds) {
 }
 
 playden::ShareAs Simulation::share_as_effective() const {
-    // An account that isn't linked, or a name that is empty, credits nobody.
-    if (state_.share_as == playden::ShareAs::kAccount)
-        return state_.account_link.state == "linked" ? playden::ShareAs::kAccount : playden::ShareAs::kNone;
+    // An account that isn't linked credits the typed name instead, if there is one; an empty name credits nobody.
+    if (state_.share_as == playden::ShareAs::kAccount) {
+        if (state_.account_link.state == "linked") return playden::ShareAs::kAccount;
+        return state_.share_name.empty() ? playden::ShareAs::kNone : playden::ShareAs::kName;
+    }
     if (state_.share_as == playden::ShareAs::kName && state_.share_name.empty()) return playden::ShareAs::kNone;
     return state_.share_as;
 }
 
 std::string Simulation::share_as_label() const {
-    if (state_.share_as == playden::ShareAs::kAccount && state_.account_link.state != "linked") return "No name (account not linked)";
     switch (share_as_effective()) {
     case playden::ShareAs::kAccount:
         return (state_.account_link.name.empty() ? std::string("Your account") : state_.account_link.name) + " · Playden account";

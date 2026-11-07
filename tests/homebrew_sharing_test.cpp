@@ -980,6 +980,9 @@ void account_link(const std::filesystem::path& base) {
     open_share(model);
     check(find_row(model, "share-as")->value == "No name", "linking alone doesn't change who a share credits");
     activate(model, "share-as");
+    // A name typed first stays for when the account isn't linked any more.
+    activate(model, "share-as-name");
+    model.SubmitEditorText("Rina R");
     activate(model, "share-as-account");
     check(model.ExportPreferences().share_as == playden::ShareAs::kAccount, "choosing the linked account makes it the default");
     model.action("circle");
@@ -1034,6 +1037,13 @@ void account_link(const std::filesystem::path& base) {
     for (const auto& result : service.TakeResults()) model.ApplySharingResult(result);
     check(model.state().account_link.state.empty() && !std::filesystem::exists(base / "community-recipes" / cm::kAccountTokenFileName),
           "an ended link is forgotten");
+    // With the account no longer linked, shares credit the typed name, and the row says why.
+    open_share(model);
+    check(find_row(model, "share-as")->value == "Rina R" &&
+              find_row(model, "share-as")->subtitle == "Your Playden account isn't linked, so this credits Rina R.",
+          "an unlinked account falls back to the typed name");
+    check(model.ExportPreferences().share_as == playden::ShareAs::kAccount, "the default stays the account, for when it's linked again");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
     service.Shutdown();
 }
 
