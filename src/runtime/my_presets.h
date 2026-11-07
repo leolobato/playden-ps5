@@ -75,9 +75,10 @@ MyPresetRefusal CheckMyPresetName(std::string_view name, std::string* trimmed);
 
 // {"format":1,"presets":[{"id","name","settings":{...},"created","updated"}]}. Parsing refuses (false) a file that is
 // not that: malformed JSON, another format, a preset without a valid id, name, string settings or timestamps, or two
-// presets with one id or one name. Within a preset, a retired setting and a setting this build refuses (a newer
-// Playden's) are dropped and listed in dropped as "<preset id> <setting>"; the preset is kept. More than kMyPresetsMax
-// presets load; only adding is capped.
+// presets with one id. Within a preset, a retired setting and a setting this build refuses (a newer Playden's) are
+// dropped and listed in dropped as "<preset id> <setting>"; the preset is kept. Like the cap, names unique ignoring
+// case and accents are a rule for changes only: two names that fold alike (another build's folding) both load, and
+// more than kMyPresetsMax presets load.
 bool ParseMyPresets(std::string_view text, std::vector<MyPreset>* presets, std::vector<std::string>* dropped,
                     std::string* reason);
 std::string SerializeMyPresets(const std::vector<MyPreset>& presets);

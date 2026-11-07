@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cstring>
 #include <limits>
 #include <set>
 #include <utility>
@@ -21,6 +20,14 @@ namespace {
 namespace storage_json = steam::json;
 
 constexpr std::size_t kIdHexDigits = 16;
+
+// A full file is about 50 * (6 + settings) values: 2,753 with today's 49 settings a preset may set, near the default
+// 4,096. Room for many more settings, so a file Playden wrote never reads back as malformed.
+storage_json::Limits FileLimits() {
+  storage_json::Limits limits;
+  limits.max_values = 64 * 1024;
+  return limits;
+}
 
 bool LowerHex(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }
 
@@ -158,7 +165,7 @@ bool ParseMyPresets(std::string_view text, std::vector<MyPreset>* presets, std::
     if (reason) *reason = std::move(why);
     return false;
   };
-  const auto root = storage_json::Parse(text);
+  const auto root = storage_json::Parse(text, FileLimits());
   if (!root || !root->is_object()) return fail("not a JSON object");
   const auto* format = root->Find("format");
   if (!format || format->AsUint64() != 1) return fail("not format 1");
@@ -166,7 +173,7 @@ bool ParseMyPresets(std::string_view text, std::vector<MyPreset>* presets, std::
   if (!list || !list->is_array()) return fail("no presets list");
   std::vector<MyPreset> out;
   std::vector<std::string> out_dropped;
-  std::set<std::string> ids, names;
+  std::set<std::string> ids;
   for (const auto& item : list->array()) {
     if (!item.is_object()) return fail("a preset is not an object");
     const auto* id = item.Find("id");
@@ -180,7 +187,6 @@ bool ParseMyPresets(std::string_view text, std::vector<MyPreset>* presets, std::
     if (!name || !name->is_string() || CheckMyPresetName(name->text(), &trimmed) != MyPresetRefusal::kNone ||
         trimmed != name->text())
       return fail("preset " + id->text() + " has no valid name");
-    if (!names.insert(FoldedName(trimmed)).second) return fail("preset " + id->text() + " repeats another's name");
     if (!settings || !settings->is_object()) return fail("preset " + id->text() + " has no settings");
     if (!created || !updated) return fail("preset " + id->text() + " has no valid created and updated times");
     MyPreset preset;
@@ -243,7 +249,7 @@ MyPresetsLoad LoadMyPresetsFile(const std::string& path) {
   out.presets.clear();
   out.dropped.clear();
   // A newer Playden's file stays where it is for that Playden; this one shows none and does not save.
-  const auto root = storage_json::Parse(text);
+  const auto root = storage_json::Parse(text, FileLimits());
   const auto* format = root && root->is_object() ? root->Find("format") : nullptr;
   const auto version = format ? format->AsUint64() : std::nullopt;
   if (version && *version > 1) {
@@ -251,6 +257,7 @@ MyPresetsLoad LoadMyPresetsFile(const std::string& path) {
     out.reason = "my-presets.json is format " + std::to_string(*version) + ", from a newer Playden";
     return out;
   }
+  errno = 0;
   if (!SetPrivateSettingsFileAside(path, kMyPresetsBadFileName)) {
     const bool taken = errno == EEXIST;
     out.status = MyPresetsLoadStatus::kUnavailable;

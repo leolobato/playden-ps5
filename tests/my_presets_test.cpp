@@ -178,9 +178,11 @@ void Format() {
   refused(R"({"format":1,"presets":[{"id":"mouse",)" + good + "}]}");
   refused(R"({"format":1,"presets":[{)" + good + "}]}");
   refused(R"({"format":1,"presets":[{"id":"my-0000000000000001",)" + good + R"(},{"id":"my-0000000000000001","name":"B","created":1,"updated":2,"settings":{}}]})");
-  // Two names that differ only in case and accents ("A" and "á").
-  refused(R"({"format":1,"presets":[{"id":"my-0000000000000001",)" + good +
-          R"(},{"id":"my-0000000000000002","name":")" + "\xc3\xa1" + R"(","created":1,"updated":2,"settings":{}}]})");
+  // Two names that differ only in case and accents ("A" and "á") load: the rule is for changes.
+  CHECK(ParseMyPresets(R"({"format":1,"presets":[{"id":"my-0000000000000001",)" + good +
+          R"(},{"id":"my-0000000000000002","name":")" + "\xc3\xa1" + R"(","created":1,"updated":2,"settings":{}}]})",
+      &loaded, nullptr, &reason) && loaded.size() == 2);
+  CHECK(RenameMyPreset(&loaded, "my-0000000000000001", "\xc3\x81", 3).refusal == R::kNameTaken);
   refused(R"({"format":1,"presets":[{"id":"my-0000000000000001","name":"","created":1,"updated":2,"settings":{}}]})");
   refused(R"({"format":1,"presets":[{"id":"my-0000000000000001","name":" A","created":1,"updated":2,"settings":{}}]})");
   refused(R"({"format":1,"presets":[{"id":"my-0000000000000001","name":"A","updated":2,"settings":{}}]})");
@@ -254,6 +256,33 @@ void Storage() {
   fs::create_symlink(root / "elsewhere.json", path);
   CHECK(LoadMyPresetsFile(path.string()).status == MyPresetsLoadStatus::kUnavailable && !fs::exists(bad));
   fs::remove(path);
+
+  // The largest file Playden can write still reads back: 50 presets, each setting every setting a preset may set,
+  // with the longest names.
+  {
+    Settings every;
+    for (const auto& definition : SettingsCatalogue()) {
+      std::vector<std::string> candidates{"mouse_middle", "1920x1080"};
+      for (const auto& choice : definition.choices) candidates.push_back(choice.value);
+      for (const auto& value : candidates)
+        if (ValidatePresetSetting(definition.id, value, nullptr)) {
+          every[definition.id] = value;
+          break;
+        }
+    }
+    CHECK(every.size() > 40);
+    std::vector<MyPreset> full;
+    for (int n = 0; n < static_cast<int>(kMyPresetsMax); ++n) {
+      std::string name = std::to_string(n);
+      for (std::size_t characters = name.size(); characters < kMyPresetNameMaxCharacters; ++characters)
+        name += "\xf0\x9f\x8e\xae";  // 4-byte characters
+      CHECK(AddMyPreset(&full, Id(1000 + n), name, every, 1762473600).ok());
+    }
+    CHECK(SaveMyPresetsFile(path.string(), full, &reason));
+    load = LoadMyPresetsFile(path.string());
+    CHECK(load.status == MyPresetsLoadStatus::kLoaded && load.presets == full && load.dropped.empty());
+    fs::remove(path);
+  }
 
   // The folder must be private.
   CHECK(::chmod(folder.c_str(), 0755) == 0);
