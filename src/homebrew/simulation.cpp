@@ -15387,14 +15387,30 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             state_.submissions[answer.id] = SubmissionView{answer.state, answer.recipe_id, answer.pr_url, state_.clock_ticks, false, ""};
             save_profile();
             refresh_game_settings();
+            // The pull request already had exactly this: nothing was revised, and the player is told so.
+            const char* heading = answer.unchanged ? "Nothing new to share" : "Recipe sent for review";
             if (!showing) {
-                push_notice({"recipe-shared", "Recipe sent for review", "", false, kLiveNoticeSeconds, false, title});
+                push_notice({"recipe-shared", heading, "", false, kLiveNoticeSeconds, false, title});
                 break;
             }
             close_sheet("share-recipe");
             share_.reset();
-            ModalEntry sent{"confirmation", "Recipe sent for review", state_.navigation.focus_key, {"alert-ok"}, 0, false};
-            if (!answer.pr_url.empty()) {
+            ModalEntry sent{"confirmation", heading, state_.navigation.focus_key, {"alert-ok"}, 0, false};
+            if (answer.unchanged) {
+                sent.body = "Your pull request already has these settings, title and note, so nothing changed.";
+                // A changed row the title can't use yet is why a change the player made didn't count: say which.
+                rt::EffectiveSettings values;
+                std::vector<std::string> waiting;
+                if (const auto record = state_.game_settings.find(result.game_id);
+                    record != state_.game_settings.end() && EffectiveSettingsFor(result.game_id, &values))
+                    for (const auto& [id, value] : record->second.overrides)
+                        if (const auto row = values.values.find(id); row != values.values.end() && !row->second.available)
+                            if (const auto* definition = rt::FindSetting(id)) waiting.push_back(definition->label);
+                if (!waiting.empty())
+                    sent.body += "\n\n" + join_text(waiting, ", ") + " isn't sent until the game runs on the new runtime kit.";
+                sent.link = answer.pr_url;
+                if (!sent.link.empty()) sent.link_caption = "Scan to see the pull request";
+            } else if (!answer.pr_url.empty()) {
                 sent.body = "Thanks! It's in review. Game settings shows when it's published.";
                 sent.link = answer.pr_url;
                 sent.link_caption = "Scan to follow the pull request";

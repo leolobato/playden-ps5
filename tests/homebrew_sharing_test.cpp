@@ -397,6 +397,19 @@ void share_and_vote(const std::filesystem::path& base) {
     pump(model, service, &sent);
     check(sent.size() == 1 && sent[0].submission.idempotency_key == first_key, "Try again is the same share: the same key");
     check(contains(find_row(model, "share-send")->subtitle, "Try again in 10 minutes"), "a rate limit says when to try again");
+    // The pull request already has exactly this: the API says unchanged, and so does Playden, not "sent for review".
+    api.answer_with({answer(201, R"({"id":"sub-1","recipe_id":"community-steam-274520-darkwood-4k","state":"in-review",)"
+                                 R"("pr_url":"https://github.com/leolobato/playden-ps5-recipes/pull/12","unchanged":true})")});
+    activate(model, "share-send");
+    pump(model, service, &sent);
+    check(model.state().navigation.modals.back().title == "Nothing new to share" &&
+              contains(model.state().navigation.modals.back().body, "already has these settings") &&
+              model.state().navigation.modals.back().link == "https://github.com/leolobato/playden-ps5-recipes/pull/12",
+          "a share that changed nothing says so, with the pull request");
+    check(model.state().game_settings.at(kGame).shared_recipe.submission_id == "sub-1", "the saved share stays");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    open_game_settings(model);
+    activate(model, "share-recipe");
     // The API doesn't know the saved share any more: it is forgotten, and the next Send shares a new recipe.
     api.answer_with({answer(404, R"({"error":"unknown_submission","message":"no such submission"})")});
     activate(model, "share-send");

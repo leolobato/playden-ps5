@@ -440,6 +440,7 @@ SubmissionResult SubmitRecipe(const ApiContext& context, const std::string& secr
     result.recipe_id = *recipe_id;
     result.state = *state;
     result.pr_url = pr_url.value_or("");
+    if (const auto* unchanged = doc->Find("unchanged"); unchanged && unchanged->is_bool()) result.unchanged = unchanged->boolean();
     return result;
   }
   // 200: a duplicate, of a published revision or of another console's open pull request.

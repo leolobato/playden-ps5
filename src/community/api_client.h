@@ -100,6 +100,7 @@ struct SubmissionResult {
   std::string state;
   std::string pr_url;
   std::string revision;
+  bool unchanged = false;  // kCreated: this console's open pull request already had exactly this; nothing was revised
   ApiError error;
 };
 
