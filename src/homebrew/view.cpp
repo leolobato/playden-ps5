@@ -730,6 +730,27 @@ class Render::Impl
     }
 
     // One line with its marks drawn, cut to max_width (0: no limit) with an ellipsis. Returns the width.
+    // ui::paragraph with the marks drawn (★ after an account's name in a recipe's description): the same wrapping and
+    // ellipsis, each line drawn by marked_text. Returns the baseline after the last line drawn.
+    float marked_paragraph(gfx::DrawList &list, const ui::FontRef &face, std::string_view value, float x, float y,
+                           float size, float width, float line_height, gfx::Color color, int max_lines) const
+    {
+        // The font measures a mark it lacks as its missing glyph, narrower than the drawn shape: wrap with room for one.
+        const std::vector<MarkRun> runs = mark_runs(face, value);
+        const bool marked = std::any_of(runs.begin(), runs.end(), [](const MarkRun &run) { return run.mark != 0; });
+        const std::vector<std::string> lines = face.font->wrap(value, size, marked ? width - mark_width(size) : width);
+        int drawn = 0;
+        for (const std::string &line : lines)
+        {
+            const bool last = drawn + 1 == max_lines && lines.size() > static_cast<std::size_t>(max_lines);
+            marked_text(list, face, last ? line + " \xE2\x80\xA6" : line, x, y, size, color, gfx::Align::left, width);
+            y += line_height;
+            if (++drawn >= max_lines)
+                break;
+        }
+        return y;
+    }
+
     float marked_text(gfx::DrawList &list, const ui::FontRef &face, std::string_view value, float x, float baseline,
                       float size, gfx::Color color, gfx::Align align = gfx::Align::left, float max_width = 0.0F) const
     {
@@ -4138,8 +4159,8 @@ class Render::Impl
                  40.0F, kText);
         y += 18.0F;
         if (!comparison.hint.empty())
-            y = ui::paragraph(overlay_, fonts_.regular, comparison.hint, card.x + 48.0F, y + 24.0F, 21.0F,
-                              card.w - 96.0F, 29.0F, kSecondary, 3);
+            y = marked_paragraph(overlay_, fonts_.regular, comparison.hint, card.x + 48.0F, y + 24.0F, 21.0F,
+                                 card.w - 96.0F, 29.0F, kSecondary, 3);
         y += 36.0F;
         const float name_w = card.w * 0.34F;
         const float column_w = (card.w - 96.0F - name_w - 40.0F) * 0.5F;
