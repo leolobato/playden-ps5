@@ -3109,13 +3109,15 @@ void Simulation::sync_self_update_job() {
 // The running version's release notes, with its release page as a QR code: once after an update
 // ("What's new"), and from Settings › About › Release notes.
 // The selected game changed under the dialogs: the ones about a game close, Playden's own update
-// dialogs (often opened at startup, before the library arrives) stay.
+// dialogs (often opened at startup, before the library arrives) stay, and so does the question after a game, which is
+// about the game played, not the one selected.
 void Simulation::close_game_modals() {
     auto& modals = state_.navigation.modals;
     modals.erase(std::remove_if(modals.begin(), modals.end(), [](const ModalEntry& modal) {
+        if (modal.id == "feedback") return false;
         return std::none_of(modal.action_keys.begin(), modal.action_keys.end(), [](const std::string& key) {
             return key == "self-update-install" || key == "self-update-restart" || key == "release-notes-ok" ||
-                   key == "kit-install" || key == "runtime-prompt-update";
+                   key == "kit-install" || key == "runtime-prompt-update" || key == "feedback-send-confirm";
         });
     }), modals.end());
 }
@@ -4338,6 +4340,8 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
         if (failed_restore) steam_restore_notice();
     }
     captured_organization_.selected_game_id = state_.navigation.selected_game_id;
+    // A prompt after a game waits for the library to list that game (its name is the sheet's title).
+    show_feedback_prompt();
     rebuild_view();
     return true;
 }
@@ -15061,8 +15065,9 @@ void Simulation::show_feedback_prompt() {
         return;
     while (!feedback_prompts_.empty()) {
         const auto prompt = feedback_prompts_.front();
-        // The recipe the title played with is known once the runtime's state for the game is.
-        if (live() && !state_.runtime_games.count(prompt.game)) return;
+        // The recipe the title played with is known once the runtime's state for the game is, and its name once the
+        // library lists it.
+        if (live() && (!state_.runtime_games.count(prompt.game) || !find_game(state_, prompt.game))) return;
         feedback_prompts_.erase(feedback_prompts_.begin());
         const auto question = cm::NextFeedbackQuestion(state_.vote_memory, ToInstallId(prompt.game), feedback_kit(),
                                                        feedback_settings(prompt.game), prompt.played_seconds,

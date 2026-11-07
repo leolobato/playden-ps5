@@ -1060,6 +1060,53 @@ void account_link(const std::filesystem::path& base) {
     service.Shutdown();
 }
 
+// A prompt after a game, at a start where the library arrives late: it waits for the game's name, and the library's
+// own selection doesn't close it.
+void feedback_prompt_waits_for_library(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    model.SetGameSettingsFile(base / "game-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"dxvk"}, true));
+    playden::homebrew::LiveKitInfo info;
+    info.version = "0.12";
+    model.SetKitInfo(info);
+    model.SetWallClock(1'000'000);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    model.UpdateVoteMemory({});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = kGame;
+    runtime.status = "Ready";
+    runtime.prepared = runtime.has_title = runtime.ready = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    model.NotifySessionEnded(kGame, 30);
+    check(model.state().navigation.modals.empty(), "the prompt waits while the library doesn't list the game");
+    playden::GameSummary other;
+    other.id = GameId::Steam(70);
+    other.title = "A Short Hike";
+    playden::GameSummary game;
+    game.id = kGame;
+    game.title = "Darkwood";
+    check(model.UpdateLibrary({{other, game}, false, {}, false, true, 100}), "library delivered");
+    check(model.view().surface == "feedback" && model.view().title == "Did Darkwood start?",
+          "once the library lists the game, the prompt names it");
+    playden::GameSummary third;
+    third.id = GameId::Steam(400);
+    third.title = "Celeste";
+    // The selected game leaves the list: the library selects another and closes the dialogs about the old one.
+    const auto selected = model.state().navigation.selected_game_id;
+    std::vector<playden::GameSummary> without_selected;
+    for (const auto& item : {third, other, game})
+        if (item.id != selected) without_selected.push_back(item);
+    check(selected.valid() && selected != kGame && model.UpdateLibrary({without_selected, false, {}, false, true, 200}),
+          "library delivered again without the selected game");
+    check(model.state().navigation.selected_game_id != selected, "the selection moved");
+    check(model.view().surface == "feedback" && model.view().title == "Did Darkwood start?",
+          "a library update that moves the selection leaves the prompt open");
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -1069,6 +1116,7 @@ int main() {
     community_keep(base / "keep");
     report_with_logs(base / "report");
     account_link(base / "account");
+    feedback_prompt_waits_for_library(base / "prompt");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;
