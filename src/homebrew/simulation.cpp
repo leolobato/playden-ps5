@@ -14820,11 +14820,11 @@ void Simulation::open_share_sheet(GameId id) {
     }
     share_ = std::move(draft);
     auto actions = share_actions();
+    // The sheet opens on its top row, never on Send: the player reads it before sending.
     const auto preferred = share_->nothing_new ? std::string("share-vote")
                          : share_->decision.kind == cm::ShareKind::kAskPlayer
                              ? std::string(share_->answer == cm::ShareChoice::kNew ? "share-choice-new" : "share-choice-update")
-                         : share_->decision.kind == cm::ShareKind::kUpdateOwn ? std::string("share-title")
-                                                                                                       : std::string("share-send");
+                             : std::string("share-title");
     const auto found = std::find(actions.begin(), actions.end(), preferred);
     const int focus = found == actions.end() ? 0 : static_cast<int>(found - actions.begin());
     open_modal({"share-recipe", share_->nothing_new ? "Nothing new to share" : "Share recipe", state_.navigation.focus_key,

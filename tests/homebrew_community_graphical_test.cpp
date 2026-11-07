@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
         check(model.view().comparison && model.view().comparison->column == "This recipe", "the recipe's comparison shows");
         // Sharing and votes: the Share sheet's cases, the first share's notice, the sent dialog with its
         // QR code, the vote prompt, a thumbs down with a reason, and votes turned off.
-        capture("share-new", "share-recipe", "share-send");
+        capture("share-new", "share-recipe", "share-title");
         check(find_row(model, "share-what") && find_row(model, "share-send"), "a new recipe: what is sent, Send");
         capture("share-ask", "share-recipe", "share-choice-update");
         check(find_row(model, "share-choice-update")->selected, "Suggest changes is pre-selected");

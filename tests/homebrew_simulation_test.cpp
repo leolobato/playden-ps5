@@ -2323,8 +2323,8 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
           "the name and the Compatibility rating are shown");
     check(find_row(simulation, "share-what")->subtitle.find("Resolution 3840×2160") != std::string::npos,
           "what is sent lists the changes from Playden's default");
-    check(top().focused_action >= 0 && top().action_keys[static_cast<std::size_t>(top().focused_action)] == "share-send",
-          "with nothing to fill in, the sheet opens on Send");
+    check(top().focused_action >= 0 && top().action_keys[static_cast<std::size_t>(top().focused_action)] == "share-title",
+          "the sheet opens on its top row, Title, not on Send");
     simulation.action("focus:share-title");
     simulation.action("cross");
     check(simulation.state().editor.active && simulation.state().editor.purpose == "Recipe title", "the title opens the keyboard");
