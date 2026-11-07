@@ -2590,6 +2590,15 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(simulation.state().navigation.focus_key.rfind("heading-", 0) != 0 && simulation.state().navigation.focus_key != "divider",
           "after It had problems the focus is on a row it can take, not a heading");
     check(simulation.state().navigation.focus_key == "feedback-result-partial", "and that row is Partial, the first choice");
+    // Circle on the second step goes back to the question, on the answer chosen; Circle there closes the sheet.
+    check(simulation.view().legends.size() == 2 && simulation.view().legends[1] == "Circle Back", "the second step's footer says Back");
+    simulation.action("circle");
+    check(top().id == "feedback" && simulation.state().navigation.focus_key == "feedback-problems" && has_row(simulation, "feedback-good"),
+          "Circle after It had problems goes back to the question");
+    activate(simulation, "feedback-good");
+    simulation.action("circle");
+    check(top().id == "feedback" && simulation.state().navigation.focus_key == "feedback-good", "and after It ran well too");
+    activate(simulation, "feedback-problems");
     activate(simulation, "feedback-change-settings");
     check(top().id == "game-settings" && simulation.state().navigation.selected_game_id == game && has_row(simulation, "preset-picker"),
           "Change settings opens the game's settings from anywhere");

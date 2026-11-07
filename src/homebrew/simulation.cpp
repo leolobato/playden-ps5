@@ -7982,7 +7982,8 @@ void Simulation::rebuild_view() {
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
-        else if (modal.id == "feedback") view_.legends = {"Cross Select", "Circle Not now"};
+        else if (modal.id == "feedback")
+            view_.legends = {"Cross Select", feedback_ && feedback_->step != "ask" ? "Circle Back" : "Circle Not now"};
         else if (modal.id == "share-as") view_.legends = {"Cross Choose", "Circle Close"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
@@ -9713,6 +9714,23 @@ void Simulation::cancel() {
             download_server_cancel_pending_ = live();
             download_server_test_requested_ = false;
             if (!live()) download_servers_.phase = "listed";
+            return;
+        }
+        // The feedback sheet's second step (after It ran well or It had problems) goes back to the question, on the answer
+        // chosen; Circle on the question closes the sheet.
+        if (state_.navigation.modals.back().id == "feedback" && feedback_ && feedback_->step != "ask" && feedback_->ticket == 0) {
+            const bool good = feedback_->step == "good";
+            feedback_->step = "ask";
+            feedback_->error.clear();
+            refresh_share_sheet();
+            auto& modal = state_.navigation.modals.back();
+            const std::string answer = feedback_->short_session ? (good ? "feedback-started" : "feedback-no-start")
+                                                                : (good ? "feedback-good" : "feedback-problems");
+            if (const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), answer); found != modal.action_keys.end()) {
+                modal.focused_action = static_cast<int>(found - modal.action_keys.begin());
+                state_.navigation.focus_key = answer;
+            }
+            rebuild_view();
             return;
         }
         // The chooser's search goes back a step: from a game's recipes to the results, from the results to the game's own.
