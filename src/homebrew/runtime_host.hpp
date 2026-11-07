@@ -9,6 +9,7 @@
 #include "runtime/game_settings.h"
 #include "runtime/install_service.h"
 #include "runtime/launch_service.h"
+#include "runtime/my_presets.h"
 #include "runtime/leftover_titles.h"
 #include "runtime/package_installer.h"
 #include "runtime/recipe_choice.h"
@@ -87,6 +88,9 @@ struct RuntimeHostConfig {
   std::string steamworks_dir;
   // The player's saved settings for a game; nothing means Playden defaults.
   std::function<std::optional<runtime::GameSettingsRecord>(const GameId& game)> settings_record;
+  // The player's own presets (my-presets.json, read on the worker each time a record is resolved, never moved).
+  // Unset or none: a record naming one plays as Playden default with its own changes.
+  std::function<std::vector<runtime::MyPreset>()> my_presets;
   // A community recipe's file from the recipes cache, by its revision (the SHA-256 of the file, 64
   // hex) or the first 32 hex of it (an install record's recipe_version); nothing when the cache has
   // no such object. Runs on the worker. The host parses it, checks the hash, applies the community
@@ -731,6 +735,9 @@ class RuntimeHost {
   // Runs one maintenance action; empty message on refusal means none; *ok tells success.
   std::string RunMaintenance(Composition& composition, std::uint32_t runtime_number, RuntimeMaintenance action, bool* ok);
   std::filesystem::path SaveBackupRoot(const std::string& install_id) const;
+  // The preset a saved record names: a built-in one or one of the player's. One of the player's that is gone plays as
+  // Playden default: *record loses its preset_id (its own changes stay), logged once per preset.
+  std::optional<runtime::SettingsPreset> RecordPreset(Composition& composition, runtime::GameSettingsRecord* record);
   // A game's files and settings as the preparation steps see them.
   struct GameFiles;
   // Puts the game's files and bottle in the state its recipe and settings ask for, before it starts:

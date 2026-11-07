@@ -40,6 +40,14 @@ const MyPreset* FindMyPreset(const std::vector<MyPreset>& presets, std::string_v
 // The presets as SettingsPreset, to add to the built-in ones.
 std::vector<SettingsPreset> MyPresetsAsSettingsPresets(const std::vector<MyPreset>& presets);
 
+// The preset a record's preset_id names, among the built-in presets and the player's. One of the player's that is gone
+// (deleted, or my-presets.json unreadable) plays as Playden default: *record loses its preset_id, keeps its overrides,
+// and *gone is set. An empty preset_id or a missing built-in preset gives nothing and leaves the record as it is (a
+// launch plan still refuses a missing built-in one).
+std::optional<SettingsPreset> ResolveRecordPreset(const std::vector<SettingsPreset>& built_in,
+                                                  const std::vector<MyPreset>& mine, GameSettingsRecord* record,
+                                                  bool* gone = nullptr);
+
 // Why a change to the player's presets was refused.
 enum class MyPresetRefusal {
   kNone,
@@ -52,6 +60,8 @@ enum class MyPresetRefusal {
   kBadId,             // a new id that is not IsMyPresetId, or one already used
   kNoSettings,        // nothing left to save (after retired settings are dropped)
   kSettingRefused,    // a setting a preset may not set (ValidatePresetSetting); detail names it and why
+  kNotSaved,          // my-presets.json could not be read at startup or written now, or a game using the preset can't
+                      // take another settings revision; detail says why. Nothing changed.
 };
 struct MyPresetChange {
   MyPresetRefusal refusal = MyPresetRefusal::kNone;
@@ -99,6 +109,13 @@ struct MyPresetsLoad {
   std::string reason;                // why the file was set aside or is unavailable, for the log
 };
 MyPresetsLoad LoadMyPresetsFile(const std::string& path);
+// The lines the log gets for a load: why the file was set aside or is unavailable, and each dropped setting. None for a
+// clean load.
+std::vector<std::string> MyPresetsLoadLog(const MyPresetsLoad& load);
+// Reads the presets without ever moving the file: for a worker that resolves records while Playden runs, as the file
+// was set aside (LoadMyPresetsFile) once at startup. No file: true and none. A file that can't be read or parsed:
+// false, none and a reason.
+bool ReadMyPresetsFile(const std::string& path, std::vector<MyPreset>* presets, std::string* reason);
 // Replaces the file atomically (0600, ReadPrivateSettingsFile's folder and file rules). Refuses while the file there
 // does not parse as presets (a load that came back kUnavailable), so a file Playden could not read is never replaced.
 // Also refuses proposed data that cannot be parsed back without loss, leaving the existing file untouched.

@@ -254,10 +254,24 @@ void Storage() {
   CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
   CHECK(Read(game_settings) == game_bytes);
 
-  // A file that isn't presets is kept aside, never written over; Playden starts with none and can save again.
+  // The worker's read never moves a file: a bad one reads as none, a missing one as none, a good one as its presets.
   const std::string garbage = "{\"format\":1,\"presets\":[{\"id\":\"broken\"}]}";
+  {
+    std::vector<MyPreset> read{presets};
+    reason.clear();
+    CHECK(ReadMyPresetsFile(path.string(), &read, &reason) && read == presets && reason.empty());
+    Write(path, garbage);
+    CHECK(!ReadMyPresetsFile(path.string(), &read, &reason) && read.empty() && !reason.empty());
+    CHECK(Read(path) == garbage && !fs::exists(bad));
+    fs::remove(path);
+    read = presets;
+    CHECK(ReadMyPresetsFile(path.string(), &read, &reason) && read.empty());
+  }
+
+  // A file that isn't presets is kept aside, never written over; Playden starts with none and can save again.
   Write(path, garbage);
   load = LoadMyPresetsFile(path.string());
+  CHECK(MyPresetsLoadLog(load) == std::vector<std::string>{"my presets set aside: " + load.reason});
   CHECK(load.status == MyPresetsLoadStatus::kSetAside && load.presets.empty() && !load.reason.empty());
   CHECK(!fs::exists(path) && Read(bad) == garbage);
   CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
@@ -267,6 +281,7 @@ void Storage() {
   Write(path, "truncated {");
   load = LoadMyPresetsFile(path.string());
   CHECK(load.status == MyPresetsLoadStatus::kUnavailable && load.presets.empty());
+  CHECK(MyPresetsLoadLog(load) == std::vector<std::string>{"my presets unavailable: " + load.reason});
   CHECK(Read(path) == "truncated {" && Read(bad) == garbage);
   CHECK(!SaveMyPresetsFile(path.string(), presets, &reason) && Read(path) == "truncated {");
   fs::remove(bad);
@@ -325,9 +340,35 @@ void Storage() {
   fs::remove_all(root);
 }
 
+// A record's preset is looked up among built-in and player presets; a player preset that is gone is Playden default.
+void Resolve() {
+  std::vector<SettingsPreset> built_in{{"playden-default", "Playden default", "", "", {}},
+                                       {"mouse-driven", "Mouse", "", "", {{"controller_preset", "mouse"}}}};
+  std::vector<MyPreset> mine;
+  CHECK(AddMyPreset(&mine, Id(7), "Point and click", {{"resolution", "1280x720"}}, 5).ok());
+  GameSettingsRecord record;
+  record.overrides = {{"button.square", "e"}};
+  bool gone = true;
+  CHECK(!ResolveRecordPreset(built_in, mine, &record, &gone) && !gone);
+  record.preset_id = "mouse-driven";
+  auto found = ResolveRecordPreset(built_in, mine, &record, &gone);
+  CHECK(found && found->id == "mouse-driven" && !gone && record.preset_id == "mouse-driven");
+  record.preset_id = Id(7);
+  found = ResolveRecordPreset(built_in, mine, &record, &gone);
+  CHECK(found && found->name == "Point and click" && found->settings.at("resolution") == "1280x720" && !gone);
+  // Deleted: Playden default with the game's own changes.
+  record.preset_id = Id(8);
+  CHECK(!ResolveRecordPreset(built_in, mine, &record, &gone) && gone && record.preset_id.empty());
+  CHECK(record.overrides.at("button.square") == "e");
+  // A missing built-in preset is left for the launch plan to refuse.
+  record.preset_id = "retired-preset";
+  CHECK(!ResolveRecordPreset(built_in, mine, &record, &gone) && !gone && record.preset_id == "retired-preset");
+}
+
 }  // namespace
 
 int main() {
+  Resolve();
   Ids();
   Changes();
   Format();

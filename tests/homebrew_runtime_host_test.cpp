@@ -2234,6 +2234,111 @@ void SettingsSavedDuringFirstPrepareFinish() {
   host.Shutdown();
 }
 
+// A record naming one of the player's presets is resolved with it, read again each time; one that is gone (deleted, or
+// my-presets.json unreadable) plays as Playden default with the game's own changes, logged once, and never blocks.
+void PlayerPresetsResolveRecords() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities = {"dxvk", "game-root-unowned", "offline_bottle", "per_game_title", kKitDxvkConfig, "wow64_i386"};
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+  const std::string id = "my-0123456789abcdef";
+  std::mutex mutex;
+  std::vector<std::string> gone_lines;
+  config.log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (line.rfind("settings preset " + id + " is gone", 0) == 0) gone_lines.push_back(line);
+  };
+  GameSettingsRecord saved;
+  saved.preset_id = id;
+  saved.overrides = {{"frame_limit", "30"}};
+  std::vector<playden::runtime::MyPreset> mine;
+  unsigned preset_reads = 0;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(mutex);
+    return saved;
+  };
+  config.my_presets = [&]() {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++preset_reads;
+    return mine;
+  };
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+  Write(game / "hl2.exe", "existing-game", 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto profile = fixture.root / "data/playden/games/steam-220/library/profiles/playden-steam-220.profile";
+  const auto set = [&](std::uint64_t revision, std::vector<playden::runtime::MyPreset> presets) {
+    std::lock_guard<std::mutex> lock(mutex);
+    saved.revision = revision;
+    mine = std::move(presets);
+  };
+  playden::runtime::MyPreset preset;
+  preset.preset = {id, "Small screen", "", "", {{"resolution", "1280x720"}}};
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  // Prepared while the preset is gone: Playden default and the game's own frame limit, not a refusal.
+  host.Prepare(Hl2());
+  auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(220) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (done.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(220).c_str());
+  CHECK(!done.refusals.count(220) && done.installs[0].state == PreparationState::kReady);
+  CHECK(Read(profile).find("desktop = 1920x1080") != std::string::npos);
+  CHECK(Read(game / "dxvk.conf").find("maxFrameRate = 30") != std::string::npos);
+  CHECK(preset_reads > 0);
+
+  const auto apply = [&host]() {
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(220, RuntimeMaintenance::kApplySettings);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  };
+  // The preset is there (made or restored): its settings, with the game's own on top.
+  set(1, {preset});
+  auto result = apply();
+  CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 1);
+  CHECK(Read(profile).find("desktop = 1280x720") != std::string::npos);
+  CHECK(Read(game / "dxvk.conf").find("maxFrameRate = 30") != std::string::npos);
+  // The preset changes: the bumped revision takes its new settings.
+  preset.preset.settings["resolution"] = "2560x1440";
+  set(2, {preset});
+  result = apply();
+  CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 2);
+  CHECK(Read(profile).find("desktop = 2560x1440") != std::string::npos);
+  // Deleted again (or the file is unreadable): Playden default, the game's frame limit kept.
+  set(3, {});
+  result = apply();
+  if (!result.maintenance.at(220).ok) std::fprintf(stderr, "apply: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 3);
+  CHECK(Read(profile).find("desktop = 1920x1080") != std::string::npos);
+  CHECK(Read(game / "dxvk.conf").find("maxFrameRate = 30") != std::string::npos);
+  // Play starts it, too.
+  host.Play(220);
+  const auto played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(220); }, 30);
+  if (played.play_refusals.count(220)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(220).c_str());
+  CHECK(played.handoff_ready);
+  host.Shutdown();
+  std::lock_guard<std::mutex> lock(mutex);
+  CHECK(gone_lines.size() == 1);
+}
+
 // Settings saved after preparation reach the Ready title through a journaled update, from
 // maintenance or from Play, only while the title is stopped; maintenance clears the shader
 // cache, backs up the bottle's user folders and repairs the bottle.
@@ -7974,6 +8079,7 @@ int main(int argc, char** argv) {
   CommunityRecipeOverGeneratedAndKitFallback();
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
+  PlayerPresetsResolveRecords();
   std::puts("runtime host tests passed");
   return 0;
 }

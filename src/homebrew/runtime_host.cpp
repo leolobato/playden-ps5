@@ -353,6 +353,8 @@ struct RuntimeHost::Composition {
   // The installer above when it is the filesystem one (a kit was admitted), for RebindRecipe.
   rt::FilesystemPackageInstaller* filesystem_installer = nullptr;
   std::vector<rt::SettingsPreset> presets;
+  // The player's presets found gone while resolving a record, so each is logged once.
+  std::set<std::string> gone_presets;
   std::string settings_data_reason;
   std::unique_ptr<rt::StorageLaunchSessionJournal> launch_journal;
   std::unique_ptr<rt::FilesystemReconcileSessionSource> sessions;
@@ -1298,10 +1300,8 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
         files.game_files_recipe = &candidate;
       }
   files.saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
-  const rt::SettingsPreset* preset = nullptr;
-  if (files.saved)
-    for (const auto& candidate : c.presets)
-      if (candidate.id == files.saved->preset_id) preset = &candidate;
+  const auto resolved = files.saved ? RecordPreset(c, &*files.saved) : std::nullopt;
+  const rt::SettingsPreset* preset = resolved ? &*resolved : nullptr;
   rt::SettingsError error;
   static const std::map<std::string, std::string> none;
   const auto kit = TitleKit(c, record);
@@ -1699,6 +1699,17 @@ static std::string WorkingFolder(const std::string& working, std::string program
   return slash == std::string::npos ? std::string() : program.substr(0, slash);
 }
 
+std::optional<rt::SettingsPreset> RuntimeHost::RecordPreset(Composition& c, rt::GameSettingsRecord* record) {
+  std::vector<rt::MyPreset> mine;
+  if (record && rt::IsMyPresetId(record->preset_id) && config_.my_presets) mine = config_.my_presets();
+  const auto wanted = record ? record->preset_id : std::string();
+  bool gone = false;
+  auto preset = rt::ResolveRecordPreset(c.presets, mine, record, &gone);
+  if (gone && c.gone_presets.insert(wanted).second)
+    Log("settings preset " + wanted + " is gone: the game plays as Playden default with its own changes");
+  return preset;
+}
+
 // next starts as the install record: it comes back naming the program and folder the settings (and, in a recipe
 // switch, the new recipe) choose, checked on disk. The caller sets the recipe the record names. Empty, or why not
 // (for the player).
@@ -1784,8 +1795,8 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   input.record = config_.settings_record
                      ? config_.settings_record(GameOf(record)).value_or(rt::GameSettingsRecord{})
                                          : rt::GameSettingsRecord{};
-  for (const auto& preset : c.presets)
-    if (preset.id == input.record.preset_id) input.preset = &preset;
+  const auto resolved = RecordPreset(c, &input.record);
+  input.preset = resolved ? &*resolved : nullptr;
   input.kit = TitleKit(c, record);
   input.target = {record.default_profile_id, record.install_path, UsbSearchRoot(c, record)};
   input.runtime_dir = config_.runtime_dir;
@@ -2244,9 +2255,8 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   if (switching)
     Log("recipe switch app=" + std::to_string(record.runtime_number) + " from=" + record.recipe_id + ":" + record.recipe_version +
         " to=" + recipe->id + ":" + rt::RecipeVersionTag(*recipe));
-  const rt::SettingsPreset* preset = nullptr;
-  for (const auto& candidate : c.presets)
-    if (candidate.id == saved.preset_id) preset = &candidate;
+  const auto resolved = RecordPreset(c, &saved);
+  const rt::SettingsPreset* preset = resolved ? &*resolved : nullptr;
   // The run's buttons are the Mouse preset's (runtime/input/mouse.input): the recipe's and the settings preset's
   // bindings stay out of it, and the recipe's locks don't keep its program or controls.
   std::optional<rt::GameRecipe> run_recipe;
@@ -4035,9 +4045,9 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     // The title is made for the launch option the player chose, so its publication matches.
     rt::LaunchEntry launch = recipe->launch_entries.front();
     if (settings) {
-      const rt::SettingsPreset* preset = nullptr;
-      for (const auto& candidate : c.presets)
-        if (candidate.id == settings->preset_id) preset = &candidate;
+      auto record = *settings;
+      const auto resolved = RecordPreset(c, &record);
+      const rt::SettingsPreset* preset = resolved ? &*resolved : nullptr;
       rt::EffectiveSettings effective;
       rt::SettingsError ignored;
       if (rt::BuildEffectiveSettings(*recipe, preset, settings->overrides, rt::KitCapabilitiesFromManifest(c.kit->capabilities, true),

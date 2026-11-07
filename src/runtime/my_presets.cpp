@@ -101,6 +101,20 @@ std::vector<SettingsPreset> MyPresetsAsSettingsPresets(const std::vector<MyPrese
   return out;
 }
 
+std::optional<SettingsPreset> ResolveRecordPreset(const std::vector<SettingsPreset>& built_in,
+                                                  const std::vector<MyPreset>& mine, GameSettingsRecord* record,
+                                                  bool* gone) {
+  if (gone) *gone = false;
+  if (!record || record->preset_id.empty()) return std::nullopt;
+  for (const auto& preset : built_in)
+    if (preset.id == record->preset_id) return preset;
+  if (!IsMyPresetId(record->preset_id)) return std::nullopt;
+  if (const auto* found = FindMyPreset(mine, record->preset_id)) return found->preset;
+  record->preset_id.clear();
+  if (gone) *gone = true;
+  return std::nullopt;
+}
+
 MyPresetRefusal CheckMyPresetName(std::string_view name, std::string* trimmed) {
   while (!name.empty() && name.front() == ' ') name.remove_prefix(1);
   while (!name.empty() && name.back() == ' ') name.remove_suffix(1);
@@ -268,6 +282,26 @@ MyPresetsLoad LoadMyPresetsFile(const std::string& path) {
   out.status = MyPresetsLoadStatus::kSetAside;
   out.reason = "my-presets.json is malformed (" + why + "); kept as my-presets.json.bad";
   return out;
+}
+
+std::vector<std::string> MyPresetsLoadLog(const MyPresetsLoad& load) {
+  std::vector<std::string> lines;
+  if (load.status == MyPresetsLoadStatus::kSetAside) lines.push_back("my presets set aside: " + load.reason);
+  if (load.status == MyPresetsLoadStatus::kUnavailable) lines.push_back("my presets unavailable: " + load.reason);
+  for (const auto& dropped : load.dropped) lines.push_back("my presets dropped setting: " + dropped);
+  return lines;
+}
+
+bool ReadMyPresetsFile(const std::string& path, std::vector<MyPreset>* presets, std::string* reason) {
+  presets->clear();
+  std::string text;
+  const auto read = ReadPrivateSettingsFile(path, &text);
+  if (read == PrivateSettingsRead::kMissing) return true;
+  std::string why = "cannot read my-presets.json";
+  if (read == PrivateSettingsRead::kPresent && ParseMyPresets(text, presets, nullptr, &why)) return true;
+  presets->clear();
+  if (reason) *reason = why;
+  return false;
 }
 
 bool SaveMyPresetsFile(const std::string& path, const std::vector<MyPreset>& presets, std::string* reason) {
