@@ -14677,6 +14677,9 @@ cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
         if (ref && shared_game_of(id, record->second.shared_recipe) == *ref) {
             inputs.saved_submission_id = record->second.shared_recipe.submission_id;
             inputs.saved_recipe_id = record->second.shared_recipe.recipe_id;
+            const auto view = state_.submissions.find(inputs.saved_submission_id);
+            inputs.saved_closed_unpublished = view != state_.submissions.end() && view->second.state == "closed" &&
+                                              !community_offer(id, inputs.saved_recipe_id);
         }
     }
     share_changes(id, inputs.based_on, &inputs.differs_from_base, &inputs.program_or_graphics_differ);

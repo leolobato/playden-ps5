@@ -7,6 +7,7 @@
 //   |-------------------------------------------------------------|--------------------------------|
 //   | No community recipe in use, no saved submission             | new recipe                     |
 //   | No community recipe in use, a saved submission              | update own (submission_id)     |
+//   | The saved submission was closed and its recipe never published | new recipe (submission_id)  |
 //   | Based on a recipe this console shared (saved recipe id)     | update own (based_on, sub. id) |
 //   | Based on someone else's recipe, with changes                | ask the player                 |
 //   | Based on someone else's recipe, no changes                  | no share; offer a thumbs up    |
@@ -34,6 +35,9 @@ struct ShareInputs {
   // The game's saved share (GameSettingsRecord::shared_recipe); empty when it was never shared.
   std::string saved_submission_id;
   std::string saved_recipe_id;
+  // The saved submission's pull request was closed without merging and its recipe isn't published: there is nothing
+  // to update, so sharing again makes the recipe anew (the API reuses its name from the submission id).
+  bool saved_closed_unpublished = false;
   // Whether the effective settings differ from the base recipe's (any row of the Changes list).
   bool differs_from_base = false;
   // Whether the program (launch entry, arguments) or graphics row differ from the base's.

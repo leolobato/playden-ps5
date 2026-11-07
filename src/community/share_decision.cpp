@@ -8,6 +8,11 @@ namespace playden::community {
 ShareDecision DecideShare(const ShareInputs& inputs) {
   ShareDecision decision;
   const bool saved = !inputs.saved_submission_id.empty();
+  if (saved && inputs.saved_closed_unpublished && !inputs.based_on) {
+    decision.kind = ShareKind::kNewRecipe;
+    decision.send_submission_id = true;
+    return decision;
+  }
   if (!inputs.based_on) {
     // A second share of a game not based on a community recipe updates its first one.
     decision.kind = saved ? ShareKind::kUpdateOwn : ShareKind::kNewRecipe;

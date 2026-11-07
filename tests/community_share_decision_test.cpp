@@ -51,6 +51,20 @@ int main() {
     CHECK(ChoiceToSend(decision, ShareChoice::kNew) == ShareChoice::kNone);
   }
 
+  // Shared before, but that pull request was closed unmerged and the recipe never published: nothing to update, so a
+  // new recipe that still sends the submission id (the API reuses its name).
+  {
+    ShareInputs inputs;
+    inputs.saved_submission_id = "s1";
+    inputs.saved_recipe_id = "community-steam-274520-darkwood";
+    inputs.saved_closed_unpublished = true;
+    inputs.differs_from_base = true;
+    const auto decision = DecideShare(inputs);
+    CHECK(decision.kind == ShareKind::kNewRecipe);
+    CHECK(decision.send_submission_id && !decision.send_based_on);
+    CHECK(ChoiceToSend(decision, ShareChoice::kUpdate) == ShareChoice::kNone);
+  }
+
   // Based on a recipe this console shared: an update, with or without changes, no question.
   for (bool differs : {false, true})
     for (bool program : {false, true}) {

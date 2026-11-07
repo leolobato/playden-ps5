@@ -2351,6 +2351,26 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     activate(simulation, "share-send");
     check(simulation.state().game_settings.at(game).shared_recipe == first, "the same submission is revised");
 
+    // Its pull request is closed unmerged and the recipe was never published: the next share is a new recipe again
+    // (still sending the submission id, so the API keeps its name), worded as one.
+    {
+        playden::homebrew::SharingResult closed;
+        closed.kind = playden::homebrew::SharingRequestKind::Status;
+        closed.status.ok = true;
+        closed.status.id = first.submission_id;
+        closed.status.state = "closed";
+        simulation.ApplySharingResult(closed);
+        const auto decision = simulation.ShareDecisionFor(game);
+        check(decision.kind == cm::ShareKind::kNewRecipe && decision.send_submission_id,
+              "a closed, never-published share: the next one is a new recipe that names the old submission");
+        while (top().id != "game-settings") simulation.action("circle");
+        activate(simulation, "share-recipe");
+        check(find_row(simulation, "share-send") && find_row(simulation, "share-send")->title == "Send" &&
+                  simulation.view().subtitle.find("An update") == std::string::npos,
+              "the Share sheet offers a new recipe, not an update");
+        simulation.action("circle");
+    }
+
     // The first share explains what is sent before sending.
     check(simulation.scenario("share-privacy"), "share-privacy scenario loads");
     check(top().title == "Before you share" && top().body.find("No Steam ID or account name") != std::string::npos,
