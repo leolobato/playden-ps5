@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-06.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-07.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -328,6 +328,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Super Meat Boy](https://store.steampowered.com/app/40800) | ✅ Works | 0.10 | Tommunism · D3D9 · 32-bit | Intro, menus and play with the D-pad. |
 | Syndicate (2012) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#616](https://github.com/leolobato/playden-ps5/issues/616), firmware 10.01) |
 | [Tabletop Simulator](https://store.steampowered.com/app/286160) | ✅ Works | 0.18 | — | Default settings. Reaches the menu; gameplay not tested. ([#641](https://github.com/leolobato/playden-ps5/issues/641), firmware 12.20) |
+| [Tales of Vesperia: Definitive Edition](https://store.steampowered.com/app/738540) | ✅ Works | 0.19 | — | Default settings. |
 | [Tape to Tape](https://store.steampowered.com/app/1566200) | ✅ Works | 0.13 | Unity · D3D11 · 64-bit | Default settings. ([#183](https://github.com/leolobato/playden-ps5/pull/183), firmware 13.00) |
 | [Team Fortress 2](https://store.steampowered.com/app/440) | ✅ Works | 0.10 | Source · D3D9 · DXVK · 64-bit | Plays with a USB mouse and keyboard. Online play does not work: the game shows it is disconnected. The menu does not react to the DualSense, even with Controller preset = **Mouse**. Keep Game settings › Steam features on **Offline emulation**: with the game's own files it quits after about 18 seconds. On Steam accounts from before about 2010, Playden installed only the game's executables until the fix for [#58](https://github.com/leolobato/playden-ps5/issues/58). |
 | [Teardown](https://store.steampowered.com/app/1167630) | ✅ Works | 0.10 | OpenGL | Set Game settings › Graphics = **OpenGL**. USB mouse and keyboard works; controller untested. Tester recommends borderless window, 1920×1080, render scale 75%, and changing the two settings below render scale from High to Low. ([#16](https://github.com/leolobato/playden-ps5/issues/16#issuecomment-6169881987), firmware 9.40) |
