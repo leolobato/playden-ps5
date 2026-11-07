@@ -452,6 +452,15 @@ std::string join_text(const std::vector<std::string>& items, const char* separat
     return text;
 }
 
+// A console link code as the player reads it: an 8-character code the API sends as "4MY85ZGQ" shows as "4MY8-5ZGQ"
+// (the account page ignores the dash). Other codes are shown as sent.
+std::string link_code_text(const std::string& code) {
+    const bool plain = code.size() == 8 && std::all_of(code.begin(), code.end(), [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    });
+    return plain ? code.substr(0, 4) + "-" + code.substr(4) : code;
+}
+
 // A Share sheet line sent for the PR description: a long list is cut at a " · " (ending in "…") until it fits the
 // API's limit; empty when even its first item doesn't.
 std::string summary_line(const std::string& text) {
@@ -6930,8 +6939,11 @@ void Simulation::rebuild_view() {
                 } else if (action_key == "share-as-account") {
                     item.kind = RowKind::Choice;
                     const bool linked = state_.account_link.state == "linked";
-                    item.subtitle = linked ? "Shown as " + state_.account_link.name + "."
-                                           : "Link one on your phone (Discord, GitHub, Google or email).";
+                    // An account made by email has no name until it is given one: shares then credit nobody.
+                    item.subtitle = !linked ? "Link one on your phone (Discord, GitHub, Google or email)."
+                                  : state_.account_link.name.empty()
+                                      ? "Your account has no name yet, so it's shown as \u201cfrom the community\u201d. Add a name on the account page."
+                                      : "Shown as " + state_.account_link.name + ".";
                     if (!linked) item.title = "Playden account: link one…";
                     item.selected = chosen == playden::ShareAs::kAccount;
                 } else if (action_key == "cancel") {
@@ -15645,15 +15657,15 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
                          "Shares and reports no longer show its name."});
     } else if (answer.state == "started") {
         if (!showing || link.state != "linking") return;  // cancelled meanwhile
-        link.user_code = answer.user_code;
+        link.user_code = link_code_text(answer.user_code);
         link.verification_uri = answer.verification_uri;
         link.interval = std::max<std::int64_t>(answer.interval, 5);
         link.next_poll = state_.clock_ticks + link.interval;
         link.expires_at = state_.clock_ticks + answer.expires_in;
-        dialog->body = "Scan the code with your phone, sign in, and approve the code " + answer.user_code +
+        dialog->body = "Scan the code with your phone, sign in, and approve the code " + link.user_code +
                        ". Playden waits here until you do.";
         dialog->link = answer.verification_uri;
-        dialog->link_caption = "Scan to link your account · code " + answer.user_code;
+        dialog->link_caption = "Scan to link your account · code " + link.user_code;
     } else if (answer.state == "pending" || answer.state == "slow") {
         if (answer.state == "slow") link.interval += 5;
         link.next_poll = state_.clock_ticks + link.interval;

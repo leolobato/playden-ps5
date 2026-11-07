@@ -946,12 +946,14 @@ void account_link(const std::filesystem::path& base) {
     check(model.state().navigation.route == playden::homebrew::Route::Settings, "Settings opens");
     model.SetWallClock(1'000'002);
     const std::string token = "tok_rina_0123456789abcdef";
-    api.answer_with({answer(200, R"({"device_code":"dev_code_0123456789","user_code":"WDJB-MJHT","verification_uri_complete":"https://account.playden.club/device?user_code=WDJB-MJHT","expires_in":900,"interval":5})")});
+    // The API sends the code without its dash; Playden shows it as two groups of four.
+    api.answer_with({answer(200, R"({"device_code":"dev_code_0123456789","user_code":"WDJBMJHT","verification_uri_complete":"https://account.playden.club/device?user_code=WDJB-MJHT","expires_in":900,"interval":5})")});
     check(model.action("focus:settings-account-link") && model.action("cross"), "Playden account opens linking");
     pump(model, service);
     {
         const auto& dialog = model.state().navigation.modals.back();
         check(dialog.title == "Link a Playden account" && contains(dialog.body, "WDJB-MJHT") &&
+                  contains(dialog.link_caption, "code WDJB-MJHT") &&
                   dialog.link == "https://account.playden.club/device?user_code=WDJB-MJHT",
               "the dialog shows the code and its QR code");
     }

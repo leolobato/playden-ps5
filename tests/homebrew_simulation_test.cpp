@@ -2517,6 +2517,16 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
         check(find_row(simulation, "share-as-account") &&
                   find_row(simulation, "share-as-account")->subtitle.find("Verified") == std::string::npos,
               "the Share as picker doesn't mention Verified");
+        // An account made by email has no name until it gets one: the picker says what shares show meanwhile.
+        playden::homebrew::SharingResult nameless;
+        nameless.kind = playden::homebrew::SharingRequestKind::AccountCheck;
+        nameless.account.state = "linked";
+        simulation.ApplySharingResult(nameless);
+        const auto* option = find_row(simulation, "share-as-account");
+        check(option && option->subtitle.find("Shown as .") == std::string::npos &&
+                  option->subtitle.find("no name yet") != std::string::npos &&
+                  option->subtitle.find("from the community") != std::string::npos,
+              "a linked account without a name: no empty name, it says shares credit nobody until it has one");
     }
     check(simulation.scenario("feedback-privacy"), "feedback-privacy scenario loads");
     check(top().title == "Before you send", "the first report says what it sends");
