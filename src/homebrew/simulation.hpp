@@ -1348,6 +1348,25 @@ public:
     playden::runtime::MyPresetChange RenameMyPreset(const std::string& id, std::string_view name);
     playden::runtime::MyPresetChange ReplaceMyPresetSettings(const std::string& id, std::map<std::string, std::string> settings);
     playden::runtime::MyPresetChange DeleteMyPreset(const std::string& id);
+    // Game settings › Save as my preset…: a new player preset with what the player chose for the game
+    // (runtime::PresetSettingsFromGame, kSave). The game then uses it with no changes of its own: its record names the
+    // new preset and loses the overrides the preset now holds; overrides a preset can't hold (program, arguments,
+    // graphics, INI values, locked or unavailable rows) stay. A game on a community recipe keeps it and its changes, as
+    // switching away would change its program and what else the recipe sets; *switched says which happened. The
+    // preset file and the game's settings are saved together (a failed settings save takes the new preset back out)
+    // and a prepared game has its title updated as after a Game settings edit. Nothing chosen: kNoSettings, and
+    // nothing changes.
+    playden::runtime::MyPresetChange SaveGameAsMyPreset(GameId id, std::string_view name, std::string* created_id = nullptr,
+                                                        bool* switched = nullptr);
+    // Game settings › Update “<name>”: the game's own changes (PresetSettingsFromGame, kOwnChanges) go into the player
+    // preset it uses, and come off the game. Every other game using the preset follows it (ReplaceMyPresetSettings),
+    // all saved together. kUnknownId: the game doesn't use one of the player's presets; kNoSettings: it has no changes
+    // a preset can hold.
+    playden::runtime::MyPresetChange UpdateMyPresetFromGame(GameId id);
+    // Which of the two Game settings offers: Update for a game on one of the player's presets with changes a preset can
+    // hold, nothing for one on a player preset without, Save for every other game.
+    enum class MyPresetAction { kNone, kSave, kUpdate };
+    [[nodiscard]] MyPresetAction MyPresetActionFor(GameId id) const;
     // The recipe and effective settings the sheet shows for a game.
     // Recipes the runtime generated from Steam launch options; a shipped recipe wins.
     void SetGeneratedRecipes(const std::vector<playden::runtime::GameRecipe>& recipes);
@@ -1558,8 +1577,13 @@ private:
     [[nodiscard]] const playden::runtime::SettingsPreset* find_preset(const std::string& id) const;
     // What a change to the player's presets does to the games using one.
     enum class MyPresetFollow { kNone, kSettings, kDeleted };
-    playden::runtime::MyPresetChange commit_my_presets(std::vector<playden::runtime::MyPreset> next, const std::string& id,
-                                                       MyPresetFollow follow);
+    // edited: one game's new record, saved with the presets and rolled back with them; it doesn't follow again.
+    playden::runtime::MyPresetChange commit_my_presets(
+        std::vector<playden::runtime::MyPreset> next, const std::string& id, MyPresetFollow follow,
+        const std::optional<std::pair<GameId, playden::runtime::GameSettingsRecord>>& edited = std::nullopt);
+    // What a game's effective settings give a preset (runtime::PresetSettingsFromGame); false when they can't be built.
+    bool preset_settings_from_game(GameId id, playden::runtime::PresetCapture capture,
+                                   std::map<std::string, std::string>* settings) const;
     [[nodiscard]] const CommunityRecipeOffer* community_offer(GameId id, const std::string& recipe_id,
                                                               const std::string& revision = {}) const;
     // The Steam app ID another store's game uses for Steamworks: its own steam_appid.txt's (as the runtime last saw

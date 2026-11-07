@@ -12844,26 +12844,31 @@ rt::MyPresetChange Simulation::DeleteMyPreset(const std::string& id) {
     return commit_my_presets(std::move(next), id, MyPresetFollow::kDeleted);
 }
 
-rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next, const std::string& id, MyPresetFollow follow) {
+rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next, const std::string& id, MyPresetFollow follow,
+                                                 const std::optional<std::pair<GameId, rt::GameSettingsRecord>>& edited) {
     const auto refuse = [](std::string why) { return rt::MyPresetChange{rt::MyPresetRefusal::kNotSaved, std::move(why)}; };
     std::vector<GameId> following;
     if (follow != MyPresetFollow::kNone)
         for (const auto& [game, record] : state_.game_settings) {
-            if (record.preset_id != id) continue;
+            if (record.preset_id != id || (edited && edited->first == game)) continue;
             if (record.revision == std::numeric_limits<std::uint64_t>::max())
                 return refuse("A game using this preset can't take another settings revision.");
             following.push_back(game);
         }
+    const bool records_change = !following.empty() || edited.has_value();
     const auto previous_records = state_.game_settings;
-    std::string previous_presets;
+    std::optional<std::string> previous_presets;  // the file's bytes; none when there was no file
     if (live()) {
         if (my_presets_unavailable_ || my_presets_file_.empty()) return refuse("Your presets could not be read when Playden started.");
-        if (follow != MyPresetFollow::kNone && (settings_load_failed_ || game_settings_file_.empty()))
+        if ((follow != MyPresetFollow::kNone || edited) && (settings_load_failed_ || game_settings_file_.empty()))
             return refuse("Game settings could not be read when Playden started.");
-        if (!following.empty()) {
+        if (records_change) {
             // Keep the exact bytes, including fields/settings a newer build wrote, for rollback.
-            if (rt::ReadPrivateSettingsFile(my_presets_file_.string(), &previous_presets) != rt::PrivateSettingsRead::kPresent)
+            std::string bytes;
+            const auto read = rt::ReadPrivateSettingsFile(my_presets_file_.string(), &bytes);
+            if (read == rt::PrivateSettingsRead::kError)
                 return refuse("Your presets could not be read before saving the games using them.");
+            if (read == rt::PrivateSettingsRead::kPresent) previous_presets = std::move(bytes);
         }
         std::string reason;
         if (!rt::SaveMyPresetsFile(my_presets_file_.string(), next, &reason)) return refuse(reason);
@@ -12874,24 +12879,103 @@ rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next,
         if (follow == MyPresetFollow::kDeleted) record.preset_id.clear();
         ++record.revision;
     }
-    if (!following.empty()) {
+    if (edited) state_.game_settings[edited->first] = edited->second;
+    if (records_change) {
         save_profile();
         if (live() && settings_save_failed_) {
             state_.game_settings = previous_records;
-            if (!rt::WritePrivateSettingsFile(my_presets_file_.string(), previous_presets)) {
+            // No file before: an empty list stands for it (the presets as they were).
+            std::string ignored;
+            const bool restored = previous_presets ? rt::WritePrivateSettingsFile(my_presets_file_.string(), *previous_presets)
+                                                   : rt::SaveMyPresetsFile(my_presets_file_.string(), my_presets_, &ignored);
+            if (!restored) {
                 my_presets_unavailable_ = true;
                 return refuse("Game settings were not saved, and the previous presets could not be restored. Restart Playden before changing presets again.");
             }
             rebuild_view();
             return refuse("Game settings were not saved; your presets and games were left unchanged.");
         }
-        if (live())
+        if (live()) {
+            if (edited) following.push_back(edited->first);
             for (const auto& game : following)
                 if (game_prepared(game)) pending_maintenance_requests_.push_back({game, MaintenanceKind::ApplySettings});
+        }
     }
     my_presets_ = std::move(next);
+    if (edited) refresh_game_settings();
     rebuild_view();
     return {};
+}
+
+bool Simulation::preset_settings_from_game(GameId id, rt::PresetCapture capture, std::map<std::string, std::string>* settings) const {
+    rt::EffectiveSettings values;
+    if (!EffectiveSettingsFor(id, &values)) return false;
+    *settings = rt::PresetSettingsFromGame(RecipeFor(id), values, capture);
+    return true;
+}
+
+rt::MyPresetChange Simulation::SaveGameAsMyPreset(GameId id, std::string_view name, std::string* created_id, bool* switched) {
+    if (switched) *switched = false;
+    std::map<std::string, std::string> settings;
+    if (!preset_settings_from_game(id, rt::PresetCapture::kSave, &settings))
+        return {rt::MyPresetRefusal::kNotSaved, "This game's settings could not be read."};
+    if (settings.empty())
+        return {rt::MyPresetRefusal::kNoSettings, "This game uses only its own settings: change something first."};
+    const auto uuid = my_preset_uuid_ ? my_preset_uuid_() : playden::RandomUuid();
+    const auto preset_id = uuid ? rt::MyPresetIdFromUuid(*uuid) : std::nullopt;
+    const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+    auto next = my_presets_;
+    if (auto change = rt::AddMyPreset(&next, preset_id.value_or(std::string()), name, settings, now); !change.ok())
+        return change;
+    // The game moves onto the new preset unless it is on a community recipe: leaving that would change its program,
+    // arguments and whatever else the recipe sets, which a preset can't hold.
+    std::optional<std::pair<GameId, rt::GameSettingsRecord>> edited;
+    auto record = state_.game_settings.count(id) ? state_.game_settings.at(id) : rt::GameSettingsRecord{};
+    if (record.community_recipe.id.empty()) {
+        if (record.revision == std::numeric_limits<std::uint64_t>::max())
+            return {rt::MyPresetRefusal::kNotSaved, "The settings revision has reached its limit."};
+        rt::ChoosePreset(&record, *preset_id);
+        for (const auto& [setting, value] : settings) record.overrides.erase(setting);
+        edited.emplace(id, std::move(record));
+    }
+    auto change = commit_my_presets(std::move(next), *preset_id, MyPresetFollow::kNone, edited);
+    if (change.ok()) {
+        if (created_id) *created_id = *preset_id;
+        if (switched) *switched = edited.has_value();
+    }
+    return change;
+}
+
+rt::MyPresetChange Simulation::UpdateMyPresetFromGame(GameId id) {
+    const auto found = state_.game_settings.find(id);
+    const auto* mine = found == state_.game_settings.end() ? nullptr : rt::FindMyPreset(my_presets_, found->second.preset_id);
+    if (!mine) return {rt::MyPresetRefusal::kUnknownId, "This game doesn't use one of your presets."};
+    std::map<std::string, std::string> own;
+    if (!preset_settings_from_game(id, rt::PresetCapture::kOwnChanges, &own))
+        return {rt::MyPresetRefusal::kNotSaved, "This game's settings could not be read."};
+    if (own.empty()) return {rt::MyPresetRefusal::kNoSettings, "This game has no changes of its own to add."};
+    auto record = found->second;
+    if (record.revision == std::numeric_limits<std::uint64_t>::max())
+        return {rt::MyPresetRefusal::kNotSaved, "The settings revision has reached its limit."};
+    auto settings = mine->preset.settings;
+    for (const auto& [setting, value] : own) {
+        settings[setting] = value;
+        record.overrides.erase(setting);
+    }
+    ++record.revision;
+    const auto preset_id = mine->preset.id;
+    const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+    auto next = my_presets_;
+    if (auto change = rt::ReplaceMyPresetSettings(&next, preset_id, std::move(settings), now); !change.ok()) return change;
+    return commit_my_presets(std::move(next), preset_id, MyPresetFollow::kSettings, std::make_pair(id, std::move(record)));
+}
+
+Simulation::MyPresetAction Simulation::MyPresetActionFor(GameId id) const {
+    const auto found = state_.game_settings.find(id);
+    if (found == state_.game_settings.end() || !rt::FindMyPreset(my_presets_, found->second.preset_id)) return MyPresetAction::kSave;
+    std::map<std::string, std::string> own;
+    return preset_settings_from_game(id, rt::PresetCapture::kOwnChanges, &own) && !own.empty() ? MyPresetAction::kUpdate
+                                                                                                : MyPresetAction::kNone;
 }
 
 void Simulation::SetKitCapabilities(rt::KitCapabilities kit) {
