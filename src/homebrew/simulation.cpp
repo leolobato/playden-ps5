@@ -9832,9 +9832,9 @@ void Simulation::move(int delta_x, int delta_y, bool repeat) {
     }
     if (!state_.navigation.modals.empty()) {
         auto& modal = state_.navigation.modals.back();
-        if (modal.id == "logs" && state_.log_state == LogState::Ready && !state_.log_lines.empty()) {
-            const int delta = delta_y != 0 ? delta_y : delta_x;
-            state_.log_offset = std::clamp(state_.log_offset + delta, 0, std::max(0, static_cast<int>(state_.log_lines.size()) - 8));
+        // Up and Down scroll a log; Left and Right move between its buttons (Refresh, Back).
+        if (modal.id == "logs" && delta_y != 0 && state_.log_state == LogState::Ready && !state_.log_lines.empty()) {
+            state_.log_offset = std::clamp(state_.log_offset + delta_y, 0, std::max(0, static_cast<int>(state_.log_lines.size()) - 8));
             return;
         }
         // Up from a side menu's top row goes round to its last row, and Down from its last row to its top row. A held

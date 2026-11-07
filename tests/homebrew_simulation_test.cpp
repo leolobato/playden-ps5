@@ -686,6 +686,15 @@ void t11_preferences_failure_and_controller_modal_recovery(const std::filesystem
     for (int index = 0; index < 20; ++index) restored.action("r2");
     check(restored.state().log_offset == 24 && restored.state().log_lines.size() <= 128,
           "T11 log scrolling clamps to the eight-row viewport");
+    // Up and Down scroll; Right and Left move between the buttons and leave the log where it is.
+    restored.action("up");
+    check(restored.state().log_offset == 23, "T11 Up scrolls the log");
+    const auto focused_before = restored.state().navigation.focus_key;
+    restored.action("right");
+    check(restored.state().log_offset == 23 && restored.state().navigation.focus_key != focused_before,
+          "T11 Right moves to the next button instead of scrolling");
+    restored.action("left");
+    check(restored.state().log_offset == 23 && restored.state().navigation.focus_key == focused_before, "T11 Left moves back");
     restored.action("inject:logs-failure"); activate(restored, "logs-retry"); restored.tick(1);
     check(restored.state().log_state == playden::homebrew::LogState::Ready, "T11 failed logs retry through normal actions");
     restored.action("circle"); activate(restored, "settings-account"); activate(restored, "account-switch");
