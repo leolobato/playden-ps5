@@ -381,8 +381,8 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     activate(simulation, "game-settings");
     // Rows by topic: the frame-rate rows sit together in Display, and focus steps over the headings.
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
-    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 23));
-    check(top == std::vector<std::string>{"preset-picker", "heading-game", "setting-launch_option", "setting-extra_arguments",
+    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 24));
+    check(top == std::vector<std::string>{"preset-picker", "save-my-preset", "heading-game", "setting-launch_option", "setting-extra_arguments",
                                           "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
                                           "setting-framegen", "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
                                           "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
@@ -404,7 +404,7 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(simulation.state().navigation.focus_key == "setting-controller", "T08b Down steps over a heading");
     simulation.action("focus:setting-launch_option");
     simulation.action("up");
-    check(simulation.state().navigation.focus_key == "preset-picker", "T08b Up steps over a heading");
+    check(simulation.state().navigation.focus_key == "save-my-preset", "T08b Up steps over a heading");
     // Compatibility expands inline; graphics is locked by the recipe and scaling is
     // disabled on DXVK with its reason.
     check(!find_row(simulation, "setting-graphics"), "T08b Compatibility starts collapsed");
@@ -540,11 +540,11 @@ void settings_sheet_details(const std::filesystem::path& fixtures, const std::fi
     simulation.action("cross");
     check(simulation.state().navigation.modals.back().id == "preset-picker", "the community row does nothing");
     simulation.action("circle");
-    simulation.action("focus:preset-picker");
+    simulation.action("focus:save-my-preset");
     simulation.action("r1");
-    check(simulation.state().navigation.modals.back().focused_action == 5, "R1 jumps five rows");
+    check(simulation.state().navigation.modals.back().focused_action == 6, "R1 jumps five rows");
     simulation.action("l1");
-    check(simulation.state().navigation.modals.back().focused_action == 0, "L1 jumps back");
+    check(simulation.state().navigation.modals.back().focused_action == 1, "L1 jumps back");
     activate(simulation, "section-advanced");
     const auto* command = find_row(simulation, "effective-command");
     check(command && command->value == "Read only" && !command->subtitle.empty(), "Advanced ends with the effective command");
@@ -2554,6 +2554,219 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(simulation.snapshot().find("sharing-id") == std::string::npos, "the snapshot holds no sharing ID");
 }
 
+
+// My presets in Choose settings: their section between the community recipes and the built-in presets (only when
+// there is one), each row's name, summary and other games, choosing one, and the Triangle menu (Rename…, Update from
+// this game, Delete… with its question).
+const std::string kMine1 = "mypreset-my-0000000000000001";
+const std::string kMine2 = "mypreset-my-0000000000000002";
+const std::string kMine3 = "mypreset-my-0000000000000003";
+
+const playden::homebrew::ModalEntry& top_modal(const playden::homebrew::Simulation& simulation) {
+    check(!simulation.state().navigation.modals.empty(), "a sheet or dialog is open");
+    return simulation.state().navigation.modals.back();
+}
+
+bool has_legend(const playden::homebrew::Simulation& simulation, const std::string& legend) {
+    const auto& legends = simulation.view().legends;
+    return std::find(legends.begin(), legends.end(), legend) != legends.end();
+}
+
+std::string validation(const playden::homebrew::Simulation& simulation) {
+    for (const auto& notice : simulation.state().notices)
+        if (notice.id == "setting-validation") return notice.detail;
+    return {};
+}
+
+void my_presets_chooser(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    check(simulation.scenario("recipes-three"), "recipes-three scenario loads");
+    const auto& none = top_modal(simulation).action_keys;
+    check(std::find(none.begin(), none.end(), "chooser-heading-mine") == none.end(),
+          "my presets: no section in Choose settings without one");
+
+    check(simulation.scenario("my-presets"), "my-presets scenario loads");
+    check(simulation.MyPresets().size() == 3, "my presets: three made");
+    const auto keys = top_modal(simulation).action_keys;
+    const auto at = [&keys](const std::string& key) { return std::find(keys.begin(), keys.end(), key) - keys.begin(); };
+    check(top_modal(simulation).id == "preset-picker" && at("recipes-search") + 1 == at("chooser-heading-mine") &&
+              at("chooser-heading-mine") + 1 == at(kMine1) && at(kMine1) + 1 == at(kMine2) && at(kMine2) + 1 == at(kMine3) &&
+              at(kMine3) + 1 == at("chooser-heading-presets") && at("preset-playden-default") == 0 &&
+              at("chooser-heading-community") < at("recipes-search"),
+          "my presets: Playden default, community recipes and search, my presets, then the built-in presets");
+    check(find_row(simulation, "chooser-heading-mine") && find_row(simulation, "chooser-heading-mine")->title == "My presets · made by you",
+          "my presets: the section's heading");
+    const auto* row = find_row(simulation, kMine1);
+    check(row && row->title == "Point and click" &&
+              row->subtitle == rt::MyPresetSummary(simulation.MyPresets().front().preset.settings) && !row->subtitle.empty() &&
+              row->value == "2 games" && row->selected && row->badge == "Current · changed",
+          "my presets: the game's preset is current, with what it sets and the two other games using it");
+    check(simulation.state().navigation.focus_key == kMine1, "my presets: Choose settings opens on the game's preset");
+    row = find_row(simulation, kMine2);
+    check(row && row->title == "Keyboard only" && row->value.empty() && !row->selected && row->badge.empty(),
+          "my presets: an unused preset says no games");
+    // Focused: the comparison beside the sheet, and Triangle for its menu.
+    check(simulation.action("focus:" + kMine3), "focus a preset of mine");
+    check(simulation.view().comparison && simulation.view().comparison->title == "Couch at 60 Hz" &&
+              !simulation.view().comparison->rows.empty(),
+          "my presets: the comparison shows what the preset changes");
+    check(has_legend(simulation, "Triangle Manage"), "my presets: the footer offers Triangle on a preset of mine");
+    check(simulation.action("focus:preset-mouse-driven") && !has_legend(simulation, "Triangle Manage"),
+          "my presets: no Triangle on a built-in preset");
+    check(simulation.action("triangle") && top_modal(simulation).id == "preset-picker", "Triangle on a built-in preset does nothing");
+
+    // Triangle menu on another preset: no Update from this game.
+    check(simulation.action("focus:" + kMine2) && simulation.action("triangle"), "Triangle on another preset");
+    check(top_modal(simulation).id == "mypreset-menu" && top_modal(simulation).title == "Keyboard only" &&
+              (top_modal(simulation).action_keys == std::vector<std::string>{"my-preset-rename", "my-preset-delete", "cancel"}),
+          "my presets: a preset the game doesn't use offers Rename and Delete");
+    check(simulation.action("circle") && top_modal(simulation).id == "preset-picker" &&
+              simulation.state().navigation.focus_key == kMine2, "Circle goes back to the row");
+
+    // On the game's preset: Update from this game, with the game's own change.
+    check(simulation.action("focus:" + kMine1) && simulation.action("triangle"), "Triangle on the game's preset");
+    check((top_modal(simulation).action_keys ==
+           std::vector<std::string>{"my-preset-rename", "my-preset-update", "my-preset-delete", "cancel"}) &&
+              find_row(simulation, "my-preset-update")->enabled && find_row(simulation, "my-preset-delete")->dangerous,
+          "my presets: the game's preset can take its changes");
+
+    // Rename…: the keyboard with the name; names that can't be used keep it open with the reason.
+    check(simulation.action("focus:my-preset-rename") && simulation.action("cross"), "Rename…");
+    check(simulation.state().editor.active && simulation.state().editor.purpose == "Preset name" &&
+              simulation.state().editor.value == "Point and click",
+          "my presets: Rename opens the keyboard with the name");
+    simulation.SubmitEditorText("keyboard ONLY");
+    check(simulation.state().editor.active && validation(simulation) == "You already have a preset with this name.",
+          "my presets: a name another preset has is refused");
+    simulation.SubmitEditorText(std::string(41, 'a'));
+    check(simulation.state().editor.active && validation(simulation) == "Up to 40 characters.", "my presets: a long name is refused");
+    simulation.SubmitEditorText("   ");
+    check(simulation.state().editor.active && validation(simulation) == "Type a name for the preset.", "my presets: an empty name is refused");
+    simulation.SubmitEditorText("Adventures");
+    check(!simulation.state().editor.active && validation(simulation).empty() && top_modal(simulation).id == "preset-picker" &&
+              simulation.state().navigation.focus_key == kMine1 && find_row(simulation, kMine1)->title == "Adventures",
+          "my presets: renamed, back on its row");
+
+    // Update from this game: the game's change goes into the preset and off the game; the other games get a revision.
+    const auto game = SteamId(900009);
+    const auto other_revision = simulation.state().game_settings.at(SteamId(900010)).revision;
+    check(simulation.action("triangle") && simulation.action("focus:my-preset-update") && simulation.action("cross"), "Update from this game");
+    check(top_modal(simulation).id == "confirmation" && top_modal(simulation).title == "Updated “Adventures”",
+          "my presets: the update says so");
+    check(simulation.MyPresets().front().preset.settings.at("performance_overlay") == "on" &&
+              simulation.state().game_settings.at(game).overrides.empty() &&
+              simulation.state().game_settings.at(game).preset_id == simulation.MyPresets().front().preset.id &&
+              simulation.state().game_settings.at(SteamId(900010)).revision == other_revision + 1,
+          "my presets: the update moved the game's change into the preset");
+    check(simulation.action("cross") && top_modal(simulation).id == "preset-picker", "OK goes back to Choose settings");
+    check(simulation.action("focus:" + kMine1) && simulation.action("triangle") && !find_row(simulation, "my-preset-update")->enabled &&
+              find_row(simulation, "my-preset-update")->subtitle == "No changes to add",
+          "my presets: with no changes of its own, Update from this game says why it can't");
+
+    // Delete…: asks first; Cancel keeps it.
+    check(simulation.action("focus:my-preset-delete") && simulation.action("cross"), "Delete…");
+    check(top_modal(simulation).id == "confirmation" && top_modal(simulation).title == "Delete “Adventures”?" &&
+              top_modal(simulation).body == "Games using it go back to Playden default and keep their own changes." &&
+              simulation.state().navigation.focus_key == "cancel",
+          "my presets: Delete asks first, on Cancel");
+    check(simulation.action("cross") && simulation.MyPresets().size() == 3 && top_modal(simulation).id == "mypreset-menu",
+          "my presets: Cancel keeps the preset");
+    auto with_change = simulation.state().game_settings.at(SteamId(900011));
+    check(simulation.action("focus:my-preset-delete") && simulation.action("cross") && simulation.action("focus:my-preset-delete-confirm") &&
+              simulation.action("cross"),
+          "Delete confirmed");
+    check(simulation.MyPresets().size() == 2 && top_modal(simulation).id == "preset-picker" && !find_row(simulation, kMine1) &&
+              simulation.state().game_settings.at(game).preset_id.empty() &&
+              simulation.state().game_settings.at(SteamId(900011)).preset_id.empty() &&
+              simulation.state().game_settings.at(SteamId(900011)).overrides == with_change.overrides &&
+              simulation.state().navigation.focus_key == "preset-playden-default" && find_row(simulation, "preset-playden-default")->selected,
+          "my presets: deleted; its games are on Playden default, which is focused");
+
+    // Choosing one of mine: like a built-in preset, it clears the game's changes and closes.
+    check(simulation.scenario("my-presets"), "my-presets scenario loads again");
+    check(simulation.action("focus:" + kMine3) && simulation.action("cross"), "choose a preset of mine");
+    check(top_modal(simulation).id == "game-settings" &&
+              simulation.state().game_settings.at(game).preset_id == "my-0000000000000003" &&
+              simulation.state().game_settings.at(game).overrides.empty() &&
+              find_row(simulation, "preset-picker")->value == "Couch at 60 Hz",
+          "my presets: chosen like a built-in preset");
+    check(simulation.action("focus:preset-picker") && simulation.action("cross") &&
+              simulation.state().navigation.focus_key == kMine3 && find_row(simulation, kMine3)->badge == "Current",
+          "my presets: the chosen preset is current");
+}
+
+// Game settings: Save as my preset… and Update “<name>”, what they say after, and why they can't.
+void my_presets_game_settings(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    // Update “<name>” on a game with a change of its own on one of the player's presets.
+    check(simulation.scenario("my-presets") && simulation.action("circle"), "back to Game settings");
+    const auto keys = top_modal(simulation).action_keys;
+    check(top_modal(simulation).id == "game-settings" && keys.size() > 2 && keys[0] == "preset-picker" &&
+              std::find(keys.begin(), keys.end(), "update-my-preset") != keys.end() &&
+              std::find(keys.begin(), keys.end(), "save-my-preset") == keys.end(),
+          "my presets: Game settings offers Update, not Save, on a preset of mine with own changes");
+    const auto* row = find_row(simulation, "update-my-preset");
+    check(row && row->title == "Update “Point and click”" && row->subtitle == "Every game using it changes too.",
+          "my presets: the Update row names the preset");
+    check(simulation.action("focus:update-my-preset") && simulation.action("cross"), "Update");
+    check(top_modal(simulation).title == "Updated “Point and click”" && simulation.action("cross") &&
+              !find_row(simulation, "update-my-preset") && !find_row(simulation, "save-my-preset"),
+          "my presets: updated; the game has no changes left, so neither row");
+
+    // Save as my preset…: the keyboard with the game's name; the game then uses the preset.
+    check(simulation.scenario("my-presets-save"), "my-presets-save scenario loads");
+    const auto game = SteamId(900012);
+    row = find_row(simulation, "save-my-preset");
+    check(row && row->title == "Save as my preset…" && simulation.state().navigation.focus_key == "save-my-preset" &&
+              !find_row(simulation, "update-my-preset"),
+          "my presets: Game settings offers Save on Playden default");
+    check(simulation.action("cross") && simulation.state().editor.active && simulation.state().editor.purpose == "Preset name",
+          "Save opens the keyboard");
+    std::string title;
+    for (const auto& known : simulation.state().games)
+        if (known.id == game) title = known.title;
+    check(simulation.state().editor.value == title, "my presets: the keyboard is prefilled with the game's name");
+    simulation.SubmitEditorText("Point and click");
+    check(simulation.state().editor.active && validation(simulation) == "You already have a preset with this name.",
+          "my presets: Save refuses a name in use");
+    simulation.SubmitEditorText("Overlay and 720p");
+    check(!simulation.state().editor.active && top_modal(simulation).id == "confirmation" &&
+              top_modal(simulation).title == "Saved “Overlay and 720p”" && top_modal(simulation).body.rfind("This game uses it now.", 0) == 0,
+          "my presets: saved, and the game uses it");
+    check(simulation.MyPresets().size() == 4 && simulation.state().game_settings.at(game).preset_id == simulation.MyPresets().back().preset.id &&
+              simulation.state().game_settings.at(game).overrides.empty(),
+          "my presets: the game moved onto the new preset");
+    check(simulation.action("cross") && top_modal(simulation).id == "game-settings" && !find_row(simulation, "save-my-preset") &&
+              find_row(simulation, "preset-picker")->value == "Overlay and 720p",
+          "my presets: Game settings shows the new preset");
+
+    // A game on a community recipe keeps it.
+    check(simulation.scenario("recipes-settings"), "recipes-settings scenario loads");
+    check(simulation.action("focus:save-my-preset") && simulation.action("cross"), "Save on a community recipe");
+    simulation.SubmitEditorText("From a recipe");
+    check(top_modal(simulation).title == "Saved “From a recipe”" &&
+              top_modal(simulation).body.rfind("This game keeps its community recipe.", 0) == 0 &&
+              !simulation.state().game_settings.at(SteamId(900002)).community_recipe.id.empty(),
+          "my presets: a game on a community recipe keeps it");
+
+    // Nothing to keep: said before the keyboard.
+    check(simulation.scenario("recipes-none") && simulation.action("circle"), "a game on Playden default without changes");
+    check(simulation.action("focus:save-my-preset") && simulation.action("cross"), "Save with nothing to keep");
+    check(!simulation.state().editor.active && top_modal(simulation).title == "Nothing to save" &&
+              top_modal(simulation).body == "This game uses only its own settings: change something first.",
+          "my presets: nothing to keep says so, without the keyboard");
+
+    // 50 presets: said before the keyboard.
+    check(simulation.scenario("my-presets-full") && simulation.MyPresets().size() == 50, "my-presets-full scenario loads");
+    check(simulation.action("cross"), "Save with 50 presets");
+    check(!simulation.state().editor.active && top_modal(simulation).title == "The preset was not saved" &&
+              top_modal(simulation).body == "You have 50 presets. Delete one to save another." && simulation.MyPresets().size() == 50,
+          "my presets: the 50th is the last");
+}
+
 int main(int argc, char** argv) {
     check(argc == 2, "fixture directory argument is required");
     const std::filesystem::path fixtures(argv[1]);
@@ -2601,6 +2814,10 @@ int main(int argc, char** argv) {
     community_recipes_updates_and_fallback(fixtures, profile);
     clean();
     community_sharing(fixtures, profile);
+    clean();
+    my_presets_chooser(fixtures, profile);
+    clean();
+    my_presets_game_settings(fixtures, profile);
     clean();
     t52_recipe_values_in_game_settings(fixtures, profile);
     clean();

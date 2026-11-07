@@ -859,6 +859,155 @@ void live_my_presets(const std::filesystem::path& base) {
           "my presets: an unavailable file refuses changes and stays as it is");
 }
 
+// My presets in the live sheets: a game whose preset is gone shows Playden default, Save and Update from Game settings
+// and Delete from Choose settings update a prepared title once (closing the sheet doesn't apply again), a failed save
+// says why, and Save is not offered while the presets file can't be read.
+void live_my_presets_sheets(const std::filesystem::path& base) {
+    namespace rt = playden::runtime;
+    using playden::homebrew::GameId;
+    using playden::homebrew::MaintenanceKind;
+    using playden::homebrew::TitleActivity;
+    using Requests = std::vector<std::pair<GameId, MaintenanceKind>>;
+    const auto folder = base / "game-settings-private";
+    std::filesystem::create_directories(folder);
+    check(::chmod(folder.c_str(), 0700) == 0, "my presets sheets: private folder");
+    const auto settings_path = folder / "game-settings.json";
+    const auto presets_path = rt::MyPresetsPath(settings_path);
+    const std::string mine = "my-00000000000000c1", gone = "my-000000000000dead";
+    std::vector<rt::MyPreset> seeded;
+    check(rt::AddMyPreset(&seeded, mine, "Adventure", {{"resolution", "1280x720"}}, 10).ok(), "my presets sheets: seed preset");
+    std::string reason;
+    check(rt::SaveMyPresetsFile(presets_path.string(), seeded, &reason), "my presets sheets: seed file");
+    std::map<GameId, rt::GameSettingsRecord> records;
+    records[SteamId(220)].overrides = {{"controller_preset", "mouse"}, {"performance_overlay", "on"}};
+    records[SteamId(700)].preset_id = gone;
+    records[SteamId(700)].overrides = {{"performance_overlay", "on"}};
+    records[SteamId(800)].preset_id = mine;
+    records[SteamId(800)].overrides = {{"performance_overlay", "on"}};
+    check(rt::SaveGameSettingsFile(settings_path.string(), records, &reason), "my presets sheets: seed settings");
+
+    auto model = make_live(base);
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetGameSettingsFile(settings_path);
+    check(model.SetMyPresetsFile(presets_path).status == rt::MyPresetsLoadStatus::kLoaded, "my presets sheets: presets loaded");
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    std::vector<playden::GameSummary> games;
+    std::vector<playden::homebrew::LiveRuntimeGame> runtimes;
+    for (const std::uint32_t app : {220u, 700u, 800u}) {
+        playden::GameSummary game;
+        game.id = SteamId(app);
+        game.title = "Game " + std::to_string(app);
+        games.push_back(game);
+        playden::homebrew::LiveRuntimeGame runtime;
+        runtime.game_id = SteamId(app);
+        runtime.status = "Ready";
+        runtime.ready = runtime.prepared = runtime.has_title = runtime.can_play = true;
+        runtime.activity = TitleActivity::Stopped;
+        runtimes.push_back(runtime);
+    }
+    check(model.UpdateLibrary({games, false, {}, false, true, 100}), "my presets sheets: library delivered");
+    model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}, {SteamId(700), 1024, "internal", true},
+                              {SteamId(800), 1024, "internal", true}});
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, runtimes);
+    unsigned uuids = 0;
+    model.SetMyPresetSources([&uuids]() -> std::optional<std::string> {
+        char text[40];
+        std::snprintf(text, sizeof(text), "%08x-0000-4000-8000-000000000000", ++uuids);
+        return std::string(text);
+    }, [] { return std::int64_t{2000}; });
+    const auto open_settings = [&model](std::uint32_t app) {
+        model.state();
+        check(model.action("details:" + std::to_string(app)), "my presets sheets: open the game");
+        activate(model, "details-more");
+        activate(model, "game-settings");
+        (void)model.TakeMaintenanceRequests();
+    };
+    const auto close_settings = [&model] {
+        while (!model.state().navigation.modals.empty()) check(model.action("circle"), "my presets sheets: close");
+    };
+    const auto saved_notice = [&model] {
+        return std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                           [](const playden::homebrew::Notice& notice) { return notice.id == "settings-saved"; });
+    };
+
+    // A gone preset: Playden default, in the Preset row and as current in Choose settings; choosing it changes nothing.
+    open_settings(700);
+    check(find_row(model, "preset-picker")->value == "Custom · from Playden default" && find_row(model, "save-my-preset"),
+          "my presets sheets: a gone preset reads as Playden default, and Save is offered");
+    activate(model, "preset-picker");
+    check(find_row(model, "preset-playden-default")->selected && find_row(model, "preset-playden-default")->badge == "Current · changed" &&
+              model.state().navigation.focus_key == "preset-playden-default",
+          "my presets sheets: Choose settings marks Playden default current for a gone preset");
+    activate(model, "preset-playden-default");
+    check(model.state().game_settings.at(SteamId(700)) == records.at(SteamId(700)),
+          "my presets sheets: choosing Playden default keeps the game's settings as they are");
+    close_settings();
+
+    // Save as my preset…: the title is updated once, by the save; closing the sheet adds nothing.
+    open_settings(220);
+    activate(model, "save-my-preset");
+    check(model.state().editor.active && model.state().editor.value == "Game 220", "my presets sheets: the keyboard has the game's name");
+    model.SubmitEditorText("Point and click");
+    check(model.state().navigation.modals.back().title == "Saved “Point and click”", "my presets sheets: saved");
+    check(model.TakeMaintenanceRequests() == Requests{{SteamId(220), MaintenanceKind::ApplySettings}},
+          "my presets sheets: the save updates the prepared title");
+    close_settings();
+    check(model.TakeMaintenanceRequests().empty() && !saved_notice(), "my presets sheets: closing Game settings doesn't apply the save again");
+
+    // Update “Adventure” from Game settings.
+    open_settings(800);
+    activate(model, "update-my-preset");
+    check(model.state().navigation.modals.back().title == "Updated “Adventure”", "my presets sheets: updated");
+    check(model.TakeMaintenanceRequests() == Requests{{SteamId(800), MaintenanceKind::ApplySettings}},
+          "my presets sheets: the update updates the prepared title");
+    close_settings();
+    check(model.TakeMaintenanceRequests().empty() && !saved_notice(), "my presets sheets: closing Game settings doesn't apply the update again");
+
+    // Delete from Choose settings: the game goes back to Playden default once.
+    open_settings(800);
+    activate(model, "preset-picker");
+    check(model.action("focus:mypreset-" + mine) && model.action("triangle"), "my presets sheets: the preset's menu");
+    activate(model, "my-preset-delete");
+    activate(model, "my-preset-delete-confirm");
+    check(model.state().game_settings.at(SteamId(800)).preset_id.empty() && !rt::FindMyPreset(model.MyPresets(), mine),
+          "my presets sheets: deleted");
+    check(model.TakeMaintenanceRequests() == Requests{{SteamId(800), MaintenanceKind::ApplySettings}},
+          "my presets sheets: the delete updates the prepared title");
+    close_settings();
+    check(model.TakeMaintenanceRequests().empty() && !saved_notice(), "my presets sheets: closing Game settings doesn't apply the delete again");
+
+    // The settings can't be saved: the dialog says so, and nothing changes.
+    open_settings(700);
+    std::filesystem::rename(settings_path, folder / "settings-held.json");
+    std::filesystem::create_directory(settings_path);
+    activate(model, "save-my-preset");
+    model.SubmitEditorText("Will fail");
+    const auto& dialog = model.state().navigation.modals.back();
+    check(!model.state().editor.active && dialog.title == "The preset was not saved" &&
+              dialog.body == "Game settings could not be read before saving your presets." &&
+              model.MyPresets().size() == 1,
+          "my presets sheets: a failed save says why");
+    std::filesystem::remove(settings_path);
+    std::filesystem::rename(folder / "settings-held.json", settings_path);
+    close_settings();
+
+    // A presets file this Playden can't read: no Save row.
+    std::ofstream(presets_path, std::ios::trunc) << R"({"format":2,"presets":[]})";
+    auto later = make_live(base);
+    later.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    later.SetGameSettingsFile(settings_path);
+    check(later.SetMyPresetsFile(presets_path).status == rt::MyPresetsLoadStatus::kUnavailable, "my presets sheets: unavailable file");
+    later.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(later.UpdateLibrary({games, false, {}, false, true, 100}), "my presets sheets: library delivered again");
+    later.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}});
+    later.UpdateRuntime(playden::homebrew::RuntimeState::Ready, runtimes);
+    check(later.action("details:220"), "my presets sheets: open the game again");
+    activate(later, "details-more");
+    activate(later, "game-settings");
+    check(!find_row(later, "save-my-preset") && !find_row(later, "update-my-preset"),
+          "my presets sheets: no Save while the presets file can't be read");
+}
+
 // Save as my preset and Update "<name>": a game's chosen settings become a player preset it then uses, and a game's own
 // changes move into the preset it uses; the preset file and the game settings are saved together or not at all.
 void live_my_presets_from_game(const std::filesystem::path& base) {
@@ -3179,6 +3328,7 @@ int main() {
     live_program_change_applies_like_other_settings(base);
     live_my_presets(base / "my-presets");
     live_my_presets_from_game(base / "my-presets-from-game");
+    live_my_presets_sheets(base / "my-presets-sheets");
     live_names_program_found_instead_of_steam_default(base);
     live_runs_setup_program_once(base);
     live_imported_game_steam_app_id(base);

@@ -748,7 +748,9 @@ std::string action_label(const std::string& key) {
         {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
         {"heading-reason", "What went wrong"}, {"heading-report", "Report"}, {"heading-recipe", "Recipe"},
         {"shared-recipe", "Shared recipe"}, {"sharing-reset-confirm", "Reset"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"clear-shader-cache", "Clear shader cache"},
+        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"save-my-preset", "Save as my preset…"},
+        {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
+        {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
@@ -5378,6 +5380,52 @@ bool Simulation::save_profile() {
     return written && closed;
 }
 
+// My presets: my-presets has three of the player's presets, one used by three games, and opens Choose settings for a
+// game on it with a change of its own (Game settings offers Update); my-presets-save opens Game settings for a game on
+// Playden default with changes of its own (Save as my preset…); my-presets-full is that with all 50 presets made.
+void Simulation::seed_my_presets_scenario(const std::string& name) {
+    state_.account().authentication = AuthState::SignedIn;
+    state_.navigation.modals.clear();
+    state_.editor.active = false;
+    my_presets_.clear();
+    my_presets_unavailable_ = false;
+    install_choice_.reset();
+    pending_switch_.reset();
+    const auto add = [this](std::size_t serial, const std::string& preset_name, std::map<std::string, std::string> settings) {
+        char id[24];
+        std::snprintf(id, sizeof(id), "my-%016zx", serial);
+        (void)rt::AddMyPreset(&my_presets_, id, preset_name, std::move(settings), 1'762'473'600 + static_cast<std::int64_t>(serial));
+    };
+    add(1, "Point and click", {{"controller", "keyboard"}, {"controller_preset", "mouse"}, {"resolution", "1280x720"}});
+    add(2, "Keyboard only", {{"controller", "keyboard"}, {"controller_preset", "gamepad"}, {"button.cross", "space"}});
+    add(3, "Couch at 60 Hz", {{"refresh", "60"}, {"performance_overlay", "on"}});
+    if (name == "my-presets-full")
+        for (std::size_t serial = 4; serial <= rt::kMyPresetsMax; ++serial)
+            add(serial, "Preset " + std::to_string(serial), {{"performance_overlay", serial % 2 ? "on" : "off"}});
+    const auto point_and_click = my_presets_.front().preset.id;
+    for (const std::uint32_t app : {900009u, 900010u, 900011u, 900012u}) state_.game_settings.erase(GameId::Steam(app));
+    for (const std::uint32_t app : {900010u, 900011u}) rt::ChoosePreset(&state_.game_settings[GameId::Steam(app)], point_and_click);
+    const bool save = name != "my-presets";
+    const auto id = GameId::Steam(save ? 900012 : 900009);
+    auto& record = state_.game_settings[id];
+    if (save) record.overrides = {{"performance_overlay", "on"}, {"resolution", "1280x720"}};
+    else {
+        rt::ChoosePreset(&record, point_and_click);
+        record.overrides = {{"performance_overlay", "on"}};
+    }
+    state_.navigation.route = Route::Details;
+    state_.navigation.detail_id = id;
+    state_.navigation.selected_game_id = id;
+    state_.navigation.focus_key = "details-play";
+    open_game_settings();
+    if (save) {
+        rebuild_view();
+        action("focus:save-my-preset");
+    } else {
+        open_chooser(id, false);
+    }
+}
+
 void Simulation::seed_community_scenario(bool offline) {
     // A synthetic catalog for the fixture games: Velvet Engines (not installed) has one recipe, the second
     // installed game three, the fifth one that needs a newer kit, the fourth none.
@@ -5978,6 +6026,8 @@ bool Simulation::scenario(const std::string& name) {
             if (auto* volume = find_volume(state_, "internal")) volume->used_bytes = volume->capacity_bytes - 1'073'741'824;
         }
         open_install_sheet(*state_.navigation.detail_id, install_sheet_actions(*state_.navigation.detail_id));
+    } else if (name == "my-presets" || name == "my-presets-save" || name == "my-presets-full") {
+        seed_my_presets_scenario(name);
     } else if (name.rfind("recipes-", 0) == 0) {
         // Community recipes: the chooser, the Install sheet's Settings row, a switch and Game settings.
         seed_community_scenario(name == "recipes-offline");
@@ -6510,6 +6560,10 @@ void Simulation::rebuild_view() {
             else if (chooser_query_)
                 view_.subtitle = "Games that have community recipes, by name. Choose one to see its recipes.";
             if (chooser_for_install_) view_.eyebrow = "Install game";
+        } else if (modal.id == "mypreset-menu") {
+            view_.eyebrow = "My presets";
+            if (const auto* mine = rt::FindMyPreset(my_presets_, my_preset_menu_id_))
+                view_.subtitle = rt::MyPresetSummary(mine->preset.settings);
         }
         if (modal.id == "install" && live()) {
             // Shown when the game does not fit as is: say why, and where it would go.
@@ -7097,6 +7151,21 @@ void Simulation::rebuild_view() {
                         item.subtitle = "Detected: " + detected;
                 item.selected = current.community.id.empty() && (id == "playden-default" ? current.preset_id.empty() : current.preset_id == id);
                 if (item.selected) item.badge = chooser_for_install_ ? "Selected" : settings_custom ? "Current · changed" : "Current";
+            } else if (settings_ready && modal.id == "preset-picker" && action_key.rfind("mypreset-my-", 0) == 0) {
+                // One of the player's presets: its name, what it sets, and how many other games use it.
+                item.kind = RowKind::Profile;
+                const auto id = action_key.substr(9);
+                if (const auto* mine = rt::FindMyPreset(my_presets_, id)) {
+                    item.title = mine->preset.name;
+                    item.subtitle = rt::MyPresetSummary(mine->preset.settings);
+                    const auto counts = MyPresetUseCounts();
+                    std::size_t others = counts.count(id) ? counts.at(id) : 0;
+                    if (settings_record != state_.game_settings.end() && settings_record->second.preset_id == id && others > 0) --others;
+                    if (others > 0) item.value = std::to_string(others) + (others == 1 ? " game" : " games");
+                }
+                const auto current = chooser_current(settings_game);
+                item.selected = current.community.id.empty() && current.preset_id == id;
+                if (item.selected) item.badge = chooser_for_install_ ? "Selected" : settings_custom ? "Current · changed" : "Current";
             } else if (settings_ready && modal.id == "preset-picker" && action_key.rfind("recipe-", 0) == 0) {
                 item.kind = RowKind::Profile;
                 const auto offer = chooser_offer(settings_game, action_key.substr(7));
@@ -7143,6 +7212,7 @@ void Simulation::rebuild_view() {
             } else if (settings_ready && modal.id == "preset-picker" && IsChooserHeading(action_key)) {
                 item.kind = RowKind::Separator;
                 item.title = action_key == "chooser-heading-community" ? "Community recipes · shared by players"
+                           : action_key == "chooser-heading-mine" ? "My presets · made by you"
                            : action_key == "chooser-heading-presets" ? "Built-in presets · from Playden"
                            // Headings are drawn in capitals, which only ASCII letters have here: the game's name is in
                            // the Unlink row and the sheet's subtitle instead.
@@ -7346,6 +7416,19 @@ void Simulation::rebuild_view() {
                 item.kind = RowKind::Text;
                 item.title = "Other key…";
                 item.subtitle = "Type a key name, a letter, F1–F24 or vk:0xNN.";
+            } else if (settings_ready && action_key == "save-my-preset") {
+                item.subtitle = "Use these settings on other games too.";
+            } else if (settings_ready && action_key == "update-my-preset") {
+                const auto* mine = settings_record == state_.game_settings.end()
+                                       ? nullptr : rt::FindMyPreset(my_presets_, settings_record->second.preset_id);
+                item.title = "Update \u201c" + (mine ? mine->preset.name : std::string("my preset")) + "\u201d";
+                item.subtitle = "Every game using it changes too.";
+            } else if (modal.id == "mypreset-menu" && action_key == "my-preset-update") {
+                // The sheet is narrow: a short reason when it can't, and the Delete question says the rest.
+                item.enabled = MyPresetActionFor(chooser_game_) == MyPresetAction::kUpdate;
+                if (!item.enabled) item.subtitle = "No changes to add";
+            } else if (modal.id == "mypreset-menu" && action_key == "my-preset-delete") {
+                item.dangerous = true;
             } else if (settings_ready && action_key == "reset-settings") {
                 item.enabled = settings_record != state_.game_settings.end() && has_resettable(settings_record->second.overrides);
             } else if (settings_ready && action_key == "effective-command") {
@@ -7850,12 +7933,16 @@ void Simulation::rebuild_view() {
         if (settings_ready && modal.id == "preset-picker") {
             const auto& focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
             if (focused.rfind("preset-", 0) == 0) build_preset_comparison(settings_game, focused.substr(7));
+            else if (focused.rfind("mypreset-my-", 0) == 0) build_preset_comparison(settings_game, focused.substr(9));
             else if (focused.rfind("recipe-", 0) == 0)
                 if (const auto offer = chooser_offer(settings_game, focused.substr(7))) build_recipe_comparison(settings_game, *offer);
         }
         view_.legends = {"Cross Select", "Circle Cancel"};
         if (modal.id == "game-settings") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Close"};
-        else if (modal.id == "preset-picker") view_.legends = {"Cross Choose", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "preset-picker")
+            view_.legends = modal.action_keys[static_cast<std::size_t>(modal.focused_action)].rfind("mypreset-my-", 0) == 0
+                                ? std::vector<std::string>{"Cross Choose", "Triangle Manage", "L1/R1 Jump", "Circle Back"}
+                                : std::vector<std::string>{"Cross Choose", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "button-mapping") view_.legends = {"Cross Change", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "controller-tuning") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "game-maintenance") view_.legends = {"Cross Select", "L1/R1 Jump", "Circle Cancel"};
@@ -9389,6 +9476,7 @@ void Simulation::commit_editor() {
         state_.navigation.focus_key = next;
         return;
     }
+    if (state_.editor.purpose == "Preset name") { commit_my_preset_name(); return; }
     if (state_.editor.purpose == "Search") { state_.library.query = state_.editor.value; reconcile_library_selection(state_); }
     else if (state_.editor.purpose == "Search recipes") {
         // The chooser lists the games whose name matches; the first is focused.
@@ -10144,7 +10232,9 @@ void Simulation::activate() {
                                 (action_name.rfind("choice-", 0) == 0 && action_name != "choice-custom") ||
                                 (action_name.rfind("program-", 0) == 0 && action_name != "program-scan") ||
                                 action_name.rfind("override-remove-", 0) == 0 || action_name == "value-reset" ||
-                                action_name == "unlock-setting" || action_name == "reset-settings";
+                                action_name == "unlock-setting" || action_name == "reset-settings" ||
+                                action_name.rfind("mypreset-my-", 0) == 0 || action_name == "update-my-preset" ||
+                                action_name == "my-preset-update" || action_name == "my-preset-delete-confirm";
     if (edits_settings && !can_change_game_settings()) return;
     if (sign_in_action(action_name)) return;
     if (action_name == "connect") open_sign_in();
@@ -11459,6 +11549,57 @@ void Simulation::activate() {
         if (std::none_of(settings_presets_.begin(), settings_presets_.end(), [&id](const rt::SettingsPreset& preset) { return preset.id == id; }))
             return;
         choose_base(chooser_game_, BaseChoice{id == "playden-default" ? std::string{} : id, {}}, false);
+    } else if (action_name.rfind("mypreset-my-", 0) == 0 && !state_.navigation.modals.empty() &&
+               state_.navigation.modals.back().id == "preset-picker") {
+        // One of the player's presets: chosen like a built-in one.
+        const auto id = action_name.substr(9);
+        if (rt::FindMyPreset(my_presets_, id)) choose_base(chooser_game_, BaseChoice{id, {}}, false);
+    } else if (action_name == "save-my-preset") {
+        start_my_preset_save();
+    } else if (action_name == "update-my-preset" || action_name == "my-preset-update") {
+        // From Game settings, or from the menu of the preset the game uses in Choose settings.
+        const auto game = action_name == "my-preset-update" ? chooser_game_ : state_.navigation.selected_game_id;
+        if (action_name == "my-preset-update") close_modal();
+        const auto found = state_.game_settings.find(game);
+        const auto before = found == state_.game_settings.end() ? rt::GameSettingsRecord{} : found->second;
+        const auto* mine = rt::FindMyPreset(my_presets_, before.preset_id);
+        const auto name = mine ? mine->preset.name : std::string();
+        const auto change = UpdateMyPresetFromGame(game);
+        if (change.ok()) finish_my_preset_change(game, before);
+        refresh_game_settings();
+        refresh_chooser(state_.navigation.focus_key);
+        if (!change.ok()) show_my_preset_refusal(change, "The preset was not updated");
+        else show_my_preset_dialog("Updated \u201c" + name + "\u201d",
+                                   "This game's changes are part of it now. Every game using it changes too.");
+    } else if (action_name == "my-preset-rename") {
+        if (const auto* mine = rt::FindMyPreset(my_presets_, my_preset_menu_id_)) {
+            const auto name = mine->preset.name;
+            start_editor("Preset name", name);
+            editing_target_id_ = my_preset_menu_id_;
+        }
+    } else if (action_name == "my-preset-delete") {
+        if (const auto* mine = rt::FindMyPreset(my_presets_, my_preset_menu_id_)) {
+            ModalEntry confirmation{"confirmation", "Delete \u201c" + mine->preset.name + "\u201d?", action_name,
+                                    {"cancel", "my-preset-delete-confirm"}, 0, true};
+            confirmation.body = "Games using it go back to Playden default and keep their own changes.";
+            open_modal(std::move(confirmation));
+        }
+    } else if (action_name == "my-preset-delete-confirm") {
+        // Back to Choose settings, without the deleted row; the game's current choice is focused.
+        while (!state_.navigation.modals.empty() && (state_.navigation.modals.back().id == "confirmation" ||
+                                                     state_.navigation.modals.back().id == "mypreset-menu"))
+            close_modal();
+        const auto game = chooser_game_.valid() ? chooser_game_ : state_.navigation.selected_game_id;
+        const auto found = state_.game_settings.find(game);
+        const auto before = found == state_.game_settings.end() ? rt::GameSettingsRecord{} : found->second;
+        const auto change = DeleteMyPreset(my_preset_menu_id_);
+        if (change.ok()) {
+            finish_my_preset_change(game, before);
+            my_preset_menu_id_.clear();
+        }
+        refresh_game_settings();
+        refresh_chooser({});
+        if (!change.ok()) show_my_preset_refusal(change, "The preset was not deleted");
     } else if (action_name.rfind("recipe-", 0) == 0 && action_name != "recipe-switch-confirm" && action_name != "recipe-update" &&
                !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "preset-picker") {
         const auto offer = chooser_offer(chooser_game_, action_name.substr(7));
@@ -12367,6 +12508,9 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         else queue_manage_updates();
     }
     else if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
+             state_.navigation.modals.back().id == "preset-picker" && state_.navigation.focus_key.rfind("mypreset-my-", 0) == 0)
+        open_my_preset_menu(state_.navigation.focus_key.substr(9));
+    else if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
              (state_.navigation.modals.back().id == "game-settings" || state_.navigation.modals.back().id == "controller-tuning" ||
               !state_.navigation.modals.back().setting_id.empty())) {
         // Triangle returns the focused setting (or the open picker's setting) to the preset value.
@@ -13006,6 +13150,130 @@ Simulation::MyPresetAction Simulation::MyPresetActionFor(GameId id) const {
                                                                                                 : MyPresetAction::kNone;
 }
 
+// Choose settings › Triangle on one of the player's presets: Rename…, Update from this game (only on the preset the
+// game uses, and not for an install), Delete….
+void Simulation::open_my_preset_menu(const std::string& id) {
+    const auto* mine = rt::FindMyPreset(my_presets_, id);
+    if (!mine) return;
+    my_preset_menu_id_ = id;
+    std::vector<std::string> actions = {"my-preset-rename"};
+    const auto record = state_.game_settings.find(chooser_game_);
+    if (!chooser_for_install_ && record != state_.game_settings.end() && record->second.preset_id == id)
+        actions.push_back("my-preset-update");
+    actions.insert(actions.end(), {"my-preset-delete", "cancel"});
+    open_modal({"mypreset-menu", mine->preset.name, state_.navigation.focus_key, std::move(actions), 0, false});
+}
+
+// Game settings › Save as my preset…: the keyboard, prefilled with the game's name. What can't work is said first,
+// before anything is typed: the 50 presets are all used, or the game has nothing a preset would keep.
+void Simulation::start_my_preset_save() {
+    const auto game = state_.navigation.selected_game_id;
+    if (my_presets_.size() >= rt::kMyPresetsMax) {
+        show_my_preset_refusal({rt::MyPresetRefusal::kTooMany, {}}, "The preset was not saved");
+        return;
+    }
+    std::map<std::string, std::string> settings;
+    if (preset_settings_from_game(game, rt::PresetCapture::kSave, &settings) && settings.empty()) {
+        show_my_preset_refusal({rt::MyPresetRefusal::kNoSettings, "This game uses only its own settings: change something first."},
+                               "The preset was not saved");
+        return;
+    }
+    const auto* known = find_game(state_, game);
+    start_editor("Preset name", known ? known->title : std::string());
+    editing_target_id_.clear();
+}
+
+// The keyboard's Done for "Preset name": saves the game's settings as a new preset, or renames the preset whose menu is
+// open. A name that can't be used keeps the keyboard open with the reason; any other refusal closes it and says why.
+void Simulation::commit_my_preset_name() {
+    const auto name_refusal = [](rt::MyPresetRefusal refusal) -> std::string {
+        switch (refusal) {
+            case rt::MyPresetRefusal::kNameEmpty: return "Type a name for the preset.";
+            case rt::MyPresetRefusal::kNameTooLong: return "Up to 40 characters.";
+            case rt::MyPresetRefusal::kNameNotPrintable: return "Letters, numbers and punctuation on one line.";
+            case rt::MyPresetRefusal::kNameTaken: return "You already have a preset with this name.";
+            default: return {};
+        }
+    };
+    const auto close_editor = [this] {
+        std::erase_if(state_.notices, [](const Notice& notice) { return notice.id == "setting-validation"; });
+        state_.editor.active = false;
+        state_.navigation.focus_key = state_.editor.opener_focus_key;
+    };
+    if (editing_target_id_.empty()) {
+        const auto game = state_.navigation.selected_game_id;
+        const auto found = state_.game_settings.find(game);
+        const auto before = found == state_.game_settings.end() ? rt::GameSettingsRecord{} : found->second;
+        std::string created;
+        bool switched = false;
+        const auto change = SaveGameAsMyPreset(game, state_.editor.value, &created, &switched);
+        if (const auto why = name_refusal(change.refusal); !why.empty()) {
+            show_setting_validation("Preset name", why);
+            return;
+        }
+        close_editor();
+        if (!change.ok()) {
+            show_my_preset_refusal(change, "The preset was not saved");
+            return;
+        }
+        finish_my_preset_change(game, before);
+        refresh_game_settings();
+        const auto* mine = rt::FindMyPreset(my_presets_, created);
+        // A game on a community recipe keeps it: leaving it would change its program and whatever else the recipe sets.
+        show_my_preset_dialog("Saved \u201c" + (mine ? mine->preset.name : std::string()) + "\u201d",
+                              switched ? "This game uses it now. Other games can pick it in Choose settings."
+                                       : "This game keeps its community recipe. Other games can pick the preset in Choose settings.");
+        return;
+    }
+    const auto id = editing_target_id_;
+    const auto change = RenameMyPreset(id, state_.editor.value);
+    if (const auto why = name_refusal(change.refusal); !why.empty()) {
+        show_setting_validation("Preset name", why);
+        return;
+    }
+    close_editor();
+    editing_target_id_.clear();
+    // Back to Choose settings, on the renamed row.
+    if (!state_.navigation.modals.empty() && state_.navigation.modals.back().id == "mypreset-menu") close_modal();
+    refresh_game_settings();
+    refresh_chooser("mypreset-" + id);
+    if (!change.ok()) show_my_preset_refusal(change, "The preset was not renamed");
+}
+
+// A preset change that also changed the game whose settings are open was saved and applied by the change itself
+// (commit_my_presets): closing the sheet must not count it again, nor apply it a second time.
+void Simulation::finish_my_preset_change(GameId game, const rt::GameSettingsRecord& before) {
+    const auto found = state_.game_settings.find(game);
+    const auto after = found == state_.game_settings.end() ? rt::GameSettingsRecord{} : found->second;
+    if (settings_opened_record_ && game == state_.navigation.selected_game_id && !(after == before))
+        settings_opened_record_ = after;
+}
+
+// A dialog with OK over the sheet: a notice would wait behind it until the sheet closes.
+void Simulation::show_my_preset_dialog(std::string title, std::string body) {
+    ModalEntry dialog{"confirmation", std::move(title), state_.navigation.focus_key, {"alert-ok"}, 0, false};
+    dialog.body = body.empty() ? std::string(" ") : std::move(body);
+    open_modal(std::move(dialog));
+}
+
+void Simulation::show_my_preset_refusal(const rt::MyPresetChange& change, const std::string& title) {
+    std::string body = change.detail;
+    switch (change.refusal) {
+        case rt::MyPresetRefusal::kTooMany:
+            body = "You have " + std::to_string(rt::kMyPresetsMax) + " presets. Delete one to save another.";
+            break;
+        case rt::MyPresetRefusal::kNoSettings:
+            show_my_preset_dialog(title == "The preset was not saved" ? "Nothing to save" : "Nothing to add", body.empty() ? std::string("There are no changes a preset can keep.") : body);
+            return;
+        case rt::MyPresetRefusal::kUnknownId:
+            if (body.empty() || body.rfind("This game", 0) != 0) body = "That preset is gone.";
+            break;
+        default:
+            if (body.empty()) body = "Your presets could not be saved.";
+    }
+    show_my_preset_dialog(title, std::move(body));
+}
+
 void Simulation::SetKitCapabilities(rt::KitCapabilities kit) {
     kit_ = kit;
     refresh_game_settings();
@@ -13131,6 +13399,9 @@ Simulation::BaseChoice Simulation::base_of(GameId id) const {
     if (record == state_.game_settings.end()) return base;
     if (!record->second.community_recipe.id.empty()) base.community = record->second.community_recipe;
     else if (record->second.preset_id != "playden-default") base.preset_id = record->second.preset_id;
+    // One of the player's presets that is gone (my-presets.json unreadable) plays as Playden default, so it reads as that:
+    // choosing Playden default then changes nothing, and the record keeps its id for when the file can be read again.
+    if (rt::IsMyPresetId(base.preset_id) && !rt::FindMyPreset(my_presets_, base.preset_id)) base.preset_id.clear();
     return base;
 }
 
@@ -13492,12 +13763,17 @@ std::optional<CommunityRecipeOffer> Simulation::chooser_offer(GameId id, const s
 }
 
 Simulation::BaseChoice Simulation::chooser_current(GameId id) const {
-    if (chooser_for_install_) return install_choice_ && install_choice_game_ == id ? *install_choice_ : BaseChoice{};
+    if (chooser_for_install_) {
+        auto choice = install_choice_ && install_choice_game_ == id ? *install_choice_ : BaseChoice{};
+        if (rt::IsMyPresetId(choice.preset_id) && !rt::FindMyPreset(my_presets_, choice.preset_id)) choice.preset_id.clear();
+        return choice;
+    }
     return base_of(id);
 }
 
 std::vector<std::string> Simulation::chooser_actions(GameId id, bool install, int* focused) const {
-    const BaseChoice current = install ? (install_choice_ && install_choice_game_ == id ? *install_choice_ : BaseChoice{}) : base_of(id);
+    BaseChoice current = install ? (install_choice_ && install_choice_game_ == id ? *install_choice_ : BaseChoice{}) : base_of(id);
+    if (rt::IsMyPresetId(current.preset_id) && !rt::FindMyPreset(my_presets_, current.preset_id)) current.preset_id.clear();
     std::vector<std::string> actions;
     *focused = 0;
     const auto add = [&](std::string key, bool selected) {
@@ -13556,6 +13832,12 @@ std::vector<std::string> Simulation::chooser_actions(GameId id, bool install, in
             *focused = static_cast<int>(std::find(actions.begin(), actions.end(), linked_chosen) - actions.begin());
     }
     actions.push_back("recipes-search");
+    // The player's own presets, in the order they were made; the heading only when there is one.
+    if (!my_presets_.empty()) {
+        actions.push_back("chooser-heading-mine");
+        for (const auto& mine : my_presets_)
+            add("mypreset-" + mine.preset.id, current.community.id.empty() && current.preset_id == mine.preset.id);
+    }
     actions.push_back("chooser-heading-presets");
     for (const auto& preset : settings_presets_)
         if (preset.id != "playden-default") add("preset-" + preset.id, current.community.id.empty() && current.preset_id == preset.id);
@@ -13894,6 +14176,13 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     if (const auto record = state_.game_settings.find(game);
         record != state_.game_settings.end() && !record->second.shared_recipe.submission_id.empty())
         actions.push_back("shared-recipe");
+    // My presets: save the game's settings as one, or put its own changes into the one it uses. Save is left out while
+    // the presets file can't be read (Playden said so at startup): it could only refuse.
+    switch (MyPresetActionFor(game)) {
+        case MyPresetAction::kSave: if (!my_presets_unavailable_) actions.push_back("save-my-preset"); break;
+        case MyPresetAction::kUpdate: actions.push_back("update-my-preset"); break;
+        case MyPresetAction::kNone: break;
+    }
     // Changes worth sharing put Share recipe up here, by the preset; otherwise it waits in Advanced.
     const bool share_on_top = changes_worth_sharing(game);
     if (share_on_top) actions.push_back("share-recipe");
@@ -14097,6 +14386,7 @@ void Simulation::build_preset_comparison(GameId id, const std::string& preset_id
     ViewData::Comparison comparison;
     comparison.title = chosen->name;
     comparison.hint = chosen->try_when;
+    if (rt::IsMyPresetId(chosen->id)) comparison.hint = "Made by you. Games using it change when you update it.";
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
         const auto& value = values.values.at(definition.id);
         if (definition.id == "launch_option") return values.launch ? values.launch->label : value.value;

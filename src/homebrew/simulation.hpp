@@ -1617,6 +1617,15 @@ private:
     void choose_base(GameId id, const BaseChoice& base, bool confirmed);
     void build_recipe_comparison(GameId id, const CommunityRecipeOffer& offer);
     void seed_community_scenario(bool offline);
+    // My presets in Choose settings and Game settings: the Triangle menu on a preset's row, the keyboard that names one
+    // (Save as my preset… when editing_target_id_ is empty, else Rename… of that preset), and the dialog after a change.
+    void open_my_preset_menu(const std::string& id);
+    void start_my_preset_save();
+    void commit_my_preset_name();
+    void finish_my_preset_change(GameId game, const playden::runtime::GameSettingsRecord& before);
+    void show_my_preset_dialog(std::string title, std::string body);
+    void show_my_preset_refusal(const playden::runtime::MyPresetChange& change, const std::string& title);
+    void seed_my_presets_scenario(const std::string& name);
     // Sharing: the Share sheet's draft, what it compares and sends, and the votes it offers.
     struct ShareDraft {
         GameId game;
@@ -1729,6 +1738,7 @@ private:
     bool my_presets_unavailable_ = false;
     std::function<std::optional<std::string>()> my_preset_uuid_;
     std::function<std::int64_t()> my_preset_now_;
+    std::string my_preset_menu_id_;  // the preset whose Triangle menu (or its Delete dialog) is open
     bool settings_save_failed_ = false;
     bool settings_load_failed_ = false;
     std::optional<playden::runtime::GameSettingsRecord> settings_opened_record_;  // for the close toast
