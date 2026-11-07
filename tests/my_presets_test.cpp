@@ -53,6 +53,9 @@ void Ids() {
   CHECK(!MyPresetIdFromUuid("3f9a0c1d2e4b4a698bcd0123456789ab"));
   CHECK(!MyPresetIdFromUuid("3f9a0c1d-2e4b-4a69-8bcd-0123456789"));
   CHECK(!MyPresetIdFromUuid("zf9a0c1d-2e4b-4a69-8bcd-0123456789ab"));
+  // Validate the unused suffix too, not just the digits copied into the id.
+  CHECK(!MyPresetIdFromUuid("3f9a0c1d-2e4b-4a69-8bcd-0123456789az"));
+  CHECK(!MyPresetIdFromUuid("3f9a0c1d-2e4b-4a69-8bzd-0123456789ab"));
 }
 
 void Changes() {
@@ -220,6 +223,36 @@ void Storage() {
   CHECK(Mode(path) == 0600);
   load = LoadMyPresetsFile(path.string());
   CHECK(load.status == MyPresetsLoadStatus::kLoaded && load.presets == presets);
+
+  // Refuse replacement bytes that would become a bad file or lose settings on the next load.
+  // The change API accepts Unix seconds, including a clock failure represented as -1.
+  const auto saved = Read(path);
+  const auto game_settings = folder / "game-settings.json";
+  const std::string game_bytes = R"({"version":1,"games":{}})";
+  Write(game_settings, game_bytes);
+  const auto refused_save = [&](const std::vector<MyPreset>& invalid) {
+    reason.clear();
+    CHECK(!SaveMyPresetsFile(path.string(), invalid, &reason) && !reason.empty());
+    CHECK(Read(path) == saved && Read(game_settings) == game_bytes && !fs::exists(bad));
+    CHECK(LoadMyPresetsFile(path.string()).presets == presets);
+  };
+  auto invalid = presets;
+  CHECK(RenameMyPreset(&invalid, Id(1), "Renamed", -1).ok());
+  refused_save(invalid);
+  invalid = presets;
+  invalid[0].preset.name = "bad \xff utf-8";
+  refused_save(invalid);
+  invalid = presets;
+  invalid.push_back(invalid.front());
+  refused_save(invalid);
+  invalid = presets;
+  invalid[0].preset.settings["graphics"] = "dxvk";
+  refused_save(invalid);
+  // A failed first save must not create a file that the loader would set aside either.
+  fs::remove(path);
+  CHECK(!SaveMyPresetsFile(path.string(), invalid, &reason) && !fs::exists(path));
+  CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
+  CHECK(Read(game_settings) == game_bytes);
 
   // A file that isn't presets is kept aside, never written over; Playden starts with none and can save again.
   const std::string garbage = "{\"format\":1,\"presets\":[{\"id\":\"broken\"}]}";

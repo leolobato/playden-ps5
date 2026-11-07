@@ -77,13 +77,13 @@ std::optional<std::string> MyPresetIdFromUuid(std::string_view uuid) {
   // 8-4-4-4-12; the version digit (14th) and the variant digit (19th) are not random, so they are skipped.
   if (uuid.size() != 36 || uuid[8] != '-' || uuid[13] != '-' || uuid[18] != '-' || uuid[23] != '-') return std::nullopt;
   std::string id = "my-";
-  for (std::size_t index = 0; index < uuid.size() && id.size() < 3 + kIdHexDigits; ++index) {
+  for (std::size_t index = 0; index < uuid.size(); ++index) {
     if (index == 8 || index == 13 || index == 18 || index == 23) continue;
     char c = uuid[index];
     if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
     if (!LowerHex(c)) return std::nullopt;
     if (index == 14 || index == 19) continue;
-    id += c;
+    if (id.size() < 3 + kIdHexDigits) id += c;
   }
   return IsMyPresetId(id) ? std::optional<std::string>(id) : std::nullopt;
 }
@@ -281,7 +281,13 @@ bool SaveMyPresetsFile(const std::string& path, const std::vector<MyPreset>& pre
   std::vector<MyPreset> current;
   if (read == PrivateSettingsRead::kPresent && !ParseMyPresets(text, &current, nullptr, nullptr))
     return fail("my-presets.json could not be read as presets; it is left as it is");
-  if (!WritePrivateSettingsFile(path, SerializeMyPresets(presets))) return fail("cannot write my-presets.json");
+  // Do not replace recoverable data with bytes this build cannot load intact. In particular, the pure changes
+  // accept signed Unix times, while the file format requires nonnegative timestamps.
+  const auto proposed = SerializeMyPresets(presets);
+  std::vector<MyPreset> checked;
+  if (!ParseMyPresets(proposed, &checked, nullptr, nullptr) || checked != presets)
+    return fail("the proposed presets cannot be saved and loaded intact");
+  if (!WritePrivateSettingsFile(path, proposed)) return fail("cannot write my-presets.json");
   return true;
 }
 
