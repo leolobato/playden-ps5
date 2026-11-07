@@ -254,6 +254,19 @@ void Storage() {
   CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
   CHECK(Read(game_settings) == game_bytes);
 
+  // A retired setting in the file is dropped on load and named in the log; the file stays as it is.
+  {
+    const std::string retired = R"({"format":1,"presets":[{"id":"my-0000000000000001","name":"A","created":1,"updated":2,
+      "settings":{"refresh":"60","opengl_thread":"off"}}]})";
+    Write(path, retired);
+    const auto with_retired = LoadMyPresetsFile(path.string());
+    CHECK(with_retired.status == MyPresetsLoadStatus::kLoaded && with_retired.presets.size() == 1);
+    CHECK(MyPresetsLoadLog(with_retired) == std::vector<std::string>{"my presets dropped setting: my-0000000000000001 opengl_thread"});
+    CHECK(MyPresetsLoadLog(LoadMyPresetsFile((folder / "none.json").string())).empty());
+    CHECK(Read(path) == retired);
+    CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
+  }
+
   // The worker's read never moves a file: a bad one reads as none, a missing one as none, a good one as its presets.
   const std::string garbage = "{\"format\":1,\"presets\":[{\"id\":\"broken\"}]}";
   {
