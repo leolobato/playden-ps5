@@ -2713,6 +2713,19 @@ void my_presets_chooser(const std::filesystem::path& fixtures, const std::filesy
     check(simulation.action("focus:install-settings") && simulation.action("cross") && find_row(simulation, kMine1)->selected &&
               find_row(simulation, kMine1)->badge == "Selected",
           "my presets: the install keeps the chosen preset");
+
+    // Deleting the pending install choice must also forget its id before Install saves it.
+    const auto install_game = simulation.state().navigation.selected_game_id;
+    check(simulation.action("triangle") && simulation.action("focus:my-preset-delete") && simulation.action("cross") &&
+              simulation.action("focus:my-preset-delete-confirm") && simulation.action("cross"), "delete the install choice");
+    check(simulation.state().navigation.focus_key == "preset-playden-default" &&
+              find_row(simulation, "preset-playden-default")->selected, "deleted install choice selects default");
+    check(simulation.action("circle") && simulation.action("focus:install-confirm") && simulation.action("cross"),
+          "install after deleting its selected preset");
+    check(simulation.state().navigation.route == playden::homebrew::Route::Downloads, "installation was queued");
+    const auto installed_settings = simulation.state().game_settings.find(install_game);
+    check(installed_settings == simulation.state().game_settings.end() || installed_settings->second.preset_id.empty(),
+          "install does not write the deleted preset id back into game settings");
 }
 
 // Game settings: Save as my preset… and Update “<name>”, what they say after, and why they can't.

@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -989,6 +990,32 @@ void live_my_presets_sheets(const std::filesystem::path& base) {
           "my presets sheets: a failed save says why");
     std::filesystem::remove(settings_path);
     std::filesystem::rename(folder / "settings-held.json", settings_path);
+    close_settings();
+
+    // Preset actions report revision refusals in a dialog above the sheet, not a hidden notice.
+    auto exhausted = model.state().game_settings;
+    exhausted.at(SteamId(220)).revision = std::numeric_limits<std::uint64_t>::max();
+    exhausted.at(SteamId(220)).overrides["resolution"] = "1280x720";
+    check(rt::SaveGameSettingsFile(settings_path.string(), exhausted, &reason), "seed exhausted settings revision");
+    model.SetGameSettingsFile(settings_path);
+    open_settings(220);
+    activate(model, "update-my-preset");
+    check(model.state().navigation.modals.back().id == "confirmation" &&
+              model.state().navigation.modals.back().title == "The preset was not updated" &&
+              model.state().navigation.modals.back().body == "The settings revision has reached its limit.",
+          "preset update refusal is visible above Game settings");
+    close_settings();
+
+    open_settings(220);
+    activate(model, "preset-picker");
+    check(model.action("triangle"), "manage preset with exhausted follower revision");
+    activate(model, "my-preset-delete");
+    activate(model, "my-preset-delete-confirm");
+    check(model.state().navigation.modals.back().title == "The preset was not deleted" &&
+              model.state().navigation.modals.back().body == "A game using this preset can't take another settings revision.",
+          "preset delete refusal is visible above Choose settings");
+    check(model.state().game_settings == exhausted && model.MyPresets().size() == 1 && model.TakeMaintenanceRequests().empty(),
+          "refused preset actions leave records and prepared titles unchanged");
     close_settings();
 
     // A presets file this Playden can't read: no Save row.

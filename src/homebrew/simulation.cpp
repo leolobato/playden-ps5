@@ -10233,8 +10233,8 @@ void Simulation::activate() {
                                 (action_name.rfind("program-", 0) == 0 && action_name != "program-scan") ||
                                 action_name.rfind("override-remove-", 0) == 0 || action_name == "value-reset" ||
                                 action_name == "unlock-setting" || action_name == "reset-settings" ||
-                                action_name.rfind("mypreset-my-", 0) == 0 || action_name == "update-my-preset" ||
-                                action_name == "my-preset-update" || action_name == "my-preset-delete-confirm";
+                                action_name.rfind("mypreset-my-", 0) == 0;
+    // Preset update/delete validate every affected revision themselves and show refusals above the sheet.
     if (edits_settings && !can_change_game_settings()) return;
     if (sign_in_action(action_name)) return;
     if (action_name == "connect") open_sign_in();
@@ -11595,6 +11595,10 @@ void Simulation::activate() {
         const auto change = DeleteMyPreset(my_preset_menu_id_);
         if (change.ok()) {
             finish_my_preset_change(game, before);
+            // The pending Install choice is not a saved game record. Forget its deleted id too,
+            // keeping an explicit default choice so Install agrees with the chooser's Selected row.
+            if (install_choice_ && install_choice_->preset_id == my_preset_menu_id_)
+                install_choice_->preset_id.clear();
             my_preset_menu_id_.clear();
         }
         refresh_game_settings();
