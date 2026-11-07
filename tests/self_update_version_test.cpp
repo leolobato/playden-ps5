@@ -1,4 +1,5 @@
 #include "update/version.h"
+#include "playden_build_commit.h"
 #include <cstdio>
 #include <cstdlib>
 using namespace playden::update;
@@ -21,6 +22,14 @@ int main() {
   // And its commit from git, when the source is a checkout.
   CHECK(BuildCommit() == PLAYDEN_BUILD_COMMIT);
   CHECK(BuildCommit().empty() || BuildCommit().find_first_not_of("0123456789abcdef") == std::string::npos);
+  CHECK(BuildHasLocalChanges() == (PLAYDEN_BUILD_LOCAL_CHANGES != 0));
+  CHECK(BuildVersionText() == VersionWithBuild(CurrentVersion(), BuildCommit(), BuildHasLocalChanges()));
+  // What Playden sends: the commit as build metadata, ".dirty" with local changes, nothing without a commit.
+  CHECK(VersionWithBuild(Version{0, 11, 0}, "3f9a0c1d2e", false) == "0.11.0+3f9a0c1d2e");
+  CHECK(VersionWithBuild(Version{0, 11, 0}, "3f9a0c1d2e", true) == "0.11.0+3f9a0c1d2e.dirty");
+  CHECK(VersionWithBuild(Version{0, 11, 0}, "", true) == "0.11.0");
+  CHECK(VersionWithBuild(*ParseVersion("0.11.0-nightly.20261107.1"), "3f9a0c1d2e", false) ==
+        "0.11.0-nightly.20261107.1+3f9a0c1d2e");
   const auto beta = ParseVersion("v0.7.1-beta.1");
   CHECK(beta);
   CHECK(beta->ToString() == "0.7.1-beta.1");

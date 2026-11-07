@@ -3,9 +3,7 @@
 #ifndef PLAYDEN_VERSION
 #error "PLAYDEN_VERSION must be defined by the build"
 #endif
-#ifndef PLAYDEN_BUILD_COMMIT
-#define PLAYDEN_BUILD_COMMIT ""
-#endif
+#include "playden_build_commit.h"
 #ifndef PLAYDEN_NIGHTLY_BASE
 #define PLAYDEN_NIGHTLY_BASE ""
 #endif
@@ -77,5 +75,14 @@ Version CurrentVersion() {
 std::optional<Version> NightlyBase() { return ParseVersion(PLAYDEN_NIGHTLY_BASE); }
 
 std::string BuildCommit() { return PLAYDEN_BUILD_COMMIT; }
+
+bool BuildHasLocalChanges() { return PLAYDEN_BUILD_LOCAL_CHANGES != 0; }
+
+std::string VersionWithBuild(const Version& version, const std::string& commit, bool local_changes) {
+  if (commit.empty()) return version.ToString();
+  return version.ToString() + "+" + commit + (local_changes ? ".dirty" : "");
+}
+
+std::string BuildVersionText() { return VersionWithBuild(CurrentVersion(), BuildCommit(), BuildHasLocalChanges()); }
 
 }  // namespace playden::update

@@ -818,7 +818,7 @@ int main(int argc, char** argv) {
             sharing = std::make_unique<playden::homebrew::SharingService>(std::move(sharing_config));
             sharing->Start();
             services->SetSharing(sharing.get());
-            simulation.SetSharingContext("", playden::update::CurrentVersion().ToString());
+            simulation.SetSharingContext("", playden::update::BuildVersionText());
         }
     }
 

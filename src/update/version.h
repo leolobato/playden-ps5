@@ -52,4 +52,12 @@ std::optional<Version> NightlyBase();
 // The commit this build was made from (10 hex digits), or empty when the source was not a git checkout.
 std::string BuildCommit();
 
+// Whether tracked files (submodules included) differed from that commit when the build was made.
+bool BuildHasLocalChanges();
+
+// The version with the commit as SemVer build metadata: "0.11.0+3f9a0c1d2e", "0.11.0+3f9a0c1d2e.dirty" with local
+// changes, the plain version without a commit. What Playden sends about itself with recipes, votes and reports.
+std::string VersionWithBuild(const Version& version, const std::string& commit, bool local_changes);
+std::string BuildVersionText();
+
 }  // namespace playden::update

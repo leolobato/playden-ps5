@@ -764,7 +764,7 @@ int main() {
         playden::homebrew::SharingService sharing(std::move(sharing_config));
         sharing.Start();
         simulation.SetSharingContext(playden::ps5::ConsoleFirmwareVersion().value_or(""),
-                                     playden::update::CurrentVersion().ToString());
+                                     playden::update::BuildVersionText());
         auto games_root = playden::ps5::EffectiveGamesRoot(paths);
         if (const auto journal = playden::runtime::LoadLayoutJournal("/data/playden/runtime-state");
             journal && (journal->step == "games-moved" || journal->step == "done"))

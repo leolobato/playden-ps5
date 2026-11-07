@@ -56,6 +56,13 @@ bash "$environment" cmake --build "$root/build/homebrew-ps5" --target playden-ho
 bash "$environment" env PLAYDEN_PACKAGE_DIR="$root/build/homebrew-ps5/dist/FAKE77031" \
  python3 "$root/tests/test_native_package_identity.py"
 echo "Selected Hui package (not deployed): $root/build/homebrew-ps5/dist/FAKE77031"
+# The commit the package says it was built from (Settings › About, and what it shares): local changes are named.
+build_commit=$(sed -n 's/^#define PLAYDEN_BUILD_COMMIT "\(.*\)"$/\1/p' "$root/build/homebrew-ps5/generated/playden_build_commit.h")
+if grep -q '^#define PLAYDEN_BUILD_LOCAL_CHANGES 1$' "$root/build/homebrew-ps5/generated/playden_build_commit.h"; then
+ echo "Built from commit ${build_commit:-unknown} with local changes"
+else
+ echo "Built from commit ${build_commit:-unknown}"
+fi
 if [[ $dev_endpoints == ON ]]; then
  echo "Built with PLAYDEN_DEV_ENDPOINTS=ON: for local testing only, not a release package" >&2
 fi

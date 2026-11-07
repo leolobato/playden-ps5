@@ -2895,7 +2895,7 @@ void Controller::TickSelfUpdate() {
   LiveSelfUpdate live;
   live.phase = update::UpdatePhaseName(snapshot.phase);
   live.current = snapshot.current.ToString();
-  live.commit = update::BuildCommit();
+  live.commit = update::BuildCommit() + (update::BuildHasLocalChanges() && !update::BuildCommit().empty() ? " · local changes" : "");
   live.available = snapshot.available.ToString();
   live.notes = snapshot.notes;
   live.part = snapshot.part;
