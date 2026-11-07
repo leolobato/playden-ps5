@@ -2642,6 +2642,9 @@ void my_presets_chooser(const std::filesystem::path& fixtures, const std::filesy
           "my presets: a name another preset has is refused");
     simulation.SubmitEditorText(std::string(41, 'a'));
     check(simulation.state().editor.active && validation(simulation) == "Up to 40 characters.", "my presets: a long name is refused");
+    simulation.SubmitEditorText("Point\u200band click");
+    check(simulation.state().editor.active && validation(simulation) == "Letters, numbers and punctuation on one line.",
+          "my presets: a name with an invisible character is refused");
     simulation.SubmitEditorText("   ");
     check(simulation.state().editor.active && validation(simulation) == "Type a name for the preset.", "my presets: an empty name is refused");
     simulation.SubmitEditorText("Adventures");
@@ -2695,6 +2698,21 @@ void my_presets_chooser(const std::filesystem::path& fixtures, const std::filesy
     check(simulation.action("focus:preset-picker") && simulation.action("cross") &&
               simulation.state().navigation.focus_key == kMine3 && find_row(simulation, kMine3)->badge == "Current",
           "my presets: the chosen preset is current");
+
+    // The Install sheet's chooser lists them too, and keeps the choice for the install; no Update in its menu.
+    check(simulation.scenario("recipes-one") && simulation.action("focus:install-settings") && simulation.action("cross"),
+          "the Install sheet's chooser");
+    check(top_modal(simulation).id == "preset-picker" && find_row(simulation, kMine1) && !find_row(simulation, kMine1)->selected &&
+              find_row(simulation, kMine1)->badge.empty(),
+          "my presets: the Install sheet's chooser lists them");
+    check(simulation.action("focus:" + kMine1) && simulation.action("triangle") &&
+              (top_modal(simulation).action_keys == std::vector<std::string>{"my-preset-rename", "my-preset-delete", "cancel"}) &&
+              simulation.action("circle"),
+          "my presets: no Update from this game for an install");
+    check(simulation.action("cross") && top_modal(simulation).id == "install", "choose one for the install");
+    check(simulation.action("focus:install-settings") && simulation.action("cross") && find_row(simulation, kMine1)->selected &&
+              find_row(simulation, kMine1)->badge == "Selected",
+          "my presets: the install keeps the chosen preset");
 }
 
 // Game settings: Save as my preset… and Update “<name>”, what they say after, and why they can't.
