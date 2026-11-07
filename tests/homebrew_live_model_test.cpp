@@ -9,7 +9,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "steam_id.h"
 
@@ -660,6 +662,158 @@ void live_program_change_applies_like_other_settings(const std::filesystem::path
     check(model.action("circle") && model.state().navigation.modals.back().id == "context" &&
               model.TakeMaintenanceRequests() == Requests{{SteamId(22380), MaintenanceKind::ApplySettings}},
           "program: the reset applies the same way");
+}
+
+// The player's own presets: loaded at startup beside the settings file (a bad file set aside), looked up with the
+// built-in ones, and changed through the model, which saves my-presets.json before the games using a preset follow it.
+void live_my_presets(const std::filesystem::path& base) {
+    namespace rt = playden::runtime;
+    using playden::homebrew::GameId;
+    using playden::homebrew::MaintenanceKind;
+    using playden::homebrew::TitleActivity;
+    using Requests = std::vector<std::pair<GameId, MaintenanceKind>>;
+    using R = rt::MyPresetRefusal;
+    const auto folder = base / "game-settings-private";
+    std::filesystem::create_directories(folder);
+    check(::chmod(folder.c_str(), 0700) == 0, "my presets: private folder");
+    const auto settings_path = folder / "game-settings.json";
+    const auto presets_path = rt::MyPresetsPath(settings_path);
+    const std::string mine = "my-00000000000000a1", gone = "my-ffffffffffffffff";
+    std::vector<rt::MyPreset> seeded;
+    check(rt::AddMyPreset(&seeded, mine, "Point and click", {{"resolution", "1280x720"}}, 10).ok(), "my presets: seed preset");
+    std::string reason;
+    check(rt::SaveMyPresetsFile(presets_path.string(), seeded, &reason), "my presets: seed file");
+    std::map<GameId, rt::GameSettingsRecord> records;
+    records[SteamId(220)].preset_id = mine;
+    records[SteamId(220)].overrides = {{"controller_preset", "gamepad"}};
+    records[SteamId(220)].revision = 4;
+    records[SteamId(400)].preset_id = mine;
+    records[SteamId(500)].preset_id = "mouse-driven";
+    records[SteamId(500)].revision = 7;
+    records[SteamId(600)].preset_id = gone;
+    records[SteamId(600)].overrides = {{"controller_preset", "mouse"}};
+    check(rt::SaveGameSettingsFile(settings_path.string(), records, &reason), "my presets: seed settings");
+
+    auto model = make_live(base);
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}},
+                           {"mouse-driven", "Mouse", "", "", {{"controller_preset", "mouse"}}}}, {});
+    model.SetGameSettingsFile(settings_path);
+    const auto load = model.SetMyPresetsFile(presets_path);
+    check(load.status == rt::MyPresetsLoadStatus::kLoaded && model.MyPresets() == seeded, "my presets: loaded at startup");
+    check(model.MyPresetUseCounts() == std::map<std::string, std::size_t>{{mine, 2}}, "my presets: games using each are counted");
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(220);
+    runtime.status = "Ready";
+    runtime.ready = runtime.prepared = runtime.has_title = runtime.can_play = true;
+    runtime.activity = TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    (void)model.TakeMaintenanceRequests();
+    unsigned uuids = 0;
+    model.SetMyPresetSources([&uuids]() -> std::optional<std::string> {
+        char text[40];
+        std::snprintf(text, sizeof(text), "%08x-0000-4000-8000-000000000000", ++uuids);
+        return std::string(text);
+    }, [] { return std::int64_t{1000}; });
+    const auto effective = [&model](GameId id, const std::string& setting) {
+        rt::EffectiveSettings settings;
+        check(model.EffectiveSettingsFor(id, &settings), "my presets: effective settings build");
+        return settings.values.at(setting).value;
+    };
+    const auto on_disk = [&] {
+        std::map<GameId, rt::GameSettingsRecord> saved;
+        std::string why;
+        check(rt::LoadGameSettingsFile(settings_path.string(), &saved, &why), "my presets: settings file reads");
+        return saved;
+    };
+    const auto presets_on_disk = [&] { return rt::LoadMyPresetsFile(presets_path.string()).presets; };
+
+    // A game on a player preset takes its settings, its own on top; one on a preset that is gone is Playden default.
+    check(effective(SteamId(220), "resolution") == "1280x720" && effective(SteamId(220), "controller_preset") == "gamepad",
+          "my presets: a game on a player preset uses it");
+    check(effective(SteamId(600), "resolution") == "1920x1080" && effective(SteamId(600), "controller_preset") == "mouse",
+          "my presets: a game on a preset that is gone is Playden default with its own changes");
+
+    // Refusals come back and change nothing.
+    std::string created;
+    auto change = model.CreateMyPreset("  point AND click ", {{"resolution", "2560x1440"}}, &created);
+    check(change.refusal == R::kNameTaken && created.empty() && presets_on_disk() == seeded, "my presets: a taken name is refused");
+    check(model.DeleteMyPreset("my-0000000000000bad").refusal == R::kUnknownId, "my presets: an unknown preset is refused");
+    check(model.ReplaceMyPresetSettings(mine, {{"graphics", "dxvk"}}).refusal == R::kSettingRefused &&
+              model.MyPresets() == seeded && on_disk() == records,
+          "my presets: a setting a preset may not set is refused");
+
+    // Created: saved at once, no game changes.
+    change = model.CreateMyPreset("Keyboard", {{"controller_preset", "gamepad"}}, &created);
+    check(change.ok() && rt::FindMyPreset(model.MyPresets(), created) && created.rfind("my-000000", 0) == 0 && model.MyPresets().size() == 2, "my presets: created");
+    check(presets_on_disk() == model.MyPresets() && on_disk() == records && model.TakeMaintenanceRequests().empty(),
+          "my presets: a new preset is saved and changes no game");
+
+    // New settings: every game using it gets a new revision, saved, and a prepared one has its title updated.
+    check(model.ReplaceMyPresetSettings(mine, {{"resolution", "2560x1440"}}).ok(), "my presets: settings replaced");
+    auto saved = on_disk();
+    check(saved.at(SteamId(220)).revision == 5 && saved.at(SteamId(400)).revision == 1 && saved.at(SteamId(500)) == records.at(SteamId(500)) &&
+              saved.at(SteamId(220)).preset_id == mine && saved == model.state().game_settings,
+          "my presets: games using a changed preset get a new revision");
+    check(rt::FindMyPreset(presets_on_disk(), mine)->preset.settings.at("resolution") == "2560x1440" &&
+              effective(SteamId(220), "resolution") == "2560x1440",
+          "my presets: the new settings are saved and used");
+    check(model.TakeMaintenanceRequests() == Requests{{SteamId(220), MaintenanceKind::ApplySettings}},
+          "my presets: a prepared game using it has its title updated");
+
+    // A rename changes no game.
+    check(model.RenameMyPreset(mine, "Adventure").ok() && rt::FindMyPreset(presets_on_disk(), mine)->preset.name == "Adventure" &&
+              on_disk() == saved && model.TakeMaintenanceRequests().empty(),
+          "my presets: a rename changes no game");
+
+    // Not saved: the file can't be written over (no longer presets), so nothing changes.
+    const auto before = model.MyPresets();
+    {
+        const auto good = presets_on_disk();
+        std::ofstream(presets_path, std::ios::trunc) << "{ not presets";
+        change = model.ReplaceMyPresetSettings(mine, {{"resolution", "1280x720"}});
+        check(change.refusal == R::kNotSaved && !change.detail.empty() && model.MyPresets() == before &&
+                  on_disk() == saved && model.TakeMaintenanceRequests().empty(),
+              "my presets: a failed save changes nothing");
+        std::filesystem::remove(presets_path);
+        check(rt::SaveMyPresetsFile(presets_path.string(), good, &reason), "my presets: file restored");
+    }
+
+    // Deleted: the games using it go back to Playden default with their own changes, and follow it as above.
+    check(model.DeleteMyPreset(mine).ok() && !rt::FindMyPreset(presets_on_disk(), mine), "my presets: deleted");
+    saved = on_disk();
+    check(saved.at(SteamId(220)).preset_id.empty() && saved.at(SteamId(220)).overrides == records.at(SteamId(220)).overrides &&
+              saved.at(SteamId(220)).revision == 6 && saved.at(SteamId(400)).preset_id.empty() &&
+              saved.at(SteamId(400)).revision == 2 && saved.at(SteamId(500)) == records.at(SteamId(500)),
+          "my presets: games using a deleted preset go back to Playden default, keeping their changes");
+    check(effective(SteamId(220), "resolution") == "1920x1080" && effective(SteamId(220), "controller_preset") == "gamepad",
+          "my presets: and play with Playden's values");
+    check(model.TakeMaintenanceRequests() == Requests{{SteamId(220), MaintenanceKind::ApplySettings}},
+          "my presets: a prepared game has its title updated after a delete");
+    check(model.MyPresetUseCounts().empty(), "my presets: nothing uses the remaining preset");
+
+    // A file that isn't presets is set aside at the next start: none shown, and the next save starts a new file.
+    std::ofstream(presets_path, std::ios::trunc) << "{\"format\":1,\"presets\":[{\"id\":\"broken\"}]}";
+    auto restarted = make_live(base);
+    restarted.SetGameSettingsFile(settings_path);
+    auto reloaded = restarted.SetMyPresetsFile(presets_path);
+    check(reloaded.status == rt::MyPresetsLoadStatus::kSetAside && restarted.MyPresets().empty() &&
+              std::filesystem::exists(folder / rt::kMyPresetsBadFileName) && !std::filesystem::exists(presets_path),
+          "my presets: a bad file is set aside at startup");
+    check(rt::MyPresetsLoadLog(reloaded).size() == 1, "my presets: the set-aside is logged");
+    check(restarted.CreateMyPreset("Fresh", {{"resolution", "1280x720"}}).ok() && presets_on_disk().size() == 1,
+          "my presets: saving works again after a set-aside");
+
+    // A file this Playden can't read safely stays, and nothing can change it.
+    const std::string newer = R"({"format":2,"presets":[]})";
+    std::ofstream(presets_path, std::ios::trunc) << newer;
+    auto later = make_live(base);
+    later.SetGameSettingsFile(settings_path);
+    reloaded = later.SetMyPresetsFile(presets_path);
+    check(reloaded.status == rt::MyPresetsLoadStatus::kUnavailable && later.MyPresets().empty(), "my presets: a newer file is unavailable");
+    change = later.CreateMyPreset("Other", {{"resolution", "1280x720"}});
+    std::ifstream kept(presets_path);
+    check(change.refusal == R::kNotSaved && std::string(std::istreambuf_iterator<char>(kept), {}) == newer,
+          "my presets: an unavailable file refuses changes and stays as it is");
 }
 
 // Steam's default only starts the game, so Playden starts a program found in the game's files: the game page says which
@@ -2731,6 +2885,7 @@ int main() {
     live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");
     live_update_runtime_from_maintenance(base / "update-runtime");
     live_program_change_applies_like_other_settings(base);
+    live_my_presets(base / "my-presets");
     live_names_program_found_instead_of_steam_default(base);
     live_runs_setup_program_once(base);
     live_imported_game_steam_app_id(base);

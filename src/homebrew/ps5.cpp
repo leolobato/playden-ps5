@@ -310,6 +310,12 @@ int main() {
         }
         // An empty path disables live writes and surfaces a settings load error.
         simulation.SetGameSettingsFile(settings_file.value_or(std::filesystem::path{}));
+        // The player's own presets live beside the settings file; without that folder there are none to load.
+        if (settings_file) {
+            const auto my_presets = simulation.SetMyPresetsFile(playden::runtime::MyPresetsPath(*settings_file));
+            for (const auto& line : playden::runtime::MyPresetsLoadLog(my_presets))
+                playden::app::AppendLogLine(log_root, "launch.log", line);
+        }
         playden::Storage auth_storage(user_root);
         // One line per Steam CM logon or refusal, with Steam's result code (#51).
         playden::steam::SetCmLog([](const std::string& line) {
@@ -566,6 +572,12 @@ int main() {
                 if (!file || !rt::LoadGameSettingsFile(file->string(), &records, &reason)) return std::nullopt;
                 const auto found = records.find(game);
                 return found == records.end() ? std::nullopt : std::optional<rt::GameSettingsRecord>(found->second);
+            };
+            // Read again for each record resolved, as the settings above: the UI saves them while Playden runs.
+            config.my_presets = [file = settings_file]() -> std::vector<rt::MyPreset> {
+                std::vector<rt::MyPreset> presets; std::string reason;
+                if (!file || !rt::ReadMyPresetsFile(rt::MyPresetsPath(*file).string(), &presets, &reason)) return {};
+                return presets;
             };
             config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
             config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects);

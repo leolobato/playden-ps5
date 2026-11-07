@@ -528,6 +528,10 @@ int main(int argc, char** argv) {
         const auto settings_file = playden::runtime::PrepareGameSettingsStorage(options->data_directory, &settings_reason);
         if (!settings_file) std::fprintf(stderr, "private game settings unavailable: %s\n", settings_reason.c_str());
         simulation.SetGameSettingsFile(settings_file.value_or(std::filesystem::path{}));
+        if (settings_file)
+            for (const auto& line : playden::runtime::MyPresetsLoadLog(
+                     simulation.SetMyPresetsFile(playden::runtime::MyPresetsPath(*settings_file))))
+                std::fprintf(stderr, "%s\n", line.c_str());
         auth_storage = std::make_unique<playden::Storage>(options->data_directory.string());
         auth_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *auth_storage);
         auth_cm->SetOwner("auth");

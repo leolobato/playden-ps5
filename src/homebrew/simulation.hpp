@@ -13,6 +13,7 @@
 #include "runtime/game_settings.h"
 #include "steam/backend/content_language.h"
 #include "runtime/kit_version.h"
+#include "runtime/my_presets.h"
 #include "runtime/package_installer.h"
 #include "runtime/recipe_choice.h"
 
@@ -1327,6 +1328,26 @@ public:
     void SetKitCapabilities(playden::runtime::KitCapabilities kit);
     // Live mode: where per-game settings are kept (loaded now, saved on every change).
     void SetGameSettingsFile(std::filesystem::path path);
+    // Live mode: the player's own presets (my-presets.json beside the settings file), loaded now. A file that can't be
+    // read as presets is set aside (my-presets.json.bad) or, when that isn't safe, left alone with changes refused;
+    // either shows a notice. The load comes back for the log (runtime::MyPresetsLoadLog).
+    playden::runtime::MyPresetsLoad SetMyPresetsFile(std::filesystem::path path);
+    // Where new presets get their id (a random UUID) and time (Unix seconds); unset: RandomUuid and the clock.
+    void SetMyPresetSources(std::function<std::optional<std::string>()> uuid, std::function<std::int64_t()> now);
+    // The player's presets, in the order they were made, and how many games' settings use each (by id; unused ones
+    // are left out).
+    [[nodiscard]] const std::vector<playden::runtime::MyPreset>& MyPresets() const noexcept { return my_presets_; }
+    [[nodiscard]] std::map<std::string, std::size_t> MyPresetUseCounts() const;
+    // Changes to the player's presets. On a refusal nothing changes. Live, my-presets.json is saved before anything
+    // else changes. New settings or a deletion reach every game using the preset as a Game settings edit does: its
+    // record's revision goes up (a deletion also takes it back to Playden default, keeping its own changes), the
+    // settings are saved, and a prepared game gets its title updated (applied now when stopped, otherwise from its
+    // next start in Playden). A rename changes no game. *created_id: the new preset's id.
+    playden::runtime::MyPresetChange CreateMyPreset(std::string_view name, std::map<std::string, std::string> settings,
+                                                    std::string* created_id = nullptr);
+    playden::runtime::MyPresetChange RenameMyPreset(const std::string& id, std::string_view name);
+    playden::runtime::MyPresetChange ReplaceMyPresetSettings(const std::string& id, std::map<std::string, std::string> settings);
+    playden::runtime::MyPresetChange DeleteMyPreset(const std::string& id);
     // The recipe and effective settings the sheet shows for a game.
     // Recipes the runtime generated from Steam launch options; a shipped recipe wins.
     void SetGeneratedRecipes(const std::vector<playden::runtime::GameRecipe>& recipes);
@@ -1533,6 +1554,12 @@ private:
     // here (its refusal is shown apart); recipe_for_base is what the game would really run.
     [[nodiscard]] const playden::runtime::GameRecipe& candidate_recipe(GameId id, const BaseChoice& base) const;
     [[nodiscard]] const playden::runtime::SettingsPreset* preset_for_base(const BaseChoice& base) const;
+    // A preset by id: a built-in one, then the player's. A player's preset that is gone is Playden default.
+    [[nodiscard]] const playden::runtime::SettingsPreset* find_preset(const std::string& id) const;
+    // What a change to the player's presets does to the games using one.
+    enum class MyPresetFollow { kNone, kSettings, kDeleted };
+    playden::runtime::MyPresetChange commit_my_presets(std::vector<playden::runtime::MyPreset> next, const std::string& id,
+                                                       MyPresetFollow follow);
     [[nodiscard]] const CommunityRecipeOffer* community_offer(GameId id, const std::string& recipe_id,
                                                               const std::string& revision = {}) const;
     // The Steam app ID another store's game uses for Steamworks: its own steam_appid.txt's (as the runtime last saw
@@ -1671,6 +1698,13 @@ private:
     std::string console_firmware_;
     std::filesystem::path game_settings_file_;
     std::map<GameId, playden::runtime::GameSettingsRecord> saved_game_settings_;
+    // The player's presets (SetMyPresetsFile); unavailable: the file couldn't be read or set aside, so none are shown
+    // and none are saved.
+    std::filesystem::path my_presets_file_;
+    std::vector<playden::runtime::MyPreset> my_presets_;
+    bool my_presets_unavailable_ = false;
+    std::function<std::optional<std::string>()> my_preset_uuid_;
+    std::function<std::int64_t()> my_preset_now_;
     bool settings_save_failed_ = false;
     bool settings_load_failed_ = false;
     std::optional<playden::runtime::GameSettingsRecord> settings_opened_record_;  // for the close toast

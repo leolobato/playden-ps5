@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "homebrew/simulation.hpp"
+#include "platform/random_id.h"
 #include "platform/usb_mount.h"
 #include "runtime/game_probe.h"
 
@@ -12783,6 +12784,99 @@ void Simulation::SetGameSettingsFile(std::filesystem::path path) {
     rebuild_view();
 }
 
+rt::MyPresetsLoad Simulation::SetMyPresetsFile(std::filesystem::path path) {
+    my_presets_file_ = std::move(path);
+    auto load = rt::LoadMyPresetsFile(my_presets_file_.string());
+    my_presets_ = load.presets;
+    my_presets_unavailable_ = load.status == rt::MyPresetsLoadStatus::kUnavailable;
+    if (load.status == rt::MyPresetsLoadStatus::kSetAside)
+        push_notice({"my-presets-set-aside", "Your presets could not be read", "", false, kLiveNoticeSeconds, true,
+                     "Playden kept the file as my-presets.json.bad and starts with no presets of yours."});
+    else if (my_presets_unavailable_)
+        push_notice({"my-presets-unavailable", "Your presets could not be read", "", false, kLiveNoticeSeconds, true,
+                     "They are left as they are, and can't be changed until Playden can read them."});
+    rebuild_view();
+    return load;
+}
+
+void Simulation::SetMyPresetSources(std::function<std::optional<std::string>()> uuid, std::function<std::int64_t()> now) {
+    my_preset_uuid_ = std::move(uuid);
+    my_preset_now_ = std::move(now);
+}
+
+std::map<std::string, std::size_t> Simulation::MyPresetUseCounts() const {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& [game, record] : state_.game_settings)
+        if (rt::FindMyPreset(my_presets_, record.preset_id)) ++counts[record.preset_id];
+    return counts;
+}
+
+rt::MyPresetChange Simulation::CreateMyPreset(std::string_view name, std::map<std::string, std::string> settings,
+                                              std::string* created_id) {
+    const auto uuid = my_preset_uuid_ ? my_preset_uuid_() : playden::RandomUuid();
+    const auto id = uuid ? rt::MyPresetIdFromUuid(*uuid) : std::nullopt;
+    const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+    auto next = my_presets_;
+    if (auto change = rt::AddMyPreset(&next, id.value_or(std::string()), name, std::move(settings), now); !change.ok())
+        return change;
+    auto change = commit_my_presets(std::move(next), *id, MyPresetFollow::kNone);
+    if (change.ok() && created_id) *created_id = *id;
+    return change;
+}
+
+rt::MyPresetChange Simulation::RenameMyPreset(const std::string& id, std::string_view name) {
+    const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+    auto next = my_presets_;
+    if (auto change = rt::RenameMyPreset(&next, id, name, now); !change.ok()) return change;
+    return commit_my_presets(std::move(next), id, MyPresetFollow::kNone);
+}
+
+rt::MyPresetChange Simulation::ReplaceMyPresetSettings(const std::string& id, std::map<std::string, std::string> settings) {
+    const auto now = my_preset_now_ ? my_preset_now_() : static_cast<std::int64_t>(std::time(nullptr));
+    auto next = my_presets_;
+    if (auto change = rt::ReplaceMyPresetSettings(&next, id, std::move(settings), now); !change.ok()) return change;
+    return commit_my_presets(std::move(next), id, MyPresetFollow::kSettings);
+}
+
+rt::MyPresetChange Simulation::DeleteMyPreset(const std::string& id) {
+    auto next = my_presets_;
+    if (auto change = rt::DeleteMyPreset(&next, id); !change.ok()) return change;
+    return commit_my_presets(std::move(next), id, MyPresetFollow::kDeleted);
+}
+
+rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next, const std::string& id, MyPresetFollow follow) {
+    const auto refuse = [](std::string why) { return rt::MyPresetChange{rt::MyPresetRefusal::kNotSaved, std::move(why)}; };
+    std::vector<GameId> following;
+    if (follow != MyPresetFollow::kNone)
+        for (const auto& [game, record] : state_.game_settings) {
+            if (record.preset_id != id) continue;
+            if (record.revision == std::numeric_limits<std::uint64_t>::max())
+                return refuse("A game using this preset can't take another settings revision.");
+            following.push_back(game);
+        }
+    if (live()) {
+        if (my_presets_unavailable_ || my_presets_file_.empty()) return refuse("Your presets could not be read when Playden started.");
+        std::string reason;
+        if (!rt::SaveMyPresetsFile(my_presets_file_.string(), next, &reason)) return refuse(reason);
+    }
+    my_presets_ = std::move(next);
+    // Saved first, so a game's settings never name a preset the file doesn't have yet. Each game then follows the
+    // preset as after a Game settings edit; a deleted one leaves it on Playden default with its own changes.
+    for (const auto& game : following) {
+        auto& record = state_.game_settings[game];
+        if (follow == MyPresetFollow::kDeleted) record.preset_id.clear();
+        ++record.revision;
+    }
+    if (!following.empty()) {
+        save_profile();
+        if (live() && !settings_save_failed_)
+            for (const auto& game : following)
+                if (game_prepared(game)) pending_maintenance_requests_.push_back({game, MaintenanceKind::ApplySettings});
+    }
+    rebuild_view();
+    return {};
+}
+
 void Simulation::SetKitCapabilities(rt::KitCapabilities kit) {
     kit_ = kit;
     refresh_game_settings();
@@ -12981,10 +13075,15 @@ const rt::GameRecipe& Simulation::candidate_recipe(GameId id, const BaseChoice& 
 }
 
 const rt::SettingsPreset* Simulation::preset_for_base(const BaseChoice& base) const {
-    const std::string wanted = !base.community.id.empty() || base.preset_id.empty() ? std::string("playden-default") : base.preset_id;
+    return find_preset(!base.community.id.empty() || base.preset_id.empty() ? std::string("playden-default") : base.preset_id);
+}
+
+const rt::SettingsPreset* Simulation::find_preset(const std::string& id) const {
     for (const auto& preset : settings_presets_)
-        if (preset.id == wanted) return &preset;
-    return nullptr;
+        if (preset.id == id) return &preset;
+    if (!rt::IsMyPresetId(id)) return nullptr;
+    if (const auto* mine = rt::FindMyPreset(my_presets_, id)) return &mine->preset;
+    return find_preset("playden-default");
 }
 
 std::uint32_t Simulation::steam_app_of(GameId id) const {
@@ -13639,11 +13738,8 @@ rt::KitCapabilities Simulation::kit_for(GameId id) const {
 
 const rt::SettingsPreset* Simulation::preset_for(GameId id) const {
     const auto record = state_.game_settings.find(id);
-    const std::string wanted = record == state_.game_settings.end() || record->second.preset_id.empty()
-        ? std::string("playden-default") : record->second.preset_id;
-    for (const auto& preset : settings_presets_)
-        if (preset.id == wanted) return &preset;
-    return nullptr;
+    return find_preset(record == state_.game_settings.end() || record->second.preset_id.empty()
+        ? std::string("playden-default") : record->second.preset_id);
 }
 
 bool Simulation::EffectiveSettingsFor(GameId id, rt::EffectiveSettings* settings) const {
@@ -13863,9 +13959,7 @@ std::map<std::string, std::string> Simulation::kept_start_choices(GameId id) con
 }
 
 void Simulation::build_preset_comparison(GameId id, const std::string& preset_id) {
-    const rt::SettingsPreset* chosen = nullptr;
-    for (const auto& preset : settings_presets_)
-        if (preset.id == preset_id) chosen = &preset;
+    const rt::SettingsPreset* chosen = find_preset(preset_id);
     rt::EffectiveSettings current, after;
     rt::SettingsError error;
     if (!chosen || !EffectiveSettingsFor(id, &current) ||
