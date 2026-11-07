@@ -2542,14 +2542,18 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
               find_row(simulation, "feedback-send")->subtitle.find("second report") != std::string::npos &&
               find_row(simulation, "feedback-send")->subtitle.find("vote") == std::string::npos,
           "a failed report says why in a report's words and offers Try again");
-    // Changes worth sharing put Share recipe by the preset, out of Advanced.
+    // Share recipe sits just above Reset all to preset, between two dividers, with Advanced collapsed.
     check(simulation.scenario("share-new"), "share-new scenario loads for Game settings");
     simulation.action("circle");
     {
         const auto& keys = top().action_keys;
         const auto share = std::find(keys.begin(), keys.end(), "share-recipe");
         const auto advanced = std::find(keys.begin(), keys.end(), "section-advanced");
-        check(top().id == "game-settings" && share != keys.end() && share < advanced, "Share recipe is at the top with changes to share");
+        check(top().id == "game-settings" && share != keys.end() && share > advanced && share - keys.begin() >= 1 &&
+                  share + 2 < keys.end() && *(share - 1) == "divider" && *(share + 1) == "divider" && *(share + 2) == "reset-settings" &&
+                  !simulation.state().navigation.focus_key.empty(),
+              "Share recipe is above Reset all to preset, set apart by dividers, outside Advanced");
+        check(std::count(keys.begin(), keys.end(), "share-recipe") == 1, "and listed once");
     }
     // The prompt can come up away from the game's page: Change settings still opens that game's settings.
     check(simulation.scenario("share-new"), "share-new scenario loads to leave the game's page");

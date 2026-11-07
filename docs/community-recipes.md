@@ -16,8 +16,8 @@ sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) a
 
 ## Share one from Playden
 
-Get the game running well from **Game settings**, then choose **Share recipe** (at the top of Game settings once
-your changes go beyond display preferences, otherwise under Advanced), or answer "It ran well" when Playden asks
+Get the game running well from **Game settings**, then choose **Share recipe** (near the end of Game settings, just
+above Reset all to preset), or answer "It ran well" when Playden asks
 how the game ran. Playden sends the recipe to the Playden API, which opens the pull request on
 playden-ps5-recipes for review. No GitHub account is needed.
 

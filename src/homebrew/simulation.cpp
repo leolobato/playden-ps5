@@ -14212,9 +14212,6 @@ std::vector<std::string> Simulation::game_settings_actions() const {
         case MyPresetAction::kUpdate: actions.push_back("update-my-preset"); break;
         case MyPresetAction::kNone: break;
     }
-    // Changes worth sharing put Share recipe up here, by the preset; otherwise it waits in Advanced.
-    const bool share_on_top = changes_worth_sharing(game);
-    if (share_on_top) actions.push_back("share-recipe");
     const auto rows = [&](G group) {
         for (const auto& definition : rt::SettingsCatalogue())
             if (definition.group == group && game_settings_row_shown(definition, game)) actions.push_back("setting-" + definition.id);
@@ -14247,10 +14244,10 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     if (expanded_settings_sections_.count("section-advanced")) {
         rows(G::kAdvanced);
         actions.push_back("effective-command");
-        // Share recipe sends the game's settings for review; the file export stays for FTP.
-        if (sharing_ref(game) && !share_on_top) actions.push_back("share-recipe");
         actions.push_back("export-recipe");
     }
+    // Share recipe sends the game's settings for review, set apart just above Reset; the file export stays for FTP.
+    if (sharing_ref(game)) actions.insert(actions.end(), {"divider", "share-recipe", "divider"});
     actions.push_back("reset-settings");
     actions.push_back("cancel");
     return actions;
