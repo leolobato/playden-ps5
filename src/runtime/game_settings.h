@@ -364,6 +364,21 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
                             const std::map<std::string, std::string>& overrides, const KitCapabilities& kit,
                             EffectiveSettings* settings, SettingsError* error);
 
+// What a player preset made from a game keeps (My presets). kSave: what the player chose for the game, either as its
+// base (a preset's values, a community recipe's) or as its own changes. kOwnChanges: its own changes alone, to move
+// into the player preset it uses.
+enum class PresetCapture { kSave, kOwnChanges };
+// The settings a preset made from a game's effective settings holds: each row a preset may set (ValidatePresetSetting)
+// whose value the player chose, as the row shows it (ChosenValue). Chosen means from the player (kUser) or a preset
+// (kPreset, which includes the rows a chosen controller preset brings) and, for kSave on a community recipe (recipe
+// is the one the settings were built from), the recipe's values. The game's own recipe (built-in or detected) and
+// Playden's defaults describe this game, so they are left out, as are rows the recipe locks (also when changed
+// anyway) and rows that don't apply here (unavailable, except one that waits for the kit update). A chosen value
+// equal to Playden's default is kept: it is what makes the row differ from a recipe or preset underneath, like the
+// built-in OpenGL game preset's 60 Hz.
+std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& recipe, const EffectiveSettings& settings,
+                                                          PresetCapture capture);
+
 // Why one choice of a row cannot apply with the other effective values (Frame limit 120 and 40 need 120 Hz output,
 // Controller PlayStation a kit with input-playstation), or empty when it can. BuildEffectiveSettings turns such a saved choice into the Playden default, with this reason.
 // On a title that still runs an older runtime, a choice that needs the kit's (Frame limit 120 with 120 Hz output

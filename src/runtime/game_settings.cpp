@@ -656,6 +656,21 @@ bool IsUnlockKey(std::string_view key) {
   return definition != nullptr;
 }
 
+std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& recipe, const EffectiveSettings& settings,
+                                                          PresetCapture capture) {
+  const bool community = capture == PresetCapture::kSave && IsCommunityRecipeId(recipe.id);
+  std::map<std::string, std::string> kept;
+  for (const auto& [id, value] : settings.values) {
+    const bool chosen = value.source == ValueSource::kUser ||
+                        (capture == PresetCapture::kSave && value.source == ValueSource::kPreset) ||
+                        (community && value.source == ValueSource::kRecipe);
+    if (!chosen || value.locked || (!value.available && !value.waits_for_update)) continue;
+    const auto& wanted = ChosenValue(value);
+    if (ValidatePresetSetting(id, wanted, nullptr)) kept[id] = wanted;
+  }
+  return kept;
+}
+
 std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::string_view id, std::string_view value) {
   if (id == "controller") {
     if (value != "playstation" || settings.input_playstation || settings.input_playstation_needs_update) return {};

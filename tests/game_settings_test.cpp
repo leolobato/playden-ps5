@@ -1710,6 +1710,93 @@ int main(int argc, char** argv) {
     CHECK(!ValidatePresetSetting(refused, "x", &reason));
   CHECK(RetiredSetting("opengl_thread") && !RetiredSetting("refresh"));
 
+  // A player preset made from a game keeps what the player chose for it, by where each value came from.
+  {
+    GameRecipe own;
+    own.id = "steam-4000-own-v1";
+    own.app_id = 4000;
+    own.launch_entries = {{"game", "Game", "game.exe", "", ""}};
+    own.defaults = {{"resolution", "1280x720"}, {"performance_overlay", "on"}, {"window_view", "desktop"},
+                    {"steam_features", "emulate"}};
+    own.locked = {"vsync", "trigger_deadzone"};
+    SettingsPreset preset{"keyboard-on-controller", "Keyboard", "", "", {{"controller_preset", "gamepad"}, {"refresh", "60"}}};
+    const std::map<std::string, std::string> overrides = {
+        {"rumble", "50"},                    // a player change
+        {"performance_overlay", "off"},      // equal to Playden's default, over the recipe's value
+        {"button.cross", "space"},           // a button binding: free text a preset may hold
+        {"extra_arguments", "-windowed"},    // free text a preset may not hold
+        {"graphics", "dxvk"},                // never in a preset
+        {"trigger_deadzone", "10"},          // a locked row, changed anyway
+        {"unlock.trigger_deadzone", "on"},
+        {"vsync", "off"},                    // a locked row: the player's value doesn't apply
+        {"volume", "50"},                    // unavailable: the kit has no volume
+    };
+    const auto tuning = KitCapabilitiesFromManifest({kKitInputRumble, kKitInputTuning, kKitDisplay120Hz}, false);
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(own, &preset, overrides, tuning, &settings, &error));
+    // What the rows are, so each case below checks what it says.
+    CHECK(settings.values.at("resolution").source == ValueSource::kRecipe);
+    CHECK(settings.values.at("refresh").source == ValueSource::kPreset && Value(settings, "refresh") == "60" &&
+          settings.values.at("refresh").available);
+    CHECK(settings.values.at("rumble").source == ValueSource::kUser && settings.values.at("rumble").available);
+    CHECK(settings.values.at("trigger_deadzone").locked && settings.values.at("trigger_deadzone").unlocked &&
+          settings.values.at("trigger_deadzone").available && Value(settings, "trigger_deadzone") == "10");
+    CHECK(settings.values.at("vsync").locked && settings.values.at("vsync").source == ValueSource::kPlayden);
+    CHECK(settings.values.at("volume").source == ValueSource::kUser && !settings.values.at("volume").available &&
+          !settings.values.at("volume").waits_for_update);
+    CHECK(settings.values.at("graphics").source == ValueSource::kUser);
+    CHECK(settings.values.at("controller").source == ValueSource::kPreset);  // brought by the controller preset
+
+    auto kept = PresetSettingsFromGame(own, settings, PresetCapture::kSave);
+    const std::map<std::string, std::string> chosen = {
+        {"controller_preset", "gamepad"}, {"refresh", "60"}, {"controller", Value(settings, "controller")},
+        {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}};
+    for (const auto& [id, value] : chosen) CHECK(kept.count(id) && kept.at(id) == value);
+    // Everything else is left out: the recipe's values, Playden's, locked and unavailable rows, what a preset can't set.
+    for (const char* left : {"resolution", "window_view", "steam_features", "extra_arguments", "graphics", "trigger_deadzone",
+                             "unlock.trigger_deadzone", "vsync", "volume", "launch_option", "architecture"})
+      CHECK(!kept.count(left));
+    for (const auto& [id, value] : kept) {
+      CHECK(ValidatePresetSetting(id, value, &reason));
+      const auto source = settings.values.at(id).source;
+      CHECK(source == ValueSource::kUser || source == ValueSource::kPreset);
+    }
+    // Own changes only: the preset's values stay with the preset.
+    kept = PresetSettingsFromGame(own, settings, PresetCapture::kOwnChanges);
+    CHECK(kept == (std::map<std::string, std::string>{
+                      {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}}));
+
+    // A community recipe as the base: its values are someone's choice for the game, and come along. Its locks don't.
+    GameRecipe community = own;
+    community.id = "community-steam-4000-keyboard-play";
+    CHECK(IsCommunityRecipeId(community.id));
+    CHECK(BuildEffectiveSettings(community, nullptr, {{"rumble", "50"}}, tuning, &settings, &error));
+    CHECK(settings.values.at("resolution").source == ValueSource::kRecipe);
+    kept = PresetSettingsFromGame(community, settings, PresetCapture::kSave);
+    CHECK(kept == (std::map<std::string, std::string>{{"resolution", "1280x720"}, {"performance_overlay", "on"},
+                                                      {"window_view", "desktop"}, {"steam_features", "emulate"},
+                                                      {"rumble", "50"}}));
+    CHECK(PresetSettingsFromGame(community, settings, PresetCapture::kOwnChanges) ==
+          (std::map<std::string, std::string>{{"rumble", "50"}}));
+    // The game's own recipe alone: nothing chosen.
+    CHECK(BuildEffectiveSettings(own, nullptr, {}, tuning, &settings, &error));
+    CHECK(PresetSettingsFromGame(own, settings, PresetCapture::kSave).empty());
+
+    // A choice that waits for the kit update is kept as chosen, not as the fallback that applies until then.
+    const auto stale = KitForTitleRuntime(KitCapabilitiesFromManifest({kKitInputPlaystation}, false), false);
+    CHECK(BuildEffectiveSettings(own, nullptr, {{"controller", "playstation"}}, stale, &settings, &error));
+    CHECK(Value(settings, "controller") == "xinput" && settings.values.at("controller").waits_for_update);
+    CHECK(PresetSettingsFromGame(own, settings, PresetCapture::kSave) ==
+          (std::map<std::string, std::string>{{"controller", "playstation"}}));
+    // So is a row that doesn't apply until then.
+    const auto stale_rumble = KitForTitleRuntime(KitCapabilitiesFromManifest({kKitInputRumble}, false), false);
+    CHECK(BuildEffectiveSettings(own, nullptr, {{"rumble", "50"}}, stale_rumble, &settings, &error));
+    CHECK(!settings.values.at("rumble").available && settings.values.at("rumble").waits_for_update);
+    CHECK(PresetSettingsFromGame(own, settings, PresetCapture::kSave) ==
+          (std::map<std::string, std::string>{{"rumble", "50"}}));
+  }
+
   // The per-game record round-trips and drops settings this build does not know.
   GameSettingsRecord record{"mouse-driven", {{"resolution", "1280x720"}, {"extra_arguments", "-a \"b c\"\\"}}, 7};
   GameSettingsRecord loaded;
