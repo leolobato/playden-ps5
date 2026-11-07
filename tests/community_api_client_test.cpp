@@ -260,6 +260,24 @@ void LocalRefusals() {
   request.title = std::string(61, 'x');
   CHECK(refused(request));
   request.title = std::string(60, 'x');
+  // The Share sheet's lines: up to 4 of 1-300 printable characters, sent as an array only when there are any.
+  {
+    auto summary = MinimalRequest();
+    CHECK(SubmissionBody(summary).find("\"summary\"") == std::string::npos);
+    summary.summary = {"What is sent: Game.exe · DXVK · Resolution 3840×2160", "Your changes: none"};
+    CHECK(SubmissionBody(summary).find(
+              ",\"summary\":[\"What is sent: Game.exe · DXVK · Resolution 3840×2160\",\"Your changes: none\"]") !=
+          std::string::npos);
+    CHECK(!refused(summary));
+    summary.summary = {"a", "b", "c", "d", "e"};
+    CHECK(refused(summary));
+    summary.summary = {std::string(301, 'x')};
+    CHECK(refused(summary));
+    summary.summary = {"two\nlines"};
+    CHECK(refused(summary));
+    summary.summary = {""};
+    CHECK(refused(summary));
+  }
   CHECK(!refused(request));
   request.title = "tab\there";
   CHECK(refused(request));

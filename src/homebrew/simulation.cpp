@@ -452,6 +452,19 @@ std::string join_text(const std::vector<std::string>& items, const char* separat
     return text;
 }
 
+// A Share sheet line sent for the PR description: a long list is cut at a " · " (ending in "…") until it fits the
+// API's limit; empty when even its first item doesn't.
+std::string summary_line(const std::string& text) {
+    const auto fits = [](const std::string& line) { return cm::IsSubmissionText(line, 1, cm::kSubmissionSummaryLineMaxCharacters); };
+    std::string line = text;
+    for (auto end = text.size(); !fits(line);) {
+        end = end == 0 ? std::string::npos : text.rfind(" · ", end - 1);
+        if (end == std::string::npos || end == 0) return {};
+        line = text.substr(0, end) + " · …";
+    }
+    return line;
+}
+
 // "Resolution 3840×2160", "120 Hz on", "Touchpad → M": one setting as a recipe sets it.
 std::string change_item(const rt::SettingDefinition& definition, const rt::EffectiveValue& value) {
     const auto chosen = rt::ChosenValue(value);
@@ -14878,6 +14891,12 @@ void Simulation::send_share() {
     if (share_->decision.send_submission_id && record != state_.game_settings.end())
         request.submission_id = record->second.shared_recipe.submission_id;
     request.idempotency_key = share_->idempotency_key;
+    // What the sheet showed, for the PR description (the reviewer sees what the player saw).
+    for (const auto& line : {"What is sent: " + (share_->sent.empty() ? std::string("The game's settings") : share_->sent),
+                      share_->based_on ? "Your changes: " + (share_->changes.empty() ? std::string("none") : share_->changes)
+                                       : std::string()})
+        if (!line.empty())
+            if (auto fitted = summary_line(line); !fitted.empty()) request.summary.push_back(std::move(fitted));
     auto checked = request;
     if (checked.idempotency_key.empty()) checked.idempotency_key = "made-by-the-worker";
     if (const auto problem = cm::SubmissionRequestProblem(checked); !problem.empty()) {

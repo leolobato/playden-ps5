@@ -324,6 +324,9 @@ std::string SubmissionRequestProblem(const SubmissionRequest& request) {
     return "a choice needs based_on";
   }
   if (!request.submission_id.empty() && !IsSubmissionId(request.submission_id)) return "bad submission id";
+  if (request.summary.size() > kSubmissionSummaryMaxLines) return "the summary has more than 4 lines";
+  for (const auto& line : request.summary)
+    if (!PrintableText(line, 1, kSubmissionSummaryLineMaxCharacters)) return "a summary line must be 1-300 printable characters";
   if (!ShortAscii(request.kit, 64) || !ShortAscii(request.firmware, 64) || !ShortAscii(request.playden_version, 64))
     return "kit, firmware and Playden version are required";
   if (!IsIdempotencyKey(request.idempotency_key)) return "the Idempotency-Key must be 8-128 of A-Z a-z 0-9 _ -";
@@ -356,6 +359,11 @@ std::string SubmissionBody(const SubmissionRequest& request) {
             ",\"revision\":" + Quoted(request.based_on->revision) + "}";
   if (request.choice != ShareChoice::kNone) body += std::string(",\"choice\":\"") + ChoiceName(request.choice) + "\"";
   if (!request.submission_id.empty()) body += ",\"submission_id\":" + Quoted(request.submission_id);
+  if (!request.summary.empty()) {
+    body += ",\"summary\":[";
+    for (std::size_t i = 0; i < request.summary.size(); ++i) body += (i ? "," : "") + Quoted(request.summary[i]);
+    body += "]";
+  }
   body += ",\"kit\":" + Quoted(request.kit) + ",\"firmware\":" + Quoted(request.firmware) +
           ",\"playden_version\":" + Quoted(request.playden_version) + "}";
   return body;

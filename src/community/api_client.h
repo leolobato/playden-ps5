@@ -32,6 +32,9 @@ namespace playden::community {
 inline constexpr std::size_t kMaxSubmissionRecipeBytes = 16 << 10;  // the API's recipe limit
 inline constexpr std::size_t kMaxSubmissionBodyBytes = 24 << 10;    // the API's body limit
 inline constexpr std::size_t kSubmissionTitleMaxCharacters = 60;
+// The Share sheet's lines sent with a recipe for the PR description: at most 4, each 1-300 printable characters.
+inline constexpr std::size_t kSubmissionSummaryMaxLines = 4;
+inline constexpr std::size_t kSubmissionSummaryLineMaxCharacters = 300;
 inline constexpr std::size_t kSubmissionNameMaxCharacters = 40;
 
 // The recipe keys the API accepts; it refuses any other (store and game among them).
@@ -76,6 +79,8 @@ struct SubmissionRequest {
   ShareChoice choice = ShareChoice::kNone;     // sent only when the player was asked
   std::string submission_id;                   // the game's saved submission; left out when empty
   std::string kit, firmware, playden_version;  // required
+  // What the Share sheet showed ("What is sent: …", "Your changes: …"), for the PR description; left out when empty.
+  std::vector<std::string> summary;
   // One per share attempt (NewIdempotencyKey), the same for every retry of it.
   std::string idempotency_key;
 };

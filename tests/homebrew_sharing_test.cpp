@@ -262,6 +262,7 @@ void share_and_vote(const std::filesystem::path& base) {
     check(contains(find_row(model, "share-what")->subtitle, "Darkwood.exe") ||
               contains(find_row(model, "share-what")->subtitle, "Game.exe"),
           "what is sent names the program");
+    const auto what_is_sent = find_row(model, "share-what")->subtitle;
     activate(model, "share-title");
     check(model.state().editor.active && model.state().editor.purpose == "Recipe title", "the title opens the keyboard");
     // Text the API would refuse stays in the editor: a zero-width space inside.
@@ -304,6 +305,10 @@ void share_and_vote(const std::filesystem::path& base) {
               request.firmware == "10.01" && request.playden_version == "0.6.0" && !request.based_on &&
               request.choice == cm::ShareChoice::kNone && request.submission_id.empty() && request.idempotency_key.empty(),
           "the request carries the recipe, title, name and versions; no base, no choice, no key yet");
+    // The PR description gets what the sheet showed: what is sent (program, resolution); no base, no "Your changes".
+    check(request.summary.size() == 1 && request.summary[0] == "What is sent: " + what_is_sent &&
+              contains(request.summary[0], "3840"),
+          "the request carries the sheet's What is sent line");
     auto keyed = request;
     keyed.idempotency_key = "checked-in-test";
     check(cm::SubmissionRequestProblem(keyed).empty(), "the request keeps the API's contract");
