@@ -2555,6 +2555,30 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
               "Share recipe is above Reset all to preset, set apart by dividers, outside Advanced");
         check(std::count(keys.begin(), keys.end(), "share-recipe") == 1, "and listed once");
     }
+    // What is sent lists only what the recipe carries: a row the game's title can't use yet (it waits for its runtime
+    // kit update) is left out of the recipe, so it isn't listed either.
+    {
+        simulation.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"launcher-mode"}, true));
+        check(top().id == "game-settings", "Game settings is open under the Share sheet");
+        activate(simulation, "setting-start_through_launcher");
+        activate(simulation, "choice-1");
+        if (top().id == "confirmation") activate(simulation, "launcher-help-on");
+        check(simulation.state().game_settings.at(game).overrides.at("start_through_launcher") == "on", "Start through a launcher is on");
+        const auto what_is_sent = [&] {
+            while (top().id != "game-settings") simulation.action("circle");
+            activate(simulation, "share-recipe");
+            const auto* row = find_row(simulation, "share-what");
+            return row ? row->subtitle : std::string("(no row)");
+        };
+        check(what_is_sent().find("Start through a launcher") != std::string::npos, "with launcher mode, What is sent lists it");
+        playden::runtime::KitCapabilities waiting;
+        waiting.launcher_mode_needs_update = true;
+        simulation.SetKitCapabilities(waiting);
+        const auto sent = what_is_sent();
+        check(top().id == "share-recipe" && sent.find("Start through a launcher") == std::string::npos,
+              (std::string("waiting for the runtime kit update, What is sent leaves it out: ") + sent).c_str());
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    }
     // The prompt can come up away from the game's page: Change settings still opens that game's settings.
     check(simulation.scenario("share-new"), "share-new scenario loads to leave the game's page");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");

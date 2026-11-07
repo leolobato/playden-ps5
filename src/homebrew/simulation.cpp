@@ -14655,6 +14655,9 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
     for (const auto& definition : rt::SettingsCatalogue()) {
         if (covered.count(definition.id)) continue;
         const auto& value = after.values.at(definition.id);
+        // A row the game's title can't use yet (it waits for its runtime kit update) stays out of the recipe, so it
+        // isn't a change the share sends either.
+        if (!value.available) continue;
         if (rt::ChosenValue(before.values.at(definition.id)) == rt::ChosenValue(value)) continue;
         items.push_back(change_item(definition, value));
         if (program_rows.count(definition.id)) *program_or_graphics = true;
