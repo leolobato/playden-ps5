@@ -1064,6 +1064,7 @@ void account_link(const std::filesystem::path& base) {
 // own selection doesn't close it.
 void feedback_prompt_waits_for_library(const std::filesystem::path& base) {
     std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
     Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
     model.SetGameSettingsFile(base / "game-settings.json");
     model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
@@ -1105,6 +1106,104 @@ void feedback_prompt_waits_for_library(const std::filesystem::path& base) {
     check(model.state().navigation.selected_game_id != selected, "the selection moved");
     check(model.view().surface == "feedback" && model.view().title == "Did Darkwood start?",
           "a library update that moves the selection leaves the prompt open");
+    // A game no longer in the delivered library has nothing to ask about, and doesn't hold up what comes after.
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    model.NotifyStartFailed(GameId::Steam(999), "");
+    check(model.state().navigation.modals.empty(), "a failure for a game the library no longer lists is dropped");
+    model.NotifyStartFailed(kGame, "");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Darkwood couldn't start",
+          "and the next failure still shows");
+}
+
+// "Couldn't start" at a start where the library arrives late: it waits for the game's name, and the runtime's own
+// "Could not start" for it says nothing more, but only for that failure.
+void start_failed_waits_for_library(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    model.SetGameSettingsFile(base / "game-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetWallClock(1'000'000);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    model.NotifyStartFailed(kGame, "");
+    check(model.state().navigation.modals.empty(), "a failure waits while the library doesn't list the game");
+    playden::GameSummary game;
+    game.id = kGame;
+    game.title = "Darkwood";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "library delivered");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Darkwood couldn't start",
+          "once listed, the dialog names it");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    // Much later, a refusal for the same game is a new outcome: it is said.
+    model.SetWallClock(1'000'000 + 600);
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = kGame;
+    runtime.status = "Ready";
+    runtime.prepared = runtime.has_title = runtime.ready = true;
+    runtime.play_detail = "Could not start: the runtime kit is missing";
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Can't play",
+          "a later Could not start isn't swallowed by an old failure");
+}
+
+// A start that failed after the handoff: one dialog that says so, with what to do, and no "Did it start?" for it.
+void start_failed(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up(model, base);
+    model.UpdateVoteMemory({});
+    const auto top = [&model]() -> const playden::homebrew::ModalEntry& { return model.state().navigation.modals.back(); };
+    // The session's prompt is up first (the runtime reports the end before its reason): the failure replaces it.
+    model.NotifySessionEnded(kGame, 20);
+    check(model.view().surface == "feedback", "the short session's prompt is up");
+    model.NotifyStartFailed(kGame, "Wine exited with code 3");
+    check(model.state().navigation.modals.size() == 1 && top().id == "start-failed" && top().title == "Darkwood couldn't start" &&
+              contains(top().body, "Wine exited with code 3.") &&
+              top().action_keys == std::vector<std::string>{"start-failed-settings", "start-failed-report", "start-failed-logs", "alert-ok"} &&
+              model.state().navigation.focus_key == "start-failed-settings",
+          "the failure replaces the question: Change settings first, then Report the problem, Open logs, OK");
+    // The runtime's own "Could not start" for it raises no second message.
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = kGame;
+    runtime.status = "Ready";
+    runtime.prepared = runtime.has_title = runtime.ready = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    runtime.play_detail = "Could not start: Wine exited with code 3";
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    check(std::none_of(model.state().notices.begin(), model.state().notices.end(),
+                       [](const auto& notice) { return notice.message == "Can't play"; }) &&
+              model.state().navigation.modals.size() == 1,
+          "no Can't play notice as well");
+    // Open logs goes over the dialog; Back returns to it.
+    activate(model, "start-failed-logs");
+    check(top().id == "logs", "Open logs shows the launch log");
+    activate(model, "logs-back");
+    check(top().id == "start-failed", "Back returns to the dialog");
+    // Report the problem: straight to the report, as after "No, it didn't start", logs included; Circle closes it.
+    activate(model, "start-failed-report");
+    check(model.view().surface == "feedback" && find_row(model, "feedback-send") && !find_row(model, "feedback-started") &&
+              find_row(model, "feedback-logs") && find_row(model, "feedback-logs")->selected,
+          "Report the problem opens the report with no question first, logs included");
+    check(model.view().legends.size() == 2 && model.view().legends[1] == "Circle Back", "its footer says Back");
+    model.action("circle");
+    check(model.state().navigation.modals.size() == 1 && top().id == "start-failed", "Circle goes back to the dialog");
+    // Change settings from the report leaves the dialog too.
+    activate(model, "start-failed-report");
+    activate(model, "feedback-change-settings");
+    check(top().id == "game-settings" &&
+              std::none_of(model.state().navigation.modals.begin(), model.state().navigation.modals.end(),
+                           [](const auto& modal) { return modal.id == "start-failed" || modal.id == "feedback"; }),
+          "Change settings from the report closes the report and the dialog");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    // Change settings opens the game's settings; nothing asks "Did it start?" afterwards.
+    model.NotifyStartFailed(kGame, "");
+    check(top().id == "start-failed" && contains(top().body, "It stopped before it got going."), "without a reason it says so plainly");
+    activate(model, "start-failed-settings");
+    check(top().id == "game-settings" && model.state().navigation.selected_game_id == kGame, "Change settings opens Game settings");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(model.state().navigation.modals.empty(), "and no question follows");
 }
 
 int main() {
@@ -1117,6 +1216,8 @@ int main() {
     report_with_logs(base / "report");
     account_link(base / "account");
     feedback_prompt_waits_for_library(base / "prompt");
+    start_failed(base / "start-failed");
+    start_failed_waits_for_library(base / "start-failed-late");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;

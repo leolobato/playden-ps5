@@ -631,6 +631,9 @@ void ImportedGamePlaysInPlace() {
     return nullptr;
   };
   const auto open_details = [](hb::Simulation& model, const GameId& game) {
+    // The fake title never really starts: a restart after Play reads that launch as failed and says so first.
+    while (!model.state().navigation.modals.empty() && model.state().navigation.modals.back().id == "start-failed")
+      model.action("circle");
     for (int i = 0; i < 8 && model.state().navigation.route != hb::Route::Library; ++i) model.action("r1");
     CHECK(model.state().navigation.route == hb::Route::Library);
     CHECK(model.action("focus:game-" + playden::ToKey(game)) && model.action("cross"));

@@ -1437,6 +1437,10 @@ public:
     // A session of a game Playden started ended after played_seconds: Playden may ask how it ran
     // (community::NextFeedbackQuestion); with a community recipe in use the answer is also its vote.
     void NotifySessionEnded(GameId id, std::int64_t played_seconds);
+    // A game Playden handed off to exited with an error before it got going (`message`: the runtime's reason, may be
+    // empty). Playden already knows the answer to "Did it start?": it says the game couldn't start and offers Change
+    // settings, Report the problem and Open logs instead of asking.
+    void NotifyStartFailed(GameId id, std::string message);
     // The community recipe revision (64 hex) the game's title plays with, by the runtime's
     // recipe_id and recipe_version; nothing for Playden's own.
     [[nodiscard]] std::optional<playden::community::RecipeRef> AppliedCommunityRecipe(GameId id) const;
@@ -1665,6 +1669,7 @@ private:
         GameId game;
         bool short_session = false;  // asks "Did it start?"
         bool after_play = false;     // the prompt after a session, not Share feedback…
+        bool from_failure = false;   // Report the problem from "couldn't start": no question to go back to
         std::string step = "ask";    // ask, good or problems
         std::string result;          // works, partial, broken or no-start
         std::string reason;          // a problem's reason (the vote reasons)
@@ -1817,7 +1822,16 @@ private:
     std::map<GameId, StoreFacts> store_facts_;  // live: from the Steam store, applied over library refreshes
     std::vector<GameId> ready_prompts_;  // games to announce as ready to play, oldest first
     // settings_game: a game whose refusal Game settings can get past; the dialog offers it.
-    struct AlertPrompt { std::string title; std::string body; GameId settings_game; bool launcher_hint = false; };
+    struct AlertPrompt {
+        std::string title;
+        std::string body;
+        GameId settings_game;
+        bool launcher_hint = false;
+        bool start_failed = false;  // "<game> couldn't start": titled when shown, once the library names the game
+    };
+    // Games whose start failure has its own dialog, and when (clock seconds): the runtime's "Could not start" for that
+    // failure, arriving within a minute, raises no notice too. Older marks are for an outcome long past.
+    std::map<GameId, std::int64_t> start_failures_told_;
     GameId alert_settings_game_;  // the game the open failure dialog's "Game settings" opens
     // Games refused at Prepare whose program or "Try anyway" the player changed since: their page
     // no longer shows the old refusal.

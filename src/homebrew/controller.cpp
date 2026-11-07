@@ -1392,9 +1392,10 @@ void Controller::TickRuntime() {
   if (snapshot.plays_handled >= plays_requested_) play_queued_.clear();
   if (snapshot.launch) {
     const std::pair<GameId, runtime::LaunchState> current{snapshot.launch->game, snapshot.launch->state};
-    // A launch that failed after the handoff may ask "Did it start?" (it never syncs or retries updates).
+    // A launch that failed after the handoff: Playden says it couldn't start and offers what to do, instead of asking
+    // "Did it start?" (it never syncs or retries updates).
     if (current.second == runtime::LaunchState::kFailed && last_launch_ != current && snapshot.launch->played_seconds)
-      model_.NotifySessionEnded(current.first, *snapshot.launch->played_seconds);
+      model_.NotifyStartFailed(current.first, snapshot.launch->message);
     if (current.second == runtime::LaunchState::kExited && last_launch_ != current) {
       if (CloudCapable(current.first)) sync_after_session_.insert(current.first);
       // Playden asks how the game ran (the runtime measured the session). played_seconds runs from the

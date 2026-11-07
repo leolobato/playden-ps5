@@ -747,7 +747,8 @@ bool SheetDecoration(const std::string& key) { return key.rfind("heading-", 0) =
 
 std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
-        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
+        {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
+        {"start-failed-report", "Report the problem"}, {"start-failed-logs", "Open logs"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"compatibility", "Compatibility"}, {"note", "Note"}, {"verify", "Verify files"},
         {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
@@ -3114,7 +3115,7 @@ void Simulation::sync_self_update_job() {
 void Simulation::close_game_modals() {
     auto& modals = state_.navigation.modals;
     modals.erase(std::remove_if(modals.begin(), modals.end(), [](const ModalEntry& modal) {
-        if (modal.id == "feedback") return false;
+        if (modal.id == "feedback" || modal.id == "start-failed") return false;
         return std::none_of(modal.action_keys.begin(), modal.action_keys.end(), [](const std::string& key) {
             return key == "self-update-install" || key == "self-update-restart" || key == "release-notes-ok" ||
                    key == "kit-install" || key == "runtime-prompt-update" || key == "feedback-send-confirm";
@@ -3160,8 +3161,13 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
         // refusal once through the existing notice path, keeping diagnostics off Details.
         if (!game.play_detail.empty() &&
             (before == state_.runtime_games.end() || before->second.play_detail != game.play_detail)) {
-            if (game.play_detail.rfind("Could not start:", 0) == 0 || game.play_detail == "The game could not start.")
-                NotifyPlayStopped(id, "The game could not start. Open Logs in Settings for details.");
+            if (game.play_detail.rfind("Could not start:", 0) == 0 || game.play_detail == "The game could not start.") {
+                // A failure after the handoff has its own dialog (NotifyStartFailed); this would say it twice.
+                const auto told = start_failures_told_.find(id);
+                const bool said = told != start_failures_told_.end() && state_.clock_ticks - told->second <= 60;
+                if (told != start_failures_told_.end()) start_failures_told_.erase(told);
+                if (!said) NotifyPlayStopped(id, "The game could not start. Open Logs in Settings for details.");
+            }
             else if (game.play_detail == "The game's PS5 title may still be running. Close it, then press Play." ||
                      game.play_detail == "Choose which Cloud saves to keep, or press Play again to start without syncing." ||
                      game.play_detail == "Cloud saves could not be checked. Press Play again to start without syncing.")
@@ -3363,9 +3369,28 @@ void Simulation::show_alert_prompt() {
     if (alert_prompts_.empty() || !state_.navigation.modals.empty() || state_.editor.active ||
         route == Route::Startup || route == Route::SignIn || route == Route::Session)
         return;
-    auto alert = std::move(alert_prompts_.front());
-    alert_prompts_.erase(alert_prompts_.begin());
+    // "Couldn't start" names the game: it waits while the game's store hasn't delivered its library yet, without holding
+    // up the alerts behind it, and is dropped once that library came without the game.
+    const auto waiting = [this](const AlertPrompt& alert) {
+        return alert.start_failed && live() && !find_game(state_, alert.settings_game);
+    };
+    std::erase_if(alert_prompts_, [&](const AlertPrompt& alert) {
+        return waiting(alert) && catalog_sources_.count(alert.settings_game.store);
+    });
+    const auto next = std::find_if_not(alert_prompts_.begin(), alert_prompts_.end(), waiting);
+    if (next == alert_prompts_.end()) return;
+    auto alert = std::move(*next);
+    alert_prompts_.erase(next);
     alert_settings_game_ = alert.settings_game;
+    if (alert.start_failed) {
+        const auto* game = find_game(state_, alert.settings_game);
+        ModalEntry failed{"start-failed", (game ? game->title : std::string("The game")) + " couldn't start",
+                          state_.navigation.focus_key,
+                          {"start-failed-settings", "start-failed-report", "start-failed-logs", "alert-ok"}, 0, false};
+        failed.body = alert.body;
+        open_modal(std::move(failed));
+        return;
+    }
     std::vector<std::string> actions = {"alert-ok"};
     if (alert.settings_game.valid()) actions = {"alert-ok", "alert-settings"};
     if (alert.launcher_hint) actions = {"launcher-hint-later", "launcher-hint-on"};
@@ -4340,7 +4365,9 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
         if (failed_restore) steam_restore_notice();
     }
     captured_organization_.selected_game_id = state_.navigation.selected_game_id;
-    // A prompt after a game waits for the library to list that game (its name is the sheet's title).
+    // A prompt after a game, and "couldn't start", wait for the library to list that game (its name is the title).
+    if (std::any_of(alert_prompts_.begin(), alert_prompts_.end(), [](const AlertPrompt& alert) { return alert.start_failed; }))
+        show_alert_prompt();
     show_feedback_prompt();
     rebuild_view();
     return true;
@@ -7987,7 +8014,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
         else if (modal.id == "feedback")
-            view_.legends = {"Cross Select", feedback_ && feedback_->step != "ask" ? "Circle Back" : "Circle Not now"};
+            view_.legends = {"Cross Select", feedback_ && (feedback_->from_failure || feedback_->step != "ask") ? "Circle Back" : "Circle Not now"};
         else if (modal.id == "share-as") view_.legends = {"Cross Choose", "Circle Close"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
@@ -9722,7 +9749,8 @@ void Simulation::cancel() {
         }
         // The feedback sheet's second step (after It ran well or It had problems) goes back to the question, on the answer
         // chosen; Circle on the question closes the sheet.
-        if (state_.navigation.modals.back().id == "feedback" && feedback_ && feedback_->step != "ask" && feedback_->ticket == 0) {
+        if (state_.navigation.modals.back().id == "feedback" && feedback_ && feedback_->step != "ask" && feedback_->ticket == 0 &&
+            !feedback_->from_failure) {
             const bool good = feedback_->step == "good";
             feedback_->step = "ask";
             feedback_->error.clear();
@@ -11135,6 +11163,31 @@ void Simulation::activate() {
                 show_alert("The setting could not be saved", "Start through a launcher is not on yet. Try again from Game settings.");
             }
         }
+    } else if (action_name == "start-failed-settings" || action_name == "start-failed-report") {
+        const auto game = alert_settings_game_;
+        // Change settings leaves the dialog; the report opens over it, so Circle comes back to it.
+        if (action_name == "start-failed-settings") close_modal();
+        if (game.valid() && find_game(state_, game)) {
+            state_.navigation.selected_game_id = game;
+            if (action_name == "start-failed-settings") {
+                open_game_settings();
+            } else {
+                // Straight to the report, as after "No, it didn't start": no question first, logs included.
+                open_feedback(game, true, false);
+                if (feedback_) {
+                    feedback_->from_failure = true;
+                    feedback_->step = "problems";
+                    feedback_->result = "no-start";
+                    feedback_->reason = "no-start";
+                    feedback_->attach_logs = true;
+                    refresh_share_sheet();
+                }
+            }
+        }
+    } else if (action_name == "start-failed-logs") {
+        // Over the dialog: Back returns to it.
+        if (live()) open_live_log("launch", {});
+        else { start_logs(); open_modal({"logs", "Operation logs", state_.navigation.focus_key, {"logs-back"}, 0, false}); }
     } else if (action_name == "alert-settings") {
         const auto game = alert_settings_game_;
         close_modal();
@@ -12009,7 +12062,8 @@ void Simulation::activate() {
     }
     else if (feedback_ && action_name == "feedback-change-settings") {
         const auto game = feedback_->game;
-        close_sheet("feedback");
+        // From "couldn't start", the dialog under the report goes too.
+        close_sheet(feedback_->from_failure && sheet_open("start-failed") ? "start-failed" : "feedback");
         feedback_.reset();
         state_.navigation.selected_game_id = game;
         open_game_settings();
@@ -15067,7 +15121,12 @@ void Simulation::show_feedback_prompt() {
         const auto prompt = feedback_prompts_.front();
         // The recipe the title played with is known once the runtime's state for the game is, and its name once the
         // library lists it.
-        if (live() && (!state_.runtime_games.count(prompt.game) || !find_game(state_, prompt.game))) return;
+        if (live() && !state_.runtime_games.count(prompt.game)) return;
+        if (live() && !find_game(state_, prompt.game)) {
+            // Its store's library came without it (removed meanwhile): nothing to ask about.
+            if (catalog_sources_.count(prompt.game.store)) { feedback_prompts_.erase(feedback_prompts_.begin()); continue; }
+            return;
+        }
         feedback_prompts_.erase(feedback_prompts_.begin());
         const auto question = cm::NextFeedbackQuestion(state_.vote_memory, ToInstallId(prompt.game), feedback_kit(),
                                                        feedback_settings(prompt.game), prompt.played_seconds,
@@ -15076,6 +15135,24 @@ void Simulation::show_feedback_prompt() {
         open_feedback(prompt.game, question == cm::FeedbackQuestion::kDidItStart, true);
         return;
     }
+}
+
+void Simulation::NotifyStartFailed(GameId id, std::string message) {
+    if (!id.valid()) return;
+    // The question this session would ask is answered: it didn't start. An open one for it gives way to the dialog.
+    std::erase_if(feedback_prompts_, [id](const FeedbackPrompt& prompt) { return prompt.game == id; });
+    if (feedback_ && feedback_->game == id && feedback_->after_play && feedback_->step == "ask" && feedback_->ticket == 0 &&
+        sheet_open("feedback")) {
+        close_sheet("feedback");
+        feedback_.reset();
+    }
+    start_failures_told_[id] = state_.clock_ticks;
+    std::string body = message.empty() ? std::string("It stopped before it got going.") : std::move(message);
+    if (body.back() != '.') body += '.';
+    body += " A setting is the usual cause; its logs say more.";
+    alert_prompts_.push_back({"", std::move(body), id, false, true});
+    show_alert_prompt();
+    rebuild_view();
 }
 
 void Simulation::NotifySessionEnded(GameId id, std::int64_t played_seconds) {
@@ -15581,7 +15658,8 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
             }
             note_feedback(done, true);
             if (mine) {
-                close_sheet("feedback");
+                // A report from "couldn't start" answers that dialog too.
+                close_sheet(feedback_->from_failure && sheet_open("start-failed") ? "start-failed" : "feedback");
                 feedback_.reset();
             }
             if (mine && done.share_recipe) {
