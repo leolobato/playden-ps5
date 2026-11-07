@@ -12854,14 +12854,21 @@ rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next,
                 return refuse("A game using this preset can't take another settings revision.");
             following.push_back(game);
         }
+    const auto previous_records = state_.game_settings;
+    std::string previous_presets;
     if (live()) {
         if (my_presets_unavailable_ || my_presets_file_.empty()) return refuse("Your presets could not be read when Playden started.");
+        if (follow != MyPresetFollow::kNone && (settings_load_failed_ || game_settings_file_.empty()))
+            return refuse("Game settings could not be read when Playden started.");
+        if (!following.empty()) {
+            // Keep the exact bytes, including fields/settings a newer build wrote, for rollback.
+            if (rt::ReadPrivateSettingsFile(my_presets_file_.string(), &previous_presets) != rt::PrivateSettingsRead::kPresent)
+                return refuse("Your presets could not be read before saving the games using them.");
+        }
         std::string reason;
         if (!rt::SaveMyPresetsFile(my_presets_file_.string(), next, &reason)) return refuse(reason);
     }
-    my_presets_ = std::move(next);
-    // Saved first, so a game's settings never name a preset the file doesn't have yet. Each game then follows the
-    // preset as after a Game settings edit; a deleted one leaves it on Playden default with its own changes.
+    // Do not expose the new presets or queue publication until both saves have succeeded.
     for (const auto& game : following) {
         auto& record = state_.game_settings[game];
         if (follow == MyPresetFollow::kDeleted) record.preset_id.clear();
@@ -12869,10 +12876,20 @@ rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next,
     }
     if (!following.empty()) {
         save_profile();
-        if (live() && !settings_save_failed_)
+        if (live() && settings_save_failed_) {
+            state_.game_settings = previous_records;
+            if (!rt::WritePrivateSettingsFile(my_presets_file_.string(), previous_presets)) {
+                my_presets_unavailable_ = true;
+                return refuse("Game settings were not saved, and the previous presets could not be restored. Restart Playden before changing presets again.");
+            }
+            rebuild_view();
+            return refuse("Game settings were not saved; your presets and games were left unchanged.");
+        }
+        if (live())
             for (const auto& game : following)
                 if (game_prepared(game)) pending_maintenance_requests_.push_back({game, MaintenanceKind::ApplySettings});
     }
+    my_presets_ = std::move(next);
     rebuild_view();
     return {};
 }

@@ -2239,10 +2239,13 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
       Publish([&](RuntimeSnapshot& s) { s.recipe_switch_failures[record.runtime_number] = "The switch didn't finish: " + message; });
     return message;
   };
+  // The presets file can disappear, become unreadable, or be restored without changing the
+  // game's revision. Compare the resulting profile even at the same revision in that case.
+  const bool refresh_player_preset = rt::IsMyPresetId(saved.preset_id) && saved.revision == record.settings_revision;
   // "Steam features" only swaps the game's own files, so it follows the saved value at once. So do the
   // steps a recipe switch that committed did not get to (its registry values): once they are in, and
   // the wanted recipe is the applied one, the switch is finished.
-  if (!force && !switching && setup_program.empty() && !restoring && saved.revision <= record.settings_revision && !moved && !unowned_upgrade) {
+  if (!force && !refresh_player_preset && !switching && setup_program.empty() && !restoring && saved.revision <= record.settings_revision && !moved && !unowned_upgrade) {
     const auto steps = ApplyPreparationSteps(c, record, steam_account_known);
     if (steps.empty() && selection.fallback_reason.empty() && switch_failure.empty())
       Publish([&](RuntimeSnapshot& s) { s.recipe_switch_failures.erase(record.runtime_number); });
@@ -2339,7 +2342,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   // respin that changes nothing there keeps its publication, registration and bottle as they are.
   // So is a program's run, or the return from one, that publishes what the title already has. A recipe
   // switch always publishes: its descriptor names the new recipe.
-  if ((force || !setup_program.empty() || restoring) && !switching) {
+  if ((force || refresh_player_preset || !setup_program.empty() || restoring) && !switching) {
     // POSIX reads, as elsewhere here: the PS5 libc++ has no locale support for file streams.
     const auto read = [](const std::filesystem::path& path) {
       std::string bytes;
@@ -2355,8 +2358,10 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
     const auto config = HostPath(record.install_path) / WorkingFolder(next.launch_working_directory, next.launch_path,
                                                                                  next.launch_in_install_root) /
                         "dxvk.conf";
-    if (read(profile) == plan.profile_bytes && read(config) == plan.dxvk_config)
-      return restoring ? MarkSetupProgram(c, record.install_id, {}) : std::string{};
+    if (read(profile) == plan.profile_bytes && read(config) == plan.dxvk_config) {
+      if (restoring) return MarkSetupProgram(c, record.install_id, {});
+      return refresh_player_preset ? ApplyPreparationSteps(c, record, steam_account_known) : std::string{};
+    }
   }
   // Recorded before the program's profile is published, so a publication cut off part way still gets the saved
   // settings back.
@@ -5538,11 +5543,13 @@ bool RuntimeHost::RunServices() {
       // now, so a start from the PS5 Home screen uses them too. Busy titles wait for Play.
       if (c.kit)
         for (const auto& record : c.repository.Snapshot()) {
-          // Only newer settings: the Steam account is not known yet, so Steam files wait for Play.
-          // So are they after a program's run (RuntimeInstall::setup_program), whatever their revision.
+          // Newer settings, and player presets whose file may have changed independently: the Steam
+          // account is not known yet, so Steam files wait for Play. Also restore a program's run
+          // (RuntimeInstall::setup_program), whatever its revision.
           const auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
           const bool newer = saved && saved->revision > record.settings_revision;
-          if ((!newer && record.setup_program.empty()) || !record.moved_from.empty() ||
+          const bool player_preset = saved && rt::IsMyPresetId(saved->preset_id);
+          if ((!newer && !player_preset && record.setup_program.empty()) || !record.moved_from.empty() ||
               !MaintenanceRefusal(c, record).empty()) continue;
           bool published = false;
           const auto refused = RepublishSettings(c, record, &published, false);

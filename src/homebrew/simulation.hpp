@@ -1338,9 +1338,9 @@ public:
     // are left out).
     [[nodiscard]] const std::vector<playden::runtime::MyPreset>& MyPresets() const noexcept { return my_presets_; }
     [[nodiscard]] std::map<std::string, std::size_t> MyPresetUseCounts() const;
-    // Changes to the player's presets. On a refusal nothing changes. Live, my-presets.json is saved before anything
-    // else changes. New settings or a deletion reach every game using the preset as a Game settings edit does: its
-    // record's revision goes up (a deletion also takes it back to Playden default, keeping its own changes), the
+    // Changes to the player's presets. Live, a failed game-settings save restores the previous preset file; a failed
+    // restoration is reported and disables further preset writes. New settings or a deletion reach every game using
+    // the preset as a Game settings edit does: its record's revision goes up (a deletion also takes it back to Playden default, keeping its own changes), the
     // settings are saved, and a prepared game gets its title updated (applied now when stopped, otherwise from its
     // next start in Playden). A rename changes no game. *created_id: the new preset's id.
     playden::runtime::MyPresetChange CreateMyPreset(std::string_view name, std::map<std::string, std::string> settings,

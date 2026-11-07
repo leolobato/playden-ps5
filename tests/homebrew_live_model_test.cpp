@@ -778,6 +778,33 @@ void live_my_presets(const std::filesystem::path& base) {
         check(rt::SaveMyPresetsFile(presets_path.string(), good, &reason), "my presets: file restored");
     }
 
+    // Without readable game settings, an empty model cannot tell which games follow a preset.
+    {
+        const auto unreadable = folder / "unreadable-settings.json";
+        std::ofstream(unreadable) << "{ broken";
+        auto unavailable = make_live(base);
+        unavailable.SetGameSettingsFile(unreadable);
+        unavailable.SetMyPresetsFile(presets_path);
+        check(unavailable.ReplaceMyPresetSettings(mine, {{"resolution", "1280x720"}}).refusal == R::kNotSaved &&
+                  unavailable.DeleteMyPreset(mine).refusal == R::kNotSaved && presets_on_disk() == before,
+              "my presets: unreadable game settings refuse changes even with no loaded followers");
+    }
+
+    // The presets file is writable, but saving the following games fails.
+    for (const bool deleting : {false, true}) {
+        std::filesystem::rename(settings_path, folder / "settings-held.json");
+        std::filesystem::create_directory(settings_path);
+        change = deleting ? model.DeleteMyPreset(mine)
+                          : model.ReplaceMyPresetSettings(mine, {{"resolution", "1280x720"}});
+        check(change.refusal == R::kNotSaved && !change.detail.empty() && model.MyPresets() == before &&
+                  presets_on_disk() == before && model.state().game_settings == saved &&
+                  model.TakeMaintenanceRequests().empty(),
+              "my presets: a failed game settings save rolls back the preset and records");
+        std::filesystem::remove(settings_path);
+        std::filesystem::rename(folder / "settings-held.json", settings_path);
+        check(on_disk() == saved, "my presets: failed following save keeps persisted records");
+    }
+
     // Deleted: the games using it go back to Playden default with their own changes, and follow it as above.
     check(model.DeleteMyPreset(mine).ok() && !rt::FindMyPreset(presets_on_disk(), mine), "my presets: deleted");
     saved = on_disk();

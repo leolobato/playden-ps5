@@ -2236,7 +2236,7 @@ void SettingsSavedDuringFirstPrepareFinish() {
 
 // A record naming one of the player's presets is resolved with it, read again each time; one that is gone (deleted, or
 // my-presets.json unreadable) plays as Playden default with the game's own changes, logged once, and never blocks.
-void PlayerPresetsResolveRecords() {
+void PlayerPresetsResolveRecords(bool restart) {
   Fixture fixture;
   auto config = fixture.Config();
   config.host_namespace_prefix = fixture.root;
@@ -2322,21 +2322,41 @@ void PlayerPresetsResolveRecords() {
   result = apply();
   CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 2);
   CHECK(Read(profile).find("desktop = 2560x1440") != std::string::npos);
-  // Deleted again (or the file is unreadable): Playden default, the game's frame limit kept.
-  set(3, {});
+  // A lost/unreadable presets file does not bump the saved revision. Apply must still
+  // replace the old preset profile with Playden defaults.
+  set(2, {});
   result = apply();
   if (!result.maintenance.at(220).ok) std::fprintf(stderr, "apply: %s\n", result.maintenance.at(220).message.c_str());
-  CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 3);
+  CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 2);
   CHECK(Read(profile).find("desktop = 1920x1080") != std::string::npos);
   CHECK(Read(game / "dxvk.conf").find("maxFrameRate = 30") != std::string::npos);
-  // Play starts it, too.
-  host.Play(220);
-  const auto played = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(220); }, 30);
+  const auto publications = uuids;
+  result = apply();
+  CHECK(result.maintenance.at(220).ok && uuids == publications);
+  // Restoring the file also takes effect without a revision bump.
+  set(2, {preset});
+  result = apply();
+  CHECK(result.maintenance.at(220).ok && result.installs[0].settings_revision == 2);
+  CHECK(Read(profile).find("desktop = 2560x1440") != std::string::npos);
+  // Startup and Play both repair a lost preset's profile, without a revision bump.
+  set(2, {});
+  std::unique_ptr<RuntimeHost> restarted;
+  if (restart) {
+    host.Shutdown();
+    restarted = std::make_unique<RuntimeHost>(config);
+    CHECK(restarted->Start());
+    CHECK(WaitFor(*restarted, Started).kit_available);
+    CHECK(Read(profile).find("desktop = 1920x1080") != std::string::npos);
+  }
+  auto& playing = restart ? *restarted : host;
+  playing.Play(220);
+  const auto played = WaitFor(playing, [](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(220); }, 30);
   if (played.play_refusals.count(220)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(220).c_str());
   CHECK(played.handoff_ready);
-  host.Shutdown();
+  CHECK(Read(profile).find("desktop = 1920x1080") != std::string::npos);
+  playing.Shutdown();
   std::lock_guard<std::mutex> lock(mutex);
-  CHECK(gone_lines.size() == 1);
+  CHECK(gone_lines.size() == (restart ? 2u : 1u));
 }
 
 // Settings saved after preparation reach the Ready title through a journaled update, from
@@ -7978,6 +7998,8 @@ void LinkedRecipeAppliesUnderItsAlias() {
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
+  PlayerPresetsResolveRecords(false);
+  PlayerPresetsResolveRecords(true);
   LeftoverDeletionSharesThePreparationAndUninstallQueue();
   LeftoverDeletionRefusesANewInstallUsingTheId();
   DeletesLeftoverTitleAndResumesFailures();
@@ -8079,7 +8101,6 @@ int main(int argc, char** argv) {
   CommunityRecipeOverGeneratedAndKitFallback();
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
-  PlayerPresetsResolveRecords();
   std::puts("runtime host tests passed");
   return 0;
 }
