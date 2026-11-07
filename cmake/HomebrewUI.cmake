@@ -568,6 +568,14 @@ if(BUILD_TESTING)
     add_dependencies(homebrew_community_graphical_test playden_homebrew_assets)
     add_test(NAME homebrew_community_graphical COMMAND homebrew_community_graphical_test
         "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison" "${CMAKE_BINARY_DIR}/community-recipes-graphical")
+    # My presets on screen: Choose settings, the preset menu, the keyboards and dialogs, Game settings' rows.
+    add_executable(homebrew_my_presets_graphical_test "${CMAKE_SOURCE_DIR}/tests/homebrew_my_presets_graphical_test.cpp")
+    target_compile_features(homebrew_my_presets_graphical_test PRIVATE cxx_std_20)
+    target_compile_definitions(homebrew_my_presets_graphical_test PRIVATE PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")
+    target_link_libraries(homebrew_my_presets_graphical_test PRIVATE playden_homebrew_ui PkgConfig::SDL2 OpenGL::GL)
+    add_dependencies(homebrew_my_presets_graphical_test playden_homebrew_assets)
+    add_test(NAME homebrew_my_presets_graphical COMMAND homebrew_my_presets_graphical_test
+        "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison" "${CMAKE_BINARY_DIR}/my-presets-graphical")
     add_executable(homebrew_glyph_fallback_graphical_test "${CMAKE_SOURCE_DIR}/tests/homebrew_glyph_fallback_graphical_test.cpp")
     target_compile_features(homebrew_glyph_fallback_graphical_test PRIVATE cxx_std_20)
     target_compile_definitions(homebrew_glyph_fallback_graphical_test PRIVATE PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")
