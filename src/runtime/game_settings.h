@@ -366,7 +366,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
 
 // What a player preset made from a game keeps (My presets). kSave: what the player chose for the game, either as its
 // base (a preset's values, a community recipe's) or as its own changes. kOwnChanges: its own changes alone, to move
-// into the player preset it uses.
+// into the player preset it uses, including the input rows implied by a user-selected controller preset.
 enum class PresetCapture { kSave, kOwnChanges };
 // The settings a preset made from a game's effective settings holds: each row a preset may set (ValidatePresetSetting)
 // whose value the player chose, as the row shows it (ChosenValue). Chosen means from the player (kUser) or a preset

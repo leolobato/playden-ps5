@@ -12857,23 +12857,45 @@ rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next,
         }
     const bool records_change = !following.empty() || edited.has_value();
     const auto previous_records = state_.game_settings;
-    std::optional<std::string> previous_presets;  // the file's bytes; none when there was no file
+    std::optional<std::string> previous_presets, previous_settings;
+    const auto remember = [](const std::filesystem::path& path, std::optional<std::string>* previous) {
+        std::string bytes;
+        const auto read = rt::ReadPrivateSettingsFile(path.string(), &bytes);
+        if (read == rt::PrivateSettingsRead::kPresent) *previous = std::move(bytes);
+        return read != rt::PrivateSettingsRead::kError;
+    };
+    // A failed write may have renamed the new file before its directory sync failed.
+    // Restore exact old bytes only if they changed; an absent file can stand as an empty list.
+    const auto restore = [](const std::filesystem::path& path, const std::optional<std::string>& previous, auto save_missing) {
+        std::string bytes;
+        const auto read = rt::ReadPrivateSettingsFile(path.string(), &bytes);
+        if ((read == rt::PrivateSettingsRead::kMissing && !previous) ||
+            (read == rt::PrivateSettingsRead::kPresent && previous && bytes == *previous)) return true;
+        return previous ? rt::WritePrivateSettingsFile(path.string(), *previous) : save_missing();
+    };
+    const auto restore_presets = [&] {
+        return restore(my_presets_file_, previous_presets, [&] {
+            return rt::SaveMyPresetsFile(my_presets_file_.string(), my_presets_, nullptr);
+        });
+    };
     if (live()) {
         if (my_presets_unavailable_ || my_presets_file_.empty()) return refuse("Your presets could not be read when Playden started.");
         if ((follow != MyPresetFollow::kNone || edited) && (settings_load_failed_ || game_settings_file_.empty()))
             return refuse("Game settings could not be read when Playden started.");
-        if (records_change) {
-            // Keep the exact bytes, including fields/settings a newer build wrote, for rollback.
-            std::string bytes;
-            const auto read = rt::ReadPrivateSettingsFile(my_presets_file_.string(), &bytes);
-            if (read == rt::PrivateSettingsRead::kError)
-                return refuse("Your presets could not be read before saving the games using them.");
-            if (read == rt::PrivateSettingsRead::kPresent) previous_presets = std::move(bytes);
-        }
+        // Keep exact bytes, including fields/settings a newer build wrote, for rollback.
+        if (!remember(my_presets_file_, &previous_presets))
+            return refuse("Your presets could not be read before saving the games using them.");
+        if (records_change && !remember(game_settings_file_, &previous_settings))
+            return refuse("Game settings could not be read before saving your presets.");
         std::string reason;
-        if (!rt::SaveMyPresetsFile(my_presets_file_.string(), next, &reason)) return refuse(reason);
+        if (!rt::SaveMyPresetsFile(my_presets_file_.string(), next, &reason)) {
+            if (!restore_presets()) {
+                my_presets_unavailable_ = true;
+                return refuse("The previous presets could not be restored. Restart Playden before changing presets again.");
+            }
+            return refuse(reason);
+        }
     }
-    // Do not expose the new presets or queue publication until both saves have succeeded.
     for (const auto& game : following) {
         auto& record = state_.game_settings[game];
         if (follow == MyPresetFollow::kDeleted) record.preset_id.clear();
@@ -12884,13 +12906,14 @@ rt::MyPresetChange Simulation::commit_my_presets(std::vector<rt::MyPreset> next,
         save_profile();
         if (live() && settings_save_failed_) {
             state_.game_settings = previous_records;
-            // No file before: an empty list stands for it (the presets as they were).
-            std::string ignored;
-            const bool restored = previous_presets ? rt::WritePrivateSettingsFile(my_presets_file_.string(), *previous_presets)
-                                                   : rt::SaveMyPresetsFile(my_presets_file_.string(), my_presets_, &ignored);
-            if (!restored) {
+            const bool settings_restored = restore(game_settings_file_, previous_settings, [&] {
+                return rt::SaveGameSettingsFile(game_settings_file_.string(), previous_records, nullptr);
+            });
+            const bool presets_restored = restore_presets();
+            if (!settings_restored || !presets_restored) {
                 my_presets_unavailable_ = true;
-                return refuse("Game settings were not saved, and the previous presets could not be restored. Restart Playden before changing presets again.");
+                if (!settings_restored) settings_load_failed_ = true;
+                return refuse("The previous game settings or presets could not be restored. Restart Playden before changing settings again.");
             }
             rebuild_view();
             return refuse("Game settings were not saved; your presets and games were left unchanged.");
@@ -12934,6 +12957,11 @@ rt::MyPresetChange Simulation::SaveGameAsMyPreset(GameId id, std::string_view na
     if (record.community_recipe.id.empty()) {
         if (record.revision == std::numeric_limits<std::uint64_t>::max())
             return {rt::MyPresetRefusal::kNotSaved, "The settings revision has reached its limit."};
+        // Locked or unavailable values from the old base cannot enter the new preset.
+        // Keep them on this game (including "Change anyway"), without replacing its own overrides.
+        if (const auto* previous = preset_for(id))
+            for (const auto& [setting, value] : previous->settings)
+                if (!settings.count(setting)) record.overrides.try_emplace(setting, value);
         rt::ChoosePreset(&record, *preset_id);
         for (const auto& [setting, value] : settings) record.overrides.erase(setting);
         edited.emplace(id, std::move(record));

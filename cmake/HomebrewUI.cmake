@@ -517,7 +517,10 @@ if(BUILD_TESTING)
         COMMAND homebrew_simulation_test "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison")
 
     add_executable(homebrew_live_model_test
-        "${CMAKE_SOURCE_DIR}/tests/homebrew_live_model_test.cpp")
+        "${CMAKE_SOURCE_DIR}/tests/homebrew_live_model_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    # Intercept only this test's directory barriers, including failures after a settings rename.
+    target_compile_definitions(homebrew_live_model_test PRIVATE fsync=playden_live_test_fsync)
     target_compile_features(homebrew_live_model_test PRIVATE cxx_std_20)
     target_link_libraries(homebrew_live_model_test PRIVATE playden_homebrew_model)
     add_test(NAME homebrew_live_model COMMAND homebrew_live_model_test)

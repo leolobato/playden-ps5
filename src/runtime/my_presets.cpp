@@ -146,7 +146,7 @@ std::string MyPresetSummary(const std::map<std::string, std::string>& settings, 
   std::string text;
   const std::size_t shown = parts.size() > items ? items : parts.size();
   for (std::size_t index = 0; index < shown; ++index) text += (index ? " \u00b7 " : "") + parts[index];
-  if (parts.size() > shown) text += " \u00b7 +" + std::to_string(parts.size() - shown) + " more";
+  if (parts.size() > shown) text += std::string(shown ? " \u00b7 +" : "+") + std::to_string(parts.size() - shown) + " more";
   return text;
 }
 

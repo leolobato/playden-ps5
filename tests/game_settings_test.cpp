@@ -1767,6 +1767,15 @@ int main(int argc, char** argv) {
     CHECK(kept == (std::map<std::string, std::string>{
                       {"rumble", "50"}, {"performance_overlay", "off"}, {"button.cross", "space"}}));
 
+    // Changing the controller layout also changes inputs inherited from the old settings preset.
+    // Update must move those effective inputs, or the old preset's explicit rows win again.
+    SettingsPreset old_inputs{"old-inputs", "Old inputs", "", "",
+                              {{"controller", "xinput"}, {"pointer_stick", "right_stick"}, {"pointer_speed", "1800"}}};
+    CHECK(BuildEffectiveSettings(own, &old_inputs, {{"controller_preset", "mouse"}}, tuning, &settings, &error));
+    CHECK(PresetSettingsFromGame(own, settings, PresetCapture::kOwnChanges) ==
+          (std::map<std::string, std::string>{{"controller_preset", "mouse"}, {"controller", "keyboard"},
+                                            {"pointer_stick", "left_stick"}, {"pointer_speed", "900"}}));
+
     // A community recipe as the base: its values are someone's choice for the game, and come along. Its locks don't.
     GameRecipe community = own;
     community.id = "community-steam-4000-keyboard-play";

@@ -659,9 +659,17 @@ bool IsUnlockKey(std::string_view key) {
 std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& recipe, const EffectiveSettings& settings,
                                                           PresetCapture capture) {
   const bool community = capture == PresetCapture::kSave && IsCommunityRecipeId(recipe.id);
+  const auto controller = settings.values.find("controller_preset");
+  const auto& inputs = ControllerPresetInputs();
+  const auto own_inputs = controller != settings.values.end() && controller->second.source == ValueSource::kUser
+                              ? inputs.find(ChosenValue(controller->second)) : inputs.end();
   std::map<std::string, std::string> kept;
   for (const auto& [id, value] : settings.values) {
+    // A user-selected controller layout replaces lower-layer input rows with kPreset values.
+    // They must move with the layout on Update, or the old preset's explicit inputs win again.
+    const bool own_input = value.source == ValueSource::kPreset && own_inputs != inputs.end() && own_inputs->second.count(id);
     const bool chosen = value.source == ValueSource::kUser ||
+                        own_input ||
                         (capture == PresetCapture::kSave && value.source == ValueSource::kPreset) ||
                         (community && value.source == ValueSource::kRecipe);
     if (!chosen || value.locked || (!value.available && !value.waits_for_update)) continue;

@@ -2,7 +2,10 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 
+#undef fsync
 #include "homebrew/simulation.hpp"
+
+#include <cerrno>
 
 #include <algorithm>
 #include <cstdlib>
@@ -14,6 +17,19 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "steam_id.h"
+
+// The managed-directory translation unit in this test redirects fsync here. All
+// calls remain real except the selected directory barrier, after an atomic rename.
+static int directory_syncs_before_failure = -1;
+extern "C" int playden_live_test_fsync(int fd) {
+    struct stat status {};
+    if (directory_syncs_before_failure >= 0 && ::fstat(fd, &status) == 0 && S_ISDIR(status.st_mode) &&
+        directory_syncs_before_failure-- == 0) {
+        errno = EIO;
+        return -1;
+    }
+    return ::fsync(fd);
+}
 
 namespace {
 
@@ -941,6 +957,25 @@ void live_my_presets_from_game(const std::filesystem::path& base) {
               presets_on_disk() == seeded && on_disk() == records && model.TakeMaintenanceRequests().empty(),
           "preset from game: a game with only its own settings has nothing to save");
 
+    // A directory sync can fail after either file has already been replaced. A refusal
+    // must restore both files, not merely the in-memory records and the preset file.
+    for (const int barrier : {0, 1}) {
+        directory_syncs_before_failure = barrier;
+        change = model.SaveGameAsMyPreset(SteamId(220), "Sync failure", &created);
+        check(directory_syncs_before_failure == -1 && change.refusal == R::kNotSaved && created.empty(),
+              "preset from game: save reports post-rename sync failure");
+        check(presets_on_disk() == seeded && on_disk() == records && model.MyPresets() == seeded &&
+                  model.state().game_settings == records && model.TakeMaintenanceRequests().empty(),
+              "preset from game: post-rename save failure restores both files and records");
+        directory_syncs_before_failure = barrier;
+        change = model.UpdateMyPresetFromGame(SteamId(700));
+        check(directory_syncs_before_failure == -1 && change.refusal == R::kNotSaved,
+              "preset from game: update reports post-rename sync failure");
+        check(presets_on_disk() == seeded && on_disk() == records && model.MyPresets() == seeded &&
+                  model.state().game_settings == records && model.TakeMaintenanceRequests().empty(),
+              "preset from game: post-rename update failure restores both files and records");
+    }
+
     // The settings file can't be saved: the new preset is taken back out and the game stays as it was.
     {
         std::filesystem::rename(settings_path, folder / "settings-held.json");
@@ -1005,6 +1040,52 @@ void live_my_presets_from_game(const std::filesystem::path& base) {
     check(requests == Requests{{SteamId(700), MaintenanceKind::ApplySettings}, {SteamId(800), MaintenanceKind::ApplySettings}},
           "preset from game: both prepared games have their titles updated");
     check(model.MyPresetActionFor(SteamId(700)) == Action::kNone, "preset from game: nothing left to update");
+
+    // A user-selected controller layout replaces explicit input rows in the previous preset.
+    // Moving the layout into that preset must move its implied inputs too.
+    check(model.ReplaceMyPresetSettings(mine, {{"controller", "xinput"}, {"pointer_stick", "right_stick"},
+                                               {"pointer_speed", "1800"}}).ok(), "preset from game: seed old inputs");
+    saved = on_disk();
+    saved.at(SteamId(700)).overrides["controller_preset"] = "mouse";
+    check(rt::SaveGameSettingsFile(settings_path.string(), saved, &reason), "preset from game: choose mouse");
+    model.SetGameSettingsFile(settings_path);
+    const auto before_layout_update = chosen(SteamId(700));
+    check(before_layout_update.at("controller") == "keyboard" && before_layout_update.at("pointer_speed") == "900",
+          "preset from game: user layout overrides old preset inputs");
+    check(model.UpdateMyPresetFromGame(SteamId(700)).ok(), "preset from game: update layout");
+    check(chosen(SteamId(700)) == before_layout_update,
+          "preset from game: updating layout preserves effective inputs");
+    check(on_disk().at(SteamId(700)).overrides == Settings{{"extra_arguments", "-x"}},
+          "preset from game: layout update retains unrelated overrides");
+
+    // A locked row can be supplied by the old base after "Change anyway". It cannot
+    // enter the new preset, but switching bases must keep its value on this game.
+    rt::GameRecipe locked_recipe;
+    locked_recipe.id = rt::GeneratedRecipeId(900);
+    locked_recipe.version = 1;
+    locked_recipe.app_id = 900;
+    locked_recipe.launch_entries = {{"launch-1", "Game", "game.exe", "", ""}};
+    locked_recipe.defaults = {{"resolution", "1280x720"}};
+    locked_recipe.locked = {"resolution"};
+    recipes.push_back(locked_recipe);
+    model.SetGeneratedRecipes(recipes);
+    model.SetSettingsData({{"locked-base", "Locked base", "", "", {{"resolution", "1920x1080"}}}}, {});
+    saved = on_disk();
+    saved[SteamId(900)].preset_id = "locked-base";
+    saved[SteamId(900)].overrides = {{"unlock.resolution", "on"}, {"performance_overlay", "on"}};
+    saved[SteamId(900)].revision = 12;
+    check(rt::SaveGameSettingsFile(settings_path.string(), saved, &reason), "preset from game: seed unlocked base");
+    model.SetGameSettingsFile(settings_path);
+    const auto before_locked_save = chosen(SteamId(900));
+    check(before_locked_save.at("resolution") == "1920x1080", "preset from game: unlocked base applies");
+    check(model.SaveGameAsMyPreset(SteamId(900), "Unlocked", &created, &switched).ok() && switched,
+          "preset from game: save unlocked base");
+    check(chosen(SteamId(900)) == before_locked_save,
+          "preset from game: save preserves uncaptured unlocked base value");
+    check(rt::FindMyPreset(model.MyPresets(), created)->preset.settings == Settings{{"performance_overlay", "on"}} &&
+              on_disk().at(SteamId(900)).overrides == Settings{{"unlock.resolution", "on"}, {"resolution", "1920x1080"}} &&
+              on_disk().at(SteamId(900)).revision == 13,
+          "preset from game: locked value stays on game, outside preset, with one revision");
 
     // With no presets file yet, a failed settings save leaves no preset behind either.
     {

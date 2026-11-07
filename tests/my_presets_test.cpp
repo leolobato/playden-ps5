@@ -383,6 +383,8 @@ void Resolve() {
 // The line under a player preset's row in Choose settings.
 void Summary() {
   CHECK(MyPresetSummary({}).empty());
+  CHECK(MyPresetSummary({}, 0).empty());
+  CHECK(MyPresetSummary({{"resolution", "1280x720"}}, 0) == "+1 more");
   // The rows a preset is known by lead; Mouse brings its own controller and pointer stick, so those go unsaid.
   const auto& mouse = ControllerPresetInputs().at("mouse");
   Settings settings = {{"performance_overlay", "on"}, {"resolution", "1280x720"}, {"controller_preset", "mouse"}};
