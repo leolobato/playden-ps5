@@ -2746,6 +2746,14 @@ void my_presets_game_settings(const std::filesystem::path& fixtures, const std::
     check(top_modal(simulation).title == "Updated “Point and click”" && simulation.action("cross") &&
               !find_row(simulation, "update-my-preset") && !find_row(simulation, "save-my-preset"),
           "my presets: updated; the game has no changes left, so neither row");
+    {
+        // The row that opened the result is gone: focus lands on a row that exists, the sheet's focused one.
+        const auto& sheet = top_modal(simulation);
+        const auto& focus = simulation.state().navigation.focus_key;
+        check(sheet.id == "game-settings" && std::find(sheet.action_keys.begin(), sheet.action_keys.end(), focus) != sheet.action_keys.end() &&
+                  focus == sheet.action_keys[static_cast<std::size_t>(sheet.focused_action)],
+              "my presets: after Update, focus is on a row of Game settings");
+    }
 
     // Save as my preset…: the keyboard with the game's name; the game then uses the preset.
     check(simulation.scenario("my-presets-save"), "my-presets-save scenario loads");
