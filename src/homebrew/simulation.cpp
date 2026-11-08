@@ -6609,6 +6609,13 @@ void Simulation::rebuild_view() {
             view_.subtitle = chooser_for_install_
                 ? "Playden's choice stays unless you pick another. Players share community recipes; we review each one." + source
                 : "One base for the game's settings. Your changes stay when you switch to or from a community recipe; between presets they are cleared." + source;
+            // Community recipes off (features.txt): no word of them, unless the game already uses one.
+            if (!community_enabled_)
+                view_.subtitle = chooser_for_install_ ? std::string("Playden's choice stays unless you pick another.")
+                               : base_of(settings_game).community.id.empty()
+                               ? std::string("One base for the game's settings. Choosing another clears your changes for this game.")
+                               : std::string("One base for the game's settings. Your changes stay when you switch from the community recipe; "
+                                             "between presets they are cleared.");
             // The search: only games that have community recipes, by name; another game's recipe links that game.
             if (chooser_query_ && chooser_browse_)
                 view_.subtitle = "Recipes for " + recipe_game_label(*chooser_browse_) +

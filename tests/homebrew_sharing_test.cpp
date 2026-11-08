@@ -1324,6 +1324,7 @@ void community_off(const std::filesystem::path& base) {
 
     // Choose settings: Playden default, the recipe in use (focused) and the presets; no search, link or other recipes.
     activate(model, "preset-picker");
+    check(!contains(model.view().subtitle, "Players share"), "the chooser doesn't describe community recipes");
     check(top_keys(model) == std::vector<std::string>{"preset-playden-default", "chooser-heading-community", "recipe-" + revision,
                                                       "chooser-heading-presets", "cancel"},
           "the chooser lists only the recipe in use besides Playden's");
@@ -1337,6 +1338,7 @@ void community_off(const std::filesystem::path& base) {
     activate(model, "preset-picker");
     check(!has(top_keys(model), "chooser-heading-community") && !has(top_keys(model), "recipes-search"),
           "with no recipe in use, the chooser has no community section");
+    check(!contains(model.view().subtitle, "community"), "and its text doesn't mention community recipes");
     while (!model.state().navigation.modals.empty()) model.action("circle");
 
     // After a game: no question. A start failure: no Report the problem.
@@ -1356,6 +1358,32 @@ void community_off(const std::filesystem::path& base) {
         check(!find_row(model, key), "Settings has no Community row");
     model.SetWallClock(1'000'000 + 3600);
     check(model.TakeSharingRequests().empty() && !model.TakeCommunityRefreshRequest(), "nothing is asked of the services");
+    check(!model.state().account_link.waiting && !model.state().account_link.checked, "no account check was queued");
+
+    // The Install sheet of a game with community recipes in the catalog: no Settings row, no catalog refresh.
+    {
+        playden::GameSummary darkwood;
+        darkwood.id = kGame;
+        darkwood.title = "Darkwood";
+        playden::GameSummary other;
+        other.id = GameId::Steam(220);
+        other.title = "Half-Life 2";
+        check(model.UpdateLibrary({{darkwood, other}, false, {}, false, true, 101}), "a second game is in the library");
+        playden::homebrew::CommunityCatalog catalog;
+        catalog.release_tag = "r20261108.2";
+        auto listed = offer(kNewerRevision);
+        listed.id = "community-steam-220-sample";
+        catalog.games[playden::GameRef::Steam(220)] = {listed};
+        model.UpdateCommunityCatalog(catalog);
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        check(model.action("details:220"), "Half-Life 2's page opens");
+        check(model.UpdateAppDetails(GameId::Steam(220), 300'000'000, 600'000'000, true), "its details arrive");
+        model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+        activate(model, "details-install");
+        check(model.state().navigation.modals.back().id == "install", "the Install sheet opens");
+        check(!has(top_keys(model), "install-settings"), "the Install sheet has no Settings row");
+        check(!model.TakeCommunityRefreshRequest(), "and asks for no catalog refresh");
+    }
 }
 
 int main() {
