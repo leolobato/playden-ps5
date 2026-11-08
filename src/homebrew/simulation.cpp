@@ -8572,14 +8572,15 @@ void Simulation::rebuild_view() {
                 row("details-prepare-next", RowKind::Action, "Prepare next", "details-prepare-next").game_id = game->id;
         }
         // An installed game with community recipes carries a "Recipe available" tag, or "Recipe in use" once one is
-        // chosen; Game settings › Preset chooses one.
+        // chosen; Game settings › Preset chooses one. A recipe from another game (search, a linked game) is in use too.
         if (installed && game && community_enabled_) {
-            if (const auto* offers = community_offers(game->id); offers && !offers->empty()) {
-                auto& mark = row("details-recipe", RowKind::Status,
-                                 base_of(game->id).community.id.empty() ? "Recipe available" : "Recipe in use", "");
+            const auto* offers = community_offers(game->id);
+            const auto count = offers ? offers->size() : 0;
+            const bool in_use = !base_of(game->id).community.id.empty();
+            if (count > 0 || in_use) {
+                auto& mark = row("details-recipe", RowKind::Status, in_use ? "Recipe in use" : "Recipe available", "");
                 mark.value = base_name(game->id, base_of(game->id));
-                const auto count = offers->size();
-                mark.subtitle = std::to_string(count) + (count == 1 ? " community recipe" : " community recipes");
+                if (count > 0) mark.subtitle = std::to_string(count) + (count == 1 ? " community recipe" : " community recipes");
                 mark.enabled = false;
             }
         }

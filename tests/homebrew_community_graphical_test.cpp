@@ -115,6 +115,13 @@ int main(int argc, char** argv) {
         capture("recipes-other-game", "preset-picker", "recipe-" + std::string(64, '7'));
         check(model.view().comparison && model.view().comparison->note.find("isn't in this copy") != std::string::npos,
               "another game's recipe: the side panel notes Playden's program");
+        // Chosen, another game's recipe is the one in use: the details tag says so, with no recipe of the game's own.
+        check(model.action("cross"), "choose another game's recipe");
+        if (model.view().surface == "confirmation") check(model.action("cross"), "switch to it");
+        for (int back = 0; back < 4 && model.view().surface != "details"; ++back) model.action("circle");
+        check(model.view().surface == "details", "back on the game's details");
+        check(find_row(model, "details-recipe") && find_row(model, "details-recipe")->title == "Recipe in use",
+              "another game's recipe in use carries the mark");
         capture("recipes-linked", "preset-picker", "recipe-" + std::string(64, '6'));
         check(find_row(model, "chooser-heading-linked") && find_row(model, "recipes-unlink") && find_row(model, one),
               "the game's own recipes, the linked game's, and Unlink");
