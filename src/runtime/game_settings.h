@@ -691,8 +691,20 @@ struct CommunityRecipe {
 // game, game_name and made_on name the game it is shared for (SharingGameRef); the id is the export's slugless form.
 CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSettings& settings, const GameRef& game,
                                      std::string game_name, std::string made_on = {});
+// A settings-only recipe (community.format_version 2) shared from a game whose base is the settings-only recipe `base`
+// (as its file has it) and whose program the player didn't change. before: the effective settings of the base as it
+// applies to this copy, without the player's changes; after: the game's. The base's defaults, plus every row whose
+// value the player changed (not the program rows, which stay the base's), and graphics when it changed. Its program
+// stays Playden's to fill in.
+CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const EffectiveSettings& before,
+                                        const EffectiveSettings& after, const GameRef& game, std::string game_name,
+                                        std::string made_on = {});
+// The rows that choose the program or how it starts, which a settings-only recipe takes from Playden's recipe: a
+// player's change to one makes a share name its program.
+bool IsProgramRow(std::string_view id);
 // A community recipe as the recipe of one installed game: recipe.app_id its runtime number, recipe.game the game.
 void BindCommunityRecipe(CommunityRecipe* community, const GameId& game, std::uint32_t runtime_number);
+// A settings-only recipe (IsSettingsOnlyRecipe) is written without the fields Playden fills in, as format_version 2.
 std::string SerializeCommunityRecipe(const CommunityRecipe& community);
 // Reads a community recipe leniently: an export (no slug, no title, locks) and older files (a kit
 // id in min_kit) read too. CommunityRecipeRefusals (runtime/community_rules.h) holds the strict

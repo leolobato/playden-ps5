@@ -14776,10 +14776,38 @@ std::string Simulation::community_title(GameId id, const std::string& recipe_id,
     return "Recipe from the community";
 }
 
+std::optional<rt::CommunityRecipe> Simulation::build_shared_recipe(GameId id, bool settings_only) const {
+    auto community = build_community_recipe(id);
+    if (!community || !settings_only) return community;
+    const auto base = RecipeBaseFor(id);
+    rt::CommunityObjectState state;
+    const auto* object = base ? community_object(base->revision, &state) : nullptr;
+    if (!object || !rt::IsSettingsOnlyRecipe(*object)) return community;
+    // The base as it applies to this copy, without the player's changes, against the game's settings.
+    BaseChoice from;
+    from.community = *base;
+    static const std::map<std::string, std::string> none;
+    rt::EffectiveSettings before, after;
+    rt::SettingsError error;
+    if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), none, kit_for(id), &before, &error) ||
+        !EffectiveSettingsFor(id, &after))
+        return std::nullopt;
+    auto shared = rt::BuildSettingsOnlyRecipe(*object, before, after, community->game, community->game_name,
+                                              community->made_on.empty() ? community->game.store : community->made_on);
+    shared.recipe.name = community->recipe.name;
+    shared.tested_kit = community->tested_kit;
+    shared.tested_firmware = community->tested_firmware;
+    shared.tested_date = community->tested_date;
+    shared.status = community->status;
+    shared.notes = community->notes;
+    return shared;
+}
+
 std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeRef>& base, bool* differs,
-                                      bool* program_or_graphics) const {
+                                      bool* program_or_graphics, bool* program_changed) const {
     *differs = false;
     *program_or_graphics = false;
+    if (program_changed) *program_changed = false;
     static const std::map<std::string, std::string> none;
     BaseChoice from;
     if (base) from.community = {base->recipe_id, base->revision};
@@ -14788,6 +14816,26 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
     if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), none, kit_for(id), &before, &error) ||
         !EffectiveSettingsFor(id, &after))
         return {};
+    // Whether the player changed what starts: the program as it resolves (the same file however its path is written),
+    // its folder and arguments, its architecture, and the required arguments and library overrides they set
+    // themselves (the DXVK overrides that follow the Graphics row are not theirs).
+    if (program_changed) {
+        const auto* was = before.launch;
+        const auto* now = after.launch;
+        const auto user_changed = [&](const char* row) {
+            const auto found_after = after.values.find(row);
+            const auto found_before = before.values.find(row);
+            return found_after != after.values.end() && found_after->second.source == rt::ValueSource::kUser &&
+                   (found_before == before.values.end() ||
+                    rt::ChosenValue(found_before->second) != rt::ChosenValue(found_after->second));
+        };
+        *program_changed = (was == nullptr) != (now == nullptr) ||
+                           (was && now && (BottlePath(was->executable) != BottlePath(now->executable) ||
+                                           BottlePath(was->working_directory) != BottlePath(now->working_directory) ||
+                                           was->in_install_root != now->in_install_root || was->arguments != now->arguments)) ||
+                           before.architecture != after.architecture || user_changed("arguments") ||
+                           user_changed("dll_overrides");
+    }
     std::vector<std::string> items;
     const auto program = [](const rt::EffectiveSettings& values) { return values.launch ? values.launch->executable : std::string(); };
     if (BottlePath(program(before)) != BottlePath(program(after))) {
@@ -14845,7 +14893,7 @@ cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
                                               !community_offer(id, inputs.saved_recipe_id);
         }
     }
-    share_changes(id, inputs.based_on, &inputs.differs_from_base, &inputs.program_or_graphics_differ);
+    share_changes(id, inputs.based_on, &inputs.differs_from_base, &inputs.program_or_graphics_differ, &inputs.program_changed);
     return cm::DecideShare(inputs);
 }
 
@@ -14947,7 +14995,9 @@ void Simulation::open_share_sheet(GameId id) {
     rt::EffectiveSettings values;
     std::vector<std::string> sent;
     if (EffectiveSettingsFor(id, &values)) {
-        if (values.launch) sent.push_back(file_name(values.launch->executable));
+        // A settings-only share names no program: Playden finds it on each copy.
+        if (draft.decision.settings_only) sent.push_back("the program Playden finds");
+        else if (values.launch) sent.push_back(file_name(values.launch->executable));
         if (const auto* graphics = rt::FindSetting("graphics"))
             sent.push_back(choice_label(*graphics, rt::ChosenValue(values.values.at("graphics"))));
     }
@@ -15020,7 +15070,7 @@ void Simulation::send_share() {
         share_->error = "Choose whether to suggest changes or share a new recipe.";
         return;
     }
-    const auto community = build_community_recipe(id);
+    const auto community = build_shared_recipe(id, share_->decision.settings_only);
     if (!community) {
         share_->error = "These settings can't be shared yet: choose the game's program first.";
         return;

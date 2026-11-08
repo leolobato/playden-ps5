@@ -149,7 +149,7 @@ of earlier files are refused: the `game` object replaced them.
 A settings-only recipe changes Game settings and leaves the program to Playden. Use one when the settings a game needs
 are known (the Mouse preset, OpenGL, vkd3d-proton, a resolution) but not the program file: a compatibility report
 often says which settings worked without naming the file. A recipe exported from Playden always has its program, so it
-is format 1; settings-only recipes are written by hand.
+is format 1. A settings-only recipe is written by hand, or shared from a game based on one (see below).
 
 ```json
 {
@@ -206,9 +206,23 @@ Playden finds" for a recipe that names no program, and lists only the program ro
 the game starts". A settings-only recipe is matched to a game by its `game` alone, like every community recipe, and to
 an installed game by its id and revision.
 
-Sharing a game whose recipe is a settings-only one never offers Suggest changes. A share carries the program the game
-ran with, so an update would turn the recipe into one for that program only. With changes, the share is a new recipe
-that credits the settings-only one as `based_on`; without changes, Playden offers a thumbs up instead.
+Sharing a game whose recipe is a settings-only one depends on whether the player changed a program row
+(`IsProgramRow`: `launch_option`, `program`, `program_folder`, `program_arguments`, `architecture`, `arguments` or
+`dll_overrides` in Game settings):
+
+- **Program kept** (Playden's program, or the one the recipe names): the share is a settings-only recipe too
+  (`BuildSettingsOnlyRecipe`). It has the base's defaults, every other row the player changed (not Extra arguments,
+  the player's own row), and `graphics` when that changed, and the base's own program rows as they are. Picking the
+  same program the recipe names, however its path is written, is no change. The usual rules apply, so Suggest changes is offered
+  (and pre-selected unless graphics changed), and the recipe stays settings-only when the change is merged. Without
+  changes, Playden offers a thumbs up.
+- **Program changed:** the share is a recipe with its program (format 1), always as a new recipe that credits the
+  settings-only one as `based_on` (`"choice": "new"`), for another game's settings-only recipe too, and never as an
+  update of the game's own earlier share. An update would turn a recipe for every copy into one for that
+  program only, and a format 1 recipe for the game's own copy doesn't fall back to Playden's program when the file is
+  missing.
+
+Export as recipe always writes format 1.
 
 ### Format versions
 

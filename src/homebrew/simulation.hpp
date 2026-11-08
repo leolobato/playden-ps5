@@ -1726,10 +1726,14 @@ private:
     std::optional<playden::ShareAs> pending_share_as_;  // chosen once its name is typed or its account linked
     void request_submission_status(GameId id, bool force);
     std::optional<playden::runtime::CommunityRecipe> build_community_recipe(GameId id) const;
+    // What a share sends: the recipe with its program, or (settings_only, ShareDecision::settings_only) a settings-only
+    // recipe made from the game's settings-only base (runtime::BuildSettingsOnlyRecipe).
+    std::optional<playden::runtime::CommunityRecipe> build_shared_recipe(GameId id, bool settings_only) const;
     // The Changes list between the game's base (Playden default without one) and its effective settings,
-    // and whether anything, or the program or graphics, differs.
+    // and whether anything, or the program or graphics, differs; program_changed: whether the player changed a row
+    // that chooses the program or how it starts (runtime::IsProgramRow).
     std::string share_changes(GameId id, const std::optional<playden::community::RecipeRef>& base, bool* differs,
-                              bool* program_or_graphics) const;
+                              bool* program_or_graphics, bool* program_changed = nullptr) const;
     [[nodiscard]] std::string community_title(GameId id, const std::string& recipe_id, const std::string& revision) const;
     [[nodiscard]] std::string vote_words(const playden::community::CastVote* vote) const;
     [[nodiscard]] std::vector<std::string> share_actions() const;

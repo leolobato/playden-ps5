@@ -3781,28 +3781,77 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
   return out;
 }
 
+bool IsProgramRow(std::string_view id) {
+  return id == "launch_option" || id == "program" || id == "program_folder" || id == "program_arguments" ||
+         id == "architecture" || id == "arguments" || id == "dll_overrides";
+}
+
+CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const EffectiveSettings& before,
+                                        const EffectiveSettings& after, const GameRef& game, std::string game_name,
+                                        std::string made_on) {
+  CommunityRecipe out;
+  out.format_version = kCommunitySettingsOnlyFormat;
+  out.game = game;
+  out.game_name = std::move(game_name);
+  if (made_on != game.store) out.made_on = std::move(made_on);
+  auto& shared = out.recipe;
+  shared.id = CommunityRecipeIdFor(game, {});
+  shared.version = 1;
+  shared.name = base.recipe.name;
+  shared.architecture.clear();
+  shared.runtime.clear();
+  shared.prefix.clear();
+  // Graphics is a field of its own: the base's, or the player's when they changed it.
+  shared.graphics = after.graphics != before.graphics ? after.graphics : base.recipe.graphics;
+  shared.defaults = base.recipe.defaults;
+  shared.requirements = base.recipe.requirements;
+  // Rows that are local or written elsewhere: the program rows stay the base's, graphics has its field, and Extra
+  // arguments is the player's own row, which no community recipe carries.
+  static const std::set<std::string> skipped = {"graphics", "extra_arguments", "start_check", "logging"};
+  for (const auto& definition : SettingsCatalogue()) {
+    if (IsProgramRow(definition.id) || skipped.count(definition.id)) continue;
+    const auto found_after = after.values.find(definition.id);
+    const auto found_before = before.values.find(definition.id);
+    if (found_after == after.values.end() || !found_after->second.available) continue;
+    if (found_before != before.values.end() && ChosenValue(found_before->second) == ChosenValue(found_after->second))
+      continue;
+    shared.defaults[definition.id] = ChosenValue(found_after->second);
+  }
+  out.status = "untested";
+  return out;
+}
+
 std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
   const auto quoted = [](const std::string& text) { return "\"" + json::escape(text) + "\""; };
   const auto& recipe = community.recipe;
+  const bool settings_only = IsSettingsOnlyRecipe(community);
   // One field per line, so a change to a shared recipe reads well in a pull request.
   std::string text = "{\n  \"recipe_id\": " + quoted(recipe.id) + ",\n  \"recipe_version\": " +
                      std::to_string(recipe.version) + ",\n  \"game\": {\"store\": " + quoted(community.game.store) +
                      ", \"key\": " + quoted(community.game.key) + ", \"name\": " + quoted(community.game_name) + "}" +
                      (community.made_on.empty() ? std::string() : ",\n  \"made_on\": " + quoted(community.made_on)) +
-                     ",\n  \"name\": " + quoted(recipe.name) + ",\n  \"launch_entries\": [";
-  for (std::size_t index = 0; index < recipe.launch_entries.size(); ++index) {
+                     ",\n  \"name\": " + quoted(recipe.name);
+  if (settings_only) {
+    // Only what Playden doesn't fill in from its own recipe for the copy.
+    if (!recipe.graphics.empty()) text += ",\n  \"graphics\": " + quoted(recipe.graphics);
+    text += ",\n  \"defaults\": {";
+  } else {
+    text += ",\n  \"launch_entries\": [";
+  }
+  for (std::size_t index = 0; !settings_only && index < recipe.launch_entries.size(); ++index) {
     const auto& entry = recipe.launch_entries[index];
     text += std::string(index ? "," : "") + "\n    {\"id\": " + quoted(entry.id) + ", \"label\": " + quoted(entry.label) +
             ", \"executable\": " + quoted(entry.executable) + ", \"working_directory\": " +
             quoted(entry.working_directory) + ", \"arguments\": " + quoted(entry.arguments) +
             (entry.in_install_root ? ", \"in_install_root\": true" : "") + "}";
   }
-  text += "\n  ],\n  \"arguments\": " + quoted(recipe.arguments) + ",\n  \"resolution_arguments\": " +
-          quoted(recipe.resolution_arguments) + ",\n  \"dll_overrides\": " + quoted(recipe.dll_overrides) +
-          ",\n  \"architecture\": " + quoted(recipe.architecture) + ",\n  \"runtime\": " + quoted(recipe.runtime) +
-          ",\n  \"prefix\": " + quoted(recipe.prefix) + ",\n  \"graphics\": " + quoted(recipe.graphics) +
-          (recipe.detected.empty() ? std::string() : ",\n  \"detected\": " + quoted(recipe.detected)) +
-          ",\n  \"defaults\": {";
+  if (!settings_only)
+    text += "\n  ],\n  \"arguments\": " + quoted(recipe.arguments) + ",\n  \"resolution_arguments\": " +
+            quoted(recipe.resolution_arguments) + ",\n  \"dll_overrides\": " + quoted(recipe.dll_overrides) +
+            ",\n  \"architecture\": " + quoted(recipe.architecture) + ",\n  \"runtime\": " + quoted(recipe.runtime) +
+            ",\n  \"prefix\": " + quoted(recipe.prefix) + ",\n  \"graphics\": " + quoted(recipe.graphics) +
+            (recipe.detected.empty() ? std::string() : ",\n  \"detected\": " + quoted(recipe.detected)) +
+            ",\n  \"defaults\": {";
   bool first = true;
   for (const auto& [id, value] : recipe.defaults) {
     text += std::string(first ? "" : ",") + "\n    " + quoted(id) + ": " + quoted(value);
@@ -3824,7 +3873,7 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
     }
     text += "}";
   }
-  if (!recipe.registry.empty()) {
+  if (!settings_only && !recipe.registry.empty()) {
     // Grouped by key as ParseGameRecipe reads it; data holds the quoted string.
     std::map<std::string, std::vector<const RegistryValue*>> keys;
     for (const auto& value : recipe.registry) keys[value.key].push_back(&value);
@@ -3840,9 +3889,10 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
     }
     text += "\n  }";
   }
-  if (!recipe.ini.empty()) text += ",\n  \"ini\": " + SerializeIniValues(recipe.ini, "\n    ", "\n  ");
-  text += ",\n  \"executable\": " +
-          quoted(community.executable) + ",\n  \"community\": {\n    \"format_version\": 1,\n    \"title\": " +
+  if (!settings_only && !recipe.ini.empty()) text += ",\n  \"ini\": " + SerializeIniValues(recipe.ini, "\n    ", "\n  ");
+  if (!settings_only) text += ",\n  \"executable\": " + quoted(community.executable);
+  text += ",\n  \"community\": {\n    \"format_version\": " + std::string(settings_only ? "2" : "1") +
+          ",\n    \"title\": " +
           quoted(community.title) + ",\n    \"tested_kit\": " + quoted(community.tested_kit) +
           // min_kit is a requirement someone sets by hand; an empty one is left out.
           (community.min_kit.empty() ? std::string() : ",\n    \"min_kit\": " + quoted(community.min_kit)) +

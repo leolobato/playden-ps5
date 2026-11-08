@@ -2,6 +2,7 @@
 // carry, and that format 1 keeps its meaning.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "runtime/community_rules.h"
 #include "runtime/game_install.h"
 #include "runtime/game_settings.h"
 #include "runtime/recipe_choice.h"
@@ -272,11 +273,58 @@ void Apply() {
   CHECK(SelectRecipe(candidates).fallback_reason == kCommunityRecipeNoProgram);
 }
 
+// A share from a game based on a settings-only recipe whose program the player kept.
+void Share() {
+  const auto own = Own();
+  const auto copy = [](const std::string& program) { return program == "Bin/Old.exe" ? std::string("pe32") : std::string(); };
+  KitCapabilities kit;
+  auto base = Read("\"controller_preset\": \"mouse\", \"program\": \"Bin/Old.exe\", \"resolution\": \"1920x1080\"");
+  auto filled = base;
+  FillSettingsOnlyRecipe(&filled.recipe, own, copy);
+  EffectiveSettings before, after;
+  SettingsError error;
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, kit, &before, &error));
+  // The player changed the resolution and graphics, and kept the recipe's program.
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"resolution", "1280x720"}, {"unlock.graphics", "on"},
+                                                        {"graphics", "opengl"}, {"extra_arguments", "-log"}}, kit,
+                               &after, &error));
+  CHECK(IsProgramRow("program") && IsProgramRow("arguments") && IsProgramRow("dll_overrides") && !IsProgramRow("graphics") &&
+        !IsProgramRow("resolution"));
+  const auto shared = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(IsSettingsOnlyRecipe(shared) && shared.executable.empty() && shared.recipe.launch_entries.empty());
+  CHECK(shared.recipe.defaults.at("resolution") == "1280x720" && shared.recipe.defaults.at("controller_preset") == "mouse" &&
+        shared.recipe.defaults.at("program") == "Bin/Old.exe" && shared.recipe.graphics == "opengl");
+  // What Playden filled in for this copy stays out: own's program, arguments, overrides; and Extra arguments, the
+  // player's own row, which no community recipe carries.
+  CHECK(!shared.recipe.defaults.count("extra_arguments"));
+  CHECK(!shared.recipe.defaults.count("launch_option") && !shared.recipe.defaults.count("arguments") &&
+        !shared.recipe.defaults.count("architecture") && !shared.recipe.defaults.count("dll_overrides"));
+  auto named = shared;
+  named.recipe.id = "community-steam-274520-shared";
+  named.title = "Shared";
+  named.tested_kit = "0.19";
+  const auto text = SerializeCommunityRecipe(named);
+  for (const char* field : {"launch_entries", "executable", "architecture", "runtime", "prefix", "dll_overrides",
+                            "\"arguments\"", "resolution_arguments", "detected"})
+    CHECK(!Has(text, field));
+  CHECK(Has(text, "\"format_version\": 2") && Has(text, "\"graphics\": \"opengl\""));
+  CommunityRecipe reread;
+  std::string reason;
+  CHECK(ParseCommunityRecipe(text, &reread, &reason) && IsSettingsOnlyRecipe(reread) &&
+        reread.recipe.defaults == named.recipe.defaults && SerializeCommunityRecipe(reread) == text);
+  CHECK(CommunityRecipeRefusals(reread).empty());
+  // Graphics kept: the field stays as the base has it (none here).
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"resolution", "1280x720"}}, kit, &after, &error));
+  const auto kept = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(kept.recipe.graphics.empty() && !Has(SerializeCommunityRecipe(kept), "\"graphics\""));
+}
+
 }  // namespace
 
 int main() {
   Parse();
   Apply();
+  Share();
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
   return failures ? 1 : 0;
 }

@@ -24,6 +24,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -861,7 +862,7 @@ void settings_only_base(const std::filesystem::path& base) {
     // The copy's programs, as the folder's scan found them.
     std::map<GameId, playden::homebrew::LiveGameSetup> setups;
     setups[kGame].scanned = true;
-    setups[kGame].programs = {{"Darkwood.exe", "pe64", "", false, ""}};
+    setups[kGame].programs = {{"Darkwood.exe", "pe64", "", false, ""}, {"Bin/Tool.exe", "pe64", "", false, ""}};
     model.SetGameSetups(setups);
     const auto file = [](const std::string& slug, const std::string& defaults) {
         return "{\"recipe_id\": \"community-steam-274520-" + slug + "\", \"recipe_version\": 1,"
@@ -869,10 +870,11 @@ void settings_only_base(const std::filesystem::path& base) {
                " \"defaults\": {" + defaults + "}, \"community\": {\"format_version\": 2, \"title\": \"" + slug +
                "\", \"status\": \"works\", \"author\": \"rina\"}}";
     };
-    const std::string plain_revision(64, 'e'), missing_revision(64, 'f');
+    const std::string plain_revision(64, 'e'), missing_revision(64, 'f'), tool_revision(64, 'a');
     std::map<std::string, rt::CommunityRecipe> objects;
     for (const auto& [revision, text] : {std::pair{plain_revision, file("mouse", "\"resolution\": \"1920x1080\"")},
-                                         std::pair{missing_revision, file("gone", "\"program\": \"Bin/Gone.exe\"")}}) {
+                                         std::pair{missing_revision, file("gone", "\"program\": \"Bin/Gone.exe\"")},
+                                         std::pair{tool_revision, file("tool", "\"program\": \"BIN\\\\tool.exe\"")}}) {
         rt::CommunityRecipe community;
         std::string reason;
         check(rt::ParseCommunityRecipe(text, &community, &reason), "the settings-only file reads");
@@ -929,7 +931,7 @@ void settings_only_base(const std::filesystem::path& base) {
     model.SetGeneratedRecipes({own});
     check(model.RecipeFallbackFor(kGame).empty(), "with one again, it applies");
 
-    // Sharing from it: a new recipe that credits it, "new" so the API doesn't take it as an update; never Suggest changes.
+    // Sharing from it with the program kept: a settings-only share, so Suggest changes keeps it settings-only.
     check(model.ShareDecisionFor(kGame).kind == cm::ShareKind::kNoChangesOfferVote, "unchanged, the share offers a vote");
     open_game_settings(model);
     activate(model, "setting-resolution");
@@ -938,13 +940,82 @@ void settings_only_base(const std::filesystem::path& base) {
         if (row.title.find("1280") != std::string::npos) choice = row.key;
     check(!choice.empty(), "another resolution can be chosen");
     activate(model, choice);
-    const auto decision = model.ShareDecisionFor(kGame);
-    check(decision.kind == cm::ShareKind::kNewRecipe && decision.send_based_on && decision.send_new &&
-              cm::ChoiceToSend(decision, cm::ShareChoice::kNone) == cm::ShareChoice::kNew,
-          "changed, it is shared as a new recipe crediting the settings-only one");
+    const auto resolution = model.state().game_settings.at(kGame).overrides.at("resolution");
+    auto decision = model.ShareDecisionFor(kGame);
+    check(decision.kind == cm::ShareKind::kAskPlayer && decision.settings_only && decision.preselect == cm::ShareChoice::kUpdate,
+          "a settings change is a settings-only share, Suggest changes pre-selected");
+    const auto send = [&]() -> std::optional<SharingRequest> {
+        activate(model, "share-send");
+        if (find_row(model, "share-send-confirm")) activate(model, "share-send-confirm");
+        for (auto& request : model.TakeSharingRequests())
+            if (request.kind == SharingRequestKind::Submit) return request;
+        return std::nullopt;
+    };
     open_share(model);
-    check(!find_row(model, "share-choice-update") && !find_row(model, "share-choice-new") && find_row(model, "share-send"),
-          "the Share sheet doesn't offer to suggest changes to a settings-only recipe");
+    check(find_row(model, "share-choice-update") && find_row(model, "share-choice-new") &&
+              contains(find_row(model, "share-what")->subtitle, "the program Playden finds") &&
+              !contains(find_row(model, "share-what")->subtitle, "Darkwood.exe"),
+          "the Share sheet offers Suggest changes and says no program is sent");
+    auto sent = send();
+    check(sent.has_value(), "the settings-only share is sent");
+    if (sent) {
+        rt::CommunityRecipe shared;
+        std::string reason;
+        check(rt::ParseCommunityRecipe(sent->submission.recipe_json, &shared, &reason) && rt::IsSettingsOnlyRecipe(shared) &&
+                  shared.recipe.launch_entries.empty() && shared.executable.empty() &&
+                  shared.recipe.defaults.at("resolution") == resolution &&
+                  !contains(sent->submission.recipe_json, "launch_entries") && !contains(sent->submission.recipe_json, "Darkwood.exe"),
+              "it sends a settings-only recipe with the player's change");
+        check(sent->submission.based_on && sent->submission.based_on->revision == plain_revision &&
+                  sent->submission.choice == cm::ShareChoice::kUpdate,
+              "as a suggested change to the settings-only recipe");
+    }
+
+    // The player picks a program: the share names it, and is always a new recipe that credits the settings-only one.
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    open_game_settings(model);
+    activate(model, "setting-launch_option");
+    activate(model, "program-1");
+    check(model.state().game_settings.at(kGame).overrides.count("program"), "the player chose Bin/Tool.exe");
+    decision = model.ShareDecisionFor(kGame);
+    check(decision.kind == cm::ShareKind::kNewRecipe && !decision.settings_only && decision.send_based_on && decision.send_new &&
+              cm::ChoiceToSend(decision, cm::ShareChoice::kNone) == cm::ShareChoice::kNew,
+          "a changed program is shared as a new recipe crediting the settings-only one");
+    open_share(model);
+    check(!find_row(model, "share-choice-update") && !find_row(model, "share-choice-new") &&
+              contains(find_row(model, "share-what")->subtitle, "Tool.exe"),
+          "the Share sheet doesn't offer to suggest changes, and names the program");
+    sent = send();
+    check(sent.has_value(), "the program share is sent");
+    if (sent) {
+        rt::CommunityRecipe shared;
+        std::string reason;
+        check(rt::ParseCommunityRecipe(sent->submission.recipe_json, &shared, &reason) && shared.format_version == 1 &&
+                  shared.executable == "Bin/Tool.exe" && sent->submission.choice == cm::ShareChoice::kNew,
+              "it sends a format 1 recipe with its program, as new");
+    }
+
+    // A recipe naming BIN\tool.exe, and the player picking that same file from the folder (Bin/Tool.exe): the program
+    // is the same, so the share stays settings-only.
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    open_game_settings(model);
+    activate(model, "preset-picker");
+    activate(model, "recipe-" + tool_revision);
+    if (model.state().navigation.modals.back().id == "confirmation") activate(model, "recipe-switch-confirm");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(model.RecipeBaseFor(kGame) && model.RecipeBaseFor(kGame)->revision == tool_revision, "the recipe naming tool.exe is the base");
+    open_game_settings(model);
+    activate(model, "setting-launch_option");
+    activate(model, "program-1");
+    activate(model, "setting-resolution");
+    std::string other;
+    for (const auto& row : model.view().rows)
+        if (row.title.find("1280") != std::string::npos) other = row.key;
+    if (!other.empty()) activate(model, other);
+    check(model.state().game_settings.at(kGame).overrides.count("program"), "the player chose Bin/Tool.exe");
+    decision = model.ShareDecisionFor(kGame);
+    check(decision.settings_only && decision.kind == cm::ShareKind::kAskPlayer && !decision.send_new,
+          "the same program, written differently, is no program change");
 }
 
 }  // namespace

@@ -11,11 +11,18 @@
 //   | Based on a recipe this console shared (saved recipe id)     | update own (based_on, sub. id) |
 //   | Based on someone else's recipe, with changes                | ask the player                 |
 //   | Based on someone else's recipe, no changes                  | no share; offer a thumbs up    |
-//   | Based on a settings-only recipe, with changes               | new recipe (based_on, "new")   |
-//   | Based on a settings-only recipe, no changes                 | no share; offer a thumbs up    |
 //
-// A settings-only recipe (community.format_version 2) is never updated from a share: the share carries the program
-// it ran with, so it would turn the recipe into one for that program only.
+// A settings-only recipe (community.format_version 2) as the base:
+//
+//   | The player's program                                        | Result                         |
+//   |-------------------------------------------------------------|--------------------------------|
+//   | Not changed (Playden's, or the one the recipe names)        | a settings-only share, by the  |
+//   |                                                             | rows above (update or new)     |
+//   | Changed (a program row: ShareInputs::program_changed)       | new recipe with its program    |
+//   |                                                             | (based_on, "new")              |
+//
+// A share that names its program is never an update of a settings-only recipe: that would turn a recipe for every
+// copy into one for that program only.
 //
 // When the player is asked, "Suggest changes" is pre-selected when program and graphics are the
 // same as the base's, "Share as a new recipe" when either differs.
@@ -37,8 +44,10 @@ struct ShareInputs {
   std::optional<RecipeRef> based_on;
   // based_on is another game's recipe (chosen from a search by name): credited, never updated from this game.
   bool based_on_other_game = false;
-  // based_on is a settings-only recipe: credited, never updated (a share names its program).
+  // based_on is a settings-only recipe.
   bool based_on_settings_only = false;
+  // The player changed a row that chooses the program or how it starts (runtime::IsProgramRow).
+  bool program_changed = false;
   // The game's saved share (GameSettingsRecord::shared_recipe); empty when it was never shared.
   std::string saved_submission_id;
   std::string saved_recipe_id;
@@ -69,6 +78,8 @@ struct ShareDecision {
   bool send_submission_id = false;
   // kNewRecipe based on a recipe of this game: the request says "new", so the API doesn't take it for an update.
   bool send_new = false;
+  // The recipe sent is settings-only (runtime::BuildSettingsOnlyRecipe), not one with its program.
+  bool settings_only = false;
 };
 
 ShareDecision DecideShare(const ShareInputs& inputs);

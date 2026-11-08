@@ -19,23 +19,22 @@ ShareDecision DecideShare(const ShareInputs& inputs) {
     decision.send_submission_id = saved;
     return decision;
   }
+  // A settings-only base whose program the player kept: the share is settings-only too, and follows the usual rules.
+  decision.settings_only = inputs.based_on_settings_only && !inputs.program_changed;
+  if (inputs.based_on_settings_only && inputs.program_changed) {
+    // Shared with its program, an update would make the recipe one program's: a new recipe that credits it. That holds
+    // for another game's too, and the game's own earlier share isn't updated either (it may be settings-only).
+    decision.kind = ShareKind::kNewRecipe;
+    decision.send_based_on = true;
+    decision.send_new = true;
+    return decision;
+  }
   if (inputs.based_on_other_game) {
     // Another game's recipe: Suggest changes is only for a recipe of the same game, so this is a recipe for this game
     // that credits it, changed or not; this game's own saved share is updated instead.
     decision.kind = saved ? ShareKind::kUpdateOwn : ShareKind::kNewRecipe;
     decision.send_based_on = true;
     decision.send_submission_id = saved;
-    return decision;
-  }
-  if (inputs.based_on_settings_only) {
-    // Shared with its program, the update would make the recipe one program's: a new recipe that credits it.
-    if (!inputs.differs_from_base) {
-      decision.kind = ShareKind::kNoChangesOfferVote;
-      return decision;
-    }
-    decision.kind = ShareKind::kNewRecipe;
-    decision.send_based_on = true;
-    decision.send_new = true;
     return decision;
   }
   if (saved && !inputs.saved_recipe_id.empty() && inputs.saved_recipe_id == inputs.based_on->recipe_id) {
