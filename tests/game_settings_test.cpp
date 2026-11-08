@@ -2597,6 +2597,16 @@ int main(int argc, char** argv) {
     EffectiveSettings again;
     CHECK(BuildEffectiveSettings(as_recipe, nullptr, {}, KitCapabilities{}, &again, &error));
     CHECK(again.arguments == "-game hl2 -w 1280 -h 720" && again.dll_overrides == settings.dll_overrides);
+    {  // The player's Extra arguments stay theirs: the export has none, so the community rules don't refuse it.
+      EffectiveSettings extra;
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"extra_arguments", "-console"}}, KitCapabilities{}, &extra, &error));
+      CHECK(extra.arguments.find("-console") != std::string::npos);
+      auto exported_extra = BuildCommunityRecipe(hl2, extra, kHalfLife2, "Half-Life 2");
+      CHECK(!exported_extra.recipe.defaults.count("extra_arguments") &&
+            SerializeCommunityRecipe(exported_extra).find("-console") == std::string::npos);
+      exported_extra.recipe.id = CommunityRecipeIdFor(kHalfLife2, "console");
+      for (const auto& refusal : CommunityRecipeRefusals(exported_extra)) CHECK(refusal.find("extra_arguments") == std::string::npos);
+    }
     // A recipe exported from a generated one keeps the Steam emulator, unlocked.
     auto from_generated = generated;
     from_generated.defaults["steam_features"] = "emulate";

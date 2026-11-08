@@ -3722,10 +3722,11 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
   shared.graphics = settings.graphics;
   // What the files showed, without the graphics value: that has its own field.
   shared.detected = recipe.detected.substr(0, recipe.detected.find(" graphics="));
-  // The recipe fields above carry the program, arguments and overrides; the rest are defaults.
+  // The recipe fields above carry the program, arguments and overrides; the rest are defaults. Extra arguments is the
+  // player's own row, which no community recipe carries.
   static const std::set<std::string> fields = {"launch_option", "program", "program_folder", "program_arguments",
-                                               "arguments", "architecture", "dll_overrides", "library_overrides",
-                                               "graphics", "start_check", "logging"};
+                                               "arguments", "extra_arguments", "architecture", "dll_overrides",
+                                               "library_overrides", "graphics", "start_check", "logging"};
   for (const auto& definition : SettingsCatalogue()) {
     const auto& row = settings.values.at(definition.id);
     if (fields.count(definition.id) || !row.available || row.source == ValueSource::kPlayden ||
