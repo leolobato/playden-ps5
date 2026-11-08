@@ -10,13 +10,16 @@
 // the effective settings on a kit with every capability, and the full prospero-win profile. It
 // prints "ok <path> <revision> <recipe_id>" or a "refused <path>: <reason>" line per refusal,
 // the command the game starts with, and a "flag <path>: <item>" line for each thing that changes
-// how the game starts. --json prints one JSON object instead. Exit status 1 when any file is
+// how the game starts. A settings-only recipe (community.format_version 2) is filled as a console fills it, from a
+// stand-in for Playden's own recipe (one program, 64-bit, DXVK; the copy has every program it names), and its command
+// names "<Playden's program>" for that program. --json prints one JSON object instead. Exit status 1 when any file is
 // refused, 2 on a usage error.
 #include "runtime/artifact_hash.h"
 #include "runtime/community_rules.h"
 #include "runtime/game_install.h"
 #include "runtime/game_settings.h"
 #include "runtime/prospero_profile.h"
+#include "runtime/recipe_choice.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -32,6 +35,8 @@ namespace rt = playden::runtime;
 namespace {
 
 constexpr std::size_t kMaxRecipeBytes = 16 * 1024;
+// The program of the stand-in for Playden's own recipe a settings-only recipe is filled from.
+constexpr const char* kStandInProgram = "Game.exe";
 
 struct Result {
   std::string path;
@@ -118,6 +123,15 @@ void Check(Result* result) {
   result->refusals = rt::CommunityRecipeRefusals(community, options);
   CheckLayout(result);
   result->flags = rt::CommunityRecipeFlags(community);
+  // A settings-only recipe has its program once Playden fills it in: a stand-in for Playden's recipe here.
+  const bool settings_only = rt::IsSettingsOnlyRecipe(community);
+  if (settings_only) {
+    rt::GameRecipe own;
+    own.launch_entries = {{"game", "Game", kStandInProgram, ""}};
+    own.architecture = "pe64";
+    own.graphics = "dxvk";
+    rt::FillSettingsOnlyRecipe(&community.recipe, own, [](const std::string&) { return std::string("pe64"); });
+  }
 
   // What a console with every capability would start, and the profile it would write.
   rt::KitCapabilities kit;
@@ -131,7 +145,8 @@ void Check(Result* result) {
     return;
   }
   if (settings.launch) {
-    result->command = settings.launch->executable;
+    result->command = settings_only && settings.launch->executable == kStandInProgram ? std::string("<Playden's program>")
+                                                                                       : settings.launch->executable;
     if (!settings.arguments.empty()) result->command += " " + settings.arguments;
   }
   const auto app = std::to_string(community.recipe.app_id);
@@ -194,6 +209,7 @@ std::string Json(const std::vector<Result>& results, bool ok) {
            ", \"revision\": " + Quoted(result.revision) + ", \"recipe_id\": " + Quoted(community.recipe.id) +
            ", \"store\": " + Quoted(community.game.store) + ", \"key\": " + Quoted(community.game.key) +
            ", \"slug\": " + Quoted(result.slug) +
+           ", \"format_version\": " + std::to_string(result.parsed ? community.format_version : 0) +
            ", \"title\": " + Quoted(community.title) + ", \"status\": " + Quoted(community.status) +
            ", \"author\": " + Quoted(community.author) + ", \"contributors\": " + List(community.contributors) +
            ", \"tested_kit\": " + Quoted(community.tested_kit) + ", \"min_kit\": " + Quoted(community.min_kit) +

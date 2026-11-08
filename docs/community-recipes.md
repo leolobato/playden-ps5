@@ -140,9 +140,90 @@ Community fields:
 Kit versions are `<generation>.<revision>` and compare as numbers: `0.9` is older than `0.12`. A
 development kit counts as the release it leads to, so `0.12-dev.20261022.1` is `0.12`.
 
-Unknown fields are ignored. A file whose `format_version` isn't 1, whose `status` is another word, whose `game` isn't
-a store and its key, or whose `recipe_id` isn't made from its `game` doesn't load. The `app_id` and `steam_appid` of
-earlier files are refused: the `game` object replaced them.
+Unknown fields are ignored. A file whose `format_version` isn't 1 or 2, whose `status` is another word, whose `game`
+isn't a store and its key, or whose `recipe_id` isn't made from its `game` doesn't load. The `app_id` and `steam_appid`
+of earlier files are refused: the `game` object replaced them.
+
+## Settings-only recipes (format_version 2)
+
+A settings-only recipe changes Game settings and leaves the program to Playden. Use one when the settings a game needs
+are known (the Mouse preset, OpenGL, vkd3d-proton, a resolution) but not the program file: a compatibility report
+often says which settings worked without naming the file. A recipe exported from Playden always has its program, so it
+is format 1; settings-only recipes are written by hand.
+
+```json
+{
+  "recipe_id": "community-steam-274520-mouse-preset",
+  "recipe_version": 1,
+  "game": {"store": "steam", "key": "274520", "name": "Darkwood"},
+  "name": "Darkwood",
+  "graphics": "opengl",
+  "defaults": {
+    "controller_preset": "mouse",
+    "d3d12": "vkd3d-proton"
+  },
+  "community": {
+    "format_version": 2,
+    "title": "Mouse preset",
+    "tested_kit": "0.19",
+    "tested_date": "2026-11-08",
+    "status": "works",
+    "notes": "Report: https://github.com/leolobato/playden-ps5/issues/…",
+    "author": "",
+    "contributors": []
+  }
+}
+```
+
+Playden fills in the program from its own recipe for the player's copy: the one it ships for the game, else the one it
+makes from Steam's launch options and the game's folder (`FillSettingsOnlyRecipe`, `src/runtime/recipe_choice.h`).
+Each recipe field is one of three kinds:
+
+| From Playden's recipe for the copy | From the file | Refused |
+|---|---|---|
+| `launch_entries`, `architecture`, `runtime`, `prefix`, `detected`, `dll_overrides`, `arguments`, `resolution_arguments` | `defaults`, `locked` (empty, as in every community recipe), `requirements`, `name`, the `community` block | the fields in the first column, `executable`, `registry`, `ini`, `game_files`, `steam_api_copies` |
+
+`graphics` may be in the file: when it is, it wins over Playden's; without it, Playden's applies. OpenGL is
+`"graphics": "opengl"`, not a default, because the Graphics row always comes from the recipe's field.
+vkd3d-proton is the `d3d12` default. `registry` and `ini` values belong to a program, so only a recipe with its own
+program (format 1) may carry them.
+
+The program rows may still be set in `defaults`, where format 1 refuses them:
+
+- `program`: a program file, relative to the game folder. When the player's copy has it, it starts, built as the copy's
+  file says (32- or 64-bit). When it doesn't, Playden's program starts and the program rows below are dropped, as for
+  [another game's recipe](#search-by-name-and-linked-games); the chooser says "Bin/Game.exe isn't in this copy, so
+  Playden's program is used."
+- `launch_option`: one of Playden's launch options for the game, by its id. One Playden doesn't have is dropped with
+  the program rows. A `program` default wins over it.
+- `program_arguments` and `program_folder`: the arguments and starting folder of the program that starts.
+
+`arguments`, `extra_arguments`, `dll_overrides`, `architecture` and `graphics` defaults are refused.
+
+When Playden has no program for the copy (it couldn't make a recipe for it), the recipe doesn't apply, and Game
+settings says "Playden found no program to start in this copy." The chooser's side panel says "Uses the program
+Playden finds" for a recipe that names no program, and lists only the program rows the file sets under "Changes how
+the game starts". A settings-only recipe is matched to a game by its `game` alone, like every community recipe, and to
+an installed game by its id and revision.
+
+Sharing a game whose recipe is a settings-only one never offers Suggest changes. A share carries the program the game
+ran with, so an update would turn the recipe into one for that program only. With changes, the share is a new recipe
+that credits the settings-only one as `based_on`; without changes, Playden offers a thumbs up instead.
+
+### Format versions
+
+`community.format_version` says which Playden can read a file. Each Playden reads a set of versions and refuses a
+file of any other version alone, with a log line in `community.log`; the rest of the release still loads. This
+Playden reads 1 and 2. Earlier builds read only 1, so they skip settings-only files. Release builds read community
+recipes only when they are turned on (see [Turn them on](#turn-them-on)), so the builds that skip them are mostly
+older nightlies.
+
+- The version goes up when an older Playden would read a file wrongly or can't apply it. A new optional field that
+  older builds may ignore safely doesn't need a new version.
+- `index.json` in a release keeps its own `format_version` 2. Changing it would make every older Playden refuse the
+  whole release.
+- There is no minimum Playden version field: the parser knows what it can read. `min_kit` stays for what the runtime
+  kit must provide.
 
 ## Games
 
@@ -270,6 +351,9 @@ Playden checks them again on the console:
   or without `.exe`). The program, its folder, arguments and library overrides go in the recipe's own fields
   (`launch_entries`, `arguments`, `dll_overrides`), not in `defaults`, and neither does the player's own arguments
   row (`extra_arguments`). A `launch_option` that names a later program is allowed and flagged.
+- **Settings-only program rows:** in a settings-only recipe the `program` and `program_folder` defaults follow the
+  same rules as a launch entry's program and folder. Its `arguments`, `extra_arguments`, `dll_overrides`,
+  `architecture` and `graphics` defaults are refused (see [Settings-only recipes](#settings-only-recipes-format_version-2)).
 - **Library overrides:** named libraries only, no wildcards (`*`).
 - **Environment:** the `environment` row may set only the variables Playden itself sets or documents:
   `WINE_CPU_TOPOLOGY`, `DXVK_FRAME_RATE`, `MESA_EXTENSION_MAX_YEAR`, `PW_MEDIA_DISABLE` and vkd3d-proton's
@@ -296,14 +380,17 @@ build/homebrew-host/community_recipe_check recipes/steam/274520/120hz-left-stick
 
 For each file it prints `ok <path> <revision> <recipe_id>` or a `refused <path>: <reason>` line for
 each problem, then `command <path>: <program and arguments>` and a `flag <path>: <item>` line for each
-thing that changes how the game starts. It exits with 1 when any file is refused. `--json` prints
-one object for the whole run instead, for CI:
+thing that changes how the game starts. A settings-only recipe is filled from a stand-in for Playden's own recipe
+(one 64-bit program, DXVK, and the copy has every program the file names), and its command names `<Playden's program>`
+for that program. It exits with 1 when any file is refused. `--json` prints one object for the whole run instead, for
+CI, with each file's `format_version` (0 when it doesn't parse):
 
 ```json
 {
   "ok": true,
   "files": [
     {"path": "…", "revision": "<sha256 of the file>", "recipe_id": "…", "store": "steam", "key": "274520", "slug": "…",
+     "format_version": 1,
      "title": "…", "status": "works", "author": "…", "contributors": [], "tested_kit": "0.12",
      "min_kit": "", "tested_firmware": "13.60", "tested_date": "2026-10-22", "ok": true,
      "refusals": [], "flags": ["program: Darkwood.exe", "…"], "command": "Darkwood.exe -force-d3d11 …"}

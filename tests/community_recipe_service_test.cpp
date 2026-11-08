@@ -388,6 +388,13 @@ int main(int argc, char** argv) {
   const std::string other_app = Replace(Replace(good, good_id, "community-steam-10-other"), "274520", "10");
   const std::string imported = Slurp(fixtures + "/recipes/imported/tmnt-mutant-melee/arrow-keys.json");
   const GameRef tmnt{"imported", "tmnt-mutant-melee"};
+  // A settings-only recipe (format 2) loads beside format 1 ones; a version this build doesn't read is dropped alone,
+  // as an older build drops a format 2 file.
+  const std::string settings_only = Slurp(fixtures + "/accepted/settings-only.json");
+  const std::string settings_only_id = "community-steam-274520-mouse-preset";
+  const std::string future = Replace(Slurp(fixtures + "/hostile/format-unknown.json"), settings_only_id,
+                                     "community-steam-274520-future");
+  CHECK(!settings_only.empty() && future.find("community-steam-274520-future") != std::string::npos);
   const std::string root = TempRoot("community-service");
   CHECK(!root.empty());
 
@@ -723,6 +730,35 @@ int main(int argc, char** argv) {
     std::string ignored;
     CHECK(store.Prepare(&ignored) && store.ReadCurrent() && store.ReadCurrent()->tag == "r20261025.1");
     CHECK(!store.ReadObject(Sha256Hex(fourth)));
+  }
+
+  {
+    // One release with a format 1 recipe, a settings-only one (format 2) and one of a version this build doesn't
+    // read: the first two load, the last is dropped alone with its reason, as an older build drops a format 2 file.
+    const std::string formats_root = TempRoot("community-formats");
+    CHECK(!formats_root.empty());
+    Harness formats;
+    Publish(formats.network, formats.site, "r20261108.1",
+            {{"recipes/steam/274520/120hz-left-stick-pointer.json", good_id, good, ""},
+             {"recipes/steam/274520/mouse-preset.json", settings_only_id, settings_only, ""},
+             {"recipes/steam/274520/future.json", "community-steam-274520-future", future, ""}},
+            {});
+    auto service = formats.Make(formats_root);
+    service->Start();
+    service->Wait();
+    const auto snapshot = service->Snapshot();
+    CHECK(snapshot->release_tag == "r20261108.1" && snapshot->last_error.empty());
+    const auto* list = snapshot->For(GameRef::Steam(274520));
+    CHECK(list && list->size() == 2 && Find(*snapshot, GameRef::Steam(274520), good_id));
+    const auto* plain = Find(*snapshot, GameRef::Steam(274520), settings_only_id);
+    CHECK(plain && plain->title == "Mouse preset" && plain->flags.empty());
+    CHECK(!Find(*snapshot, GameRef::Steam(274520), "community-steam-274520-future"));
+    if (!formats.Logged("community-steam-274520-future dropped: not a recipe: community recipe needs community.format_version 1 to 2"))
+      std::fprintf(stderr, "not logged: the unknown version\n"), ++failures;
+    const auto loaded = service->LoadRecipe(Sha256Hex(settings_only));
+    CHECK(loaded && loaded->format_version == 2 && loaded->recipe.launch_entries.empty() && loaded->executable.empty());
+    service->Shutdown();
+    fs::remove_all(fs::path(formats_root).parent_path().parent_path());
   }
 
   fs::remove_all(fs::path(root).parent_path().parent_path());

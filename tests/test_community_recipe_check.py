@@ -104,6 +104,20 @@ check(made_on.returncode == 0 and "ok " in made_on.stdout, "made_on imported pas
 nameless = run(FIXTURES / "accepted" / "no-author.json")
 check(nameless.returncode == 0 and "ok " in nameless.stdout, "a recipe without an author passes: " + nameless.stdout)
 
+# A settings-only recipe (format 2) passes: it starts the program Playden finds, and only its program rows are flagged.
+settings_only = run(FIXTURES / "accepted" / "settings-only.json")
+check(settings_only.returncode == 0 and "ok " in settings_only.stdout, "a settings-only recipe passes: " + settings_only.stdout)
+check(": <Playden's program>\n" in settings_only.stdout and "flag " not in settings_only.stdout,
+      "a settings-only recipe starts Playden's program and changes nothing about it: " + settings_only.stdout)
+named = FIXTURES / "accepted" / "settings-only-program.json"
+named_run = run(named)
+check(named_run.returncode == 0 and f"command {named}: Bin/Darkwood.exe -windowed\n" in named_run.stdout and
+      f"flag {named}: program: Bin/Darkwood.exe\n" in named_run.stdout and
+      f"flag {named}: arguments of Bin/Darkwood.exe: -windowed\n" in named_run.stdout,
+      "a settings-only recipe that names a program starts it and flags it: " + named_run.stdout)
+report = json.loads(run("--json", FIXTURES / "accepted" / "settings-only.json", GOOD).stdout)
+check([item["format_version"] for item in report["files"]] == [2, 1], f"json says each file's format: {report}")
+
 # The AppDefaults key of a fake system-program entry is still listed for review.
 check("registry: Software\\Wine\\AppDefaults\\msiexec.exe" in run(FIXTURES / "hostile" / "program-system-msiexec.json").stdout,
       "AppDefaults key flagged")
