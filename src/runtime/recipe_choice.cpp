@@ -108,6 +108,16 @@ std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
 std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
                                    const std::function<std::string(const std::string& program)>& architecture_in_copy) {
   if (!recipe) return {};
+  // Playden's own settings for the copy stay under the recipe's: what its files showed (a generated recipe's Steam
+  // emulator, its controller), a shipped recipe's defaults and locks. The recipe's defaults win; Playden's program rows
+  // apply only when the recipe names no program.
+  const auto file_defaults = recipe->defaults;
+  const bool names_program = std::any_of(file_defaults.begin(), file_defaults.end(),
+                                         [](const auto& item) { return IsProgramRow(item.first); });
+  for (const auto& [id, value] : own.defaults)
+    if (!file_defaults.count(id) && !(names_program && IsProgramRow(id))) recipe->defaults.emplace(id, value);
+  for (const auto& id : own.locked)
+    if (!file_defaults.count(id)) recipe->locked.insert(id);
   recipe->launch_entries = own.launch_entries;
   recipe->architecture = own.architecture;
   recipe->runtime = own.runtime;

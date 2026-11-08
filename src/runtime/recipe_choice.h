@@ -87,7 +87,8 @@ std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
 // A settings-only community recipe (community.format_version 2) as it applies to this copy, which it is always filled
 // for, its own game's or another's. From `own` (Playden's shipped recipe for the copy, else the generated one): the
 // launch entries, architecture, runtime, prefix, detected, dll_overrides, arguments and resolution_arguments, and the
-// graphics when the recipe sets none. The recipe's defaults keep applying, its program rows too:
+// graphics when the recipe sets none; own's defaults and locks under the recipe's (the recipe's defaults win, and own's
+// program rows apply only when the recipe names no program). The recipe's defaults keep applying, its program rows too:
 // - A "program" default the copy has starts: architecture_in_copy answers its architecture, which the recipe takes,
 //   and it is listed as the player's own program (kProgramEntryId) with the recipe's folder and arguments. One the copy
 //   hasn't: the program rows are dropped as UseOwnProgram drops them, and own's program starts.

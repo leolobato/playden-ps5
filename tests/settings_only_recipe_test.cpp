@@ -236,6 +236,27 @@ void Apply() {
           !Has(settings.dll_overrides, "d3d8,d3d9") && Has(settings.arguments, "-force-d3d11"));
   }
 
+  // Playden's own settings for the copy stay under the recipe's: a generated recipe's Steam emulator, a shipped
+  // recipe's lock. The recipe's defaults win.
+  {
+    auto with_defaults = own;
+    with_defaults.defaults = {{"steam_features", "emulate"}, {"controller_preset", "gamepad"}, {"launch_option", "dx11"}};
+    with_defaults.locked = {"graphics"};
+    community = Read("\"controller_preset\": \"mouse\"");
+    FillSettingsOnlyRecipe(&community.recipe, with_defaults, copy);
+    CHECK(community.recipe.defaults.at("steam_features") == "emulate" && community.recipe.defaults.at("controller_preset") == "mouse" &&
+          community.recipe.locked.count("graphics"));
+    CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) &&
+          settings.values.at("steam_features").value == "emulate" && settings.launch &&
+          settings.launch->executable == "bin/Darkwood11.exe");
+    // A recipe naming its program keeps Playden's launch option out.
+    community = Read("\"program\": \"bin/Old.exe\"");
+    FillSettingsOnlyRecipe(&community.recipe, with_defaults, copy);
+    CHECK(!community.recipe.defaults.count("launch_option") && community.recipe.defaults.at("steam_features") == "emulate");
+    CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) && settings.launch &&
+          settings.launch->executable == "bin/Old.exe");
+  }
+
   // Identity: the game, id and revision, with no program of its own.
   community = Read("\"controller_preset\": \"mouse\"");
   FillSettingsOnlyRecipe(&community.recipe, own, copy);
