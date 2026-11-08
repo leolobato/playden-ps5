@@ -22,8 +22,8 @@ struct ExperimentalFeatures {
   bool community_recipes = false;
 };
 
-// What a build has on before features.txt: nightly builds have community recipes on.
-ExperimentalFeatures DefaultExperimentalFeatures(bool nightly);
+// What a build has on before features.txt: nightlies and local dev builds (all_on) have every feature on.
+ExperimentalFeatures DefaultExperimentalFeatures(bool all_on);
 // defaults with the features text names turned on. unknown: each line that names no feature, as written.
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults = {},
                                                std::vector<std::string>* unknown = nullptr);

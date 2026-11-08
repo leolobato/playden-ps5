@@ -8,9 +8,9 @@
 
 namespace playden::app {
 
-ExperimentalFeatures DefaultExperimentalFeatures(bool nightly) {
+ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
   ExperimentalFeatures features;
-  features.community_recipes = nightly;
+  features.community_recipes = all_on;
   return features;
 }
 

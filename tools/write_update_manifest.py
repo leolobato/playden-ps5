@@ -26,6 +26,7 @@ import sys
 import zipfile
 
 DEV_ENDPOINTS_MARKER = "dev-endpoints-build"
+DEV_BUILD_MARKER = "dev-build"
 VERSION = re.compile(r"[vV]?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})(?:-beta\.([1-9][0-9]{0,5}))?")
 
 
@@ -104,6 +105,10 @@ def main(argv=None):
         if prefix + DEV_ENDPOINTS_MARKER in app.namelist():
             raise SystemExit(f"{args.app_zip.name} was built with PLAYDEN_DEV_ENDPOINTS=ON "
                              f"({DEV_ENDPOINTS_MARKER}); build the release with it OFF")
+        # A local dev build has every experimental feature on by default: never a release.
+        if prefix + DEV_BUILD_MARKER in app.namelist():
+            raise SystemExit(f"{args.app_zip.name} is a dev build ({DEV_BUILD_MARKER}): every experimental feature is "
+                             "on by default; build the release with PLAYDEN_DEV_BUILD=OFF")
         numeric_version = version(param["contentVersion"])
         try:
             full_text = app.read(prefix + "playden-version").decode("ascii")

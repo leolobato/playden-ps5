@@ -36,6 +36,7 @@ option(PLAYDEN_PLATFORM_PS5 "Build a PS5 native title" OFF)
 # Local testing only: read other community recipe endpoints from dev-endpoints.json in the user
 # data folder (plain http and an auth header allowed for them). Never on in a release package.
 option(PLAYDEN_DEV_ENDPOINTS "Compile in the dev-endpoints.json override for community recipes" OFF)
+option(PLAYDEN_DEV_BUILD "A local build for testing: every experimental feature on by default; never a release" OFF)
 set(PLAYDEN_PS5_TITLE_ID "" CACHE STRING "Explicit PS5 title id (required for PS5 packaging)")
 
 file(READ "${CMAKE_SOURCE_DIR}/dependencies.lock.json" playden_dependency_lock)

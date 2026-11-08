@@ -16,14 +16,15 @@ sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) a
 
 ## Turn them on
 
-Community recipes are an experimental feature. Nightly builds have them on. Other builds need a line
+Community recipes are an experimental feature. Nightly builds and local dev builds ([docs/building.md](building.md)) have them on. Other builds
+need a line
 `community-recipes` in `features.txt` in Playden's data folder (`/data/playden/features.txt` on the console, which FTP
 and the file manager can write; one feature name per line, `#` starts a comment). Playden reads the file when it
 starts. My presets don't need it.
 
 Without it, Playden doesn't download recipes, ask how a game ran, send votes or test reports, or link an account, and
 the screens for them are hidden. A game that already uses a community recipe keeps it: Playden reads it from the copy
-it saved, and the game can still go back to a preset. A nightly build can't turn community recipes off.
+it saved, and the game can still go back to a preset. A nightly or dev build can't turn community recipes off.
 
 ## Share one from Playden
 

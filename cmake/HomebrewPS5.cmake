@@ -130,7 +130,8 @@ function(playden_add_homebrew_ps5_title)
     target_compile_definitions(playden_ps5_app PRIVATE GL_GLEXT_PROTOTYPES=1
         PLAYDEN_PS5_TITLE_ID="${PLAYDEN_PS5_TITLE_ID}"
         PLAYDEN_NATIVE_ACCESS_SOURCE=$<BOOL:${native_access_source}>
-        PLAYDEN_UI_SIMULATION=$<BOOL:${PLAYDEN_UI_SIMULATION}>)
+        PLAYDEN_UI_SIMULATION=$<BOOL:${PLAYDEN_UI_SIMULATION}>
+        PLAYDEN_DEV_BUILD=$<BOOL:${PLAYDEN_DEV_BUILD}>)
     target_compile_options(playden_ps5_app PRIVATE -O2 -Wall -ffunction-sections -fdata-sections
         $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>)
     target_compile_features(playden_ps5_app PRIVATE cxx_std_20)
@@ -273,6 +274,13 @@ function(playden_add_homebrew_ps5_title)
 	else()
 		set(dev_endpoints_package_commands COMMAND "${CMAKE_COMMAND}" -E rm -f "${app}/dev-endpoints-build")
 	endif()
+	# A dev build (every experimental feature on by default) carries a marker that tools/write_update_manifest.py
+	# refuses, so it can't become a release either.
+	if(PLAYDEN_DEV_BUILD)
+		set(dev_build_package_commands COMMAND "${CMAKE_COMMAND}" -E touch "${app}/dev-build")
+	else()
+		set(dev_build_package_commands COMMAND "${CMAKE_COMMAND}" -E rm -f "${app}/dev-build")
+	endif()
 	if(PLAYDEN_UI_SIMULATION)
 		set(playden_title_name "Playden UI Simulation")
 		file(GLOB_RECURSE simulation_inputs CONFIGURE_DEPENDS
@@ -295,6 +303,7 @@ function(playden_add_homebrew_ps5_title)
 			-P "${CMAKE_SOURCE_DIR}/cmake/PackagePS5.cmake"
 		${simulation_package_commands}
 		${dev_endpoints_package_commands}
+		${dev_build_package_commands}
 		COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/runtime" "${app}/runtime"
 		${native_helper_package_commands}
 		COMMAND "${CMAKE_COMMAND}" -E make_directory "${app}/trust"

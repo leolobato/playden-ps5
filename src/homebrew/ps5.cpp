@@ -282,9 +282,10 @@ int main() {
         playden::homebrew::Simulation simulation({}, {}, playden::homebrew::ModelMode::Live);
 #endif
         // Experimental features: one name per line in /data/playden/features.txt (open to FTP and the file manager;
-        // user/ is not), read once before anything asks. Nightlies have community recipes on.
+        // user/ is not), read once before anything asks. Nightlies and local dev builds (PLAYDEN_DEV_BUILD) have every
+        // feature on.
         playden::app::ExperimentalFeatures features =
-            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly());
+            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD);
 #if !PLAYDEN_UI_SIMULATION
         {
             std::vector<std::string> unknown;
