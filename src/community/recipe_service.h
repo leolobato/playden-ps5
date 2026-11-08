@@ -138,4 +138,9 @@ std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
 // the reason in *error. The caller compares the game with the path or index entry it came from.
 std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, std::string* error);
 
+// A stored object by its revision (64 hex) or a 32-hex prefix, checked as CheckRecipeFile does; nothing when the store
+// isn't prepared or has no such object. *error: why a stored object was refused (empty when there was none).
+std::optional<runtime::CommunityRecipe> LoadStoredRecipe(const RecipeStore& store, std::string_view revision_or_prefix,
+                                                         std::string* error);
+
 }  // namespace playden::community

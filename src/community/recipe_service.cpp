@@ -481,15 +481,26 @@ std::optional<runtime::CommunityRecipe> CommunityRecipeService::LoadRecipe(std::
     std::string error;
     if (!store_->Prepare(&error)) return std::nullopt;
   }
+  std::string error;
+  auto community = LoadStoredRecipe(*store_, revision_or_prefix, &error);
+  if (!community && !error.empty())
+    Log("community recipes: stored " + std::string(revision_or_prefix.substr(0, 32)) + " refused: " + error);
+  return community;
+}
+
+std::optional<runtime::CommunityRecipe> LoadStoredRecipe(const RecipeStore& store, std::string_view revision_or_prefix,
+                                                         std::string* error) {
+  if (error) error->clear();
+  if (!store.prepared()) return std::nullopt;
   std::optional<std::string> revision;
   if (IsRevision(revision_or_prefix)) revision = std::string(revision_or_prefix);
-  else if (IsRevisionPrefix(revision_or_prefix)) revision = store_->FindObjectByPrefix(revision_or_prefix);
+  else if (IsRevisionPrefix(revision_or_prefix)) revision = store.FindObjectByPrefix(revision_or_prefix);
   if (!revision) return std::nullopt;
-  const auto bytes = store_->ReadObject(*revision);
+  const auto bytes = store.ReadObject(*revision);
   if (!bytes) return std::nullopt;
-  std::string error;
-  auto community = CheckRecipeFile(*bytes, &error);
-  if (!community) Log("community recipes: stored " + revision->substr(0, 32) + " refused: " + error);
+  std::string reason;
+  auto community = CheckRecipeFile(*bytes, &reason);
+  if (!community && error) *error = reason.empty() ? "refused" : reason;
   return community;
 }
 

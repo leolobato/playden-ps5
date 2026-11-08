@@ -42,6 +42,9 @@ class RecipeStore {
   // Creates root, objects/ and releases/ (0700) when missing and checks they are private. Every
   // other call fails until this succeeded once.
   bool Prepare(std::string* error);
+  // Prepare without making anything: succeeds only when root and objects/ are already there and
+  // private. For a reader that must not leave folders behind (community recipes off, features.txt).
+  bool OpenExisting();
   bool prepared() const { return prepared_; }
 
   // The object's bytes when its sha256 equals revision (full 64 hex); nothing otherwise.

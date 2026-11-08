@@ -54,6 +54,16 @@ bool RecipeStore::Prepare(std::string* error) {
   return true;
 }
 
+bool RecipeStore::OpenExisting() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (prepared_) return true;
+  if (!root_.is_absolute() || root_.lexically_normal() != root_ || !root_.has_parent_path()) return false;
+  auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kPrivate);
+  if (!directory || !directory->OpenChild(kObjects, DirectoryPolicy::kPrivate)) return false;
+  prepared_ = true;
+  return true;
+}
+
 std::optional<std::string> RecipeStore::ReadFile(const std::string& relative, std::size_t limit) const {
   if (!prepared_) return std::nullopt;
   auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kPrivate);
