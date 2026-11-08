@@ -419,7 +419,7 @@ target_compile_definitions(playden-homebrew PRIVATE
     PLAYDEN_HOMEBREW_DEFAULT_DATA_DIR="${CMAKE_BINARY_DIR}/playden-data"
     PLAYDEN_HOMEBREW_CA_BUNDLE="${playden_staged_ca}")
 target_link_libraries(playden-homebrew PRIVATE
-    playden_homebrew_ui playden_homebrew_controller playden_local_session_repository
+    playden_experimental_features playden_homebrew_ui playden_homebrew_controller playden_local_session_repository
     playden_library playden_steam_auth playden_steam_library playden_steam_cm playden_local_copy playden_game_move PkgConfig::SDL2 OpenGL::GL)
 add_dependencies(playden-homebrew playden_homebrew_assets playden_steam_trust)
 set_target_properties(playden-homebrew PROPERTIES
@@ -501,7 +501,7 @@ if(BUILD_TESTING)
         PLAYDEN_HOMEBREW_CA_BUNDLE="${playden_staged_ca}"
         PLAYDEN_HOMEBREW_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/fixtures/ui-comparison"
         PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")
-    target_link_libraries(homebrew_host_input_test PRIVATE playden_homebrew_ui
+    target_link_libraries(homebrew_host_input_test PRIVATE playden_experimental_features playden_homebrew_ui
         playden_homebrew_controller playden_local_session_repository playden_library playden_steam_auth playden_steam_library playden_steam_cm
         playden_local_copy playden_game_move PkgConfig::SDL2 OpenGL::GL)
     add_test(NAME homebrew_host_input COMMAND homebrew_host_input_test "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison")
@@ -529,6 +529,8 @@ if(BUILD_TESTING)
     add_executable(homebrew_sharing_test "${CMAKE_SOURCE_DIR}/tests/homebrew_sharing_test.cpp")
     target_compile_features(homebrew_sharing_test PRIVATE cxx_std_20)
     target_link_libraries(homebrew_sharing_test PRIVATE playden_homebrew_controller)
+    target_compile_definitions(homebrew_sharing_test PRIVATE
+        PLAYDEN_COMMUNITY_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/community-recipes")
     add_test(NAME homebrew_sharing COMMAND homebrew_sharing_test)
 
     add_executable(homebrew_library_model_test

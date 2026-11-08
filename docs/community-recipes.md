@@ -14,6 +14,17 @@ contributed there are released under [CC0 1.0](https://creativecommons.org/publi
 sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) are CC0 1.0 too
 ([LICENSE](../runtime/recipes/LICENSE)).
 
+## Turn them on
+
+Community recipes are an experimental feature. Nightly builds have them on. Other builds need a line
+`community-recipes` in `features.txt` in Playden's data folder (`/data/playden/features.txt` on the console, which FTP
+and the file manager can write; one feature name per line, `#` starts a comment). Playden reads the file when it
+starts. My presets don't need it.
+
+Without it, Playden doesn't download recipes, ask how a game ran, send votes or test reports, or link an account, and
+the screens for them are hidden. A game that already uses a community recipe keeps it: Playden reads it from the copy
+it saved, and the game can still go back to a preset. A nightly build can't turn community recipes off.
+
 ## Share one from Playden
 
 Get the game running well from **Game settings**, then choose **Share recipe** (near the end of Game settings, just

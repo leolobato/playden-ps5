@@ -49,8 +49,14 @@ std::function<std::optional<std::set<std::string>>()> CommunityKeepCallback(std:
 std::optional<std::set<std::string>> CommunityKeepRevisions(const Simulation& model, const RuntimeSnapshot* runtime,
                                                            bool has_runtime, bool no_runtime_installs);
 // RuntimeHostConfig::community_recipe_bytes over that store: a full revision's object, or the object a
-// 32-hex prefix names (RecipeStore::FindObjectByPrefix). Runs on the runtime worker.
-std::function<std::optional<std::string>(std::string_view)> CommunityRecipeBytes(std::shared_ptr<community::RecipeStore> objects);
+// 32-hex prefix names (RecipeStore::FindObjectByPrefix). Runs on the runtime worker. create: the store's folders are
+// made when missing (community recipes on); else only a cache already there is read (RecipeStore::OpenExisting).
+std::function<std::optional<std::string>(std::string_view)> CommunityRecipeBytes(std::shared_ptr<community::RecipeStore> objects,
+                                                                                 bool create = true);
+// Simulation::SetCommunityRecipeLoader over a cache that is already there (community recipes off): reads and checks
+// a stored object as the service does, and never makes the store's folders (RecipeStore::OpenExisting).
+std::function<std::optional<runtime::CommunityRecipe>(const std::string&)> CommunityRecipeCacheLoader(
+    std::shared_ptr<community::RecipeStore> cache);
 // What the "Store name in PS5 titles" setting adds to a game's title name: " (Steam)"; imported games
 // have no store to name.
 std::string TitleStoreSuffix(Store store);
@@ -90,6 +96,9 @@ class Controller {
   // means its installs are unknown and nothing is collected.
   void SetCommunityRecipes(community::CommunityRecipeService* service, std::shared_ptr<CommunityKeepSet> keep,
                            bool no_runtime_installs = false);
+  // Community recipes off (features.txt): no service. The model still loads the recipes games already chose from the
+  // cache that is there, without making its folders, so their settings resolve and show as before.
+  void SetCommunityRecipeCache(std::shared_ptr<community::RecipeStore> cache);
   // Sharing recipes and votes: the model's requests go to the service's worker, its answers and vote
   // memory come back. The service must outlive the controller.
   void SetSharing(SharingService* sharing) { sharing_ = sharing; sharing_memory_revision_ = ~0ull; }

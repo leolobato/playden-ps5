@@ -427,9 +427,10 @@ std::function<std::optional<std::set<std::string>>()> CommunityKeepCallback(std:
   };
 }
 
-std::function<std::optional<std::string>(std::string_view)> CommunityRecipeBytes(std::shared_ptr<community::RecipeStore> objects) {
-  return [objects = std::move(objects)](std::string_view revision_or_prefix) -> std::optional<std::string> {
-    if (!objects || !PreparedStore(*objects)) return std::nullopt;
+std::function<std::optional<std::string>(std::string_view)> CommunityRecipeBytes(std::shared_ptr<community::RecipeStore> objects,
+                                                                                 bool create) {
+  return [objects = std::move(objects), create](std::string_view revision_or_prefix) -> std::optional<std::string> {
+    if (!objects || !(create ? PreparedStore(*objects) : objects->OpenExisting())) return std::nullopt;
     if (runtime::IsCommunityRevision(revision_or_prefix)) return objects->ReadObject(revision_or_prefix);
     if (!runtime::IsCommunityRevisionPrefix(revision_or_prefix)) return std::nullopt;
     const auto revision = objects->FindObjectByPrefix(revision_or_prefix);
@@ -457,6 +458,25 @@ void Controller::SetCommunityRecipes(community::CommunityRecipeService* service,
     model_.SetCommunityRecipeLoader([service](const std::string& revision) { return service->LoadRecipe(revision); });
   else
     model_.SetCommunityRecipeLoader({});
+}
+
+std::function<std::optional<runtime::CommunityRecipe>(const std::string&)> CommunityRecipeCacheLoader(
+    std::shared_ptr<community::RecipeStore> cache) {
+  return [cache = std::move(cache)](const std::string& revision) -> std::optional<runtime::CommunityRecipe> {
+    if (!cache || !cache->OpenExisting()) return std::nullopt;
+    std::string ignored;
+    return community::LoadStoredRecipe(*cache, revision, &ignored);
+  };
+}
+
+void Controller::SetCommunityRecipeCache(std::shared_ptr<community::RecipeStore> cache) {
+  community_ = nullptr;
+  community_revision_ = ~0ull;
+  if (!cache) {
+    model_.SetCommunityRecipeLoader({});
+    return;
+  }
+  model_.SetCommunityRecipeLoader(CommunityRecipeCacheLoader(std::move(cache)));
 }
 
 void Controller::TickCommunity() {

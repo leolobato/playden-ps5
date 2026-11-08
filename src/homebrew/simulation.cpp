@@ -3386,7 +3386,10 @@ void Simulation::show_alert_prompt() {
         const auto* game = find_game(state_, alert.settings_game);
         ModalEntry failed{"start-failed", (game ? game->title : std::string("The game")) + " couldn't start",
                           state_.navigation.focus_key,
-                          {"start-failed-settings", "start-failed-report", "start-failed-logs", "alert-ok"}, 0, false};
+                          community_enabled_
+                              ? std::vector<std::string>{"start-failed-settings", "start-failed-report", "start-failed-logs", "alert-ok"}
+                              : std::vector<std::string>{"start-failed-settings", "start-failed-logs", "alert-ok"},
+                          0, false};
         failed.body = alert.body;
         open_modal(std::move(failed));
         return;
@@ -8563,7 +8566,7 @@ void Simulation::rebuild_view() {
         }
         // An installed game with community recipes carries a "Recipe available" tag, or "Recipe in use" once one is
         // chosen; Game settings › Preset chooses one.
-        if (installed && game) {
+        if (installed && game && community_enabled_) {
             if (const auto* offers = community_offers(game->id); offers && !offers->empty()) {
                 auto& mark = row("details-recipe", RowKind::Status,
                                  base_of(game->id).community.id.empty() ? "Recipe available" : "Recipe in use", "");
@@ -8780,8 +8783,9 @@ void Simulation::rebuild_view() {
             cloud.subtitle = state_.cloud_saves_auto ? "Before Play, after each game and when Playden starts."
                                                      : "Off: saves move only when you choose Sync in Saves.";
         }
-        section = "Community";
-        {
+        // Community recipes off (features.txt): no Community section.
+        if (community_enabled_) {
+            section = "Community";
             // Community recipes: the question after a game, votes (opt-in), and the sharing ID can be replaced.
             // Asking and voting are apart: "Don't ask again" stops the question, and votes still work.
             auto& ask = add("settings-ask-after-games", RowKind::Toggle, "Ask how games ran", "toggle-ask-after-games");
@@ -13612,6 +13616,7 @@ std::optional<GameRef> Simulation::sharing_ref(GameId id) const {
 }
 
 const std::vector<CommunityRecipeOffer>* Simulation::community_offers(GameId id) const {
+    if (!community_enabled_) return nullptr;
     const auto ref = community_ref(id);
     if (!ref) return nullptr;
     const auto found = state_.community.games.find(*ref);
@@ -13793,6 +13798,7 @@ std::vector<CommunityRecipeOffer> Simulation::CommunityOffersFor(GameId id) cons
 
 std::vector<CommunityRecipeOffer> Simulation::CommunityOffersOf(const GameRef& game) const {
     std::vector<CommunityRecipeOffer> offers;
+    if (!community_enabled_) return offers;
     if (const auto found = state_.community.games.find(game); found != state_.community.games.end()) offers = found->second;
     for (auto& offer : offers) add_own_vote(&offer);
     sort_offers(&offers);
@@ -13810,6 +13816,7 @@ bool Simulation::SearchMatchesOwnGame(GameId id, std::string_view query) const {
 
 std::vector<RecipeSearchResult> Simulation::SearchRecipeGames(GameId id, std::string_view query) const {
     std::vector<RecipeSearchResult> results;
+    if (!community_enabled_) return results;
     const auto own = community_ref(id);
     for (const auto& [game, offers] : state_.community.games) {
         if (offers.empty() || (own && game == *own)) continue;
@@ -13908,6 +13915,13 @@ std::vector<std::string> Simulation::chooser_actions(GameId id, bool install, in
         return actions;
     }
     add("preset-playden-default", current.community.id.empty() && current.preset_id.empty());
+    if (!community_enabled_) {
+        // Community recipes off (features.txt): only the recipe the game already uses, so the choice can be seen.
+        if (!current.community.id.empty() && chooser_offer(id, current.community.revision)) {
+            actions.push_back("chooser-heading-community");
+            add("recipe-" + current.community.revision, true);
+        }
+    } else {
     // Headings set the players' recipes apart from Playden's own presets; focus skips them.
     actions.push_back("chooser-heading-community");
     bool listed = false;
@@ -13940,6 +13954,7 @@ std::vector<std::string> Simulation::chooser_actions(GameId id, bool install, in
             *focused = static_cast<int>(std::find(actions.begin(), actions.end(), linked_chosen) - actions.begin());
     }
     actions.push_back("recipes-search");
+    }
     // The player's own presets, in the order they were made; the heading only when there is one.
     if (!my_presets_.empty()) {
         actions.push_back("chooser-heading-mine");
@@ -14007,7 +14022,7 @@ void Simulation::open_install_sheet(GameId id, std::vector<std::string> actions)
     install_choice_.reset();
     if (const auto saved = base_of(id); saved != BaseChoice{}) install_choice_ = saved;
     install_choice_game_ = id;
-    community_refresh_requested_ = true;
+    community_refresh_requested_ = community_enabled_;
     open_modal({"install", "Install game", "details-install", std::move(actions), 0, false});
 }
 
@@ -14169,6 +14184,18 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
     view_.comparison = std::move(comparison);
 }
 
+void Simulation::SetCommunityRecipesEnabled(bool enabled) {
+    if (community_enabled_ == enabled) return;
+    community_enabled_ = enabled;
+    if (!enabled) {
+        // Set at startup, before anything asked; a question or request already queued is dropped all the same.
+        feedback_prompts_.clear();
+        pending_sharing_requests_.clear();
+        community_refresh_requested_ = false;
+    }
+    rebuild_view();
+}
+
 void Simulation::UpdateCommunityCatalog(CommunityCatalog catalog) {
     if (catalog == state_.community) return;
     state_.community = std::move(catalog);
@@ -14278,12 +14305,15 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     else if (const auto runtime = state_.runtime_games.find(game);
              runtime != state_.runtime_games.end() && !runtime->second.recipe_switch_failure.empty())
         actions.push_back("recipe-status");
-    if (updated_offer(game)) actions.push_back("recipe-update");
-    // Community recipes: the vote for the recipe in use, and the state of this game's shared recipe.
-    if (VoteTargetFor(game)) actions.push_back("recipe-vote");
-    if (const auto record = state_.game_settings.find(game);
-        record != state_.game_settings.end() && !record->second.shared_recipe.submission_id.empty())
-        actions.push_back("shared-recipe");
+    // Community recipes: a newer revision, the vote for the recipe in use, and the state of this game's shared recipe.
+    // Off (features.txt), none of them: a recipe the game already uses stays its base, with no update or vote.
+    if (community_enabled_) {
+        if (updated_offer(game)) actions.push_back("recipe-update");
+        if (VoteTargetFor(game)) actions.push_back("recipe-vote");
+        if (const auto record = state_.game_settings.find(game);
+            record != state_.game_settings.end() && !record->second.shared_recipe.submission_id.empty())
+            actions.push_back("shared-recipe");
+    }
     // My presets: save the game's settings as one, or put its own changes into the one it uses. Save is left out while
     // the presets file can't be read (Playden said so at startup): it could only refuse.
     switch (MyPresetActionFor(game)) {
@@ -14326,7 +14356,7 @@ std::vector<std::string> Simulation::game_settings_actions() const {
         actions.push_back("export-recipe");
     }
     // Share recipe sends the game's settings for review, set apart just above Reset; the file export stays for FTP.
-    if (sharing_ref(game)) actions.insert(actions.end(), {"divider", "share-recipe", "divider"});
+    if (community_enabled_ && sharing_ref(game)) actions.insert(actions.end(), {"divider", "share-recipe", "divider"});
     actions.push_back("reset-settings");
     actions.push_back("cancel");
     return actions;
@@ -14376,7 +14406,7 @@ std::vector<std::string> Simulation::details_context_actions() const {
     if (installed || game_prepared(state_.navigation.selected_game_id))
         actions.insert(actions.begin(), {"game-settings", "game-maintenance"});
     // How it ran, any time: the same sheet as after a game (plan 2026-11-06, decision 1).
-    if (installed || game_prepared(selected) || (!live() && is_installed(state_, selected))) {
+    if (community_enabled_ && (installed || game_prepared(selected) || (!live() && is_installed(state_, selected)))) {
         const auto after = std::find(actions.begin(), actions.end(), "game-maintenance");
         actions.insert(after == actions.end() ? actions.begin() : after + 1, "share-feedback");
     }
@@ -15156,7 +15186,8 @@ void Simulation::NotifyStartFailed(GameId id, std::string message) {
 }
 
 void Simulation::NotifySessionEnded(GameId id, std::int64_t played_seconds) {
-    if (!id.valid() || played_seconds < 0) return;
+    // Community recipes off (features.txt): Playden doesn't ask how a game ran.
+    if (!id.valid() || played_seconds < 0 || !community_enabled_) return;
     feedback_prompts_.push_back({id, played_seconds});
     show_feedback_prompt();
     rebuild_view();
@@ -15417,7 +15448,7 @@ void Simulation::send_feedback() {
 }
 
 void Simulation::request_submission_status(GameId id, bool force) {
-    if (!live()) return;
+    if (!live() || !community_enabled_) return;
     const auto record = state_.game_settings.find(id);
     if (record == state_.game_settings.end() || record->second.shared_recipe.submission_id.empty()) return;
     const auto& submission_id = record->second.shared_recipe.submission_id;
@@ -15435,7 +15466,12 @@ void Simulation::request_submission_status(GameId id, bool force) {
     pending_sharing_requests_.push_back(std::move(request));
 }
 
-std::vector<SharingRequest> Simulation::TakeSharingRequests() { return std::exchange(pending_sharing_requests_, {}); }
+std::vector<SharingRequest> Simulation::TakeSharingRequests() {
+    auto requests = std::exchange(pending_sharing_requests_, {});
+    // Community recipes off: nothing is sent (every producer is off too).
+    if (!community_enabled_) requests.clear();
+    return requests;
+}
 
 void Simulation::SetSharingContext(std::string firmware, std::string playden_version) {
     if (!firmware.empty()) console_firmware_ = std::move(firmware);
@@ -15811,7 +15847,7 @@ void Simulation::apply_account_answer(SharingRequestKind kind, const SharingResu
 
 void Simulation::account_link_tick() {
     auto& link = state_.account_link;
-    if (!live()) return;
+    if (!live() || !community_enabled_) return;
     if (!link.checked && !link.waiting && state_.vote_memory_loaded) {
         // Once per start: whether the saved link still works, and its name.
         SharingRequest request;

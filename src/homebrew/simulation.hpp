@@ -1395,6 +1395,11 @@ public:
     // how to read one recipe's object by its revision (64 hex): the service's LoadRecipe, called at
     // most once per revision and kept (objects are named by their content, so they never change).
     void UpdateCommunityCatalog(CommunityCatalog catalog);
+    // Community recipes, sharing, votes, test reports and the Playden account (features.txt, app/experimental_features.h);
+    // on unless set. Off: none of their rows, sheets or questions, and no requests; a recipe a game already uses stays
+    // its base (read from the cache), shown in Choose settings without the others. My presets is not part of it.
+    void SetCommunityRecipesEnabled(bool enabled);
+    [[nodiscard]] bool CommunityRecipesEnabled() const noexcept { return community_enabled_; }
     void SetCommunityRecipeLoader(std::function<std::optional<playden::runtime::CommunityRecipe>(const std::string& revision)> loader);
     // The admitted kit (the view CommunityRecipeFits checks requirements against); nothing: no kit.
     void SetKitView(std::optional<playden::runtime::VerifiedKitView> view);
@@ -1741,6 +1746,7 @@ private:
     std::filesystem::path my_presets_file_;
     std::vector<playden::runtime::MyPreset> my_presets_;
     bool my_presets_unavailable_ = false;
+    bool community_enabled_ = true;
     std::function<std::optional<std::string>()> my_preset_uuid_;
     std::function<std::int64_t()> my_preset_now_;
     std::string my_preset_menu_id_;  // the preset whose Triangle menu (or its Delete dialog) is open

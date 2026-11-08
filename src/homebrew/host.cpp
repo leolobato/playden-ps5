@@ -32,6 +32,7 @@
 #include "steam/backend/library_client.h"
 #include "steam/local_session_repository.h"
 #include "library/cache.h"
+#include "app/experimental_features.h"
 
 #include "core/input.hpp"
 #include "gfx/gl.hpp"
@@ -523,6 +524,19 @@ int main(int argc, char** argv) {
     SDL_GL_SetSwapInterval(options->headless ? 0 : 1);
     hui::gfx::set_glsl_prefix("#version 410 core\n");
 
+    // Experimental features: one name per line in features.txt in the data folder, read once here. Simulation keeps
+    // every feature on, so its scenarios show them.
+    playden::app::ExperimentalFeatures features = playden::app::DefaultExperimentalFeatures(true);
+    if (!options->simulation) {
+        std::vector<std::string> unknown;
+        features = playden::app::ReadExperimentalFeatures(
+            (options->data_directory / playden::app::kExperimentalFeaturesFileName).string(),
+            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly()), &unknown);
+        for (const auto& name : unknown) std::fprintf(stderr, "unknown experimental feature: %s\n", name.substr(0, 64).c_str());
+        if (features.community_recipes) std::fprintf(stderr, "experimental feature community-recipes on\n");
+        simulation.SetCommunityRecipesEnabled(features.community_recipes);
+    }
+
     if (!options->simulation) {
         std::string settings_reason;
         const auto settings_file = playden::runtime::PrepareGameSettingsStorage(options->data_directory, &settings_reason);
@@ -781,7 +795,11 @@ int main(int argc, char** argv) {
         services->SetStoreDetails(store_details.get());
         // Community recipes: the latest release of the recipes repository, kept under the data folder.
         // The Mac host has no runtime: the cache keeps the saved choices (and the current release).
-        {
+        // Off (features.txt): no service and no requests; the recipes games already chose load from the cache.
+        if (!features.community_recipes) {
+            services->SetCommunityRecipeCache(
+                std::make_shared<playden::community::RecipeStore>(options->data_directory / "community-recipes"));
+        } else {
             const auto root = options->data_directory / "community-recipes";
             playden::community::RecipeServiceConfig config;
             config.store_root = root.string();
