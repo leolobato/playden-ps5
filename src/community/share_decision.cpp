@@ -27,6 +27,17 @@ ShareDecision DecideShare(const ShareInputs& inputs) {
     decision.send_submission_id = saved;
     return decision;
   }
+  if (inputs.based_on_settings_only) {
+    // Shared with its program, the update would make the recipe one program's: a new recipe that credits it.
+    if (!inputs.differs_from_base) {
+      decision.kind = ShareKind::kNoChangesOfferVote;
+      return decision;
+    }
+    decision.kind = ShareKind::kNewRecipe;
+    decision.send_based_on = true;
+    decision.send_new = true;
+    return decision;
+  }
   if (saved && !inputs.saved_recipe_id.empty() && inputs.saved_recipe_id == inputs.based_on->recipe_id) {
     // This console's own recipe (in review or published): an update, whatever changed.
     decision.kind = ShareKind::kUpdateOwn;
@@ -47,7 +58,8 @@ ShareDecision DecideShare(const ShareInputs& inputs) {
 }
 
 ShareChoice ChoiceToSend(const ShareDecision& decision, ShareChoice player_answer) {
-  return decision.kind == ShareKind::kAskPlayer ? player_answer : ShareChoice::kNone;
+  if (decision.kind == ShareKind::kAskPlayer) return player_answer;
+  return decision.send_new ? ShareChoice::kNew : ShareChoice::kNone;
 }
 
 }  // namespace playden::community

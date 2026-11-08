@@ -242,10 +242,41 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
     }
     programs.insert(Lower(Basename(*relative)));
   }
-  for (const char* id : {"program", "program_folder", "program_arguments", "arguments", "extra_arguments", "dll_overrides"})
-    if (recipe.defaults.count(id))
-      refuse(std::string("defaults sets ") + id + ": put the program, its folder, arguments and library overrides in "
-             "the recipe's launch_entries, arguments and dll_overrides (the player's own arguments row is not shared).");
+  if (!IsSettingsOnlyRecipe(community)) {
+    for (const char* id : {"program", "program_folder", "program_arguments", "arguments", "extra_arguments", "dll_overrides"})
+      if (recipe.defaults.count(id))
+        refuse(std::string("defaults sets ") + id + ": put the program, its folder, arguments and library overrides in "
+               "the recipe's launch_entries, arguments and dll_overrides (the player's own arguments row is not shared).");
+  } else {
+    // Settings-only: the program rows are its only way to name a program; the rest is Playden's for the copy.
+    for (const char* id : {"arguments", "extra_arguments", "dll_overrides", "architecture"})
+      if (recipe.defaults.count(id))
+        refuse(std::string("defaults sets ") + id + ": a settings-only recipe takes the program's arguments, library "
+               "overrides and architecture from Playden's recipe for the copy; name a program with defaults program "
+               "and its arguments with program_arguments, or share a recipe with its own program (format_version 1).");
+    if (recipe.defaults.count("graphics"))
+      refuse("defaults sets graphics: the Graphics row comes from the recipe's graphics field, so set \"graphics\" "
+             "instead.");
+    if (const auto* program = Default(recipe, "program")) {
+      const auto relative = steam::RelativeGamePath(*program);
+      if (!relative) {
+        refuse("defaults program " + *program + " is not inside the game folder.");
+      } else {
+        if (IsSystemProgram(Basename(*relative)))
+          refuse("defaults program " + *program + " is a Windows or Wine system program: name the game's own program.");
+        if (HasAliasedComponent(*relative))
+          refuse("defaults program " + *program +
+                 " has a folder or file name of only dots and spaces or ending in a dot or space.");
+      }
+    }
+    if (const auto* folder = Default(recipe, "program_folder"); folder && !folder->empty()) {
+      const auto relative = steam::RelativeGamePath(*folder, true);
+      if (!relative) refuse("defaults program_folder " + *folder + " is not inside the game folder.");
+      else if (HasAliasedComponent(*relative))
+        refuse("defaults program_folder " + *folder +
+               " has a folder name of only dots and spaces or ending in a dot or space.");
+    }
+  }
 
   // Library overrides: named libraries only.
   for (const auto& [where, list] : {std::pair<const char*, const std::string*>{"dll_overrides", &recipe.dll_overrides},
@@ -275,26 +306,41 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
 std::vector<std::string> CommunityRecipeFlags(const CommunityRecipe& community) {
   std::vector<std::string> flags;
   const auto& recipe = community.recipe;
-  for (const auto& entry : recipe.launch_entries) {
+  const bool settings_only = IsSettingsOnlyRecipe(community);
+  if (settings_only) {
+    // Its program rows; what Playden fills in is Playden's own.
+    const auto* program = Default(recipe, "program");
+    const auto* folder = Default(recipe, "program_folder");
+    const auto* arguments = Default(recipe, "program_arguments");
+    const std::string name = program ? *program : "Playden's program";
+    if (program) flags.push_back("program: " + *program + (folder && !folder->empty() ? " (starts in " + *folder + ")" : ""));
+    else if (folder && !folder->empty()) flags.push_back("Playden's program starts in " + *folder);
+    if (arguments && !arguments->empty()) flags.push_back("arguments of " + name + ": " + *arguments);
+    if (const auto* option = Default(recipe, "launch_option"); option && !program)
+      flags.push_back("starts Playden's launch option " + *option);
+  }
+  for (const auto& entry : settings_only ? std::vector<LaunchEntry>{} : recipe.launch_entries) {
     std::string item = "program: " + entry.executable;
     if (!entry.working_directory.empty()) item += " (starts in " + entry.working_directory + ")";
     else if (entry.in_install_root) item += " (starts in the game folder)";
     flags.push_back(std::move(item));
     if (!entry.arguments.empty()) flags.push_back("arguments of " + entry.executable + ": " + entry.arguments);
   }
-  if (const auto* option = Default(recipe, "launch_option"))
-    if (recipe.launch_entries.empty() || *option != recipe.launch_entries.front().id)
-      flags.push_back("starts the program " + *option + ", not the first one");
-  if (!recipe.arguments.empty()) flags.push_back("arguments: " + recipe.arguments);
-  if (!recipe.resolution_arguments.empty() && recipe.arguments.find("{resolution}") != std::string::npos)
-    flags.push_back("resolution arguments: " + recipe.resolution_arguments);
+  if (!settings_only) {
+    if (const auto* option = Default(recipe, "launch_option"))
+      if (recipe.launch_entries.empty() || *option != recipe.launch_entries.front().id)
+        flags.push_back("starts the program " + *option + ", not the first one");
+    if (!recipe.arguments.empty()) flags.push_back("arguments: " + recipe.arguments);
+    if (!recipe.resolution_arguments.empty() && recipe.arguments.find("{resolution}") != std::string::npos)
+      flags.push_back("resolution arguments: " + recipe.resolution_arguments);
+  }
   if (const auto* extra = Default(recipe, "extra_arguments")) flags.push_back("extra arguments: " + *extra);
-  if (!recipe.dll_overrides.empty()) flags.push_back("library overrides: " + recipe.dll_overrides);
+  if (!settings_only && !recipe.dll_overrides.empty()) flags.push_back("library overrides: " + recipe.dll_overrides);
   if (const auto* added = Default(recipe, "library_overrides")) flags.push_back("added library overrides: " + *added);
   if (const auto* registry = Default(recipe, "registry_dll_overrides"))
     flags.push_back("library load order in the registry: " + *registry);
   if (const auto* environment = Default(recipe, "environment")) flags.push_back("environment: " + *environment);
-  for (const auto& value : recipe.registry)
+  for (const auto& value : settings_only ? std::vector<RegistryValue>{} : recipe.registry)
     flags.push_back(AppDefaultsProgram(value.key).empty() ? "publisher registry key, needs review: " + RegistryText(value)
                                                           : "registry: " + RegistryText(value));
   return flags;

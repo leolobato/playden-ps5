@@ -33,6 +33,9 @@ struct CommunityCheckOptions {};
 // - program: every launch entry an .exe inside the game folder, starting in a folder inside it;
 //   not a Windows or Wine system program, no folder or file name of only dots and spaces or ending in one;
 //   the program rows (program, program_folder, arguments, extra_arguments) belong in the recipe's own fields, not defaults;
+// - a settings-only recipe (community.format_version 2), which has no launch entries: its program rows are defaults
+//   (program, program_folder, program_arguments, launch_option), checked as launch entries are; the arguments,
+//   extra_arguments, dll_overrides, architecture and graphics rows are not defaults (graphics is the recipe's field);
 // - library overrides: named libraries only, no wildcard;
 // - environment: only the variables Playden itself sets that take no path (IsPlaydenEnvironmentVariable);
 // - registry: Software\Wine\AppDefaults\<one of the recipe's own programs>\..., or a publisher key
@@ -42,7 +45,9 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
 
 // What in the recipe changes how the game starts, one item each ("program: Darkwood.exe"): the
 // program, arguments, library overrides, environment and registry values. A publisher key
-// says it needs review. CI labels pull requests with it and the chooser lists it.
+// says it needs review. CI labels pull requests with it and the chooser lists it. A settings-only recipe changes the
+// program only through its program rows: its launch entries, arguments and library overrides, once filled in, are
+// Playden's own, so they are not listed.
 std::vector<std::string> CommunityRecipeFlags(const CommunityRecipe& community);
 
 // Why the kit a game's title runs with cannot run a community recipe, as a sentence for the

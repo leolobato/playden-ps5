@@ -7737,7 +7737,8 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
 }
 
 // A settings-only recipe (community.format_version 2) starts the program Playden finds: the generated recipe is made
-// first and lends its program, the recipe's settings apply on top.
+// first and lends its program, the recipe's settings apply on top. A "program" default the copy has starts instead,
+// one it hasn't is dropped.
 void SettingsOnlyRecipeStartsPlaydensProgram() {
   Fixture fixture;
   auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
@@ -7768,6 +7769,8 @@ void SettingsOnlyRecipeStartsPlaydensProgram() {
            " \"community\": {\"format_version\": 2, \"title\": \"Emulated Steam\", \"status\": \"works\", \"author\": \"Ana\"}}";
   };
   const auto rev_plain = cache.Add(settings_only(""));
+  const auto rev_fast = cache.Add(settings_only(", \"program\": \"Bin/Fast.exe\""));
+  const auto rev_gone = cache.Add(settings_only(", \"program\": \"Bin/Gone.exe\""));
   GameSettingsRecord saved;
   config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
   RuntimePrepareRequest request{4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"};
@@ -7788,12 +7791,31 @@ void SettingsOnlyRecipeStartsPlaydensProgram() {
     CHECK(!done.refusals.count(4242) && done.installs.size() == 1);
     return done;
   };
+  const auto remove = [&] {
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    const auto before = host.Snapshot().removals_handled;
+    host.Remove(4242, true);
+    const auto removed = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.removals_handled > before; }, 60);
+    CHECK(removed.installs.empty());
+  };
   // No program of its own: the game's own program from its generated recipe, made before the recipe is bound.
   ChooseCommunityRecipe(&saved, "community-steam-4242-emulate", rev_plain);
   auto done = prepare();
   CHECK(done.installs[0].recipe_id == "community-steam-4242-emulate" && done.installs[0].recipe_version == rev_plain.substr(0, 32));
   CHECK(!done.recipe_fallbacks.count(4242) && done.installs[0].launch_path == "Bin/Game.exe" && has(Read(profile), "Game.exe"));
   CHECK(done.generated_recipes.size() == 1 && done.generated_recipes[0].id == "steam-4242-auto");
+  remove();
+  // A program the copy has starts.
+  ChooseCommunityRecipe(&saved, "community-steam-4242-emulate", rev_fast);
+  done = prepare();
+  CHECK(done.installs[0].recipe_version == rev_fast.substr(0, 32) && !done.recipe_fallbacks.count(4242) &&
+        done.installs[0].launch_path == "Bin/Fast.exe" && has(Read(profile), "Fast.exe"));
+  remove();
+  // One it hasn't: Playden's program, and the recipe still applies.
+  ChooseCommunityRecipe(&saved, "community-steam-4242-emulate", rev_gone);
+  done = prepare();
+  CHECK(done.installs[0].recipe_version == rev_gone.substr(0, 32) && !done.recipe_fallbacks.count(4242) &&
+        done.installs[0].launch_path == "Bin/Game.exe");
   host.Shutdown();
 }
 

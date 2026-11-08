@@ -88,9 +88,12 @@ std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
 // for, its own game's or another's. From `own` (Playden's shipped recipe for the copy, else the generated one): the
 // launch entries, architecture, runtime, prefix, detected, dll_overrides, arguments and resolution_arguments, and the
 // graphics when the recipe sets none. The recipe's defaults keep applying, its program rows too:
-// - A "launch_option" default that names none of own's entries is dropped (and its lock).
-// - A "program" default the copy has: architecture_in_copy answers its architecture, which the recipe takes. One the
-//   copy hasn't: the program rows are dropped as UseOwnProgram drops them, and own's program starts.
+// - A "program" default the copy has starts: architecture_in_copy answers its architecture, which the recipe takes,
+//   and it is listed as the player's own program (kProgramEntryId) with the recipe's folder and arguments. One the copy
+//   hasn't: the program rows are dropped as UseOwnProgram drops them, and own's program starts.
+// - Without one, a "launch_option" default names one of own's entries; one own hasn't is dropped with the program rows.
+// - The "program_folder" and "program_arguments" defaults go on the entry that starts (BuildEffectiveSettings takes a
+//   recipe's from the entry).
 // Returns the program (or launch option) dropped, empty when none was. own without launch entries leaves the recipe
 // without any, which SelectRecipe refuses (kCommunityRecipeNoProgram). Pure.
 std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,

@@ -169,6 +169,36 @@ void Rules(const std::string& fixtures) {
   refused("text-notes-control.json", "community.notes must be valid UTF-8");
   refused("text-firmware-newline.json", "community.tested_firmware must be valid UTF-8");
   refused("defaults-extra-arguments.json", "defaults sets extra_arguments");
+  refused("settings-only-defaults-arguments.json", "defaults sets arguments");
+  refused("settings-only-defaults-graphics.json", "defaults sets graphics");
+  refused("settings-only-program-system.json", "Bin/msiexec.exe is a Windows or Wine system program");
+  // Settings-only recipes pass, with their program rows as defaults; only those are flagged.
+  {
+    const auto plain = Load(fixtures + "/accepted/settings-only.json");
+    CHECK(IsSettingsOnlyRecipe(plain) && CommunityRecipeRefusals(plain, ci).empty() && CommunityRecipeFlags(plain).empty());
+    const auto named = Load(fixtures + "/accepted/settings-only-program.json");
+    const auto named_flags = CommunityRecipeFlags(named);
+    CHECK(CommunityRecipeRefusals(named, ci).empty() && named_flags.size() == 2 &&
+          named_flags[0] == "program: Bin/Darkwood.exe" && named_flags[1] == "arguments of Bin/Darkwood.exe: -windowed");
+    // Filled from Playden's recipe, what Playden filled in is not listed.
+    auto filled = plain;
+    filled.recipe.launch_entries = {{"game", "Darkwood", "Darkwood.exe", "", "-x"}};
+    filled.recipe.arguments = "-force-d3d11";
+    filled.recipe.dll_overrides = "d3d11=n";
+    CHECK(CommunityRecipeFlags(filled).empty());
+    auto option = plain;
+    option.recipe.defaults["launch_option"] = "dx11";
+    option.recipe.defaults["program_folder"] = "bin";
+    CHECK(CommunityRecipeRefusals(option, ci).empty() && Mentions(CommunityRecipeFlags(option), "starts Playden's launch option dx11") &&
+          Mentions(CommunityRecipeFlags(option), "Playden's program starts in bin"));
+    // Format 1 still refuses those defaults: its program rows are its own fields.
+    auto format_1 = good;
+    format_1.recipe.defaults["program"] = "Bin/Other.exe";
+    CHECK(Mentions(CommunityRecipeRefusals(format_1, ci), "defaults sets program"));
+    auto escaping = plain;
+    escaping.recipe.defaults["program_folder"] = "bin. ";
+    CHECK(Mentions(CommunityRecipeRefusals(escaping, ci), "defaults program_folder bin. "));
+  }
   // The fake entry's AppDefaults key is still listed for review.
   CHECK(Mentions(CommunityRecipeFlags(Load(fixtures + "/hostile/program-system-msiexec.json")),
                  "registry: Software\\Wine\\AppDefaults\\msiexec.exe"));

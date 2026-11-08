@@ -142,17 +142,18 @@ std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
       defaults.erase(arguments);
     }
   };
-  std::string dropped;
   LaunchEntry* chosen_entry = nullptr;
   if (const auto option = defaults.find("launch_option"); option != defaults.end()) {
     for (auto& entry : recipe->launch_entries)
       if (entry.id == option->second) chosen_entry = &entry;
     if (!chosen_entry) {
-      dropped = option->second;
+      // A program default starts instead of any launch option; without one, own's starts as Playden has it, as the
+      // folder and arguments were for that launch option's program.
+      const bool program = defaults.count("program") && !defaults.at("program").empty();
+      const auto dropped = option->second;
       defaults.erase(option);
       recipe->locked.erase("launch_option");
-      // Its folder and arguments were for that program: own's starts as Playden has it.
-      if (!defaults.count("program")) {
+      if (!program) {
         drop_program_rows();
         return dropped;
       }
@@ -174,7 +175,7 @@ std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
     entry.label = slash == std::string::npos ? program : program.substr(slash + 1);
     carry_rows(&entry);
     recipe->launch_entries.push_back(std::move(entry));
-    return dropped;
+    return {};
   }
   if (chosen_entry) {
     // A launch option of own's: its program in this copy, when the copy knows it.
@@ -187,7 +188,7 @@ std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
     if (!chosen_entry) chosen_entry = &recipe->launch_entries.front();
   }
   carry_rows(chosen_entry);
-  return dropped;
+  return {};
 }
 
 std::vector<DroppedOverride> DroppedOverrides(const GameRecipe& from, const SettingsPreset* from_preset,

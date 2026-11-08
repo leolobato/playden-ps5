@@ -157,6 +157,34 @@ int main() {
       CHECK(ChoiceToSend(decision, ShareChoice::kUpdate) == ShareChoice::kNone);
     }
 
+  // Based on a settings-only recipe: never an update (the share names its program), whoever shared it and whatever
+  // differs; a new recipe that credits it and says "new", so the API doesn't ask. Nothing changed: a thumbs up.
+  for (bool mine : {false, true})
+    for (bool program : {false, true}) {
+      ShareInputs inputs;
+      inputs.based_on = mine ? kMine : kTheirs;
+      inputs.based_on_settings_only = true;
+      if (mine) inputs.saved_submission_id = "s2", inputs.saved_recipe_id = kMine.recipe_id;
+      inputs.differs_from_base = true;
+      inputs.program_or_graphics_differ = program;
+      auto decision = DecideShare(inputs);
+      CHECK(decision.kind == ShareKind::kNewRecipe && decision.send_based_on && decision.send_new);
+      CHECK(!decision.send_submission_id && decision.preselect == ShareChoice::kNone);
+      CHECK(ChoiceToSend(decision, ShareChoice::kUpdate) == ShareChoice::kNew);
+      inputs.differs_from_base = inputs.program_or_graphics_differ = false;
+      decision = DecideShare(inputs);
+      CHECK(decision.kind == ShareKind::kNoChangesOfferVote && !decision.send_based_on && !decision.send_new);
+    }
+  // Another game's settings-only recipe is credited as another game's: the API knows the game differs.
+  {
+    ShareInputs inputs;
+    inputs.based_on = kTheirs;
+    inputs.based_on_other_game = inputs.based_on_settings_only = true;
+    const auto decision = DecideShare(inputs);
+    CHECK(decision.kind == ShareKind::kNewRecipe && decision.send_based_on &&
+          ChoiceToSend(decision, ShareChoice::kNone) == ShareChoice::kNone);
+  }
+
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
   return failures ? 1 : 0;
 }

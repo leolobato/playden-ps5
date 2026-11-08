@@ -1,0 +1,25 @@
+{
+  "recipe_id": "community-steam-274520-mouse-preset",
+  "recipe_version": 1,
+  "game": {
+    "store": "steam",
+    "key": "274520",
+    "name": "Darkwood"
+  },
+  "name": "Darkwood",
+  "defaults": {
+    "controller_preset": "mouse",
+    "graphics": "opengl"
+  },
+  "community": {
+    "format_version": 2,
+    "title": "Mouse preset",
+    "tested_kit": "0.19",
+    "tested_firmware": "13.60",
+    "tested_date": "2026-11-08",
+    "status": "works",
+    "notes": "",
+    "author": "",
+    "contributors": []
+  }
+}

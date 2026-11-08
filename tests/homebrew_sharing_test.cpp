@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -841,6 +842,111 @@ void community_keep(const std::filesystem::path& base) {
           "unreadable game settings keep everything");
 }
 
+// A settings-only recipe (community.format_version 2): it starts the program Playden finds, the chooser's panel says
+// so, and a share based on it is a new recipe that credits it, never a suggested change to it.
+void settings_only_base(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up(model, base, false);
+    rt::GameRecipe own;
+    own.id = "steam-274520-auto";
+    own.version = 1;
+    own.app_id = 274520;
+    own.name = "Darkwood";
+    own.launch_entries = {{"game", "Darkwood", "Darkwood.exe", ""}};
+    own.arguments = "{resolution}";
+    own.architecture = "pe64";
+    own.graphics = "dxvk";
+    model.SetGeneratedRecipes({own});
+    // The copy's programs, as the folder's scan found them.
+    std::map<GameId, playden::homebrew::LiveGameSetup> setups;
+    setups[kGame].scanned = true;
+    setups[kGame].programs = {{"Darkwood.exe", "pe64", "", false, ""}};
+    model.SetGameSetups(setups);
+    const auto file = [](const std::string& slug, const std::string& defaults) {
+        return "{\"recipe_id\": \"community-steam-274520-" + slug + "\", \"recipe_version\": 1,"
+               " \"game\": {\"store\": \"steam\", \"key\": \"274520\", \"name\": \"Darkwood\"}, \"name\": \"Darkwood\","
+               " \"defaults\": {" + defaults + "}, \"community\": {\"format_version\": 2, \"title\": \"" + slug +
+               "\", \"status\": \"works\", \"author\": \"rina\"}}";
+    };
+    const std::string plain_revision(64, 'e'), missing_revision(64, 'f');
+    std::map<std::string, rt::CommunityRecipe> objects;
+    for (const auto& [revision, text] : {std::pair{plain_revision, file("mouse", "\"resolution\": \"1920x1080\"")},
+                                         std::pair{missing_revision, file("gone", "\"program\": \"Bin/Gone.exe\"")}}) {
+        rt::CommunityRecipe community;
+        std::string reason;
+        check(rt::ParseCommunityRecipe(text, &community, &reason), "the settings-only file reads");
+        objects[revision] = community;
+    }
+    playden::homebrew::CommunityCatalog catalog;
+    catalog.release_tag = "r20261108.5";
+    for (const auto& [revision, object] : objects) {
+        auto listed = offer(revision);
+        listed.id = object.recipe.id;
+        listed.title = object.title;
+        listed.flags = rt::CommunityRecipeFlags(object);
+        catalog.games[kGameRef].push_back(listed);
+    }
+    model.UpdateCommunityCatalog(catalog);
+    model.SetCommunityRecipeLoader([objects](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
+        const auto found = objects.find(revision);
+        if (found == objects.end()) return std::nullopt;
+        return found->second;
+    });
+
+    // The chooser's panel: the program Playden finds, or the named one that isn't in this copy.
+    open_game_settings(model);
+    activate(model, "preset-picker");
+    check(model.action("focus:recipe-" + plain_revision) && model.view().comparison, "the settings-only recipe is listed");
+    {
+        const auto& starts = model.view().comparison->starts;
+        check(!starts.empty() && starts.front() == "Uses the program Playden finds" &&
+                  std::none_of(starts.begin(), starts.end(), [](const std::string& line) { return contains(line, "Darkwood.exe"); }),
+              "the panel says the recipe uses the program Playden finds, without listing Playden's program as the recipe's");
+    }
+    check(model.ProgramNoteFor(kGame, plain_revision).empty(), "no program note when the recipe names none");
+    check(model.action("focus:recipe-" + missing_revision) && model.view().comparison, "the one naming a program is listed");
+    check(model.view().comparison->starts.front() == "Uses the program Playden finds (Bin/Gone.exe isn't in this copy)" &&
+              model.ProgramNoteFor(kGame, missing_revision) == "Bin/Gone.exe isn't in this copy, so Playden's program is used.",
+          "a named program this copy hasn't: Playden's program, and the note says so without naming another game");
+    // Chosen: Playden's program with the recipe's settings, matched by its game, id and revision alone.
+    activate(model, "recipe-" + plain_revision);
+    if (model.state().navigation.modals.back().id == "confirmation") activate(model, "recipe-switch-confirm");
+    check(model.RecipeBaseFor(kGame) && model.RecipeBaseFor(kGame)->revision == plain_revision &&
+              model.RecipeFallbackFor(kGame).empty(),
+          "the settings-only recipe is the base and applies");
+    const auto& recipe = model.RecipeFor(kGame);
+    check(recipe.id == "community-steam-274520-mouse" && recipe.launch_entries.size() == 1 &&
+              recipe.launch_entries[0].executable == "Darkwood.exe" && recipe.architecture == "pe64" &&
+              recipe.defaults.at("resolution") == "1920x1080",
+          "it runs with Playden's program and its own settings");
+    // Playden with no program for the copy: the recipe doesn't apply, and Game settings says why.
+    auto none = own;
+    none.launch_entries.clear();
+    model.SetGeneratedRecipes({none});
+    check(model.RecipeFallbackFor(kGame) == rt::kCommunityRecipeNoProgram && !model.RecipeBaseFor(kGame),
+          "without a program Playden can find, the recipe falls back with the reason");
+    model.SetGeneratedRecipes({own});
+    check(model.RecipeFallbackFor(kGame).empty(), "with one again, it applies");
+
+    // Sharing from it: a new recipe that credits it, "new" so the API doesn't take it as an update; never Suggest changes.
+    check(model.ShareDecisionFor(kGame).kind == cm::ShareKind::kNoChangesOfferVote, "unchanged, the share offers a vote");
+    open_game_settings(model);
+    activate(model, "setting-resolution");
+    std::string choice;
+    for (const auto& row : model.view().rows)
+        if (row.title.find("1280") != std::string::npos) choice = row.key;
+    check(!choice.empty(), "another resolution can be chosen");
+    activate(model, choice);
+    const auto decision = model.ShareDecisionFor(kGame);
+    check(decision.kind == cm::ShareKind::kNewRecipe && decision.send_based_on && decision.send_new &&
+              cm::ChoiceToSend(decision, cm::ShareChoice::kNone) == cm::ShareChoice::kNew,
+          "changed, it is shared as a new recipe crediting the settings-only one");
+    open_share(model);
+    check(!find_row(model, "share-choice-update") && !find_row(model, "share-choice-new") && find_row(model, "share-send"),
+          "the Share sheet doesn't offer to suggest changes to a settings-only recipe");
+}
+
 }  // namespace
 
 // A report that didn't work: the worker uploads the game's logs, redacted, then the report naming them.
@@ -1399,6 +1505,7 @@ int main() {
     start_failed(base / "start-failed");
     start_failed_waits_for_library(base / "start-failed-late");
     community_off(base / "off");
+    settings_only_base(base / "settings-only");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;

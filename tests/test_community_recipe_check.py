@@ -74,6 +74,15 @@ expected = {
     "text-notes-control.json": "community.notes must be valid UTF-8",
     "text-firmware-newline.json": "community.tested_firmware must be valid UTF-8",
     "defaults-extra-arguments.json": "defaults sets extra_arguments",
+    # Format 2 (settings-only) refuses what Playden fills in and what belongs to a recipe with its own program.
+    "settings-only-launch-entries.json": "can't carry launch_entries",
+    "settings-only-registry.json": "can't carry registry",
+    "settings-only-defaults-arguments.json": "defaults sets arguments",
+    "settings-only-defaults-graphics.json": "defaults sets graphics",
+    "settings-only-program-system.json": "is a Windows or Wine system program",
+    # Format 1 keeps its meaning: it needs its program.
+    "format-1-no-launch-entries.json": "recipe needs launch_entries",
+    "format-unknown.json": "needs community.format_version 1 to 2",
 }
 hostile = sorted((FIXTURES / "hostile").glob("*.json"))
 check(sorted(path.name for path in hostile) == sorted(expected), "every hostile fixture has an expectation")

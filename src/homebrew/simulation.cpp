@@ -13745,6 +13745,10 @@ std::string Simulation::ProgramNoteFor(GameId id, const std::string& revision) c
     std::string missing;
     (void)applied_object(id, *object, &missing);
     if (missing.empty()) return {};
+    // A settings-only recipe of the game's own names a program this copy hasn't: no other game to name.
+    const auto own = community_ref(id);
+    if (rt::IsSettingsOnlyRecipe(*object) && own && object->game == *own)
+        return missing + " isn't in this copy, so Playden's program is used.";
     return "Made for " + recipe_game_label(object->game) + ": " + missing + " isn't in this copy, so Playden's program is used.";
 }
 
@@ -14181,7 +14185,22 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
     comparison.starts = offer.flags;
     // How it starts the game here: another game's recipe may start Playden's program.
     rt::CommunityObjectState object_state;
-    if (const auto* object = community_object(offer.revision, &object_state)) {
+    if (const auto* object = community_object(offer.revision, &object_state); object && rt::IsSettingsOnlyRecipe(*object)) {
+        // No program of its own: Playden's, or the one its program rows name when this copy has it.
+        std::string missing;
+        (void)applied_object(id, *object, &missing);
+        comparison.starts = rt::CommunityRecipeFlags(*object);
+        // What it names that this copy hasn't drops all its program rows.
+        if (!missing.empty())
+            comparison.starts.erase(std::remove_if(comparison.starts.begin(), comparison.starts.end(), [](const std::string& line) {
+                for (const char* row : {"program: ", "arguments of ", "starts Playden's launch option ", "Playden's program starts in "})
+                    if (line.rfind(row, 0) == 0) return true;
+                return false;
+            }), comparison.starts.end());
+        if (!object->recipe.defaults.count("program") || !missing.empty())
+            comparison.starts.insert(comparison.starts.begin(), missing.empty() ? std::string("Uses the program Playden finds")
+                                     : "Uses the program Playden finds (" + missing + " isn't in this copy)");
+    } else if (object) {
         std::string missing;
         comparison.starts = rt::CommunityRecipeFlags(*applied_object(id, *object, &missing));
         // Playden's program in place of the recipe's: said to be Playden's, the first time with the program it replaces.
@@ -14812,6 +14831,9 @@ cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
         inputs.based_on = cm::RecipeRef{base->id, base->revision};
         // Another game's recipe (chosen from a search): the game its choice records, when it isn't the one shared for.
         inputs.based_on_other_game = base->game.valid() && (!ref || base->game != *ref);
+        rt::CommunityObjectState state;
+        if (const auto* object = community_object(base->revision, &state))
+            inputs.based_on_settings_only = rt::IsSettingsOnlyRecipe(*object);
     }
     // The saved share counts only for the game it was made for: a changed GameRef starts a new share.
     if (const auto record = state_.game_settings.find(id); record != state_.game_settings.end()) {
