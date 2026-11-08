@@ -647,6 +647,10 @@ void FreeDlcCandidatesAndMemory(const std::filesystem::path& root) {
   CHECK((FreeDlcCandidates(base, dlc, {6000, 6001}, {}) == U32s{6003}));
   CHECK((FreeDlcCandidates(base, dlc, {6000}, {6003}) == U32s{6001}));
   CHECK((FreeDlcCandidates(base, dlc, {6000}, {}, 1) == U32s{6001}));
+  // A DLC whose only Windows content is Steam China's build has nothing to install.
+  std::vector<AppInfo> china = dlc;
+  for (auto& depot : china[0].depots) depot.realm = "steamchina";
+  CHECK((FreeDlcCandidates(base, china, {6000}, {}) == U32s{6003}));
   AppInfo many = base;
   many.dlc_app_ids.clear();
   for (std::uint32_t id = 7000; id < 7030; ++id) {

@@ -629,6 +629,21 @@ void TestRejectionReasons() {
   CHECK(result.depots[1].owner_app == 645390 && result.depots[1].source_app == 427520);
 }
 
+// Magicraft lists a Steam China build with no oslist beside its global Windows depot. Only the global one
+// installs: the China files would land over it.
+void TestSteamChinaDepot() {
+  const AppInfo magicraft = Fixture(2103140, "magicraft.vdf");
+  SelectionResult result;
+  CHECK(SelectDepots(magicraft, {}, {2103140}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{2103141}));
+  CHECK(RejectedAs(result, 2103142) == "os" && RejectedAs(result, 2103143) == "os" &&
+        RejectedAs(result, 2103144) == "realm");
+  // The China depot is no base content an account could be missing.
+  CHECK(MissingBaseDepots(magicraft, std::set<std::uint32_t>{2103141}, {}).empty());
+  CHECK(RealmIsGlobal("") && RealmIsGlobal("steamglobal") && RealmIsGlobal("SteamChina, steamglobal"));
+  CHECK(!RealmIsGlobal("steamchina") && !RealmIsGlobal("steamglobalx"));
+}
+
 // Portal ships its English as neutral content beside a Russian voice depot.
 void TestPortalLanguages() {
   const AppInfo portal = Fixture(400, "portal.vdf");
@@ -1145,6 +1160,7 @@ int main(int argc, char** argv) {
   TestMissingBaseDepots();
   TestDlcAppDepotDoesNotHideMissingContent();
   TestRejectionReasons();
+  TestSteamChinaDepot();
   TestPortalLanguages();
   TestDlcAppDepots();
   TestSelectionNeedsTheGamesContent();

@@ -206,7 +206,9 @@ bool UpdateNeedsUnfetchedDlc(const installs::InstalledRecord& record, std::uint3
 std::vector<std::uint32_t> FreeDlcCandidates(const AppInfo& app, const std::vector<AppInfo>& dlc_apps,
                                              const std::set<std::uint32_t>& owned_apps,
                                              const std::set<std::uint32_t>& refused, std::size_t limit) {
-  const auto windows = [](const DepotInfo& depot) { return !depot.shared_install && OsListMatchesWindows(depot.os_list); };
+  const auto windows = [](const DepotInfo& depot) {
+    return !depot.shared_install && OsListMatchesWindows(depot.os_list) && RealmIsGlobal(depot.realm);
+  };
   std::vector<std::uint32_t> candidates;
   for (const auto dlc : app.dlc_app_ids) {
     if (candidates.size() >= limit) break;

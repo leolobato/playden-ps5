@@ -1,0 +1,95 @@
+"appinfo"
+{
+	"appid"		"2103140"
+	"common"
+	{
+		"name"		"Magicraft"
+		"type"		"Game"
+	}
+	"config"
+	{
+		"installdir"		"Magicraft"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"Magicraft.exe"
+				"type"		"default"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"2103141"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"realm"		"steamglobal"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7154262898761249278"
+					"size"		"2212278762"
+					"download"		"754842480"
+				}
+			}
+		}
+		"2103142"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+				"realm"		"steamglobal"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1000000000000000002"
+					"size"		"2200000000"
+					"download"		"750000000"
+				}
+			}
+		}
+		"2103143"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+				"realm"		"steamglobal"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1000000000000000003"
+					"size"		"2200000000"
+					"download"		"750000000"
+				}
+			}
+		}
+		"2103144"
+		{
+			"config"
+			{
+				"realm"		"steamchina"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5383460820466663275"
+					"size"		"2032464288"
+					"download"		"700000000"
+				}
+			}
+		}
+	}
+}

@@ -26,6 +26,7 @@ struct DepotInfo {
   std::string os_list;  // "windows", "macos,linux", "" = all
   std::string os_arch;
   std::string language;  // "" = all languages
+  std::string realm;     // "steamglobal", "steamchina"; "" = global
   bool shared_install = false;
   std::optional<std::uint32_t> depot_from_app;
   bool is_dlc = false;
@@ -124,6 +125,9 @@ void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game);
 
 // Steam `oslist`: empty means every platform; otherwise a comma list that must name windows.
 bool OsListMatchesWindows(std::string_view os_list);
+// Steam `realm`: empty means the global realm; otherwise a comma list that must name steamglobal. A depot of
+// another realm (steamchina) is that region's build of the same files.
+bool RealmIsGlobal(std::string_view realm);
 
 // What an install asks for: the content language as Steam names it ("german"; empty: English)
 // and the branch whose manifests are installed. `excluded_dlc`: DLC the player turned off, whose depots stay out.
@@ -134,7 +138,8 @@ struct DepotSelection {
 };
 
 struct SelectionResult {
-  // A depot left out, and why: os, shared, licence, dlc, dlc-off, branch, language, arch or duplicate.
+  // A depot left out, and why: os, realm, shared, licence, dlc, dlc-off, branch, language, arch or
+  // duplicate.
   struct Rejected {
     std::uint32_t id = 0;
     std::uint32_t source_app = 0;

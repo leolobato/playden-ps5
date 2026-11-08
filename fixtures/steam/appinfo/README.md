@@ -4,6 +4,8 @@ Text VDF as `ParseAppInfo` takes it (root `"appinfo"`), trimmed to the keys depo
 
 - `factorio.vdf`: shaped after Factorio (427520): 64- and 32-bit Windows depots, Mac and Linux depots, and its
   Space Age DLC (645390) listed in the game's own depots by `dlcappid`. Manifest IDs and sizes are illustrative.
+- `magicraft.vdf`: shaped after Magicraft (2103140): a global Windows depot, Linux and Mac depots, and a Steam China
+  depot with no `oslist`, only `realm` `steamchina`. Public manifest IDs are the real ones; sizes are illustrative.
 - `portal.vdf`: shaped after Portal (400): language-neutral content, a Russian voice depot, Windows and Mac binaries.
 - `dlc-base-5000.vdf`, `dlc-app-5001.vdf`, `dlc-app-5002.vdf`: synthetic. A game whose DLC apps list their own
   depots, one 64/32-bit pair, one set of language depots, and a copy of the game's content depot.

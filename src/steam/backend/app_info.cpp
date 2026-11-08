@@ -127,6 +127,7 @@ DepotInfo ParseDepot(std::uint32_t id, const VdfNode& value) {
   depot.os_list = ChildString(config, "oslist");
   depot.os_arch = ChildString(config, "osarch");
   depot.language = ChildString(config, "language");
+  depot.realm = ChildString(config, "realm");
   depot.shared_install = value.String("sharedinstall") == std::string_view("1");
   depot.depot_from_app = ChildU32(&value, "depotfromapp");
   depot.dlc_app_id = ChildU32(&value, "dlcappid");
@@ -444,6 +445,17 @@ bool OsListMatchesWindows(std::string_view os_list) {
   return false;
 }
 
+bool RealmIsGlobal(std::string_view realm) {
+  if (Trim(realm).empty()) return true;
+  while (!realm.empty()) {
+    const std::size_t comma = realm.find(',');
+    if (LowerString(Trim(realm.substr(0, comma))) == "steamglobal") return true;
+    if (comma == std::string_view::npos) break;
+    realm.remove_prefix(comma + 1);
+  }
+  return false;
+}
+
 namespace {
 
 // The languages `depots` carry, in listing order, lower case. Content with no language is the
@@ -560,6 +572,8 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
   bool eligible = false;
   for (const DepotInfo& depot : listed) {
     if (!OsListMatchesWindows(depot.os_list)) { reject(depot, "os"); continue; }
+    // Magicraft's Steam China build has no oslist: installed with the global one, its files land over it (#694).
+    if (!RealmIsGlobal(depot.realm)) { reject(depot, "realm"); continue; }
     if (depot.shared_install) { reject(depot, "shared"); continue; }
     if (owned_depots && owned_depots->count(depot.id) == 0 && from_app.count(depot.id) == 0) { reject(depot, "licence"); continue; }
     if (depot.owner_app != app.app_id && owned_apps.count(depot.owner_app) == 0) { reject(depot, "dlc"); continue; }
@@ -754,7 +768,7 @@ std::vector<std::uint32_t> MissingBaseDepots(const AppInfo& app,
   if (!owned_depots) return {};
   const auto base_content = [](const DepotInfo& depot) {
     return !depot.depot_from_app && !depot.shared_install && !depot.is_dlc && depot.os_list.empty() &&
-           depot.language.empty() && depot.manifest_gid && *depot.manifest_gid != 0;
+           RealmIsGlobal(depot.realm) && depot.language.empty() && depot.manifest_gid && *depot.manifest_gid != 0;
   };
   std::vector<std::uint32_t> missing;
   std::uint64_t missing_size = 0, largest_missing = 0;
