@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "logging",
+        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);
@@ -917,6 +917,72 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"cpu_topology", "4"}}, KitCapabilities{}, &settings, &error));
     CHECK(!settings.values.at("cpu_topology").available && !settings.values.at("reported_gpu").available);
     CHECK(!ValidateSettingValue(hl2, "registry_dll_overrides", "not a list", &reason));
+    // Address space: WINE_LARGE_ADDRESS_AWARE in [environment] for a 32-bit program, with a runtime that takes it.
+    {
+      auto lae = every;
+      lae.environment = lae.large_address_aware = lae.environment_file_budgets = lae.launch_arguments_4096 = true;
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"address_space", "4gb"}, {"cpu_topology", "4"}}, lae, &settings,
+                                   &error));
+      CHECK(settings.values.at("address_space").available);
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\n[environment]\nWINE_CPU_TOPOLOGY = 4:0,1,2,3\nWINE_LARGE_ADDRESS_AWARE = 1\n") !=
+            std::string::npos);
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true}));
+      // Environment variables may set it itself, and it is written once.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"address_space", "4gb"}, {"environment", "WINE_LARGE_ADDRESS_AWARE=1"}},
+                                   lae, &settings, &error));
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("WINE_LARGE_ADDRESS_AWARE") == profile.text.rfind("WINE_LARGE_ADDRESS_AWARE"));
+      // An older runtime has no such row, and refuses the variable from Environment variables too.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"address_space", "4gb"}}, every, &settings, &error));
+      CHECK(!settings.values.at("address_space").available && settings.values.at("address_space").value == "kit");
+      auto plain = every;
+      plain.environment = true;
+      CHECK(!BuildEffectiveSettings(hl2, nullptr, {{"environment", "WINE_LARGE_ADDRESS_AWARE=1"}}, plain, &settings,
+                                    &error));
+      CHECK(error.setting_id == "environment" && error.message == "WINE_LARGE_ADDRESS_AWARE needs a newer runtime kit");
+      CHECK(!BuildEffectiveSettings(hl2, nullptr, {{"environment", "WINE_PS5_PARK_FILES=96"}}, plain, &settings, &error));
+      // A value that only contains the name sets nothing: an older runtime takes it, and the row still writes its own.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "SDL_HINT_X=a WINE_LARGE_ADDRESS_AWARE=1"}}, plain,
+                                   &settings, &error));
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"address_space", "4gb"}, {"environment", "SDL_HINT_X=X_WINE_LARGE_ADDRESS_AWARE=1"}},
+                                   lae, &settings, &error));
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\nWINE_LARGE_ADDRESS_AWARE = 1\n") != std::string::npos);
+      CHECK(!BuildEffectiveSettings(hl2, nullptr, {{"environment", "WINE_PS5_PARK_FILES=96; WINE_PS5_CACHED_FILES=8"}},
+                                    KitForTitleRuntime(lae, false), &settings, &error));
+      CHECK(error.message == "WINE_PS5_PARK_FILES needs the game's runtime kit update");
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"environment", "WINE_PS5_PARK_FILES=96; WINE_PS5_CACHED_FILES=8"}},
+                                   lae, &settings, &error));
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("WINE_PS5_PARK_FILES = 96\nWINE_PS5_CACHED_FILES = 8\n") != std::string::npos);
+      CHECK(!ValidateSettingValue(hl2, "environment", "WINE_LARGE_ADDRESS_AWARE=2", &reason));
+      CHECK(!ValidateSettingValue(hl2, "environment", "WINE_PS5_PARK_FILES=12345", &reason));
+      // A title that waits for its update keeps the choice for then.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"address_space", "4gb"}}, KitForTitleRuntime(lae, false), &settings,
+                                   &error));
+      CHECK(settings.values.at("address_space").waits_for_update && settings.values.at("address_space").after_update == "4gb");
+      // Only for 32-bit programs.
+      auto pe64 = hl2;
+      pe64.architecture = "pe64";
+      CHECK(BuildEffectiveSettings(pe64, nullptr, {{"address_space", "4gb"}}, lae, &settings, &error));
+      CHECK(!settings.values.at("address_space").available &&
+            settings.values.at("address_space").reason == "Only for 32-bit programs.");
+      // Arguments past 512 bytes: only for a runtime that takes 4096 (a long mod list on one command line).
+      const std::string mods = "/singleplayer _MODULES_*" + std::string(1500, 'M') + "*_MODULES_";
+      CHECK(ValidateSettingValue(hl2, "extra_arguments", mods, &reason));
+      CHECK(!ValidateSettingValue(hl2, "extra_arguments", std::string(4097, 'a'), &reason));
+      CHECK(!BuildEffectiveSettings(hl2, nullptr, {{"extra_arguments", mods}}, every, &settings, &error));
+      CHECK(error.setting_id == "extra_arguments" && error.message == "arguments past 512 bytes need a newer runtime kit");
+      CHECK(!BuildEffectiveSettings(hl2, nullptr, {{"extra_arguments", mods}}, KitForTitleRuntime(lae, false), &settings,
+                                    &error));
+      CHECK(error.message == "arguments past 512 bytes need the game's runtime kit update");
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"extra_arguments", mods}}, lae, &settings, &error));
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find(mods) != std::string::npos);
+      CHECK(!CheckProsperoProfile(profile.text, &reason, {.environment_section = true}));  // a 512-byte title refuses it
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true, .long_arguments = true}));
+    }
     // The title publication carries at most the two registry values it owns; a longer plan cannot be applied.
     CHECK(BuildEffectiveSettings(hl2, nullptr, {{"windows_version", "win7"}, {"text_scale", "120"},
         {"registry_dll_overrides", "winmm=d"}}, every, &settings, &error));

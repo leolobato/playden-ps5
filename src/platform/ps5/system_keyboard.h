@@ -33,7 +33,7 @@ class SystemKeyboard {
 
  private:
   void Wipe();
-  std::array<std::uint16_t, 512> buffer_{};
+  std::array<std::uint16_t, 2049> buffer_{};
   std::array<std::uint16_t, 64> title_{};
   std::string text_;
   std::int64_t started_us_ = 0;

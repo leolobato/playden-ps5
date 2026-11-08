@@ -273,6 +273,11 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"kit", "Runtime default", ""}, {"4", "4 cores", "For games that fail with many cores."},
                          {"8", "8 cores", ""}},
                         "kit", 3, ApplyMode::kGameClosed));
+  list.push_back(Choice("address_space", "Address space", "How much memory a 32-bit program can use.",
+                        "WINE_LARGE_ADDRESS_AWARE", G::kWindows,
+                        {{"kit", "Runtime default", "2 GB, unless the program asks for more."},
+                         {"4gb", "4 GB", "For 32-bit games that run out of memory."}},
+                        "kit", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("logging", "Logging", "How much detail goes into the game's log file.", "WINEDEBUG",
                         G::kWindows,
                         {{"normal", "Normal", "Errors and loaded modules."},
@@ -558,6 +563,12 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if (id == "registry_dll_overrides") return "Needs a newer runtime kit that lets Playden write more registry values.";
   // Wine reads WINE_CPU_TOPOLOGY from the [environment] section; [debug] env does not take WINE_ names.
   if (id == "cpu_topology" && !kit.environment) return "Needs a newer runtime kit that reads [environment].";
+  if (id == "address_space") {
+    if (kit.large_address_aware_needs_update) return kAppliesAfterKitUpdate;
+    if (!kit.large_address_aware) return "Needs a newer runtime kit that gives 32-bit games 4 GB.";
+    if (const auto program = values.find("architecture"); program != values.end() && program->second.value == "pe64")
+      return "Only for 32-bit programs.";
+  }
   if (id == "start_through_launcher" || id == "launcher_controller_preset") {
     if (kit.launcher_mode_needs_update) return kAppliesAfterKitUpdate;
     if (!kit.launcher_mode) return "Needs a runtime kit with launcher mode.";
@@ -723,7 +734,8 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
     return fail("not one of the choices");
   }
   if (id == "extra_arguments" || id == "program_arguments" || id == "arguments") {
-    if (value.size() > kProsperoMaxArgumentBytes) return fail("too long");
+    // Up to what the newest titles take; BuildEffectiveSettings checks the game's own runtime kit.
+    if (value.size() > kProsperoMaxLongArgumentBytes) return fail("too long");
     // Required arguments may name where the Resolution size goes; nothing else uses braces.
     std::string rest(value);
     if (id == "arguments") ReplaceAll(&rest, "{resolution}", "");
@@ -794,6 +806,26 @@ bool UsesGeneratedLaunch(const GameRecipe& recipe) { return IsGeneratedRecipeId(
 bool IsGraphicsDllOverride(const GameRecipe& recipe, const std::string& entry) {
   return UsesGeneratedLaunch(recipe) && entry == kDxvkOverrides;
 }
+
+namespace {
+// Whether an Environment variables value (NAME=value entries separated by ';') sets the variable name: the name
+// before an entry's first '=', trimmed. A value that merely contains the name sets nothing.
+bool EnvironmentSetsName(std::string_view entries, std::string_view name) {
+  std::size_t start = 0;
+  while (start <= entries.size()) {
+    const auto end = std::min(entries.find(';', start), entries.size());
+    auto entry = entries.substr(start, end - start);
+    start = end + 1;
+    const auto equals = entry.find('=');
+    if (equals == std::string_view::npos) continue;
+    auto key = entry.substr(0, equals);
+    while (!key.empty() && key.front() == ' ') key.remove_prefix(1);
+    while (!key.empty() && key.back() == ' ') key.remove_suffix(1);
+    if (key == name) return true;
+  }
+  return false;
+}
+}  // namespace
 
 bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* preset,
                             const std::map<std::string, std::string>& overrides, const KitCapabilities& kit,
@@ -1061,8 +1093,26 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   const auto& extra = out.values["extra_arguments"].value;
   if (!extra.empty()) arguments += " " + extra;
   out.arguments = CollapseSpaces(arguments);
-  if (out.arguments.size() > kProsperoMaxArgumentBytes || !SplitProsperoArguments(out.arguments, nullptr))
+  if (out.arguments.size() > kProsperoMaxLongArgumentBytes || !SplitProsperoArguments(out.arguments, nullptr))
     return fail("extra_arguments", "arguments are too long or have too many words");
+  if (out.arguments.size() > kProsperoMaxArgumentBytes && !kit.launch_arguments_4096)
+    return fail("extra_arguments", kit.launch_arguments_4096_needs_update
+                                       ? "arguments past 512 bytes need the game's runtime kit update"
+                                       : "arguments past 512 bytes need a newer runtime kit");
+  // Environment variables that only newer titles take in [environment]: an older one refuses the whole profile.
+  if (const auto row = out.values.find("environment"); row != out.values.end() && row->second.available) {
+    const auto& entries = row->second.value;
+    const auto names = [&](std::string_view name) { return EnvironmentSetsName(entries, name); };
+    const auto refuse = [&](std::string_view name, bool needs_update) {
+      return fail("environment", std::string(name) + (needs_update ? " needs the game's runtime kit update"
+                                                                    : " needs a newer runtime kit"));
+    };
+    if (names("WINE_LARGE_ADDRESS_AWARE") && !kit.large_address_aware)
+      return refuse("WINE_LARGE_ADDRESS_AWARE", kit.large_address_aware_needs_update);
+    for (const char* budget : {"WINE_PS5_PARK_FILES", "WINE_PS5_CACHED_FILES"})
+      if (names(budget) && !kit.environment_file_budgets)
+        return refuse(budget, kit.environment_file_budgets_needs_update);
+  }
 
   // Library overrides: the recipe's, then the DXVK ones a generated recipe needs, then what an
   // earlier build let the player add; or the player's whole list.
@@ -1294,6 +1344,13 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     environment_lines += "WINE_CPU_TOPOLOGY = " + topology + "\n";
     ++environment_count;
   }
+  // Address space: WINE_LARGE_ADDRESS_AWARE in [environment] too, unless Environment variables set it already.
+  const auto& address_space = OptionalValue(settings, "address_space");
+  if (address_space.available && address_space.value == "4gb" &&
+      (!environment.available || !EnvironmentSetsName(environment.value, "WINE_LARGE_ADDRESS_AWARE"))) {
+    environment_lines += "WINE_LARGE_ADDRESS_AWARE = 1\n";
+    ++environment_count;
+  }
   if (environment.available && !settings.environment_as_debug_env) {
     std::size_t start = 0;
     const auto& entries = environment_entries;
@@ -1330,6 +1387,8 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_fps_counter = fps_counter;
   features.input_playstation = value("controller") == "playstation";
   features.runtime_version = settings.profile_version == 2;
+  // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them.
+  features.long_arguments = settings.arguments.size() > kProsperoMaxArgumentBytes;
   features.launcher_section = launcher_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
@@ -3594,6 +3653,9 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.display_fps_counter = has(kKitDisplayFpsCounter);
   kit.launcher_mode = has(kKitLauncherMode);
   kit.input_playstation = has(kKitInputPlaystation);
+  kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
+  kit.large_address_aware = has(kKitLargeAddressAware);
+  kit.environment_file_budgets = has(kKitEnvironmentFileBudgets);
   kit.registry = bottle_access;
   return kit;
 }
@@ -3628,6 +3690,18 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.input_playstation) {
     kit.input_playstation = false;
     kit.input_playstation_needs_update = true;
+  }
+  if (!title_runtime_current && kit.launch_arguments_4096) {
+    kit.launch_arguments_4096 = false;
+    kit.launch_arguments_4096_needs_update = true;
+  }
+  if (!title_runtime_current && kit.large_address_aware) {
+    kit.large_address_aware = false;
+    kit.large_address_aware_needs_update = true;
+  }
+  if (!title_runtime_current && kit.environment_file_budgets) {
+    kit.environment_file_budgets = false;
+    kit.environment_file_budgets_needs_update = true;
   }
   return kit;
 }

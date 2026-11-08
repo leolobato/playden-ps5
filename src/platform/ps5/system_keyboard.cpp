@@ -161,7 +161,7 @@ bool SystemKeyboard::Open(std::string_view title, std::string_view value, bool s
     const auto byte = static_cast<unsigned char>(value[i]);
     if ((byte & 0xc0) != 0x80) units += byte >= 0xf0 ? 2 : 1;
   }
-  if (units > (secret ? 64u : 511u)) {
+  if (units > (secret ? 64u : 2048u)) {
     if (error) *error = "value-too-long units=" + std::to_string(units);
     return false;
   }
@@ -170,11 +170,14 @@ bool SystemKeyboard::Open(std::string_view title, std::string_view value, bool s
   // A password dialog takes only the basic Latin type (1); the default type is refused with
   // 0x80bc0030 (console, 2026-10-17). Settings are tried in turn and every refusal is logged.
   struct Attempt { std::int32_t type; std::uint32_t max_length; bool placeholder; };
-  static constexpr Attempt kPlain[] = {{0, 511, true}};
+  // 2048 for long launch arguments; 511 was all the dialog was asked for before, so it stays the fallback for a
+  // value that fits.
+  static constexpr Attempt kPlain[] = {{0, 2048, true}, {0, 511, true}};
   static constexpr Attempt kSecret[] = {{1, 128, true}, {1, 64, false}};
   std::string refusals;
   bool opened = false;
   for (const auto& attempt : secret ? std::span<const Attempt>(kSecret) : std::span<const Attempt>(kPlain)) {
+    if (units > attempt.max_length) continue;  // it would come back cut
     ToUtf16(value, std::span<std::uint16_t>(buffer_.data(), attempt.max_length + 1));
     param.type = attempt.type;
     param.option = secret ? kOptionPassword : 0;

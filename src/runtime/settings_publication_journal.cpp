@@ -85,7 +85,7 @@ template<class C> void IdentityPayload(C& c, RuntimeInstall& r, SettingsLaunchPl
   Presence(c, r.journal);
   if (r.journal) { c.Text(r.journal->operation_id, 128); c.Text(r.journal->operation, 128); c.Text(r.journal->step, 128); }
   c.U32(p.app_id); c.Text(p.recipe_id, 64); c.Text(p.recipe_version, 64); c.Text(p.profile_id, 64);
-  c.Text(p.profile_bytes, 8192); c.U64(p.settings_revision); c.Text(p.launch_entry_id, 128);
+  c.Text(p.profile_bytes, kProsperoMaxLongProfileBytes); c.U64(p.settings_revision); c.Text(p.launch_entry_id, 128);
   Count(c, p.input_presets, 64);
   for (auto& input : p.input_presets) { c.Text(input.first, 64); c.Text(input.second, 8192); }
   c.Text(p.dxvk_config, kDxvkLimit); Count(c, p.registry, 2);
@@ -202,7 +202,7 @@ bool BaseValid(const SettingsPublicationOperation& o, std::string* reason) {
   if (pw_game_profile_parse(reinterpret_cast<const uint8_t*>(p.profile_bytes.data()), p.profile_bytes.size(), &profile) != PW_OK ||
       profile.app.id != p.profile_id || profile.app.runtime != r.runtime_bundle_id || std::strcmp(profile.app.prefix, "game"))
     return Reject(reason, "Frozen profile is unsupported or has mismatched identities.");
-  char prefix[1024], executable[1024], working[1024], storage[513]; const char* words[32];
+  char prefix[1024], executable[1024], working[1024], storage[PW_APP_ARGUMENTS_CAPACITY]; const char* words[32];
   std::snprintf(prefix, sizeof(prefix), "%s/library/prefixes/game", r.data_root.c_str());
   if (pw_wine_launch_split(profile.app.arguments, storage, sizeof(storage), words, 32) < 0 ||
       pw_wine_launch_host_dir(prefix, profile.app.executable, executable, sizeof(executable)) ||

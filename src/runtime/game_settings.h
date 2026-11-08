@@ -84,6 +84,18 @@ struct KitCapabilities {
   // for a title that runs this kit's runtime, like display_120hz.
   bool display_fps_counter = false;
   bool display_fps_counter_needs_update = false;
+  // [application] arguments up to 4096 bytes and profiles up to 16384 (kKitLaunchArguments4096). Counts only for a title
+  // that runs this kit's runtime, like display_120hz.
+  bool launch_arguments_4096 = false;
+  bool launch_arguments_4096_needs_update = false;
+  // [environment] WINE_LARGE_ADDRESS_AWARE = 1 gives a 32-bit program 4 GB (kKitLargeAddressAware). Counts only for a
+  // title that runs this kit's runtime.
+  bool large_address_aware = false;
+  bool large_address_aware_needs_update = false;
+  // [environment] WINE_PS5_PARK_FILES and WINE_PS5_CACHED_FILES, the open-file budgets (kKitEnvironmentFileBudgets).
+  // Counts only for a title that runs this kit's runtime.
+  bool environment_file_budgets = false;
+  bool environment_file_budgets_needs_update = false;
   bool launcher_mode = false;  // [launcher]: the game starts through a launcher (kKitLauncherMode)
   bool launcher_mode_needs_update = false;  // the kit has it, but the game's title still runs an older runtime
   bool display_framegen_needs_update = false;
@@ -394,7 +406,8 @@ bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_
 // The variables Environment variables accepts (IsProsperoEnvironmentEntry, IsProsperoDebugEnvEntry and
 // IsBottleEnvironmentEntry), as the setting's description and a refusal tell the player.
 inline constexpr char kEnvironmentNamesHint[] =
-    "Allowed names start with DXVK_, MESA_, RADV_, SDL_, VK_, VKD3D_, ZINK_, GALLIUM_ or PW_, or are WINE_CPU_TOPOLOGY.";
+    "Allowed names start with DXVK_, MESA_, RADV_, SDL_, VK_, VKD3D_, ZINK_, GALLIUM_ or PW_, or are WINE_CPU_TOPOLOGY, "
+    "WINE_LARGE_ADDRESS_AWARE, WINE_PS5_PARK_FILES or WINE_PS5_CACHED_FILES.";
 
 // Checks one player value for one setting; used by the UI before saving an override.
 bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::string_view value, std::string* reason);
@@ -763,6 +776,14 @@ inline constexpr const char* kKitGameRootUsbSearch = "game-root-usb-search";
 // The kit's libvulkan.prx keeps 120 Hz output on a display with variable refresh, so Playden may declare a game's PS5
 // title VRR-supported (param.json attribute3 0x40000). Older runtimes fall back to 60 Hz under VRR: they get no such title.
 inline constexpr const char* kKitDisplayVrr = "display-vrr";
+// The title takes [application] arguments of up to 4096 bytes and profiles of up to 16384; older ones 512 and 8192.
+inline constexpr const char* kKitLaunchArguments4096 = "launch-arguments-4096";
+// Wine gives a 32-bit program 4 GB of address space when [environment] sets WINE_LARGE_ADDRESS_AWARE = 1, as the
+// large-address-aware flag would; older titles refuse the variable.
+inline constexpr const char* kKitLargeAddressAware = "wine-large-address-aware";
+// The title takes WINE_PS5_PARK_FILES and WINE_PS5_CACHED_FILES in [environment]: the in-process server's open-file
+// budgets. Older titles refuse them.
+inline constexpr const char* kKitEnvironmentFileBudgets = "environment-file-budgets";
 // The runtime honors [display] refresh = 60|120 on every graphics path (Wine reports the rate it asked for) and
 // [display] frame_rate = 0|120|60|40|30, which the display paces. Runtimes without it refuse a profile with frame_rate.
 inline constexpr const char* kKitDisplay120Hz = "display-120hz";

@@ -38,10 +38,12 @@ struct ProsperoProfile {
 };
 
 constexpr std::size_t kProsperoMaxProfileBytes = 8192;
+constexpr std::size_t kProsperoMaxLongProfileBytes = 16384;  // a title with launch-arguments-4096
 constexpr std::size_t kProsperoMaxIdBytes = 64;
 constexpr std::size_t kProsperoMaxNameBytes = 96;
 constexpr std::size_t kProsperoMaxPathBytes = 259;
 constexpr std::size_t kProsperoMaxArgumentBytes = 512;
+constexpr std::size_t kProsperoMaxLongArgumentBytes = 4096;  // a title with launch-arguments-4096
 constexpr std::size_t kProsperoMaxCatalogEntries = 16;
 constexpr std::size_t kProsperoMaxDllOverrideBytes = 256;
 constexpr std::size_t kProsperoMaxArgumentWords = 32;
@@ -85,6 +87,7 @@ struct ProsperoProfileFeatures {
   bool launcher_section = false;     // [launcher] (kit launcher-mode)
   bool input_playstation = false;    // [input] mode = playstation (kit capability input-playstation)
   bool runtime_version = false;      // [runtime] version = 1|2 (kit capability profile-version-2)
+  bool long_arguments = false;       // arguments up to 4096 bytes, a profile up to 16384 (launch-arguments-4096)
 };
 // A [debug] env variable the runtime takes: PW_, DXVK_, MESA_, GALLIUM_, ZINK_, RADV_ or VK_ names, without the ones
 // the title sets itself or the performance overlay owns.

@@ -1,4 +1,5 @@
 #include "runtime/package_installer.h"
+#include "runtime/prospero_profile.h"
 #include "runtime/kit_trust.h"
 #include "runtime/private_directories.h"
 #include "platform/managed_directory.h"
@@ -436,7 +437,7 @@ bool PublicationIdentityMatches(const RuntimeInstall& record,
          publication.recipe_version == record.recipe_version &&
          publication.settings_revision == record.settings_revision &&
          !publication.profile_bytes.empty() &&
-         publication.profile_bytes.size() <= kMaxPublicationBytes &&
+         publication.profile_bytes.size() <= kProsperoMaxLongProfileBytes &&
          publication.profile_references_validated &&
          DescriptorMatches(record, publication.descriptor_bytes)))
     return false;
