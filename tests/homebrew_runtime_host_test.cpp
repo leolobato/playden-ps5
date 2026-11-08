@@ -7804,6 +7804,26 @@ void SettingsOnlyRecipeStartsPlaydensProgram() {
   CHECK(done.installs[0].recipe_id == "community-steam-4242-emulate" && done.installs[0].recipe_version == rev_plain.substr(0, 32));
   CHECK(!done.recipe_fallbacks.count(4242) && done.installs[0].launch_path == "Bin/Game.exe" && has(Read(profile), "Game.exe"));
   CHECK(done.generated_recipes.size() == 1 && done.generated_recipes[0].id == "steam-4242-auto");
+  {
+    // An update renamed the program: Playden's recipe is made again from the new files, and the recipe follows it.
+    const auto marker = game / playden::installs::kFilesChangedName;
+    fs::remove(game / "Bin/Game.exe");
+    Write(game / "Bin/Game2.exe", pe, 0644);
+    Write(marker, "v1\n", 0644);
+    host.RecheckInstalls();
+    WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && s.installs[0].files_changed; });
+    request.launches = {{"", "", "Bin\\Game2.exe", "", ""}};
+    const auto before = host.Snapshot().prepares_handled;
+    host.Prepare(request);
+    const auto updated = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.prepares_handled > before && !s.preparing_app; }, 60);
+    if (updated.refusals.count(4242)) std::fprintf(stderr, "Refresh refused: %s\n", updated.refusals.at(4242).c_str());
+    CHECK(!updated.refusals.count(4242) && updated.installs[0].recipe_version == rev_plain.substr(0, 32));
+    CHECK(updated.installs[0].launch_path == "Bin/Game2.exe" && !updated.installs[0].files_changed && !fs::exists(marker));
+    CHECK(has(Read(profile), "Game2.exe"));
+    fs::remove(game / "Bin/Game2.exe");
+    Write(game / "Bin/Game.exe", pe, 0644);
+    request.launches = {{"", "", "Bin\\Game.exe", "", ""}};
+  }
   remove();
   // A program the copy has starts.
   ChooseCommunityRecipe(&saved, "community-steam-4242-emulate", rev_fast);

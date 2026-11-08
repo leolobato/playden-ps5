@@ -3224,6 +3224,15 @@ std::string RuntimeHost::RefreshChangedFiles(Composition& c, const RuntimePrepar
           "/" + std::to_string(recipe->version));
       return std::string("This game's setup changed with its update.") + kRecreateHint;
     }
+  } else if (const auto* community = CommunityOf(c, record);
+             community && rt::IsSettingsOnlyRecipe(*community) && !ShippedRecipeFor(c, GameOf(record), record.runtime_number)) {
+    // A settings-only recipe starts the program of Playden's generated recipe, which is made again from the new files
+    // as for a game that runs it; the recipe is bound to it again when the settings are published below.
+    std::string reason;
+    if (!GenerateRecipeForPrepare(c, request, &reason, false)) {
+      Log("files changed app=" + app + " generated recipe for the settings-only recipe refused: " + reason);
+      return reason;
+    }
   }
   // Settings older than the title's can't be published over it (a forced publication skips them silently).
   if (const auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
