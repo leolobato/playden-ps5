@@ -13712,6 +13712,18 @@ std::string Simulation::program_in_copy(GameId id, const std::string& program, c
 
 const rt::CommunityRecipe* Simulation::applied_object(GameId id, const rt::CommunityRecipe& object, std::string* missing) const {
     if (missing) missing->clear();
+    if (rt::IsSettingsOnlyRecipe(object)) {
+        // A settings-only recipe, for any game: the program and its fields are Playden's own for this copy.
+        const auto& own = own_recipe(id);
+        auto adapted = object;
+        const auto program = rt::FillSettingsOnlyRecipe(&adapted.recipe, own, [&](const std::string& path) {
+            return program_in_copy(id, path, own.architecture);
+        });
+        if (missing) *missing = program;
+        auto& slot = adapted_community_[{id, object.recipe.revision}];
+        slot = std::move(adapted);
+        return &slot;
+    }
     const auto own = community_ref(id);
     if (own && object.game == *own) return &object;
     auto adapted = object;

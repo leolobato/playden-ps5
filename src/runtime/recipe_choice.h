@@ -33,6 +33,8 @@ enum class CommunityObjectState { kLoaded, kMissing, kUnreadable };
 
 inline constexpr const char* kCommunityRecipeRemoved = "This recipe was removed.";
 inline constexpr const char* kCommunityRecipeUnreadable = "The recipe can't be read.";
+// A settings-only recipe on a copy where Playden finds no program of its own (FillSettingsOnlyRecipe).
+inline constexpr const char* kCommunityRecipeNoProgram = "Playden found no program to start in this copy.";
 inline constexpr const char* kCommunityRecipeNeedsRuntimeUpdate =
     " Update the game's runtime kit first: Play, or Maintenance › Update runtime kit.";
 
@@ -60,8 +62,9 @@ struct RecipeSelection {
 };
 
 // Precedence: the wanted community recipe when its object loaded and CommunityRecipeFits is empty
-// for the title's kit, else the shipped recipe, else the generated one. Pure; the settings sheet and
-// preparation share it.
+// for the title's kit, else the shipped recipe, else the generated one. A settings-only recipe needs the program
+// Playden filled in (FillSettingsOnlyRecipe): without one it falls back with kCommunityRecipeNoProgram. Pure; the
+// settings sheet and preparation share it.
 RecipeSelection SelectRecipe(const RecipeCandidates& candidates);
 
 // The program a recipe starts as it selects it: its "program" default (a game-relative path), else the launch entry its
@@ -80,6 +83,18 @@ std::string SelectedProgram(const GameRecipe& recipe);
 // Pure.
 std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
                           const std::function<std::string(const std::string& program)>& architecture_in_copy);
+
+// A settings-only community recipe (community.format_version 2) as it applies to this copy, which it is always filled
+// for, its own game's or another's. From `own` (Playden's shipped recipe for the copy, else the generated one): the
+// launch entries, architecture, runtime, prefix, detected, dll_overrides, arguments and resolution_arguments, and the
+// graphics when the recipe sets none. The recipe's defaults keep applying, its program rows too:
+// - A "launch_option" default that names none of own's entries is dropped (and its lock).
+// - A "program" default the copy has: architecture_in_copy answers its architecture, which the recipe takes. One the
+//   copy hasn't: the program rows are dropped as UseOwnProgram drops them, and own's program starts.
+// Returns the program (or launch option) dropped, empty when none was. own without launch entries leaves the recipe
+// without any, which SelectRecipe refuses (kCommunityRecipeNoProgram). Pure.
+std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
+                                   const std::function<std::string(const std::string& program)>& architecture_in_copy);
 
 // A player override that stops applying when the game's base (recipe and preset) changes.
 struct DroppedOverride {

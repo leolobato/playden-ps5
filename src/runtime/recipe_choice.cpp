@@ -37,6 +37,8 @@ RecipeSelection SelectRecipe(const RecipeCandidates& candidates) {
                                                                             : kCommunityRecipeUnreadable;
     } else if (!candidates.kit) {
       reason = "No verified runtime kit is installed.";
+    } else if (IsSettingsOnlyRecipe(*community) && community->recipe.launch_entries.empty()) {
+      reason = kCommunityRecipeNoProgram;
     } else {
       reason = CommunityRecipeFits(*community, *candidates.kit, candidates.title_kit_version);
       if (reason.empty()) {
@@ -75,6 +77,11 @@ std::string SelectedProgram(const GameRecipe& recipe) {
   return program;
 }
 
+namespace {
+// The rows that choose the program, which another copy's program can't keep.
+constexpr const char* kProgramRows[] = {"launch_option", "program", "program_folder", "program_arguments", "architecture"};
+}  // namespace
+
 std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
                           const std::function<std::string(const std::string& program)>& architecture_in_copy) {
   if (!recipe) return {};
@@ -91,11 +98,96 @@ std::string UseOwnProgram(GameRecipe* recipe, const GameRecipe& own,
   if (own.launch_entries.empty()) return {};
   recipe->launch_entries = own.launch_entries;
   recipe->architecture = own.architecture;
-  for (const char* id : {"launch_option", "program", "program_folder", "program_arguments", "architecture"}) {
+  for (const char* id : kProgramRows) {
     recipe->defaults.erase(id);
     recipe->locked.erase(id);
   }
   return program;
+}
+
+std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
+                                   const std::function<std::string(const std::string& program)>& architecture_in_copy) {
+  if (!recipe) return {};
+  recipe->launch_entries = own.launch_entries;
+  recipe->architecture = own.architecture;
+  recipe->runtime = own.runtime;
+  recipe->prefix = own.prefix;
+  recipe->detected = own.detected;
+  recipe->dll_overrides = own.dll_overrides;
+  recipe->arguments = own.arguments;
+  recipe->resolution_arguments = own.resolution_arguments;
+  if (recipe->graphics.empty()) recipe->graphics = own.graphics;
+  auto& defaults = recipe->defaults;
+  // The copy's program decides the architecture.
+  defaults.erase("architecture");
+  recipe->locked.erase("architecture");
+  if (recipe->launch_entries.empty()) return {};
+  const auto drop_program_rows = [&] {
+    for (const char* id : kProgramRows) {
+      defaults.erase(id);
+      recipe->locked.erase(id);
+    }
+  };
+  // The recipe's folder and arguments go with the program it starts: BuildEffectiveSettings takes a recipe's from
+  // the launch entry, and its rows only from the player.
+  const auto carry_rows = [&](LaunchEntry* entry) {
+    if (const auto folder = defaults.find("program_folder"); folder != defaults.end()) {
+      const auto relative = steam::RelativeGamePath(folder->second, true);
+      entry->working_directory = !relative || *relative == "." ? std::string() : *relative;
+      entry->in_install_root = relative && *relative == "." && !folder->second.empty();
+      defaults.erase(folder);
+    }
+    if (const auto arguments = defaults.find("program_arguments"); arguments != defaults.end()) {
+      entry->arguments = arguments->second;
+      defaults.erase(arguments);
+    }
+  };
+  std::string dropped;
+  LaunchEntry* chosen_entry = nullptr;
+  if (const auto option = defaults.find("launch_option"); option != defaults.end()) {
+    for (auto& entry : recipe->launch_entries)
+      if (entry.id == option->second) chosen_entry = &entry;
+    if (!chosen_entry) {
+      dropped = option->second;
+      defaults.erase(option);
+      recipe->locked.erase("launch_option");
+      // Its folder and arguments were for that program: own's starts as Playden has it.
+      if (!defaults.count("program")) {
+        drop_program_rows();
+        return dropped;
+      }
+    }
+  }
+  if (const auto chosen = defaults.find("program"); chosen != defaults.end() && !chosen->second.empty()) {
+    const auto program = SelectedProgram(*recipe);
+    const auto architecture = architecture_in_copy(program);
+    if (architecture.empty()) {
+      drop_program_rows();
+      return program;
+    }
+    recipe->architecture = architecture;
+    // Listed as the player's own program, which BuildEffectiveSettings starts for the "program" row.
+    LaunchEntry entry;
+    entry.id = kProgramEntryId;
+    entry.executable = program;
+    const auto slash = program.rfind('/');
+    entry.label = slash == std::string::npos ? program : program.substr(slash + 1);
+    carry_rows(&entry);
+    recipe->launch_entries.push_back(std::move(entry));
+    return dropped;
+  }
+  if (chosen_entry) {
+    // A launch option of own's: its program in this copy, when the copy knows it.
+    if (const auto architecture = architecture_in_copy(SelectedProgram(*recipe)); !architecture.empty())
+      recipe->architecture = architecture;
+  } else {
+    // Own's default program (DefaultLaunchEntry).
+    for (auto& entry : recipe->launch_entries)
+      if (entry.id != kProgramEntryId) { chosen_entry = &entry; break; }
+    if (!chosen_entry) chosen_entry = &recipe->launch_entries.front();
+  }
+  carry_rows(chosen_entry);
+  return dropped;
 }
 
 std::vector<DroppedOverride> DroppedOverrides(const GameRecipe& from, const SettingsPreset* from_preset,

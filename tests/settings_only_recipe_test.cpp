@@ -2,10 +2,13 @@
 // carry, and that format 1 keeps its meaning.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "runtime/game_install.h"
 #include "runtime/game_settings.h"
+#include "runtime/recipe_choice.h"
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace playden::runtime;
 
@@ -106,10 +109,152 @@ void Parse() {
   CHECK(Has(SerializeCommunityRecipe(community), "\"format_version\": 1"));
 }
 
+
+// Playden's recipe for the copy: what a settings-only recipe takes its program from.
+GameRecipe Own() {
+  GameRecipe own;
+  own.id = "steam-274520-auto";
+  own.version = 1;
+  own.app_id = 274520;
+  own.name = "Darkwood";
+  own.launch_entries = {{"game", "Darkwood", "Darkwood.exe", ""}, {"dx11", "Darkwood (DX11)", "bin/Darkwood11.exe", ""}};
+  own.architecture = "pe64";
+  own.graphics = "dxvk";
+  own.arguments = "-force-d3d11 {resolution}";
+  own.resolution_arguments = "-screen-width {width} -screen-height {height}";
+  own.dll_overrides = "d3d11,dxgi=n";
+  own.runtime = "wine";
+  own.prefix = "default";
+  own.detected = "unity";
+  return own;
+}
+
+CommunityRecipe Read(const std::string& defaults, const std::string& graphics = {}) {
+  CommunityRecipe community;
+  std::string reason;
+  const auto fields = (graphics.empty() ? std::string() : "  \"graphics\": \"" + graphics + "\",\n") +
+                      "  \"defaults\": {" + defaults + "},\n";
+  if (!ParseCommunityRecipe(File(2, fields), &community, &reason)) std::fprintf(stderr, "unread: %s\n", reason.c_str());
+  community.recipe.revision = std::string(64, 'a');
+  BindCommunityRecipe(&community, playden::GameId::Steam(274520), 274520);
+  return community;
+}
+
+void Apply() {
+  const auto own = Own();
+  std::vector<std::string> asked;
+  // The copy has bin/Old.exe (32-bit) and Playden's programs; nothing else.
+  const auto copy = [&](const std::string& program) -> std::string {
+    asked.push_back(program);
+    if (program == "bin/Old.exe") return "pe32";
+    if (program == "Darkwood.exe" || program == "bin/Darkwood11.exe") return "pe64";
+    return {};
+  };
+  KitCapabilities kit;
+  kit.vkd3d_proton = true;
+  EffectiveSettings settings;
+  SettingsError error;
+
+  // No program rows: Playden's program and every program-shaped field, the recipe's settings on top.
+  auto community = Read("\"controller_preset\": \"mouse\", \"d3d12\": \"vkd3d-proton\"");
+  CHECK(FillSettingsOnlyRecipe(&community.recipe, own, copy).empty() && asked.empty());
+  const auto& recipe = community.recipe;
+  CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "Darkwood.exe" &&
+        recipe.architecture == "pe64" && recipe.graphics == "dxvk" && recipe.arguments == own.arguments &&
+        recipe.resolution_arguments == own.resolution_arguments && recipe.dll_overrides == own.dll_overrides &&
+        recipe.runtime == "wine" && recipe.prefix == "default" && recipe.detected == "unity");
+  CHECK(recipe.id == "community-steam-274520-mouse" && recipe.defaults.at("controller_preset") == "mouse");
+  CHECK(BuildEffectiveSettings(recipe, nullptr, {}, kit, &settings, &error));
+  CHECK(settings.launch && settings.launch->executable == "Darkwood.exe" && settings.graphics == "dxvk" &&
+        settings.values.at("controller_preset").value == "mouse" && settings.values.at("d3d12").value == "vkd3d-proton");
+  // Graphics the file sets wins over Playden's.
+  community = Read("\"controller_preset\": \"mouse\"", "opengl");
+  FillSettingsOnlyRecipe(&community.recipe, own, copy);
+  CHECK(community.recipe.graphics == "opengl" && BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) &&
+        settings.graphics == "opengl");
+
+  // A program the copy has: it starts, built as the copy says, with the recipe's arguments for it.
+  community = Read("\"program\": \"bin\\\\Old.exe\", \"program_arguments\": \"-windowed\"");
+  CHECK(FillSettingsOnlyRecipe(&community.recipe, own, copy).empty());
+  CHECK(asked.size() == 1 && asked[0] == "bin/Old.exe" && community.recipe.architecture == "pe32");
+  CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error));
+  CHECK(settings.launch && settings.launch->executable == "bin/Old.exe" && settings.architecture == "pe32" &&
+        settings.launch->arguments == "-windowed");
+  // One it hasn't: Playden's program, the program rows dropped, the missing program returned.
+  community = Read("\"program\": \"bin/Gone.exe\", \"program_arguments\": \"-windowed\", \"program_folder\": \"bin\","
+                   " \"controller_preset\": \"mouse\"");
+  CHECK(FillSettingsOnlyRecipe(&community.recipe, own, copy) == "bin/Gone.exe");
+  CHECK(!community.recipe.defaults.count("program") && !community.recipe.defaults.count("program_arguments") &&
+        !community.recipe.defaults.count("program_folder") && community.recipe.defaults.at("controller_preset") == "mouse");
+  CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) && settings.launch &&
+        settings.launch->executable == "Darkwood.exe" && settings.architecture == "pe64");
+
+  // A launch option of Playden's recipe starts; one it hasn't is dropped, so the settings still build.
+  community = Read("\"launch_option\": \"dx11\"");
+  CHECK(FillSettingsOnlyRecipe(&community.recipe, own, copy).empty());
+  CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) && settings.launch &&
+        settings.launch->executable == "bin/Darkwood11.exe");
+  community = Read("\"launch_option\": \"dx11\", \"program_arguments\": \"-dx11\", \"program_folder\": \".\"");
+  FillSettingsOnlyRecipe(&community.recipe, own, copy);
+  CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) && settings.launch &&
+        settings.launch->executable == "bin/Darkwood11.exe" && settings.launch->arguments == "-dx11" &&
+        settings.launch->in_install_root && settings.values.at("program_arguments").value == "-dx11");
+  community = Read("\"launch_option\": \"vulkan\", \"program_arguments\": \"-vulkan\"");
+  CHECK(FillSettingsOnlyRecipe(&community.recipe, own, copy) == "vulkan" && !community.recipe.defaults.count("launch_option") &&
+        !community.recipe.defaults.count("program_arguments"));
+  CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) && settings.launch &&
+        settings.launch->executable == "Darkwood.exe" && settings.launch->arguments.empty());
+  // Arguments and a folder alone go with Playden's own program.
+  community = Read("\"program_arguments\": \"-nolog\", \"program_folder\": \"bin\"");
+  CHECK(FillSettingsOnlyRecipe(&community.recipe, own, copy).empty());
+  CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) && settings.launch &&
+        settings.launch->executable == "Darkwood.exe" && settings.launch->arguments == "-nolog" &&
+        settings.launch->working_directory == "bin");
+  // Playden's recipe itself is not changed.
+  CHECK(own.launch_entries[0].arguments.empty() && own.launch_entries.size() == 2);
+
+  // Identity: the game, id and revision, with no program of its own.
+  community = Read("\"controller_preset\": \"mouse\"");
+  FillSettingsOnlyRecipe(&community.recipe, own, copy);
+  RuntimeInstall record;
+  record.runtime_number = 274520;
+  record.game = playden::GameId::Steam(274520);
+  record.recipe_id = community.recipe.id;
+  record.recipe_version = RecipeVersionTag(community.recipe);
+  CHECK(community.executable.empty() && RecipeMatchesInstall(community.recipe, record));
+  auto other = community;
+  other.recipe.revision = std::string(64, 'b');
+  CHECK(!RecipeMatchesInstall(other.recipe, record));
+
+  // Selection: the filled recipe applies; without a program Playden can find, Playden's recipe with the reason.
+  VerifiedKitView view;
+  RecipeCandidates candidates;
+  candidates.shipped = &own;
+  candidates.kit = &view;
+  const CommunityRecipeChoice wanted{community.recipe.id, community.recipe.revision};
+  candidates.wanted = &wanted;
+  candidates.community = &community;
+  candidates.community_state = CommunityObjectState::kLoaded;
+  auto selection = SelectRecipe(candidates);
+  CHECK(selection.community && selection.recipe == &community.recipe && selection.fallback_reason.empty());
+  auto unfound = Read("\"controller_preset\": \"mouse\"");
+  CHECK(FillSettingsOnlyRecipe(&unfound.recipe, GameRecipe{}, copy).empty() && unfound.recipe.launch_entries.empty());
+  candidates.community = &unfound;
+  candidates.shipped = nullptr;
+  selection = SelectRecipe(candidates);
+  CHECK(!selection.community && selection.recipe == nullptr &&
+        selection.fallback_reason == "Playden found no program to start in this copy.");
+  // Unfilled, it doesn't apply either.
+  auto unfilled = Read("\"controller_preset\": \"mouse\"");
+  candidates.community = &unfilled;
+  CHECK(SelectRecipe(candidates).fallback_reason == kCommunityRecipeNoProgram);
+}
+
 }  // namespace
 
 int main() {
   Parse();
+  Apply();
   if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
   return failures ? 1 : 0;
 }

@@ -7736,6 +7736,67 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
   restarted.Shutdown();
 }
 
+// A settings-only recipe (community.format_version 2) starts the program Playden finds: the generated recipe is made
+// first and lends its program, the recipe's settings apply on top.
+void SettingsOnlyRecipeStartsPlaydensProgram() {
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.removal_confirm_polls = 3;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  config.unregister_title = [&fixture](const std::string&, const std::string&) {
+    fixture.registered = false;
+    fixture.submitted = false;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  RecipeCache cache;
+  cache.Wire(config);
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/4242";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "Bin/Game.exe", pe, 0644);
+  Write(game / "Bin/Fast.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  const auto settings_only = [](const std::string& defaults) {
+    return "{\"recipe_id\": \"community-steam-4242-emulate\", \"recipe_version\": 1,"
+           " \"game\": {\"store\": \"steam\", \"key\": \"4242\", \"name\": \"Example Game\"},"
+           " \"name\": \"Example Game\", \"defaults\": {\"steam_features\": \"emulate\"" + defaults + "},"
+           " \"community\": {\"format_version\": 2, \"title\": \"Emulated Steam\", \"status\": \"works\", \"author\": \"Ana\"}}";
+  };
+  const auto rev_plain = cache.Add(settings_only(""));
+  GameSettingsRecord saved;
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  RuntimePrepareRequest request{4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"};
+  request.launches = {{"", "", "Bin\\Game.exe", "", ""}};
+  const auto profile = fixture.root / "data/playden/games/steam-4242/library/profiles/playden-steam-4242.profile";
+  const auto has = [](const std::string& text, const std::string& needle) { return text.find(needle) != std::string::npos; };
+  RuntimeHost host(config);
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto prepare = [&] {
+    host.Prepare(request);
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4242) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(4242)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(4242).c_str());
+    if (done.recipe_fallbacks.count(4242)) std::fprintf(stderr, "Recipe fallback: %s\n", done.recipe_fallbacks.at(4242).c_str());
+    CHECK(!done.refusals.count(4242) && done.installs.size() == 1);
+    return done;
+  };
+  // No program of its own: the game's own program from its generated recipe, made before the recipe is bound.
+  ChooseCommunityRecipe(&saved, "community-steam-4242-emulate", rev_plain);
+  auto done = prepare();
+  CHECK(done.installs[0].recipe_id == "community-steam-4242-emulate" && done.installs[0].recipe_version == rev_plain.substr(0, 32));
+  CHECK(!done.recipe_fallbacks.count(4242) && done.installs[0].launch_path == "Bin/Game.exe" && has(Read(profile), "Game.exe"));
+  CHECK(done.generated_recipes.size() == 1 && done.generated_recipes[0].id == "steam-4242-auto");
+  host.Shutdown();
+}
+
 // An imported game takes the community recipes of its Steam app ID (Game settings here, or its steam_appid.txt): the
 // chosen recipe is bound to the imported game's own runtime number and game. A recipe of another game reads as
 // unreadable, and without a Steam app ID nothing matches (searching by name comes later).
@@ -8099,6 +8160,7 @@ int main(int argc, char** argv) {
   CommunityRecipeSwitches();
   AppliedCommunityRecipeSurvivesKitSwap();
   CommunityRecipeOverGeneratedAndKitFallback();
+  SettingsOnlyRecipeStartsPlaydensProgram();
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
   std::puts("runtime host tests passed");

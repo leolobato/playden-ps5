@@ -3325,7 +3325,22 @@ const rt::CommunityRecipe* RuntimeHost::BoundCommunityRecipe(Composition& c, con
   // Another game's recipe as it applies to this copy: the program it selects with this copy's architecture, or, when
   // this copy hasn't it, the game's own program (Playden's choice).
   const auto own_ref = MatchingRefOf(game, runtime_number, saved);
-  if (!install_path.empty() && (!own_ref || loaded.game != *own_ref)) {
+  if (rt::IsSettingsOnlyRecipe(loaded)) {
+    // A settings-only recipe, for any game: the program and its fields are Playden's own for this copy.
+    const auto* own = ShippedRecipeFor(c, game, runtime_number);
+    if (!own) own = GeneratedRecipeFor(c, game, runtime_number);
+    const auto root = install_path.empty() ? std::string() : HostPath(install_path).string();
+    const auto missing = rt::FillSettingsOnlyRecipe(&fresh->recipe, own ? *own : rt::GameRecipe{}, [&](const std::string& program) {
+      // Without the copy's folder (none given), its program is taken as Playden's recipe says; preparation binds again.
+      return root.empty() ? (own ? own->architecture : std::string()) : rt::GameProgramArchitecture(root, program);
+    });
+    if (fresh->recipe.launch_entries.empty())
+      Log("community recipe app=" + std::to_string(runtime_number) + " id=" + loaded.recipe.id +
+          " is settings-only and Playden has no program for this copy");
+    else if (!missing.empty())
+      Log("community recipe app=" + std::to_string(runtime_number) + " id=" + loaded.recipe.id + " program " + missing +
+          " not in this copy: Playden's program is used");
+  } else if (!install_path.empty() && (!own_ref || loaded.game != *own_ref)) {
     const auto* own = ShippedRecipeFor(c, game, runtime_number);
     if (!own) own = GeneratedRecipeFor(c, game, runtime_number);
     const auto root = HostPath(install_path).string();
@@ -3441,9 +3456,15 @@ rt::RecipeSelection RuntimeHost::SelectRecipeFor(Composition& c, const GameId& g
 const rt::GameRecipe* RuntimeHost::RecipeForPrepare(Composition& c, const RuntimePrepareRequest& request,
                                                     std::string* reason) {
   const auto saved = config_.settings_record ? config_.settings_record(GameOf(request)) : std::nullopt;
-  // Another game's recipe may need Playden's own program (BoundCommunityRecipe): it is generated first when the game
-  // has none yet.
-  if (saved && saved->community_recipe.game.valid() && !ShippedRecipeFor(c, GameOf(request), request.runtime_number) &&
+  // Another game's recipe may need Playden's own program, and a settings-only recipe always does
+  // (BoundCommunityRecipe): it is generated first when the game has none yet.
+  const auto needs_own = [&] {
+    if (!saved || saved->community_recipe.id.empty()) return false;
+    if (saved->community_recipe.game.valid()) return true;
+    const auto load = LoadCommunityRecipe(c, saved->community_recipe.revision);
+    return load.recipe && rt::IsSettingsOnlyRecipe(*load.recipe);
+  };
+  if (needs_own() && !ShippedRecipeFor(c, GameOf(request), request.runtime_number) &&
       !GeneratedRecipeFor(c, GameOf(request), request.runtime_number)) {
     std::string ignored;
     GenerateRecipeForPrepare(c, request, &ignored, true);
