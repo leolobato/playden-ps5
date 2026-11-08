@@ -185,6 +185,9 @@ struct GameRecipe {
   std::map<std::string, std::string> defaults;  // setting id -> value
   std::set<std::string> locked;                 // setting ids the player cannot change
   std::string detected;  // generated recipes: what the game's files showed (GameDefaults::summary)
+  // A settings-only community recipe filled from a generated recipe (FillSettingsOnlyRecipe): the generated recipe's
+  // launch rules apply to the fields it took (UsesGeneratedLaunch). Never in a file; not serialized.
+  bool generated_launch = false;
   int defaults_revision = 0;  // generated recipes: the DefaultsRevision of the defaults above
   // Values the bottle's user.reg gets when the game's files are prepared, as a Steam install
   // script's would be (docs/community-recipes.md): strings under HKEY_CURRENT_USER.
@@ -437,6 +440,10 @@ bool ParseGameSettingsRecord(std::string_view json, GameSettingsRecord* record, 
 std::optional<std::uint32_t> ParseSteamAppId(std::string_view text);
 // The recipe as JSON that ParseGameRecipe reads back.
 std::string SerializeGameRecipe(const GameRecipe& recipe);
+// Whether a recipe's program, arguments and overrides are a generated recipe's, which BuildEffectiveSettings completes
+// (the DXVK overrides that follow Graphics, Direct3D 12 arguments, Steam launch options that pick another graphics
+// API): a generated recipe, or a settings-only community recipe filled from one.
+bool UsesGeneratedLaunch(const GameRecipe& recipe);
 
 // Games without a shipped recipe get one generated from Steam's Windows launch options.
 // Its id is playden::GeneratedRecipeId(game); it starts the first launch entry with the game's own

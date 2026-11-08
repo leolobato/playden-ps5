@@ -789,8 +789,10 @@ std::vector<std::string> SplitDllOverrides(const std::string& list) {
   return entries;
 }
 
+bool UsesGeneratedLaunch(const GameRecipe& recipe) { return IsGeneratedRecipeId(recipe.id) || recipe.generated_launch; }
+
 bool IsGraphicsDllOverride(const GameRecipe& recipe, const std::string& entry) {
-  return IsGeneratedRecipeId(recipe.id) && entry == kDxvkOverrides;
+  return UsesGeneratedLaunch(recipe) && entry == kDxvkOverrides;
 }
 
 bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* preset,
@@ -1001,7 +1003,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     ReplaceAll(&required.value, "--rendering-driver opengl3", "--rendering-driver vulkan");
   // Generated recipes ask Unity and Unreal for Direct3D 11, which DXVK draws. With Direct3D 12 on vkd3d-proton they
   // ask for Direct3D 12 instead (CULTIC stays black on 11). Arguments the player typed are left as they are.
-  if (IsGeneratedRecipeId(recipe.id) && required.source != ValueSource::kUser &&
+  if (UsesGeneratedLaunch(recipe) && required.source != ValueSource::kUser &&
       out.values["d3d12"].value == "vkd3d-proton") {
     ReplaceAll(&required.value, "-force-d3d11", "-force-d3d12");
     ReplaceAll(&required.value, "-dx11", "-dx12");
@@ -1017,7 +1019,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   // A generated recipe picks the graphics API in Required arguments; a Steam launch option that picks one too is
   // dropped from it, or the engine stops: Severed Steel's "-noraytracing -d3d12" next to "-dx11" ends in "-d3d12,
   // -d3d11, -vulkan, and -opengl are mutually exclusive". Required arguments stay the one place to change it.
-  if (IsGeneratedRecipeId(recipe.id) && !launch_arguments.empty()) {
+  if (UsesGeneratedLaunch(recipe) && !launch_arguments.empty()) {
     static const std::vector<std::vector<std::string>> api_words = {
         {"-d3d11", "-dx11", "-d3d12", "-dx12", "-d3d10", "-dx10", "-vulkan", "-opengl", "-opengl4"},
         {"-force-d3d9", "-force-d3d11", "-force-d3d12", "-force-vulkan", "-force-glcore", "-force-gles",
@@ -1072,14 +1074,14 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     };
     // A generated recipe reaches the bottle's DXVK through overrides that follow the graphics value,
     // so a player who changes graphics never keeps DXVK half on.
-    if (IsGeneratedRecipeId(recipe.id) && out.graphics == "dxvk") list = list.empty() ? std::string(kDxvkOverrides)
+    if (UsesGeneratedLaunch(recipe) && out.graphics == "dxvk") list = list.empty() ? std::string(kDxvkOverrides)
                                                                                      : kDxvkOverrides + (";" + list);
     append(out.values["library_overrides"].value);
     overrides_row.value = list;
     overrides_row.source = list.empty() ? ValueSource::kPlayden
                          : out.values["library_overrides"].source == ValueSource::kUser ? ValueSource::kUser
                                                                                          : ValueSource::kRecipe;
-  } else if (IsGeneratedRecipeId(recipe.id)) {
+  } else if (UsesGeneratedLaunch(recipe)) {
     // The player's list never holds the DXVK entry: it follows graphics here as well, so a list
     // saved while DXVK was on does not keep it after the player switches graphics.
     std::string list;

@@ -3358,7 +3358,9 @@ const rt::CommunityRecipe* RuntimeHost::BoundCommunityRecipe(Composition& c, con
   // Kept for the session, so pointers stay valid; updated in place when the copy or Playden's own recipe changed.
   auto& bound = c.bound_community[{loaded.recipe.revision, runtime_number}];
   if (!bound) bound = std::move(fresh);
-  else if (rt::SerializeGameRecipe(bound->recipe) != rt::SerializeGameRecipe(fresh->recipe)) *bound = std::move(*fresh);
+  else if (rt::SerializeGameRecipe(bound->recipe) != rt::SerializeGameRecipe(fresh->recipe) ||
+           bound->recipe.generated_launch != fresh->recipe.generated_launch)
+    *bound = std::move(*fresh);
   return bound.get();
 }
 

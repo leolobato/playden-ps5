@@ -116,6 +116,8 @@ std::string FillSettingsOnlyRecipe(GameRecipe* recipe, const GameRecipe& own,
   recipe->dll_overrides = own.dll_overrides;
   recipe->arguments = own.arguments;
   recipe->resolution_arguments = own.resolution_arguments;
+  // The fields are completed as own's are (the DXVK overrides a generated recipe leaves to Graphics, its arguments).
+  recipe->generated_launch = UsesGeneratedLaunch(own);
   if (recipe->graphics.empty()) recipe->graphics = own.graphics;
   auto& defaults = recipe->defaults;
   // The copy's program decides the architecture.

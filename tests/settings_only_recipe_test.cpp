@@ -213,6 +213,28 @@ void Apply() {
   // Playden's recipe itself is not changed.
   CHECK(own.launch_entries[0].arguments.empty() && own.launch_entries.size() == 2);
 
+  // A generated recipe leaves its DXVK overrides to Graphics and asks Unity for Direct3D 11: filled from one, the
+  // recipe gets both completed as the generated recipe would, here with vkd3d-proton asking for Direct3D 12.
+  {
+    auto generated = own;
+    generated.dll_overrides.clear();
+    CHECK(IsGeneratedRecipeId(generated.id));
+    community = Read("\"d3d12\": \"vkd3d-proton\"");
+    FillSettingsOnlyRecipe(&community.recipe, generated, copy);
+    CHECK(UsesGeneratedLaunch(community.recipe));
+    CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error));
+    CHECK(Has(settings.dll_overrides, "d3d8,d3d9,d3d10core,d3d11,dxgi=n") && Has(settings.arguments, "-force-d3d12") &&
+          !Has(settings.arguments, "-force-d3d11"));
+    // Playden's shipped recipe names its overrides itself: nothing is added.
+    auto shipped = generated;
+    shipped.id = "steam-274520-darkwood-v1";
+    community = Read("\"controller_preset\": \"mouse\"");
+    FillSettingsOnlyRecipe(&community.recipe, shipped, copy);
+    CHECK(!UsesGeneratedLaunch(community.recipe));
+    CHECK(BuildEffectiveSettings(community.recipe, nullptr, {}, kit, &settings, &error) &&
+          !Has(settings.dll_overrides, "d3d8,d3d9") && Has(settings.arguments, "-force-d3d11"));
+  }
+
   // Identity: the game, id and revision, with no program of its own.
   community = Read("\"controller_preset\": \"mouse\"");
   FillSettingsOnlyRecipe(&community.recipe, own, copy);
