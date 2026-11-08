@@ -1564,7 +1564,12 @@ std::string SerializeIniValues(const std::vector<IniValue>& values, const std::s
 
 }  // namespace
 
-bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* reason) {
+namespace {
+
+// A recipe file. settings_only: a community recipe of community.format_version 2, which has no program of its own:
+// Playden fills its program-shaped fields from its own recipe for the copy (FillSettingsOnlyRecipe), so the file may
+// not carry them, and its launch_option default is checked once they are filled.
+bool ParseRecipeFile(std::string_view text, GameRecipe* recipe, std::string* reason, bool settings_only) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);
     return false;
@@ -1594,6 +1599,8 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
   }
   out.version = static_cast<int>(parsed_version);
   out.app_id = static_cast<std::uint32_t>(parsed_app);
+  // Empty until filled from Playden's own recipe; a graphics field the file sets wins over Playden's.
+  if (settings_only) out.architecture.clear(), out.graphics.clear();
   // Games from other stores name their store and game; absent, the recipe is for Steam's app_id.
   if (!community && (store == nullptr) != (game == nullptr)) return fail("recipe needs both store and game, or neither");
   if (store && !community) {
@@ -1616,9 +1623,23 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
       return fail("recipe has a field of the wrong type");
     out.defaults_revision = static_cast<int>(parsed_revision);
   }
+  if (settings_only) {
+    for (const char* field : {"launch_entries", "architecture", "runtime", "prefix", "detected", "dll_overrides",
+                              "arguments", "resolution_arguments"})
+      if (root->get(field))
+        return fail(std::string("a settings-only recipe (community.format_version 2) can't carry ") + field +
+                    ": Playden takes it from its own recipe for the copy");
+    // What the bottle and the game folder get belongs to a recipe that names its program.
+    for (const char* field : {"registry", "ini", "game_files", "steam_api_copies"})
+      if (root->get(field))
+        return fail(std::string("a settings-only recipe (community.format_version 2) can't carry ") + field +
+                    ": only a recipe with its own program (format_version 1) can");
+  }
   const auto* entries = root->get("launch_entries");
-  if (!entries || !entries->array() || entries->array()->empty()) return fail("recipe needs launch_entries");
-  for (const auto& item : *entries->array()) {
+  if (!settings_only && (!entries || !entries->array() || entries->array()->empty()))
+    return fail("recipe needs launch_entries");
+  static const json::Value::Array kNoEntries;
+  for (const auto& item : entries ? *entries->array() : kNoEntries) {
     LaunchEntry entry;
     if (!item.object() || !StringField(item, "id", &entry.id) || !StringField(item, "label", &entry.label) ||
         !StringField(item, "executable", &entry.executable) ||
@@ -1713,15 +1734,29 @@ bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* rea
     }
   }
   if (out.dll_overrides.size() && !IsProsperoDllOverrides(out.dll_overrides)) return fail("recipe dll_overrides are invalid");
-  if (out.architecture != "pe32" && out.architecture != "pe64") return fail("architecture must be pe32 or pe64");
+  if (!settings_only && out.architecture != "pe32" && out.architecture != "pe64")
+    return fail("architecture must be pe32 or pe64");
   for (const auto& [id, value] : out.defaults) {
     std::string why;
+    // A settings-only recipe's launch option names one of the entries Playden fills in.
+    if (settings_only && id == "launch_option") {
+      if (value.empty() || HasControl(value)) return fail("default launch_option: not a launch option id");
+      continue;
+    }
     if (!ValidateSettingValue(out, id, value, &why)) return fail("default " + id + ": " + why);
   }
-  if (!ValidateSettingValue(out, "graphics", out.graphics, nullptr)) return fail("unknown graphics mode");
+  // A settings-only recipe without graphics takes Playden's.
+  if ((!settings_only || !out.graphics.empty()) && !ValidateSettingValue(out, "graphics", out.graphics, nullptr))
+    return fail("unknown graphics mode");
   if (HasControl(out.arguments) || HasControl(out.resolution_arguments)) return fail("arguments contain a control character");
   *recipe = std::move(out);
   return true;
+}
+
+}  // namespace
+
+bool ParseGameRecipe(std::string_view text, GameRecipe* recipe, std::string* reason) {
+  return ParseRecipeFile(text, recipe, reason, false);
 }
 
 bool RetiredSetting(std::string_view id) { return id == "opengl_thread"; }
@@ -3822,16 +3857,26 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community) {
   return text + "\n  }\n}\n";
 }
 
-bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std::string* reason) {
+bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std::string* reason, int newest_format) {
   const auto fail = [&](std::string why) {
     if (reason) *reason = std::move(why);
     return false;
   };
   CommunityRecipe out;
-  if (!ParseGameRecipe(text, &out.recipe, reason)) return false;
+  // The version first: a file this build can't read is refused for that alone, whatever else it holds.
+  const auto root = json::parse(text);
+  if (!root || !root->object()) return fail("recipe is not a JSON object");
+  const auto* meta = root->get("community");
+  std::uint64_t format = 0;
+  if (!meta || !meta->object() || !ExactUnsigned(meta->get("format_version"), 1000, &format) || format < 1 ||
+      format > static_cast<std::uint64_t>(newest_format))
+    return fail(newest_format == 1 ? "community recipe needs community.format_version 1"
+                                   : "community recipe needs community.format_version 1 to " + std::to_string(newest_format));
+  out.format_version = static_cast<int>(format);
+  const bool settings_only = out.format_version == kCommunitySettingsOnlyFormat;
+  if (!ParseRecipeFile(text, &out.recipe, reason, settings_only)) return false;
   if (!out.recipe.steam_api_copies.empty()) return fail("a community recipe can't carry steam_api_copies");
   if (!out.recipe.game_files.empty()) return fail("a community recipe can't carry game_files");
-  const auto root = json::parse(text);
   // ParseGameRecipe read the game object's shape; app_id and steam_appid are refused there.
   const auto* game = root->get("game");
   if (!game || !game->object()) return fail("community recipe needs \"game\": {\"store\", \"key\", \"name\"}");
@@ -3847,11 +3892,14 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
       return fail("made_on must be steam, epic, gog or imported");
     out.made_on = *made_on->string();
   }
-  if (!StringField(*root, "executable", &out.executable)) return fail("community recipe needs executable");
-  const auto* meta = root->get("community");
-  std::uint64_t format = 0;
-  if (!meta || !meta->object() || !ExactUnsigned(meta->get("format_version"), 1000, &format) || format != 1)
-    return fail("community recipe needs community.format_version 1");
+  // The program it is for, in format 1; a settings-only recipe has none: it is for its game alone.
+  if (settings_only) {
+    if (root->get("executable"))
+      return fail("a settings-only recipe (community.format_version 2) can't carry executable: Playden takes the "
+                  "program from its own recipe for the copy");
+  } else if (!StringField(*root, "executable", &out.executable)) {
+    return fail("community recipe needs executable");
+  }
   if (out.recipe.id != CommunityRecipeIdFor(out.game, {}) && !CommunityRecipeSlug(out.recipe.id, out.game))
     return fail("recipe_id must be community-<store>-<key>-<slug> for the game object's store and key, at most 128 "
                 "bytes, with a slug of 1-32 lowercase letters, digits and single hyphens");
@@ -3874,6 +3922,10 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
     if (!base->object() || !StringField(*base, "repository", &out.base_repository) ||
         !StringField(*base, "path", &out.base_path) || !StringField(*base, "revision", &out.base_revision, false))
       return fail("base needs repository and path");
+  }
+  if (settings_only) {
+    *community = std::move(out);
+    return true;
   }
   for (const auto& entry : out.recipe.launch_entries)
     if (entry.executable == out.executable) {

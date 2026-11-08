@@ -641,16 +641,26 @@ bool ParseProfileSidecar(std::string_view json, CommunityPreset* community, std:
 
 // A game's effective settings in the community recipe format (docs/community-recipes.md):
 // a Playden recipe that ParseGameRecipe reads, plus who tested it where.
+// community.format_version: 1, a recipe with its program (launch_entries and executable), as Playden shares it; 2, a
+// settings-only recipe, whose program and program-shaped fields come from Playden's own recipe for the copy
+// (FillSettingsOnlyRecipe, runtime/recipe_choice.h). This build reads 1 to kNewestCommunityFormat; a file of another
+// version is refused alone, so a release can carry recipes that only newer builds read.
+inline constexpr int kCommunitySettingsOnlyFormat = 2;
+inline constexpr int kNewestCommunityFormat = 2;
+
 struct CommunityRecipe {
   // id community-<store>-<key>-<slug>; the effective program, arguments, overrides and settings. app_id and game are
   // not in the file: they name the installed game it is applied to (BindCommunityRecipe), 0 and none until then.
+  // A settings-only recipe has no launch entries, architecture or program fields until it is filled.
   GameRecipe recipe;
+  int format_version = 1;       // community.format_version
   GameRef game;                 // the game it is for ("game": {"store", "key", "name"})
   std::string game_name;        // that game's name as the sharer's store or folder showed it (IsGameName)
   // The store of the copy it was made with, when not game.store ("imported" for an imported copy shared under its
   // Steam app ID); empty otherwise.
   std::string made_on;
-  std::string executable;       // identity: the program, relative to the install root
+  // Identity: the program, relative to the install root; empty in a settings-only recipe, which is for its game alone.
+  std::string executable;
   std::string title;            // what the chooser shows, 1-60 printable characters; empty in an export
   // The kit version it was tested with ("0.12", "0.12-dev.20261022.1"): information, not a requirement.
   std::string tested_kit;
@@ -680,7 +690,13 @@ std::string SerializeCommunityRecipe(const CommunityRecipe& community);
 // Reads a community recipe leniently: an export (no slug, no title, locks) and older files (a kit
 // id in min_kit) read too. CommunityRecipeRefusals (runtime/community_rules.h) holds the strict
 // rules the recipes repository and the console apply.
-bool ParseCommunityRecipe(std::string_view json, CommunityRecipe* community, std::string* reason);
+// newest_format is the newest community.format_version read; a smaller one reads as an older build does.
+bool ParseCommunityRecipe(std::string_view json, CommunityRecipe* community, std::string* reason,
+                          int newest_format = kNewestCommunityFormat);
+// Whether a community recipe leaves its program to Playden (community.format_version 2).
+inline bool IsSettingsOnlyRecipe(const CommunityRecipe& community) {
+  return community.format_version == kCommunitySettingsOnlyFormat;
+}
 
 // Whether the kit's runtime has every newer profile feature the sidecar declares in
 // requires.prospero_win: the kit capability names without "settings-" (profile-environment,
