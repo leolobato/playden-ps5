@@ -1123,7 +1123,8 @@ void Controller::TickRuntime() {
     };
     const auto ready = [](const RuntimeInstallView* view) {
       return view && view->state == runtime::PreparationState::kReady && !view->recovery_pending &&
-             view->title_current && !runtime::AdmissionNeedsRepair(view->admission) && !view->files_changed;
+             view->title_current && !runtime::AdmissionNeedsRepair(view->admission) && !view->files_changed &&
+             view->title_icon_current;
     };
     const auto refusal_of = [&prepared](GameId id) {
       const auto found = prepared.refusals.find(NumberIn(prepared, id));
@@ -1133,7 +1134,8 @@ void Controller::TickRuntime() {
     // left behind updates and stops on a dialog, since the player may only have wanted the update.
     const auto needs_work = [](const RuntimeInstallView* view) {
       return view && view->state == runtime::PreparationState::kReady && !view->recovery_pending &&
-             (!view->title_current || runtime::AdmissionNeedsRepair(view->admission) || view->files_changed);
+             (!view->title_current || runtime::AdmissionNeedsRepair(view->admission) || view->files_changed ||
+              !view->title_icon_current);
     };
     // A record left before Ready by an earlier session, with no journal to resume, is what the
     // game page calls "Not prepared": Play prepares it too, instead of asking the launcher.
@@ -1164,7 +1166,8 @@ void Controller::TickRuntime() {
         else if (needs_work(view)) {
           pending.words = !view->title_current ? "Updating runtime kit…"
                           : runtime::AdmissionNeedsRepair(view->admission) ? "Repairing game setup…"
-                                                    : "Setting up the updated game…";
+                          : view->files_changed ? "Setting up the updated game…"
+                                                : "Updating the game's icon…";
           pending.stops_when_ready = !view->title_current;
         }
         std::erase(auto_prepare_, id);
@@ -1642,10 +1645,15 @@ void Controller::TickRuntime() {
       game.runtime_current = record->runtime_current;
       game.save_backups = record->save_backups;
       game.latest_save_backup = record->latest_save_backup;
+      // The game's own icon file (a GOG copy's), as its title's icon uses it, falling back to its program's icon;
+      // else its program's icon.
+      std::string program_path;
       if (auto program = record->launch_path; !program.empty() && !record->install_path.empty()) {
         std::replace(program.begin(), program.end(), '\\', '/');
-        game.program_icon = ProgramIconSource(record->install_path + "/" + program);
+        program_path = record->install_path + "/" + program;
       }
+      if (!record->title_icon_file.empty()) game.program_icon = ProgramIconSource(record->title_icon_file, program_path);
+      else if (!program_path.empty()) game.program_icon = ProgramIconSource(program_path);
     }
     if (const auto answer = snapshot.activity.find(NumberIn(snapshot, id)); answer != snapshot.activity.end())
       game.activity = answer->second.first == runtime::NativeActivity::kStopped ? TitleActivity::Stopped

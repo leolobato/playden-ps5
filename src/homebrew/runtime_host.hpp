@@ -120,11 +120,13 @@ struct RuntimeHostConfig {
   // startup. The wrapper writes it inside the private bottle tree, which only
   // the app user can read.
   std::function<void(const std::string& title_id, const std::string& text)> title_log;
-  // The game's PS5 title icon: a 512x512 PNG made from its store artwork, else from
-  // the icon of `program` (the program the title starts, a host path; empty when
-  // unknown), or nothing (the kit's icon stays). Runs on the worker; may use the
-  // network. Named by the game, so a runtime number never reaches a store's artwork.
-  std::function<std::optional<std::string>(const GameId& game, const std::filesystem::path& program)> title_icon;
+  // The game's PS5 title icon: a 512x512 PNG made from its store artwork, else from the
+  // game's own icon file `icon_file` (a GOG copy's .ico, homebrew/gog_icon.hpp; a host path,
+  // empty when it has none), else from the icon of `program` (the program the title starts,
+  // a host path; empty when unknown), or nothing (the kit's icon stays). Runs on the worker;
+  // may use the network. Named by the game, so a runtime number never reaches a store's artwork.
+  std::function<std::optional<std::string>(const GameId& game, const std::filesystem::path& program,
+                                           const std::filesystem::path& icon_file)> title_icon;
   // The DLC of a Steam game this account owns, from the Library's license read and app lookups
   // (EntitledLibraryBackend::DlcOf). Each prepare adds them to what the download recorded, so DLC past
   // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator; DLC the download
@@ -203,6 +205,12 @@ struct RuntimeInstallView {
   bool awaiting_registration = false;
   // False when a Ready title was made from an earlier kit; Prepare updates it.
   bool title_current = true;
+  // The game's own icon file (a GOG copy's .ico, homebrew/gog_icon.hpp; console path), empty when it has none.
+  // The library's poster and the title's icon both use it when the store has no cover.
+  std::string title_icon_file;
+  // False when the title's icon was made before the game's icon file was known (or from another one):
+  // Prepare (or Play) writes it again. Not a runtime kit update.
+  bool title_icon_current = true;
   // A Ready game whose files an update changed since its launch was set up (the update's marker in its
   // folder): Play refuses it until Prepare has made its launch again from the new files and published it.
   bool files_changed = false;
@@ -850,6 +858,12 @@ class RuntimeHost {
   static bool KitDeclaresVariableRefresh(const Composition& composition);
   // The title's written parameters declare VRR support exactly when the kit can (an unreadable layout counts as current).
   bool TitleVariableRefreshCurrent(const Composition& composition, const runtime::RuntimeInstall& record) const;
+  // The game's own icon file name in its folder (homebrew/gog_icon.hpp), empty when it has none.
+  std::string GameIconFile(const runtime::RuntimeInstall& record) const;
+  // The title's icon was written for the game's icon file it now has (none counts for metadata written
+  // before sources were recorded). `icon_file`: GameIconFile(record).
+  bool TitleIconCurrent(const Composition& composition, const runtime::RuntimeInstall& record,
+                        const std::string& icon_file) const;
   // Writes the game's own title name (and icon) for its PS5 title.
   runtime::PackageActionResult WriteTitleMetadata(Composition& composition, const runtime::RuntimeInstall& record,
                                                   const std::string& title_name);

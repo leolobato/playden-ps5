@@ -140,6 +140,20 @@ Bytes Png(int w, int h, std::uint32_t rgba) {
   return png;
 }
 
+// An .ico file: ICONDIR, one 16-byte entry per image, then the images in order.
+Bytes IcoFile(const std::vector<Icon>& icons) {
+  Bytes out;
+  Add16(&out, 0); Add16(&out, 1); Add16(&out, static_cast<std::uint32_t>(icons.size()));
+  std::uint32_t offset = static_cast<std::uint32_t>(6 + 16 * icons.size());
+  for (const auto& icon : icons) {
+    out += char(icon.width); out += char(icon.height); out += '\0'; out += '\0';
+    Add16(&out, 1); Add16(&out, icon.bits); Add32(&out, static_cast<std::uint32_t>(icon.data.size())); Add32(&out, offset);
+    offset += static_cast<std::uint32_t>(icon.data.size());
+  }
+  for (const auto& icon : icons) out += icon.data;
+  return out;
+}
+
 std::string Write(const fs::path& path, const Bytes& bytes) {
   FILE* file = std::fopen(path.c_str(), "wb");
   CHECK(file);
@@ -240,13 +254,72 @@ int main() {
     CHECK(icon && icon->width == 4);
   }
 
+  // An .ico file (a GOG copy's goggame-<id>.ico): its largest image, PNG or BMP, as a program's icon reads.
+  {
+    icon = ReadIconFile(Write(root / "Game/Both.ico", IcoFile({
+        {16, 16, 32, Dib(16, 16, 32, std::vector<std::uint32_t>(256, 0x00ff00ffu))},
+        {0, 0, 32, Png(256, 256, 0xff000080u)},
+        {48, 48, 32, Dib(48, 48, 32, std::vector<std::uint32_t>(48 * 48, 0x0000ffffu))}})));
+    CHECK(icon && icon->width == 256 && icon->height == 256 && Pixel(*icon, 10, 10)[0] == 255 && Pixel(*icon, 10, 10)[3] == 0x80);
+    icon = ReadIconFile(Write(root / "Game/Bands.ico", IcoFile({{4, 4, 32, Dib(4, 4, 32, bands)}, {2, 2, 32, Dib(2, 2, 32, {0, 0, 0, 0})}})));
+    CHECK(icon && icon->width == 4 && Pixel(*icon, 0, 0)[0] == 255 && Pixel(*icon, 0, 0)[3] == 0x80);
+    icon = ReadIconFile(Write(root / "Game/Old.ico", IcoFile({{8, 2, 4, Dib(8, 2, 4, indexes, {0x000000ffu, 0x00ff00ffu}, holes)}})));
+    CHECK(icon && icon->width == 8 && Pixel(*icon, 1, 0)[1] == 255 && Pixel(*icon, 7, 0)[3] == 0);
+    // A broken or oversized largest image falls back to the next one; with none left, nothing.
+    icon = ReadIconFile(Write(root / "Game/Fallback.ico", IcoFile({
+        {0, 0, 32, Bytes("\x89PNG\r\n\x1a\nbroken", 14)}, {0, 0, 32, Png(600, 2, 0xff0000ffu)}, {4, 4, 32, Dib(4, 4, 32, bands)}})));
+    CHECK(icon && icon->width == 4);
+    CHECK(!ReadIconFile(Write(root / "Game/BigPng.ico", IcoFile({{0, 0, 32, Png(600, 2, 0xff0000ffu)}}))));
+    auto big = Dib(4, 4, 32, bands);
+    Put32(&big, 4, 4096); Put32(&big, 8, 8192);
+    CHECK(!ReadIconFile(Write(root / "Game/BigBmp.ico", IcoFile({{4, 4, 32, big}}))));
+    {  // An image claiming more bytes than an icon may have is not read.
+      auto huge = IcoFile({{4, 4, 32, Dib(4, 4, 32, bands)}});
+      Put32(&huge, 6 + 8, static_cast<std::uint32_t>(kMaxProgramIconBytes + 1));
+      CHECK(!ReadIconFile(Write(root / "Game/Huge.ico", huge)));
+    }
+    // Malformed: no images, the wrong type, too many entries, an image past the end; every truncation reads safely.
+    CHECK(!ReadIconFile(Write(root / "Game/Empty.ico", IcoFile({}))));
+    auto cursor = IcoFile({{4, 4, 32, Dib(4, 4, 32, bands)}});
+    Put16(&cursor, 2, 2);
+    CHECK(!ReadIconFile(Write(root / "Game/Cursor.ico", cursor)));
+    auto many = IcoFile({{4, 4, 32, Dib(4, 4, 32, bands)}});
+    Put16(&many, 4, 0xffff);
+    CHECK(!ReadIconFile(Write(root / "Game/Many.ico", many)));
+    auto past = IcoFile({{4, 4, 32, Dib(4, 4, 32, bands)}});
+    Put32(&past, 6 + 12, 0x7fffffffu);
+    CHECK(!ReadIconFile(Write(root / "Game/Past.ico", past)));
+    CHECK(!ReadIconFile(Write(root / "Game/Text.ico", "not an icon")));
+    CHECK(!ReadIconFile((root / "Game/Missing.ico").string()));
+    const auto good_ico = IcoFile({{0, 0, 32, Png(32, 32, 0xff0000ffu)}, {4, 4, 32, Dib(4, 4, 32, bands)}});
+    for (std::size_t size = 0; size < good_ico.size(); size += 3)
+      (void)ReadIconFile(Write(root / "Game/Cut.ico", good_ico.substr(0, size)));
+    // A symbolic link is not followed, as the file or as one of its folders; a FIFO doesn't block.
+    fs::create_symlink(root / "Game/Bands.ico", root / "Game/Link.ico");
+    CHECK(!ReadIconFile((root / "Game/Link.ico").string()));
+    CHECK(!ReadIconFile((root / "Linked/Bands.ico").string()) && ReadIconFile((root / "Game/Bands.ico").string()));
+    CHECK(::mkfifo((root / "Game/Pipe.ico").c_str(), 0600) == 0);
+    CHECK(!ReadIconFile((root / "Game/Pipe.ico").string()));
+    CHECK(!ReadIconFile("relative/Game.ico"));
+  }
+
   // The artwork source carries an absolute .exe path, nothing else.
   CHECK(ProgramIconSource("/data/playden-games/1/Game.exe") == "program-icon:/data/playden-games/1/Game.exe");
   CHECK(ProgramIconSource("").empty());
   CHECK(ProgramIconPath("program-icon:/data/playden-games/1/Game.EXE") == std::string("/data/playden-games/1/Game.EXE"));
+  // Or the game's own .ico file.
+  CHECK(ProgramIconPath("program-icon:/data/playden-games/1/goggame-1.ICO") == std::string("/data/playden-games/1/goggame-1.ICO"));
   for (const char* bad : {"program-icon:", "program-icon:relative/Game.exe", "program-icon:/a/../b/Game.exe",
-                          "program-icon:/a//Game.exe", "program-icon:/a/Game.dll", "https://x/Game.exe", "program-icon:/./Game.exe"})
+                          "program-icon:/a//Game.exe", "program-icon:/a/Game.dll", "https://x/Game.exe", "program-icon:/./Game.exe",
+                          "program-icon:/a/Game.exe\n/a/Other.exe"})
     CHECK(!ProgramIconPath(bad));
+  // A .ico names the program to fall back to.
+  CHECK(ProgramIconSource("/a/goggame-1.ico", "/a/Game.exe") == "program-icon:/a/goggame-1.ico\n/a/Game.exe");
+  CHECK(ProgramIconPath("program-icon:/a/goggame-1.ico\n/a/Game.exe") == std::string("/a/goggame-1.ico"));
+  CHECK(ProgramIconFallbackPath("program-icon:/a/goggame-1.ico\n/a/Game.exe") == std::string("/a/Game.exe"));
+  CHECK(!ProgramIconFallbackPath("program-icon:/a/goggame-1.ico"));
+  CHECK(!ProgramIconFallbackPath("program-icon:/a/goggame-1.ico\n/a/../Game.exe"));
+  CHECK(!ProgramIconFallbackPath("program-icon:/a/goggame-1.ico\n/a/other.ico"));
 
   // The backend reads program icons from the game's files, under the desktop prefix, and passes on the rest.
   FakeBackend next;
@@ -256,6 +329,13 @@ int main() {
   icon = backend.Load({1, game, ProgramIconSource("/Game/Bands.exe")}, cancel);
   CHECK(icon && icon->width == kProgramIconPosterWidth && icon->height == kProgramIconPosterHeight && next.asked.empty());
   CHECK(!backend.Load({1, game, ProgramIconSource("/Game/Missing.exe")}, cancel) && next.asked.empty());
+  // An .ico source is read as an icon file, not as a program.
+  icon = backend.Load({1, game, ProgramIconSource("/Game/Both.ico")}, cancel);
+  CHECK(icon && icon->width == kProgramIconPosterWidth && icon->height == kProgramIconPosterHeight && next.asked.empty());
+  CHECK(!backend.Load({1, game, ProgramIconSource("/Game/Text.ico")}, cancel) && next.asked.empty());
+  // One that can't be read falls back to its program's icon, as the title's icon does.
+  icon = backend.Load({1, game, ProgramIconSource("/Game/Text.ico", "/Game/Bands.exe")}, cancel);
+  CHECK(icon && icon->width == kProgramIconPosterWidth && next.asked.empty());
   icon = backend.Load({1, game, "https://cdn.cloudflare.steamstatic.com/steam/apps/10/library_600x900.jpg"}, cancel);
   CHECK(icon && icon->width == 1 && next.asked.size() == 1);
 

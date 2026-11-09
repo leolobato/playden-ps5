@@ -105,11 +105,17 @@ public:
   // another build of this one): owner markers that name the install but not the admitted kit.
   // A setup stopped before Ready can't finish over it (cheap marker check).
   virtual bool SetupFromOtherKit(const RuntimeInstall &) { return false; }
+  // `icon_source` names where the icon came from (empty: the store's cover or the program's own icon);
+  // TitleIconSource gives it back, so a game whose source changed gets its icon again.
   virtual PackageActionResult WriteTitleMetadata(const RuntimeInstall &, const std::string &,
-                                                 const std::optional<std::string> &) {
+                                                 const std::optional<std::string> &,
+                                                 const std::string & /*icon_source*/ = {}) {
     return {PackageActionState::kFailed, "unsupported", "title metadata is unsupported"};
   }
   virtual bool TitleMetadataCurrent(const RuntimeInstall &) { return true; }
+  // The icon source the title metadata was written with (empty before sources were recorded); nothing
+  // without readable metadata.
+  virtual std::optional<std::string> TitleIconSource(const RuntimeInstall &) { return std::string(); }
   // Updates an installed title's immutable files to the admitted kit when only
   // the kit's file inventory changed (same kit id, variant, runtime, recipe).
   virtual PackageActionResult RefreshTitle(const RuntimeInstall &) {

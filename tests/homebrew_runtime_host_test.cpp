@@ -638,7 +638,7 @@ void PreparesExistingDownloadToReady() {
     ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
   };
   config.unix_time = [] { return std::int64_t{1760000000}; };
-  config.title_icon = [](const playden::GameId& game, const fs::path&) -> std::optional<std::string> {
+  config.title_icon = [](const playden::GameId& game, const fs::path&, const fs::path&) -> std::optional<std::string> {
     return game == playden::GameId::Steam(220) ? std::optional<std::string>("game-icon-png") : std::nullopt;
   };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
@@ -1237,7 +1237,9 @@ void RepairsBottleRegistryModes() {
   CHECK(chmod(title_param.c_str(), 0644) == 0);
   Write(title_param, Read(fixture.root / "kit/titles/variant/sce_sys/param.json"), 0644);
   auto named = config;
-  named.title_icon = [](const playden::GameId&, const fs::path&) -> std::optional<std::string> { return std::string("game-icon-png"); };
+  named.title_icon = [](const playden::GameId&, const fs::path&, const fs::path&) -> std::optional<std::string> {
+    return std::string("game-icon-png");
+  };
   RuntimeHost upgraded(named);
   CHECK(upgraded.Start());
   CHECK(!WaitFor(upgraded, Started).installs[0].title_current);
@@ -3490,10 +3492,14 @@ void LocalGameKeepsItsBottle() {
   config.removal_poll_interval = std::chrono::milliseconds(1);
   std::vector<playden::GameId> icons;
   std::vector<fs::path> icon_programs;
-  config.title_icon = [&icons, &icon_programs](const playden::GameId& game, const fs::path& program) -> std::optional<std::string> {
+  std::vector<fs::path> icon_files;
+  config.title_icon = [&icons, &icon_programs, &icon_files](const playden::GameId& game, const fs::path& program,
+                                                          const fs::path& icon_file) -> std::optional<std::string> {
+    icon_files.push_back(icon_file);
     icons.push_back(game);
     icon_programs.push_back(program);
-    return std::nullopt;
+    if (icon_file.empty()) return std::nullopt;
+    return std::optional<std::string>("icon-from-" + icon_file.filename().string());
   };
   config.unregister_title = [&fixture](const std::string&, const std::string&) {
     fixture.registered = false; fixture.submitted = false;
@@ -3535,6 +3541,64 @@ void LocalGameKeepsItsBottle() {
     CHECK(std::find(icons.begin(), icons.end(), local) != icons.end());  // named by game, not by number
     // With the program the title starts, on the host, for a game without cover art.
     CHECK(!icon_programs.empty() && icon_programs.back() == fixture.root / "data/playden-import/Imported/Bin/Game.exe");
+    // Without a GOG icon file: none for the poster or the title, and the marker records no source.
+    const auto icon_marker = games / ready.installs[0].install_id / "title-metadata/.generated";
+    const auto title_icon = fixture.root / "data/homebrew" / ready.installs[0].title_id / "sce_sys/icon0.png";
+    CHECK(icon_files.back().empty() && ready.installs[0].title_icon_file.empty() && ready.installs[0].title_icon_current);
+    CHECK(Read(icon_marker) == "2\n\n");
+    {
+      // Metadata written before icon sources were recorded stays current: Prepare writes nothing again.
+      Write(icon_marker, "1\n", 0600);
+      const auto written = icons.size();
+      const auto handled = host.Snapshot().prepares_handled;
+      host.Prepare(request);
+      const auto again = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.prepares_handled > handled; }, 60);
+      CHECK(again.refusals.count(number) && again.refusals.at(number) == "This game is already prepared.");
+      CHECK(again.installs[0].title_icon_current && icons.size() == written);
+      CHECK(Read(icon_marker) == "1\n");
+    }
+    {
+      // A GOG copy's files arrive: the game's icon file is now known, so the old marker is stale (not a runtime kit
+      // update), and the poster names the same file the title's icon is made from.
+      Write(game / "goggame-77.info", R"({"gameId":"77","rootGameId":"77","playTasks":[
+        {"category":"launcher","isPrimary":true,"path":"Launcher.exe","type":"FileTask"},
+        {"category":"game","icon":"goggame-77.ico","path":"Bin\\Game.exe","type":"FileTask"}]})", 0644);
+      Write(game / "goggame-77.ico", "ico", 0644);
+      host.RecheckInstalls();
+      const auto stale = WaitFor(host, [](const RuntimeSnapshot& s) {
+        return !s.installs.empty() && !s.installs[0].title_icon_current;
+      }, 30);
+      CHECK(stale.installs[0].title_current);
+      CHECK(stale.installs[0].title_icon_file == "/data/playden-import/Imported/goggame-77.ico");
+      const auto handled = stale.prepares_handled;
+      host.Prepare(request);
+      const auto rewritten = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.prepares_handled > handled; }, 60);
+      if (rewritten.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", rewritten.refusals.at(number).c_str());
+      CHECK(!rewritten.refusals.count(number) && rewritten.installs[0].title_icon_current && rewritten.installs[0].title_current);
+      CHECK(icon_files.back() == game / "goggame-77.ico");
+      // The poster's console path is the title icon's file, on the host.
+      CHECK(fixture.root / fs::path(rewritten.installs[0].title_icon_file).relative_path() == icon_files.back());
+      CHECK(Read(icon_marker) == "2\nfile:goggame-77.ico\n");
+      CHECK(Read(title_icon) == "icon-from-goggame-77.ico");
+      // Current now: a further Prepare writes nothing again.
+      const auto written = icons.size();
+      const auto next = rewritten.prepares_handled;
+      host.Prepare(request);
+      const auto quiet = WaitFor(host, [next](const RuntimeSnapshot& s) { return s.prepares_handled > next; }, 60);
+      CHECK(quiet.refusals.count(number) && quiet.refusals.at(number) == "This game is already prepared.");
+      CHECK(quiet.installs[0].title_icon_current && icons.size() == written);
+      // Another icon file (the .info now names another): stale again.
+      Write(game / "goggame-77.info", R"({"playTasks":[{"category":"game","icon":"other.ico","path":"Bin/Game.exe"}]})", 0644);
+      Write(game / "other.ico", "ico", 0644);
+      host.RecheckInstalls();
+      const auto changed = WaitFor(host, [](const RuntimeSnapshot& s) {
+        return !s.installs.empty() && !s.installs[0].title_icon_current;
+      }, 30);
+      CHECK(changed.installs[0].title_icon_file == "/data/playden-import/Imported/other.ico");
+      fs::remove(game / "goggame-77.info");
+      fs::remove(game / "goggame-77.ico");
+      fs::remove(game / "other.ico");
+    }
     CHECK(ready.generated_recipes.size() == 1 && ready.generated_recipes[0].id == playden::GeneratedRecipeId(local) &&
           playden::runtime::RecipeGame(ready.generated_recipes[0]) == local);
     // A store's name in the title name (any store's) is not the game's: the kept bottle names the game.

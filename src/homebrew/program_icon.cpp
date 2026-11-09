@@ -26,6 +26,16 @@ constexpr std::size_t kMaxGroupBytes = 64 * 1024;
 constexpr std::size_t kMaxSections = 96;
 constexpr std::size_t kMaxIconAttempts = 8;
 
+// Whether `path` ends in `extension` (lower case), in any case.
+bool HasExtension(std::string_view path, std::string_view extension) {
+  if (path.size() < extension.size()) return false;
+  for (std::size_t i = 0; i < extension.size(); ++i) {
+    const char c = path[path.size() - extension.size() + i];
+    if ((c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c) != extension[i]) return false;
+  }
+  return true;
+}
+
 std::uint16_t U16(const unsigned char* p) { return static_cast<std::uint16_t>(p[0] | (p[1] << 8)); }
 std::uint32_t U32(const unsigned char* p) {
   return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
@@ -247,6 +257,51 @@ std::optional<ArtworkImage> DecodeDib(const std::vector<unsigned char>& bytes) {
   return image;
 }
 
+// One image of an icon, as its directory lists it; `key` finds its bytes (a resource id, or an index).
+struct Choice {
+  std::uint32_t area = 0, bits = 0, key = 0;
+};
+
+// An icon image's bytes, PNG or BMP, decoded within the icon bounds; nothing when malformed or too large.
+std::optional<ArtworkImage> DecodeIconImage(const std::vector<unsigned char>& bytes) {
+  static constexpr unsigned char kPng[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+  std::optional<ArtworkImage> image;
+  if (bytes.size() >= sizeof(kPng) && std::memcmp(bytes.data(), kPng, sizeof(kPng)) == 0) {
+    // The size from its IHDR chunk first, so an oversized image is never decoded.
+    const auto big_endian = [&](std::size_t at) {
+      return (std::uint32_t{bytes[at]} << 24) | (std::uint32_t{bytes[at + 1]} << 16) |
+             (std::uint32_t{bytes[at + 2]} << 8) | bytes[at + 3];
+    };
+    if (bytes.size() < 24 || std::memcmp(bytes.data() + 12, "IHDR", 4) != 0 || big_endian(16) == 0 ||
+        big_endian(16) > kMaxProgramIconSide || big_endian(20) == 0 || big_endian(20) > kMaxProgramIconSide)
+      return std::nullopt;
+    image = DecodeArtwork(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+  } else {
+    image = DecodeDib(bytes);
+  }
+  if (image && image->width <= kMaxProgramIconSide && image->height <= kMaxProgramIconSide) return image;
+  return std::nullopt;
+}
+
+// The largest image that decodes, then the most colours: a malformed one falls back to the next, a few times
+// at most. `bytes` gives an image's bytes by its key.
+template <typename Bytes>
+std::optional<ArtworkImage> LargestImage(std::vector<Choice> choices, const Bytes& bytes) {
+  std::stable_sort(choices.begin(), choices.end(), [](const Choice& a, const Choice& b) {
+    return a.area != b.area ? a.area > b.area : a.bits > b.bits;
+  });
+  std::vector<std::uint32_t> tried;
+  for (const auto& choice : choices) {
+    if (tried.size() >= kMaxIconAttempts) break;
+    if (std::find(tried.begin(), tried.end(), choice.key) != tried.end()) continue;
+    tried.push_back(choice.key);
+    const std::optional<std::vector<unsigned char>> data = bytes(choice.key);
+    if (!data) continue;
+    if (auto image = DecodeIconImage(*data)) return image;
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 std::optional<ArtworkImage> ReadProgramIcon(const std::string& path) {
@@ -257,9 +312,6 @@ std::optional<ArtworkImage> ReadProgramIcon(const std::string& path) {
   // bits, bytes, the RT_ICON id); a width or height of 0 means 256.
   const auto group = resources->Data(kGroupIconType, std::nullopt, kMaxGroupBytes);
   if (!group || group->size() < 6 || U16(group->data() + 2) != 1) return std::nullopt;
-  struct Choice {
-    std::uint32_t area = 0, bits = 0, id = 0;
-  };
   std::vector<Choice> choices;
   const std::size_t count = std::min<std::size_t>(U16(group->data() + 4), (group->size() - 6) / 14);
   for (std::size_t i = 0; i < count; ++i) {
@@ -267,52 +319,71 @@ std::optional<ArtworkImage> ReadProgramIcon(const std::string& path) {
     const std::uint32_t width = row[0] ? row[0] : 256, height = row[1] ? row[1] : 256;
     choices.push_back({width * height, U16(row + 6), U16(row + 12)});
   }
-  std::stable_sort(choices.begin(), choices.end(), [](const Choice& a, const Choice& b) {
-    return a.area != b.area ? a.area > b.area : a.bits > b.bits;
+  return LargestImage(std::move(choices), [&](std::uint32_t id) {
+    return resources->Data(kIconType, id, kMaxProgramIconBytes);
   });
-  // The largest that decodes: a malformed image falls back to the next one, a few times at most.
-  std::vector<std::uint32_t> tried;
-  for (const auto& choice : choices) {
-    if (tried.size() >= kMaxIconAttempts) break;
-    if (std::find(tried.begin(), tried.end(), choice.id) != tried.end()) continue;
-    tried.push_back(choice.id);
-    const auto bytes = resources->Data(kIconType, choice.id, kMaxProgramIconBytes);
-    if (!bytes) continue;
-    static constexpr unsigned char kPng[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
-    std::optional<ArtworkImage> image;
-    if (bytes->size() >= sizeof(kPng) && std::memcmp(bytes->data(), kPng, sizeof(kPng)) == 0) {
-      // The size from its IHDR chunk first, so an oversized image is never decoded.
-      const auto big_endian = [&](std::size_t at) {
-        return (std::uint32_t{(*bytes)[at]} << 24) | (std::uint32_t{(*bytes)[at + 1]} << 16) |
-               (std::uint32_t{(*bytes)[at + 2]} << 8) | (*bytes)[at + 3];
-      };
-      if (bytes->size() < 24 || std::memcmp(bytes->data() + 12, "IHDR", 4) != 0 || big_endian(16) == 0 ||
-          big_endian(16) > kMaxProgramIconSide || big_endian(20) == 0 || big_endian(20) > kMaxProgramIconSide)
-        continue;
-      image = DecodeArtwork(std::vector<std::uint8_t>(bytes->begin(), bytes->end()));
-    } else {
-      image = DecodeDib(*bytes);
-    }
-    if (image && image->width <= kMaxProgramIconSide && image->height <= kMaxProgramIconSide) return image;
+}
+
+std::optional<ArtworkImage> ReadIconFile(const std::string& path) {
+  File file(path);
+  // ICONDIR: reserved, type 1, count, then 16-byte entries (width, height, colours, reserved, planes, bits,
+  // bytes, the image's file offset); a width or height of 0 means 256.
+  unsigned char head[6];
+  if (!file.Read(0, head, sizeof(head)) || U16(head) != 0 || U16(head + 2) != 1) return std::nullopt;
+  const std::size_t count = U16(head + 4);
+  if (count == 0 || count > kMaxDirectoryEntries) return std::nullopt;
+  std::vector<unsigned char> rows(count * 16);
+  if (!file.Read(sizeof(head), rows.data(), rows.size())) return std::nullopt;
+  std::vector<Choice> choices;
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto* row = &rows[i * 16];
+    const std::uint32_t width = row[0] ? row[0] : 256, height = row[1] ? row[1] : 256;
+    choices.push_back({width * height, U16(row + 6), static_cast<std::uint32_t>(i)});
   }
-  return std::nullopt;
+  return LargestImage(std::move(choices), [&](std::uint32_t index) -> std::optional<std::vector<unsigned char>> {
+    const auto* row = &rows[index * 16];
+    const std::uint32_t size = U32(row + 8), offset = U32(row + 12);
+    if (size == 0 || size > kMaxProgramIconBytes) return std::nullopt;
+    std::vector<unsigned char> bytes(size);
+    if (!file.Read(offset, bytes.data(), bytes.size())) return std::nullopt;
+    return bytes;
+  });
+}
+
+namespace {
+
+// An absolute path to a .exe (or a game's own .ico file), with no "." or ".." component.
+bool PlainIconPath(const std::string& path) {
+  if (path.size() < 5 || path.front() != '/' || path.find('\0') != std::string::npos) return false;
+  if (!HasExtension(path, ".exe") && !HasExtension(path, ".ico")) return false;
+  for (std::size_t start = 1; start <= path.size();) {
+    const auto end = std::min(path.find('/', start), path.size());
+    const auto part = std::string_view(path).substr(start, end - start);
+    if (part.empty() || part == "." || part == "..") return false;
+    start = end + 1;
+  }
+  return true;
+}
+
+}  // namespace
+
+std::optional<std::string> ProgramIconFallbackPath(const std::string& source) {
+  if (!ProgramIconPath(source)) return std::nullopt;
+  const auto line = source.find('\n');
+  if (line == std::string::npos) return std::nullopt;
+  auto program = source.substr(line + 1);
+  if (!PlainIconPath(program) || !HasExtension(program, ".exe")) return std::nullopt;
+  return program;
 }
 
 std::optional<std::string> ProgramIconPath(const std::string& source) {
   const std::size_t prefix = std::strlen(kProgramIconScheme);
   if (source.size() <= prefix || source.compare(0, prefix, kProgramIconScheme) != 0) return std::nullopt;
-  auto path = source.substr(prefix);
-  // An absolute path to a .exe, with no "." or ".." component.
-  if (path.front() != '/' || path.find('\0') != std::string::npos || path.size() < 5) return std::nullopt;
-  std::string extension = path.substr(path.size() - 4);
-  for (char& c : extension) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-  if (extension != ".exe") return std::nullopt;
-  for (std::size_t start = 1; start <= path.size();) {
-    const auto end = std::min(path.find('/', start), path.size());
-    const auto part = std::string_view(path).substr(start, end - start);
-    if (part.empty() || part == "." || part == "..") return std::nullopt;
-    start = end + 1;
-  }
+  const auto line = source.find('\n', prefix);
+  auto path = source.substr(prefix, line == std::string::npos ? std::string::npos : line - prefix);
+  // Only a .ico names a program to fall back to.
+  if (line != std::string::npos && !HasExtension(path, ".ico")) return std::nullopt;
+  if (!PlainIconPath(path)) return std::nullopt;
   return path;
 }
 
@@ -326,7 +397,11 @@ std::optional<ArtworkImage> ProgramIconArtworkBackend::Load(const ArtworkKey& ke
   if (!path) return next_.Load(key, cancel);
   if (cancel.load(std::memory_order_acquire)) return std::nullopt;
   // The library shows a poster made from the icon, shaped like the store's covers.
-  const auto icon = ReadProgramIcon(host_prefix_ + *path);
+  auto icon = HasExtension(*path, ".ico") ? ReadIconFile(host_prefix_ + *path) : ReadProgramIcon(host_prefix_ + *path);
+  // A game's .ico that can't be read falls back to its program's icon, as its title's icon does.
+  if (!icon)
+    if (const auto program = ProgramIconFallbackPath(key.source); program && !cancel.load(std::memory_order_acquire))
+      icon = ReadProgramIcon(host_prefix_ + *program);
   return icon ? ProgramIconArt(*icon, kProgramIconPosterWidth, kProgramIconPosterHeight) : std::nullopt;
 }
 

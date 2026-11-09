@@ -21,17 +21,25 @@ inline constexpr std::uint32_t kMaxProgramIconSide = 512;
 // a Windows program, has no icon, or is malformed; reads are bounded and never follow a symbolic link.
 std::optional<ArtworkImage> ReadProgramIcon(const std::string& path);
 
-// The program-icon source of the UI's artwork (homebrew/artwork.hpp): the program's console path behind
-// a prefix no store URL has. ProgramIconPath gives the path back, or nothing for any other source.
+// The largest image of an .ico file (a game's own icon file, homebrew/gog_icon.hpp), decoded as
+// ReadProgramIcon decodes a program's, with the same bounds.
+std::optional<ArtworkImage> ReadIconFile(const std::string& path);
+
+// The program-icon source of the UI's artwork (homebrew/artwork.hpp): the program's console path (or the
+// game's .ico file's) behind a prefix no store URL has, and for a .ico the program to fall back to after a line
+// break (which no path here holds). ProgramIconPath gives the first path back, ProgramIconFallbackPath the
+// program, or nothing for any other source.
 inline constexpr const char* kProgramIconScheme = "program-icon:";
-inline std::string ProgramIconSource(const std::string& console_path) {
-  return console_path.empty() ? std::string() : kProgramIconScheme + console_path;
+inline std::string ProgramIconSource(const std::string& console_path, const std::string& fallback_program = "") {
+  if (console_path.empty()) return {};
+  return kProgramIconScheme + console_path + (fallback_program.empty() ? std::string() : "\n" + fallback_program);
 }
 std::optional<std::string> ProgramIconPath(const std::string& source);
+std::optional<std::string> ProgramIconFallbackPath(const std::string& source);
 
 // Loads program-icon sources from the game's files (a console path under `host_prefix` on the desktop
-// build), as a 2:3 poster made from the icon (homebrew/title_icon.hpp ProgramIconArt), and passes every
-// other source to `next`. Both outlive it.
+// build; a .ico path with ReadIconFile, else ReadProgramIcon), as a 2:3 poster made from the icon
+// (homebrew/title_icon.hpp ProgramIconArt), and passes every other source to `next`. Both outlive it.
 class ProgramIconArtworkBackend final : public ArtworkBackend {
  public:
   ProgramIconArtworkBackend(ArtworkBackend& next, std::string host_prefix = "");

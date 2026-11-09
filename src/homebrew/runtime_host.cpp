@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 #include "homebrew/runtime_host.hpp"
 
+#include "homebrew/gog_icon.hpp"
 #include "pw_app_profile.h"
 #include "platform/usb_mount.h"
 #include "installs/install_record.h"
@@ -1613,11 +1614,13 @@ static bool ArtifactsBound(const auto& kit_artifacts, const rt::RuntimeInstall& 
 }
 
 void RuntimeHost::PublishInstalls(const Composition& composition, const std::string& only) {
-  std::map<std::string, std::tuple<bool, bool, bool>> checked;  // title_current, runtime_current, setup_other_kit
+  // title_current, runtime_current, setup_other_kit, title_icon_current, title_icon_file
+  std::map<std::string, std::tuple<bool, bool, bool, bool, std::string>> checked;
   if (!only.empty()) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& view : snapshot_.installs)
-      checked[view.install_id] = {view.title_current, view.runtime_current, view.setup_other_kit};
+      checked[view.install_id] = {view.title_current, view.runtime_current, view.setup_other_kit, view.title_icon_current,
+                                  view.title_icon_file};
   }
   std::vector<RuntimeInstallView> installs;
   for (const auto& record : composition.repository.Snapshot()) {
@@ -1637,11 +1640,15 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
       view.failure_code = record.last_failure->code;
     }
     if (const auto kept = checked.find(record.install_id); !only.empty() && record.install_id != only && kept != checked.end()) {
-      std::tie(view.title_current, view.runtime_current, view.setup_other_kit) = kept->second;
+      std::tie(view.title_current, view.runtime_current, view.setup_other_kit, view.title_icon_current,
+               view.title_icon_file) = kept->second;
     } else if (record.state == rt::PreparationState::kReady && composition.kit) {
       const bool files_current = composition.installer->TitleCurrent(record);
       view.title_current = files_current && composition.installer->TitleMetadataCurrent(record) && TitleNameCurrent(record) &&
                            TitleVariableRefreshCurrent(composition, record);
+      const auto icon_file = GameIconFile(record);
+      if (!icon_file.empty()) view.title_icon_file = record.install_path + "/" + icon_file;
+      view.title_icon_current = TitleIconCurrent(composition, record, icon_file);
       view.runtime_current = files_current && ArtifactsBound(composition.kit->view.artifacts, record);
     } else if (composition.kit && SetupRestarts(record) && !view.moving) {
       view.setup_other_kit = composition.installer->SetupFromOtherKit(record);
@@ -3142,6 +3149,20 @@ bool RuntimeHost::TitleNameCurrent(const rt::RuntimeInstall& record) const {
   return installed && *installed == wanted;
 }
 
+// The source recorded with a title's icon (PackageInstaller::TitleIconSource): the game's icon file, by name.
+static std::string IconSourceOf(const std::string& icon_file) { return icon_file.empty() ? std::string() : "file:" + icon_file; }
+
+std::string RuntimeHost::GameIconFile(const rt::RuntimeInstall& record) const {
+  if (record.install_path.empty()) return {};
+  return GogIconFile(HostPath(record.install_path).string(), record.launch_path);
+}
+
+bool RuntimeHost::TitleIconCurrent(const Composition& c, const rt::RuntimeInstall& record,
+                                   const std::string& icon_file) const {
+  const auto recorded = c.installer->TitleIconSource(record);
+  return recorded && *recorded == IconSourceOf(icon_file);
+}
+
 rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt::RuntimeInstall& record,
                                                        const std::string& title_name) {
   const auto failed = [](std::string message) {
@@ -3192,10 +3213,16 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
     std::replace(launch.begin(), launch.end(), '\\', '/');
     program = HostPath(record.install_path) / launch;
   }
-  const auto icon = config_.title_icon ? config_.title_icon(GameOf(record), program) : std::nullopt;
+  // The game's own icon file, the same one its library poster shows (PublishInstalls).
+  const auto icon_file = GameIconFile(record);
+  const auto icon = config_.title_icon ? config_.title_icon(GameOf(record), program,
+                                                            icon_file.empty() ? std::filesystem::path()
+                                                                              : HostPath(record.install_path) / icon_file)
+                                       : std::nullopt;
   Log("title metadata app=" + std::to_string(record.runtime_number) + " name=" + name + " icon=" +
-      (icon ? std::to_string(icon->size()) + "B" : std::string("kit")) + " vrr=" + (variable_refresh ? "1" : "0"));
-  return c.installer->WriteTitleMetadata(record, param, icon);
+      (icon ? std::to_string(icon->size()) + "B" : std::string("kit")) + (icon_file.empty() ? "" : " icon-file=" + icon_file) +
+      " vrr=" + (variable_refresh ? "1" : "0"));
+  return c.installer->WriteTitleMetadata(record, param, icon, IconSourceOf(icon_file));
 }
 
 const rt::GameRecipe* RuntimeHost::ShippedRecipeFor(const Composition& c, const GameId& game,
@@ -3873,7 +3900,8 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       const auto bound = c.repository.Update(record);
       if (!bound.ok()) return "The runtime kit artifacts could not be recorded: " + bound.message();
     }
-    if (!c.installer->TitleMetadataCurrent(record) || !TitleVariableRefreshCurrent(c, record)) {
+    if (!c.installer->TitleMetadataCurrent(record) || !TitleVariableRefreshCurrent(c, record) ||
+        !TitleIconCurrent(c, record, GameIconFile(record))) {
       const auto written = WriteTitleMetadata(c, record, request.title_name);
       if (written.state != rt::PackageActionState::kComplete) return written.message;
     }
@@ -3913,7 +3941,8 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       // Older titles carry the kit's generic name and icon: give them the game's.
       const bool metadata_current = c.installer->TitleMetadataCurrent(*existing) &&
                                     (request.title_name.empty() || InstalledTitleName(*existing) == request.title_name) &&
-                                    TitleVariableRefreshCurrent(c, *existing);
+                                    TitleVariableRefreshCurrent(c, *existing) &&
+                                    TitleIconCurrent(c, *existing, GameIconFile(*existing));
       if (!metadata_current) {
         const auto written = WriteTitleMetadata(c, *existing, request.title_name);
         if (written.state != rt::PackageActionState::kComplete) return written.message;

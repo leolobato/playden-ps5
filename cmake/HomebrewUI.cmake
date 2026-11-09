@@ -260,6 +260,7 @@ target_link_libraries(playden_homebrew_controller PUBLIC
 
 # Worker-owned per-game runtime composition (OWNER records, native inventory, kit layer).
 add_library(playden_homebrew_runtime_host STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/runtime_host.cpp"
+    "${CMAKE_SOURCE_DIR}/src/homebrew/gog_icon.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/writable_folders.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
 target_compile_features(playden_homebrew_runtime_host PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_runtime_host PUBLIC "${CMAKE_SOURCE_DIR}/src")
@@ -485,6 +486,12 @@ if(BUILD_TESTING)
         "${CMAKE_SOURCE_DIR}/third_party/ps5-homebrew-ui/third_party/stb")
     target_link_libraries(homebrew_program_icon_test PRIVATE playden_homebrew_artwork)
     add_test(NAME homebrew_program_icon COMMAND homebrew_program_icon_test)
+    add_executable(homebrew_gog_icon_test "${CMAKE_SOURCE_DIR}/tests/homebrew_gog_icon_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/homebrew/gog_icon.cpp")
+    target_compile_features(homebrew_gog_icon_test PRIVATE cxx_std_20)
+    target_include_directories(homebrew_gog_icon_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_link_libraries(homebrew_gog_icon_test PRIVATE playden_steam_protocol)
+    add_test(NAME homebrew_gog_icon COMMAND homebrew_gog_icon_test)
     add_executable(homebrew_controller_tour_test "${CMAKE_SOURCE_DIR}/tests/homebrew_controller_tour_test.cpp")
     target_compile_features(homebrew_controller_tour_test PRIVATE cxx_std_20)
     target_link_libraries(homebrew_controller_tour_test PRIVATE playden_homebrew_model)

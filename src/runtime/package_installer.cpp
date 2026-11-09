@@ -682,11 +682,27 @@ bool FilesystemPackageInstaller::TitleMetadataCurrent(const RuntimeInstall& reco
   return true;
 }
 
+std::optional<std::string> FilesystemPackageInstaller::TitleIconSource(const RuntimeInstall& record) {
+  const auto path = TitleMetadataPath(record, kTitleMetadataMarker);
+  const auto marker = path.empty() ? std::nullopt : ReadBounded(path, 4096);
+  if (!marker) return std::nullopt;
+  if (*marker == "1\n") return std::string();
+  // "2\n<source>\n"
+  if (marker->size() < 3 || marker->compare(0, 2, "2\n") != 0 || marker->back() != '\n') return std::nullopt;
+  auto source = marker->substr(2, marker->size() - 3);
+  if (source.find('\n') != std::string::npos) return std::nullopt;
+  return source;
+}
+
 PackageActionResult FilesystemPackageInstaller::WriteTitleMetadata(const RuntimeInstall& record,
                                                                    const std::string& param_json,
-                                                                   const std::optional<std::string>& icon_png) {
+                                                                   const std::optional<std::string>& icon_png,
+                                                                   const std::string& icon_source) {
   const auto paths = Resolve(record);
   if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
+  if (icon_source.find_first_of("\r\n") != std::string::npos || icon_source.find('\0') != std::string::npos ||
+      icon_source.size() > 1024)
+    return Failed("title-metadata", "the game's title icon source is not one line");
   // The parameters name this title, whichever kit title they were made from.
   const auto parameters = playden::steam::json::Parse(param_json, {64 * 1024, 8, 1024, 64 * 1024});
   const auto* title = parameters && parameters->is_object()
@@ -715,7 +731,7 @@ PackageActionResult FilesystemPackageInstaller::WriteTitleMetadata(const Runtime
   const auto icon = root / kTitleMetadataFiles[1];
   if (icon_png ? !replace(icon, *icon_png) : (::unlink(icon.c_str()) != 0 && errno != ENOENT))
     return Failed("title-metadata", "the game's title icon could not be written");
-  if (!replace(root / kTitleMetadataMarker, "1\n"))
+  if (!replace(root / kTitleMetadataMarker, "2\n" + icon_source + "\n"))
     return Failed("title-metadata", "the game's title metadata could not be recorded");
   return Complete();
 }

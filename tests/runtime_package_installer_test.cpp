@@ -1012,6 +1012,23 @@ void AnyTitleVariantServesEveryTitle() {
   CHECK(Read(fixture.host_data / "homebrew/FAKE78012/sce_sys/param.json") == own);
   CHECK(Read(fixture.host_data / "homebrew/FAKE78012/eboot.bin") == "native");
   CHECK(installer.TitleMetadataCurrent(record) && installer.Inspect(record).manifest_matches);
+
+  // The marker records where the icon came from; metadata written before sources were recorded ("1\n") has none.
+  const auto marker = fixture.host_data / "playden/games" / record.install_id / "title-metadata/.generated";
+  CHECK(Read(marker) == "2\n\n" && installer.TitleIconSource(record) == std::string());
+  CHECK(installer.WriteTitleMetadata(record, own, std::string("icon"), "file:goggame-1.ico").state == PackageActionState::kComplete);
+  CHECK(Read(marker) == "2\nfile:goggame-1.ico\n" && installer.TitleIconSource(record) == std::string("file:goggame-1.ico"));
+  CHECK(installer.WriteTitleMetadata(record, own, std::nullopt, "two\nlines").state != PackageActionState::kComplete);
+  CHECK(installer.TitleIconSource(record) == std::string("file:goggame-1.ico"));
+  CHECK(::chmod(marker.c_str(), 0600) == 0);
+  for (const auto& [text, source] : std::vector<std::pair<std::string, std::optional<std::string>>>{
+           {"1\n", std::string()}, {"2\nfile:a.ico\n", std::string("file:a.ico")}, {"2\n", std::nullopt},
+           {"2\na\nb\n", std::nullopt}, {"2\nno end", std::nullopt}, {"3\nx\n", std::nullopt}, {"", std::nullopt}}) {
+    Write(marker, text, 0600);
+    CHECK(installer.TitleIconSource(record) == source);
+  }
+  std::filesystem::remove(marker);
+  CHECK(!installer.TitleIconSource(record) && !installer.TitleMetadataCurrent(record));
 }
 
 // A game prepared on a fixed kit title moves to the any-title shell when its kit is respun:

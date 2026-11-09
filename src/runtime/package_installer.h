@@ -194,9 +194,12 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // and refresh copy them over the kit's param.json and icon0.png; no icon keeps
   // the kit's.
   PackageActionResult WriteTitleMetadata(const RuntimeInstall& record, const std::string& param_json,
-                                         const std::optional<std::string>& icon_png) override;
+                                         const std::optional<std::string>& icon_png,
+                                         const std::string& icon_source = {}) override;
   // The metadata was generated and the installed title carries it.
   bool TitleMetadataCurrent(const RuntimeInstall& record) override;
+  // From the metadata's marker: "1\n" (written before sources were recorded) is the empty source.
+  std::optional<std::string> TitleIconSource(const RuntimeInstall& record) override;
   PackageActionResult StageTitle(const RuntimeInstall& record) override;
   PackageActionResult CopyTemplate(const RuntimeInstall& record) override;
   PackageActionResult ValidateArtifacts(const RuntimeInstall& record) override;
