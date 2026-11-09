@@ -103,6 +103,23 @@ int main(int argc, char** argv) {
         capture("recipes-details", "details", "details");
         check(find_row(model, "details-recipe") && find_row(model, "details-recipe")->title == "Recipe available",
               "an installed game with recipes carries the mark");
+        // The community's compatibility list, apart from the player's own rating.
+        check(find_row(model, "details-compat") && find_row(model, "details-compat")->title == "Works" &&
+                  find_row(model, "details-compat")->value == "Confirmed by 14 players",
+              "a game listed as Works says how many players confirmed it");
+        check(model.action("details:900005") && find_row(model, "details-compat") &&
+                  find_row(model, "details-compat")->title == "Refused" && find_row(model, "details-compat")->value.empty(),
+              "a game listed as Refused says so, without a count");
+        check(model.action("details:900004") && find_row(model, "details-compat") &&
+                  find_row(model, "details-compat")->title == "Not listed",
+              "a game the list doesn't have is Not listed");
+        {
+            // Without the list (not fetched yet, or an API that has none) the page says nothing about the community.
+            auto catalog = model.state().community;
+            catalog.compat.reset();
+            model.UpdateCommunityCatalog(catalog);
+            check(!find_row(model, "details-compat"), "no list: no Compatibility from the community");
+        }
         // Search by game name and linked games.
         capture("recipes-imported-none", "preset-picker", "preset-playden-default");
         check(find_row(model, "recipes-none") && find_row(model, "recipes-search"), "no recipes of its own: None yet and the search");

@@ -317,8 +317,17 @@ inline std::string CommunityRecipeLabel(const CommunityRecipeOffer& offer) { ret
 // Live: the community recipes Playden has (community::RecipeSnapshot, projected), by the game they are for. A library
 // game gets those of its GameRef (Simulation::community_ref: a Steam game's app ID, an imported game's Steam app ID).
 // Search by name (the chooser's "Search recipes by game name…") finds any game here that has recipes, by its name.
+// A game of the community's compatibility list: how it is listed ("works", "partial", "broken" or "refused") and how
+// many players confirmed a game listed as Works.
+struct CommunityListing {
+    std::string status;
+    std::uint32_t reports = 0;
+    bool operator==(const CommunityListing&) const = default;
+};
 struct CommunityCatalog {
     std::map<GameRef, std::vector<CommunityRecipeOffer>> games;
+    // The compatibility list. Nothing: Playden doesn't have it (yet), which isn't "this game is not listed".
+    std::optional<std::map<GameRef, CommunityListing>> compat;
     std::map<GameRef, std::string> names;  // each game's name as the release's index has it
     std::string release_tag;      // empty: no copy yet
     std::int64_t fetched_at = 0;  // the copy's last successful refresh (Unix seconds)

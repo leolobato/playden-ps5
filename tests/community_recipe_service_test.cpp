@@ -439,7 +439,8 @@ int main(int argc, char** argv) {
   {
     h.network.routes[h.site.summary] = Route{
         200, R"({"generated_at":"2026-11-07T10:00:00Z","recipes":{")" + good_id + R"(":{")" + Sha256Hex(good) +
-                 R"(":{"up":42,"down":3,"reasons":{"slow":1,"crash":2},"kits":{},"verified":true,"author":"account","author_trusted":true}}}})", {}};
+                 R"(":{"up":42,"down":3,"reasons":{"slow":1,"crash":2},"kits":{},"verified":true,"author":"account","author_trusted":true}}},)"
+                 R"("games":{"steam":{"274520":{"status":"works","reports":14}}}})", {}};
     auto service = h.Make(root);
     service->Start();
     service->Wait();
@@ -449,6 +450,9 @@ int main(int argc, char** argv) {
     CHECK(!snapshot->refreshing);
     CHECK(snapshot->fetched_at == 1'000'000);
     CHECK(snapshot->votes_generated_at == 1794045600);  // when the API made the totals
+    // The compatibility list comes with the totals.
+    CHECK(snapshot->compat && snapshot->compat->size() == 1 &&
+          snapshot->compat->at(GameRef::Steam(274520)) == (ListedGame{"works", 14}));
     const auto* list = snapshot->For(GameRef::Steam(274520));
     CHECK(list && list->size() == 3);
     const auto* first = Find(*snapshot, GameRef::Steam(274520), good_id);

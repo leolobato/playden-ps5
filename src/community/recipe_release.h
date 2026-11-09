@@ -90,6 +90,18 @@ struct RecipeVotes {
 using VoteTotals = std::map<std::string, std::map<std::string, RecipeVotes>>;
 std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* error, std::int64_t* generated_at = nullptr);
 
+// A game of the compatibility list, from summary.json's "games": how it is listed ("works", "partial", "broken" or
+// "refused") and how many players confirmed a game listed as Works.
+struct ListedGame {
+  std::string status;
+  std::uint32_t reports = 0;
+  bool operator==(const ListedGame&) const = default;
+};
+using CompatList = std::map<GameRef, ListedGame>;
+// summary.json's compatibility list. Nothing when the summary has none (an API without it, or an unusable file):
+// that is "not known", apart from a list the game isn't on. Unusable entries are skipped.
+std::optional<CompatList> ParseCompatList(std::string_view json);
+
 // Unix seconds of a UTC time as "2026-11-07T10:00:00Z" (ISO 8601, what summary.json says) or
 // "Sat, 07 Nov 2026 10:00:00 GMT" (an HTTP Date header); nothing for anything else.
 std::optional<std::int64_t> ParseUtcTime(std::string_view text);

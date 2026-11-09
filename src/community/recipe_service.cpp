@@ -237,7 +237,11 @@ void CommunityRecipeService::LoadFromDisk() {
   }
   std::optional<VoteTotals> totals;
   std::int64_t votes_generated_at = 0;
-  if (const auto votes = store_->ReadVotes()) totals = ParseVoteSummary(*votes, nullptr, &votes_generated_at);
+  std::optional<CompatList> compat;
+  if (const auto votes = store_->ReadVotes()) {
+    totals = ParseVoteSummary(*votes, nullptr, &votes_generated_at);
+    if (totals) compat = ParseCompatList(*votes);
+  }
   auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
   std::size_t count = 0;
   for (const auto& [game, list] : games) count += list.size();
@@ -248,6 +252,7 @@ void CommunityRecipeService::LoadFromDisk() {
     s.release_tag = current->tag;
     s.fetched_at = current->fetched_at;
     s.votes_generated_at = totals ? votes_generated_at : 0;
+    s.compat = std::move(compat);
   });
 }
 
@@ -417,10 +422,12 @@ bool CommunityRecipeService::Refresh(std::string* error) {
   std::optional<std::string> votes_json;
   std::optional<VoteTotals> totals;
   std::int64_t votes_generated_at = 0;
+  std::optional<CompatList> compat;
   {
     std::string why;
     auto summary = GetFrom(endpoints.api_base_url + "/v1/summary.json", kMaxSummaryBytes, "application/json", false, &why);
     if (summary) totals = ParseVoteSummary(*summary, &why, &votes_generated_at);
+    if (totals) compat = ParseCompatList(*summary);
     if (totals) votes_json = std::move(summary);
     else Log("community recipes: vote totals unavailable (" + why + ")");
   }
@@ -456,7 +463,10 @@ bool CommunityRecipeService::Refresh(std::string* error) {
   }
 
   if (!totals)
-    if (const auto stored = store_->ReadVotes()) totals = ParseVoteSummary(*stored, nullptr, &votes_generated_at);
+    if (const auto stored = store_->ReadVotes()) {
+      totals = ParseVoteSummary(*stored, nullptr, &votes_generated_at);
+      if (totals) compat = ParseCompatList(*stored);
+    }
   auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
   Publish([&](RecipeSnapshot& s) {
     s.games = std::move(games);
@@ -464,6 +474,7 @@ bool CommunityRecipeService::Refresh(std::string* error) {
     s.release_tag = release->tag;
     s.fetched_at = fetched_at;
     s.votes_generated_at = totals ? votes_generated_at : 0;
+    s.compat = std::move(compat);
   });
 
   if (config_.referenced) {

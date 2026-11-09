@@ -66,6 +66,8 @@ struct RecipeSnapshot {
   // When the API made the vote totals (summary.json's generated_at, unix seconds): votes this console cast later are
   // not in them yet. 0: unknown.
   std::int64_t votes_generated_at = 0;
+  // The compatibility list from the same summary.json. Nothing: not known (no summary yet, or one without a list).
+  std::optional<CompatList> compat;
   bool refreshing = false;
   std::string last_error;      // the last refresh's failure, one short sentence; empty after success
   const std::vector<RecipeSummary>* For(const GameRef& game) const;

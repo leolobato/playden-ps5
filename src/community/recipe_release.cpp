@@ -335,4 +335,33 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
   return totals;
 }
 
+std::optional<CompatList> ParseCompatList(std::string_view json) {
+  if (json.size() > kMaxSummaryBytes) return std::nullopt;
+  steam::json::Limits limits;
+  limits.max_bytes = kMaxSummaryBytes;
+  limits.max_values = 1 << 17;
+  limits.max_string_bytes = 4096;
+  const auto doc = steam::json::Parse(json, limits);
+  const auto* games = doc && doc->is_object() ? doc->Find("games") : nullptr;
+  if (!games || !games->is_object()) return std::nullopt;
+  CompatList list;
+  for (const auto& [store, entries] : games->object()) {
+    if (!entries.is_object()) continue;
+    for (const auto& [key, value] : entries.object()) {
+      const GameRef game{store, key};
+      const auto* status = value.is_object() ? value.Find("status") : nullptr;
+      if (!game.valid() || !status || !status->is_string()) continue;
+      const std::string how = status->text();
+      if (how != "works" && how != "partial" && how != "broken" && how != "refused") continue;
+      ListedGame listed;
+      listed.status = how;
+      if (const auto* reports = value.Find("reports"); reports && how == "works")
+        if (const auto number = reports->AsUint64())
+          listed.reports = static_cast<std::uint32_t>(std::min<std::uint64_t>(*number, 0xffffffffu));
+      list[game] = std::move(listed);
+    }
+  }
+  return list;
+}
+
 }  // namespace playden::community

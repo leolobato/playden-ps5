@@ -263,6 +263,22 @@ void OwnVoteInCounts() {
         generated_at == 1794045600);
   CHECK(ParseVoteSummary(R"({"recipes":{}})", nullptr, &generated_at) && generated_at == 0);
 
+  // The compatibility list in the same file. A summary without one is "not known", not an empty list; the vote totals
+  // read the same with it there.
+  CHECK(!ParseCompatList(R"({"recipes":{}})") && !ParseCompatList("x") && !ParseCompatList(R"({"games":[]})"));
+  const std::string with_list =
+      R"({"recipes":{},"games":{"steam":{"274520":{"status":"works","reports":14},"38410":{"status":"broken","reports":3},)"
+      R"("620":{"status":"great"},"x":{"status":"works"},"10":"works"},"gog":{"1207658924":{"status":"refused"}},)"
+      R"("local":{"a":{"status":"works"}},"epic":7}})";
+  CHECK(ParseVoteSummary(with_list, nullptr));
+  const auto list = ParseCompatList(with_list);
+  CHECK(list && list->size() == 3);
+  CHECK(list && list->count(GameRef::Steam(274520)) && list->at(GameRef::Steam(274520)) == (ListedGame{"works", 14}));
+  // Only a game listed as Works carries a count; unknown statuses, stores and keys are skipped.
+  CHECK(list && list->count(GameRef::Steam(38410)) && list->at(GameRef::Steam(38410)) == (ListedGame{"broken", 0}));
+  CHECK(list && list->count(GameRef{"gog", "1207658924"}) && !list->count(GameRef::Steam(620)));
+  CHECK(ParseCompatList(R"({"recipes":{},"games":{}})") && ParseCompatList(R"({"recipes":{},"games":{}})")->empty());
+
   const auto shown = [](std::uint32_t up, std::uint32_t down, const CastVote* own, std::int64_t at) {
     const auto votes = VotesWithOwn(up, down, own, at);
     return std::to_string(votes.up) + "/" + std::to_string(votes.down);

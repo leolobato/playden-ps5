@@ -5615,6 +5615,11 @@ void Simulation::seed_community_scenario(bool offline) {
     older.recipe.revision = std::string(64, '0');
     older.recipe.defaults.erase("button.touchpad");
     synthetic_community_[older.recipe.revision] = std::move(older);
+    // The compatibility list: the second game Works with players' confirmations, the fifth is Refused, the twelfth
+    // Partial; the fourth isn't listed.
+    catalog.compat = std::map<GameRef, CommunityListing>{{GameRef::Steam(900002), {"works", 14}},
+                                                         {GameRef::Steam(900005), {"refused", 0}},
+                                                         {GameRef::Steam(900012), {"partial", 0}}};
     state_.community = std::move(catalog);
 }
 
@@ -8607,6 +8612,21 @@ void Simulation::rebuild_view() {
                 if (count > 0) mark.subtitle = std::to_string(count) + (count == 1 ? " community recipe" : " community recipes");
                 mark.enabled = false;
             }
+        }
+        // How the community's compatibility list has the game, apart from the player's own rating. Only once Playden
+        // has the list: without it the page says nothing about the community.
+        if (game && community_enabled_ && state_.community.compat) {
+            const auto ref = community_ref(game->id);
+            const auto listed = ref ? state_.community.compat->find(*ref) : state_.community.compat->end();
+            const bool found = listed != state_.community.compat->end();
+            const std::string& how = found ? listed->second.status : std::string();
+            auto& cell = row("details-compat", RowKind::Status,
+                             how == "works" ? "Works" : how == "partial" ? "Partial" : how == "broken" ? "Broken"
+                             : how == "refused" ? "Refused" : "Not listed", "");
+            if (found && listed->second.reports > 0)
+                cell.value = "Confirmed by " + std::to_string(listed->second.reports) +
+                             (listed->second.reports == 1 ? " player" : " players");
+            cell.enabled = false;
         }
         row("details-favorite", RowKind::Toggle, "Favorite", "favorite").selected = game && state_.library.favorites.contains(game->id);
         if (!live()) row("details-simulate-launch", RowKind::Action, "Simulate launch", "launch");

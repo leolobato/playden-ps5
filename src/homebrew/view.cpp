@@ -3419,7 +3419,8 @@ class Render::Impl
             for (const ViewRow &row : view.rows)
             {
                 if (row.key.rfind("details-", 0) != 0 || row.key == "details-kept" ||
-                    row.key == "details-hint" || row.key == "details-setup" || row.key == "details-recipe")
+                    row.key == "details-hint" || row.key == "details-setup" || row.key == "details-recipe" ||
+                    row.key == "details-compat")
                     continue;
                 if (row.kind == RowKind::Status)
                 {
@@ -3564,9 +3565,15 @@ class Render::Impl
             scanned_bytes ? short_size(*scanned_bytes) : std::string("Unknown");
         const std::string playtime = game->playtime_minutes && *game->playtime_minutes > 0 ?
             playtime_label(game->playtime_minutes) : std::string("Never played");
-        std::string compat = rating_label(compatibility);
-        if (const auto dot = compat.find(" · "); dot != std::string::npos)
-            compat.resize(dot);
+        // The player's own rating, apart from how the community's list has the game.
+        std::string own_rating = rating_label(compatibility);
+        if (const auto dot = own_rating.find(" · "); dot != std::string::npos)
+            own_rating.resize(dot);
+        if (compatibility == Compatibility::Untested)
+            own_rating = "Not rated";
+        const auto listed = std::find_if(view.rows.begin(), view.rows.end(),
+                                         [](const ViewRow &row) { return row.key == "details-compat"; });
+        const bool has_listed = listed != view.rows.end();
         std::string controller = game->controller_support.empty() ? "Unknown" : game->controller_support;
         controller.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(controller.front())));
         constexpr float left = 1304.0F;
@@ -3587,8 +3594,11 @@ class Render::Impl
                                          [](const ViewRow &row) { return row.key == "details-recipe"; });
         // "Recipe available" takes its own line under Compatibility; Setup (and the facts above it) make room.
         const float recipe_line = recipe != view.rows.end() ? 38.0F : 0.0F;
+        // With the community's list: "Confirmed by N players" under Compatibility, and Your rating on a row of its own.
+        const float count_line = has_listed && !listed->value.empty() ? 30.0F : 0.0F;
+        const float rating_row = has_listed ? 76.0F + count_line : 0.0F;
         const float facts_top = (setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F) -
-                                (setup == view.rows.end() ? 0.0F : recipe_line);
+                                (setup == view.rows.end() && !has_listed ? 0.0F : recipe_line) - rating_row;
         detail_cell("Playtime", playtime, left, facts_top, 240.0F);
         detail_cell("Size", size, right, facts_top, 240.0F);
         // A game a Steam family member shares comes from Steam Families, not the account's own library.
@@ -3597,14 +3607,23 @@ class Render::Impl
                                   game->source.empty() ? std::string("Steam") : game->source;
         detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
         detail_cell("Location", location, right, facts_top + 76.0F, 240.0F);
-        detail_cell("Compatibility", compat, left, facts_top + 152.0F, 240.0F);
+        if (has_listed)
+        {
+            detail_cell("Compatibility", listed->title, left, facts_top + 152.0F, 240.0F);
+            if (!listed->value.empty())
+                ui::text(scene_, fonts_.regular, fonts_.regular.font->fit(listed->value, 20.0F, 270.0F), left,
+                         facts_top + 152.0F + 82.0F, 20.0F, kSecondary);
+            detail_cell("Your rating", own_rating, left, facts_top + 228.0F + count_line + recipe_line, 240.0F);
+        }
+        else
+            detail_cell("Your rating", own_rating, left, facts_top + 152.0F, 240.0F);
         // A game with community recipes: "Recipe available" (or "Recipe in use") on its own line under its
         // compatibility, so it never runs into the Controller column.
         if (recipe != view.rows.end())
         {
             const std::string tag = ui::upper(recipe->title);
             const float tag_x = left;
-            const float tag_top = facts_top + 152.0F + 66.0F;
+            const float tag_top = facts_top + 152.0F + 66.0F + count_line;
             // The measure leaves out the 1.2 letter spacing the text is drawn with.
             const float tag_w = mark_width(15.0F) + fonts_.semibold.measure(tag, 13.0F) + 1.2F * static_cast<float>(tag.size()) + 22.0F;
             scene_.rounded_rect({tag_x, tag_top, tag_w, 26.0F}, 5.0F, kAccent.with_alpha(0.16F));
@@ -3619,10 +3638,10 @@ class Render::Impl
             detail_cell("Controller", controller, right, facts_top + 152.0F, 240.0F);
         if (setup != view.rows.end()) {
             const gfx::Color tone = setup->tone.empty() || setup->tone == "quiet" ? kText : save_tone(setup->tone);
-            detail_cell("Setup", setup_step, left, facts_top + 228.0F + recipe_line, 520.0F, tone);
+            detail_cell("Setup", setup_step, left, facts_top + 228.0F + recipe_line + rating_row, 520.0F, tone);
             if (!setup_detail.empty()) {
                 const ui::FontRef &face = font_for(setup_detail, fonts_.regular);
-                ui::text(scene_, face, face.font->fit(setup_detail, 24.0F, 520.0F), left, facts_top + 228.0F + recipe_line + 84.0F,
+                ui::text(scene_, face, face.font->fit(setup_detail, 24.0F, 520.0F), left, facts_top + 228.0F + recipe_line + rating_row + 84.0F,
                          24.0F, kSecondary);
             }
         }

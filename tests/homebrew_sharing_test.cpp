@@ -1539,6 +1539,7 @@ void community_off(const std::filesystem::path& base) {
     // Game details and Game actions: no recipe tag, no Share feedback.
     check(model.action("details:274520"), "Darkwood's page opens");
     check(!find_row(model, "details-recipe"), "no Recipe available or Recipe in use tag");
+    check(!find_row(model, "details-compat"), "nothing from the community's compatibility list");
     activate(model, "details-more");
     check(has(top_keys(model), "game-settings") && !has(top_keys(model), "share-feedback"), "Game actions has no Share feedback");
 
