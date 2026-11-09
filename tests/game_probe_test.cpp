@@ -495,6 +495,46 @@ int main() {
     CHECK(!RefreshRecipeDefaults(root.string(), kit, &unity) && unity.arguments == "-force-d3d11");
     CHECK(DefaultsRevision("unity,d3d11 graphics=dxvk") == 0 && DefaultsRevision("nwjs,nwjs-0.86,d3d11") == 2);
   }
+  {  // A Watcom program set up before Watcom got Translator: the next Play adds only that default.
+    const auto root = fresh();
+    PeSpec fallout{false, {"USER32.dll", "ddraw.dll"}};
+    fallout.code_section = "BEGTEXT";
+    WritePe(root / "falloutwHR.exe", fallout);
+    WritePe(root / "Plain.exe", {false, {"USER32.dll", "ddraw.dll"}});
+    KitCapabilities kit;
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(38400, "Fallout", {{"", "", "falloutwHR.exe", "", ""}}, root.string(), &recipe, &reason, kit));
+    CHECK(recipe.defaults.at("cpu") == "translator" && !RefreshRecipeDefaults(root.string(), kit, &recipe));
+    // As it was saved before: no cpu default, no watcom fact, a graphics value of its own.
+    auto old = recipe;
+    old.defaults.erase("cpu");
+    old.detected = "ddraw graphics=auto";
+    old.graphics = "dxvk";
+    CHECK(WatcomProgram((root / "falloutwHR.exe").string()) && !WatcomProgram((root / "Plain.exe").string()));
+    auto missing = old;
+    CHECK(!RefreshRecipeDefaults((root / "not-plugged-in").string(), kit, &missing) && !missing.defaults.count("cpu"));
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &old));
+    CHECK(old.defaults.at("cpu") == "translator" && old.detected == "ddraw,watcom graphics=auto" && old.graphics == "dxvk");
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &old));
+    // A Native the recipe already says, a 32-bit program that isn't Watcom's and a 64-bit recipe stay as they are.
+    auto native = recipe;
+    native.defaults["cpu"] = "native";
+    native.detected = "ddraw graphics=auto";
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &native) && native.defaults.at("cpu") == "native");
+    auto plain = old;
+    plain.defaults.erase("cpu");
+    plain.detected = "unknown graphics=auto";
+    plain.launch_entries.front().executable = "Plain.exe";
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &plain) && !plain.defaults.count("cpu"));
+    auto x64 = plain;
+    x64.launch_entries.front().executable = "falloutwHR.exe";
+    x64.architecture = "pe64";
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &x64) && !x64.defaults.count("cpu"));
+    auto unknown = plain;
+    unknown.launch_entries.front().executable = "falloutwHR.exe";
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &unknown) && unknown.detected == "watcom graphics=auto");
+  }
   {  // node-webkit before NW.js 0.13 (CrossCode's demo): Chromium in the program, nw.pak beside it, no nw.dll.
     const auto root = fresh();
     WritePe(root / "crosscode-beta.exe", {false, {"KERNEL32.dll"}});

@@ -2503,13 +2503,44 @@ std::optional<std::string> ProgramInsteadOfSteamDefault(const GameRecipe& recipe
   return current->executable;
 }
 
+namespace {
+// Whether a summary (GameDefaults::summary) lists `fact` among its facts, before " graphics=".
+bool SummaryHasFact(std::string_view summary, std::string_view fact) {
+  summary = summary.substr(0, summary.find(' '));
+  for (std::size_t start = 0; start <= summary.size();) {
+    const auto end = std::min(summary.find(',', start), summary.size());
+    if (summary.substr(start, end - start) == fact) return true;
+    start = end + 1;
+  }
+  return false;
+}
+
+// A 32-bit program linked by Watcom gets Translator from DefaultsFor, but only recipes set up since then have it: one
+// set up before keeps Native and crashes at start (Fallout). Only "cpu" is added, so the engine's other defaults stay
+// as they were set up. The program's PE headers are read on each Play while the recipe has neither the default nor the fact.
+bool MayNeedWatcomTranslator(const GameRecipe& recipe) {
+  return recipe.architecture == "pe32" && !recipe.defaults.count("cpu") && !SummaryHasFact(recipe.detected, "watcom");
+}
+bool AddWatcomTranslator(const std::string& install_root, const std::string& on_disk, GameRecipe* recipe) {
+  if (!MayNeedWatcomTranslator(*recipe) || !WatcomProgram(install_root + "/" + on_disk)) return false;
+  recipe->defaults["cpu"] = "translator";
+  const auto space = recipe->detected.find(' ');
+  auto facts = recipe->detected.substr(0, space);
+  const auto rest = space == std::string::npos ? std::string() : recipe->detected.substr(space);
+  facts = facts.empty() || facts == "unknown" ? std::string("watcom") : facts + ",watcom";
+  recipe->detected = facts + rest;
+  return true;
+}
+}  // namespace
+
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
-  if (!IsGeneratedRecipeId(recipe->id) || recipe->launch_entries.empty() ||
-      recipe->defaults_revision >= DefaultsRevision(recipe->detected))
-    return false;
+  if (!IsGeneratedRecipeId(recipe->id) || recipe->launch_entries.empty()) return false;
+  const bool current = recipe->defaults_revision >= DefaultsRevision(recipe->detected);
+  if (current && !MayNeedWatcomTranslator(*recipe)) return false;
   const auto relative = steam::RelativeGamePath(recipe->launch_entries.front().executable);
   const auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
   if (!on_disk) return false;
+  if (current) return AddWatcomTranslator(install_root, *on_disk, recipe);
   RuntimeAbilities abilities;
   abilities.shared_sections = kit.shared_sections;
   abilities.wine_mono = kit.wine_mono;

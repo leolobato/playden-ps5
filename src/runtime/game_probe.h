@@ -113,6 +113,8 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
 // changes: their saved recipes then take the new defaults on the next Play or kit update, without a Recreate bottle.
 // An engine not listed is 0. `engine` may be a GameDefaults::summary, whose first word is the engine.
 int DefaultsRevision(std::string_view engine);
+// Whether the program at `path` is a 32-bit one linked by Watcom (as ProbeGame's watcom), from its PE headers, without the rest of ProbeGame.
+bool WatcomProgram(const std::string& path);
 
 // The player's words for a GameDefaults::summary: "Unity · Direct3D 11", "OpenGL"; empty
 // when nothing was recognised.

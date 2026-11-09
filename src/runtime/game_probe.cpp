@@ -656,6 +656,11 @@ namespace {
 bool LegacyDirect3D9(const GameProbe& probe) { return probe.legacy_unity && probe.unity_major < 5; }
 }  // namespace
 
+bool WatcomProgram(const std::string& path) {
+  const auto pe = ReadPe(path);
+  return pe.valid && pe.watcom && !pe.pe64;
+}
+
 int DefaultsRevision(std::string_view engine) {
   engine = engine.substr(0, engine.find_first_of(", "));
   if (engine == "nwjs") return 2;  // 1: low-end device mode and a larger V8 heap. 2: low-end device mode gone
