@@ -34,6 +34,7 @@ struct PeSpec {
   bool shared_data = false;  // the data section is writable and shared, on 4 KB pages
   std::vector<std::string> delay_imports;  // delay-loaded DLLs (descriptors at RVA 0x2a00)
   std::string resource;      // the resource directory's bytes, at RVA 0x2c00 (at most 0x400)
+  std::string code_section = ".text";  // the first section's name (Watcom's linker calls it BEGTEXT)
 };
 
 void Put32(std::string* bytes, std::size_t at, std::uint32_t value) {
@@ -67,7 +68,7 @@ void WritePe(const fs::path& path, const PeSpec& spec) {
     Put32(&bytes, table + row * 40 + 16, 0x1000);
     Put32(&bytes, table + row * 40 + 20, raw);
   };
-  section(0, spec.bind_entry ? ".bind" : ".text", 0x1000, 0x400);
+  section(0, spec.bind_entry ? ".bind" : spec.code_section.c_str(), 0x1000, 0x400);
   section(1, ".rdata", 0x2000, static_cast<std::uint32_t>(spec.data_at));
   if (spec.shared_data) Put32(&bytes, table + 40 + 36, 0xd0000040);
   bytes.replace(0x400, spec.text.size(), spec.text);
@@ -346,6 +347,22 @@ int main() {
     CHECK(DefaultsFor(ProbeGame(root.string(), "Gl.exe")).graphics == "opengl");
     const auto plain = ProbeGame(root.string(), "Plain.exe");
     CHECK(plain.apis.count("ddraw") && DefaultsFor(plain).graphics == "auto");
+    CHECK(!plain.watcom && DefaultsFor(plain).cpu.empty());
+  }
+  {  // A 32-bit program linked by Watcom (Fallout) runs on the translator: its runtime reloads FS.
+    const auto root = fresh();
+    PeSpec fallout{false, {"USER32.dll", "ddraw.dll"}};
+    fallout.code_section = "BEGTEXT";
+    WritePe(root / "falloutw.exe", fallout);
+    const auto probe = ProbeGame(root.string(), "falloutw.exe");
+    CHECK(probe.watcom);
+    const auto defaults = DefaultsFor(probe);
+    CHECK(defaults.cpu == "translator" && defaults.summary.find(",watcom ") != std::string::npos);
+    CHECK(DetectedLabel(defaults.summary).empty());
+    PeSpec x64{true, {"USER32.dll"}};
+    x64.code_section = "BEGTEXT";
+    WritePe(root / "w64.exe", x64);
+    CHECK(!ProbeGame(root.string(), "w64.exe").watcom && DefaultsFor(ProbeGame(root.string(), "w64.exe")).cpu.empty());
   }
   {  // Godot and Source.
     const auto root = fresh();

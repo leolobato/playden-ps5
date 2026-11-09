@@ -384,9 +384,15 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         return fail("unknown [input] key " + key);
       }
     } else if (section == "runtime") {
-      // Only the profile's version: the defaults the title applies (prospero-win's [runtime] has more keys).
-      if (key != "version") return fail("unknown [runtime] key " + key);
-      if (value != "1" && value != "2") return bad("not 1 or 2");
+      // The profile's version (the defaults the title applies) and the 32-bit CPU; prospero-win's [runtime] has more
+      // keys.
+      if (key == "cpu") {
+        if (value != "native" && value != "translator") return bad("not native or translator");
+      } else if (key == "version") {
+        if (value != "1" && value != "2") return bad("not 1 or 2");
+      } else {
+        return fail("unknown [runtime] key " + key);
+      }
     } else if (section == "audio") {
       if (key != "volume") return fail("unknown [audio] key " + key);
       if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > 100) return bad("not 0-100");

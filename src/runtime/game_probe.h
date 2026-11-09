@@ -38,6 +38,7 @@ struct GameProbe {
   // root, as spelled on disk.
   std::string unreal_program;
   bool unreal5 = false;  // Unreal Engine 5 (its Shipping program names Nanite's settings)
+  bool watcom = false;   // a 32-bit program linked by Watcom, whose runtime reloads FS
 };
 
 inline constexpr unsigned long long kProbeScanBytes = 256ull * 1024ull * 1024ull;
@@ -91,6 +92,7 @@ struct GameDefaults {
   std::string resolution_arguments;
   std::string environment;  // "NAME=value;..." the engine needs, for the Environment variables setting
   std::string d3d12;        // the Direct3D 12 setting the game needs ("vkd3d-proton"), empty for the default
+  std::string cpu;          // the 32-bit code setting the game needs ("translator"), empty for the default
   std::string refusal;  // non-empty: the console cannot run this program; a sentence for the player
   // The refusal comes from a broad detection (.NET, a shared section) that a run could get
   // past, so the player may "Try anyway"; graphics and arguments are still filled in.

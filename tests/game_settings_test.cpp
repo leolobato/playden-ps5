@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "logging",
+        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);
@@ -859,7 +859,8 @@ int main(int argc, char** argv) {
     CHECK(!CheckProsperoProfile(profile.text, &reason));  // a runtime without it refuses [runtime]
     CHECK(CheckProsperoProfile(profile.text, &reason, {.runtime_version = true}));
     CHECK(!CheckProsperoProfile(base + "\n[runtime]\nversion = 3\n", &reason, {.runtime_version = true}));
-    CHECK(!CheckProsperoProfile(base + "\n[runtime]\ncpu = native\n", &reason, {.runtime_version = true}));
+    CHECK(CheckProsperoProfile(base + "\n[runtime]\ncpu = native\n", &reason, {.runtime_version = true}));
+    CHECK(!CheckProsperoProfile(base + "\n[runtime]\ncpu = fast\n", &reason, {.runtime_version = true}));
     // Wave64 is the opt-out: RADV_PS5_PS_WAVE64=1, as before.
     CHECK(render(stray, {{"pixel_shader_waves", "wave64"}}, version_kit) ==
           base + version_2 + "\n[environment]\nRADV_PS5_PS_WAVE64 = 1\n");
@@ -968,6 +969,35 @@ int main(int argc, char** argv) {
       CHECK(BuildEffectiveSettings(pe64, nullptr, {{"address_space", "4gb"}}, lae, &settings, &error));
       CHECK(!settings.values.at("address_space").available &&
             settings.values.at("address_space").reason == "Only for 32-bit programs.");
+      // 32-bit code: Native writes nothing; Translator writes [runtime] cpu, once, with the version when there is one.
+      auto v2 = every;
+      v2.profile_version_2 = true;
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {}, v2, &settings, &error));
+      CHECK(settings.values.at("cpu").available && settings.values.at("cpu").value == "native");
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("cpu =") == std::string::npos);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"cpu", "translator"}}, v2, &settings, &error));
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("\ncpu = translator\n") != std::string::npos);
+      CHECK(profile.text.find("[runtime]") == profile.text.rfind("[runtime]"));
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.runtime_version = true}));
+      // A generated recipe's default (a Watcom program) is the row's value.
+      auto watcom = hl2;
+      watcom.defaults["cpu"] = "translator";
+      CHECK(BuildEffectiveSettings(watcom, nullptr, {}, v2, &settings, &error));
+      CHECK(settings.values.at("cpu").value == "translator");
+      CHECK(BuildEffectiveSettings(pe64, nullptr, {{"cpu", "translator"}}, v2, &settings, &error));
+      CHECK(!settings.values.at("cpu").available && settings.values.at("cpu").reason == "Only for 32-bit programs.");
+      // A title that waits for its update keeps the choice for then.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"cpu", "translator"}}, KitForTitleRuntime(v2, false), &settings,
+                                   &error));
+      CHECK(settings.values.at("cpu").waits_for_update && settings.values.at("cpu").after_update == "translator");
+      auto version_1 = v2;
+      version_1.profile_version_2 = false;
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"cpu", "translator"}}, version_1, &settings, &error));
+      CHECK(!settings.values.at("cpu").available);
+      CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+      CHECK(profile.text.find("cpu =") == std::string::npos);
       // Arguments past 512 bytes: only for a runtime that takes 4096 (a long mod list on one command line).
       const std::string mods = "/singleplayer _MODULES_*" + std::string(1500, 'M') + "*_MODULES_";
       CHECK(ValidateSettingValue(hl2, "extra_arguments", mods, &reason));

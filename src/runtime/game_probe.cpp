@@ -91,6 +91,7 @@ struct PeFacts {
   // A writable section shared between processes that doesn't fill whole console pages.
   bool unaligned_shared = false;
   bool pe64 = false;                 // PE32+ (x64), otherwise PE32 (x86)
+  bool watcom = false;               // linked by Watcom (its BEGTEXT or DGROUP section)
   std::uint64_t resource_offset = 0;  // file offset of the resource directory, 0 when there is none
   std::uint32_t resource_size = 0;
   std::vector<std::string> imports;  // lower case
@@ -139,6 +140,7 @@ PeFacts ReadPe(const std::string& path, bool delay_imports = false) {
     if ((section.flags & kSharedWritable) == kSharedWritable &&
         (section.address % kConsolePage != 0 || mapped % kConsolePage != 0))
       facts.unaligned_shared = true;
+    if (section.name == "BEGTEXT" || section.name == "DGROUP") facts.watcom = true;
     list.push_back(section);
   }
   const auto file_offset = [&](std::uint32_t rva) -> std::optional<std::uint64_t> {
@@ -585,6 +587,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
   }
   probe.shared_section = program.unaligned_shared;
   probe.x64 = program.pe64;
+  probe.watcom = program.watcom && !program.pe64;
   AddImports(program, &probe.apis);
   for (const auto& [name, directory] : here)
     if (!directory && EndsWith(Lower(name), ".dll")) AddImports(ReadPe((root / folder / name).string()), &probe.apis);
@@ -742,6 +745,10 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
     // Direct3D, which can't get an OpenGL context on the console, so DXVK covers the likeliest case.
     out.graphics = "dxvk";
   }
+  // Watcom's runtime saves and reloads FS (push fs / pop fs around its allocator). On the native WoW64 CPU the
+  // reloaded selector's base is not the thread's TEB, and the next FS access faults (Fallout, at its start); the
+  // translator keeps FS on the TEB.
+  if (probe.watcom) out.cpu = "translator";
   if (out.refusal.empty() && !soft.empty()) {
     out.refusal = std::move(soft);
     out.refusal_soft = true;
@@ -757,6 +764,7 @@ GameDefaults DefaultsFor(const GameProbe& probe, const RuntimeAbilities& runtime
   if (probe.unreal5) facts += out.d3d12.empty() ? ",dx11" : ",dx12";
   if (probe.anticheat) facts += (facts.empty() ? "" : ",") + std::string("anticheat");
   if (probe.shared_section) facts += (facts.empty() ? "" : ",") + std::string("shared-section");
+  if (probe.watcom) facts += (facts.empty() ? "" : ",") + std::string("watcom");
   out.summary = (facts.empty() ? "unknown" : facts) + " graphics=" + out.graphics;
   return out;
 }

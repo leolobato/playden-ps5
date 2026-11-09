@@ -278,6 +278,12 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"kit", "Runtime default", "2 GB, unless the program asks for more."},
                          {"4gb", "4 GB", "For 32-bit games that run out of memory."}},
                         "kit", 3, ApplyMode::kGameClosed));
+  // A 32-bit program runs on the console's processor; the translator is slower but keeps FS on the thread's TEB when
+  // the program reloads it (Watcom's runtime does, and Fallout faulted at its start), so DefaultsFor picks it then.
+  list.push_back(Choice("cpu", "32-bit code", "How a 32-bit program's code runs.", "[runtime] cpu", G::kWindows,
+                        {{"native", "Native", "On the console's processor. Fastest."},
+                         {"translator", "Translator", "Translated as it runs. Slower; for programs that crash on Native."}},
+                        "native", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("logging", "Logging", "How much detail goes into the game's log file.", "WINEDEBUG",
                         G::kWindows,
                         {{"normal", "Normal", "Errors and loaded modules."},
@@ -568,6 +574,13 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (!kit.large_address_aware) return "Needs a newer runtime kit that gives 32-bit games 4 GB.";
     if (const auto program = values.find("architecture"); program != values.end() && program->second.value == "pe64")
       return "Only for 32-bit programs.";
+  }
+  if (id == "cpu") {
+    if (const auto program = values.find("architecture"); program != values.end() && program->second.value == "pe64")
+      return "Only for 32-bit programs.";
+    // [runtime] is read by titles of a runtime kit with profile version 2.
+    if (kit.profile_version_2_needs_update) return kAppliesAfterKitUpdate;
+    if (!kit.profile_version_2) return "Needs a newer runtime kit.";
   }
   if (id == "start_through_launcher" || id == "launcher_controller_preset") {
     if (kit.launcher_mode_needs_update) return kAppliesAfterKitUpdate;
@@ -1285,7 +1298,13 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   if (audio_section) text += "\n[audio]\nvolume = " + value("volume") + "\n";
 
   // [runtime] version 2: the title takes the driver's defaults. Without the line the profile is version 1.
-  if (settings.profile_version == 2) text += "\n[runtime]\nversion = 2\n";
+  const auto& cpu = OptionalValue(settings, "cpu");
+  const bool translator = cpu.available && cpu.value == "translator";
+  if (settings.profile_version == 2 || translator) {
+    text += "\n[runtime]\n";
+    if (settings.profile_version == 2) text += "version = 2\n";
+    if (translator) text += "cpu = translator\n";
+  }
   if (value("logging") == "verbose") text += std::string("\n[debug]\nwinedebug = ") + kVerboseWinedebug + "\n";
   if (value("logging") == "input") text += std::string("\n[debug]\nwinedebug = ") + kInputWinedebug + "\n";
 
@@ -2436,6 +2455,7 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
       out.defaults["steam_features"] = "emulate";
       if (!defaults.environment.empty()) out.defaults["environment"] = defaults.environment;
       if (!defaults.d3d12.empty()) out.defaults["d3d12"] = defaults.d3d12;
+      if (!defaults.cpu.empty()) out.defaults["cpu"] = defaults.cpu;
 
     } else if (architecture != out.architecture) {
       continue;
@@ -2504,6 +2524,8 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   else refreshed.defaults["environment"] = defaults.environment;
   if (defaults.d3d12.empty()) refreshed.defaults.erase("d3d12");
   else refreshed.defaults["d3d12"] = defaults.d3d12;
+  if (defaults.cpu.empty()) refreshed.defaults.erase("cpu");
+  else refreshed.defaults["cpu"] = defaults.cpu;
   // The files no longer show this engine (an update changed it): that's for the files-changed path, not this one.
   if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) return false;
   *recipe = std::move(refreshed);
