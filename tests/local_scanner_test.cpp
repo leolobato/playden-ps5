@@ -210,6 +210,10 @@ void NonAsciiPathsAreFlagged() {
   CHECK(plain.status == ScanStatus::kOk && plain.printable_path);
   CHECK(plain.programs.size() == 1 && !plain.programs[0].printable);
   CHECK(IsPrintableAscii("/mnt/usb0/playden/import/Old School Rally") && !IsPrintableAscii("a\tb"));
+  // A colon or backslash can't be in Wine's path for the folder (prospero-win's Z: is the console root).
+  CHECK(IsPlayableInPlace("/mnt/usb0/playden/import/Old School Rally"));
+  CHECK(!IsPlayableInPlace("/mnt/usb0/playden/import/Warhammer 40k: Space Marine"));
+  CHECK(!IsPlayableInPlace("/mnt/usb0/playden/import/a\\b") && !IsPlayableInPlace("/mnt/usb0/Caf\xc3\xa9"));
 }
 
 void FailuresAreReported() {

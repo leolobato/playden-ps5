@@ -591,7 +591,7 @@ void LocalLibrarySource::Scan() {
       candidate.programs = scan.programs;
       candidate.total_bytes = scan.total_bytes;
       candidate.file_count = scan.file_count;
-      candidate.ascii_ok = IsPrintableAscii(candidate.path);
+      candidate.ascii_ok = IsPlayableInPlace(candidate.path);
       candidate.partial = scan.limit_reached || scan.deeper_folders;
       if (const auto known = store_.FindByFolder(candidate.volume, candidate.folder)) candidate.imported_id = known->id;
       candidates.push_back(std::move(candidate));
@@ -622,7 +622,7 @@ void LocalLibrarySource::Project() {
     location.ownership = installs::InstalledLocation::Ownership::kExternal;
     location.available = present_.count(game.volume) && IsFolder(HostPath(location.root));
     if (const auto other = also_on_.find(game.id); other != also_on_.end()) location.also_on = other->second;
-    if (location.available && !IsPrintableAscii(location.root)) {
+    if (location.available && !IsPlayableInPlace(location.root)) {
       location.available = false;
       location.reason = kNotAsciiReason;
     }

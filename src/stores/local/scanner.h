@@ -33,7 +33,7 @@ struct Program {
   // Installers, uninstallers, redistributables, crash handlers and tools: shown as
   // "Installer or tool" and ranked last.
   bool helper = false;
-  bool printable = true;  // printable ASCII (in-place eligibility also needs this)
+  bool printable = true;  // IsPlayableInPlace (in-place eligibility also needs this)
 };
 
 struct FolderScan {
@@ -46,8 +46,8 @@ struct FolderScan {
   std::uint64_t total_bytes = 0;
   std::uint64_t file_count = 0;
   bool deeper_folders = false;  // folders below kMaxProgramDepth were not walked
-  // The folder's console path is printable ASCII: only then can it play in place (the
-  // descriptor rule); otherwise it can only be copied or moved into Playden.
+  // The folder's console path passes IsPlayableInPlace: only then can it play in place (the
+  // descriptor rule and Wine's path); otherwise it can only be copied or moved into Playden.
   bool printable_path = false;
   bool limit_reached = false;  // kMaxScanEntries or kMaxScanPrograms: the lists are partial
   std::size_t unreadable = 0;  // entries that could not be opened and were skipped
@@ -77,6 +77,9 @@ std::optional<std::size_t> ClearGameProgram(const Programs& programs) {
   return found;
 }
 bool IsPrintableAscii(const std::string& text);
+// A console path a game can play from in place: printable ASCII without ':' or '\\', which Wine's path for it can't
+// hold (prospero-win maps the console root to Z:, so a colon or backslash would split the folder name).
+bool IsPlayableInPlace(const std::string& text);
 
 // A path inside a folder: relative, '/' separators, no empty, "." or ".." parts, no backslash or NUL.
 bool IsSafeRelativePath(const std::string& path);

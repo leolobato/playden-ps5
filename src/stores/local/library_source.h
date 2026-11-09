@@ -45,7 +45,7 @@ struct ImportCandidate {
   std::vector<Program> programs;  // ranked: the likely game first; helpers flagged
   std::uint64_t total_bytes = 0;  // estimate (scanner.h)
   std::uint64_t file_count = 0;
-  bool ascii_ok = false;  // printable-ASCII path: can play in place
+  bool ascii_ok = false;  // IsPlayableInPlace path: can play in place
   bool partial = false;   // the scan stopped at a limit or a depth
   ScanStatus status = ScanStatus::kOk;
   std::string imported_id;  // already in the library as this game; empty when not

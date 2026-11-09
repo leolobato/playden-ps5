@@ -545,6 +545,7 @@ void ImportedGamePlaysInPlace() {
   Write(usb / "Rally/Redist/vcredist_x64.exe", pe, 0644);
   Write(usb / "Rally/data.pak", "data", 0644);
   Write(usb / "Caf\xc3\xa9/Game.exe", pe, 0644);
+  Write(usb / "Space: Marine/Game.exe", pe, 0644);
   CHECK(chmod((usb / "Rally").c_str(), 0755) == 0);
   const std::string console_root = "/mnt/usb0/playden/import/Rally";
   std::atomic<bool> usb_present{true};
@@ -612,7 +613,7 @@ void ImportedGamePlaysInPlace() {
     };
     tick_until([&] {
       return host.Snapshot().status == RuntimeHostStatus::kReady && model.state().runtime == hb::RuntimeState::Ready &&
-             !model.state().import_scanning && model.state().import_candidates.size() >= 2;  // Sky joins later
+             !model.state().import_scanning && model.state().import_candidates.size() >= 3;  // Sky joins later
     });
     body(model, controller, host, *local_library, tick_until);
     controller.Shutdown();
@@ -643,16 +644,21 @@ void ImportedGamePlaysInPlace() {
   // Signed out of Steam.
   run(false, [&](hb::Simulation& model, hb::Controller&, RuntimeHost& host, local::LocalLibrarySource& source,
                  const std::function<void(const std::function<bool()>&)>& tick_until) {
-    // The two folders on the drive are candidates: Rally with its game first and the redistributable
-    // flagged, and the one whose name the PS5 can't play from.
+    // The three folders on the drive are candidates: Rally with its game first and the redistributable
+    // flagged, and the two whose names the PS5 can't play from.
     const auto& candidates = model.state().import_candidates;
     const auto rally = std::find_if(candidates.begin(), candidates.end(), [](const hb::LiveImportCandidate& c) { return c.title == "Rally"; });
     CHECK(rally != candidates.end() && rally->volume_id == "usb0" && rally->folder == "playden/import/Rally");
     CHECK(rally->ascii_ok && !rally->imported.valid() && rally->programs.size() == 2);
     CHECK(rally->programs[0].path == "Bin/Rally.exe" && !rally->programs[0].helper && rally->programs[1].helper);
     CHECK(rally->total_bytes > 4096);
-    const auto cafe = std::find_if(candidates.begin(), candidates.end(), [](const hb::LiveImportCandidate& c) { return !c.ascii_ok; });
-    CHECK(cafe != candidates.end() && cafe->folder == "playden/import/Caf\xc3\xa9");
+    const auto cafe = std::find_if(candidates.begin(), candidates.end(),
+                                   [](const hb::LiveImportCandidate& c) { return c.folder == "playden/import/Caf\xc3\xa9"; });
+    CHECK(cafe != candidates.end() && !cafe->ascii_ok);
+    // A colon can't be in Wine's path for the folder: it is copied into Playden, never played in place.
+    const auto marine = std::find_if(candidates.begin(), candidates.end(),
+                                     [](const hb::LiveImportCandidate& c) { return c.folder == "playden/import/Space: Marine"; });
+    CHECK(marine != candidates.end() && !marine->ascii_ok);
 
     // Add: the game is in the library with its folder's name, and plays in place.
     model.RequestImport({hb::ImportRequestKind::Add, {}, "usb0", "Rally", "Bin/Rally.exe"});

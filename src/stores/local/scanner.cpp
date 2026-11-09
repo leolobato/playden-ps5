@@ -107,6 +107,10 @@ bool IsPrintableAscii(const std::string& text) {
   return std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
 }
 
+bool IsPlayableInPlace(const std::string& text) {
+  return IsPrintableAscii(text) && text.find_first_of(":\\") == std::string::npos;
+}
+
 bool IsSafeRelativePath(const std::string& path) {
   if (path.empty() || path.size() > 4096 || path.front() == '/') return false;
   if (path.find('\\') != std::string::npos || path.find('\0') != std::string::npos) return false;
@@ -177,7 +181,7 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
   FolderScan scan;
   const auto folder = Trimmed(folder_path);
   scan.title = TitleForFolder(folder);
-  scan.printable_path = IsPrintableAscii(folder);
+  scan.printable_path = IsPlayableInPlace(folder);
   const int root = platform::OpenDirectoryWalk(folder);
   if (root < 0) {
     scan.error = errno;
@@ -252,7 +256,7 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     ++scan.file_count;
     if (!EndsWithExe(name)) continue;
     if (scan.programs.size() >= kMaxScanPrograms) { scan.limit_reached = true; break; }
-    scan.programs.push_back(Program{relative, bytes, IsLikelyHelper(relative), IsPrintableAscii(relative)});
+    scan.programs.push_back(Program{relative, bytes, IsLikelyHelper(relative), IsPlayableInPlace(relative)});
   }
   for (auto& frame : stack) Close(frame);
   scan.status = status;
