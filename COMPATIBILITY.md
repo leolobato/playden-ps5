@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-08.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-09.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -197,6 +197,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Into the Breach](https://store.steampowered.com/app/590380) | ✅ Works | 0.10 | — · OpenGL · 32-bit | Menu, new game and island map with the DualSense, at about 60 fps through Zink. |
 | [IT Specialist Simulator](https://store.steampowered.com/app/3266090) | ✅ Works | 0.10 | — | USB mouse and keyboard; controller untested. ([#21](https://github.com/leolobato/playden-ps5/issues/21), firmware 9.40) |
 | [Jotunnslayer: Hordes of Hel](https://store.steampowered.com/app/2820820) | ✅ Works | 0.17 | — | Default settings, DualSense. Steam Cloud sync downloaded 2 of 3 saves, then failed on the last one. ([#87](https://github.com/leolobato/playden-ps5/issues/87), firmware 13.40; [#367](https://github.com/leolobato/playden-ps5/issues/367), firmware 10.01) |
+| [Just Cause 3](https://store.steampowered.com/app/225540) | ✅ Works | 0.19 | — | Default settings, DualSense. ([#693](https://github.com/leolobato/playden-ps5/pull/693), firmware 13.60) |
 | [Katana ZERO](https://store.steampowered.com/app/460950) | ✅ Works | 0.10 | GameMaker · D3D11 · 32-bit | Plays with the DualSense. |
 | [Keylocker](https://store.steampowered.com/app/1325040) | ✅ Works | 0.12 | — | Default settings, DualSense. The first 20 minutes. ([#125](https://github.com/leolobato/playden-ps5/issues/125), firmware 13.60) |
 | [Kholat](https://store.steampowered.com/app/343710) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#501](https://github.com/leolobato/playden-ps5/pull/501), firmware 12.40) |
@@ -333,6 +334,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Super Meat Boy](https://store.steampowered.com/app/40800) | ✅ Works | 0.10 | Tommunism · D3D9 · 32-bit | Intro, menus and play with the D-pad. |
 | Syndicate (2012) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#616](https://github.com/leolobato/playden-ps5/issues/616), firmware 10.01) |
 | [Tabletop Simulator](https://store.steampowered.com/app/286160) | ✅ Works | 0.18 | — | Default settings. Reaches the menu; gameplay not tested. ([#641](https://github.com/leolobato/playden-ps5/issues/641), firmware 12.20) |
+| [Tales of Vesperia: Definitive Edition](https://store.steampowered.com/app/738540) | ✅ Works | 0.19 | — | Default settings. ([#695](https://github.com/leolobato/playden-ps5/pull/695)) |
 | [Tape to Tape](https://store.steampowered.com/app/1566200) | ✅ Works | 0.13 | Unity · D3D11 · 64-bit | Default settings. ([#183](https://github.com/leolobato/playden-ps5/pull/183), firmware 13.00) |
 | [Team Fortress 2](https://store.steampowered.com/app/440) | ✅ Works | 0.10 | Source · D3D9 · DXVK · 64-bit | Plays with a USB mouse and keyboard. Online play does not work: the game shows it is disconnected. The menu does not react to the DualSense, even with Controller preset = **Mouse**. Keep Game settings › Steam features on **Offline emulation**: with the game's own files it quits after about 18 seconds. On Steam accounts from before about 2010, Playden installed only the game's executables until the fix for [#58](https://github.com/leolobato/playden-ps5/issues/58). |
 | [Teardown](https://store.steampowered.com/app/1167630) | ✅ Works | 0.10 | OpenGL | Set Game settings › Graphics = **OpenGL**. USB mouse and keyboard works; controller untested. Tester recommends borderless window, 1920×1080, render scale 75%, and changing the two settings below render scale from High to Low. ([#16](https://github.com/leolobato/playden-ps5/issues/16#issuecomment-6169881987), firmware 9.40) |
@@ -379,6 +381,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Warhammer 40,000: Boltgun](https://store.steampowered.com/app/2005010) | ✅ Works | 0.14 | — | Default settings, DualSense. ([#390](https://github.com/leolobato/playden-ps5/issues/390), firmware 13.60) |
 | [Warhammer 40,000: Boltgun 2](https://store.steampowered.com/app/3115160) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#645](https://github.com/leolobato/playden-ps5/issues/645), firmware 10.01) |
 | [Wartales](https://store.steampowered.com/app/1527950) | ✅ Works | 0.13 | — | Default settings, DualSense; some stutter. ([#154](https://github.com/leolobato/playden-ps5/issues/154), firmware 13.42) |
+| WendyQuest | ✅ Works | 0.19 | — | Default settings. ([#679](https://github.com/leolobato/playden-ps5/pull/679)) |
 | [What Remains of Edith Finch](https://store.steampowered.com/app/501300) | ✅ Works | 0.12 | Unreal 4 · D3D11 · DXVK · 64-bit | Default settings, direct `FinchGame/Binaries/Win64/FinchGame.exe` selected by Playden. Opening ferry scene, looking around and opening the journal with the controller, then walking on the path toward the house verified. Tested from USB storage; later stories not tested. |
 | [WitchSpring R](https://store.steampowered.com/app/1958220) | ✅ Works | 0.13 | — | Default settings, DualSense. ([#220](https://github.com/leolobato/playden-ps5/issues/220), firmware 13.60) |
 | [Wobbly Life](https://store.steampowered.com/app/1211020) | ✅ Works | 0.10 | — | Single-player with DualSense or USB mouse and keyboard; multiplayer does not work. Loading takes about a minute. ([#25](https://github.com/leolobato/playden-ps5/issues/25), firmware 9.40) |
