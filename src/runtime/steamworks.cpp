@@ -164,6 +164,12 @@ bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, c
   if (!WriteAtomic(settings / "configs.user.ini", user) || !WriteAtomic(settings / "configs.app.ini", apps) ||
       !WriteAtomic(settings / "configs.main.ini", main) || !WriteAtomic(settings / "supported_languages.txt", kLanguages))
     return false;
+  if (!identity.steam_input_sets.empty()) {
+    const auto controller = settings / "controller";
+    if (!EnsureFolder(controller)) return false;
+    for (const auto& [name, text] : identity.steam_input_sets)
+      if (!WriteAtomic(controller / (name + ".txt"), text)) return false;
+  }
   const auto interfaces = SteamInterfaces(original);
   if (interfaces.empty()) return true;  // keep a hand-supplied file, if any
   std::string text;

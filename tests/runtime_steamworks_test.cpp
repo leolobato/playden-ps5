@@ -96,6 +96,15 @@ int main(int argc, char** argv) {
         "STEAMAPPS_INTERFACE_VERSION008\nSTEAMCONTROLLER_INTERFACE_VERSION\nSteamClient017\nSteamUser021\n");
   CHECK(Read(plugin / "steam_interfaces.txt") == Read(plugin / "steam_settings/steam_interfaces.txt"));
   CHECK(!fs::exists(root / ".hidden/steam_api.dll.orig"));
+  // No Steam Input map: no controller folder, so the emulator reports no Steam Input controller.
+  CHECK(!fs::exists(plugin / "steam_settings/controller"));
+  // With the game's Steam Input map, each action set gets its file.
+  identity.steam_input_sets = {{"Menu", "select=A\n"}, {"OnFoot", "Move=LJOY=joystick_move\n"}};
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(Read(plugin / "steam_settings/controller/Menu.txt") == "select=A\n");
+  CHECK(Read(plugin / "steam_settings/controller/OnFoot.txt") == "Move=LJOY=joystick_move\n");
+  CHECK(Read(root / "bin/steam_settings/controller/Menu.txt") == "select=A\n");
+  identity.steam_input_sets.clear();
 
   // Another store's game: no steam_appid.txt of Playden's beside the DLL, only the emulator's own; a
   // game's own file stays as it is.

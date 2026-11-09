@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace playden::runtime {
@@ -47,6 +48,9 @@ struct SteamworksIdentity {
   // Relative paths that get a copy of the game's own DLL (the .orig) while the emulator stays where the game loads it
   // from, for a game that hashes the file it finds at one of these paths (GameRecipe::steam_api_copies).
   std::vector<std::string> steam_api_copies;
+  // The game's Steam Input action sets (SteamInputActionSets), as steam_settings/controller/<name>.txt. With them the
+  // emulator answers Steam Input with the controller it reads through XInput; with none it reports no controller.
+  std::vector<std::pair<std::string, std::string>> steam_input_sets;  // action set name, file text
 };
 
 struct SteamworksResult {

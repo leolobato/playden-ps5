@@ -26,6 +26,7 @@
 #include "runtime/redist_install.h"
 #include "runtime/settings_publication_owner.h"
 #include "runtime/session_storage.h"
+#include "runtime/steam_input.h"
 #include "runtime/steam_stub.h"
 #include "runtime/steamworks.h"
 #include "runtime/self_heal.h"
@@ -897,6 +898,10 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.
     identity.write_game_appid_file = !other_store;
     identity.steam_api_copies = *files.steam_api_copies;
+    for (auto& set : rt::SteamInputActionSets(root.string())) identity.steam_input_sets.emplace_back(set.name, set.text);
+    if (!identity.steam_input_sets.empty())
+      Log("steamworks app=" + std::to_string(record.runtime_number) +
+          " steam input action sets=" + std::to_string(identity.steam_input_sets.size()));
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
   } else {
     result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);

@@ -75,6 +75,7 @@ add_library(playden_steam_cm_codec STATIC
     "${CMAKE_SOURCE_DIR}/src/runtime/community_rules.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/recipe_choice.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/install_script.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/steam_input.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/msi_package.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/lzx_decoder.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/burn_bundle.cpp"
@@ -624,6 +625,10 @@ if(BUILD_TESTING)
             "$<TARGET_FILE:community_recipe_check>" "${CMAKE_SOURCE_DIR}/tests/fixtures/community-recipes")
     set_tests_properties(community_recipe_check PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME game_probe COMMAND game_probe_test)
+    add_executable(runtime_steam_input_test tests/runtime_steam_input_test.cpp)
+    target_link_libraries(runtime_steam_input_test PRIVATE playden_steam_cm_codec)
+    target_compile_features(runtime_steam_input_test PRIVATE cxx_std_17)
+    add_test(NAME runtime_steam_input COMMAND runtime_steam_input_test)
     add_executable(runtime_redist_test tests/runtime_redist_test.cpp)
     target_link_libraries(runtime_redist_test PRIVATE playden_steam_cm_codec)
     target_compile_features(runtime_redist_test PRIVATE cxx_std_20)
