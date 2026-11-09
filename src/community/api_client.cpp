@@ -624,6 +624,7 @@ std::string ReportRequestProblem(const ReportRequest& request) {
   if (!request.author.empty() && !PrintableText(request.author, 1, kSubmissionNameMaxCharacters))
     return "the name must be at most 40 printable characters";
   if (!request.attachment.empty() && !IsSubmissionId(request.attachment)) return "bad attachment id";
+  if (!OneOf(request.origin, {"prompt", "started", "manual"})) return "where the answer came from is missing";
   if (!ShortAscii(request.kit, 64) || !ShortAscii(request.firmware, 64) || !ShortAscii(request.playden_version, 64))
     return "kit, firmware and Playden version are required";
   if (!IsIdempotencyKey(request.idempotency_key)) return "the Idempotency-Key must be 8-128 of A-Z a-z 0-9 _ -";
@@ -655,6 +656,7 @@ std::string ReportBody(const ReportRequest& request) {
   body += "]";
   if (!request.author.empty()) body += ",\"name\":" + Quoted(request.author);
   if (!request.attachment.empty()) body += ",\"attachment\":" + Quoted(request.attachment);
+  body += ",\"origin\":" + Quoted(request.origin);
   body += ",\"kit\":" + Quoted(request.kit) + ",\"firmware\":" + Quoted(request.firmware) +
           ",\"playden_version\":" + Quoted(request.playden_version) + "}";
   return body;
@@ -742,8 +744,9 @@ ReportResult SendReport(const ApiContext& context, const std::string& secret, co
   const auto state = doc ? StringField(*doc, "state") : std::nullopt;
   const auto issue_url = doc ? StringField(*doc, "issue_url", &issue_null) : std::nullopt;
   const auto* updated = doc ? doc->Find("updated") : nullptr;
-  if (!id || !IsSubmissionId(*id) || !state || (*state != "provisioning" && *state != "open") ||
+  if (!id || !IsSubmissionId(*id) || !state || (*state != "provisioning" && *state != "open" && *state != "counted") ||
       (!issue_null && (!issue_url || !PrUrl(*issue_url))) || (*state == "open" && issue_null) ||
+      (*state == "counted" && !issue_null) ||
       (updated && !updated->is_bool())) {
     result.error = BadResponse(status);
     return result;

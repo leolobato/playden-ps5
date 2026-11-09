@@ -554,6 +554,7 @@ void share_and_vote(const std::filesystem::path& base) {
                   report.details == "Played the first day, no problems." && report.based_on &&
                   report.based_on->revision == kRevision && report.installed_on == "console" && !sent[2].attach_logs,
               "the report names the game, the result, the recipe and where it is installed");
+        check(report.origin == "prompt", "an answer to the after-game prompt says so");
         std::lock_guard<std::mutex> lock(api.mutex);
         check(api.requests.size() == 2 && api.requests[1].url.find("/v1/reports") != std::string::npos,
               "a report that works sends no logs");
@@ -607,6 +608,22 @@ void share_and_vote(const std::filesystem::path& base) {
         activate(model, "feedback-reason-slow");
         activate(model, "feedback-send");
         check(model.state().library.ratings.at(kGame) == Compatibility::Untested, "a problem report leaves Untested");
+        // Counted, with no issue: a plain thanks, and nothing to scan.
+        const auto counted = model.TakeSharingRequests();
+        const auto report = std::find_if(counted.begin(), counted.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; });
+        check(report != counted.end() && report->report.origin == "manual", "a report from Share feedback says so");
+        SharingResult waits;
+        waits.kind = SharingRequestKind::Report;
+        waits.ticket = report->ticket;
+        waits.game_id = kGame;
+        waits.report.ok = true;
+        waits.report.id = "r-2";
+        waits.report.state = "counted";
+        model.ApplySharingResult(waits);
+        check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Report received" &&
+                  model.state().navigation.modals.back().link.empty() &&
+                  contains(model.state().navigation.modals.back().body, "when another player reports the same game"),
+              "a problem that waits for another player says so, with no link");
         while (!model.state().navigation.modals.empty()) model.action("circle");
         model.TakeSharingRequests();
         check(model.action("rate:274520:untested") && model.action("details:274520"), "Untested set again");
@@ -615,6 +632,12 @@ void share_and_vote(const std::filesystem::path& base) {
         activate(model, "feedback-good");
         activate(model, "feedback-send");
         check(model.state().library.ratings.at(kGame) == Compatibility::Works, "Untested set by hand also becomes Works");
+        api.answer_with({answer(204, ""), answer(201, R"({"id":"r-3","state":"counted","issue_url":null,"updated":false})")});
+        pump(model, service);
+        check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Answer counted" &&
+                  model.state().navigation.modals.back().link.empty() &&
+                  contains(model.state().navigation.modals.back().body, "counts for the compatibility list"),
+              "it ran well is counted, with no link");
         while (!model.state().navigation.modals.empty()) model.action("circle");
         model.TakeSharingRequests();
         check(model.action("rate:274520:playable") && model.action("details:274520"), "the player rates Darkwood Playable");
@@ -1105,6 +1128,7 @@ void report_with_logs(const std::filesystem::path& base) {
     report.result = "no-start";
     report.reason = "no-start";
     report.installed_on = "console";
+    report.origin = "manual";
     report.controls = {"dualsense"};
     report.kit = "0.19";
     report.firmware = "13.60";
@@ -1248,6 +1272,7 @@ void account_link(const std::filesystem::path& base) {
     report.report.store_id = "274520";
     report.report.name = "Darkwood";
     report.report.result = "works";
+    report.report.origin = "manual";
     report.report.installed_on = "console";
     report.report.kit = report.report.firmware = report.report.playden_version = "unknown";
     api.answer_with({answer(401, R"({"error":"account_unlinked","message":"ended"})")});

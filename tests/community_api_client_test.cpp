@@ -706,6 +706,7 @@ ReportRequest Report() {
   report.versions = {{"Playden version", "0.10.0"}, {"firmware", "13.60"}};
   report.author = "TodorPenchev";
   report.attachment = "att_1";
+  report.origin = "manual";
   report.kit = "0.19";
   report.firmware = "13.60";
   report.playden_version = "0.10.0";
@@ -720,7 +721,7 @@ void Reports() {
         "\"details\":\"Drops to 20 fps in the forest.\",\"installed_on\":\"usb\",\"controls\":[\"dualsense\",\"mouse-preset\"],"
         "\"settings\":\"Resolution 3840×2160 · 120 Hz on\",\"based_on\":{\"recipe_id\":\"community-steam-274520-120hz-left-stick-pointer\","
         "\"revision\":\"" + kRevision + "\"},\"versions\":[[\"Playden version\",\"0.10.0\"],[\"firmware\",\"13.60\"]],"
-        "\"name\":\"TodorPenchev\",\"attachment\":\"att_1\",\"kit\":\"0.19\",\"firmware\":\"13.60\",\"playden_version\":\"0.10.0\"}");
+        "\"name\":\"TodorPenchev\",\"attachment\":\"att_1\",\"origin\":\"manual\",\"kit\":\"0.19\",\"firmware\":\"13.60\",\"playden_version\":\"0.10.0\"}");
   auto imported = Report();
   imported.store = "imported";
   imported.store_id.clear();
@@ -788,6 +789,23 @@ void Reports() {
   api.answers = {Answer(201, R"({"id":"r_8","state":"provisioning","issue_url":null})")};
   result = SendReport(context, kSecret, Report(), cancel);
   CHECK(result.ok && result.state == "provisioning" && result.issue_url.empty());
+  // Counted: no issue, and never one in the answer.
+  api.answers = {Answer(201, R"({"id":"r_9","state":"counted","issue_url":null,"updated":false})")};
+  result = SendReport(context, kSecret, Report(), cancel);
+  CHECK(result.ok && result.state == "counted" && result.issue_url.empty());
+  api.answers = {Answer(201, R"({"id":"r_9","state":"counted","issue_url":"https://github.com/leolobato/playden-ps5/issues/801"})")};
+  CHECK(SendReport(context, kSecret, Report(), cancel).error.code == "bad_response");
+  {
+    auto nowhere = Report();
+    nowhere.origin.clear();
+    CHECK(ReportBody(nowhere).empty() && !ReportRequestProblem(nowhere).empty());
+    nowhere.origin = "prompt";
+    CHECK(ReportBody(nowhere).find("\"origin\":\"prompt\"") != std::string::npos);
+    nowhere.origin = "started";
+    CHECK(ReportBody(nowhere).find("\"origin\":\"started\"") != std::string::npos);
+    nowhere.origin = "elsewhere";
+    CHECK(ReportBody(nowhere).empty());
+  }
   api.answers = {Answer(201, R"({"id":"r_8","state":"open","issue_url":null})")};  // open needs its issue
   CHECK(SendReport(context, kSecret, Report(), cancel).error.code == "bad_response");
   api.answers = {Answer(201, R"({"id":"r_8","state":"open","issue_url":"https://x/)" + kSecret + R"("})")};

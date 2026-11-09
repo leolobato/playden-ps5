@@ -15458,8 +15458,9 @@ void Simulation::open_feedback_privacy() {
     ModalEntry privacy{"confirmation", "Before you send", "feedback-send", {"cancel", "feedback-send-confirm"}, 1, false};
     privacy.body = "Playden sends the game's name, how it ran, what happened if you wrote it, the game's settings, the name you "
                    "share as (if any), the runtime kit, firmware and Playden versions, and the logs when you include them. Logs "
-                   "have the Steam account name, IDs, PS5 user and home network addresses removed. We publish the report as "
-                   "an issue on GitHub and review it there. By sending, you confirm that you own this game.";
+                   "have the Steam account name, IDs, PS5 user and home network addresses removed. A problem report is published "
+                   "as an issue on GitHub and reviewed there; an answer that the game ran well is counted for the compatibility "
+                   "list. By sending, you confirm that you own this game.";
     open_modal(std::move(privacy));
 }
 
@@ -15482,6 +15483,8 @@ void Simulation::send_feedback() {
     request.reason = draft.result == "works" ? std::string() : draft.reason;
     if (request.reason == "other") request.reason_text = draft.reason_text;
     request.details = draft.details;
+    // "Yes, it started" says nothing about how the game plays: the API keeps it apart.
+    request.origin = !draft.after_play ? "manual" : draft.short_session ? "started" : "prompt";
     // Where it is installed, from its drive's name.
     request.installed_on = id.store == Store::kLocal ? "imported" : "other";
     for (const auto& installation : state_.installations) {
@@ -15577,7 +15580,7 @@ void Simulation::send_feedback() {
         refresh_share_sheet();
         return;
     }
-    // Fixtures answer as the API would: a new issue.
+    // Fixtures answer as the API would: "it ran well" is counted, a problem is a new issue.
     SharingResult result;
     result.kind = SharingRequestKind::Report;
     result.ticket = draft.ticket;
@@ -15585,8 +15588,12 @@ void Simulation::send_feedback() {
     result.idempotency_key = request.idempotency_key.empty() ? "simulated-" + std::to_string(draft.ticket) : request.idempotency_key;
     result.report.ok = true;
     result.report.id = "simulated-report-" + std::to_string(draft.ticket);
-    result.report.state = "open";
-    result.report.issue_url = "https://github.com/leolobato/playden-ps5/issues/" + std::to_string(700 + ++simulated_submissions_);
+    if (request.result == "works") {
+        result.report.state = "counted";
+    } else {
+        result.report.state = "open";
+        result.report.issue_url = "https://github.com/leolobato/playden-ps5/issues/" + std::to_string(700 + ++simulated_submissions_);
+    }
     ApplySharingResult(result);
 }
 
@@ -15851,7 +15858,16 @@ void Simulation::ApplySharingResult(const SharingResult& result) {
                 break;
             }
             ModalEntry sent{"confirmation", "Test report sent", state_.navigation.focus_key, {"alert-ok"}, 0, false};
-            sent.body = answer.updated ? "Thanks! It was added to your earlier report for this game and runtime kit version."
+            // Counted: no issue was opened. "It ran well" counts for the compatibility list; a problem waits until
+            // another player reports the game.
+            const bool counted = answer.state == "counted";
+            const bool problem = mine && done.result != "works";
+            const bool started = mine && !problem && done.after_play && done.short_session;
+            if (counted) sent.title = problem ? "Report received" : started ? "Answer received" : "Answer counted";
+            sent.body = counted ? (problem ? "Thanks! It opens on GitHub when another player reports the same game."
+                                   : started ? "Thanks! Playden asks how it ran after a longer session."
+                                             : "Thanks! It counts for the compatibility list.")
+                      : answer.updated ? "Thanks! It was added to your earlier report for this game and runtime kit version."
                       : answer.issue_url.empty() ? "Thanks! The report is being opened on GitHub; we review it there."
                                                  : "Thanks! The report is public on GitHub, and we review it there.";
             if (!answer.issue_url.empty()) {

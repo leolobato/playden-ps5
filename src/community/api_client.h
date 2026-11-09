@@ -155,6 +155,9 @@ struct ReportRequest {
   std::vector<std::pair<std::string, std::string>> versions;  // summary.md's facts, at most 24
   std::string author;        // optional: the player's name, 1-40 printable characters
   std::string attachment;    // optional: an id UploadAttachment returned
+  // prompt (Playden asked how the game ran), started (it asked only whether the game started, after a short session)
+  // or manual (Game details › Share feedback…)
+  std::string origin;
   std::string kit, firmware, playden_version;  // required
   std::string idempotency_key;  // one per report attempt (NewIdempotencyKey)
 };
@@ -162,8 +165,10 @@ struct ReportRequest {
 struct ReportResult {
   bool ok = false;
   std::string id;         // the report's id (1-128 of A-Z a-z 0-9 _ -)
-  std::string state;      // provisioning (no issue yet) or open
-  std::string issue_url;  // empty while provisioning
+  // provisioning (no issue yet), open, or counted: no issue is opened for it ("it ran well" counts for the
+  // compatibility list; a problem from the prompt waits for a second console that reports the game).
+  std::string state;
+  std::string issue_url;  // empty while provisioning, and when counted
   bool updated = false;   // added to this console's earlier report for the game and runtime kit version
   ApiError error;
 };
