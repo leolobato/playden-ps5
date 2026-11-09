@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.20, installed as playden-kit. Kit 0.19 with libvulkan.prx (RADV from PS5_Mesa 56bd594: 120 Hz output kept on a display with variable refresh), win32u.prx, and msvcp80.dll and msvcp90.dll (i386 and x86_64) from the prospero-win 86d1917 cross build kit-h/wine-ps5-020-1, and capability display-vrr. The app shell, the template and every other module are 0.19's, so bottles need no Recreate.",
-    "manifest_sha256": "1c0773b5a5a78bdfbe4be2333c429dfa2653a6b945fcbea0b1a8920e2fc7d6ee",
-    "files_sha256": "12b9df9c6452b792acfd740ff099efbc09090be5fda71d59dca97b59f594142f",
+    "status": "Kit 0.21, installed as playden-kit. Kit 0.20 with the prospero-win 5bd69cc changes (Wine patches 1000-1007 in ntdll, wineserver, win32u, wowprospero, the new nsiproxy.prx, ntdll.dll, ntoskrnl.exe, dnsapi.dll and every d3dx9_NN.dll; the translator's decimal-adjust instructions), the any-title shell built from 5bd69cc, Arial, Times New Roman and Courier New (Liberation 2.1.5) in the template, DXVK 2.6.2 with the unexportable shared fence fix (leolobato/dxvk release v2.6.2-fence-fix.1, built by that fork's CI), and capabilities launch-arguments-4096, wine-large-address-aware and environment-file-budgets. Bottles need no Recreate; a Recreate brings the new fonts and DXVK to a game set up before.",
+    "manifest_sha256": "66e5878d064645d0bda413553ee7ff9ce8f5f20b6d2807c329c58c9455c44550",
+    "files_sha256": "5c92e506835209de9964f5e035e6d51d189f3997f67c06c2571f072266abbf9f",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -240,10 +240,12 @@
       "display-framegen",
       "display-vrr",
       "dxvk",
+      "environment-file-budgets",
       "game-root-unowned",
       "game-root-usb-search",
       "input-playstation",
       "input-rumble",
+      "launch-arguments-4096",
       "launcher-mode",
       "offline_bottle",
       "opengl-zink",
@@ -253,13 +255,14 @@
       "title-any-id",
       "vkd3d-proton",
       "wine-driver-threads",
+      "wine-large-address-aware",
       "wine-mono",
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "7537eb0113b438e8dc0730e594fa0743203bc7c9",
-    "runtime_artifact_revision": "86d1917-kit-0.20",
-    "runtime_inventory_source": "Kit 0.20: staged by build/kit-0.20/stage.py from the kit 0.19 inputs with the six modules above (the PE modules stripped as build_host_wine.sh does; the cross build's other PRX modules came out byte-identical to 0.19's). Earlier kits: see this file's git history.",
+    "wrapper_revision": "5bd69cc04a36c82d3deab05fbc8eaf6e1b4f3d30",
+    "runtime_artifact_revision": "5bd69cc-kit-0.21",
+    "runtime_inventory_source": "Kit 0.21: staged by build/kit-0.21/stage.py from dev kit 0.21-dev.20261109.7, whose runtime files changed over 0.20 were checked against the clean 5bd69cc cross build kit-h/wine-ps5-021-9 (verify_modules.py: PRX byte-identical, PE identical apart from build stamps), with all five DXVK DLLs from the fork release. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
