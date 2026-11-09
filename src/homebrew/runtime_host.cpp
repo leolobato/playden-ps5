@@ -900,10 +900,18 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.
     identity.write_game_appid_file = !other_store;
     identity.steam_api_copies = *files.steam_api_copies;
-    for (auto& set : rt::SteamInputActionSets(root.string())) identity.steam_input_sets.emplace_back(set.name, set.text);
-    if (!identity.steam_input_sets.empty())
+    std::vector<std::string> lost_actions;
+    for (auto& set : rt::SteamInputActionSets(root.string(), &lost_actions))
+      identity.steam_input_sets.emplace_back(set.name, set.text);
+    if (!identity.steam_input_sets.empty()) {
       Log("steamworks app=" + std::to_string(record.runtime_number) +
           " steam input action sets=" + std::to_string(identity.steam_input_sets.size()));
+    } else if (!lost_actions.empty()) {
+      std::string lost;
+      for (std::size_t i = 0; i < lost_actions.size() && i < 4; ++i) lost += (i ? "," : "") + lost_actions[i];
+      Log("steamworks app=" + std::to_string(record.runtime_number) + " steam input map left out: lost=" +
+          std::to_string(lost_actions.size()) + " " + lost + (lost_actions.size() > 4 ? ",..." : ""));
+    }
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
   } else {
     result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);

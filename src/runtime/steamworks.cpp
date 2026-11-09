@@ -136,6 +136,24 @@ std::vector<std::uint32_t> Sorted(std::vector<std::uint32_t> values) {
   return values;
 }
 
+void RemoveStaleActionSets(const fs::path& controller, const std::vector<std::pair<std::string, std::string>>& sets) {
+  std::error_code error;
+  if (!fs::is_directory(fs::symlink_status(controller, error))) return;
+  std::vector<fs::path> stale;
+  for (fs::directory_iterator it(controller, error), last; !error && it != last; it.increment(error)) {
+    const auto name = it->path().filename().string();
+    if (name.size() <= 4 || Lower(name.substr(name.size() - 4)) != ".txt") continue;
+    const auto status = it->symlink_status(error);
+    if (error) { error.clear(); continue; }
+    if (!fs::is_regular_file(status)) continue;
+    const auto set = name.substr(0, name.size() - 4);
+    if (std::none_of(sets.begin(), sets.end(), [&](const auto& kept) { return kept.first == set; }))
+      stale.push_back(it->path());
+  }
+  for (const auto& path : stale) ::unlink(path.c_str());
+  ::rmdir(controller.c_str());  // only when empty
+}
+
 bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, const std::string& original) {
   const auto settings = folder / "steam_settings";
   if (!EnsureFolder(settings)) return false;
@@ -164,8 +182,11 @@ bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, c
   if (!WriteAtomic(settings / "configs.user.ini", user) || !WriteAtomic(settings / "configs.app.ini", apps) ||
       !WriteAtomic(settings / "configs.main.ini", main) || !WriteAtomic(settings / "supported_languages.txt", kLanguages))
     return false;
+  const auto controller = settings / "controller";
+  // Action sets an earlier setup wrote and this one doesn't: a game set up with a map now left out (Euro Truck
+  // Simulator 2) gets its controller back only once the emulator has no action set left.
+  RemoveStaleActionSets(controller, identity.steam_input_sets);
   if (!identity.steam_input_sets.empty()) {
-    const auto controller = settings / "controller";
     if (!EnsureFolder(controller)) return false;
     for (const auto& [name, text] : identity.steam_input_sets)
       if (!WriteAtomic(controller / (name + ".txt"), text)) return false;

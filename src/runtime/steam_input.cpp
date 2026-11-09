@@ -77,6 +77,10 @@ class Bindings {
 
   bool Empty() const { return entries_.empty(); }
 
+  bool Has(const std::string& action) const {
+    return std::any_of(entries_.begin(), entries_.end(), [&](const Entry& entry) { return entry.action == action; });
+  }
+
  private:
   struct Entry {
     std::string action;
@@ -173,6 +177,12 @@ void AddGroup(const std::string& source, const VdfNode& group, const std::string
   }
 }
 
+// A mode whose group gives only button presses: a "gameactions" entry left on such a group outputs nothing.
+bool ButtonMode(const std::string& mode) {
+  return mode == "dpad" || mode == "four_buttons" || mode == "switches" || mode == "single_button" ||
+         mode == "touch_menu" || mode == "radial_menu";
+}
+
 // Whole regular file, not through a link, at most limit bytes.
 std::optional<std::string> ReadFile(const fs::path& path, std::size_t limit) {
   const int file = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -232,8 +242,10 @@ void FindManifest(const fs::path& folder, int depth, std::size_t* entries, fs::p
 
 }  // namespace
 
-std::vector<SteamInputActionSet> ConvertSteamInputConfig(std::string_view controller_vdf) {
+std::vector<SteamInputActionSet> ConvertSteamInputConfig(std::string_view controller_vdf,
+                                                         std::vector<std::string>* lost_actions) {
   std::vector<SteamInputActionSet> out;
+  std::vector<std::string> lost;
   const auto root = steam::ParseVdf(controller_vdf);
   const auto* mappings = root ? root->Find("controller_mappings") : nullptr;
   if (!mappings || !mappings->is_dict) return out;
@@ -262,11 +274,27 @@ std::vector<SteamInputActionSet> ConvertSteamInputConfig(std::string_view contro
       // "<source> active": the group in use. "inactive" and "active modeshift" groups only take over on demand.
       if (value.is_dict || tokens.size() != 2 || Lower(tokens[1]) != "active") continue;
       const auto group = groups.find(id);
-      if (group != groups.end()) AddGroup(Lower(tokens[0]), *group->second, *set, &bindings);
+      if (group == groups.end()) continue;
+      const auto source = Lower(tokens[0]);
+      AddGroup(source, *group->second, *set, &bindings);
+      // A stick or trigger the emulator can't drive: a mouse mode, like Euro Truck Simulator 2's camera and cursor,
+      // whether it feeds a game action or moves the pointer itself. Only what an Xbox controller has counts: a
+      // PlayStation configuration's gyro and touchpad groups don't.
+      const bool stick = source == "joystick" || source == "right_joystick" || source == "dpad";
+      const bool trigger = source == "left_trigger" || source == "right_trigger";
+      const auto mode = Lower(group->second->String("mode").value_or(""));
+      if ((!stick && !trigger) || ButtonMode(mode)) continue;
+      const auto analog = GroupAction(*group->second, *set);
+      const bool drives = trigger ? mode == "trigger" : mode == "joystick_move" || mode == "joystick_camera";
+      if (analog.empty() ? !drives : !bindings.Has(analog)) lost.push_back(*set + "/" + (analog.empty() ? source : analog));
     }
     if (!bindings.Empty() && std::none_of(out.begin(), out.end(), [&](const auto& s) { return Lower(s.name) == Lower(*set); }))
       out.push_back({*set, bindings.Text()});
   }
+  if (lost_actions) *lost_actions = lost;
+  // A game that also reads its controller without Steam Input hides that controller once Steam Input reports one.
+  // With a stick or trigger missing from the map it would play worse than it does without the map.
+  if (!lost.empty()) out.clear();
   return out;
 }
 
@@ -284,7 +312,9 @@ std::string SteamInputConfigPath(std::string_view manifest_vdf) {
   return {};
 }
 
-std::vector<SteamInputActionSet> SteamInputActionSets(const std::string& install_root) {
+std::vector<SteamInputActionSet> SteamInputActionSets(const std::string& install_root,
+                                                      std::vector<std::string>* lost_actions) {
+  if (lost_actions) lost_actions->clear();
   std::size_t entries = 0;
   fs::path manifest_path;
   FindManifest(fs::path(install_root), 0, &entries, &manifest_path);
@@ -310,7 +340,7 @@ std::vector<SteamInputActionSet> SteamInputActionSets(const std::string& install
   if (!text) return {};
   std::string_view view(*text);
   while (!view.empty() && view.back() == '\0') view.remove_suffix(1);
-  return ConvertSteamInputConfig(view);
+  return ConvertSteamInputConfig(view, lost_actions);
 }
 
 }  // namespace playden::runtime

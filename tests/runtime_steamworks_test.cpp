@@ -104,7 +104,22 @@ int main(int argc, char** argv) {
   CHECK(Read(plugin / "steam_settings/controller/Menu.txt") == "select=A\n");
   CHECK(Read(plugin / "steam_settings/controller/OnFoot.txt") == "Move=LJOY=joystick_move\n");
   CHECK(Read(root / "bin/steam_settings/controller/Menu.txt") == "select=A\n");
+  // A later setup with fewer action sets removes the others; one without a map removes them all, so the emulator
+  // reports no Steam Input controller again. Other files in the folder stay.
+  identity.steam_input_sets = {{"Menu", "select=A\n"}};
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(fs::exists(plugin / "steam_settings/controller/Menu.txt"));
+  CHECK(!fs::exists(plugin / "steam_settings/controller/OnFoot.txt"));
   identity.steam_input_sets.clear();
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(!fs::exists(plugin / "steam_settings/controller"));
+  CHECK(!fs::exists(root / "bin/steam_settings/controller"));
+  Write(plugin / "steam_settings/controller/Menu.txt", "select=A\n");
+  Write(plugin / "steam_settings/controller/readme.md", "mine");
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(!fs::exists(plugin / "steam_settings/controller/Menu.txt"));
+  CHECK(Read(plugin / "steam_settings/controller/readme.md") == "mine");
+  fs::remove_all(plugin / "steam_settings/controller");
 
   // Another store's game: no steam_appid.txt of Playden's beside the DLL, only the emulator's own; a
   // game's own file stays as it is.

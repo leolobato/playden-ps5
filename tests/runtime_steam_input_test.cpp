@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 #define CHECK(cond)                                                                     \
   do {                                                                                  \
@@ -193,6 +194,81 @@ const char* const kManifest = R"VDF("Action Manifest"
 }
 )VDF";
 
+// Shaped like Euro Truck Simulator 2's configuration: the UI cursor and the driving camera are sticks in mouse modes,
+// which the emulator can't drive. The game reads the controller without Steam Input too, and hides it once Steam Input
+// reports one.
+const char* const kMouseStickConfig = R"VDF("controller_mappings"
+{
+	"version"		"3"
+	"controller_type"		"controller_xboxone"
+	"actions"
+	{
+		"ui" { "title" "#action_set_ui" }
+		"driving" { "title" "#action_set_driving" }
+	}
+	"group"
+	{
+		"id"		"0"
+		"mode"		"four_buttons"
+		"inputs" { "button_a" { "activators" { "Full_Press" { "bindings" { "binding" "game_action ui ui_confirm, #Confirm" } } } } }
+	}
+	"group"
+	{
+		"id"		"1"
+		"mode"		"joystick_mouse"
+		"gameactions" { "ui" "ui_mouse_rel_position" }
+	}
+	"group"
+	{
+		"id"		"2"
+		"mode"		"joystick_move"
+		"gameactions" { "driving" "driving_steering" }
+	}
+	"group"
+	{
+		"id"		"3"
+		"mode"		"joystick_mouse"
+		"gameactions" { "driving" "driving_mouse_look" }
+	}
+	"group"
+	{
+		"id"		"4"
+		"mode"		"trigger"
+		"gameactions" { "driving" "driving_aforward" }
+	}
+	"group"
+	{
+		"id"		"5"
+		"mode"		"dpad"
+		"gameactions" { "driving" "driving_stale" }
+		"inputs" { "dpad_north" { "activators" { "Full_Press" { "bindings" { "binding" "game_action driving driving_cam1, #Cam" } } } } }
+	}
+	"group"
+	{
+		"id"		"6"
+		"mode"		"absolute_mouse"
+	}
+	"group"
+	{
+		"id"		"7"
+		"mode"		"mouse_region"
+		"gameactions" { "ui" "ui_gyro_aim" }
+	}
+	"preset"
+	{
+		"id"		"0"
+		"name"		"ui"
+		"group_source_bindings" { "0" "button_diamond active" "1" "joystick active" "6" "right_joystick active" "7" "gyro active" }
+	}
+	"preset"
+	{
+		"id"		"1"
+		"name"		"driving"
+		"group_source_bindings" { "2" "joystick active" "3" "right_joystick active" "4" "right_trigger active" "5" "dpad active" }
+	}
+}
+)VDF";
+
 const SteamInputActionSet* Find(const std::vector<SteamInputActionSet>& sets, const std::string& name) {
   for (const auto& set : sets)
     if (set.name == name) return &set;
@@ -231,6 +307,17 @@ void TestConvertsActionSets() {
         "hud=DLEFT\n");
 }
 
+void TestLeavesOutMapThatLosesSticks() {
+  std::vector<std::string> lost{"left over"};
+  CHECK(ConvertSteamInputConfig(kMouseStickConfig, &lost).empty());
+  // A stick that moves the pointer itself is lost too. A dpad keeps only its buttons: a "gameactions" entry left on it
+  // is not a lost stick. Gyro isn't on an Xbox controller.
+  CHECK((lost == std::vector<std::string>{"ui/ui_mouse_rel_position", "ui/right_joystick", "driving/driving_mouse_look"}));
+  // A map that keeps every stick and trigger says it lost nothing.
+  CHECK(ConvertSteamInputConfig(kConfig, &lost).size() == 2);
+  CHECK(lost.empty());
+}
+
 void TestRejectsOtherText() {
   CHECK(ConvertSteamInputConfig("").empty());
   CHECK(ConvertSteamInputConfig("\"Action Manifest\" { }").empty());
@@ -267,6 +354,12 @@ void TestFindsManifestInInstall() {
         "\"Action Manifest\" { \"configurations\" { \"controller_xboxone\" { \"0\" { \"path\" \"../outside.vdf\" } } } }");
   Write(root / "GAMEDATA" / "outside.vdf", kConfig);
   CHECK(SteamInputActionSets(root.string()).empty());
+  // A configuration whose sticks the emulator can't drive gives no map, and says why.
+  Write(root / "GAMEDATA" / "INPUT" / "STEAM_INPUT_MANIFEST.VDF", kManifest);
+  Write(root / "GAMEDATA" / "INPUT" / "configs" / "controller_xboxone.vdf", kMouseStickConfig);
+  std::vector<std::string> lost;
+  CHECK(SteamInputActionSets(root.string(), &lost).empty());
+  CHECK(lost.size() == 3);
   fs::remove_all(root);
 }
 
@@ -274,6 +367,7 @@ void TestFindsManifestInInstall() {
 
 int main() {
   TestConvertsActionSets();
+  TestLeavesOutMapThatLosesSticks();
   TestRejectsOtherText();
   TestPicksXboxConfig();
   TestFindsManifestInInstall();
