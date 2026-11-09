@@ -284,6 +284,15 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"native", "Native", "On the console's processor. Fastest."},
                          {"translator", "Translator", "Translated as it runs. Slower; for programs that crash on Native."}},
                         "native", 3, ApplyMode::kGameClosed));
+  // A 64-bit game hosts nsiproxy, so it can list the console's network adapters; Off is for a game that hangs there.
+  // A 32-bit game hosts none either way, so Off changes nothing for it; the row stays open because a game not prepared
+  // yet has no architecture to tell.
+  list.push_back(Choice("network_adapters", "Network adapters",
+                        "Whether a 64-bit game can list the console's network adapters.", "PW_NSIPROXY_DISABLE",
+                        G::kWindows,
+                        {{"kit", "Runtime default", "The game can list them."},
+                         {"off", "Off", "For 64-bit games that hang at start or lose the network with them listed."}},
+                        "kit", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("logging", "Logging", "How much detail goes into the game's log file.", "WINEDEBUG",
                         G::kWindows,
                         {{"normal", "Normal", "Errors and loaded modules."},
@@ -574,6 +583,10 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (!kit.large_address_aware) return "Needs a newer runtime kit that gives 32-bit games 4 GB.";
     if (const auto program = values.find("architecture"); program != values.end() && program->second.value == "pe64")
       return "Only for 32-bit programs.";
+  }
+  if (id == "network_adapters") {
+    if (kit.nsiproxy_switch_needs_update) return kAppliesAfterKitUpdate;
+    if (!kit.nsiproxy_switch) return "Needs a newer runtime kit that can turn network adapters off.";
   }
   if (id == "cpu") {
     if (const auto program = values.find("architecture"); program != values.end() && program->second.value == "pe64")
@@ -1123,6 +1136,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     };
     if (names("WINE_LARGE_ADDRESS_AWARE") && !kit.large_address_aware)
       return refuse("WINE_LARGE_ADDRESS_AWARE", kit.large_address_aware_needs_update);
+    if (names("PW_NSIPROXY_DISABLE") && !kit.nsiproxy_switch)
+      return refuse("PW_NSIPROXY_DISABLE", kit.nsiproxy_switch_needs_update);
     for (const char* budget : {"WINE_PS5_PARK_FILES", "WINE_PS5_CACHED_FILES"})
       if (names(budget) && !kit.environment_file_budgets)
         return refuse(budget, kit.environment_file_budgets_needs_update);
@@ -1369,6 +1384,13 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   if (address_space.available && address_space.value == "4gb" &&
       (!environment.available || !EnvironmentSetsName(environment.value, "WINE_LARGE_ADDRESS_AWARE"))) {
     environment_lines += "WINE_LARGE_ADDRESS_AWARE = 1\n";
+    ++environment_count;
+  }
+  // Network adapters Off: PW_NSIPROXY_DISABLE in [environment], unless Environment variables set it already.
+  const auto& network_adapters = OptionalValue(settings, "network_adapters");
+  if (network_adapters.available && network_adapters.value == "off" &&
+      (!environment.available || !EnvironmentSetsName(environment.value, "PW_NSIPROXY_DISABLE"))) {
+    environment_lines += "PW_NSIPROXY_DISABLE = 1\n";
     ++environment_count;
   }
   if (environment.available && !settings.environment_as_debug_env) {
@@ -3710,6 +3732,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.input_playstation = has(kKitInputPlaystation);
   kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
   kit.large_address_aware = has(kKitLargeAddressAware);
+  kit.nsiproxy_switch = has(kKitNsiproxySwitch);
   kit.environment_file_budgets = has(kKitEnvironmentFileBudgets);
   kit.registry = bottle_access;
   return kit;
@@ -3753,6 +3776,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.large_address_aware) {
     kit.large_address_aware = false;
     kit.large_address_aware_needs_update = true;
+  }
+  if (!title_runtime_current && kit.nsiproxy_switch) {
+    kit.nsiproxy_switch = false;
+    kit.nsiproxy_switch_needs_update = true;
   }
   if (!title_runtime_current && kit.environment_file_budgets) {
     kit.environment_file_budgets = false;

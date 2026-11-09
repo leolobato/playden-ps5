@@ -86,7 +86,8 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu", "logging",
+        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu", "network_adapters",
+        "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);
@@ -969,6 +970,52 @@ int main(int argc, char** argv) {
       CHECK(BuildEffectiveSettings(pe64, nullptr, {{"address_space", "4gb"}}, lae, &settings, &error));
       CHECK(!settings.values.at("address_space").available &&
             settings.values.at("address_space").reason == "Only for 32-bit programs.");
+      // Network adapters Off: PW_NSIPROXY_DISABLE in [environment] for a 64-bit program, with a runtime that takes it.
+      {
+        auto nsi = every;
+        nsi.environment = nsi.nsiproxy_switch = true;
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"network_adapters", "off"}}, nsi, &settings, &error));
+        CHECK(settings.values.at("network_adapters").available);
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("\n[environment]\nPW_NSIPROXY_DISABLE = 1\n") != std::string::npos);
+        CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true}));
+        // Runtime default writes nothing.
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {}, nsi, &settings, &error));
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("PW_NSIPROXY_DISABLE") == std::string::npos);
+        // Environment variables may set it itself, and it is written once.
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"network_adapters", "off"}, {"environment", "PW_NSIPROXY_DISABLE=1"}},
+                                     nsi, &settings, &error));
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("PW_NSIPROXY_DISABLE") == profile.text.rfind("PW_NSIPROXY_DISABLE"));
+        // An older runtime has no such row, and refuses the variable from Environment variables too.
+        auto older = every;
+        older.environment = true;
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"network_adapters", "off"}}, older, &settings, &error));
+        CHECK(!settings.values.at("network_adapters").available && settings.values.at("network_adapters").value == "kit");
+        CHECK(!BuildEffectiveSettings(pe64, nullptr, {{"environment", "PW_NSIPROXY_DISABLE=1"}}, older, &settings, &error));
+        CHECK(error.setting_id == "environment" && error.message == "PW_NSIPROXY_DISABLE needs a newer runtime kit");
+        // A title that waits for its update keeps the choice for then.
+        CHECK(BuildEffectiveSettings(pe64, nullptr, {{"network_adapters", "off"}}, KitForTitleRuntime(nsi, false),
+                                     &settings, &error));
+        CHECK(settings.values.at("network_adapters").waits_for_update &&
+              settings.values.at("network_adapters").after_update == "off");
+        CHECK(!BuildEffectiveSettings(pe64, nullptr, {{"environment", "PW_NSIPROXY_DISABLE=1"}},
+                                      KitForTitleRuntime(nsi, false), &settings, &error));
+        CHECK(error.message == "PW_NSIPROXY_DISABLE needs the game's runtime kit update");
+        // A 32-bit program hosts no nsiproxy anyway: the row stays open (an unprepared game has no architecture yet).
+        CHECK(BuildEffectiveSettings(hl2, nullptr, {{"network_adapters", "off"}}, nsi, &settings, &error));
+        CHECK(settings.values.at("network_adapters").available);
+        // Like CPU cores, it takes its place before the player's variables, which the limit trims.
+        CHECK(BuildEffectiveSettings(pe64, nullptr,
+                                     {{"network_adapters", "off"},
+                                      {"environment", "DXVK_A=1; DXVK_B=1; DXVK_C=1; DXVK_D=1; DXVK_E=1; DXVK_F=1; "
+                                                      "DXVK_G=1; DXVK_H=1"}},
+                                     nsi, &settings, &error));
+        CHECK(RenderProsperoProfile(pe64, settings, target, &profile, &reason));
+        CHECK(profile.text.find("\n[environment]\nPW_NSIPROXY_DISABLE = 1\n") != std::string::npos);
+        CHECK(KitCapabilitiesFromManifest({kKitNsiproxySwitch}, true).nsiproxy_switch);
+      }
       // 32-bit code: Native writes nothing; Translator writes [runtime] cpu, once, with the version when there is one.
       auto v2 = every;
       v2.profile_version_2 = true;

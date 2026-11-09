@@ -159,6 +159,7 @@ void Rules(const std::string& fixtures) {
   refused("env-vkd3d-log-file.json", "VKD3D_LOG_FILE is not one Playden sets");
   refused("env-vkd3d-shader-cache-path.json", "VKD3D_SHADER_CACHE_PATH is not one Playden sets");
   refused("env-large-address-aware.json", "share the Address space setting instead");
+  refused("env-nsiproxy-disable.json", "share the Network adapters setting instead");
   refused("program-system-msiexec.json", "msiexec.exe, a Windows or Wine system program");
   refused("program-dots-and-spaces.json", "only dots and spaces");
   refused("program-folder-trailing-dot.json", "ending in a dot or space");

@@ -92,6 +92,10 @@ struct KitCapabilities {
   // title that runs this kit's runtime.
   bool large_address_aware = false;
   bool large_address_aware_needs_update = false;
+  // [environment] PW_NSIPROXY_DISABLE = 1 keeps a 64-bit game from hosting nsiproxy, so it lists no network adapters
+  // (kKitNsiproxySwitch). Counts only for a title that runs this kit's runtime.
+  bool nsiproxy_switch = false;
+  bool nsiproxy_switch_needs_update = false;
   // [environment] WINE_PS5_PARK_FILES and WINE_PS5_CACHED_FILES, the open-file budgets (kKitEnvironmentFileBudgets).
   // Counts only for a title that runs this kit's runtime.
   bool environment_file_budgets = false;
@@ -784,6 +788,7 @@ inline constexpr const char* kKitLaunchArguments4096 = "launch-arguments-4096";
 // Wine gives a 32-bit program 4 GB of address space when [environment] sets WINE_LARGE_ADDRESS_AWARE = 1, as the
 // large-address-aware flag would; older titles refuse the variable.
 inline constexpr const char* kKitLargeAddressAware = "wine-large-address-aware";
+inline constexpr const char* kKitNsiproxySwitch = "nsiproxy-switch";
 // The title takes WINE_PS5_PARK_FILES and WINE_PS5_CACHED_FILES in [environment]: the in-process server's open-file
 // budgets. Older titles refuse them.
 inline constexpr const char* kKitEnvironmentFileBudgets = "environment-file-budgets";
