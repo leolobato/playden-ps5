@@ -15502,6 +15502,14 @@ void Simulation::send_feedback() {
         refresh_share_sheet();
         return;
     }
+    // A game that ran rates itself Works while it is still Untested; a rating the player chose stays.
+    if (draft.result == "works") {
+        const auto rating = state_.library.ratings.find(id);
+        if (rating == state_.library.ratings.end() || rating->second == Compatibility::Untested) {
+            state_.library.ratings[id] = Compatibility::Works;
+            save_profile();
+        }
+    }
     // With a community recipe in use, the answer is its vote too (votes off: no vote).
     if (draft.recipe && state_.recipe_votes != playden::RecipeVotesPreference::kOff) {
         if (state_.recipe_votes == playden::RecipeVotesPreference::kUnset) {

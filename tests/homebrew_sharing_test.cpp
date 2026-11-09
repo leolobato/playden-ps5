@@ -33,6 +33,7 @@ namespace {
 
 using playden::GameId;
 using playden::homebrew::AuthState;
+using playden::homebrew::Compatibility;
 using playden::homebrew::ModelMode;
 using playden::homebrew::RuntimeState;
 using playden::homebrew::SharingRequest;
@@ -526,6 +527,7 @@ void share_and_vote(const std::filesystem::path& base) {
     check(model.view().surface == "feedback" && model.view().title == "How did Darkwood run?" &&
               contains(model.view().subtitle, "Darkwood at 4K"),
           "ten minutes ask how it ran, and say the answer rates the recipe");
+    check(!model.state().library.ratings.contains(kGame), "Darkwood starts out Untested");
     activate(model, "feedback-good");
     check(find_row(model, "feedback-send") && find_row(model, "feedback-logs") && !find_row(model, "feedback-logs")->selected &&
               !find_row(model, "feedback-recipe"),
@@ -536,8 +538,11 @@ void share_and_vote(const std::filesystem::path& base) {
     check(model.state().navigation.modals.back().title == "Before you send" &&
               contains(model.state().navigation.modals.back().body, "you own this game"),
           "the first report says what it sends");
+    check(!model.state().library.ratings.contains(kGame), "the rating waits for the report to go");
     activate(model, "feedback-send-confirm");
     check(model.state().reports_explained && model.ExportPreferences().reports_explained, "and only the first time");
+    check(model.state().library.ratings.contains(kGame) && model.state().library.ratings.at(kGame) == Compatibility::Works,
+          "a game that ran well and was Untested is rated Works");
     api.answer_with({answer(204, ""), answer(201, R"({"id":"r-1","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/801","updated":false})")});
     pump(model, service, &sent);
     check(sent.size() == 3 && sent[0].kind == SharingRequestKind::FeedbackSeen && sent[1].kind == SharingRequestKind::Vote &&
@@ -590,6 +595,35 @@ void share_and_vote(const std::filesystem::path& base) {
         for (const auto& notice : model.state().notices)
             if (contains(notice.message, "wasn't sent")) ++messages;
         check(messages == 1 && report_messages == 1, "a failed report and its vote say so once, as the report");
+        model.TakeSharingRequests();
+    }
+    // A problem never changes the rating; a report that it ran well keeps a rating the player chose.
+    {
+        check(model.action("rate:274520:untested"), "the player sets Darkwood back to Untested");
+        check(model.action("details:274520"), "Darkwood's page opens for a problem report");
+        activate(model, "details-more");
+        activate(model, "share-feedback");
+        activate(model, "feedback-problems");
+        activate(model, "feedback-reason-slow");
+        activate(model, "feedback-send");
+        check(model.state().library.ratings.at(kGame) == Compatibility::Untested, "a problem report leaves Untested");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        model.TakeSharingRequests();
+        check(model.action("rate:274520:untested") && model.action("details:274520"), "Untested set again");
+        activate(model, "details-more");
+        activate(model, "share-feedback");
+        activate(model, "feedback-good");
+        activate(model, "feedback-send");
+        check(model.state().library.ratings.at(kGame) == Compatibility::Works, "Untested set by hand also becomes Works");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        model.TakeSharingRequests();
+        check(model.action("rate:274520:playable") && model.action("details:274520"), "the player rates Darkwood Playable");
+        activate(model, "details-more");
+        activate(model, "share-feedback");
+        activate(model, "feedback-good");
+        activate(model, "feedback-send");
+        check(model.state().library.ratings.at(kGame) == Compatibility::Playable, "a report that it ran well keeps Playable");
+        while (!model.state().navigation.modals.empty()) model.action("circle");
         model.TakeSharingRequests();
     }
     // Other, in the player's words, goes with the report and with its vote.
