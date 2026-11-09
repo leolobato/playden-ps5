@@ -63,6 +63,7 @@ expected = {
     "kit-not-a-version.json": "tested_kit is not a kit version",
     "env-vkd3d-log-file.json": "VKD3D_LOG_FILE is not one Playden sets",
     "env-vkd3d-shader-cache-path.json": "VKD3D_SHADER_CACHE_PATH is not one Playden sets",
+    "env-large-address-aware.json": "share the Address space setting instead",
     "program-system-msiexec.json": "a Windows or Wine system program",
     "program-dots-and-spaces.json": "only dots and spaces",
     "program-folder-trailing-dot.json": "ending in a dot or space",

@@ -292,6 +292,10 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
     for (const auto& [name, value] : EnvironmentEntries(*environment))
       if (!IsPlaydenEnvironmentVariable(name))
         refuse("Environment variable " + name + " is not one Playden sets; a community recipe may set only those.");
+      // A share carries the Address space setting instead: on a game whose title still runs an older runtime the
+      // setting waits for its update, while the raw variable would make every setting of the game refused.
+      else if (name == "WINE_LARGE_ADDRESS_AWARE")
+        refuse("Environment variable WINE_LARGE_ADDRESS_AWARE: share the Address space setting instead.");
 
   // Registry: the recipe's own programs; publisher keys are flagged for review instead.
   for (const auto& value : recipe.registry) {
