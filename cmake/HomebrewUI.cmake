@@ -560,6 +560,7 @@ if(BUILD_TESTING)
     target_compile_definitions(homebrew_library_graphical_test PRIVATE
         PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}"
         PLAYDEN_HOMEBREW_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/fixtures/ui-comparison")
+    target_include_directories(homebrew_library_graphical_test PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
     target_link_libraries(homebrew_library_graphical_test PRIVATE
         playden_persistence_controller playden_library_controller playden_homebrew_ui PkgConfig::SDL2 OpenGL::GL)
     add_dependencies(homebrew_library_graphical_test playden_homebrew_assets)

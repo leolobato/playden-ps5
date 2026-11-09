@@ -3050,19 +3050,35 @@ class Render::Impl
         const float offset = list_scroll(list_key, focus_index * pitch, focus_index * pitch + 80.0F, viewport, content,
                                          state.reduced_motion);
         scene_.push_clip({0.0F, top - 8.0F, kWidth, viewport + 8.0F});
+        // The rows are 4 px apart, so a focus glow and ring reach into the next row. Each layer is drawn for every row
+        // before the next one: no row drawn later covers a focus that is still fading in or out.
+        struct ListRow
+        {
+            const ViewRow *row;
+            gfx::Rect box;
+            float amount;
+        };
+        std::vector<ListRow> on_screen;
         for (std::size_t index = 0; index < games.size(); ++index)
         {
             const float y = top + index * pitch - offset;
             if (y + pitch < top - 8.0F || y > top + viewport)
                 continue;
-            const ViewRow &row = *games[index];
-            const gfx::Rect box{table_x, y, table_w, 80.0F};
-            const float amount = focus_of(row);
-            focus_glow(scene_, box, amount, true);
+            on_screen.push_back({games[index], {table_x, y, table_w, 80.0F}, focus_of(*games[index])});
+        }
+        for (const ListRow &item : on_screen)
+            focus_glow(scene_, item.box, item.amount, true);
+        for (const ListRow &item : on_screen)
+        {
+            const ViewRow &row = *item.row;
+            const gfx::Rect &box = item.box;
+            const float y = box.y;
+            const float amount = item.amount;
             if (amount > 0.0F)
             {
-                // The row covers the glow's middle, lifted a little.
-                scene_.rounded_rect(box, 10.0F, kBackground);
+                // The row covers its glow's middle, lifted a little. The cover fades with the focus, so a row
+                // losing it does not hide the glow of the row gaining it.
+                scene_.rounded_rect(box, 10.0F, kBackground.with_alpha(amount));
                 scene_.rounded_rect(box, 10.0F, kText.with_alpha(0.07F * amount));
             }
             if (!row.enabled)
@@ -3086,8 +3102,9 @@ class Render::Impl
             ui::text(scene_, fonts_.regular, row.value, size_right, y + 49.0F, 24.0F, kText, gfx::Align::right);
             if (!row.enabled)
                 scene_.pop_opacity();
-            focus_ring(scene_, box, amount, true);
         }
+        for (const ListRow &item : on_screen)
+            focus_ring(scene_, item.box, item.amount, true);
         // A running check's note under the games, or the empty tab's words.
         for (const ViewRow *row : notes)
         {

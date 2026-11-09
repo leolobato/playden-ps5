@@ -13,6 +13,10 @@
 #include <filesystem>
 #include "steam_id.h"
 
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 namespace {
 using namespace playden;
 struct Sessions final : SessionRepository {
@@ -40,6 +44,20 @@ struct Cache final : LibraryRepository {
   }
   Result<void> Clear(std::uint64_t) const override { snapshot.reset();return Result<void>::Success(); }
 };
+}
+
+// Rows of a capture whose pixel at column x is the focus ring's orange, top to bottom.
+static std::vector<int> ring_rows(const std::filesystem::path& png, int x, int from, int to) {
+  int width = 0, height = 0, channels = 0;
+  unsigned char* pixels = stbi_load(png.string().c_str(), &width, &height, &channels, 3);
+  assert(pixels != nullptr && x < width && to <= height);
+  std::vector<int> rows;
+  for (int y = from; y < to; ++y) {
+    const unsigned char* p = pixels + (static_cast<std::size_t>(y) * width + x) * 3;
+    if (p[0] > 150 && p[0] > p[1] + 50 && p[1] > p[2] + 20) rows.push_back(y);
+  }
+  stbi_image_free(pixels);
+  return rows;
 }
 
 // Settings: Up and Down stay in a section; another section is reached through the rail.
@@ -433,6 +451,27 @@ int main(int argc,char** argv) {
       assert(fixture.action("triangle") && fixture.state().navigation.route != Route::ManageGames);
       assert(std::any_of(fixture.state().notices.begin(), fixture.state().notices.end(),
                          [](const auto& notice) { return notice.message == "3 updates queued"; }));
+      // Moving up a row: the row below is still fading out, but it must not cover the new focus ring's lower edge.
+      {
+        assert(fixture.scenario("manage-uninstall") && !fixture.state().reduced_motion);
+        std::vector<std::string> toggles;
+        for (const auto& row : fixture.view().rows)
+          if (row.key.rfind("manage-toggle-", 0) == 0) toggles.push_back(row.key);
+        assert(toggles.size() >= 3);
+        assert(fixture.action("focus:" + toggles[2]));
+        for(int i=0;i<24;++i) renderer.draw(fixture,1920,1080);
+        assert(fixture.action("up") && fixture.state().navigation.focus_key == toggles[1]);
+        for(int i=0;i<6;++i) renderer.draw(fixture,1920,1080);
+        assert(renderer.capture_png(output/"manage-uninstall-moving-up.png",1920,1080));
+        // The list starts at y 366 with a row every 84 px; the ring sits 6.5 px outside each 80 px row.
+        const int box = 366 + 84;
+        for (int x : {700, 1000, 1600}) {
+          const auto rows = ring_rows(output/"manage-uninstall-moving-up.png", x, box - 10, box + 92);
+          const bool top = std::any_of(rows.begin(), rows.end(), [&](int y) { return y < box; });
+          const bool bottom = std::any_of(rows.begin(), rows.end(), [&](int y) { return y > box + 80; });
+          assert(top && bottom);
+        }
+      }
       // Uninstall: Triangle asks first, naming the checked games; confirming closes the screen on a notice.
       assert(fixture.scenario("manage-uninstall") && fixture.action("triangle"));
       assert(!fixture.state().navigation.modals.empty() && fixture.state().navigation.modals.back().id == "confirmation");
