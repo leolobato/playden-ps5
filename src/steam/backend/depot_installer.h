@@ -141,6 +141,12 @@ struct DepotMerge {
   std::uint64_t install_bytes = 0;   // the merged files' bytes: what the install holds
   std::uint64_t download_bytes = 0;  // their chunks' compressed bytes: what a new install downloads
 };
+// Gives each folder one spelling across `manifests`: the first one seen, in depot then file order. Windows
+// treats "Content" and "content" as one folder, and depots of one game may spell it both ways; on a drive that
+// keeps case apart they would become two folders, and a game looking in one would miss the files of the other.
+// A file keeps the case of its own name.
+void UnifyFolderCase(std::vector<DepotManifest>* manifests);
+
 // `log` hears how each clash of a file and a folder settled (the result, then both entries: depot, kind,
 // size and path).
 DepotMerge MergeDepotManifests(const std::vector<DepotManifest>& manifests,

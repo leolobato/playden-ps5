@@ -407,6 +407,21 @@ struct UpdatePlan {
   std::map<std::string, std::string> new_spelling;  // lowercase -> path as the new version names it
 };
 
+// Whether an old version's folder stays: the new version lists it in the same spelling, or in another spelling that
+// is the same folder on disk (a filesystem that ignores case). A folder whose spelling changed on a filesystem that
+// keeps case apart goes once empty, so the files moved into the new spelling aren't hidden behind the old one.
+bool FolderStays(const std::string& install_root, const UpdatePlan& plan, const std::string& path) {
+  const auto key = Lower(path);
+  if (!plan.new_dirs.count(key)) return false;
+  const auto spelling = plan.new_spelling.find(key);
+  if (spelling == plan.new_spelling.end() || spelling->second == path) return true;
+  struct stat old_info {}, new_info {};
+  if (lstat((install_root + "/" + path).c_str(), &old_info) != 0 ||
+      lstat((install_root + "/" + spelling->second).c_str(), &new_info) != 0)
+    return true;
+  return old_info.st_dev == new_info.st_dev && old_info.st_ino == new_info.st_ino;
+}
+
 UpdatePlan ReadUpdatePlan(const std::string& work) {
   UpdatePlan plan;
   plan.old_list = ReadFileList(work + "/" + kUpdateOld);
@@ -535,6 +550,27 @@ const char* InstallErrorName(InstallError error) {
     case InstallError::kGameRunning: return "game_running";
   }
   return "protocol";
+}
+
+void UnifyFolderCase(std::vector<DepotManifest>* manifests) {
+  std::map<std::string, std::string> spelling;  // lowercase folder path -> the first spelling seen
+  for (auto& manifest : *manifests) {
+    for (auto& file : manifest.files) {
+      auto& path = file.path;
+      // The folders above a file, or every part of a folder's own path.
+      const auto folders_end = file.is_directory() ? path.size() : path.rfind('/');
+      if (folders_end == std::string::npos) continue;
+      for (std::size_t start = 0; start < folders_end;) {
+        auto slash = path.find('/', start);
+        if (slash == std::string::npos || slash > folders_end) slash = folders_end;
+        const auto prefix = path.substr(0, slash);
+        const auto found = spelling.emplace(Lower(prefix), prefix).first;
+        // Only ASCII letters change case (Lower), so the spelling has the same length.
+        if (found->second != prefix) path.replace(0, slash, found->second);
+        start = slash + 1;
+      }
+    }
+  }
 }
 
 DepotMerge MergeDepotManifests(const std::vector<DepotManifest>& manifests,
@@ -698,6 +734,7 @@ std::optional<DepotMerge> DepotInstaller::MergedManifests(const StoredSession& s
     if (fetched == InstallError::kCorrupt && network_failed) fetched = InstallError::kNetwork;
     if (fetched != InstallError::kNone) return fail(fetched, "manifest unavailable");
   }
+  UnifyFolderCase(manifests);
   auto merged = MergeDepotManifests(*manifests);
   if (!merged.conflict.empty()) return fail(InstallError::kCorrupt, "conflicting depots");
   return merged;
@@ -915,6 +952,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   const auto log_merge = [&](const char* result, const std::string& detail) {
     if (hooks_.merge && ++merge_lines <= kMergeLogLimit) hooks_.merge(result, detail);
   };
+  UnifyFolderCase(&manifests);
   auto merged = MergeDepotManifests(manifests, log_merge);
   if (!merged.conflict.empty()) return fail(InstallError::kCorrupt, ("conflicting depots " + merged.conflict).c_str());
   const auto& placements = merged.placements;
@@ -1870,7 +1908,7 @@ InstallOutcome DepotInstaller::FinishUpdate(const std::string& install_root, con
     if (cancel.load()) return fail(InstallError::kCanceled, "canceled");
     const auto key = Lower(entry.path);
     if (entry.kind == 'd') {
-      if (!plan.new_dirs.count(key)) folders.push_back(entry.path);
+      if (!FolderStays(install_root, plan, entry.path)) folders.push_back(entry.path);
       continue;
     }
     const auto old_path = install_root + "/" + entry.path;
@@ -1902,7 +1940,7 @@ InstallOutcome DepotInstaller::FinishUpdate(const std::string& install_root, con
   std::sort(folders.begin(), folders.end(),
             [](const std::string& left, const std::string& right) { return left.size() > right.size(); });
   for (const auto& folder : folders)
-    if (!plan.new_dirs.count(Lower(folder)) && GamePath(folder) && RealParents(install_root, folder))
+    if (!FolderStays(install_root, plan, folder) && GamePath(folder) && RealParents(install_root, folder))
       rmdir((install_root + "/" + folder).c_str());
   if (std::remove((work + "/" + kUpdateOld).c_str()) != 0 && errno != ENOENT)
     return fail(InstallError::kStorage, "cannot finish deleting");

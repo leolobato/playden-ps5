@@ -503,11 +503,10 @@ void ParallelMergedAndFullyResumed(const std::filesystem::path& root) {
   std::filesystem::create_directories(resumed / DepotInstaller::kJournalDir);
   std::filesystem::create_directories(resumed / "data");
   std::ofstream(resumed / "game.exe") << "MZ-executable-second-chunk";
-  // On a case-sensitive filesystem make the chosen mixed-case parent too.
-  std::filesystem::create_directories(resumed / "DATA");
-  std::ofstream(resumed / "DATA/level.dat") << "level-patched";
+  // The patch's DATA/level.dat goes in the base's folder, data (UnifyFolderCase).
+  std::ofstream(resumed / "data/level.dat") << "level-patched";
   std::ofstream journal(resumed / DepotInstaller::kJournalDir / "journal");
-  journal << "441\t0\tgame.exe\n441\t14\tgame.exe\n442\t0\tDATA/level.dat\n";
+  journal << "441\t0\tgame.exe\n441\t14\tgame.exe\n442\t0\tdata/level.dat\n";
   journal.close();
   int factories = 0;
   hooks.make_fetcher = [&] { ++factories; return InstallerHooks::ChunkFetcher{}; };
@@ -1062,8 +1061,7 @@ void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
   CHECK(std::filesystem::exists(root / "empty.txt") && std::filesystem::file_size(root / "empty.txt") == 0);
   CHECK(std::filesystem::exists(root / DepotInstaller::kInstallRecord));
   CHECK(!std::filesystem::exists(root / DepotInstaller::kJournalDir));
-  CHECK(Read(root / DepotInstaller::kFileList).find("f\tdata/level.dat") != std::string::npos ||
-        Read(root / DepotInstaller::kFileList).find("f\tDATA/level.dat") != std::string::npos);
+  CHECK(Read(root / DepotInstaller::kFileList).find("f\tdata/level.dat") != std::string::npos);
   CHECK(last.download_done == last.download_total && last.files_total == 3);
   CHECK(last.held_bytes == last.install_total);  // every written byte is on the drive
   CHECK(world.chunk_calls == 3);  // the shadowed base level.dat is never fetched
@@ -1078,10 +1076,10 @@ void InstallsMergedDepotsAndWritesRecord(const std::filesystem::path& root) {
   CHECK(record && record->version == 2 && record->app_id == 440 && record->install_bytes == last.install_total);
   CHECK(record->branch == "public" && record->language == "german");
   CHECK((record->depots == std::vector<playden::installs::RecordedDepot>{{441, 11, 440, 440}, {442, 12, 450, 450}}));
-  // The merged tree: each file the merge kept (the patch's level.dat, in its own case), no folders, by path.
+  // The merged tree: each file the merge kept (the patch's level.dat, in the base's folder), no folders, by path.
   CHECK(Read(root / DepotInstaller::kFileTree) ==
         "v1\n"
-        "8eaf8755d1f863e507024462baa384b6be8b9878\t13\tDATA/level.dat\n"
+        "8eaf8755d1f863e507024462baa384b6be8b9878\t13\tdata/level.dat\n"
         "da39a3ee5e6b4b0d3255bfef95601890afd80709\t0\tempty.txt\n"
         "000d1a2734414e5b6875828f9ca9b6c3d0ddeaf7\t26\tgame.exe\n");
   CHECK(!std::filesystem::exists(root / (std::string(DepotInstaller::kFileTree) + ".tmp")));
@@ -1141,6 +1139,37 @@ void MeasureMatchesTheMergedInstall(const std::filesystem::path& root) {
   CHECK(clash.Measure({}, target.app_id, target.depots, {}, cancel).error == InstallError::kCorrupt);
   const auto merged = MergeDepotManifests({world.manifests[441], world.manifests[442]});
   CHECK(merged.conflict == "data");
+}
+
+// Depots that spell a folder in different cases share one folder, spelled as first seen: Windows sees one
+// folder, and on a drive that keeps case apart a game would otherwise miss half of it (BioShock keeps
+// Content/Maps in one depot and content/BulkContent in another). A file keeps the case of its own name.
+void OneSpellingPerFolder(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  world.manifests[441].files = {world.AddFile("Content/Maps/1-Welcome.bsm", {"map"})};
+  ManifestFile folder;
+  folder.path = "content/BulkContent";
+  folder.flags = kDepotFileFlagDirectory;
+  world.manifests[442].files = {folder, world.AddFile("content/BulkContent/Textures.BLK", {"textures"}),
+                                world.AddFile("CONTENT/Maps/2-Medical.bsm", {"medical"})};
+  std::vector<DepotManifest> manifests{world.manifests[441], world.manifests[442]};
+  UnifyFolderCase(&manifests);
+  CHECK(manifests[0].files[0].path == "Content/Maps/1-Welcome.bsm");
+  CHECK(manifests[1].files[0].path == "Content/BulkContent");
+  CHECK(manifests[1].files[1].path == "Content/BulkContent/Textures.BLK");
+  CHECK(manifests[1].files[2].path == "Content/Maps/2-Medical.bsm");
+  DepotInstaller installer(world.Hooks());
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kNone);
+  CHECK(Read(root / DepotInstaller::kFileTree).find("\tContent/BulkContent/Textures.BLK\n") != std::string::npos);
+  CHECK(Read(root / DepotInstaller::kFileTree).find("\tContent/Maps/2-Medical.bsm\n") != std::string::npos);
+  CHECK(Read(root / DepotInstaller::kFileList).find("content/") == std::string::npos);
+  CHECK(Read(root / DepotInstaller::kFileList).find("CONTENT/") == std::string::npos);
+  CHECK(Read(root / "Content/BulkContent/Textures.BLK") == "textures");
+  int top = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(root))
+    if (entry.is_directory() && entry.path().filename() != DepotInstaller::kJournalDir) ++top;
+  CHECK(top == 1);
 }
 
 // A file and an empty folder of the same name in different depots keep the file, in either order; a folder
@@ -1295,7 +1324,7 @@ void ChangedManifestRefetchesSameOffset(const std::filesystem::path& root) {
 
 void JournalHeaderModes(const std::filesystem::path& base) {
   const std::string header = "#v2 441:11,442:12\n";
-  const std::string entry = "442\t0\tDATA/level.dat\n";
+  const std::string entry = "442\t0\tdata/level.dat\n";
   const std::vector<std::string> journals = {
     header + "#comment ignored\n#verified chunks\n" + entry, entry, "", "#v2 441:11,442:99\n" + entry,
     "#v2 broken\n" + entry, header + header + entry, "#v2 442:12,441:11\n" + entry,
@@ -1333,14 +1362,14 @@ void JournalHeaderModes(const std::filesystem::path& base) {
 void UnterminatedJournalGetsSeparator(const std::filesystem::path& root) {
   auto world = MakeWorld();
   std::filesystem::create_directories(root / DepotInstaller::kJournalDir);
-  std::filesystem::create_directories(root / "DATA");
-  std::ofstream(root / "DATA/level.dat") << "level-patched";
-  std::ofstream(root / DepotInstaller::kJournalDir / "journal") << "#v2 441:11,442:12\n442\t0\tDATA/level.dat";
+  std::filesystem::create_directories(root / "data");
+  std::ofstream(root / "data/level.dat") << "level-patched";
+  std::ofstream(root / DepotInstaller::kJournalDir / "journal") << "#v2 441:11,442:12\n442\t0\tdata/level.dat";
   std::atomic<bool> cancel{false}; world.cancel = &cancel; world.cancel_after = 1;
   DepotInstaller installer(world.Hooks()); installer.SetTuning({1, 256});
   CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kCanceled);
   CHECK(Read(root / DepotInstaller::kJournalDir / "journal") ==
-        "#v2 441:11,442:12\n442\t0\tDATA/level.dat\n441\t0\tgame.exe\n");
+        "#v2 441:11,442:12\n442\t0\tdata/level.dat\n441\t0\tgame.exe\n");
   cancel.store(false); world.chunk_calls = 0; world.cancel_after = -1;
   CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kNone);
   CHECK(world.chunk_calls == 1);
@@ -1373,7 +1402,7 @@ void HeaderWriteFailureCannotAppend(const std::filesystem::path& root) {
   auto world = MakeWorld();
   const auto folder = root / DepotInstaller::kJournalDir;
   std::filesystem::create_directories(folder / "journal.tmp");
-  const std::string stale = "#v2 441:999,442:12\n442\t0\tDATA/level.dat\n";
+  const std::string stale = "#v2 441:999,442:12\n442\t0\tdata/level.dat\n";
   std::ofstream(folder / "journal") << stale;
   DepotInstaller installer(world.Hooks());
   std::atomic<bool> cancel{false};
@@ -1603,6 +1632,37 @@ InstallTarget UpdateTarget(const std::filesystem::path& root) {
 
 std::string Update(const std::filesystem::path& root, const char* name) {
   return (root / DepotInstaller::kUpdateDir / name).string();
+}
+
+// An install made before folder spellings were unified keeps "content/" beside "Content/". Its next update moves the
+// files into the unified spelling and, on a drive that keeps case apart, removes the old folders once they are empty,
+// so a game looking up "Content/BulkContent" finds the files there.
+void UpdateMergesFolderSpellings(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  ManifestFile folder;
+  folder.path = "content/BulkContent";
+  folder.flags = kDepotFileFlagDirectory;
+  world.manifests[441].files = {world.AddFile("game.exe", {"MZ"})};
+  world.manifests[442].files = {folder, world.AddFile("content/BulkContent/Textures.BLK", {"textures"})};
+  InstallBase(world, root);
+  CHECK(Read(root / "content/BulkContent/Textures.BLK") == "textures");
+  // The new version adds Content/Maps to the first depot: "Content" is now the spelling seen first.
+  auto& base = world.manifests[441];
+  base.gid = 21;
+  base.files.push_back(world.AddFile("Content/Maps/1-Welcome.bsm", {"map"}));
+  auto target = UpdateTarget(root);
+  target.depots[0].manifest_gid = 21;
+  DepotInstaller installer(world.Hooks());
+  installer.SetTuning({1, 256});
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, target, cancel).error == InstallError::kNone);
+  CHECK(Read(root / "Content/BulkContent/Textures.BLK") == "textures");
+  CHECK(Read(root / "Content/Maps/1-Welcome.bsm") == "map");
+  CHECK(Read(root / DepotInstaller::kFileList).find("content/") == std::string::npos);
+  std::ofstream(root / "CaseProbe") << "x";
+  const bool keeps_case = !std::filesystem::exists(root / "caseprobe");
+  std::filesystem::remove(root / "CaseProbe");
+  if (keeps_case) CHECK(!std::filesystem::exists(root / "content"));
 }
 
 // A changed file is downloaded beside the game and replaces it; an unchanged one is never fetched; a file
@@ -2784,6 +2844,8 @@ int main(int argc, char** argv) {
   MeasureMatchesTheMergedInstall(base / "measure");
   LocalRecordNamesItsGame(base / "install-local");
   FileReplacesEmptyFolderFromOtherDepot(base / "file-over-folder");
+  OneSpellingPerFolder(base / "folder-case");
+  UpdateMergesFolderSpellings(base / "folder-case-update");
   ResumesWithoutRefetchingFinishedChunks(base / "resume");
   ChangedManifestRefetchesSameOffset(base / "manifest-update");
   JournalHeaderModes(base / "header-modes");
