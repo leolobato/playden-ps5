@@ -1266,6 +1266,48 @@ void RepairsBottleRegistryModes() {
   upgraded.Shutdown();
 }
 
+// The handoff can come several seconds after the worker's check (Play after a runtime update, a slow drive): a check
+// that old still starts the title instead of failing as "native launch capability is unavailable".
+void HandoffTrustsARecentCheck() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.session_data_root = fixture.root / "data";
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  auto offset = std::make_shared<std::atomic<std::int64_t>>(0);
+  config.now_ms = [offset] {
+    return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch()).count()) + offset->load();
+  };
+  std::vector<std::string> launches;
+  config.launch_title = [&launches](const std::string& title, const std::vector<std::string>&) {
+    launches.push_back(title);
+    return TitleResult{true, 0, "launch"};
+  };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+  }, 60);
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  *offset += 10000;  // the player's Play reaches the handoff ten seconds after the check
+  CHECK(host.Handoff());
+  CHECK(launches.size() == 1 && launches[0] == "FAKE78001");
+}
+
 // Play from Playden: the worker checks the Ready title and prepares a session;
 // only Handoff on the application thread starts it, once, with the session
 // argument. The wrapper's exit record ends the session and allows the next Play.
@@ -8216,6 +8258,7 @@ int main(int argc, char** argv) {
   SetupFromAnEarlierKitAsksForRecreate();
   RepairsBottleRegistryModes();
   PlaysReadyTitleThroughHandoff();
+  HandoffTrustsARecentCheck();
   ReplacedKitAsksForRestart();
   MaintainsReadyTitle();
   ModdedGameFolderStillPlays();

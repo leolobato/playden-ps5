@@ -75,9 +75,11 @@ class UnavailablePackageInstaller final : public rt::PackageInstaller {
 
 constexpr int kMaxPreparationSteps = 64;
 // A pending launch is polled at this interval, and Handoff trusts a preflight
-// the worker made at most this long ago.
+// the worker made at most this long ago: the handoff can come several seconds after
+// the check (a Play that first updated the runtime, a game on a slow drive), and an
+// older check made Play fail as "native launch capability is unavailable".
 constexpr auto kLaunchPollInterval = std::chrono::seconds(2);
-constexpr std::int64_t kPreflightFreshMs = 5000;
+constexpr std::int64_t kPreflightFreshMs = 30000;
 // The console's process list could not show whether the title runs (the reason is in
 // runtime.log). Closing the game cannot help when no game runs; a restart usually does.
 constexpr char kActivityUnknown[] =
