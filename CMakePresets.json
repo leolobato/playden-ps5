@@ -15,7 +15,8 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "PLAYDEN_UI_SIMULATION": "OFF",
-        "PLAYDEN_PLATFORM_PS5": "OFF"
+        "PLAYDEN_PLATFORM_PS5": "OFF",
+        "PLAYDEN_DEV_BUILD": "ON"
       }
     }
   ],

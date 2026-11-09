@@ -525,13 +525,14 @@ int main(int argc, char** argv) {
     hui::gfx::set_glsl_prefix("#version 410 core\n");
 
     // Experimental features: one name per line in features.txt in the data folder, read once here. Simulation keeps
-    // every feature on, so its scenarios show them.
+    // every feature on, so its scenarios show them; nightlies and local dev builds (PLAYDEN_DEV_BUILD, on in the
+    // homebrew-host preset) have every feature on, as on the PS5.
     playden::app::ExperimentalFeatures features = playden::app::DefaultExperimentalFeatures(true);
     if (!options->simulation) {
         std::vector<std::string> unknown;
         features = playden::app::ReadExperimentalFeatures(
             (options->data_directory / playden::app::kExperimentalFeaturesFileName).string(),
-            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly()), &unknown);
+            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD), &unknown);
         for (const auto& name : unknown) std::fprintf(stderr, "unknown experimental feature: %s\n", name.substr(0, 64).c_str());
         if (features.community_recipes) std::fprintf(stderr, "experimental feature community-recipes on\n");
         simulation.SetCommunityRecipesEnabled(features.community_recipes);
