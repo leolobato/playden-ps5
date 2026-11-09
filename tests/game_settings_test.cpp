@@ -998,6 +998,11 @@ int main(int argc, char** argv) {
       CHECK(!settings.values.at("cpu").available);
       CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
       CHECK(profile.text.find("cpu =") == std::string::npos);
+      // A runtime that takes 4096-byte arguments also takes a profile up to 16384 bytes, with short arguments too.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {}, lae, &settings, &error) && settings.long_profile);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {}, every, &settings, &error) && !settings.long_profile);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {}, KitForTitleRuntime(lae, false), &settings, &error) &&
+            !settings.long_profile);
       // Arguments past 512 bytes: only for a runtime that takes 4096 (a long mod list on one command line).
       const std::string mods = "/singleplayer _MODULES_*" + std::string(1500, 'M') + "*_MODULES_";
       CHECK(ValidateSettingValue(hl2, "extra_arguments", mods, &reason));

@@ -889,6 +889,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.environment_as_debug_env = !kit.environment && kit.opengl_zink;
   out.debug_env_lines = kit.opengl_zink;
   out.profile_version = kit.profile_version_2 ? 2 : 1;
+  out.long_profile = kit.launch_arguments_4096;
   out.display_120hz = kit.display_120hz;
   out.display_120hz_needs_update = kit.display_120hz_needs_update;
   out.input_playstation = kit.input_playstation;
@@ -1406,8 +1407,9 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_fps_counter = fps_counter;
   features.input_playstation = value("controller") == "playstation";
   features.runtime_version = settings.profile_version == 2;
-  // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them.
-  features.long_arguments = settings.arguments.size() > kProsperoMaxArgumentBytes;
+  // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them; such a runtime
+  // also takes a profile up to 16384 bytes with short arguments.
+  features.long_arguments = settings.long_profile || settings.arguments.size() > kProsperoMaxArgumentBytes;
   features.launcher_section = launcher_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};

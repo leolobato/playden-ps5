@@ -349,6 +349,8 @@ struct EffectiveSettings {
   // The profile's [runtime] version: 2 when the game's title applies the driver's defaults (wave32 pixel shaders, so
   // Wave32 needs no variable); 1 (no key written) otherwise, and Wave32 adds pswave32 itself.
   int profile_version = 1;
+  // The game's title takes 4096-byte arguments and a profile up to 16384 bytes (launch-arguments-4096).
+  bool long_profile = false;
   // The title's runtime honors [display] refresh on every graphics path and paces [display] frame_rate itself
   // (KitCapabilities::display_120hz); without it Frame limit is DXVK's maxFrameRate, as before.
   bool display_120hz = false;
