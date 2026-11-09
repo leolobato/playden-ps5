@@ -181,6 +181,21 @@ void LimitsStopTheScanAndSaySo() {
     CHECK(scan.status == ScanStatus::kOk && scan.limit_reached);
     CHECK(scan.file_count == kMaxScanEntries);
   }
+  {  // A folder's own programs are found before the limit is spent in its subfolders, whatever the listing order.
+    TemporaryDirectory root;
+    for (const char* folder : {"a", "m", "z"})
+      for (std::size_t i = 0; i < kMaxScanEntries / 2; ++i) {
+        const auto path = root.path / "Game" / folder / ("f" + std::to_string(i) + ".dat");
+        if (i == 0) fs::create_directories(path.parent_path());
+        const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT, 0644);
+        CHECK(fd >= 0);
+        ::close(fd);
+      }
+    File(root.path / "Game/Wanted.exe", 1);
+    const auto scan = ScanGameFolder((root.path / "Game").string());
+    CHECK(scan.status == ScanStatus::kOk && scan.limit_reached);
+    CHECK(scan.programs.size() == 1 && scan.programs.front().path == "Wanted.exe");
+  }
 }
 
 void NonAsciiPathsAreFlagged() {

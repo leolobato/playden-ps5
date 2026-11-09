@@ -66,6 +66,10 @@ struct Frame {
   DIR* listing = nullptr;
   std::string relative;  // empty for the game folder itself
   int level = 0;         // its children are level + 1 components deep
+  // Its subfolders (name, listed inode), walked once its own entries are done, so a folder's programs are found
+  // before the entry limit is spent below it.
+  std::vector<std::pair<std::string, std::uint64_t>> folders;
+  std::size_t next_folder = 0;
 };
 
 void Close(Frame& frame) {
@@ -86,7 +90,7 @@ bool OpenFrame(int fd, std::string relative, int level, Frame* frame) {
     errno = error;
     return false;
   }
-  *frame = Frame{fd, listing, std::move(relative), level};
+  *frame = Frame{fd, listing, std::move(relative), level, {}, 0};
   return true;
 }
 
@@ -198,6 +202,21 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     const auto* entry = ::readdir(frame.listing);
     if (!entry) {
       if (errno != 0) { scan.error = errno; status = ScanStatus::kFailed; break; }
+      if (frame.next_folder < frame.folders.size()) {
+        const auto& [name, listed] = frame.folders[frame.next_folder++];
+        const int child = platform::OpenWalkChildUnprivileged(frame.fd, name.c_str(), kOpenAny, listed);
+        struct stat info{};
+        if (child < 0 || ::fstat(child, &info) != 0 || !S_ISDIR(info.st_mode)) {
+          if (child >= 0) ::close(child);
+          ++scan.unreadable;
+          continue;
+        }
+        Frame next;
+        const auto relative = frame.relative.empty() ? name : frame.relative + "/" + name;
+        if (!OpenFrame(child, relative, frame.level + 1, &next)) { ++scan.unreadable; continue; }
+        stack.push_back(std::move(next));  // `frame` is not used after this
+        continue;
+      }
       Close(frame);
       stack.pop_back();
       continue;
@@ -220,16 +239,10 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     if (::fstat(child, &info) != 0) { ::close(child); ++scan.unreadable; continue; }
     const auto relative = frame.relative.empty() ? name : frame.relative + "/" + name;
     if (S_ISDIR(info.st_mode)) {
-      if (frame.level + 1 >= kMaxProgramDepth) {
-        // Its entries would be deeper than programs are looked for.
-        ::close(child);
-        scan.deeper_folders = true;
-        continue;
-      }
-      Frame next;
-      const int level = frame.level + 1;
-      if (!OpenFrame(child, relative, level, &next)) { ++scan.unreadable; continue; }
-      stack.push_back(std::move(next));  // `frame` is not used after this
+      ::close(child);
+      // Its entries would be deeper than programs are looked for.
+      if (frame.level + 1 >= kMaxProgramDepth) scan.deeper_folders = true;
+      else frame.folders.emplace_back(name, listed);
       continue;
     }
     ::close(child);
