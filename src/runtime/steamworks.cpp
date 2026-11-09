@@ -231,7 +231,9 @@ fs::path OriginalFor(const fs::path& root, const std::vector<std::string>& found
 
 std::vector<std::string> RetiredSteamApiSha256() {
   return {"4cc9dfcab8b4df0db507fa91d0acec6e58693fd4edd78dc80d39bda8072d08ed",   // 2026-10-07, 32-bit
-          "513430ac8b869b0eed258d9e5feba5176a35446b3b61a63d01ab1d87683cdd1b"};  // 2026-10-07, 64-bit
+          "513430ac8b869b0eed258d9e5feba5176a35446b3b61a63d01ab1d87683cdd1b",   // 2026-10-07, 64-bit
+          "cae4372bceda997d6c73cebc1c14eb27d39b74a7999d8f28384bdfd8d746a79c",   // release-2026_09_27, 32-bit
+          "70d9826a402d3a78b0c07e9f7ea7c6832468a1113013f31ea570fccaa5445ea9"};  // release-2026_09_27, 64-bit
 }
 
 std::vector<std::string> FindSteamApi(const std::string& install_root) {

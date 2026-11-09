@@ -9,12 +9,12 @@
 namespace playden::runtime {
 
 // Steamworks emulation for games without a Steam client on the console: the game's
-// steam_api.dll / steam_api64.dll is replaced by gbe_fork's (shipped unmodified in
-// <runtime_dir>/steamworks, pinned below), the original is kept as <dll>.orig, and
+// steam_api.dll / steam_api64.dll is replaced by gbe_fork's (shipped in <runtime_dir>/steamworks,
+// built as runtime/steamworks/README.md says, pinned below), the original is kept as <dll>.orig, and
 // steam_settings/ beside it tells the emulator who plays and what they own. Every call is
 // idempotent and must run while the game is stopped. Links are never followed.
-inline constexpr const char* kSteamApi32Sha256 = "cae4372bceda997d6c73cebc1c14eb27d39b74a7999d8f28384bdfd8d746a79c";
-inline constexpr const char* kSteamApi64Sha256 = "70d9826a402d3a78b0c07e9f7ea7c6832468a1113013f31ea570fccaa5445ea9";
+inline constexpr const char* kSteamApi32Sha256 = "4007fdef3062f8fa194c64d2286ab4e3d72ca1be189657a3b1a4da8f04f33bbb";
+inline constexpr const char* kSteamApi64Sha256 = "3c46a4b109a1bd03a2d0255d1cc0e6e72608d4f67d621227701af4d8ad3d5ba9";
 
 // The emulator builds earlier Playden versions shipped (32-bit, 64-bit). A game they set up
 // still has one as its DLL: it is Playden's, replaced like the current one and never kept as

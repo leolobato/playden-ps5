@@ -241,7 +241,7 @@ int main(int argc, char** argv) {
     CHECK(!restored.ok && restored.message.find("reinstall the game") != std::string::npos);
     CHECK(Read(game / "steam_api.dll") == emulator32);
     // The pins Playden ships cover both architectures of every earlier build.
-    CHECK(RetiredSteamApiSha256().size() == 2);
+    CHECK(RetiredSteamApiSha256().size() == 4);
   }
 
   {  // A game that hashes its library at one path and loads it from another (Clair Obscur: Expedition 33).
