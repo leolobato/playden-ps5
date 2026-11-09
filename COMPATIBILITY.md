@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-08.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-09.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -377,7 +377,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Victory Heat Rally](https://store.steampowered.com/app/1594060) | ✅ Works | 0.12 | GameMaker · D3D11 · DXVK · 64-bit | Default settings. Controller menus, loading the existing save and driving in an Ancient Arena circuit race (accelerating and steering) verified. Tested from the M.2 SSD; a full race and multiplayer not tested. |
 | [Vital Shell](https://store.steampowered.com/app/3741860) | ✅ Works | 0.18 | — | Default settings, DualSense. ([#490](https://github.com/leolobato/playden-ps5/issues/490), firmware 12.20) |
 | [VVVVVV](https://store.steampowered.com/app/70300) | ✅ Works | 0.17 | SDL2 · D3D9 · DXVK · 32-bit | Default settings, DualSense. ([#416](https://github.com/leolobato/playden-ps5/issues/416), firmware 12.20) |
-| Wanted: Weapons of Fate | ✅ Works | 0.13 | — | Imported copy. Game settings › Program = `Wanted.exe`. In `context.xml`, `physx_effects="software"`; in `dieselx.cfg`, `memory_pretend = 2048`. DualSense. Needs a patched program and PhysX 2.8.1. Tracked in [#582](https://github.com/leolobato/playden-ps5/issues/582). ([#556](https://github.com/leolobato/playden-ps5/issues/556), firmware 12.70) |
+| Wanted: Weapons of Fate | ✅ Works | 0.13 | — | Imported copy. Game settings › Program = `Wanted.exe`. In `context.xml`, `physx_effects="software"`; in `dieselx.cfg`, `memory_pretend = 2048`. DualSense. Needs a patched program. Needs PhysX 2.8.1: add NVIDIA's `PhysX_9.09.0010_SystemSoftware.exe` to the game's `_Redist` folder (the Legacy 9.13 package stops at 2.7). Tracked in [#582](https://github.com/leolobato/playden-ps5/issues/582). ([#556](https://github.com/leolobato/playden-ps5/issues/556), firmware 12.70) |
 | [Warhammer 40,000: Boltgun](https://store.steampowered.com/app/2005010) | ✅ Works | 0.14 | — | Default settings, DualSense. ([#390](https://github.com/leolobato/playden-ps5/issues/390), firmware 13.60) |
 | [Warhammer 40,000: Boltgun 2](https://store.steampowered.com/app/3115160) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#645](https://github.com/leolobato/playden-ps5/issues/645), firmware 10.01) |
 | [Wartales](https://store.steampowered.com/app/1527950) | ✅ Works | 0.13 | — | Default settings, DualSense; some stutter. ([#154](https://github.com/leolobato/playden-ps5/issues/154), firmware 13.42) |
