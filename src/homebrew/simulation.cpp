@@ -690,8 +690,8 @@ SaveFacts save_facts(const LiveCloudGame* cloud, bool installed) {
 }
 
 // The player's choices that decide whether the game starts at all: the program from the game
-// folder, its type and folder, and "Try anyway". A preset or a reset keeps them, so a game
-// that starts only with them keeps starting; the Program row resets them.
+// folder, its type and folder, and "Try anyway". Switching preset or recipe keeps them, so a game
+// that starts only with them keeps starting; Reset and the Program row remove them.
 bool start_choice(const std::string& id) {
     return id == "program" || id == "architecture" || id == "program_folder" || id == "start_check";
 }
@@ -699,9 +699,6 @@ bool start_choice(const std::string& id) {
 void forget_program_choices(std::map<std::string, std::string>* overrides) {
     for (const char* key : {"program", "architecture", "program_folder", "program_arguments", "start_check"})
         overrides->erase(key);
-}
-bool has_resettable(const std::map<std::string, std::string>& overrides) {
-    return std::any_of(overrides.begin(), overrides.end(), [](const auto& entry) { return !start_choice(entry.first); });
 }
 // A game-relative path as the bottle config and the Program picker compare it: '/' separated, lower
 // case, "." for none.
@@ -1702,6 +1699,7 @@ void Simulation::open_steam_programs(GameId id) {
 bool Simulation::SeedGameProgram(GameId id, const std::string& program) {
     if (!live() || !id.valid() || settings_load_failed_ || game_settings_file_.empty()) return false;
     if (!rt::ValidateSettingValue(rt::GameRecipe{}, "program", program, nullptr)) return false;
+    imported_programs_[id] = program;
     // Only a record never saved: once the player changed anything (a Program reset included), the
     // choice is theirs.
     if (const auto found = state_.game_settings.find(id);
@@ -1713,6 +1711,28 @@ bool Simulation::SeedGameProgram(GameId id, const std::string& program) {
     save_profile();
     rebuild_view();
     return saved_game_settings_ == state_.game_settings;
+}
+
+void Simulation::UpdateImportedPrograms(std::map<GameId, std::string> programs) {
+    std::erase_if(programs, [](const auto& entry) { return !rt::ValidateSettingValue(rt::GameRecipe{}, "program", entry.second, nullptr); });
+    imported_programs_ = std::move(programs);
+    imported_programs_known_ = true;
+}
+
+std::map<std::string, std::string> Simulation::reset_overrides(GameId id) const {
+    // Reset removes every change of the player's, the program they picked too. An imported game goes back to the
+    // program it was added with: that one is saved as a change, but the game has no other way to start.
+    std::map<std::string, std::string> overrides;
+    if (const auto imported = imported_programs_.find(id); imported != imported_programs_.end())
+        overrides["program"] = imported->second;
+    return overrides;
+}
+
+bool Simulation::can_reset_settings(GameId id) const {
+    // Until the Local store has said which program each imported game was added with, Reset would lose it.
+    if (live() && id.store == Store::kLocal && !imported_programs_known_) return false;
+    const auto record = state_.game_settings.find(id);
+    return record != state_.game_settings.end() && record->second.overrides != reset_overrides(id);
 }
 
 std::vector<std::string> Simulation::collection_sheet_actions(const std::string& sheet) const {
@@ -7499,7 +7519,7 @@ void Simulation::rebuild_view() {
             } else if (modal.id == "mypreset-menu" && action_key == "my-preset-delete") {
                 item.dangerous = true;
             } else if (settings_ready && action_key == "reset-settings") {
-                item.enabled = settings_record != state_.game_settings.end() && has_resettable(settings_record->second.overrides);
+                item.enabled = can_reset_settings(settings_game);
             } else if (settings_ready && action_key == "effective-command") {
                 item.kind = RowKind::Text;
                 item.title = "Effective command";
@@ -7594,12 +7614,9 @@ void Simulation::rebuild_view() {
                 const bool busy = runtime && runtime->maintenance_running;
                 if (action_key == "maintenance-reset") {
                     item.title = "Reset settings…";
-                    item.subtitle = "Removes your changes; the preset and the program you chose stay.";
-                    item.enabled = settings_record != state_.game_settings.end() && has_resettable(settings_record->second.overrides);
-                    if (!item.enabled)
-                        item.subtitle = settings_record != state_.game_settings.end() && !settings_record->second.overrides.empty()
-                            ? "Nothing else to reset. The program you chose stays; change it in the Program row."
-                            : "Nothing to reset: the settings follow the preset.";
+                    item.subtitle = "Removes your changes, the program you chose too; the preset stays.";
+                    item.enabled = can_reset_settings(settings_game);
+                    if (!item.enabled) item.subtitle = "Nothing to reset: the settings follow the preset.";
                 } else if (kind == MaintenanceKind::UpdateRuntime) {
                     // What Play does first for a title on an older kit's runtime ("Runtime kit update available"), alone.
                     const bool stale = runtime && (runtime->status == "Runtime kit update available" || runtime->status == "Update available");
@@ -11440,8 +11457,8 @@ void Simulation::activate() {
                                                            : MaintenanceKind::ApplySettings;
         if (chosen == "maintenance-reset") {
             auto& record = state_.game_settings[state_.navigation.selected_game_id];
-            if (has_resettable(record.overrides) && can_change_game_settings()) {
-                clear_keeping_start_choices(&record.overrides);
+            if (can_reset_settings(state_.navigation.selected_game_id) && can_change_game_settings()) {
+                record.overrides = reset_overrides(state_.navigation.selected_game_id);
                 ++record.revision;
                 if (save_profile() || !live()) {
                     push_notice({"settings-reset", "Settings reset", "", false, kLiveNoticeSeconds, false,
@@ -11899,7 +11916,10 @@ void Simulation::activate() {
         refresh_game_settings();
     } else if (action_name == "reset-settings") {
         auto& record = state_.game_settings[state_.navigation.selected_game_id];
-        if (has_resettable(record.overrides)) { clear_keeping_start_choices(&record.overrides); ++record.revision; }
+        if (can_reset_settings(state_.navigation.selected_game_id)) {
+            record.overrides = reset_overrides(state_.navigation.selected_game_id);
+            ++record.revision;
+        }
         refresh_game_settings(); save_profile();
     }
     else if (action_name == "compatibility")

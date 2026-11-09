@@ -958,7 +958,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     check(find_row(simulation, "effective-command")->subtitle.rfind("bin/win64/hl2_win64.exe -game hl2", 0) == 0,
           "T52 the effective command starts the picked program");
     check(!find_row(simulation, "setting-start_check"), "T52 no known problem, no Try anyway");
-    // A preset or a reset keeps the program, so a game that starts only with it keeps starting.
+    // A preset keeps the program, so a game that starts only with it keeps starting; Reset removes it.
     check(simulation.action("focus:setting-architecture") && simulation.action("triangle"), "T52 triangle on program type");
     check(overrides().count("architecture"), "T52 the program type is not reset on its own");
     activate(simulation, "setting-resolution");
@@ -970,8 +970,14 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     activate(simulation, "setting-resolution");
     activate(simulation, "choice-0");
     activate(simulation, "reset-settings");
-    check(overrides().count("program") && !overrides().count("resolution"), "T52 reset keeps the program");
-    check(!find_row(simulation, "reset-settings")->enabled, "T52 nothing else left to reset");
+    check(!overrides().count("program") && !overrides().count("architecture") && !overrides().count("resolution"),
+          "T52 Reset removes the picked program too");
+    check(!find_row(simulation, "reset-settings")->enabled, "T52 nothing left to reset");
+    check(find_row(simulation, "setting-launch_option")->value != "hl2_win64.exe", "T52 the Program row is back to the recipe's");
+    // A program alone is a change Reset takes back.
+    activate(simulation, "setting-launch_option");
+    activate(simulation, "program-0");
+    check(overrides().count("program") && find_row(simulation, "reset-settings")->enabled, "T52 a picked program alone can be reset");
     activate(simulation, "setting-launch_option");
     activate(simulation, "value-reset");
     check(!overrides().count("program") && !overrides().count("architecture"), "T52 reset returns to the recipe's program");
@@ -1955,6 +1961,36 @@ void community_old_share_is_the_steam_games(const std::filesystem::path& fixture
     std::filesystem::remove(settings_file);
 }
 
+// Reset takes an imported game back to the program it was added with, not to none: it has no other way to start.
+void reset_keeps_the_imported_program(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    check(simulation.scenario("share-imported"), "share-imported scenario loads");
+    rt::GameSettingsRecord imported;
+    imported.overrides["program"] = "Tools/Editor.exe";
+    imported.overrides["resolution"] = "3840x2160";
+    const auto settings_file = profile.string() + ".imported-reset.settings";
+    std::string reason;
+    check(rt::SaveGameSettingsFile(settings_file, {{night_sky, imported}}, &reason), "seed the imported game's settings");
+    simulation.SetGameSettingsFile(settings_file);
+    simulation.UpdateImportedPrograms({{night_sky, "NightSky.exe"}});
+    const auto overrides = [&]() -> const std::map<std::string, std::string>& {
+        return simulation.state().game_settings.at(night_sky).overrides;
+    };
+    while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+    check(simulation.action("details:" + playden::ToKey(night_sky)), "the imported game's page opens");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    check(find_row(simulation, "reset-settings") && find_row(simulation, "reset-settings")->enabled, "Reset is offered");
+    activate(simulation, "reset-settings");
+    check(overrides() == std::map<std::string, std::string>{{"program", "NightSky.exe"}},
+          "Reset goes back to the program the game was added with");
+    check(!find_row(simulation, "reset-settings")->enabled, "then there is nothing left to reset");
+    std::filesystem::remove(settings_file);
+}
+
 void community_recipes_imported(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
     const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
@@ -2919,6 +2955,7 @@ int main(int argc, char** argv) {
     community_recipes_imported(fixtures, profile);
     community_recipes_search_and_link(fixtures, profile);
     community_old_share_is_the_steam_games(fixtures, profile);
+    reset_keeps_the_imported_program(fixtures, profile);
     clean();
     community_recipes_one_base(fixtures, profile);
     clean();

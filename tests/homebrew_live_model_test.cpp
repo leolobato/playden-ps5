@@ -2245,6 +2245,11 @@ void live_imported_program_seeds_once(const std::filesystem::path& base) {
     check(playden::runtime::LoadGameSettingsFile(file.string(), &loaded, &reason) &&
               loaded.at(fresh).overrides.at("program") == "Bin/Game.exe" && !loaded.at(reset).overrides.count("program"),
           "seed: saved at once");
+    // Reset goes back to the import's program, so it waits until the Local store has said which one that is.
+    check(!model.can_reset_settings(chosen), "reset: not before the imported programs are known");
+    model.UpdateImportedPrograms({{chosen, "Bin/Game.exe"}, {fresh, "Bin/Game.exe"}});
+    check(model.can_reset_settings(chosen), "reset: a program other than the import's can be reset");
+    check(!model.can_reset_settings(fresh), "reset: the import's own program is nothing to reset");
 }
 
 // Steam options only for other branches don't say which program starts the game: once the download is

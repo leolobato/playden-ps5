@@ -2032,6 +2032,10 @@ void Controller::TickImports() {
   // Added or removed games: the Local library loads again (Steam's is left alone).
   if (snapshot->games_revision != local_games_revision_) {
     local_games_revision_ = snapshot->games_revision;
+    std::map<GameId, std::string> programs;
+    for (const auto& game : snapshot->games)
+      if (!game.program.empty()) programs[GameId::Local(game.id)] = game.program;
+    model_.UpdateImportedPrograms(std::move(programs));
     if (library_) library_->Refresh(Store::kLocal);
   }
 }

@@ -1207,6 +1207,10 @@ public:
     // saved settings yet (just added); never over anything the player changed, a reset Program
     // included. Saved at once so the next preparation reads it. True when it was written.
     bool SeedGameProgram(GameId id, const std::string& program);
+    // The program each imported game was added with (relative to its folder): Reset goes back to it.
+    void UpdateImportedPrograms(std::map<GameId, std::string> programs);
+    // Whether Reset would change the game's settings (never for an imported game before UpdateImportedPrograms).
+    [[nodiscard]] bool can_reset_settings(GameId id) const;
     [[nodiscard]] std::vector<GameId> TakeKeptDeleteRequests();
     // Live mode: maintenance the player confirmed (and settings to apply when the sheet
     // closes), and games whose title activity the sheet needs to know.
@@ -1990,6 +1994,8 @@ private:
     void move_import_sheet(int delta);
     void look_for_games();
     std::string import_programs_key_;  // the candidate whose program list is open
+    std::map<GameId, std::string> imported_programs_;  // UpdateImportedPrograms
+    bool imported_programs_known_ = false;             // the first UpdateImportedPrograms came
     // The import wizard. Step 1 (surface import-choice), for the program picked in the open program
     // list: play the game from its folder, or Copy to storage. Step 2 (surface import-storage):
     // the drive the game goes to, for that program's folder or for a game already added
@@ -2116,6 +2122,8 @@ private:
     void refresh_collection_sheets(const std::string& focus = {});
     void refresh_game_settings();
     bool can_change_game_settings();
+    // What Reset leaves of a game's changes: an imported game's own program.
+    std::map<std::string, std::string> reset_overrides(GameId id) const;
     void set_game_setting(const std::string& id, const std::string& value);
     void announce_settings_saved();
     // The game's Game settings and maintenance can change it: in live mode, its title is prepared.
