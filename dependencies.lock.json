@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.21, installed as playden-kit. Kit 0.20 with the prospero-win 5bd69cc changes (Wine patches 1000-1007 in ntdll, wineserver, win32u, wowprospero, the new nsiproxy.prx, ntdll.dll, ntoskrnl.exe, dnsapi.dll and every d3dx9_NN.dll; the translator's decimal-adjust instructions), the any-title shell built from 5bd69cc, Arial, Times New Roman and Courier New (Liberation 2.1.5) in the template, DXVK 2.6.2 with the unexportable shared fence fix (leolobato/dxvk release v2.6.2-fence-fix.1, built by that fork's CI), and capabilities launch-arguments-4096, wine-large-address-aware and environment-file-budgets. Bottles need no Recreate; a Recreate brings the new fonts and DXVK to a game set up before.",
-    "manifest_sha256": "66e5878d064645d0bda413553ee7ff9ce8f5f20b6d2807c329c58c9455c44550",
-    "files_sha256": "5c92e506835209de9964f5e035e6d51d189f3997f67c06c2571f072266abbf9f",
+    "status": "Kit 0.22, installed as playden-kit. Kit 0.21 with the prospero-win bb7d152 changes: wowprospero.prx (the translator starts over when one PC piles up retired blocks, so code that rewrites itself every frame, such as Fallout's movie player, keeps its lookups short), ntdll.dll for both architectures (Wine patch 1008: WINE_NTOSKRNL_HOSTED=winebus hosts the controller's HID drivers without nsiproxy), the any-title shell built from bb7d152 ([environment] PW_NSIPROXY_DISABLE), and capability nsiproxy-switch. DXVK, the template and every other module are 0.21's, so bottles need no Recreate.",
+    "manifest_sha256": "c7a808a45c2dc463a0656215fa66379b6437e615497824bd4dae4bd1b9476a20",
+    "files_sha256": "8a766547aba15980aad40799e36eb59e706a0ab9684ff0621a68adb215be2317",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -247,6 +247,7 @@
       "input-rumble",
       "launch-arguments-4096",
       "launcher-mode",
+      "nsiproxy-switch",
       "offline_bottle",
       "opengl-zink",
       "per_game_title",
