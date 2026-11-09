@@ -1563,6 +1563,70 @@ void community_off(const std::filesystem::path& base) {
     }
 }
 
+// Community recipes off and the game's recipe is gone from the cache: nothing can fetch it again, so the status row
+// says so and offers Playden default, keeping the player's changes. On, the row stays a status (the catalog can help).
+void community_off_recipe_missing(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const auto nothing_cached = [](const std::string&) -> std::optional<rt::CommunityRecipe> { return std::nullopt; };
+    std::string resolution;
+    {
+        // On: the player chose the recipe for Darkwood and changed its resolution.
+        Simulation on("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+        set_up(on, base);
+        open_game_settings(on);
+        activate(on, "preset-picker");
+        activate(on, "recipe-" + kRevision);
+        if (on.state().navigation.modals.back().id == "confirmation") activate(on, "recipe-switch-confirm");
+        check(on.RecipeBaseFor(kGame) && on.RecipeBaseFor(kGame)->id == kRecipeId, "on: the recipe is Darkwood's base");
+        activate(on, "setting-resolution");
+        std::string choice;
+        for (const auto& row : on.view().rows)
+            if (row.title.find("1280") != std::string::npos) choice = row.key;
+        check(!choice.empty(), "another resolution can be chosen");
+        activate(on, choice);
+        resolution = on.state().game_settings.at(kGame).overrides.at("resolution");
+    }
+    {
+        // On with the recipe missing: the row only says why, as before.
+        Simulation on("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+        set_up(on, base, false);
+        on.SetCommunityRecipeLoader(nothing_cached);
+        open_game_settings(on);
+        const auto* status = find_row(on, "recipe-status");
+        check(status && status->kind == playden::homebrew::RowKind::Status && !status->enabled &&
+                  status->subtitle == rt::kCommunityRecipeRemoved,
+              "on: the status row says why and offers nothing");
+        activate(on, "recipe-status");
+        check(on.state().game_settings.at(kGame).community_recipe.id == kRecipeId, "on: the row changes nothing");
+    }
+
+    // Off, with nothing in the cache: Playden's own recipe runs, and the row offers Playden default.
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    model.SetCommunityRecipesEnabled(false);
+    set_up(model, base, false);
+    model.SetCommunityRecipeLoader(nothing_cached);
+    check(!model.RecipeBaseFor(kGame) && !model.RecipeFallbackFor(kGame).empty(), "off: the missing recipe falls back");
+    open_game_settings(model);
+    const auto* status = find_row(model, "recipe-status");
+    check(status && status->title == "Playden's own recipe is used" && status->kind == playden::homebrew::RowKind::Choice &&
+              status->enabled && status->value == "Use Playden default" &&
+              status->subtitle == "The recipe isn't on this console.",
+          "off: the status row says the recipe isn't here and offers Playden default");
+    activate(model, "recipe-status");
+    if (model.state().navigation.modals.back().id == "confirmation") {
+        check(contains(model.state().navigation.modals.back().title, "Playden default"), "the switch names Playden default");
+        activate(model, "recipe-switch-confirm");
+    }
+    const auto& record = model.state().game_settings.at(kGame);
+    check(record.community_recipe.id.empty() && (record.preset_id.empty() || record.preset_id == "playden-default"),
+          "Playden default replaces the recipe");
+    check(record.overrides.count("resolution") && record.overrides.at("resolution") == resolution, "the player's change stays");
+    check(model.state().navigation.modals.back().id == "game-settings" && !find_row(model, "recipe-status"),
+          "Game settings shows no status row afterwards");
+    check(model.TakeSharingRequests().empty() && !model.TakeCommunityRefreshRequest(), "nothing is asked of the services");
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -1576,6 +1640,7 @@ int main() {
     start_failed(base / "start-failed");
     start_failed_waits_for_library(base / "start-failed-late");
     community_off(base / "off");
+    community_off_recipe_missing(base / "off-missing");
     settings_only_base(base / "settings-only");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");

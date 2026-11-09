@@ -7933,6 +7933,13 @@ void Simulation::rebuild_view() {
                 } else {
                     item.title = "Playden's own recipe is used";
                     item.subtitle = RecipeFallbackFor(id);
+                    // Community recipes off: nothing can fetch the recipe again, so the row offers Playden default.
+                    if (recipe_out_of_reach(id)) {
+                        if (item.subtitle == rt::kCommunityRecipeRemoved) item.subtitle = "The recipe isn't on this console.";
+                        item.kind = RowKind::Choice;
+                        item.enabled = true;
+                        item.value = "Use Playden default";
+                    }
                 }
                 item.tone = "attention";
             }
@@ -11720,7 +11727,7 @@ void Simulation::activate() {
         refresh_chooser({});
         if (!change.ok()) show_my_preset_refusal(change, "The preset was not deleted");
     } else if (action_name.rfind("recipe-", 0) == 0 && action_name != "recipe-switch-confirm" && action_name != "recipe-update" &&
-               !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "preset-picker") {
+               action_name != "recipe-status" && !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "preset-picker") {
         const auto offer = chooser_offer(chooser_game_, action_name.substr(7));
         // A recipe that can't apply stays listed, and Cross does nothing.
         if (!offer || !community_refusal(chooser_game_, *offer).empty()) return;
@@ -11757,6 +11764,14 @@ void Simulation::activate() {
         if (const auto* offer = updated_offer(id)) {
             chooser_for_install_ = false;
             choose_base(id, BaseChoice{{}, {offer->id, offer->revision, base_of(id).community.game}}, false);
+        }
+    } else if (action_name == "recipe-status") {
+        // A recipe nothing can bring back (community recipes off): Playden default, chosen like any switch; the player's
+        // changes stay as they do from the chooser.
+        const auto id = state_.navigation.selected_game_id;
+        if (recipe_out_of_reach(id)) {
+            chooser_for_install_ = false;
+            choose_base(id, BaseChoice{}, false);
         }
     } else if (action_name.rfind("setting-", 0) == 0) {
         open_setting(action_name.substr(8));
@@ -14303,6 +14318,14 @@ std::optional<rt::CommunityRecipeChoice> Simulation::ExportedRecipeBase(GameId i
     const auto found = exported_bases_.find(id);
     if (found == exported_bases_.end()) return std::nullopt;
     return found->second;
+}
+
+// Community recipes off (features.txt) and the chosen recipe isn't readable from the cache: no catalog or update can
+// bring it back, so only the player can let the choice go.
+bool Simulation::recipe_out_of_reach(GameId id) const {
+    if (community_enabled_) return false;
+    const auto reason = RecipeFallbackFor(id);
+    return reason == rt::kCommunityRecipeRemoved || reason == rt::kCommunityRecipeUnreadable;
 }
 
 std::string Simulation::RecipeFallbackFor(GameId id) const {

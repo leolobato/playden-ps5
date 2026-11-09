@@ -1610,6 +1610,8 @@ private:
     [[nodiscard]] std::string base_name(GameId id, const BaseChoice& base) const;
     // A newer revision of the game's chosen community recipe than the one it runs (or chose).
     [[nodiscard]] const CommunityRecipeOffer* updated_offer(GameId id) const;
+    // Community recipes off and the chosen recipe isn't in the cache or can't be read: nothing can bring it back.
+    [[nodiscard]] bool recipe_out_of_reach(GameId id) const;
     [[nodiscard]] bool title_made(GameId id) const;  // the game has a PS5 title (live) or is installed (fixtures)
     [[nodiscard]] std::vector<std::string> install_sheet_actions(GameId id) const;
     void open_install_sheet(GameId id, std::vector<std::string> actions);
