@@ -1,6 +1,6 @@
 # Compatibility
 
-Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-10.
+Games tested on a PS5 on firmware 13.60, plus community test reports (linked in the notes) on other firmware. Last updated 2026-11-11.
 
 > [!NOTE]
 > Games were checked on runtime kit **0.10**, the first stable kit, unless the Kit column names a newer one.
@@ -281,7 +281,6 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [POSTAL](https://store.steampowered.com/app/232770) | ✅ Works | 0.17 | — | Default settings, DualSense. ([#462](https://github.com/leolobato/playden-ps5/issues/462), firmware 12.20) | 1 |
 | [Prime95](https://www.mersenne.org/download/) | ✅ Works | 0.19 | — | Imported benchmark. DualSense with the Mouse preset. A `prime.txt` with `UsePrimenet=0` keeps it offline. ([#674](https://github.com/leolobato/playden-ps5/issues/674), firmware 12.20) |
 | [Project Warlock](https://store.steampowered.com/app/893680) | ✅ Works | 0.10 | Unity · D3D11 · 64-bit | Plays the first level with the sticks. The D-pad does not move the menu focus. |
-| [Project Zomboid](https://store.steampowered.com/app/108600) | ✅ Works | 0.19 | Java (LWJGL) · OpenGL · 64-bit | Plays with the controller. If its terms screen ignores the pad the first time, use Game settings › Controller preset = Mouse. ([#194](https://github.com/leolobato/playden-ps5/issues/194)) |
 | [Prototype](https://store.steampowered.com/app/10150) | ✅ Works | 0.19 | D3D9 · 32-bit | Default settings. Imported from USB. ([#554](https://github.com/leolobato/playden-ps5/issues/554)) | 1 |
 | [Prototype 2](https://store.steampowered.com/app/115320) | ✅ Works | 0.13 | — | Needs a patched engine DLL and files from a PC install. Tracked in [#575](https://github.com/leolobato/playden-ps5/issues/575) and [#581](https://github.com/leolobato/playden-ps5/issues/581). ([#555](https://github.com/leolobato/playden-ps5/issues/555), firmware 12.70) | 1 |
 | [Pseudoregalia](https://store.steampowered.com/app/2365810) | ✅ Works | 0.13 | Unreal · DXVK · 64-bit | Default settings, DualSense. ([#560](https://github.com/leolobato/playden-ps5/issues/560), firmware 12.70) | 1 |
@@ -575,6 +574,7 @@ uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d
 | [Phantom Blade Zero](https://store.steampowered.com/app/4115450) | ❌ Broken | 0.17 | — | The game's copy protection (Denuvo) stops it: the PS5 reports an app error (0xa002030a) before any graphics. ([#326](https://github.com/leolobato/playden-ps5/issues/326), firmware 13.60) |
 | [Portal with RTX](https://store.steampowered.com/app/2012840) | ❌ Broken | 0.13 | — | Starts, then never draws a frame. Probably the RTX Remix bridge, which starts a separate renderer program. ([#129](https://github.com/leolobato/playden-ps5/issues/129), firmware 13.60) |
 | Prison Break: The Conspiracy | ❌ Broken | 0.19 | — | Imported retail DVD. Stops at "You must run the game as administrator the first time": its TAGES copy protection has to start another program, which the runtime can't do yet ([#160](https://github.com/leolobato/playden-ps5/issues/160)). ([#690](https://github.com/leolobato/playden-ps5/issues/690), firmware 12.20) |
+| [Project Zomboid](https://store.steampowered.com/app/108600) | ❌ Broken | 0.23 | Java (LWJGL) · OpenGL · 64-bit | Since game version 42.22, quits at start: its file watcher needs more open files than a PS5 title has ([#813](https://github.com/leolobato/playden-ps5/issues/813)). ([#194](https://github.com/leolobato/playden-ps5/issues/194)) |
 | [Puyo Puyo Tetris](https://store.steampowered.com/app/546050) | ❌ Broken | 0.13 | — | Shows "Unable to load steamclient64.dll". Cause not clear; no logs yet. ([#219](https://github.com/leolobato/playden-ps5/issues/219), firmware 13.00) |
 | [Red Dead Redemption](https://store.steampowered.com/app/2668510) | ❌ Broken | 0.17 | — | Needs the Rockstar Games Launcher. ([#469](https://github.com/leolobato/playden-ps5/issues/469), firmware 12.20) |
 | [Resident Evil 4 (2005)](https://store.steampowered.com/app/254700) | ❌ Broken | 0.13 | — | Starts but is not playable. Cause not clear from the logs. ([#136](https://github.com/leolobato/playden-ps5/issues/136), firmware 13.60) |
