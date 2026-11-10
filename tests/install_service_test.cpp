@@ -1015,6 +1015,64 @@ void UpdatesAnInstalledGame(const std::filesystem::path& root) {
   std::filesystem::remove_all(root);
 }
 
+// Manage DLC: an update with the whole DLC choice. Turning every DLC on leaves nothing out, so only the flag says the
+// choice replaces the record's; it reaches the runner with the record's branch and language, and a change Playden stopped
+// keeps it across a restart, also with nothing left out.
+void DlcChangeKeepsItsChoice(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  Sessions sessions;
+  Runner runner(sessions);
+  const auto game = SteamId(710);
+  {
+    InstallService service(runner, root.string());
+    service.Install(game);
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return Installed(s, game) && !JobOf(s, game); });
+  }
+  std::ofstream(root / "710" / ".playden-install.json")
+      << "{\"version\":2,\"install_bytes\":4096,\"branch\":\"public\",\"language\":\"german\",\"excluded_dlc\":[711,712]}";
+  runner.block = true;
+  {
+    InstallService service(runner, root.string());
+    InstallOptions all_on;
+    all_on.dlc_choice = true;
+    CHECK(service.Update(game, all_on, 2048).empty());
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return runner.updates == 1; });
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      CHECK(runner.update_options.back() == (InstallOptions{"german", "public", {}, true}));
+    }
+    const auto running = service.Snapshot();
+    const auto* job = JobOf(running, game);
+    CHECK(job && job->dlc_change && job->estimated_bytes == std::optional<std::uint64_t>(2048));
+    CHECK(RegistryLine(root, "710") == "710\tinternal\t4096\tupdate\tlang=german\tbranch=public\tdlcset\test=2048");
+    // Playden closes while it downloads: the change waits in the registry.
+  }
+  {
+    InstallService again(runner, root.string());
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot&) { return runner.updates == 2; });
+    const auto restored = again.Snapshot();
+    const auto* job = JobOf(restored, game);
+    CHECK(job && job->kind == InstallJobKind::kUpdate && job->dlc_change);
+    {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      CHECK(runner.update_options.back() == (InstallOptions{"german", "public", {}, true}));
+    }
+    runner.block = false;
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) { return !JobOf(s, game); });
+    // Completed lists it as an update, whatever it downloaded (a change that only removes DLC downloads nothing).
+    const auto done = again.Snapshot();
+    const auto finished = std::find_if(done.completed.begin(), done.completed.end(),
+                                       [&](const playden::installs::CompletedDownload& entry) { return entry.id == game; });
+    CHECK(finished != done.completed.end() && finished->updated);
+    // A plain update is no DLC change: the runner keeps the record's DLC left out.
+    CHECK(again.Update(game).empty());
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) { return !JobOf(s, game) && runner.updates == 3; });
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(!runner.update_options.back().dlc_choice);
+  }
+  std::filesystem::remove_all(root);
+}
+
 // At start an update on disk is read before the record: downloading → paused (the game playable);
 // putting files in place → the game is locked and the update finishes by itself, without a sign-in.
 void ScanFindsUpdatesFirst(const std::filesystem::path& root) {
@@ -1270,6 +1328,7 @@ int main() {
                                             ("playden-update-unknown-" + std::to_string(::getpid())));
   UpdateWaitsForTheGameToClose(std::filesystem::temp_directory_path() / ("playden-update-wait-" + std::to_string(::getpid())));
   UpdatesAnInstalledGame(std::filesystem::temp_directory_path() / ("playden-update-service-" + std::to_string(::getpid())));
+  DlcChangeKeepsItsChoice(std::filesystem::temp_directory_path() / ("playden-dlc-change-service-" + std::to_string(::getpid())));
   ScanFindsUpdatesFirst(std::filesystem::temp_directory_path() / ("playden-update-scan-" + std::to_string(::getpid())));
   InstallRecordsParse(std::filesystem::temp_directory_path() / ("playden-record-service-" + std::to_string(::getpid())));
   InstallOptionsReachTheRunner(std::filesystem::temp_directory_path() / ("playden-options-service-" + std::to_string(::getpid())));

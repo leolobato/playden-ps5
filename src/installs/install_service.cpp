@@ -116,7 +116,7 @@ std::vector<CompletedDownload> AllCompletedDownloads(const std::vector<Installed
   for (const auto& game : installed) {
     if (game.finished_at <= 0 || game.finished_at > now || now - game.finished_at > kCompletedDays * 24 * 60 * 60) continue;
     if (std::find(dismissed.begin(), dismissed.end(), std::make_pair(game.id, game.finished_at)) != dismissed.end()) continue;
-    completed.push_back({game.id, game.install_bytes, game.volume_id, game.finished_at, game.update_bytes});
+    completed.push_back({game.id, game.install_bytes, game.volume_id, game.finished_at, game.update_bytes, game.updated});
   }
   std::stable_sort(completed.begin(), completed.end(), [](const CompletedDownload& left, const CompletedDownload& right) {
     return left.finished_at > right.finished_at;
@@ -230,7 +230,7 @@ struct RegistryEntry {
   // <from> to <to>; once <volume> is <to>, only the old folder is left to delete.
   std::string move_to;
   std::string move_from;
-  InstallOptions options;  // a job's "lang=<code>", "branch=<name>" and "nodlc=<app>,<app>" fields
+  InstallOptions options;  // a job's "lang=<code>", "branch=<name>", "nodlc=<app>,<app>" and "dlcset" fields
   std::optional<std::uint64_t> estimated_bytes;  // a job's "est=<bytes>": what it reserves on its drive
   std::int64_t finished_at = 0;  // "finished=<unix seconds>": a moved game's install time, older than its record
   std::string also_on;  // not stored: another USB drive holding the same folder (FollowUsbDrives)
@@ -240,7 +240,8 @@ struct RegistryEntry {
 // followed by "\tpaused" for a job that should wait for Resume after a restart, or "\tremoving" for
 // an uninstall whose folder is not deleted yet, or "\tupdate" for an installed game with an update job
 // (then "\tpaused" is the update's), or "\tmove=<volume>\tfrom=<volume>" for one with a move job, then a job's install options as "\tlang=<code>",
-// "\tbranch=<name>" and "\tnodlc=<app>,<app>" (none: the defaults), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
+// "\tbranch=<name>" and "\tnodlc=<app>,<app>" (none: the defaults), "\tdlcset" for an update that changes the game's DLC
+// (InstallOptions::dlc_choice; an older Playden skips it and updates with the record's DLC), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
 // after the install bytes may come in any order, and
 // unknown ones are skipped. The key is ToKey: a Steam game's app ID, "local-<uuid>" for an imported game.
 std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
@@ -275,6 +276,7 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
         entry.move_from = std::string(field.substr(kFrom.size()));
       else if (field == "removing") entry.removing = true;
       else if (field == "update") entry.update = true;
+      else if (field == "dlcset") entry.options.dlc_choice = true;
       else if (field.substr(0, kLanguage.size()) == kLanguage) entry.options.language = std::string(field.substr(kLanguage.size()));
       else if (field.substr(0, kBranch.size()) == kBranch) entry.options.branch = std::string(field.substr(kBranch.size()));
       else if (field.substr(0, kEstimate.size()) == kEstimate) {
@@ -585,6 +587,7 @@ void InstallService::Scan() {
           if (job.options.branch.empty()) job.options.branch = update->branch;
         }
         job.options = Registrable(job.options);
+        job.view.dlc_change = job.options.dlc_choice;
         job.view.locked = update && update->phase != UpdatePhase::kStaging;
         if (job.view.locked || (entry.update && !entry.paused)) {
           // One putting its files in place finishes by itself: the game can't run until it does.
@@ -658,6 +661,8 @@ bool InstallService::SaveRegistry(bool sync) {
     if (!job.options.branch.empty()) fields += "\tbranch=" + job.options.branch;
     for (std::size_t index = 0; index < job.options.excluded_dlc.size(); ++index)
       fields += (index ? "," : "\tnodlc=") + std::to_string(job.options.excluded_dlc[index]);
+    // Also with nothing left out: turning every DLC on is a choice too.
+    if (job.view.kind == InstallJobKind::kUpdate && job.options.dlc_choice) fields += "\tdlcset";
     if (job.view.kind != InstallJobKind::kMove && job.estimated_bytes) fields += "\test=" + std::to_string(*job.estimated_bytes);
     return fields;
   };
@@ -800,6 +805,7 @@ std::string InstallService::Update(GameId id, const InstallOptions& options, std
     if (job.options.branch.empty()) job.options.branch = game->record->branch;
   }
   job.options = Registrable(job.options);
+  job.view.dlc_change = job.options.dlc_choice;
   Admit(job, game->volume_id, estimated_bytes);
   jobs_.push_back(job);
   Publish();
@@ -1436,6 +1442,7 @@ void InstallService::Run() {
           game.finished_at = WallNow();
           game.finished_kept = false;
           game.update_bytes = downloaded;
+          game.updated = true;
           game.record = ReadInstallRecord(next_root + "/" + kRecord);
         }
       } else if (job && job->cancel_requested && next_update && !locked_on_disk) {

@@ -2293,7 +2293,8 @@ class Render::Impl
                     // The files are here; preparing them is the Preparation section's.
                     value = job->game_id.store == Store::kLocal ? "Copied" : job->update ? "Updated" : "Downloaded";
                     tone = "good";
-                    aside = byte_count(job->total_bytes);
+                    // An update that only deleted files (a DLC removed) downloaded nothing to count.
+                    aside = job->update && job->total_bytes == 0 ? std::string() : byte_count(job->total_bytes);
                     if (job->finished_at > 0 && !state.simulation_mode)
                         badge = finished_words(job->finished_at, now);
                 }
@@ -4628,7 +4629,7 @@ class Render::Impl
                 return 30.0F;
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
                 return 54.0F;
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc") &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc") &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || import_sheet ||
                                     row.key == "install-settings") && !row.subtitle.empty();
@@ -4732,7 +4733,7 @@ class Render::Impl
             // Game settings rows carry an effect line under the name (or the reason a row is
             // disabled), an accent dot when the player changed the value, and a tag.
             // Kept game data: each game is a checkbox row with its kept date under the name.
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc") &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc") &&
                                   row.kind == RowKind::Toggle;
             const bool described = (settings_sheet || checkbox || import_sheet ||
                                     row.key == "install-settings") && !row.subtitle.empty() && row.kind != RowKind::Heading;

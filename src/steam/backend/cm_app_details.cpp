@@ -131,6 +131,13 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
     details.versions.push_back(std::move(version));
   }
   // Only licenses say which DLC is owned or still free to claim. Without them the sheet has nothing to offer.
+  // An installed game's DLC, for Manage DLC: as its record's branch and language have them, which a DLC change keeps.
+  if (installed && any) {
+    const std::set<std::uint32_t> refused_dlc = free_dlc_refused ? *free_dlc_refused : std::set<std::uint32_t>{};
+    for (auto& offer : OfferedDlc(*app, dlc_apps, apps, depots_owned, selection, refused_dlc))
+      details.dlc.push_back({offer.app_id, std::move(offer.name), offer.download_bytes, offer.install_bytes, offer.free, {},
+                             offer.optional});
+  }
   if (!installed && any) {
     const std::set<std::uint32_t> refused_dlc = free_dlc_refused ? *free_dlc_refused : std::set<std::uint32_t>{};
     auto offers = OfferedDlc(*app, dlc_apps, apps, depots_owned, selection, refused_dlc);
@@ -255,7 +262,8 @@ std::vector<AppDetails> CmAppDetailsSource::Fetch(const StoredSession& session,
     if (!record || !record->depots.empty()) dlc_apps = FetchDlcApps(client_, session, id, found->second, cancel);
     if (cancel.load()) return {};
     std::set<std::uint32_t> refused;
-    if (!record && free_dlc_memory_) refused = LoadFreeDlcMemory(*free_dlc_memory_, session.steam_id);
+    // Free DLC Steam refused isn't offered: not by the install sheet, nor by Manage DLC (the runner won't ask again).
+    if (free_dlc_memory_) refused = LoadFreeDlcMemory(*free_dlc_memory_, session.steam_id);
     result.push_back(DetailsFromAppInfo(id, found->second, licensed_ ? licensed_->Get(session.steam_id) : std::nullopt, language, record,
                                         dlc_apps, &refused));
   }

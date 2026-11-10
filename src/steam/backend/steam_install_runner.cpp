@@ -203,6 +203,13 @@ bool UpdateNeedsUnfetchedDlc(const installs::InstalledRecord& record, std::uint3
   });
 }
 
+std::set<std::uint32_t> ExcludedDlcFor(const InstallOptions& options, bool update,
+                                       const std::optional<installs::InstalledRecord>& record) {
+  std::set<std::uint32_t> excluded(options.excluded_dlc.begin(), options.excluded_dlc.end());
+  if (update && !options.dlc_choice && record) excluded.insert(record->excluded_dlc.begin(), record->excluded_dlc.end());
+  return excluded;
+}
+
 std::vector<std::uint32_t> FreeDlcCandidates(const AppInfo& app, const std::vector<AppInfo>& dlc_apps,
                                              const std::set<std::uint32_t>& owned_apps,
                                              const std::set<std::uint32_t>& refused, std::size_t limit) {
@@ -370,11 +377,20 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
       result.retry_later = dlc_error == CmError::kNetwork || dlc_error == CmError::kTimeout;
       return result;
     }
-  // What the player turned off: this install's choice, and for an update what its install left out.
-  std::set<std::uint32_t> excluded(options.excluded_dlc.begin(), options.excluded_dlc.end());
-  if (update)
-    if (const auto record = installs::ReadInstallRecord(root + "/" + DepotInstaller::kInstallRecord))
-      excluded.insert(record->excluded_dlc.begin(), record->excluded_dlc.end());
+  // What the player turned off: this install's choice, and for an update what its install left out (unless the update
+  // changes the DLC: then the choice is all of it).
+  const auto excluded = ExcludedDlcFor(options, update,
+                                       update ? installs::ReadInstallRecord(root + "/" + DepotInstaller::kInstallRecord)
+                                              : std::nullopt);
+  // A DLC change that turns on a DLC whose appinfo Steam didn't send would leave its depots out: it waits for Steam.
+  if (update && options.dlc_choice && std::any_of(unfetched.begin(), unfetched.end(), [&](std::uint32_t dlc) {
+        return dlc != app->demo_of_app_id && !excluded.count(dlc);
+      })) {
+    log("dlc_app_info", "dlc-change-blocked", "");
+    result.failure = "Could not reach Steam. Resume to try again.";
+    result.retry_later = dlc_error == CmError::kNetwork || dlc_error == CmError::kTimeout;
+    return result;
+  }
   InstallTarget target;
   target.app_id = id;
   target.excluded_dlc.assign(excluded.begin(), excluded.end());

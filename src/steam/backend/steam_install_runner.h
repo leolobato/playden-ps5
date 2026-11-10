@@ -53,6 +53,12 @@ inline constexpr std::uint32_t kFreeDlcLicenseWaitMs = 10'000;
 bool UpdateNeedsUnfetchedDlc(const installs::InstalledRecord& record, std::uint32_t app,
                              const std::set<std::uint32_t>& unfetched);
 
+// The DLC a run leaves out. An install: the player's choice. An update: that and what its install `record` left out,
+// so DLC turned off stays off; one that changes the game's DLC (`options.dlc_choice`, Manage DLC): the choice alone,
+// which can turn DLC on again.
+std::set<std::uint32_t> ExcludedDlcFor(const InstallOptions& options, bool update,
+                                       const std::optional<installs::InstalledRecord>& record);
+
 // The DLC an install asks Steam to grant for free: the game's listofdlc apps, in that order, that the
 // account doesn't own, that have a Windows depot (one the game lists for that DLC, or one in the DLC's
 // own appinfo), and that Steam hasn't refused for this account before. At most `limit`.

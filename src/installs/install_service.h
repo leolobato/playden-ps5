@@ -54,8 +54,12 @@ struct InstallOptions {
   std::string language;  // a Steam content language code ("german")
   std::string branch;    // a Steam branch name
   std::vector<std::uint32_t> excluded_dlc;  // DLC the player turned off, sorted: not claimed, downloaded or reported
+  // An update that changes the game's DLC (Manage DLC): `excluded_dlc` is the whole choice and replaces what the
+  // install record left out, so DLC can be turned on again. Otherwise an update leaves out the record's DLC too.
+  bool dlc_choice = false;
   bool operator==(const InstallOptions& other) const {
-    return language == other.language && branch == other.branch && excluded_dlc == other.excluded_dlc;
+    return language == other.language && branch == other.branch && excluded_dlc == other.excluded_dlc &&
+           dlc_choice == other.dlc_choice;
   }
   bool operator!=(const InstallOptions& other) const { return !(*this == other); }
 };
@@ -100,6 +104,7 @@ struct InstallJobView {
   std::uint64_t total_bytes = 0;
   std::uint64_t held_bytes = 0;  // installed bytes already on disk (see PendingInstallBytes)
   std::optional<std::uint64_t> estimated_bytes;  // what the job was asked with, which its drive reserves
+  bool dlc_change = false;  // an update that changes the game's DLC (InstallOptions::dlc_choice)
   std::string failure;  // short, user-facing
   std::string volume_id;
   std::optional<std::uint64_t> bytes_per_second;
@@ -125,6 +130,7 @@ struct InstalledGame {
   std::optional<InstalledRecord> record;
   // An update that finished this session: what it downloaded (0 for an install, or after a restart).
   std::uint64_t update_bytes = 0;
+  bool updated = false;  // that update finished this session, also one that downloaded nothing (a DLC removed)
   // `finished_at` is older than the record: a move copied the record, and the registry keeps the time.
   bool finished_kept = false;
   // Another USB drive that holds the same folder too (a copy, or a move that stopped); empty when none.
@@ -138,6 +144,7 @@ struct CompletedDownload {
   std::string volume_id;
   std::int64_t finished_at = 0;
   std::uint64_t update_bytes = 0;  // an update: what it downloaded; 0 for an install
+  bool updated = false;            // an update, also one that downloaded nothing
 };
 
 // Installs that finished at most `kCompletedDays` before `now` and were not dismissed (a dismissal
@@ -273,7 +280,9 @@ class InstallService {
   // install record says (its branch and language). The game stays installed and playable while the
   // update downloads; once the update puts its files in place, Locked is true until it finishes. A
   // game with a job, or that isn't installed and available, is not updated. `estimated_bytes` (the
-  // download) is reserved as for installs. Empty when queued, or why not (a sentence for the player).
+  // download) is reserved as for installs. With `options.dlc_choice` the update changes the game's DLC to
+  // `options.excluded_dlc`: DLC turned on downloads, files only a turned-off DLC had are deleted. Empty when
+  // queued, or why not (a sentence for the player).
   std::string Update(GameId id, const InstallOptions& options = {}, std::optional<std::uint64_t> estimated_bytes = std::nullopt);
   // True while the game's update is putting files in place, also when Playden stopped during that, and
   // while the game's move runs or must finish: the game must not run then.

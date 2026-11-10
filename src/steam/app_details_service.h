@@ -79,7 +79,8 @@ struct AppDetails {
   // The content languages the game's Windows depots carry, as Steam names them ("german"), in
   // listing order; empty when nothing is localised. An install can pick one of them.
   std::vector<std::string> languages;
-  // A game that isn't installed: the DLC with files an install can leave out, owned or free to claim (OfferedDlc).
+  // The DLC with files an install can leave out, owned or free to claim (OfferedDlc). An installed game's are its
+  // record's branch and language, with no other sizes.
   std::vector<DlcChoice> dlc;
   // The versions an install can choose: the public branch first, then branches with no password
   // that carry the game's own content, the most recently updated first. One entry: nothing to choose.

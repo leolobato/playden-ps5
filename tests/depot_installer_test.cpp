@@ -634,6 +634,77 @@ void UpdateWaitsForUnfetchedDlc() {
   CHECK(!UpdateNeedsUnfetchedDlc(record, 440, {0}));
 }
 
+// The DLC a run leaves out. An update adds what its install left out, so DLC turned off stays off; a DLC change
+// (Manage DLC) is the whole choice, so the record's DLC can be turned on again, all of them too.
+void ExcludedDlcForARun() {
+  using U32s = std::set<std::uint32_t>;
+  playden::installs::InstalledRecord record;
+  record.excluded_dlc = {900, 901};
+  InstallOptions options;
+  options.excluded_dlc = {902};
+  CHECK(ExcludedDlcFor(options, false, record) == (U32s{902}));
+  CHECK(ExcludedDlcFor(options, true, record) == (U32s{900, 901, 902}));
+  CHECK(ExcludedDlcFor(options, true, std::nullopt) == (U32s{902}));
+  options.dlc_choice = true;
+  CHECK(ExcludedDlcFor(options, true, record) == (U32s{902}));
+  options.excluded_dlc.clear();
+  CHECK(ExcludedDlcFor(options, true, record).empty());
+}
+
+InstallTarget UpdateTarget(const std::filesystem::path& root);
+
+// A DLC change runs as an update of the depots selected without, then with, the DLC's depot. Turned off, nothing
+// downloads and only the files no other depot has go, while one the DLC replaced goes back to the game's copy; the
+// record and facts say so. Turned on again, only the DLC's files download.
+void DlcTurnedOffAndOnAgain(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  DepotManifest dlc;
+  dlc.depot_id = 443;
+  dlc.gid = 13;
+  dlc.files.push_back(world.AddFile("dlc/pack.dat", {"pack-", "data"}));
+  dlc.files.push_back(world.AddFile("game.exe", {"MZ-executable-", "second-chunk"}));  // the same as the game's
+  dlc.files.push_back(world.AddFile("empty.txt", {"dlc-text"}));
+  world.manifests[443] = dlc;
+  DepotInfo dlc_depot;
+  dlc_depot.id = 443;
+  dlc_depot.manifest_gid = 13;
+  dlc_depot.owner_app = 900;
+  auto with = Target(root);
+  with.depots.push_back(dlc_depot);
+  std::filesystem::remove_all(root);
+  DepotInstaller installer(world.Hooks());
+  installer.SetTuning({1, 256});
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, with, cancel).error == InstallError::kNone);
+  CHECK(Read(root / "dlc/pack.dat") == "pack-data" && Read(root / "empty.txt") == "dlc-text");
+
+  auto without = UpdateTarget(root);
+  without.excluded_dlc = {900};
+  without.before_apply = [&](const std::string& folder, const std::vector<std::uint32_t>&) {
+    std::ofstream(std::filesystem::path(folder) / ".playden-steam") << "depots=441,442\nnodlc=900\n";
+    return true;
+  };
+  world.chunk_calls = 0;
+  CHECK(installer.Run({}, without, cancel).error == InstallError::kNone);
+  CHECK(world.chunk_calls == 0);  // empty.txt has no chunks: the game's copy is empty
+  CHECK(!std::filesystem::exists(root / "dlc/pack.dat") && !std::filesystem::exists(root / "dlc"));
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-chunk" && std::filesystem::exists(root / "empty.txt") &&
+        Read(root / "empty.txt").empty());
+  CHECK(Read(root / ".playden-steam") == "depots=441,442\nnodlc=900\n");
+  CHECK(std::filesystem::exists(root / playden::installs::kFilesChangedName));
+  auto record = playden::installs::ReadInstallRecord((root / DepotInstaller::kInstallRecord).string());
+  CHECK(record && (record->excluded_dlc == std::vector<std::uint32_t>{900}) && !playden::installs::HoldsDlc(*record));
+
+  auto again = UpdateTarget(root);
+  again.depots.push_back(dlc_depot);
+  world.chunk_calls = 0;
+  CHECK(installer.Run({}, again, cancel).error == InstallError::kNone);
+  CHECK(world.chunk_calls == 3);  // pack.dat's two chunks and the DLC's empty.txt
+  CHECK(Read(root / "dlc/pack.dat") == "pack-data" && Read(root / "empty.txt") == "dlc-text");
+  record = playden::installs::ReadInstallRecord((root / DepotInstaller::kInstallRecord).string());
+  CHECK(record && record->excluded_dlc.empty() && playden::installs::HoldsDlc(*record));
+}
+
 void FreeDlcCandidatesAndMemory(const std::filesystem::path& root) {
   const auto base = AppFixture(6000, "free-dlc-base-6000.vdf");
   const std::vector<AppInfo> dlc = {AppFixture(6001, "free-dlc-app-6001.vdf"), AppFixture(6002, "free-dlc-app-6002.vdf")};
@@ -2867,6 +2938,8 @@ int main(int argc, char** argv) {
   MeasureUpdateMatchesTheUpdate(base / "update-measure");
   MeasureUpdateWithoutTreeUsesTheInstalledManifests(base / "update-measure-no-tree");
   UpdateRestoresFilesOfARemovedDepot(base / "update-removed-depot");
+  ExcludedDlcForARun();
+  DlcTurnedOffAndOnAgain(base / "update-dlc-change");
   UpdateWithoutTreeHashesFiles(base / "update-no-tree");
   InterruptedUpdateResumes(base / "update-resume");
   DiscardAndUninstallDuringUpdate(base / "update-discard");

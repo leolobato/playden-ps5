@@ -658,12 +658,18 @@ void IncludedDlcIsCounted() {
   assert(details.install_bytes == 1020u);
   assert(details.dlc.size() == 1 && details.dlc[0].app_id == 6001 && details.dlc[0].install_bytes == 20 &&
          details.dlc[0].download_bytes == 10 && !details.dlc[0].free);
-  // An installed game offers no choice.
+  // An installed game offers its DLC for Manage DLC, also one its install left out, as the record's branch and language
+  // have them (no other sizes): a DLC change keeps those.
   installs::InstalledRecord record;
   record.version = 2;
   record.app_id = 6000;
   record.depots = {{6000, 1, 6000, 6000}};
-  assert(DetailsFromAppInfo(6000, buffer, grant, "english", record).dlc.empty());
+  record.excluded_dlc = {6001};
+  const auto installed = DetailsFromAppInfo(6000, buffer, grant, "english", record);
+  assert(installed.dlc.size() == 1 && installed.dlc[0].app_id == 6001 && installed.dlc[0].install_bytes == 20 &&
+         installed.dlc[0].other_sizes.empty());
+  // Without licenses, nothing says what is owned: no list.
+  assert(DetailsFromAppInfo(6000, buffer, std::nullopt, "english", record).dlc.empty());
   // A free pack on the game's own list, as Space Marine 2's: offered and sized, unless Steam refused it.
   const std::string pack_game = R"("appinfo"
 {
@@ -685,6 +691,15 @@ void IncludedDlcIsCounted() {
   assert(!offered.dlc[0].optional);
   const std::set<std::uint32_t> refused{6101};
   assert(DetailsFromAppInfo(6100, pack_game, game_only, "english", std::nullopt, {*pack}, &refused).dlc.empty());
+  // Installed, Manage DLC offers the unclaimed pack too, unless Steam refused it.
+  installs::InstalledRecord pack_record;
+  pack_record.version = 2;
+  pack_record.app_id = 6100;
+  pack_record.depots = {{6100, 1, 6100, 6100}};
+  pack_record.excluded_dlc = {6101};
+  const auto installed_pack = DetailsFromAppInfo(6100, pack_game, game_only, "english", pack_record, {*pack});
+  assert(installed_pack.dlc.size() == 1 && installed_pack.dlc[0].free);
+  assert(DetailsFromAppInfo(6100, pack_game, game_only, "english", pack_record, {*pack}, &refused).dlc.empty());
   // Each version and language says where it differs: another size, no DLC at all, or a DLC only it has.
   const std::string branched = R"("appinfo"
 {

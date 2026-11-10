@@ -721,6 +721,114 @@ void live_install_dlc_row() {
 }
 
 // Optional DLC the account owns starts off; other DLC and free DLC start on; the player's choice wins.
+// Manage DLC (Maintenance) of an installed Steam game: its DLC as the install holds them, check boxes that say what
+// changes, and Apply queues one DLC change with every DLC to leave out and what the DLC turned on install.
+void live_manage_dlc() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(42), "With DLC"), game(SteamId(43), "Old record")}, false, {}, false, false, {}}),
+          "library loaded");
+    model.UpdateVolumes({{"internal", "Console storage", true, 2'000'000'000, 1'000'000'000}}, "internal");
+    // Art Book is installed, Texture Pack was turned off at install, Campaign was bought later, the free pack never claimed.
+    LiveInstalledGame installed{SteamId(42), 500'000'000, "internal", true, 0};
+    installed.dlc_known = true;
+    installed.installed_dlc = {501};
+    installed.excluded_dlc = {503, 599};
+    // No install record read: nothing says what it holds.
+    LiveInstalledGame unknown{SteamId(43), 500'000'000, "internal", true, 0};
+    model.UpdateInstalls({}, {installed, unknown});
+    const std::vector<GameDlc> dlc{{501, "Art Book", 40'000'000, 50'000'000, false}, {502, "Campaign", 200'000'000, 300'000'000, false},
+                                   {503, "Texture Pack", 100'000'000, 1'200'000'000, false}, {504, "Pack", 10'000'000, 20'000'000, true},
+                                   {505, "Unlock", 0, 0, false}};
+    model.UpdateAppDetails(SteamId(42), 300'000'000, 500'000'000, true, {"english"}, dlc);
+    model.UpdateAppDetails(SteamId(43), 300'000'000, 500'000'000, true, {"english"}, dlc);
+
+    check(model.action("details:43"), "details open");
+    activate(model, "details-more");
+    activate(model, "game-maintenance");
+    check(!has_row(model, "manage-dlc"), "without the install record there is no Manage DLC");
+    model.action("circle");
+    model.action("circle");
+    model.action("circle");
+
+    check(model.action("details:42"), "details open");
+    activate(model, "details-more");
+    activate(model, "game-maintenance");
+    const auto* row = find_row(model, "manage-dlc");
+    check(row && row->enabled && row->value == "1 of 4", "Maintenance offers Manage DLC with what is installed");
+    activate(model, "manage-dlc");
+    check(model.view().surface == "manage-dlc" && model.view().title == "Manage DLC", "the row opens the sheet");
+    check(find_row(model, "heading-manage-dlc-installed") && find_row(model, "heading-manage-dlc-other"), "installed DLC comes first");
+    check(!has_row(model, "manage-dlc-505"), "DLC without files isn't listed");
+    row = find_row(model, "manage-dlc-501");
+    check(row && row->kind == RowKind::Toggle && row->selected && row->subtitle.empty(), "an installed DLC starts on");
+    row = find_row(model, "manage-dlc-502");
+    check(row && !row->selected, "a DLC bought later starts off");
+    check(find_row(model, "manage-dlc-504")->value == "Free · 20 MB", "a free DLC says so");
+    check(fact(model, "Free space") == "1.0 GB", "the sheet says the drive's free space");
+    check(!find_row(model, "manage-dlc-apply")->enabled && find_row(model, "manage-dlc-apply")->subtitle == "Nothing changed",
+          "nothing to apply yet");
+
+    activate(model, "manage-dlc-501");
+    activate(model, "manage-dlc-502");
+    check(model.view().surface == "manage-dlc", "a toggle keeps the sheet open");
+    check(find_row(model, "manage-dlc-501")->subtitle == "Its files are deleted", "turning one off says what happens");
+    check(find_row(model, "manage-dlc-502")->subtitle == "Downloads", "turning one on says what happens");
+    check(fact(model, "Download") == "About 200 MB" && fact(model, "Frees") == "About 50 MB", "the sheet says what changes");
+    check(find_row(model, "manage-dlc-apply")->enabled && find_row(model, "manage-dlc-apply")->subtitle == "Runs in Queue", "Apply is ready");
+    // Too big for the drive: Apply waits.
+    activate(model, "manage-dlc-503");
+    check(fact(model, "Download") == "About 300 MB · 1.0 GB free", "the download says it doesn't fit");
+    check(!find_row(model, "manage-dlc-apply")->enabled && find_row(model, "manage-dlc-apply")->subtitle == "Not enough space",
+          "a change that doesn't fit can't start");
+    activate(model, "manage-dlc-503");
+    activate(model, "manage-dlc-504");
+    check(find_row(model, "manage-dlc-504")->subtitle == "Downloads, and Steam adds it to your account", "a free DLC is claimed");
+    activate(model, "manage-dlc-504");
+    check(model.TakeInstallRequests().empty(), "toggling asks for nothing");
+
+    activate(model, "manage-dlc-apply");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::ChangeDlc && requests[0].game_id == SteamId(42) &&
+              (requests[0].excluded_dlc == std::vector<std::uint32_t>{501, 503, 504, 599}) &&
+              requests[0].install_bytes == std::optional<std::uint64_t>(300'000'000),
+          "Apply asks for the whole choice (the record's unlisted DLC stays off) and reserves what turns on");
+    check(model.state().navigation.modals.empty() && model.state().navigation.route == Route::Details, "back on the game's page");
+
+    // While its change runs, Queue says so and the row waits.
+    LiveInstallJob change;
+    change.game_id = SteamId(42);
+    change.state = JobState::Downloading;
+    change.update = true;
+    change.dlc_change = true;
+    model.UpdateInstalls({change}, {installed, unknown});
+    const auto* job = std::find_if(model.state().jobs.begin(), model.state().jobs.end(), [](const Job& value) { return value.game_id == SteamId(42); }).operator->();
+    check(job && job->stage_text == "Changing DLC", "Queue names the DLC change");
+    const auto* note = find_row(model, "details-updating");
+    check(note && note->title == "Changing DLC", "the game's page names the DLC change too");
+    activate(model, "details-more");
+    activate(model, "game-maintenance");
+    row = find_row(model, "manage-dlc");
+    check(row && !row->enabled && row->subtitle == "Wait for its job in Queue to finish.", "one change at a time");
+    model.action("circle");
+    model.action("circle");
+    installed.installed_dlc = {502};
+    installed.excluded_dlc = {501, 503, 504, 599};
+    model.UpdateInstalls({}, {installed, unknown});
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const auto& notice) { return notice.message == "DLC changed"; }),
+          "its end says the DLC changed");
+    // A change that only removed DLC downloaded nothing: Completed lists it as an update, not as the whole game.
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    model.UpdateInstalls({}, {installed, unknown}, {{SteamId(42), 500'000'000, "internal", now, 0, true}});
+    const auto finished = std::find_if(model.state().jobs.begin(), model.state().jobs.end(),
+                                       [](const Job& value) { return value.game_id == SteamId(42); });
+    check(finished != model.state().jobs.end() && finished->state == JobState::Downloaded && finished->update &&
+              finished->total_bytes == 0,
+          "a change that downloaded nothing is no download of the game");
+}
+
 void live_install_optional_dlc() {
     auto model = make_live();
     model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
@@ -4492,6 +4600,7 @@ int main() {
     live_install_exact_size();
     live_install_version_title();
     live_install_dlc_row();
+    live_manage_dlc();
     live_install_optional_dlc();
     details_ask_follows_licenses_and_install_state();
     live_page_matches_install_sheet();

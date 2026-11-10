@@ -86,9 +86,9 @@ enum class SessionState { Idle, Preparing, Launching, Running, Stopping, Failed,
 enum class RuntimeState { Unavailable, Checking, Ready, Failed };
 enum class LogState { Loading, Ready, Failed };
 // Update: an installed game's update (or DLC bought since), from its details page. Move: an installed game to
-// another drive (volume_id).
+// another drive (volume_id). ChangeDlc: an installed game's DLC from Manage DLC, as an update with excluded_dlc.
 enum class InstallRequestKind { Install, Pause, Resume, DownloadNow, MoveUp, MoveDown, Cancel, Uninstall, SetDefaultVolume,
-                                DismissCompleted, ClearCompleted, Update, Move };
+                                DismissCompleted, ClearCompleted, Update, Move, ChangeDlc };
 struct InstallRequest {
     InstallRequestKind kind = InstallRequestKind::Install;
     GameId game_id;
@@ -99,9 +99,9 @@ struct InstallRequest {
     std::string language;
     std::string branch;
     // Install: the install-size estimate of the chosen version (the game's when Steam gives none for it),
-    // which the install service reserves on the drive; empty: unknown.
+    // which the install service reserves on the drive; empty: unknown. ChangeDlc: what the DLC turned on install.
     std::optional<std::uint64_t> install_bytes;
-    // Install: the DLC turned off in the install sheet, sorted.
+    // Install: the DLC turned off in the install sheet, sorted. ChangeDlc: every DLC the game is to leave out, sorted.
     std::vector<std::uint32_t> excluded_dlc;
 };
 // Game maintenance the details page offers (simulated in fixture mode).
@@ -141,6 +141,7 @@ struct LiveInstallJob {
     std::uint64_t checked_files = 0;
     std::uint64_t check_files = 0;
     std::optional<std::uint64_t> estimated_bytes;  // what the job was asked with, DLC choice included
+    bool dlc_change = false;  // an update that changes the game's DLC (Manage DLC)
 };
 struct LiveInstalledGame {
     GameId game_id;
@@ -148,6 +149,10 @@ struct LiveInstalledGame {
     std::string volume_id;
     bool available = true;  // false while the game's drive is absent
     std::int64_t finished_at = 0;  // when it was installed (Unix seconds; a move keeps it), 0 unknown
+    // From its install record (dlc_known): the DLC whose depots it holds, and the DLC the player turned off.
+    bool dlc_known = false;
+    std::vector<std::uint32_t> installed_dlc;
+    std::vector<std::uint32_t> excluded_dlc;
 };
 // A recent finished download, listed in Downloads after the queue.
 struct LiveCompletedDownload {
@@ -156,6 +161,7 @@ struct LiveCompletedDownload {
     std::string volume_id;
     std::int64_t finished_at = 0;  // Unix seconds
     std::uint64_t update_bytes = 0;  // an update: what it downloaded; 0 for an install
+    bool update = false;  // an update, also one that downloaded nothing (a DLC removed)
 };
 // A drive the real install service can use. Space is absent when the platform cannot report it.
 struct LiveVolume {
@@ -786,6 +792,11 @@ struct Installation {
     bool runtime_ready = true;
     bool saves_present = true;
     std::int64_t installed_at = 0;  // live: when it was installed (Unix seconds), 0 unknown; Home's Recently installed
+    // What Manage DLC starts from (dlc_known: the install record was read): the DLC whose depots the install holds,
+    // and the DLC the player turned off, which stay off when the sheet doesn't list them.
+    bool dlc_known = false;
+    std::vector<std::uint32_t> installed_dlc;
+    std::vector<std::uint32_t> excluded_dlc;
 };
 
 struct Job {
@@ -812,6 +823,7 @@ struct Job {
     bool checking_licenses = false;  // live: a slow Steam license check before the download starts
     std::string server_name;  // live, while downloading: the download server's display name
     bool update = false;  // an installed game's update (kind stays "install": a game's download)
+    bool dlc_change = false;  // live: the update changes the game's DLC (Manage DLC)
     bool locked = false;  // the update is putting its files in place, or the move must finish: Play waits for it
     bool move = false;    // an installed game moving to volume_id from from_volume_id: Play waits while it runs
     std::string from_volume_id;
@@ -1518,6 +1530,7 @@ private:
     // Settings download language resolves to for the game).
     std::string install_language_;
     std::map<std::uint32_t, bool> install_dlc_choice_;  // what the install sheet's player changed (on?), for this install only
+    std::map<std::uint32_t, bool> manage_dlc_choice_;  // Manage DLC: what the player changed (on?) while the sheet is open
     bool page_under_install_sheet_ = false;  // while the page behind the install sheet is built
     // Live: the version (branch) chosen in the install sheet for this one install (empty: public).
     std::string install_version_;
@@ -1809,6 +1822,7 @@ private:
     bool live_installs_seen_ = false;
     std::map<GameId, JobState> live_job_states_;
     std::set<GameId> live_update_jobs_;  // the live jobs that are updates, as last projected
+    std::set<GameId> live_dlc_jobs_;     // of those, the DLC changes
     std::set<GameId> live_move_jobs_;    // the live jobs that are moves, as last projected
     std::set<GameId> canceled_updates_;  // updates the player canceled, until their job ends
     std::set<GameId> live_installed_ids_;
@@ -2210,6 +2224,28 @@ private:
     [[nodiscard]] std::string install_size_text(GameId id, const std::optional<std::uint64_t>& bytes, const char* unknown) const;
     [[nodiscard]] InstallDlcSizes install_dlc_sizes(GameId id) const;
     [[nodiscard]] std::uint64_t install_dlc_on_bytes(GameId id) const;
+    // Manage DLC of an installed Steam game: its DLC with files (as its install's version and language have them),
+    // whether the install holds one, and whether it is on in the sheet (as installed, until the player turns it).
+    [[nodiscard]] std::vector<GameDlc> manage_dlc(GameId id) const;
+    [[nodiscard]] bool manage_dlc_installed(GameId id, std::uint32_t dlc) const;
+    [[nodiscard]] bool manage_dlc_on(GameId id, std::uint32_t dlc) const;
+    // What Apply asks for: every DLC to leave out (the record's that the sheet doesn't list stay), and what changes.
+    struct ManageDlcPlan {
+        std::vector<std::uint32_t> excluded;
+        std::size_t turned_on = 0, turned_off = 0;
+        std::uint64_t download_bytes = 0;  // the DLC turned on (Steam's figures)
+        std::uint64_t install_bytes = 0;
+        std::uint64_t freed_bytes = 0;     // the DLC turned off (files another depot also has stay)
+        bool claims_free = false;          // a free DLC turned on: the download adds it to the account
+        [[nodiscard]] bool changed() const noexcept { return turned_on || turned_off; }
+    };
+    [[nodiscard]] ManageDlcPlan manage_dlc_plan(GameId id) const;
+    // Why the game's DLC can't change now (short, for a row), or empty.
+    [[nodiscard]] std::string manage_dlc_blocker(GameId id) const;
+    // What the DLC turned on install doesn't fit the game's drive (with the install margin).
+    [[nodiscard]] bool manage_dlc_short_of_room(GameId id) const;
+    [[nodiscard]] bool manage_dlc_offered(GameId id) const;
+    void open_manage_dlc(GameId id);
     // A sheet's rows depend on the game's details and on the version and language chosen.
     void refresh_install_sheet(GameId id);
     // The version chosen in the install sheet for `id`, when it is not the public one.

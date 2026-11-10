@@ -725,9 +725,9 @@ std::vector<std::string> split_overrides(const std::string& list) {
     return entries;
 }
 
-// The app ID in an install sheet DLC row's action ("install-dlc-1234"); 0 for anything else.
-std::uint32_t parse_dlc_action(std::string_view action) {
-    constexpr std::string_view prefix = "install-dlc-";
+// The app ID in a DLC row's action ("install-dlc-1234" on the install sheet, "manage-dlc-1234" in Manage DLC); 0 for
+// anything else.
+std::uint32_t parse_dlc_action(std::string_view action, std::string_view prefix = "install-dlc-") {
     if (action.substr(0, prefix.size()) != prefix) return 0;
     const auto digits = action.substr(prefix.size());
     std::uint32_t app = 0;
@@ -754,7 +754,7 @@ std::string action_label(const std::string& key) {
         {"cloud-use-local", "Use console saves"}, {"cloud-confirm-account", "Use this account"},
         {"cloud-confirm-account-all", "Upload all"},
         {"saves-delete-confirm", "Delete saves"}, {"manage-saves", "Manage saves"}, {"saves-leftover-confirm", "Remove"}, {"saves-quit-anyway", "Play without syncing"},
-        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "DLC"}, {"install-dlc-all", "All DLC"}, {"install-dlc-done", "Done"}, {"heading-dlc-included", "Included"}, {"heading-dlc-optional", "Optional"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
+        {"install-confirm", "Install"}, {"install-version", "Version"}, {"install-language", "Language"}, {"install-dlc", "DLC"}, {"install-dlc-all", "All DLC"}, {"install-dlc-done", "Done"}, {"manage-dlc", "Manage DLC…"}, {"manage-dlc-apply", "Apply changes"}, {"heading-manage-dlc-installed", "Installed"}, {"heading-manage-dlc-other", "Not installed"}, {"heading-dlc-included", "Included"}, {"heading-dlc-optional", "Optional"}, {"update-confirm", "Download and install"}, {"storage-picker", "Change storage…"},
         {"value-edit", "Edit…"}, {"value-reset", "Reset to recipe"}, {"override-add", "Add an override…"},
         {"unlock-setting", "Change anyway"}, {"export-recipe", "Export as file"}, {"share-recipe", "Share recipe"},
         {"share-send", "Send"}, {"share-send-confirm", "Send"}, {"share-vote", "👍 Vote for it instead"}, {"vote-up", "👍 Good"},
@@ -3535,8 +3535,9 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
             }
             const bool update = live_update_jobs_.contains(id);
             if (update && canceled_updates_.erase(id)) continue;
-            push_notice({"install-" + ToKey(id), update ? "Update complete" : "Download complete", "", false, kLiveNoticeSeconds,
-                         false, title(id)});
+            push_notice({"install-" + ToKey(id),
+                         live_dlc_jobs_.contains(id) ? "DLC changed" : update ? "Update complete" : "Download complete", "", false,
+                         kLiveNoticeSeconds, false, title(id)});
             // What Steam said about the update is answered: the details page asks again.
             if (update) {
                 if (auto* game = const_cast<Game*>(find_game(state_, id))) game->update = {};
@@ -3548,7 +3549,8 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
             if (job.state != JobState::Failed || (previous != live_job_states_.end() && previous->second == JobState::Failed)) continue;
             // The queue carries on with the next game and Downloads keeps the failure with Resume, so the
             // player is told in a corner instead of a dialog that stops what they are doing.
-            push_notice({"install-" + ToKey(job.game_id), job.move ? "Move failed" : job.update ? "Update failed" : "Download failed", "", false,
+            push_notice({"install-" + ToKey(job.game_id),
+                         job.move ? "Move failed" : job.dlc_change ? "DLC change failed" : job.update ? "Update failed" : "Download failed", "", false,
                          kLiveNoticeSeconds * 2, true,
                          title(job.game_id) + (job.failure.empty() ? std::string() : " · " + job.failure), false});
         }
@@ -3568,9 +3570,11 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
     live_installs_seen_ = true;
     live_job_states_ = std::move(job_states);
     live_update_jobs_.clear();
+    live_dlc_jobs_.clear();
     live_move_jobs_.clear();
     for (const auto& job : jobs) {
         if (job.update) live_update_jobs_.insert(job.game_id);
+        if (job.update && job.dlc_change) live_dlc_jobs_.insert(job.game_id);
         if (job.move) live_move_jobs_.insert(job.game_id);
     }
     std::erase_if(canceled_updates_, [this](GameId id) { return !live_update_jobs_.contains(id); });
@@ -3595,11 +3599,13 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
             job.eta_seconds = live_job.eta_seconds;
             job.server_name = live_job.server_name;
         }
-        // An update reads "Updating · <state>"; its own steps stand for the state while they run.
+        // An update reads "Updating · <state>"; its own steps stand for the state while they run. A DLC change reads
+        // "Changing DLC".
         job.update = live_job.update;
+        job.dlc_change = live_job.dlc_change;
         job.locked = live_job.locked;
         if (live_job.update) {
-            job.stage_text = "Updating";
+            job.stage_text = live_job.dlc_change ? "Changing DLC" : "Updating";
             if (live_job.state == JobState::Downloading && live_job.checking_files) job.state_text = "Checking files";
             else if (live_job.state == JobState::Downloading && live_job.applying) job.state_text = "Applying";
         }
@@ -3638,7 +3644,7 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
         job.queue_order = order++;
         job.state = JobState::Downloaded;
         // An update lists what it downloaded, not the whole game.
-        job.update = finished.update_bytes > 0;
+        job.update = finished.update || finished.update_bytes > 0;
         job.completed_bytes = job.total_bytes = job.update ? finished.update_bytes : finished.install_bytes;
         job.volume_id = finished.volume_id;
         job.finished_at = finished.finished_at;
@@ -3649,7 +3655,7 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
     for (const auto& game : installed)
         installations.push_back({game.game_id, game.volume_id, game.install_bytes, game.available,
                                  state_.runtime_games.count(game.game_id) && state_.runtime_games.at(game.game_id).ready, false,
-                                 game.finished_at});
+                                 game.finished_at, game.dlc_known, game.installed_dlc, game.excluded_dlc});
     state_.jobs = std::move(projected);
     sync_self_update_job();
     state_.installations = std::move(installations);
@@ -4101,6 +4107,94 @@ std::uint64_t Simulation::install_dlc_on_bytes(GameId id) const {
     for (const auto& dlc : install_dlc(id))
         if (!install_dlc_off(dlc)) bytes += dlc.install_bytes;
     return bytes;
+}
+
+std::vector<GameDlc> Simulation::manage_dlc(GameId id) const {
+    std::vector<GameDlc> offered;
+    const auto* game = find_game(state_, id);
+    if (!game) return offered;
+    // Steam's details of an installed game have its record's version and language: no other sizes to pick from.
+    for (const auto& dlc : game->dlc)
+        if (dlc.install_bytes != 0) offered.push_back(dlc);
+    return offered;
+}
+
+bool Simulation::manage_dlc_installed(GameId id, std::uint32_t dlc) const {
+    const auto* installation = find_installation(state_, id);
+    return installation && std::find(installation->installed_dlc.begin(), installation->installed_dlc.end(), dlc) !=
+                               installation->installed_dlc.end();
+}
+
+bool Simulation::manage_dlc_on(GameId id, std::uint32_t dlc) const {
+    const auto chosen = manage_dlc_choice_.find(dlc);
+    return chosen != manage_dlc_choice_.end() ? chosen->second : manage_dlc_installed(id, dlc);
+}
+
+Simulation::ManageDlcPlan Simulation::manage_dlc_plan(GameId id) const {
+    ManageDlcPlan plan;
+    const auto* installation = find_installation(state_, id);
+    // What the record leaves out stays out unless the sheet turns it on; a listed DLC that is off is left out, also one
+    // bought since the install, so it doesn't download with a later update.
+    std::set<std::uint32_t> excluded;
+    if (installation) excluded.insert(installation->excluded_dlc.begin(), installation->excluded_dlc.end());
+    for (const auto& dlc : manage_dlc(id)) {
+        const bool installed = manage_dlc_installed(id, dlc.app_id);
+        const bool on = manage_dlc_on(id, dlc.app_id);
+        if (on) excluded.erase(dlc.app_id);
+        else excluded.insert(dlc.app_id);
+        if (on && !installed) {
+            ++plan.turned_on;
+            plan.download_bytes += dlc.download_bytes;
+            plan.install_bytes += dlc.install_bytes;
+            plan.claims_free = plan.claims_free || dlc.free;
+        } else if (!on && installed) {
+            ++plan.turned_off;
+            plan.freed_bytes += dlc.install_bytes;
+        }
+    }
+    plan.excluded.assign(excluded.begin(), excluded.end());
+    return plan;
+}
+
+std::string Simulation::manage_dlc_blocker(GameId id) const {
+    if (!find_installation(state_, id)) return "Not installed";
+    // Its job, an uninstall, a preparation or the game running; then its drive, as an update checks it.
+    if (auto blocker = installed_blocker(id); !blocker.empty()) return blocker;
+    if (const auto check = update_check(id); !check.allowed) return check.reason;
+    return {};
+}
+
+bool Simulation::manage_dlc_short_of_room(GameId id) const {
+    const auto plan = manage_dlc_plan(id);
+    const auto check = update_check(id);
+    return plan.turned_on && check.free_bytes && plan.install_bytes + steam::kInstallSpaceMargin > *check.free_bytes;
+}
+
+bool Simulation::manage_dlc_offered(GameId id) const {
+    // Steam games only: their install record says which DLC they hold.
+    const auto* installation = find_installation(state_, id);
+    return id.store == Store::kSteam && installation && installation->dlc_known && external_game(id) == nullptr &&
+           !manage_dlc(id).empty();
+}
+
+void Simulation::open_manage_dlc(GameId id) {
+    manage_dlc_choice_.clear();
+    const auto offered = manage_dlc(id);
+    if (offered.empty()) return;
+    // By what the install holds, so a row stays put when it is toggled; one kind needs no headings.
+    const auto held = std::count_if(offered.begin(), offered.end(), [&](const GameDlc& dlc) { return manage_dlc_installed(id, dlc.app_id); });
+    const bool sections = held > 0 && held < static_cast<std::ptrdiff_t>(offered.size());
+    std::vector<std::string> actions;
+    if (sections) actions.push_back("heading-manage-dlc-installed");
+    for (const auto& dlc : offered)
+        if (manage_dlc_installed(id, dlc.app_id)) actions.push_back("manage-dlc-" + std::to_string(dlc.app_id));
+    if (sections) actions.push_back("heading-manage-dlc-other");
+    for (const auto& dlc : offered)
+        if (!manage_dlc_installed(id, dlc.app_id)) actions.push_back("manage-dlc-" + std::to_string(dlc.app_id));
+    actions.push_back("divider");
+    actions.push_back("manage-dlc-apply");
+    actions.push_back("cancel");
+    open_modal({"manage-dlc", "Manage DLC", state_.navigation.focus_key, std::move(actions), sections ? 1 : 0, false});
 }
 
 void Simulation::ResetSizeChecks() {
@@ -6098,6 +6192,34 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.detail_id = id;
         state_.navigation.selected_game_id = id;
         state_.navigation.focus_key = "details-update";
+    } else if (name == "dlc-manage") {
+        // An installed game's Maintenance with Manage DLC: two DLC installed (one turned off would show as not
+        // installed), one left out at install and a free one never claimed. Replay "action focus:manage-dlc" and
+        // "action cross" for the sheet.
+        const auto id = GameId::Steam(900001);
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        std::erase_if(state_.jobs, [id](const Job& job) { return job.game_id == id; });
+        if (auto* game = const_cast<Game*>(find_game(state_, id))) {
+            game->update = {};
+            game->dlc = {{900201, "Soundtrack", 610'000'000, 640'000'000, false},
+                         {900202, "Old Lighthouse Expansion", 3'900'000'000, 4'700'000'000, false},
+                         {900203, "HD Textures", 11'200'000'000, 14'100'000'000, false},
+                         {900204, "Photo Mode Filters", 40'000'000, 52'000'000, true}};
+        }
+        if (auto* installation = find_installation(state_, id)) {
+            installation->runtime_ready = true;
+            installation->dlc_known = true;
+            installation->installed_dlc = {900201, 900202};
+            installation->excluded_dlc = {900203};
+        }
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_origin = Route::Library;
+        state_.navigation.detail_id = id;
+        state_.navigation.selected_game_id = id;
+        state_.navigation.focus_key = "details-play";
+        open_modal({"game-maintenance", "Maintenance", "details-play", maintenance_actions(), 0, false});
+        state_.navigation.focus_key = "manage-dlc";
     } else if (name == "install-options") {
         // The install sheet of a game in several languages and versions, with owned DLC: its Version,
         // Language and Includes rows.
@@ -6796,6 +6918,24 @@ void Simulation::rebuild_view() {
                                    short_of_room});
             view_.facts.push_back({"Download", install_size_text(id, assessment.download_bytes, "Unknown")});
         }
+        if (modal.id == "manage-dlc") {
+            // What Apply does: what downloads, what is deleted, where, and that the game stays playable meanwhile.
+            const auto id = state_.navigation.selected_game_id;
+            const auto plan = manage_dlc_plan(id);
+            const auto check = update_check(id);
+            // The sheet's head has room for the explanation, or for what the change does (at most two figures).
+            if (!plan.changed()) {
+                if (check.free_bytes) view_.facts.push_back({"Free space", format_bytes(*check.free_bytes)});
+                view_.subtitle = "DLC you turn on downloads into the game; the files of DLC you turn off are deleted. On " +
+                                 check.volume_label + ".";
+            }
+            // Steam's figures: depots can share files, so the change can take less.
+            if (plan.turned_on)
+                view_.facts.push_back({"Download", "About " + format_bytes(plan.download_bytes) +
+                                                       (manage_dlc_short_of_room(id) ? " · " + format_bytes(*check.free_bytes) + " free" : std::string()),
+                                       manage_dlc_short_of_room(id)});
+            if (plan.turned_off) view_.facts.push_back({"Frees", "About " + format_bytes(plan.freed_bytes)});
+        }
         if (modal.id == "install-language")
             view_.subtitle = "For this game only. New downloads of other games stay in " +
                              playden::steam::LanguageName(state_.content_language) + ".";
@@ -7033,6 +7173,35 @@ void Simulation::rebuild_view() {
                         item.selected = !install_dlc_off(dlc);
                         if (!dlc.name.empty()) item.title = dlc.name;
                         item.value = (dlc.free ? "Free · " : "") + format_bytes(dlc.install_bytes);
+                    }
+            }
+            // Manage DLC: one check box per DLC, on as installed until the player turns it; Apply says what changes.
+            if (modal.id == "manage-dlc" && action_key == "manage-dlc-apply") {
+                const auto id = state_.navigation.selected_game_id;
+                const auto plan = manage_dlc_plan(id);
+                const auto blocker = manage_dlc_blocker(id);
+                const bool short_of_room = manage_dlc_short_of_room(id);
+                item.enabled = plan.changed() && blocker.empty() && !short_of_room;
+                const auto* game = find_game(state_, id);
+                if (!blocker.empty()) item.subtitle = blocker;
+                else if (!plan.changed()) item.subtitle = "Nothing changed";
+                else if (short_of_room) item.subtitle = "Not enough space";
+                // The job selects the content Steam has now: a pending update of the game comes with it.
+                else if (game && game->update.newer) item.subtitle = "With the game's update";
+                else item.subtitle = "Runs in Queue";
+            } else if (modal.id == "manage-dlc" && action_key.rfind("manage-dlc-", 0) == 0) {
+                const auto id = state_.navigation.selected_game_id;
+                const auto app = parse_dlc_action(action_key, "manage-dlc-");
+                item.kind = RowKind::Toggle;
+                item.title = "DLC " + std::to_string(app);
+                for (const auto& dlc : manage_dlc(id))
+                    if (dlc.app_id == app) {
+                        const bool installed = manage_dlc_installed(id, app);
+                        item.selected = manage_dlc_on(id, app);
+                        if (!dlc.name.empty()) item.title = dlc.name;
+                        item.value = (dlc.free && !installed ? "Free · " : "") + format_bytes(dlc.install_bytes);
+                        if (item.selected && !installed) item.subtitle = dlc.free ? "Downloads, and Steam adds it to your account" : "Downloads";
+                        else if (!item.selected && installed) item.subtitle = "Its files are deleted";
                     }
             }
             if (modal.id == "install" && action_key == "install-language") {
@@ -7666,6 +7835,21 @@ void Simulation::rebuild_view() {
                 item.subtitle = "Like dinput8=n,b: n uses the game's copy, b Wine's.";
             } else if (settings_ready && action_key == "unlock-setting") {
                 item.dangerous = true;
+            } else if (modal.id == "game-maintenance" && action_key == "manage-dlc") {
+                // The game's DLC, installed or not: the same check boxes as the install sheet's.
+                const auto offered = manage_dlc(settings_game);
+                const auto held = std::count_if(offered.begin(), offered.end(), [&](const GameDlc& dlc) {
+                    return manage_dlc_installed(settings_game, dlc.app_id);
+                });
+                item.value = std::to_string(held) + " of " + std::to_string(offered.size());
+                const auto blocker = manage_dlc_blocker(settings_game);
+                const auto* game = find_game(state_, settings_game);
+                const std::string title = game && !game->title.empty() ? game->title : "the game";
+                item.enabled = blocker.empty();
+                if (blocker == "Playing") item.subtitle = "Quit " + title + " to change its DLC.";
+                else if (blocker == "In Queue") item.subtitle = "Wait for its job in Queue to finish.";
+                else if (!blocker.empty()) item.subtitle = blocker + ".";
+                else item.subtitle = "Install DLC you left out or bought later, or remove DLC to free space.";
             } else if (modal.id == "game-maintenance" && action_key == "game-move") {
                 // The game's move to another drive: the same Queue job as the Move tab's.
                 const auto* installation = find_installation(state_, settings_game);
@@ -8130,6 +8314,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "steam-programs") view_.legends = {"Cross Choose", "Circle Cancel"};
         else if (modal.id == "content-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "manage-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Cancel"};
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
@@ -8349,7 +8534,7 @@ void Simulation::rebuild_view() {
                 if (job->state == JobState::Downloading && job->state_text.empty() && job->total_bytes > 0)
                     progress = std::to_string(static_cast<int>(100.0 * static_cast<double>(job->completed_bytes) /
                                                                static_cast<double>(job->total_bytes))) + "%";
-                auto& note = row("details-updating", RowKind::Status, "Updating", "");
+                auto& note = row("details-updating", RowKind::Status, job->dlc_change ? "Changing DLC" : "Updating", "");
                 note.value = progress;
                 if (!job->failure.empty()) note.subtitle = job->failure;
                 note.enabled = false;
@@ -11745,6 +11930,31 @@ void Simulation::activate() {
         refresh_game_settings(); save_profile();
     } else if (live() && action_name == "run-once-start") {
         start_setup_program();
+    } else if (action_name == "manage-dlc") {
+        const auto game = state_.navigation.selected_game_id;
+        if (manage_dlc_offered(game) && manage_dlc_blocker(game).empty()) open_manage_dlc(game);
+    } else if (action_name == "manage-dlc-apply") {
+        const auto game = state_.navigation.selected_game_id;
+        const auto plan = manage_dlc_plan(game);
+        if (!plan.changed() || !manage_dlc_blocker(game).empty() || manage_dlc_short_of_room(game)) return;
+        if (live()) {
+            InstallRequest request{InstallRequestKind::ChangeDlc, game};
+            request.excluded_dlc = plan.excluded;
+            if (plan.install_bytes) request.install_bytes = plan.install_bytes;
+            pending_install_requests_.push_back(std::move(request));
+        }
+        manage_dlc_choice_.clear();
+        // Back on the game's page, where Play says what the change is doing.
+        while (!state_.navigation.modals.empty()) close_modal();
+        const auto* known = find_game(state_, game);
+        push_notice({"update-" + ToKey(game), "DLC change queued", "", false, kLiveNoticeSeconds, false,
+                     live() ? (known && !known->title.empty() ? known->title : std::string("The game")) + " · Follow it in Queue"
+                            : std::string("Fixture: nothing downloads")});
+    } else if (const auto manage_app = parse_dlc_action(action_name, "manage-dlc-")) {
+        const auto game = state_.navigation.selected_game_id;
+        const auto offered = manage_dlc(game);
+        if (std::any_of(offered.begin(), offered.end(), [manage_app](const GameDlc& dlc) { return dlc.app_id == manage_app; }))
+            manage_dlc_choice_[manage_app] = !manage_dlc_on(game, manage_app);
     } else if (action_name == "game-move") {
         const auto game = state_.navigation.selected_game_id;
         if (move_blocker(game, {}).empty() && move_volumes().size() >= 2) open_move_picker(game);
@@ -12425,7 +12635,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});
@@ -12750,6 +12960,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
               state_.navigation.modals.back().id == "content-language" ||
               state_.navigation.modals.back().id == "install-language" ||
               state_.navigation.modals.back().id == "install-dlc" ||
+              state_.navigation.modals.back().id == "manage-dlc" ||
               state_.navigation.modals.back().id == "install-version" ||
               state_.navigation.modals.back().id == "button-mapping" || state_.navigation.modals.back().id == "controller-tuning" ||
               !state_.navigation.modals.back().setting_id.empty()))
@@ -14646,6 +14857,8 @@ std::vector<std::string> Simulation::maintenance_actions() const {
                                      "maintenance-backup", "maintenance-recreate", "cancel"};
     // An installed game can move to another drive; imported games have Copy or Move into Playden instead.
     const auto id = state_.navigation.selected_game_id;
+    // Its DLC can be installed or removed later (Manage DLC), beside the move.
+    if (manage_dlc_offered(id)) actions.insert(actions.end() - 1, "manage-dlc");
     if (id.store != Store::kLocal && find_installation(state_, id))
         actions.insert(actions.end() - 1, "game-move");
     return actions;

@@ -1888,6 +1888,9 @@ void Controller::TickUninstalls() {
       case UninstallAction::Kind::kStop: StopUninstall(id, action.reason); break;
       case UninstallAction::Kind::kFinished:
         model_.NotifyUninstallFinished(id);
+        // Steam's details of the installed game had its DLC for that install only: the install sheet asks with every
+        // version's and language's sizes.
+        if (id.store == Store::kSteam) refresh_details_.insert(id);
         ++play_notes_revision_;
         break;
     }
@@ -2337,6 +2340,16 @@ void Controller::TickInstalls() {
           model_.NotifyUpdateRefused(request.game_id, refused);
         break;
       }
+      case InstallRequestKind::ChangeDlc: {
+        // Manage DLC: the whole choice replaces the record's, with the record's branch and language. What the DLC turned on
+        // install is reserved; the update checks the room its files need again before it downloads them.
+        steam::InstallOptions options;
+        options.excluded_dlc = request.excluded_dlc;
+        options.dlc_choice = true;
+        if (const auto refused = installs_->Update(request.game_id, options, request.install_bytes); !refused.empty())
+          model_.NotifyUpdateRefused(request.game_id, refused);
+        break;
+      }
       case InstallRequestKind::Move:
         if (const auto refused = installs_->Move(request.game_id, request.volume_id); !refused.empty())
           model_.NotifyMoveRefused(request.game_id, refused);
@@ -2392,7 +2405,7 @@ void Controller::TickInstalls() {
     // An update that ended (finished or canceled) leaves the game prepared as it was: Play publishes its
     // settings again and puts Playden's Steam files back over the new ones; one that changed the files first
     // has its launch made again from them. Steam's details for it (the launch options that uses, whether more
-    // is to download) are asked for again.
+    // is to download) are asked for again; a DLC change's can add or take away options that need a DLC (DUSK HD).
     if (updating_.count(id)) {
       refresh_details_.insert(id);
       refresh_asked_.erase(id);
@@ -2468,6 +2481,7 @@ void Controller::TickInstalls() {
                         update && running && job.step == steam::InstallStep::kCheckingFiles,
                         update && running && (job.step == steam::InstallStep::kApplying || job.locked)};
     live.estimated_bytes = job.estimated_bytes;
+    live.dlc_change = job.dlc_change;
     if (move) {
       using Step = LiveInstallJob::MoveStep;
       live.move = true;
@@ -2482,11 +2496,23 @@ void Controller::TickInstalls() {
     jobs.push_back(std::move(live));
   }
   std::vector<LiveInstalledGame> installed;
-  for (const auto& game : snapshot.installed)
+  for (const auto& game : snapshot.installed) {
     installed.push_back({game.id, game.install_bytes, game.volume_id, game.available, game.finished_at});
+    // What Manage DLC starts from: the DLC whose depots the install holds, and the ones the player turned off.
+    if (game.record) {
+      auto& live = installed.back();
+      live.dlc_known = true;
+      live.excluded_dlc = game.record->excluded_dlc;
+      for (const auto& depot : game.record->depots)
+        if (depot.owner != 0 && depot.owner != game.record->app_id &&
+            std::find(live.installed_dlc.begin(), live.installed_dlc.end(), depot.owner) == live.installed_dlc.end())
+          live.installed_dlc.push_back(depot.owner);
+    }
+  }
   std::vector<LiveCompletedDownload> completed;
   for (const auto& finished : snapshot.completed)
-    completed.push_back({finished.id, finished.install_bytes, finished.volume_id, finished.finished_at, finished.update_bytes});
+    completed.push_back({finished.id, finished.install_bytes, finished.volume_id, finished.finished_at, finished.update_bytes,
+                         finished.updated});
   model_.UpdateInstalls(jobs, installed, completed);
 }
 void Controller::TickStoreDetails() {
