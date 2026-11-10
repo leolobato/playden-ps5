@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.22, installed as playden-kit. Kit 0.21 with the prospero-win bb7d152 changes: wowprospero.prx (the translator starts over when one PC piles up retired blocks, so code that rewrites itself every frame, such as Fallout's movie player, keeps its lookups short), ntdll.dll for both architectures (Wine patch 1008: WINE_NTOSKRNL_HOSTED=winebus hosts the controller's HID drivers without nsiproxy), the any-title shell built from bb7d152 ([environment] PW_NSIPROXY_DISABLE), and capability nsiproxy-switch. DXVK, the template and every other module are 0.21's, so bottles need no Recreate.",
-    "manifest_sha256": "c7a808a45c2dc463a0656215fa66379b6437e615497824bd4dae4bd1b9476a20",
-    "files_sha256": "8a766547aba15980aad40799e36eb59e706a0ab9684ff0621a68adb215be2317",
+    "status": "Kit 0.23, installed as playden-kit. Kit 0.22 with wineserver.prx from prospero-win 7ae9bdb (Wine patch 1009: files a game reads through an I/O completion port are parked like other read-only files, so Euro Truck Simulator 2 with many mods no longer runs out of open files). The any-title shell (bb7d152), the template, DXVK and every other module are 0.22's, so bottles need no Recreate.",
+    "manifest_sha256": "9ded9e100402461429eb5f8f3ee6902c5cd4c055113d1584408b43e9b0a94e13",
+    "files_sha256": "8d91fab0d8124823f61d835b5cb96c476720132f18c5a5471ca71d57ac669809",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -261,9 +261,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "5bd69cc04a36c82d3deab05fbc8eaf6e1b4f3d30",
-    "runtime_artifact_revision": "5bd69cc-kit-0.21",
-    "runtime_inventory_source": "Kit 0.21: staged by build/kit-0.21/stage.py from dev kit 0.21-dev.20261109.7, whose runtime files changed over 0.20 were checked against the clean 5bd69cc cross build kit-h/wine-ps5-021-9 (verify_modules.py: PRX byte-identical, PE identical apart from build stamps), with all five DXVK DLLs from the fork release. Earlier kits: see this file's git history.",
+    "wrapper_revision": "bb7d1528dfb53280ed66be2095fb3b01c0434080",
+    "runtime_artifact_revision": "7ae9bdb-kit-0.23",
+    "runtime_inventory_source": "Kit 0.23: staged by build/kit-0.23/stage.py from kit 0.22; the clean 7ae9bdb cross build (kit-h/wine-ps5-021-11-1009) differs from the clean bb7d152 build (kit-h/wine-ps5-021-10-nsi-smc) only in wineserver.prx, which replaces 0.22's. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
