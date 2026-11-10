@@ -259,7 +259,8 @@ private:
   LaunchSnapshot snapshot_;
   bool recovered_pending_ = false;
   // Consecutive observations of a stopped title while its record still says
-  // starting or running: the title ended without writing its exit.
+  // starting or running: the title ended without writing its exit. Each
+  // session starts its own count.
   int stopped_polls_ = 0;
   // A durable operation can fail after its rename/remove became visible. Freeze
   // this instance until a fresh journal load reconciles the on-disk state.

@@ -470,6 +470,31 @@ void RecordLeftRunningEndsAfterTitleStops() {
   CHECK(service.Finish().accepted && !f.journal.pending);
 }
 
+void NewSessionStartsItsOwnStoppedCount() {
+  constexpr const char *kNextSession = "5b0f4c8e-3a7d-4f21-9c6e-2d8a1b7e4f90";
+  Fixture f;
+  auto service = f.Service();
+  f.RequestAndHandoff(service);
+  f.evidence = LaunchEvidence::Running(ReadyInstall(), kSession);
+  f.preflight.activity = NativeActivity::kStopped;
+  for (int i = 1; i < LaunchService::kStoppedPollsToEnd; ++i)
+    CHECK(service.Snapshot().state == LaunchState::kRunning);
+  f.evidence = LaunchEvidence::Exited(ReadyInstall(), kSession, 0);
+  CHECK(service.Snapshot().state == LaunchState::kExited);
+  CHECK(service.Finish().accepted);
+
+  // Stopped observations of the earlier session must not end the next one.
+  f.uuid = kNextSession;
+  CHECK(service.Request("install-hl2").accepted);
+  CHECK(service.Handoff().accepted);
+  f.evidence = LaunchEvidence::Running(ReadyInstall(), kNextSession);
+  CHECK(service.Snapshot().state == LaunchState::kRunning);
+  for (int i = 2; i < LaunchService::kStoppedPollsToEnd; ++i)
+    CHECK(service.Snapshot().state == LaunchState::kRunning);
+  const auto ended = service.Snapshot();
+  CHECK(ended.state == LaunchState::kExited && ended.code == "title-ended-without-record");
+}
+
 void FinishEndsOnlyDecidedSessions() {
   Fixture f;
   auto service = f.Service();
@@ -737,6 +762,7 @@ int main() {
   ExitRequiresValidatedTerminalEvidenceAndPreservesUnknownCode();
   FinishEndsOnlyDecidedSessions();
   RecordLeftRunningEndsAfterTitleStops();
+  NewSessionStartsItsOwnStoppedCount();
   CloudWaitCancelOfflineOptInAndAccountCoherence();
   ClockCannotCreateRunningEvidence();
   MissingFutureCloudHookAllowsTaskSixLaunch();

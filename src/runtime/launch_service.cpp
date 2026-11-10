@@ -418,6 +418,7 @@ LaunchResult LaunchService::Request(const std::string &install_id) {
   if (disk_pending.session) {
     session_ = *disk_pending.session;
     recovered_pending_ = true;
+    stopped_polls_ = 0;
     return Reject(LaunchError::kDuplicate, "launch-pending",
                   "another launch session is still pending");
   }
@@ -543,6 +544,7 @@ LaunchResult LaunchService::Begin(const RuntimeInstall &record,
   if (!pending.ok)
     return Reject(LaunchError::kPersistence, pending.code, pending.message);
   session_ = session;
+  stopped_polls_ = 0;
   snapshot_ = {};
   snapshot_.state = LaunchState::kReadyToHandoff;
   snapshot_.install_id = session.install_id;
@@ -678,6 +680,7 @@ LaunchResult LaunchService::Finish() {
   const std::string session_id = session_->session_id;
   session_.reset();
   recovered_pending_ = false;
+  stopped_polls_ = 0;
   snapshot_ = current;
   return LaunchResult::Accepted(session_id);
 }
