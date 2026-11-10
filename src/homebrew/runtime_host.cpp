@@ -900,12 +900,19 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     // the game's lack of one, so a later app ID in Game settings still reaches the emulator.
     identity.write_game_appid_file = !other_store;
     identity.steam_api_copies = *files.steam_api_copies;
+    // Game settings › Steam Input: Automatic leaves out a map that loses a stick or trigger, Steam Input keeps it,
+    // Game's own gives none. No sets also takes away the files an earlier start wrote.
+    const auto steam_input = files.settings.values.at("steam_input").value;
     std::vector<std::string> lost_actions;
-    for (auto& set : rt::SteamInputActionSets(root.string(), &lost_actions))
-      identity.steam_input_sets.emplace_back(set.name, set.text);
-    if (!identity.steam_input_sets.empty()) {
+    if (steam_input != "off")
+      for (auto& set : rt::SteamInputActionSets(root.string(), &lost_actions, steam_input == "on"))
+        identity.steam_input_sets.emplace_back(set.name, set.text);
+    if (steam_input == "off") {
+      Log("steamworks app=" + std::to_string(record.runtime_number) + " steam input off: settings");
+    } else if (!identity.steam_input_sets.empty()) {
       Log("steamworks app=" + std::to_string(record.runtime_number) +
-          " steam input action sets=" + std::to_string(identity.steam_input_sets.size()));
+          " steam input action sets=" + std::to_string(identity.steam_input_sets.size()) +
+          (lost_actions.empty() ? std::string() : " lost=" + std::to_string(lost_actions.size()) + " kept=settings"));
     } else if (!lost_actions.empty()) {
       std::string lost;
       for (std::size_t i = 0; i < lost_actions.size() && i < 4; ++i) lost += (i ? "," : "") + lost_actions[i];

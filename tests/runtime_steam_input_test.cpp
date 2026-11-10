@@ -316,6 +316,26 @@ void TestLeavesOutMapThatLosesSticks() {
   // A map that keeps every stick and trigger says it lost nothing.
   CHECK(ConvertSteamInputConfig(kConfig, &lost).size() == 2);
   CHECK(lost.empty());
+  // A stick that moves the mouse is lost even when another group binds the same action to a stick that converts.
+  const char* const shared = R"VDF("controller_mappings"
+{
+	"actions" { "foot" { } }
+	"group" { "id" "0" "mode" "joystick_camera" "gameactions" { "foot" "look" } }
+	"group" { "id" "1" "mode" "joystick_mouse" "gameactions" { "foot" "look" } }
+	"preset" { "id" "0" "name" "foot" "group_source_bindings" { "0" "joystick active" "1" "right_joystick active" } }
+}
+)VDF";
+  CHECK(ConvertSteamInputConfig(shared, &lost).empty());
+  CHECK((lost == std::vector<std::string>{"foot/look"}));
+  // Asked for anyway (Steam Input = Steam Input): the sets keep what converts, and still say what was lost.
+  const auto partial = ConvertSteamInputConfig(kMouseStickConfig, &lost, true);
+  CHECK(lost.size() == 3);
+  CHECK(partial.size() == 2);
+  const auto* ui = Find(partial, "ui");
+  CHECK(ui && ui->text == "ui_confirm=A\n");
+  const auto* driving = Find(partial, "driving");
+  CHECK(driving && driving->text.find("driving_steering=LJOY=joystick_move\n") != std::string::npos &&
+        driving->text.find("driving_mouse_look") == std::string::npos);
 }
 
 void TestRejectsOtherText() {
@@ -360,6 +380,7 @@ void TestFindsManifestInInstall() {
   std::vector<std::string> lost;
   CHECK(SteamInputActionSets(root.string(), &lost).empty());
   CHECK(lost.size() == 3);
+  CHECK(SteamInputActionSets(root.string(), &lost, true).size() == 2);
   fs::remove_all(root);
 }
 

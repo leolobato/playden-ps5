@@ -77,10 +77,6 @@ class Bindings {
 
   bool Empty() const { return entries_.empty(); }
 
-  bool Has(const std::string& action) const {
-    return std::any_of(entries_.begin(), entries_.end(), [&](const Entry& entry) { return entry.action == action; });
-  }
-
  private:
   struct Entry {
     std::string action;
@@ -243,7 +239,7 @@ void FindManifest(const fs::path& folder, int depth, std::size_t* entries, fs::p
 }  // namespace
 
 std::vector<SteamInputActionSet> ConvertSteamInputConfig(std::string_view controller_vdf,
-                                                         std::vector<std::string>* lost_actions) {
+                                                         std::vector<std::string>* lost_actions, bool keep_partial) {
   std::vector<SteamInputActionSet> out;
   std::vector<std::string> lost;
   const auto root = steam::ParseVdf(controller_vdf);
@@ -286,15 +282,17 @@ std::vector<SteamInputActionSet> ConvertSteamInputConfig(std::string_view contro
       if ((!stick && !trigger) || ButtonMode(mode)) continue;
       const auto analog = GroupAction(*group->second, *set);
       const bool drives = trigger ? mode == "trigger" : mode == "joystick_move" || mode == "joystick_camera";
-      if (analog.empty() ? !drives : !bindings.Has(analog)) lost.push_back(*set + "/" + (analog.empty() ? source : analog));
+      // This group's own conversion counts: another group bound to the same action doesn't make up for it.
+      if (!drives || (!analog.empty() && !Plain(analog))) lost.push_back(*set + "/" + (analog.empty() ? source : analog));
     }
     if (!bindings.Empty() && std::none_of(out.begin(), out.end(), [&](const auto& s) { return Lower(s.name) == Lower(*set); }))
       out.push_back({*set, bindings.Text()});
   }
   if (lost_actions) *lost_actions = lost;
   // A game that also reads its controller without Steam Input hides that controller once Steam Input reports one.
-  // With a stick or trigger missing from the map it would play worse than it does without the map.
-  if (!lost.empty()) out.clear();
+  // With a stick or trigger missing from the map it would play worse than it does without the map, unless the player
+  // asked for the map anyway (a game that reads its controller only through Steam Input).
+  if (!lost.empty() && !keep_partial) out.clear();
   return out;
 }
 
@@ -313,7 +311,7 @@ std::string SteamInputConfigPath(std::string_view manifest_vdf) {
 }
 
 std::vector<SteamInputActionSet> SteamInputActionSets(const std::string& install_root,
-                                                      std::vector<std::string>* lost_actions) {
+                                                      std::vector<std::string>* lost_actions, bool keep_partial) {
   if (lost_actions) lost_actions->clear();
   std::size_t entries = 0;
   fs::path manifest_path;
@@ -340,7 +338,7 @@ std::vector<SteamInputActionSet> SteamInputActionSets(const std::string& install
   if (!text) return {};
   std::string_view view(*text);
   while (!view.empty() && view.back() == '\0') view.remove_suffix(1);
-  return ConvertSteamInputConfig(view, lost_actions);
+  return ConvertSteamInputConfig(view, lost_actions, keep_partial);
 }
 
 }  // namespace playden::runtime

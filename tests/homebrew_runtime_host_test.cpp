@@ -1550,6 +1550,13 @@ void PreparesGameWithoutShippedRecipe() {
   };
   config.unix_time = [] { return std::int64_t{1760000000}; };
   config.session_data_root = fixture.root / "data";
+  std::mutex log_mutex;
+  std::vector<std::string> lines;
+  config.log = [&](const std::string& line) { std::lock_guard<std::mutex> lock(log_mutex); lines.push_back(line); };
+  const auto logged = [&](const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    return std::any_of(lines.begin(), lines.end(), [&](const std::string& line) { return line.rfind(prefix, 0) == 0; });
+  };
   std::vector<std::pair<std::string, std::vector<std::string>>> launches;
   config.launch_title = [&launches](const std::string& title, const std::vector<std::string>& arguments) {
     launches.emplace_back(title, arguments);
@@ -1568,6 +1575,16 @@ void PreparesGameWithoutShippedRecipe() {
   Write(game / "Bin/steam_api64.dll", own_api, 0644);
   // 4270 was turned off at install: the game isn't told about it.
   Write(game / ".playden-steam", "depots=4243\ndlc=4250\nnodlc=4270\n", 0644);
+  // A Steam Input map whose right stick moves the mouse: the emulator can't drive it.
+  Write(game / "Input/steam_input_manifest.vdf",
+        "\"Action Manifest\" { \"configurations\" { \"controller_xboxone\" { \"0\" { \"path\" \"xbox.vdf\" } } } }\n", 0644);
+  Write(game / "Input/xbox.vdf",
+        "\"controller_mappings\" { \"actions\" { \"drive\" { } }\n"
+        "\"group\" { \"id\" \"0\" \"mode\" \"joystick_move\" \"gameactions\" { \"drive\" \"steer\" } }\n"
+        "\"group\" { \"id\" \"1\" \"mode\" \"joystick_mouse\" \"gameactions\" { \"drive\" \"look\" } }\n"
+        "\"preset\" { \"id\" \"0\" \"name\" \"drive\" \"group_source_bindings\" { \"0\" \"joystick active\" \"1\" "
+        "\"right_joystick active\" } } }\n",
+        0644);
   // The Library knows one more owned DLC than the download recorded (past listofdlc's 64 entries).
   std::vector<std::pair<std::uint64_t, std::uint32_t>> dlc_asked;
   config.owned_dlc = [&dlc_asked](std::uint64_t steam_id, std::uint32_t app_id) {
@@ -1623,6 +1640,9 @@ void PreparesGameWithoutShippedRecipe() {
   // The bottle's owner marker names the generated recipe, so the game's sessions are read.
   const auto marker = Read(fixture.root / "data/playden/games/steam-4242/library/prefixes/game/.playden-template-owner");
   CHECK(marker.find("\nrecipe_id=steam-4242-auto\n") != std::string::npos);
+  // Steam Input on Automatic: the map would lose the right stick, so the game gets none and reads the pad itself.
+  CHECK(!fs::exists(game / "Bin/steam_settings/controller"));
+  CHECK(logged("steamworks app=4242 steam input map left out: lost=1 drive/look"));
   // The player asks for the game's own Steam files: Play puts them back before the game starts.
   saved_settings = {{"steam_features", "game"}};
   host.Play(4242);
@@ -1646,6 +1666,28 @@ void PreparesGameWithoutShippedRecipe() {
     return s.launch && s.launch->state != LaunchState::kRunning && s.launch->state != LaunchState::kLaunching;
   }, 30);
   CHECK(ended.launch->state == LaunchState::kExited);
+  // Steam Input asked for: Play gives the map without the lost stick. Game's own: the next Play takes it away. The
+  // files are written before the handoff.
+  saved_settings = {{"steam_input", "on"}};
+  host.Play(4242);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(Read(game / "Bin/steam_settings/controller/drive.txt") == "steer=LJOY=joystick_move\n");
+  CHECK(logged("steamworks app=4242 steam input action sets=1 lost=1 kept=settings"));
+  CHECK(host.Handoff());
+  const auto second = launches.back().second[0].substr(std::strlen("session="));
+  auto second_record = [&](const std::string& phase) {
+    auto text = record(phase);
+    return text.replace(text.find(session), session.size(), second);
+  };
+  Write(sessions / (second + ".json"), second_record("running"), 0600);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kRunning; }, 30);
+  Write(sessions / (second + ".json"), second_record("exited"), 0600);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+  saved_settings = {{"steam_input", "off"}};
+  host.Play(4242);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(!fs::exists(game / "Bin/steam_settings/controller"));
+  CHECK(logged("steamworks app=4242 steam input off: settings"));
   host.Shutdown();
 
   // After a restart the saved recipe is found without Steam, and the title log carries the

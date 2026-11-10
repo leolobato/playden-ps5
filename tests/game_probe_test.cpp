@@ -731,8 +731,14 @@ int main() {
     CHECK(settings.graphics == "auto" && settings.dll_overrides.empty());
     // Steam features: emulation by default here, and the player may choose the game's own files.
     CHECK(settings.values.at("steam_features").value == "emulate" && !settings.values.at("steam_features").locked);
-    CHECK(BuildEffectiveSettings(recipe, nullptr, {{"steam_features", "game"}}, KitCapabilities{}, &settings, &error));
+    CHECK(settings.values.at("steam_input").value == "auto" && settings.values.at("steam_input").available);
+    CHECK(BuildEffectiveSettings(recipe, nullptr, {{"steam_input", "off"}}, KitCapabilities{}, &settings, &error));
+    CHECK(settings.values.at("steam_input").value == "off");
+    CHECK(BuildEffectiveSettings(recipe, nullptr, {{"steam_features", "game"}, {"steam_input", "on"}}, KitCapabilities{},
+                                 &settings, &error));
     CHECK(settings.values.at("steam_features").value == "game");
+    // Steam Input comes from the emulator: with the game's own files the row is off and back to Automatic.
+    CHECK(!settings.values.at("steam_input").available && settings.values.at("steam_input").value == "auto");
     // A shipped recipe that says nothing about Steam features keeps the game's own library, whatever the player asks.
     auto shipped = recipe;
     shipped.id = "steam-2062430-shipped-v1";

@@ -254,6 +254,17 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
                          {"game", "Game's own files", "The game's Steam library, unchanged."}},
                         "game", 1, ApplyMode::kGameClosed));
+  // A game with a Steam Input map gets it from the emulator, as Steam would give it. Some of those games read the
+  // controller themselves too and stop once Steam Input reports one (Euro Truck Simulator 2), and the emulator can't
+  // drive a stick that moves the mouse in the map, so Automatic leaves out a map that would lose a stick or trigger.
+  list.push_back(Choice("steam_input", "Steam Input", "Whether the game gets its Steam Input controller layout.",
+                        "steam_settings/controller", G::kWindows,
+                        {{"auto", "Automatic",
+                          "The game's Steam Input layout, unless a stick or trigger in it can't work. Then the game "
+                          "reads the controller itself."},
+                         {"on", "Steam Input", "Always the game's Steam Input layout. Sticks that move the mouse in it don't work."},
+                         {"off", "Game's own", "No Steam Input: the game reads the controller itself, as an Xbox controller."}},
+                        "auto", 1, ApplyMode::kGameClosed));
   list.push_back(Choice("windows_version", "Windows version", "Which Windows the game is told it runs on.",
                         "winver · registry", G::kWindows,
                         {{"win10", "Windows 10", ""}, {"win81", "Windows 8.1", ""}, {"win7", "Windows 7", ""},
@@ -547,6 +558,10 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     // Checked on the console (results/20261005-dxvk-conf-probe): the cap works, DXVK applies
     // latency and VRAM, VSync off does not change the display's pacing.
     if (id == "vsync" && !kit.dxvk_present) return "The PS5 display always waits for the TV; VSync cannot be turned off yet.";
+  }
+  if (id == "steam_input") {
+    const auto steam = values.find("steam_features");
+    if (steam == values.end() || steam->second.value != "emulate") return "Only with Offline emulation.";
   }
   if ((id == "windows_version" || id == "text_scale") && !kit.registry)
     return "Needs a verified runtime kit with access to the game's bottle.";

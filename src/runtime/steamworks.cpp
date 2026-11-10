@@ -136,22 +136,30 @@ std::vector<std::uint32_t> Sorted(std::vector<std::uint32_t> values) {
   return values;
 }
 
-void RemoveStaleActionSets(const fs::path& controller, const std::vector<std::pair<std::string, std::string>>& sets) {
+// False when an action set this setup doesn't name may still be there: the emulator would still report a Steam Input
+// controller.
+bool RemoveStaleActionSets(const fs::path& controller, const std::vector<std::pair<std::string, std::string>>& sets) {
   std::error_code error;
-  if (!fs::is_directory(fs::symlink_status(controller, error))) return;
+  const auto folder = fs::symlink_status(controller, error);
+  if (error) return error == std::errc::no_such_file_or_directory;
+  if (!fs::is_directory(folder)) return true;
   std::vector<fs::path> stale;
   for (fs::directory_iterator it(controller, error), last; !error && it != last; it.increment(error)) {
     const auto name = it->path().filename().string();
     if (name.size() <= 4 || Lower(name.substr(name.size() - 4)) != ".txt") continue;
-    const auto status = it->symlink_status(error);
-    if (error) { error.clear(); continue; }
+    std::error_code entry_error;
+    const auto status = it->symlink_status(entry_error);
+    if (entry_error) return false;
     if (!fs::is_regular_file(status)) continue;
     const auto set = name.substr(0, name.size() - 4);
     if (std::none_of(sets.begin(), sets.end(), [&](const auto& kept) { return kept.first == set; }))
       stale.push_back(it->path());
   }
-  for (const auto& path : stale) ::unlink(path.c_str());
+  if (error) return false;
+  for (const auto& path : stale)
+    if (::unlink(path.c_str()) != 0 && errno != ENOENT) return false;
   ::rmdir(controller.c_str());  // only when empty
+  return true;
 }
 
 bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, const std::string& original) {
@@ -185,7 +193,7 @@ bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, c
   const auto controller = settings / "controller";
   // Action sets an earlier setup wrote and this one doesn't: a game set up with a map now left out (Euro Truck
   // Simulator 2) gets its controller back only once the emulator has no action set left.
-  RemoveStaleActionSets(controller, identity.steam_input_sets);
+  if (!RemoveStaleActionSets(controller, identity.steam_input_sets)) return false;
   if (!identity.steam_input_sets.empty()) {
     if (!EnsureFolder(controller)) return false;
     for (const auto& [name, text] : identity.steam_input_sets)

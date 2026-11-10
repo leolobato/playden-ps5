@@ -86,8 +86,8 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu", "network_adapters",
-        "logging",
+        "steam_features", "steam_input", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu",
+        "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define CHECK(cond)                                                                     \
@@ -119,6 +120,13 @@ int main(int argc, char** argv) {
   CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
   CHECK(!fs::exists(plugin / "steam_settings/controller/Menu.txt"));
   CHECK(Read(plugin / "steam_settings/controller/readme.md") == "mine");
+  // A stale action set that can't be removed fails the setup: the emulator would still report a Steam Input controller.
+  Write(plugin / "steam_settings/controller/Menu.txt", "select=A\n");
+  CHECK(chmod((plugin / "steam_settings/controller").c_str(), 0555) == 0);
+  CHECK(!EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(chmod((plugin / "steam_settings/controller").c_str(), 0755) == 0);
+  CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
+  CHECK(!fs::exists(plugin / "steam_settings/controller/Menu.txt"));
   fs::remove_all(plugin / "steam_settings/controller");
 
   // Another store's game: no steam_appid.txt of Playden's beside the DLL, only the emulator's own; a
