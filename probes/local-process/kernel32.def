@@ -1,0 +1,19 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+LIBRARY kernel32.dll
+EXPORTS
+CreateFileA
+WriteFile
+CloseHandle
+GetCurrentProcessId
+Sleep
+ExitProcess
+FlushFileBuffers
+GetLastError
+CreateEventA
+OpenEventA
+SetEvent
+WaitForSingleObject
+CreateFileMappingA
+OpenFileMappingA
+MapViewOfFile
+    CreateThread
