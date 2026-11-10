@@ -87,7 +87,10 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // Display.
   list.push_back(Choice("resolution", "Resolution", "Size of the game's screen. Higher is sharper and slower.",
                         "[display] desktop", G::kDisplay,
-                        {{"1280x720", "1280×720", "Smoother frame rate in heavy scenes. Softer on a 4K TV."},
+                        {{"1024x768", "1024×768", "4:3, for older games that expect it."},
+                         {"1152x864", "1152×864", "4:3, for older games that expect it."},
+                         {"1280x960", "1280×960", "4:3, for older games that expect it."},
+                         {"1280x720", "1280×720", "Smoother frame rate in heavy scenes. Softer on a 4K TV."},
                          {"1920x1080", "1920×1080", "Full HD."},
                          {"2560x1440", "2560×1440", "Sharper image. May drop below 60 fps."},
                          {"3840x2160", "3840×2160", "The TV's own size. For light games; heavy ones run slowly."}},
