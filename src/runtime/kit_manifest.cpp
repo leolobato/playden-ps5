@@ -1,5 +1,6 @@
 #include "runtime/kit_manifest.h"
 #include "runtime/game_settings.h"
+#include "runtime/pe_architecture.h"
 
 #include "steam/backend/json.h"
 
@@ -126,14 +127,7 @@ bool RegularNoSymlink(const fs::path& root, const std::string& relative) {
 }
 
 bool PeArchitecture(const fs::path& path, bool pe64) {
-  const auto bytes = Read(path, 256 * 1024 * 1024);
-  if (!bytes || bytes->size() < 0x40 || bytes->at(0) != 'M' || bytes->at(1) != 'Z') return false;
-  const auto u8 = [&](std::size_t offset) { return static_cast<unsigned char>(bytes->at(offset)); };
-  const std::uint32_t pe = u8(0x3c) | (u8(0x3d) << 8) | (u8(0x3e) << 16) | (u8(0x3f) << 24);
-  if (pe > bytes->size() || bytes->size() - pe < 26 || bytes->compare(pe, 4, "PE\0\0", 4) != 0) return false;
-  const unsigned machine = u8(pe + 4) | (u8(pe + 5) << 8);
-  const unsigned magic = u8(pe + 24) | (u8(pe + 25) << 8);
-  return pe64 ? machine == 0x8664 && magic == 0x020b : machine == 0x014c && magic == 0x010b;
+  return ExecutableArchitecture(path.string()) == (pe64 ? "pe64" : "pe32");
 }
 
 bool ContainsLine(const std::string& bytes, const std::string& line) {
