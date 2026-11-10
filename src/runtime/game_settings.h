@@ -29,7 +29,7 @@ namespace playden::runtime {
 // arguments the game needs and the library overrides each have a row the player can change.
 
 // Where the Game settings sheet lists a setting, in sheet order. Button mapping and Controller tuning are submenus of
-// Controls; Compatibility (with its Graphics and Windows parts) and Advanced start collapsed.
+// Controls; Compatibility (with its Graphics, Steam and Windows parts) and Advanced start collapsed.
 enum class SettingGroup {
   kGame,
   kDisplay,
@@ -39,6 +39,7 @@ enum class SettingGroup {
   kSound,
   kCompatibility,
   kGraphics,
+  kSteam,
   kWindows,
   kAdvanced,
 };
@@ -127,7 +128,9 @@ struct SettingDefinition {
   std::string id;
   std::string label;
   std::string effect;       // one-line description under the name
-  std::string also_called;  // technical names: profile keys, DXVK options
+  // Names a player finds in Wine, DXVK or Steam tips online (WINEDEBUG, dxgi.maxFrameRate, a Steam launch option);
+  // empty for Playden's own settings, whose profile keys mean nothing outside Playden.
+  std::string also_called;
   SettingGroup group = SettingGroup::kGame;
   int phase = 1;            // roadmap phase that ships it
   ApplyMode apply = ApplyMode::kNextLaunch;

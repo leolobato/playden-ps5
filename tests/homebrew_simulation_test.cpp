@@ -410,6 +410,25 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     // disabled on DXVK with its reason.
     check(!find_row(simulation, "setting-graphics"), "T08b Compatibility starts collapsed");
     activate(simulation, "section-compatibility");
+    {
+        // Compatibility: Graphics, then the Steam rows under their own heading, then Windows; Logging is in Advanced.
+        const auto& open = simulation.state().navigation.modals.back().action_keys;
+        const auto at = [&](const char* key) { return std::find(open.begin(), open.end(), key) - open.begin(); };
+        const auto end = static_cast<std::ptrdiff_t>(open.size());
+        check(at("setting-reported_vram") < at("heading-steam") && at("heading-steam") + 1 == at("setting-steam_features") &&
+                  at("setting-steam_input") < at("heading-windows") && at("heading-windows") + 1 == at("setting-windows_version"),
+              "T08b Compatibility lists a Steam heading above Windows");
+        check(find_row(simulation, "heading-steam") && find_row(simulation, "heading-steam")->title == "Steam",
+              "T08b the Steam heading is named");
+        check(at("setting-logging") == end, "T08b Logging is not under Compatibility");
+        activate(simulation, "section-advanced");
+        const auto& both = simulation.state().navigation.modals.back().action_keys;
+        const auto logging = std::find(both.begin(), both.end(), "setting-logging");
+        const auto advanced = std::find(both.begin(), both.end(), "section-advanced");
+        check(logging != both.end() && advanced < logging && *(advanced + 1) == "setting-logging",
+              "T08b Logging is the first row of Advanced");
+        activate(simulation, "section-advanced");
+    }
     const auto* graphics = find_row(simulation, "setting-graphics");
     check(graphics && graphics->enabled && graphics->badge == "Required by this game", "T08b graphics is locked by the recipe");
     const auto* scaling = find_row(simulation, "setting-scaling");

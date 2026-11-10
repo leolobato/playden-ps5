@@ -785,8 +785,11 @@ void live_settings_follow_the_prepared_title(const std::filesystem::path& base) 
     check(find_row(model, "setting-locale") && !find_row(model, "setting-locale")->enabled,
           "unbuilt rows stay listed and disabled");
     check(model.action("focus:setting-frame_limit") &&
-              find_row(model, "setting-frame_limit")->subtitle.find("Also called [display] frame_rate · dxgi.maxFrameRate") != std::string::npos,
-          "the focused row names its technical keys");
+              find_row(model, "setting-frame_limit")->subtitle.find("Also called dxgi.maxFrameRate · d3d9.maxFrameRate") != std::string::npos,
+          "the focused row names the DXVK options it sets");
+    check(model.action("focus:setting-resolution") &&
+              find_row(model, "setting-resolution")->subtitle.find("Also called") == std::string::npos,
+          "a Playden setting names no profile key");
 
     activate(model, "setting-resolution");
     activate(model, "choice-0");

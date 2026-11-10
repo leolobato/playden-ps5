@@ -68,28 +68,28 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // title's program (RuntimeHost::RepublishSettings). The picker also lists the game folder's
   // programs, which set "program".
   list.push_back(Choice("launch_option", "Program", "Which program starts when you press Play.",
-                        "Steam launch option · [application] executable", G::kGame, {}, "", 1));
+                        "Steam launch option", G::kGame, {}, "", 1));
   {
     // Not a row of its own: the Program picker sets it to a program from the game folder.
     auto program = Text("program", "Program file", "A program from the game folder instead of a launch option.",
-                        "[application] executable", G::kGame);
+                        "", G::kGame);
     list.push_back(std::move(program));
   }
   list.push_back(Choice("start_through_launcher", "Start through a launcher",
-                        "Turn on if this program opens a launcher that starts the game.", "[launcher]", G::kGame,
+                        "Turn on if this program opens a launcher that starts the game.", "", G::kGame,
                         {{"off", "Off", ""}, {"on", "On", "Starts in launcher mode. Hold the touchpad in game to switch presets."}},
                         "off"));
   list.push_back(Choice("launcher_controller_preset", "Launcher controller preset",
-                        "Used until the game starts. Then the Controller preset takes over.", "[launcher] preset", G::kGame,
+                        "Used until the game starts. Then the Controller preset takes over.", "", G::kGame,
                         {{"mouse", "Mouse", "Left stick moves the pointer; Cross clicks, Circle right-clicks, Options Enter."},
                          {"gamepad", "Gamepad", "Xbox controller layout; no stick moves the pointer."},
                          {"arrows", "Arrow keys", "D-pad sends the arrows; Cross Z, Circle X, Triangle C, Options Enter."}},
                         "mouse"));
   list.push_back(Text("extra_arguments", "Extra arguments", "Added after the arguments the game needs.",
-                      "[application] arguments", G::kGame));
+                      "", G::kGame));
   // Display.
   list.push_back(Choice("resolution", "Resolution", "Size of the game's screen. Higher is sharper and slower.",
-                        "[display] desktop", G::kDisplay,
+                        "", G::kDisplay,
                         {{"1280x720", "1280×720", "Smoother frame rate in heavy scenes. Softer on a 4K TV."},
                          {"1920x1080", "1920×1080", "Full HD."},
                          {"2560x1440", "2560×1440", "Sharper image. May drop below 60 fps."},
@@ -98,13 +98,13 @@ std::vector<SettingDefinition> BuildCatalogue() {
   list.push_back(Choice("refresh", "Refresh rate",
                         "How often the TV shows a new frame. Some older games run too fast at 120 Hz: if so, set it "
                         "back to 60 Hz.",
-                        "[display] refresh", G::kDisplay,
+                        "", G::kDisplay,
                         {{"60", "60 Hz", "The TV refreshes 60 times a second."},
                          {"120", "120 Hz", "Needs a TV with 120 Hz and the PS5's 120 Hz output on."}},
                         "60"));
   // With a display-120hz runtime the display paces the cap ([display] frame_rate); otherwise DXVK does.
   list.push_back(Choice("frame_limit", "Frame limit", "Caps the frame rate for steadier motion and less heat.",
-                        "[display] frame_rate · dxgi.maxFrameRate · d3d9.maxFrameRate", G::kDisplay,
+                        "dxgi.maxFrameRate · d3d9.maxFrameRate", G::kDisplay,
                         {{"off", "Off", "No cap."}, {"120", "120", ""}, {"60", "60", ""}, {"40", "40", ""},
                          {"30", "30", ""}},
                         "off", 2));
@@ -113,7 +113,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
   list.push_back(Choice("framegen", "Frame generation",
                         "Adds made-up pictures between the game's frames for smoother motion. The game responds about "
                         "one frame later.",
-                        "[display] framegen · MihawkGen", G::kDisplay,
+                        "", G::kDisplay,
                         {{"off", "Off", ""},
                          {"2", "2×", "The game runs at half the TV's rate: 30 fps shows as 60."},
                          {"3", "3×", "The game runs at a third of the TV's rate: 20 fps shows as 60."},
@@ -126,7 +126,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                          {"off", "Off", ""}},
                         "game", 2));
   list.push_back(Choice("performance_overlay", "Performance overlay", "Frame rate in the corner of the screen.",
-                        "DXVK HUD · [display] show_fps", G::kDisplay,
+                        "DXVK HUD", G::kDisplay,
                         {{"off", "Off", ""}, {"on", "On", "Shows frames per second."}}, "off"));
   list.push_back(Choice("overlay_detail", "Overlay detail", "What the performance overlay shows.", "dxvk.hud",
                         G::kDisplay,
@@ -134,24 +134,24 @@ std::vector<SettingDefinition> BuildCatalogue() {
                          {"frametimes", "Frame rate and frame times", "Adds a graph of how long each frame took."},
                          {"full", "Everything", "Also memory, GPU load and the DXVK version."}},
                         "fps", 2));
-  list.push_back(Choice("scaling", "Scaling", "How the game's screen fills the TV.", "[display] scaling",
+  list.push_back(Choice("scaling", "Scaling", "How the game's screen fills the TV.", "",
                         G::kDisplay,
                         {{"fit", "Fit", "Keeps the shape; black bars if needed."},
                          {"integer", "Integer", "Whole-number steps; sharp pixels."},
                          {"stretch", "Stretch", "Fills the screen."}},
                         "fit"));
   list.push_back(Choice("window_view", "Window view", "Show only game windows, or the whole Windows desktop.",
-                        "[display] view", G::kDisplay,
+                        "", G::kDisplay,
                         {{"window", "Game windows", ""}, {"desktop", "Entire desktop", ""}}, "window"));
   // Controls.
-  list.push_back(Choice("controller", "Controller", "How the game sees your DualSense.", "[input] mode", G::kControls,
+  list.push_back(Choice("controller", "Controller", "How the game sees your DualSense.", "", G::kControls,
                         {{"xinput", "Xbox controller", "For games with controller support."},
                          {"playstation", "PlayStation controller",
                           "For games that show PlayStation buttons. Games that only read Xbox controllers see none."},
                          {"keyboard", "Keyboard and mouse mapping", "Buttons send keys and mouse clicks."}},
                         "xinput"));
   list.push_back(Choice("controller_preset", "Controller preset", "Ready-made button layout for this kind of game.",
-                        "[input] preset", G::kControls,
+                        "", G::kControls,
                         {{"none", "None", "Only the buttons set here."},
                          {"gamepad", "Gamepad", "Xbox controller layout; no stick moves the pointer."},
                          {"mouse", "Mouse", "Left stick moves the pointer; Cross clicks, Circle right-clicks, Options Enter."},
@@ -166,60 +166,60 @@ std::vector<SettingDefinition> BuildCatalogue() {
       {"touchpad", "Touchpad"}};
   for (const auto& button : ProsperoButtons()) {
     auto definition = Text("button." + button, button_names.at(button), "Key or mouse button this button sends.",
-                           "[input] " + button, G::kButtonMapping);
+                           "", G::kButtonMapping);
     list.push_back(std::move(definition));
   }
   // Controls › Controller tuning.
   list.push_back(Choice("pointer_stick", "Pointer stick", "Move the mouse pointer with a stick, for menus.",
-                        "[input] mouse", G::kControllerTuning,
+                        "", G::kControllerTuning,
                         {{"none", "None", ""}, {"left_stick", "Left stick", ""}, {"right_stick", "Right stick", ""}},
                         "none"));
   list.push_back(Choice("pointer_speed", "Pointer speed", "How fast the pointer moves, in pixels per second.",
-                        "[input] mouse_speed", G::kControllerTuning,
+                        "", G::kControllerTuning,
                         {{"600", "600", ""}, {"900", "900", ""}, {"1200", "1200", ""}, {"1800", "1800", ""},
                          {"2400", "2400", ""}},
                         "1200"));
   list.push_back(Choice("stick_deadzone", "Stick dead zone",
                         "How far a stick moves before the game sees it. Raise it if the camera drifts.",
-                        "[input] stick_deadzone", G::kControllerTuning,
+                        "", G::kControllerTuning,
                         {{"0", "Off", "The game's own dead zone only."}, {"5", "5%", ""}, {"10", "10%", ""},
                          {"15", "15%", ""}, {"20", "20%", ""}, {"30", "30%", "For a badly drifting stick."}},
                         "0", 4));
-  list.push_back(Choice("rumble", "Rumble", "How strongly the controller vibrates.", "[input] rumble",
+  list.push_back(Choice("rumble", "Rumble", "How strongly the controller vibrates.", "",
                         G::kControllerTuning,
                         {{"100", "Full", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
                          {"0", "Off", ""}},
                         "100", 4));
   list.push_back(Choice("invert_stick", "Invert stick", "Flip a stick's up and down for this game.",
-                        "[input] invert", G::kControllerTuning,
+                        "", G::kControllerTuning,
                         {{"none", "None", ""}, {"left_y", "Left stick up/down", ""}, {"right_y", "Right stick up/down", ""}},
                         "none", 4));
   list.push_back(Choice("trigger_deadzone", "Trigger dead zone",
                         "How far L2 and R2 travel before the game sees them. Raise it for worn triggers.",
-                        "[input] trigger_deadzone", G::kControllerTuning,
+                        "", G::kControllerTuning,
                         {{"0", "Off", ""}, {"5", "5%", ""}, {"10", "10%", ""}, {"20", "20%", ""}, {"30", "30%", ""}},
                         "0", 4));
   list.push_back(Choice("wheel_stick", "Mouse wheel stick", "Scroll the mouse wheel by pushing a stick up or down.",
-                        "[input] wheel", G::kControllerTuning,
+                        "", G::kControllerTuning,
                         {{"none", "None", ""}, {"left_stick", "Left stick", ""}, {"right_stick", "Right stick", ""}},
                         "none", 4));
   // Sound.
   list.push_back(Choice("volume", "Volume", "How loud this game plays, without changing the console's volume.",
-                        "[audio] volume", G::kSound,
+                        "", G::kSound,
                         {{"100", "100%", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
                          {"0", "Muted", ""}},
                         "100", 4));
   // Compatibility.
   // Shown only for a game whose program Playden refuses for a reason a run could get past.
   list.push_back(Choice("start_check", "Known problems", "What Playden does with a problem it found in the game's program.",
-                        ".NET · shared section", G::kCompatibility,
+                        "", G::kCompatibility,
                         {{"stop", "Don't start", "Playden stops before a program it expects to fail."},
                          {"try", "Try anyway", "Prepares the game anyway. It may not start."}},
                         "stop", 1));
   // Compatibility › Graphics.
   // "OpenGL worker thread" ([display] opengl_thread) was the PS5 OpenGL SDK's; Zink has none, so the row is gone.
   // Saved values for it are dropped when the record loads (RecordFromValue).
-  list.push_back(Choice("graphics", "Graphics", "How Direct3D is drawn on the PS5 GPU.", "[application] graphics",
+  list.push_back(Choice("graphics", "Graphics", "How Direct3D is drawn on the PS5 GPU.", "",
                         G::kGraphics,
                         {{"auto", "Automatic", ""}, {"gdi", "GDI", "2D only."}, {"dxvk", "DXVK", "Direct3D 9-11 on Vulkan."},
                          {"opengl", "OpenGL", ""}},
@@ -251,9 +251,9 @@ std::vector<SettingDefinition> BuildCatalogue() {
   list.push_back(Choice("reported_vram", "Reported video memory", "How much VRAM the game is told it has. Does not add memory.",
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"2048", "2 GB", ""}, {"4096", "4 GB", ""}}, "game", 2));
-  // Compatibility › Windows.
+  // Compatibility › Steam.
   list.push_back(Choice("steam_features", "Steam features", "What answers the game when it calls Steam.",
-                        "steam_api.dll · steam_api64.dll", G::kWindows,
+                        "steam_api.dll · steam_api64.dll", G::kSteam,
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
                          {"online", "Online (experimental)",
                           "Runs Steam's own client beside the game, signed in as you. Only for games you trust."},
@@ -264,14 +264,14 @@ std::vector<SettingDefinition> BuildCatalogue() {
   list.push_back(Choice("steam_sign_in", "Steam sign-in",
                         "When the game gets your Steam sign-in. Kept, it stays on the console while this is on: any "
                         "program that can read the console's storage can use your Steam account.",
-                        "C:\\playden\\online-session.txt", G::kWindows,
+                        "", G::kSteam,
                         {{"play", "At each Play", "From Playden only. Started from the Home screen, it is offline."},
                          {"kept", "Kept for the Home screen", "Online from the Home screen too. Signing out removes it."}},
                         "play", 1, ApplyMode::kGameClosed));
   // What the Steam host does with a friend's invite while the game runs, as online-session.txt's invites= says. Ask and
   // Only show need a title that shows notifications (title-notify); without it both are Off.
   list.push_back(Choice("game_invites", "Game invites", "What happens when a friend invites you while you play.",
-                        "C:\\playden\\online-session.txt · invites", G::kWindows,
+                        "", G::kSteam,
                         {{"ask", "Ask with L3 + R3",
                           "The PS5 shows the invite. Press both sticks in within 15 seconds to join. The game does not "
                           "see that press."},
@@ -285,7 +285,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // Online by default, as GameNative ships gbe_fork: games that check BLoggedOn() ("Steam is offline") get to their
   // online menus. Offline is for a game that waits on the network when it is told Steam is online.
   list.push_back(Choice("steam_network", "Steam network", "Whether the game is told Steam is online.",
-                        "configs.main.ini · offline · disable_networking", G::kWindows,
+                        "configs.main.ini · offline · disable_networking", G::kSteam,
                         {{"online", "Online",
                           "Steam is online. Lobbies and servers reach only other consoles or PCs running a Steam "
                           "emulator on the same network, not Steam players."},
@@ -295,13 +295,14 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // controller themselves too and stop once Steam Input reports one (Euro Truck Simulator 2), and the emulator can't
   // drive a stick that moves the mouse in the map, so Automatic leaves out a map that would lose a stick or trigger.
   list.push_back(Choice("steam_input", "Steam Input", "Whether the game gets its Steam Input controller layout.",
-                        "steam_settings/controller", G::kWindows,
+                        "steam_settings/controller", G::kSteam,
                         {{"auto", "Automatic",
                           "The game's Steam Input layout, unless a stick or trigger in it can't work. Then the game "
                           "reads the controller itself."},
                          {"on", "Steam Input", "Always the game's Steam Input layout. Sticks that move the mouse in it don't work."},
                          {"off", "Game's own", "No Steam Input: the game reads the controller itself, as an Xbox controller."}},
                         "auto", 1, ApplyMode::kGameClosed));
+  // Compatibility › Windows.
   list.push_back(Choice("windows_version", "Windows version", "Which Windows the game is told it runs on.",
                         "winver · registry", G::kWindows,
                         {{"win10", "Windows 10", ""}, {"win81", "Windows 8.1", ""}, {"win7", "Windows 7", ""},
@@ -328,7 +329,7 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "kit", 3, ApplyMode::kGameClosed));
   // A 32-bit program runs on the console's processor; the translator is slower but keeps FS on the thread's TEB when
   // the program reloads it (Watcom's runtime does, and Fallout faulted at its start), so DefaultsFor picks it then.
-  list.push_back(Choice("cpu", "32-bit code", "How a 32-bit program's code runs.", "[runtime] cpu", G::kWindows,
+  list.push_back(Choice("cpu", "32-bit code", "How a 32-bit program's code runs.", "", G::kWindows,
                         {{"native", "Native", "On the console's processor. Fastest."},
                          {"translator", "Translator", "Translated as it runs. Slower; for programs that crash on Native."}},
                         "native", 3, ApplyMode::kGameClosed));
@@ -336,47 +337,47 @@ std::vector<SettingDefinition> BuildCatalogue() {
   // A 32-bit game hosts none either way, so Off changes nothing for it; the row stays open because a game not prepared
   // yet has no architecture to tell.
   list.push_back(Choice("network_adapters", "Network adapters",
-                        "Whether a 64-bit game can list the console's network adapters.", "PW_NSIPROXY_DISABLE",
+                        "Whether a 64-bit game can list the console's network adapters.", "",
                         G::kWindows,
                         {{"kit", "Runtime default", "The game can list them."},
                          {"off", "Off", "For 64-bit games that hang at start or lose the network with them listed."}},
                         "kit", 3, ApplyMode::kGameClosed));
+  // Advanced.
   list.push_back(Choice("logging", "Logging", "How much detail goes into the game's log file.", "WINEDEBUG",
-                        G::kWindows,
+                        G::kAdvanced,
                         {{"normal", "Normal", "Errors and loaded modules."},
                          {"verbose", "Verbose", "Also warnings and exceptions, for one session; then Normal again."},
                          {"input", "Input", "Also keyboard, mouse and controller calls, for one session; then Normal again."}},
                         "normal"));
-  // Advanced.
   {
     auto environment = Text("environment", "Environment variables",
                             std::string("Extra variables for the game, separated by ';', like WINE_CPU_TOPOLOGY=4:0,1,2,3. ") +
                                 kEnvironmentNamesHint,
-                            "[environment]", G::kAdvanced);
+                            "", G::kAdvanced);
     environment.phase = 2;
     list.push_back(std::move(environment));
   }
   {
     auto folder = Text("program_folder", "Program folder",
                        "Folder the program starts in, inside the game folder; . is the game folder itself. Empty: the program's own folder.",
-                       "[application] working_directory", G::kAdvanced);
+                       "", G::kAdvanced);
     list.push_back(std::move(folder));
   }
   list.push_back(Text("program_arguments", "Program arguments", "The program's own arguments, as Steam lists them.",
-                      "launch option arguments", G::kAdvanced));
+                      "", G::kAdvanced));
   list.push_back(Text("arguments", "Required arguments",
                       "Arguments the game needs, from its recipe. {resolution} adds the Resolution size.",
-                      "[application] arguments", G::kAdvanced));
+                      "", G::kAdvanced));
   list.push_back(Choice("architecture", "Program type", "Follows the program: 32-bit or 64-bit Windows.",
-                        "[application] architecture", G::kAdvanced,
+                        "", G::kAdvanced,
                         {{"pe32", "32-bit", ""}, {"pe64", "64-bit", ""}}, "pe32"));
   list.push_back(Text("dll_overrides", "Library overrides",
                       "Windows libraries the game loads from its own copy, from the recipe, DXVK and you.",
-                      "WINEDLLOVERRIDES · [application] dll_overrides", G::kAdvanced));
+                      "WINEDLLOVERRIDES", G::kAdvanced));
   // Earlier builds kept only the player's additions here. Still read, never shown: the full
   // list above starts from them, and changing it replaces them.
   list.push_back(Text("library_overrides", "Added library overrides", "Library overrides added after the recipe's.",
-                      "[application] dll_overrides", G::kAdvanced));
+                      "", G::kAdvanced));
   {
     auto registry = Text("registry_dll_overrides", "Library load order in the registry",
                          "Library overrides kept in the game's Windows registry, like name=n,b.",

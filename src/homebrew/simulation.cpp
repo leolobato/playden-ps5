@@ -779,7 +779,7 @@ std::string action_label(const std::string& key) {
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
-        {"heading-graphics", "Graphics"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
+        {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
         {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
         {"sort-playtime", "Playtime"}, {"sort-install-size", "Install size"}, {"filter-installed", "Installed"},
@@ -7808,6 +7808,7 @@ void Simulation::rebuild_view() {
                     const bool inside = advanced ? definition.group == rt::SettingGroup::kAdvanced
                                                  : definition.group == rt::SettingGroup::kCompatibility ||
                                                        definition.group == rt::SettingGroup::kGraphics ||
+                                                       definition.group == rt::SettingGroup::kSteam ||
                                                        definition.group == rt::SettingGroup::kWindows;
                     if (inside && game_settings_row_shown(definition, settings_game)) ++count;
                 }
@@ -15065,6 +15066,8 @@ std::vector<std::string> Simulation::game_settings_actions() const {
         rows(G::kCompatibility);
         actions.push_back("heading-graphics");
         rows(G::kGraphics);
+        actions.push_back("heading-steam");
+        rows(G::kSteam);
         actions.push_back("heading-windows");
         rows(G::kWindows);
     }

@@ -98,7 +98,21 @@ int main(int argc, char** argv) {
     CHECK(FindSetting("refresh")->group == SettingGroup::kDisplay &&
           FindSetting("button.cross")->group == SettingGroup::kButtonMapping &&
           FindSetting("rumble")->group == SettingGroup::kControllerTuning);
+    // Compatibility › Steam holds the Steam rows, above Windows; Logging is in Advanced.
+    for (const char* id : {"steam_features", "steam_sign_in", "game_invites", "steam_network", "steam_input"})
+      CHECK(FindSetting(id)->group == SettingGroup::kSteam);
+    CHECK(FindSetting("windows_version")->group == SettingGroup::kWindows &&
+          FindSetting("logging")->group == SettingGroup::kAdvanced);
   }
+
+  // "Also called" names only what a player finds in Wine, DXVK or Steam tips: never a profile key ([section] key),
+  // a Playden file or a prospero-win variable.
+  for (const auto& definition : SettingsCatalogue()) {
+    const auto& also = definition.also_called;
+    CHECK(also.find('[') == std::string::npos && also.find("playden") == std::string::npos &&
+          also.find("PW_") == std::string::npos);
+  }
+  CHECK(FindSetting("logging")->also_called == "WINEDEBUG" && FindSetting("resolution")->also_called.empty());
 
   // Every catalogue choice default is one of its own choices.
   for (const auto& definition : SettingsCatalogue()) {
