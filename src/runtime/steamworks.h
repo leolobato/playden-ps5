@@ -13,8 +13,8 @@ namespace playden::runtime {
 // built as runtime/steamworks/README.md says, pinned below), the original is kept as <dll>.orig, and
 // steam_settings/ beside it tells the emulator who plays and what they own. Every call is
 // idempotent and must run while the game is stopped. Links are never followed.
-inline constexpr const char* kSteamApi32Sha256 = "4007fdef3062f8fa194c64d2286ab4e3d72ca1be189657a3b1a4da8f04f33bbb";
-inline constexpr const char* kSteamApi64Sha256 = "3c46a4b109a1bd03a2d0255d1cc0e6e72608d4f67d621227701af4d8ad3d5ba9";
+inline constexpr const char* kSteamApi32Sha256 = "d778ba3007cc46b7587f23698493c6734752213e34eaec2d5e59a036da11df44";
+inline constexpr const char* kSteamApi64Sha256 = "ca4698c8d8db8270735c3570922748300abd10dc9d16c2f3a95a6a564be144d2";
 
 // The emulator builds earlier Playden versions shipped (32-bit, 64-bit). A game they set up
 // still has one as its DLL: it is Playden's, replaced like the current one and never kept as
@@ -31,7 +31,13 @@ inline constexpr const char* kSteamworksSavePath = "C:\\Program Files (x86)\\Ste
 
 // What the download recorded beside the game (SteamworksFactsFile): installed depots and the
 // DLC this account owns.
-inline constexpr const char* kSteamworksFactsFile = ".playden-steam";  // "depots=1,2\ndlc=3\nnodlc=4\n"
+inline constexpr const char* kSteamworksFactsFile = ".playden-steam";  // "depots=1,2\ndlc=3\nnodlc=4\napps=215\napps_account=7656…\n"
+
+// The Source SDK Base apps (2006, 2007, 2013 Singleplayer, 2013 Multiplayer). A Source engine game can ask Steam
+// whether the account owns one before it starts, and stop with "A Source engine game is required to run mods"
+// when it doesn't (Black Mesa asks for 215). Each one the account's licenses grant is passed to the emulator as
+// owned.
+inline constexpr std::uint32_t kSourceSdkBaseApps[] = {215, 218, 243730, 243750};
 
 struct SteamworksIdentity {
   std::uint32_t app_id = 0;
@@ -41,6 +47,10 @@ struct SteamworksIdentity {
   std::vector<std::uint32_t> owned_dlc;
   std::vector<std::uint32_t> excluded_dlc;  // turned off at install: never added to owned_dlc
   std::vector<std::uint32_t> depots;  // empty: no depots.txt
+  // Other apps the account owns that the game may ask Steam about (kSourceSdkBaseApps), as
+  // steam_settings/owned_app_ids.txt (empty: none). The emulator reports them as owned, outside the DLC list.
+  std::vector<std::uint32_t> owned_apps;
+  std::uint64_t owned_apps_account = 0;  // the Steam account whose licenses gave owned_apps (0: unknown)
   // A steam_appid.txt beside a DLL that has none (Steam games). Off for a game whose app ID came from its
   // own steam_appid.txt or Game settings: the emulator reads steam_settings/steam_appid.txt, and a file
   // Playden left in the game's folder would later pass for the game's own.
@@ -96,12 +106,17 @@ std::vector<std::string> SteamInterfaces(std::string_view dll_bytes);
 // The facts file the download writes, and its reader (missing or unreadable: false). `language`
 // is the content language the depots were installed for; English, and files written before
 // Playden could choose one, leave the line out. `excluded_dlc`: DLC the player turned off at install, which each
-// prepare leaves out when it adds the account's owned DLC.
+// prepare leaves out when it adds the account's owned DLC. `owned_apps` and `owned_apps_account`: SteamworksIdentity's,
+// kept so a start before the next license read (or offline) still has them, for that account only.
 std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
-                                     const std::string& language = {}, const std::vector<std::uint32_t>& excluded_dlc = {});
+                                     const std::string& language = {}, const std::vector<std::uint32_t>& excluded_dlc = {},
+                                     const std::vector<std::uint32_t>& owned_apps = {},
+                                     std::uint64_t owned_apps_account = 0);
 bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std::uint32_t>& depots,
                           const std::vector<std::uint32_t>& owned_dlc, const std::string& language = {},
-                          const std::vector<std::uint32_t>& excluded_dlc = {});
+                          const std::vector<std::uint32_t>& excluded_dlc = {},
+                          const std::vector<std::uint32_t>& owned_apps = {},
+                          std::uint64_t owned_apps_account = 0);
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity);
 
 }  // namespace playden::runtime

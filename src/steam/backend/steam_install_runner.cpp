@@ -539,7 +539,12 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
       if (depot.owner_app != 0 && depot.owner_app != id &&
           std::find(dlc.begin(), dlc.end(), depot.owner_app) == dlc.end())
         dlc.push_back(depot.owner_app);
-    const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language, target.excluded_dlc);
+    // The Source SDK Base apps the account owns, which a Source engine game can check before it starts.
+    std::vector<std::uint32_t> sdk_apps;
+    for (const auto app_id : runtime::kSourceSdkBaseApps)
+      if (app_id != id && entitlements.owned_apps.count(app_id)) sdk_apps.push_back(app_id);
+    const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language, target.excluded_dlc,
+                                                       sdk_apps, sdk_apps.empty() ? 0 : account);
     if (!written) log("steamworks_facts", "write-failed", folder.c_str());
     else
       log("steamworks_facts", "written",

@@ -877,22 +877,50 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     if (!facts)
       Log("steamworks app=" + std::to_string(record.runtime_number) + " no download facts: no DLC or depots listed");
     // DLC the account owns that the download didn't record. They stay in the facts, so a start before the
-    // next license read still has them.
-    if (config_.owned_dlc) {
-      const auto listed = [](const std::vector<std::uint32_t>& ids, std::uint32_t id) {
-        return std::find(ids.begin(), ids.end(), id) != ids.end();
-      };
-      std::vector<std::uint32_t> added;
-      // DLC turned off at install stays out: the game would look for files that aren't there.
+    // next license read (or offline) still has them.
+    const auto listed = [](const std::vector<std::uint32_t>& ids, std::uint32_t id) {
+      return std::find(ids.begin(), ids.end(), id) != ids.end();
+    };
+    std::vector<std::uint32_t> added_dlc;
+    // DLC turned off at install stays out: the game would look for files that aren't there.
+    if (config_.owned_dlc)
       for (const auto dlc : config_.owned_dlc(identity.steam_id, steam_app.app_id))
-        if (dlc != steam_app.app_id && !listed(identity.owned_dlc, dlc) && !listed(added, dlc) && !listed(identity.excluded_dlc, dlc))
-          added.push_back(dlc);
-      if (!added.empty()) {
-        identity.owned_dlc.insert(identity.owned_dlc.end(), added.begin(), added.end());
-        const bool kept = !facts || other_store ||
-                          rt::WriteSteamworksFacts(root.string(), identity.depots, identity.owned_dlc, identity.language, identity.excluded_dlc);
-        Log("steamworks app=" + std::to_string(record.runtime_number) + " owned dlc added=" + std::to_string(added.size()) +
-            " total=" + std::to_string(identity.owned_dlc.size()) + (kept ? "" : " facts=write-failed"));
+        if (dlc != steam_app.app_id && !listed(identity.owned_dlc, dlc) && !listed(added_dlc, dlc) &&
+            !listed(identity.excluded_dlc, dlc))
+          added_dlc.push_back(dlc);
+    identity.owned_dlc.insert(identity.owned_dlc.end(), added_dlc.begin(), added_dlc.end());
+    // The Source SDK Base apps the account owns: a license read of this account gives the whole list, which
+    // replaces the saved one (an app it no longer grants goes). Without one, the saved list stands for the
+    // account that saved it; another account gets none, and the saved list is kept for its own account.
+    auto saved_apps = identity.owned_apps;
+    std::sort(saved_apps.begin(), saved_apps.end());
+    const auto saved_account = identity.owned_apps_account;
+    bool apps_changed = false;
+    // No account (0) has no license read either.
+    const auto read = config_.owned_sdk_apps && identity.steam_id ? config_.owned_sdk_apps(identity.steam_id) : std::nullopt;
+    if (read) {
+      identity.owned_apps.clear();
+      for (const auto app : *read)
+        if (app != steam_app.app_id && !listed(identity.owned_apps, app)) identity.owned_apps.push_back(app);
+      std::sort(identity.owned_apps.begin(), identity.owned_apps.end());
+      identity.owned_apps_account = identity.owned_apps.empty() ? 0 : identity.steam_id;
+      apps_changed = saved_apps != identity.owned_apps || saved_account != identity.owned_apps_account;
+    } else if (identity.owned_apps_account != identity.steam_id) {
+      identity.owned_apps.clear();
+    }
+    if (!added_dlc.empty() || apps_changed) {
+      const bool kept = !facts || other_store ||
+                        rt::WriteSteamworksFacts(root.string(), identity.depots, identity.owned_dlc, identity.language,
+                                                 identity.excluded_dlc, apps_changed ? identity.owned_apps : saved_apps,
+                                                 apps_changed ? identity.owned_apps_account : saved_account);
+      const std::string failed = kept ? "" : " facts=write-failed";
+      if (!added_dlc.empty())
+        Log("steamworks app=" + std::to_string(record.runtime_number) + " owned dlc added=" + std::to_string(added_dlc.size()) +
+            " total=" + std::to_string(identity.owned_dlc.size()) + failed);
+      if (apps_changed) {
+        std::string ids;
+        for (const auto app : identity.owned_apps) ids += (ids.empty() ? "" : ",") + std::to_string(app);
+        Log("steamworks app=" + std::to_string(record.runtime_number) + " owned sdk apps=" + (ids.empty() ? "-" : ids) + failed);
       }
     }
     const auto emulator = config_.steamworks_dir.empty() ? config_.runtime_dir + "/steamworks" : config_.steamworks_dir;

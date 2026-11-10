@@ -1591,6 +1591,13 @@ void PreparesGameWithoutShippedRecipe() {
     dlc_asked.emplace_back(steam_id, app_id);
     return std::vector<std::uint32_t>{4260, 4250, 4242, 4270};
   };
+  // The account owns Source SDK Base 2006, which a Source engine game checks before it starts.
+  std::vector<std::uint64_t> sdk_asked;
+  std::optional<std::vector<std::uint32_t>> sdk_owned = std::vector<std::uint32_t>{215};
+  config.owned_sdk_apps = [&sdk_asked, &sdk_owned](std::uint64_t steam_id) {
+    sdk_asked.push_back(steam_id);
+    return sdk_owned;
+  };
 
   std::map<std::string, std::string> saved_settings;
   config.settings_record = [&saved_settings](const playden::GameId&) -> std::optional<GameSettingsRecord> {
@@ -1634,8 +1641,12 @@ void PreparesGameWithoutShippedRecipe() {
   CHECK(Read(game / "Bin/steam_settings/configs.user.ini").find("account_name=player\n") != std::string::npos);
   CHECK(Read(game / "Bin/steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n4250=dlc4250\n4260=dlc4260\n");
   CHECK(!dlc_asked.empty() && dlc_asked.back() == std::make_pair(std::uint64_t{76561198000000001ull}, std::uint32_t{4242}));
-  // The added DLC stay with the download's facts, for a start before the next license read.
-  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\n");
+  // The added DLC and SDK apps stay with the download's facts, for a start before the next license read.
+  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n");
+  // Owned SDK apps reach the emulator as owned_app_ids.txt; the depots stay the game's own.
+  CHECK(Read(game / "Bin/steam_settings/owned_app_ids.txt") == "215\n");
+  CHECK(Read(game / "Bin/steam_settings/depots.txt") == "4243\n");
+  CHECK(!sdk_asked.empty() && sdk_asked.back() == 76561198000000001ull);
   CHECK(Read(game / "Bin/steam_settings/steam_interfaces.txt") == "SteamUser021\n");
   // The bottle's owner marker names the generated recipe, so the game's sessions are read.
   const auto marker = Read(fixture.root / "data/playden/games/steam-4242/library/prefixes/game/.playden-template-owner");
@@ -1724,6 +1735,34 @@ void PreparesGameWithoutShippedRecipe() {
   const auto again = WaitFor(legacy, [](const RuntimeSnapshot& s) { return s.refusals.count(4242) != 0; });
   CHECK(again.refusals.at(4242) == "This game is already prepared.");
   legacy.Shutdown();
+
+  // Back on emulation: each start below is a fresh Playden (Play, then its title stays unstarted).
+  saved_settings.clear();
+  const std::string facts_215 = "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n";
+  const auto play_as = [&](std::uint64_t steam_id) {
+    RuntimeHost started(config);
+    started.SetSteamAccount("player", steam_id);
+    CHECK(started.Start());
+    WaitFor(started, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+    started.Play(4242);
+    WaitFor(started, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    started.Shutdown();
+  };
+  // No license read yet (or offline): the account keeps the SDK app the facts recorded for it.
+  sdk_owned = std::nullopt;
+  play_as(76561198000000001ull);
+  CHECK(Read(game / "Bin/steam_api64.dll") == emulator);
+  CHECK(Read(game / "Bin/steam_settings/owned_app_ids.txt") == "215\n");
+  CHECK(Read(game / ".playden-steam") == facts_215);
+  // Another account, before its license read, gets none, and the first account's list stays saved.
+  play_as(76561198000000002ull);
+  CHECK(!fs::exists(game / "Bin/steam_settings/owned_app_ids.txt"));
+  CHECK(Read(game / ".playden-steam") == facts_215);
+  // A license read that no longer grants it takes it away, from the game and the facts.
+  sdk_owned = std::vector<std::uint32_t>{};
+  play_as(76561198000000001ull);
+  CHECK(!fs::exists(game / "Bin/steam_settings/owned_app_ids.txt"));
+  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\n");
 }
 
 // A game set up before Playden's defaults for its engine changed takes the new ones on the next Play: its saved

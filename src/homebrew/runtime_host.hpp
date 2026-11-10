@@ -132,6 +132,11 @@ struct RuntimeHostConfig {
   // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator; DLC the download
   // recorded as turned off doesn't. Empty: none.
   std::function<std::vector<std::uint32_t>(std::uint64_t steam_id, std::uint32_t app_id)> owned_dlc;
+  // The apps of runtime::kSourceSdkBaseApps this account's licenses grant, from the Library's license read. Each
+  // prepare adds them to what the download recorded and the emulator counts them as owned, for a Source engine
+  // game that checks one before it starts (Black Mesa). Nullopt: no license read of this account yet, so the
+  // saved list stands.
+  std::function<std::optional<std::vector<std::uint32_t>>(std::uint64_t steam_id)> owned_sdk_apps;
   // One ranged HTTPS GET for what Playden downloads for a game's bottle: Microsoft's Visual C++ redistributable,
   // for a game whose files import MFC (runtime/redist_install.h). Runs on the worker, only for work the player
   // started (Play, Prepare, maintenance), never at start-up; it should give up soon after cancel turns true

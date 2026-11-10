@@ -30,6 +30,7 @@
 #include "runtime/artifact_hash.h"
 #include "runtime/kit_admission.h"
 #include "runtime/kit_trust.h"
+#include "runtime/steamworks.h"
 #include "update/update_service.h"
 #include "web/address.h"
 #include "web/server.h"
@@ -627,6 +628,15 @@ int main() {
                 if (!grant) return owned;
                 for (const auto dlc : library_backend.DlcOf(app_id))
                     if (grant->apps.count(dlc)) owned.push_back(dlc);
+                return owned;
+            };
+            // The Source SDK Base apps the last license read of this account grants.
+            config.owned_sdk_apps = [&licensed_depots](std::uint64_t steam_id) -> std::optional<std::vector<std::uint32_t>> {
+                const auto grant = licensed_depots.Get(steam_id);
+                if (!grant) return std::nullopt;
+                std::vector<std::uint32_t> owned;
+                for (const auto app : playden::runtime::kSourceSdkBaseApps)
+                    if (grant->apps.count(app)) owned.push_back(app);
                 return owned;
             };
             config.title_icon = [trust = paths.trust_store, art_cache_dir, generic_icon](
