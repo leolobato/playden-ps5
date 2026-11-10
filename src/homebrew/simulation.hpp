@@ -1245,9 +1245,10 @@ public:
     void SetKitInfo(LiveKitInfo kit);
     void UpdateRuntime(RuntimeState runtime, const std::vector<LiveRuntimeGame>& games);
     // Live mode: the preparation queue for Queue, and what the player asked of it there: games to
-    // prepare next, finished preparations dismissed, and Clear completed.
+    // prepare next, waiting games canceled, finished preparations dismissed, and Clear completed.
     void UpdatePreparationQueue(PreparationQueue queue);
     [[nodiscard]] std::vector<GameId> TakePrepareNextRequests();
+    [[nodiscard]] std::vector<GameId> TakePrepareCancels();
     [[nodiscard]] std::vector<LiveCompletedPreparation> TakePreparedDismissals();
     [[nodiscard]] bool TakePreparedClear();
     // The game runtime could not start (raw: its log reason; empty: it runs). Shown on every screen
@@ -1787,6 +1788,9 @@ private:
     std::vector<ImportRequest> pending_import_requests_;
     std::vector<GameId> pending_runtime_prepare_requests_;
     std::vector<GameId> pending_prepare_next_requests_;
+    std::vector<GameId> pending_prepare_cancels_;
+    // Waiting games the player canceled that the runtime still lists: Queue hides them until it doesn't.
+    std::vector<GameId> prepare_cancel_asked_;
     std::vector<LiveCompletedPreparation> pending_prepared_dismissals_;
     bool pending_prepared_clear_ = false;
     // Asked of the runtime and not carried out yet: finished preparations dismissed, a game moved first.
@@ -1978,6 +1982,7 @@ private:
     void change_route(int delta);
     void open_modal(ModalEntry modal);
     void prepare_next(GameId id);
+    void cancel_preparations(std::vector<GameId> ids);
     void close_modal();
     void open_details_from_queue(GameId id);
     void start_editor(std::string purpose, std::string value, bool secret = false);

@@ -2905,6 +2905,112 @@ void live_manage_runtimes(const std::filesystem::path& base) {
     check(model.TakeMaintenanceRequests().empty(), "the game that started isn't sent");
 }
 
+// Queue: a waiting preparation's sheet cancels that game or every waiting one, and its last row only closes it.
+// A game the Runtimes batch holds leaves the batch; one the runtime has queued is withdrawn there.
+void live_queue_cancel_preparations(const std::filesystem::path& base) {
+    using playden::GameId;
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::MaintenanceKind;
+    using playden::homebrew::TitleActivity;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    auto model = make_live(base);
+    model.SetWallClock(kNow);
+    model.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{{SteamId(10), "Ten", "", "", ""}, {SteamId(20), "Twenty", "", "", ""}, {SteamId(30), "Thirty", "", "", ""},
+                                {SteamId(40), "Forty", "", "", ""}, {SteamId(50), "Fifty", "", "", ""}},
+                               false, {}, false, true, kNow}),
+          "cancel: library delivered");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(10), 4 * gb, "internal", true}, {SteamId(20), 3 * gb, "internal", true},
+                              {SteamId(30), 2 * gb, "internal", true}, {SteamId(40), 1 * gb, "internal", true},
+                              {SteamId(50), 1 * gb, "internal", true}});
+    const auto game = [](int id, const char* status) {
+        LiveRuntimeGame runtime;
+        runtime.game_id = SteamId(id);
+        runtime.status = status;
+        runtime.prepared = runtime.has_title = runtime.can_prepare = true;
+        runtime.activity = TitleActivity::Stopped;
+        return runtime;
+    };
+    auto first = game(10, "Runtime kit update available");
+    auto ready = game(50, "Not prepared");
+    ready.prepared = ready.has_title = false;
+    const auto all = [&] {
+        return std::vector<LiveRuntimeGame>{first, game(20, "Runtime kit update available"), game(30, "Runtime kit update available"),
+                                            game(40, "Runtime kit update available"), ready};
+    };
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    for (int i = 0; i < 6 && model.state().navigation.route != playden::homebrew::Route::Settings; ++i) model.action("r1");
+    activate(model, "settings-installed");
+    while (model.state().navigation.manage_tab != playden::homebrew::ManageTab::Runtimes) check(model.action("r1"), "cancel: tabs go round");
+    (void)model.TakeMaintenanceRequests();
+    check(model.action("triangle"), "cancel: the Runtimes batch starts");
+    auto sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].first == SteamId(10), "cancel: the first game goes");
+    // The runtime prepares the first game and has another game of its own waiting.
+    first.status = "Preparing";
+    first.maintenance = MaintenanceKind::UpdateRuntime;
+    first.maintenance_running = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    model.UpdatePreparationQueue({SteamId(10), {SteamId(50)}, {}, {}});
+    const auto waiting = [&] { return model.state().preparation_queue.waiting; };
+    check((waiting() == std::vector<GameId>{SteamId(50), SteamId(20), SteamId(30), SteamId(40)}),
+          "the runtime's waiting game comes first, then the batch");
+
+    activate(model, "prep-30");
+    check(find_row(model, "prep-cancel-30") && find_row(model, "prep-cancel-30")->title == "Cancel", "a waiting game offers Cancel");
+    check(find_row(model, "prep-cancel-all") && find_row(model, "prep-cancel-all")->title == "Cancel all", "and Cancel all");
+    const auto* close = find_row(model, "cancel");
+    check(close && close->title == "Close", "the last row says Close: it only closes the sheet");
+    check(std::find(model.view().legends.begin(), model.view().legends.end(), "Circle Close") != model.view().legends.end(),
+          "and Circle says Close too");
+    model.action("circle");
+    check(waiting().size() == 4, "Close cancels nothing");
+
+    activate(model, "prep-30");
+    activate(model, "prep-cancel-30");
+    check((waiting() == std::vector<GameId>{SteamId(50), SteamId(20), SteamId(40)}), "Cancel takes the game out of the queue");
+    check(model.TakePrepareCancels().empty(), "a game only the batch held asks nothing of the runtime");
+    {
+        const auto running = std::find_if(model.state().notices.begin(), model.state().notices.end(),
+                                          [](const auto& item) { return item.id == "runtime-batch"; });
+        check(running != model.state().notices.end() && running->detail == "0 of 3 games", "the running notice counts the smaller total");
+    }
+    check(model.state().navigation.focus_key == "queue-preparation", "focus goes to the section heading");
+
+    activate(model, "prep-50");
+    activate(model, "prep-cancel-50");
+    check(model.TakePrepareCancels() == std::vector<GameId>{SteamId(50)}, "a game the runtime queued is withdrawn there");
+    check((waiting() == std::vector<GameId>{SteamId(20), SteamId(40)}), "and leaves the list at once");
+    model.UpdatePreparationQueue({SteamId(10), {SteamId(50)}, {}, {}});
+    check((waiting() == std::vector<GameId>{SteamId(20), SteamId(40)}), "a snapshot from before the withdrawal doesn't bring it back");
+    model.UpdatePreparationQueue({SteamId(10), {}, {}, {}});
+    model.UpdatePreparationQueue({SteamId(10), {SteamId(50)}, {}, {}});
+    check((waiting() == std::vector<GameId>{SteamId(50), SteamId(20), SteamId(40)}), "queued again later, it is listed again");
+    model.UpdatePreparationQueue({SteamId(10), {}, {}, {}});
+
+    activate(model, "prep-active-10");
+    check(find_row(model, "prep-cancel-all") && !find_row(model, "prep-cancel-10"),
+          "the game being prepared can't be canceled, but its sheet offers Cancel all for the rest");
+    activate(model, "prep-cancel-all");
+    check(waiting().empty(), "Cancel all empties the waiting list");
+    check(model.TakePrepareCancels().empty(), "with nothing of the runtime's waiting");
+
+    // The game being prepared finishes; the batch ends there.
+    first.status = "Ready";
+    first.ready = true;
+    first.maintenance_running = false;
+    first.maintenance_ok = true;
+    first.maintenance_message = "Runtime kit updated.";
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    check(model.TakeMaintenanceRequests().empty(), "no canceled game is sent");
+    const auto notice = std::find_if(model.state().notices.begin(), model.state().notices.end(),
+                                     [](const auto& item) { return item.id == "runtime-batch"; });
+    check(notice != model.state().notices.end() && notice->message == "Runtime kit updated" && notice->detail == "1 game",
+          "the end counts only the game that was updated");
+}
+
 // The runtime kit prompt: once per kit, only when a kit update is due, and never over What's new or another dialog.
 void live_runtime_prompt(const std::filesystem::path& base) {
     using playden::homebrew::LiveRuntimeGame;
@@ -3442,6 +3548,7 @@ int main() {
     live_manage_games_tabs(base / "manage-games");
     live_manage_update_selected(base / "update-selected");
     live_manage_runtimes(base / "manage-runtimes");
+    live_queue_cancel_preparations(base / "queue-cancel-preparations");
     live_runtime_prompt(base / "runtime-prompt");
     live_runtime_prompt_survives_library(base / "runtime-prompt");
     live_manage_move(base / "manage-move");

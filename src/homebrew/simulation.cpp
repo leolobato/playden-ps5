@@ -791,7 +791,7 @@ std::string action_label(const std::string& key) {
         {"account-last-sync", "Last library sync"}, {"account-sync", "Sync now"},
         {"account-recover", "Reconnect account"}, {"account-switch", "Switch account…"},
         {"account-reauth", "Sign in again"}, {"job-resume-all", "Resume all"}, {"job-clear-completed", "Clear completed"},
-        {"prep-clear-completed", "Clear completed"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
+        {"prep-clear-completed", "Clear completed"}, {"prep-cancel-all", "Cancel all"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
         {"about-version", "Version"}, {"self-update-install", "Download and install"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
         {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
@@ -807,7 +807,7 @@ std::string action_label(const std::string& key) {
              {"job-cancel-", "Cancel download…"}, {"job-now-", "Download now"}, {"job-up-", "Move up"}, {"job-down-", "Move down"},
              {"job-open-", "Open game"}, {"job-dismiss-", "Dismiss"}, {"prep-next-", "Prepare next"},
              {"prep-open-", "Game details"}, {"prep-retry-", "Try again"}, {"prep-recreate-", "Recreate bottle…"},
-             {"prep-dismiss-", "Dismiss"},
+             {"prep-dismiss-", "Dismiss"}, {"prep-cancel-", "Cancel"},
              {"uninstall-dismiss-", "Dismiss"}})
         if (key.rfind(prefix, 0) == 0) return label;
     std::string title = key;
@@ -2832,6 +2832,12 @@ void Simulation::UpdatePreparationQueue(PreparationQueue queue) {
     for (const auto& [id, kind] : runtime_batch_)
         if (std::find(queue.waiting.begin(), queue.waiting.end(), id) == queue.waiting.end() && queue.active != id)
             queue.waiting.push_back(id);
+    // A cancel the runtime has not carried out yet keeps the game off the list; once the runtime's list no
+    // longer has it waiting, it is done.
+    std::erase_if(prepare_cancel_asked_, [&queue](GameId id) {
+        return std::find(queue.waiting.begin(), queue.waiting.end(), id) == queue.waiting.end();
+    });
+    for (const auto id : prepare_cancel_asked_) std::erase(queue.waiting, id);
     // A dismissal or Prepare next the runtime has not carried out yet keeps showing as asked; once the
     // runtime's list no longer has the entry, or has the game first, it is done.
     std::erase_if(prepared_dismissed_, [&queue](const LiveCompletedPreparation& done) {
@@ -2853,6 +2859,52 @@ void Simulation::UpdatePreparationQueue(PreparationQueue queue) {
 }
 
 std::vector<GameId> Simulation::TakePrepareNextRequests() { return std::exchange(pending_prepare_next_requests_, {}); }
+
+std::vector<GameId> Simulation::TakePrepareCancels() { return std::exchange(pending_prepare_cancels_, {}); }
+
+// Takes waiting games out of the preparation queue. A game the Runtimes tab's Update still holds leaves that batch;
+// one the runtime has queued is withdrawn there. The game being prepared now finishes. Focus moves to the
+// section's heading when its row goes.
+void Simulation::cancel_preparations(std::vector<GameId> ids) {
+    if (std::any_of(ids.begin(), ids.end(), [this](GameId id) { return state_.navigation.focus_key == "prep-" + ToKey(id); }))
+        state_.navigation.focus_key = "queue-preparation";
+    if (!live()) {
+        // Fixture mode: the list only.
+        for (const auto id : ids) std::erase(state_.preparation_queue.waiting, id);
+        return;
+    }
+    std::size_t from_batch = 0;
+    for (const auto id : ids) {
+        const auto before = runtime_batch_.size();
+        std::erase_if(runtime_batch_, [id](const auto& entry) { return entry.first == id; });
+        from_batch += before - runtime_batch_.size();
+        if (std::find(runtime_queue_.waiting.begin(), runtime_queue_.waiting.end(), id) != runtime_queue_.waiting.end()) {
+            pending_prepare_cancels_.push_back(id);
+            if (std::find(prepare_cancel_asked_.begin(), prepare_cancel_asked_.end(), id) == prepare_cancel_asked_.end())
+                prepare_cancel_asked_.push_back(id);
+        }
+        if (prepare_next_asked_ == id) prepare_next_asked_.reset();
+    }
+    if (from_batch) {
+        runtime_batch_total_ -= from_batch;
+        // Nothing left of the batch: its notice goes, as the end of a batch that did nothing would say nothing.
+        if (runtime_batch_.empty() && !runtime_batch_current_) {
+            state_.notices.erase(std::remove_if(state_.notices.begin(), state_.notices.end(),
+                                                [](const Notice& notice) { return notice.id == "runtime-batch"; }),
+                                 state_.notices.end());
+        } else {
+            // The running notice counts against the smaller total at once.
+            const auto done = runtime_batch_total_ - runtime_batch_.size() - (runtime_batch_current_ ? 1 : 0);
+            for (auto& notice : state_.notices)
+                if (notice.id == "runtime-batch" && notice.progress >= 0.0F) {
+                    notice.detail = std::to_string(done) + " of " + std::to_string(runtime_batch_total_) +
+                                    (runtime_batch_total_ == 1 ? " game" : " games");
+                    notice.progress = static_cast<float>(done) / static_cast<float>(runtime_batch_total_);
+                }
+        }
+    }
+    UpdatePreparationQueue(runtime_queue_);
+}
 
 std::vector<LiveCompletedPreparation> Simulation::TakePreparedDismissals() {
     return std::exchange(pending_prepared_dismissals_, {});
@@ -6844,6 +6896,8 @@ void Simulation::rebuild_view() {
             item.dangerous = modal.destructive && action_key != "cancel";
             if (action_key == "runtime-prompt-update")
                 item.title = "Update " + std::to_string(runtime_prompt_games_) + (runtime_prompt_games_ == 1 ? " game" : " games");
+            // The preparation sheet's own Cancel takes the game out of the queue; its last row only closes it.
+            if (modal.id == "prep-actions" && action_key == "cancel") item.title = "Close";
             if (modal.id == "job-actions")
                 if (const auto label = move_action_label(action_key); !label.empty())
                     if (const auto* job = find_job(state_, action_key.substr(action_key.find('-', 4) + 1)); job && job->move)
@@ -8071,7 +8125,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "button-mapping") view_.legends = {"Cross Change", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "controller-tuning") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "game-maintenance") view_.legends = {"Cross Select", "L1/R1 Jump", "Circle Cancel"};
-        else if (modal.id == "import-games") view_.legends = {"Cross Select", "Circle Close"};
+        else if (modal.id == "import-games" || modal.id == "prep-actions") view_.legends = {"Cross Select", "Circle Close"};
         else if (modal.id == "import-programs" || modal.id == "import-choice") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "steam-programs") view_.legends = {"Cross Choose", "Circle Cancel"};
         else if (modal.id == "content-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
@@ -10788,11 +10842,16 @@ void Simulation::activate() {
             }
         } else if (key.rfind("prep-active-", 0) == 0) {
             actions.push_back("prep-open-" + id);
+            // The game being prepared finishes; the games waiting behind it can go.
+            if (!state_.preparation_queue.waiting.empty()) actions.push_back("prep-cancel-all");
         } else {
             // Prepare next waits for the game being prepared now; the first waiting game is next already.
             const auto& waiting = state_.preparation_queue.waiting;
             if (!waiting.empty() && waiting.front() != selected.game_id) actions.push_back("prep-next-" + id);
             actions.push_back("prep-open-" + id);
+            // Cancel takes a game that hasn't started out of the queue; the game stays as it was.
+            actions.push_back("prep-cancel-" + id);
+            if (waiting.size() > 1) actions.push_back("prep-cancel-all");
         }
         actions.push_back("cancel");
         open_modal({"prep-actions", std::move(title), key, std::move(actions), 0, false});
@@ -10803,6 +10862,12 @@ void Simulation::activate() {
     } else if (action_name.rfind("prep-next-", 0) == 0) {
         close_modal();
         prepare_next(key_id(std::string_view(action_name).substr(std::strlen("prep-next-"))));
+    } else if (action_name == "prep-cancel-all") {
+        close_modal();
+        cancel_preparations(state_.preparation_queue.waiting);
+    } else if (action_name.rfind("prep-cancel-", 0) == 0) {
+        close_modal();
+        cancel_preparations({key_id(std::string_view(action_name).substr(std::strlen("prep-cancel-")))});
     } else if (action_name.rfind("prep-open-", 0) == 0) {
         const auto id = key_id(std::string_view(action_name).substr(std::strlen("prep-open-")));
         close_modal();

@@ -1024,6 +1024,27 @@ void Controller::TickRuntime() {
     if (app && runtime_->PrepareNext(*app)) prepare_next_pending_.reset();
     else prepare_next_pending_ = id;
   }
+  // Canceled in Queue before it started: the preparation leaves the runtime's queue, and nothing that waited
+  // on it (Play, a download's or an import's prepare, Update runtime) goes ahead. A Recreate bottle whose title
+  // is already removed ends there: the game is prepared again from its page.
+  // A game whose number is being looked up is asked again on the next pass.
+  auto cancels = std::exchange(prepare_cancels_pending_, {});
+  for (const auto id : model_.TakePrepareCancels()) cancels.push_back(id);
+  for (const auto id : cancels) {
+    bool busy = false;
+    const auto app = RuntimeApp(*runtime_, id, &busy);
+    if (!app && busy) { prepare_cancels_pending_.push_back(id); continue; }
+    if (!app || !runtime_->WithdrawPrepare(*app)) continue;
+    std::erase(auto_prepare_, id);
+    prepare_after_import_.erase(id);
+    prepare_after_details_.erase(id);
+    play_after_prepare_.erase(id);
+    ready_watch_.erase(id);
+    runtime_updates_.erase(id);
+    if (prepare_next_pending_ == id) prepare_next_pending_.reset();
+    if (recreate_.erase(id)) recreate_results_[id] = {false, "Canceled. Press Prepare on the game page to set it up again."};
+    ++play_notes_revision_;
+  }
   for (const auto& done : model_.TakePreparedDismissals())
     WithApp(done.game_id, [this, done](std::uint32_t app) { runtime_->DismissPrepared(app, done.finished_at); });
   if (model_.TakePreparedClear()) runtime_->ClearPrepared();

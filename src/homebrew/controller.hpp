@@ -309,6 +309,7 @@ class Controller {
   std::vector<GameId> auto_prepare_;  // in the order their downloads (copies, imports) finished
   std::set<GameId> refresh_asked_;  // updated games whose setup for the new files was asked for (TickRuntime)
   std::optional<GameId> prepare_next_pending_;  // Prepare next on a game not in the runtime's queue yet
+  std::vector<GameId> prepare_cancels_pending_;  // Cancel in Queue on a game whose number was being looked up
   struct PlayAfterPrepare {
     bool queued = false;
     bool seen_preparing = false;
