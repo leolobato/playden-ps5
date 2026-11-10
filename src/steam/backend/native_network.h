@@ -15,7 +15,8 @@ bool InitializeNativeNetworkForBootstrap();
 
 // Initializes and semantically checks the process-wide native network runtime before curl global
 // initialization. The PS5 runtime is intentionally retained until process exit so this adapter
-// never terminates networking initialized or used by another subsystem.
+// never terminates networking initialized or used by another subsystem. A passed check is kept for the
+// process; a failed one is tried again by the next call.
 bool InitializeNativeNetwork();
 
 // Resolves the URL host through the bounded PS5 resolver and attaches the numeric address through

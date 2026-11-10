@@ -122,9 +122,12 @@ bool InitializeNativeNetworkForBootstrap() {
 bool InitializeNativeNetwork() {
   if (!InitializeNativeNetworkForBootstrap()) return false;
 #if defined(PLAYDEN_PLATFORM_PS5) && PLAYDEN_PLATFORM_PS5
-  static std::once_flag once;
+  // Only a pass is kept. A check that fails (the network still coming up, a loopback connect refused) is tried
+  // again a few times now and again by the next client, rather than leaving Steam unreachable until restart.
+  static std::mutex mutex;
   static bool ready = false;
-  std::call_once(once, [] { ready = NativeNonblockingPreflight(); });
+  const std::lock_guard<std::mutex> guard(mutex);
+  for (int attempt = 0; !ready && attempt < 3; ++attempt) ready = NativeNonblockingPreflight();
   return ready;
 #else
   return true;
