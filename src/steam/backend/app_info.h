@@ -122,6 +122,10 @@ std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffe
 // game's appinfo holds the manifest. Trims the game's appinfo to those depots, for SelectDepots' dlc_apps, which
 // installs the listing that has a manifest. The rest of the game stays out, even for an account that owns it.
 void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game);
+// The same for any app that borrows: trims the source app's appinfo to the depots the borrower lists with
+// depotfromapp and no manifest of its own (Half-Life: Source's engine depots from Half-Life 2), so SelectDepots
+// installs them from the source's listing. The source's other depots and its DLC stay out.
+void KeepDepotsBorrowedBy(const AppInfo& borrower, AppInfo* source);
 
 // Steam `oslist`: empty means every platform; otherwise a comma list that must name windows.
 bool OsListMatchesWindows(std::string_view os_list);

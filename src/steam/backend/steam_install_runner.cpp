@@ -328,12 +328,20 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
   // that has such depots installed waits for Steam instead: without them it would delete them.
   std::vector<AppInfo> dlc_apps;
   std::set<std::uint32_t> unfetched;
+  std::set<std::uint32_t> borrowed_sources;
   CmError dlc_error = CmError::kNone;
   {
     std::vector<std::uint32_t> dlc_ids;
     for (const auto dlc : app->dlc_app_ids)
       if (dlc != id && std::find(dlc_ids.begin(), dlc_ids.end(), dlc) == dlc_ids.end()) dlc_ids.push_back(dlc);
-    if (app->demo_of_app_id != 0) dlc_ids.push_back(app->demo_of_app_id);
+    // A depot listed with depotfromapp and no manifest of its own is the source app's content: its manifest
+    // is in that app's appinfo (Half-Life: Source's 221 and 222 from Half-Life 2).
+    for (const auto& depot : app->depots)
+      if (depot.depot_from_app && *depot.depot_from_app != id && !depot.manifest_gid && depot.branches.empty())
+        borrowed_sources.insert(*depot.depot_from_app);
+    if (app->demo_of_app_id != 0) borrowed_sources.insert(app->demo_of_app_id);
+    for (const auto source : borrowed_sources)
+      if (source != id && std::find(dlc_ids.begin(), dlc_ids.end(), source) == dlc_ids.end()) dlc_ids.push_back(source);
     for (std::size_t start = 0; start < dlc_ids.size(); start += kMaxAppInfoBatch) {
       const std::vector<std::uint32_t> batch(
           dlc_ids.begin() + static_cast<std::ptrdiff_t>(start),
@@ -353,14 +361,37 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
         const auto found = dlc_info.buffers.find(dlc);
         auto parsed = found == dlc_info.buffers.end() ? std::nullopt : ParseAppInfo(dlc, found->second);
         if (!parsed) {
-          // Without its game's appinfo a demo's update would select only its own depots and delete the borrowed ones.
-          if (dlc == app->demo_of_app_id) unfetched.insert(dlc);
+          if (borrowed_sources.count(dlc)) unfetched.insert(dlc);
           continue;
         }
-        if (dlc == app->demo_of_app_id) KeepDepotsDemoBorrows(*app, &*parsed);
+        if (borrowed_sources.count(dlc)) {
+          if (std::find(app->dlc_app_ids.begin(), app->dlc_app_ids.end(), dlc) != app->dlc_app_ids.end())
+            dlc_apps.push_back(*parsed);
+          KeepDepotsBorrowedBy(*app, &*parsed);
+          const bool missing_depot = std::any_of(app->depots.begin(), app->depots.end(), [&](const DepotInfo& listed) {
+            return listed.depot_from_app == dlc && !listed.manifest_gid && listed.branches.empty() &&
+                   std::none_of(parsed->depots.begin(), parsed->depots.end(), [&](const DepotInfo& resolved) {
+                     return resolved.id == listed.id;
+                   });
+          });
+          if (missing_depot) unfetched.insert(dlc);
+        }
         dlc_apps.push_back(std::move(*parsed));
       }
     }
+  }
+  for (const auto source : borrowed_sources)
+    if (!std::any_of(dlc_apps.begin(), dlc_apps.end(), [source](const AppInfo& related) {
+          return related.app_id == source;
+        })) unfetched.insert(source);
+  std::set<std::uint32_t> missing_sources;
+  std::set_intersection(unfetched.begin(), unfetched.end(), borrowed_sources.begin(), borrowed_sources.end(),
+                        std::inserter(missing_sources, missing_sources.end()));
+  if (!missing_sources.empty()) {
+    log("source_app_info", "missing", "required borrowed depot metadata unavailable");
+    result.failure = "Steam could not provide required shared game content. Resume to retry.";
+    result.retry_later = dlc_error == CmError::kNetwork || dlc_error == CmError::kTimeout;
+    return result;
   }
   if (update && !unfetched.empty())
     if (const auto record = installs::ReadInstallRecord(root + "/" + DepotInstaller::kInstallRecord);

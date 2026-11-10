@@ -1133,7 +1133,41 @@ void TestDemoInstallsTheDepotsItBorrows() {
   CHECK(whole_game);
   KeepDepotsDemoBorrows(own_beta, &*whole_game);
   CHECK(whole_game->depots.empty());
-  // Another app that borrows a depot, here Half-Life 2's episode depot, is not a demo: nothing changes for it.
+  // A regular game can borrow shared engine content too; retain only what it names.
+  const auto borrower = ParseAppInfo(280, R"("appinfo"
+{
+  "appid" "280"
+  "common" { "name" "Half-Life: Source" "type" "Game" }
+  "depots"
+  {
+    "280" { "manifests" { "public" { "gid" "2800" "size" "10" "download" "5" } } }
+    "221" { "depotfromapp" "220" }
+    "222" { "depotfromapp" "220" }
+  }
+})");
+  auto source = ParseAppInfo(220, R"("appinfo"
+{
+  "appid" "220"
+  "common" { "name" "Half-Life 2" "type" "Game" }
+  "depots"
+  {
+    "221" { "manifests" { "public" { "gid" "2210" "size" "20" "download" "9" } } }
+    "222" { "manifests" { "public" { "gid" "2220" "size" "30" "download" "12" } } }
+    "223" { "manifests" { "public" { "gid" "2230" "size" "9000" "download" "8000" } } }
+  }
+})");
+  CHECK(borrower && source);
+  SelectionResult borrowed_result;
+  CHECK(SelectDepots(*borrower, {}, {280}, std::nullopt, DepotSelection{}, &borrowed_result));
+  CHECK(RejectedAs(borrowed_result, 221) == "branch");
+  KeepDepotsBorrowedBy(*borrower, &*source);
+  CHECK(source->depots.size() == 2);
+  CHECK(SelectDepots(*borrower, {*source}, {280}, std::nullopt, DepotSelection{}, &borrowed_result));
+  CHECK((Ids(borrowed_result.depots) == U32s{280, 221, 222}));
+  CHECK(borrowed_result.depots[1].source_app == 220 && borrowed_result.depots[1].owner_app == 280);
+  CHECK(borrowed_result.depots[1].depot_from_app == 220u);
+
+  // Another app that borrows a depot, here Half-Life 2's episode depot, is not a demo.
   const auto other = ParseAppInfo(220, R"("appinfo"
 {
   "appid" "220"
