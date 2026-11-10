@@ -605,6 +605,70 @@ void live_settings_follow_the_prepared_title(const std::filesystem::path& base) 
 // A new program applies like any other setting: closing Game settings asks the runtime to apply
 // it (RuntimeHost::RepublishSettings switches the prepared title's program), with no dialog, and
 // Play starts at once. Reset to recipe goes back to Steam's launch option.
+// Saved settings can fall below the revision their PS5 title was published from: Reset UI data clears them and keeps
+// the title, and the next choice starts again at revision 1. The runtime then
+// refuses to publish them ("older than its PS5 title's") and Prepare can't fix that, or reads an edit that reaches the
+// title's revision as already applied. The model keeps them above the title's revision so they are published (#793).
+void live_saved_settings_stay_ahead_of_the_title(const std::filesystem::path& base) {
+    namespace rt = playden::runtime;
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all);
+    const auto file = base / "behind-settings.json";
+    const auto read_revision = [&file](playden::GameId game) -> std::uint64_t {
+        std::map<playden::GameId, rt::GameSettingsRecord> records;
+        std::string why;
+        if (!rt::LoadGameSettingsFile(file.string(), &records, &why) || !records.count(game)) return 0;
+        return records.at(game).revision;
+    };
+    rt::GameSettingsRecord stored;
+    stored.revision = 1;
+    rt::ChooseCommunityRecipe(&stored, rt::CommunityRecipeIdFor(playden::GameRef::Steam(220), "vkd3d"), std::string(64, 'a'),
+                              playden::GameRef::Steam(220));
+    stored.revision = 1;  // a fresh record and one choice, as after Reset UI data
+    std::string reason;
+    check(rt::SaveGameSettingsFile(file.string(), {{SteamId(220), stored}}, &reason), "behind: seed saved settings");
+    auto model = make_live(base);
+    model.SetGameSettingsFile(file);
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(220);
+    game.title = "Half-Life 2";
+    playden::GameSummary other;
+    other.id = SteamId(240);
+    other.title = "Counter-Strike: Source";
+    check(model.UpdateLibrary({{game, other}, false, {}, false, true, 100}), "behind: library delivered");
+    model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}, {SteamId(240), 1024, "internal", true}});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(220);
+    runtime.status = "Ready";
+    runtime.ready = runtime.prepared = runtime.has_title = true;
+    runtime.launch_entry_id = "game";
+    runtime.settings_revision = 4;
+    // A game prepared at revision 1 whose settings were then cleared: no record at all.
+    auto cleared = runtime;
+    cleared.game_id = SteamId(240);
+    cleared.settings_revision = 1;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime, cleared});
+    check(read_revision(SteamId(220)) == 5, "saved settings below the title's revision are saved again above it");
+    check(model.state().game_settings.at(SteamId(220)).community_recipe == stored.community_recipe,
+          "lifting the revision keeps the saved choices");
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime, cleared});
+    check(read_revision(SteamId(220)) == 5, "settings already ahead of the title are left alone");
+    check(!model.state().game_settings.count(SteamId(240)), "a game with no saved settings gets no record");
+
+    // The first change to the cleared game's settings lands on revision 1, its title's: it must still be published.
+    check(model.action("details:240"), "behind: open the cleared game");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    activate(model, "setting-resolution");
+    activate(model, "choice-0");
+    check(model.action("circle"), "behind: close the settings sheet");
+    check(read_revision(SteamId(240)) == 2, "a change that reaches the title's revision is saved above it");
+    check(find_row(model, "game-settings")->subtitle == "Changes apply on next launch",
+          "the lifted change waits for the next launch");
+}
+
 void live_program_change_applies_like_other_settings(const std::filesystem::path& base) {
     using playden::homebrew::GameId;
     using playden::homebrew::MaintenanceKind;
@@ -3357,6 +3421,7 @@ int main() {
     live_120hz_waits_for_the_title_update(base / "display");
     live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");
     live_update_runtime_from_maintenance(base / "update-runtime");
+    live_saved_settings_stay_ahead_of_the_title(base / "behind");
     live_program_change_applies_like_other_settings(base);
     live_my_presets(base / "my-presets");
     live_my_presets_from_game(base / "my-presets-from-game");

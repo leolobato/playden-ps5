@@ -3217,6 +3217,7 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
         }
     }
     state_.runtime_games = std::move(next);
+    if (lift_settings_behind_titles()) save_profile();
     // A quit to Home waiting for a preparation goes once nothing is prepared; Cancel drops it.
     if (state_.quit_waiting) {
         const bool waiting = !state_.navigation.modals.empty() && state_.navigation.modals.back().title == quit_wait_title_;
@@ -5354,8 +5355,34 @@ void Simulation::load_profile() {
     reconcile_storage(state_);
 }
 
+// A prepared title publishes the saved settings of one revision, and only newer ones replace them. Reset UI data (or a
+// settings file put back by hand) clears the saved settings but keeps the titles, so the next choice starts again
+// at revision 1: at or below the title's, the runtime reads it as already applied or refuses it as older, and
+// preparing again can't change that. Such settings are the ones the sheet shows, so they go above the title's revision
+// and the next Play or Apply publishes them. A change is lifted from the title's own revision too; settings left as
+// they were at that revision are not.
+bool Simulation::lift_settings_behind_titles() {
+    if (!live() || settings_load_failed_ || game_settings_file_.empty()) return false;
+    bool lifted = false;
+    for (auto& [id, record] : state_.game_settings) {
+        const auto game = state_.runtime_games.find(id);
+        if (game == state_.runtime_games.end() || !game->second.prepared) continue;
+        const auto title = game->second.settings_revision;
+        // A title at the last revision can take no newer one; the edit paths refuse such a change themselves.
+        if (title == std::numeric_limits<std::uint64_t>::max()) continue;
+        const auto saved = saved_game_settings_.find(id);
+        const bool changed = saved == saved_game_settings_.end() ? record.revision != 0 : saved->second.revision != record.revision;
+        if (record.revision < title || (changed && record.revision == title)) {
+            record.revision = title + 1;
+            lifted = true;
+        }
+    }
+    return lifted;
+}
+
 bool Simulation::save_profile() {
     settings_save_failed_ = true;
+    lift_settings_behind_titles();
     if (live() && !settings_load_failed_ && !game_settings_file_.empty() && state_.game_settings != saved_game_settings_) {
         std::string reason;
         if (rt::SaveGameSettingsFile(game_settings_file_.string(), state_.game_settings, &reason)) saved_game_settings_ = state_.game_settings;

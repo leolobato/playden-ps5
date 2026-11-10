@@ -1956,6 +1956,8 @@ private:
     void load_fixtures();
     void load_profile();
     bool save_profile();
+    // Raises saved settings that are behind their prepared PS5 title's settings revision above it; true when one was.
+    bool lift_settings_behind_titles();
     GameId import_page_asked_;  // the imported game whose open page has asked whether it runs
     void reset_default_state();
     void rebuild_view();
