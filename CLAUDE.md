@@ -107,6 +107,11 @@ the same call:
     Write "version of the runtime kit", not "runtime kit version", unless a number follows.
   - A bare "update" means a game update from Steam. A runtime kit update names the runtime kit, and says so when a player
     could expect a download.
+- A shared community recipe (`BuildCommunityRecipe`, `BuildSettingsOnlyRecipe`) carries the rows its base recipe
+  sets, the rows the player changed, and the rows the controller preset brings. It does not carry a row that only has
+  Playden's default value. An older Playden refuses a whole recipe that names a setting it doesn't know, so a new row
+  must stay out of shares until a player or a recipe sets it. The `game_settings` and `settings_only_recipe` tests
+  check this.
 - Commit format: see CONTRIBUTING.md › Commits. A commit that resolves an issue says `Fixes #N` (`Refs #N`
   for partial work).
 - History is linear: rebase and fast-forward, no merge commits.

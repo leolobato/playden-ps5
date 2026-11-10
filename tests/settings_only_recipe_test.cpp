@@ -334,6 +334,10 @@ void Share() {
   CHECK(ParseCommunityRecipe(text, &reread, &reason) && IsSettingsOnlyRecipe(reread) &&
         reread.recipe.defaults == named.recipe.defaults && SerializeCommunityRecipe(reread) == text);
   CHECK(CommunityRecipeRefusals(reread).empty());
+  // Nothing changed: the share is the base's defaults, with no other row (an older Playden refuses a recipe naming a
+  // setting it doesn't know, so a new row must stay out until the player changes it).
+  const auto untouched = BuildSettingsOnlyRecipe(base, before, before, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(untouched.recipe.defaults == base.recipe.defaults);
   // Graphics kept: the field stays as the base has it (none here).
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"resolution", "1280x720"}}, kit, &after, &error));
   const auto kept = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");

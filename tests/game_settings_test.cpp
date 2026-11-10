@@ -2765,6 +2765,32 @@ int main(int argc, char** argv) {
     CHECK(BuildEffectiveSettings(exported, nullptr, {}, KitCapabilities{}, &again, &error));
     CHECK(again.values.at("steam_features").value == "emulate" && !again.values.at("steam_features").locked);
     CHECK(again.dll_overrides == kDxvkOverrides);  // the DXVK overrides are written out, not added again
+    {  // A row the player didn't change stays out of a share, so an older Playden, which refuses a recipe naming a
+       // setting it doesn't know, still reads it. A new row must not change that (Steam Input came in 0.11).
+      // Rows the recipe sets go with it, and so do the rows its controller preset brings (runtime/input/*.input).
+      const auto only_recipe_rows = [&](const GameRecipe& recipe) {
+        EffectiveSettings untouched;
+        CHECK(BuildEffectiveSettings(recipe, nullptr, {}, KitCapabilities{}, &untouched, &error));
+        auto allowed = recipe.defaults;
+        if (const auto preset = recipe.defaults.find("controller_preset"); preset != recipe.defaults.end())
+          for (const auto& [id, value] : ControllerPresetInputs().at(preset->second)) allowed.emplace(id, value);
+        for (const auto& [id, value] : BuildCommunityRecipe(recipe, untouched, kHalfLife2, "Half-Life 2").recipe.defaults) {
+          const auto own = allowed.find(id);
+          if (own == allowed.end() || own->second != value)
+            std::fprintf(stderr, "untouched row %s=%s is shared\n", id.c_str(), value.c_str());
+          CHECK(own != allowed.end() && own->second == value);
+        }
+      };
+      only_recipe_rows(from_generated);
+      auto with_preset = from_generated;
+      with_preset.defaults["controller_preset"] = "mouse";
+      only_recipe_rows(with_preset);
+      EffectiveSettings chosen;
+      CHECK(BuildEffectiveSettings(from_generated, nullptr, {{"steam_input", "auto"}}, KitCapabilities{}, &chosen, &error));
+      CHECK(!BuildCommunityRecipe(from_generated, chosen, kHalfLife2, "Half-Life 2").recipe.defaults.count("steam_input"));
+      CHECK(BuildEffectiveSettings(from_generated, nullptr, {{"steam_input", "off"}}, KitCapabilities{}, &chosen, &error));
+      CHECK(BuildCommunityRecipe(from_generated, chosen, kHalfLife2, "Half-Life 2").recipe.defaults.at("steam_input") == "off");
+    }
     // Registry values and requirements stay with the game when it is exported.
     auto with_extras = from_generated;
     with_extras.registry = {{"Software\\Wine\\AppDefaults\\a.exe\\Direct3D", "VideoMemorySize", "\"4096\""},
