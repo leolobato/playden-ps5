@@ -126,6 +126,10 @@ void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game);
 // depotfromapp and no manifest of its own (Half-Life: Source's engine depots from Half-Life 2), so SelectDepots
 // installs them from the source's listing. The source's other depots and its DLC stay out.
 void KeepDepotsBorrowedBy(const AppInfo& borrower, AppInfo* source);
+// The apps whose appinfo holds the manifests of depots this app borrows: the depotfromapp source of each depot
+// it lists with no manifest or branch of its own, and a demo's game. Their appinfo is fetched with the DLC's and
+// trimmed with KeepDepotsBorrowedBy.
+std::set<std::uint32_t> BorrowedSourceApps(const AppInfo& app);
 
 // Steam `oslist`: empty means every platform; otherwise a comma list that must name windows.
 bool OsListMatchesWindows(std::string_view os_list);

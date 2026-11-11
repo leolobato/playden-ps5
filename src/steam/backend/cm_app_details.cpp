@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <set>
 
 namespace playden::steam {
 
@@ -200,7 +201,10 @@ std::vector<AppInfo> CmAppDetailsSource::FetchDlcApps(CmClient& client, const St
   std::vector<std::uint32_t> dlc_ids;
   for (const auto dlc : app->dlc_app_ids)
     if (dlc != id && std::find(dlc_ids.begin(), dlc_ids.end(), dlc) == dlc_ids.end()) dlc_ids.push_back(dlc);
-  if (app->demo_of_app_id != 0) dlc_ids.push_back(app->demo_of_app_id);
+  // The apps it borrows depots from, as the install fetches them, so the size and languages count that content.
+  const std::set<std::uint32_t> borrowed_sources = BorrowedSourceApps(*app);
+  for (const auto source : borrowed_sources)
+    if (source != id && std::find(dlc_ids.begin(), dlc_ids.end(), source) == dlc_ids.end()) dlc_ids.push_back(source);
   for (std::size_t start = 0; start < dlc_ids.size() && !cancel.load(); start += kMaxAppInfoBatch) {
     const std::vector<std::uint32_t> batch(
         dlc_ids.begin() + static_cast<std::ptrdiff_t>(start),
@@ -210,7 +214,12 @@ std::vector<AppInfo> CmAppDetailsSource::FetchDlcApps(CmClient& client, const St
     for (const auto dlc : batch)
       if (const auto found = dlc_info.buffers.find(dlc); found != dlc_info.buffers.end())
         if (auto parsed = ParseAppInfo(dlc, found->second)) {
-          if (dlc == app->demo_of_app_id) KeepDepotsDemoBorrows(*app, &*parsed);
+          if (borrowed_sources.count(dlc)) {
+            // A source that is also the game's DLC stays a DLC too.
+            if (std::find(app->dlc_app_ids.begin(), app->dlc_app_ids.end(), dlc) != app->dlc_app_ids.end())
+              dlc_apps.push_back(*parsed);
+            KeepDepotsBorrowedBy(*app, &*parsed);
+          }
           dlc_apps.push_back(std::move(*parsed));
         }
   }

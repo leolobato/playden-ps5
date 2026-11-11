@@ -503,6 +503,15 @@ void KeepDepotsBorrowedBy(const AppInfo& borrower, AppInfo* source) {
   source->dlc_app_ids.clear();
 }
 
+std::set<std::uint32_t> BorrowedSourceApps(const AppInfo& app) {
+  std::set<std::uint32_t> sources;
+  for (const DepotInfo& depot : app.depots)
+    if (depot.depot_from_app && *depot.depot_from_app != app.app_id && !depot.manifest_gid && depot.branches.empty())
+      sources.insert(*depot.depot_from_app);
+  if (app.demo_of_app_id != 0 && app.demo_of_app_id != app.app_id) sources.insert(app.demo_of_app_id);
+  return sources;
+}
+
 bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, const std::set<std::uint32_t>& owned_apps,
                   const std::optional<std::set<std::uint32_t>>& owned_depots, const DepotSelection& selection,
                   SelectionResult* result) {

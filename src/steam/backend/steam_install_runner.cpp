@@ -328,18 +328,14 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
   // that has such depots installed waits for Steam instead: without them it would delete them.
   std::vector<AppInfo> dlc_apps;
   std::set<std::uint32_t> unfetched;
-  std::set<std::uint32_t> borrowed_sources;
+  // A depot listed with depotfromapp and no manifest of its own is the source app's content: its manifest is in
+  // that app's appinfo (Half-Life: Source's 221 and 222 from Half-Life 2). A demo's game is one such source.
+  const std::set<std::uint32_t> borrowed_sources = BorrowedSourceApps(*app);
   CmError dlc_error = CmError::kNone;
   {
     std::vector<std::uint32_t> dlc_ids;
     for (const auto dlc : app->dlc_app_ids)
       if (dlc != id && std::find(dlc_ids.begin(), dlc_ids.end(), dlc) == dlc_ids.end()) dlc_ids.push_back(dlc);
-    // A depot listed with depotfromapp and no manifest of its own is the source app's content: its manifest
-    // is in that app's appinfo (Half-Life: Source's 221 and 222 from Half-Life 2).
-    for (const auto& depot : app->depots)
-      if (depot.depot_from_app && *depot.depot_from_app != id && !depot.manifest_gid && depot.branches.empty())
-        borrowed_sources.insert(*depot.depot_from_app);
-    if (app->demo_of_app_id != 0) borrowed_sources.insert(app->demo_of_app_id);
     for (const auto source : borrowed_sources)
       if (source != id && std::find(dlc_ids.begin(), dlc_ids.end(), source) == dlc_ids.end()) dlc_ids.push_back(source);
     for (std::size_t start = 0; start < dlc_ids.size(); start += kMaxAppInfoBatch) {

@@ -1104,6 +1104,9 @@ void TestDemoInstallsTheDepotsItBorrows() {
 })");
   CHECK(demo && game);
   CHECK(demo->demo_of_app_id == 6000 && game->demo_of_app_id == 0);
+  // The demo's game is fetched once, as its parent and as the source of 6001; the game borrows nothing.
+  CHECK((BorrowedSourceApps(*demo) == std::set<std::uint32_t>{6000}));
+  CHECK(BorrowedSourceApps(*game).empty());
   SelectionResult result;
   // Without the game's appinfo the borrowed depot has no manifest, the case that left the demo without its files.
   CHECK(SelectDepots(*demo, {}, {7000}, std::nullopt, DepotSelection{}, &result));
@@ -1157,6 +1160,7 @@ void TestDemoInstallsTheDepotsItBorrows() {
   }
 })");
   CHECK(borrower && source);
+  CHECK((BorrowedSourceApps(*borrower) == std::set<std::uint32_t>{220}));
   SelectionResult borrowed_result;
   CHECK(SelectDepots(*borrower, {}, {280}, std::nullopt, DepotSelection{}, &borrowed_result));
   CHECK(RejectedAs(borrowed_result, 221) == "branch");
@@ -1175,6 +1179,21 @@ void TestDemoInstallsTheDepotsItBorrows() {
   "depots" { "389" { "depotfromapp" "380" "sharedinstall" "2" } }
 })");
   CHECK(other && other->demo_of_app_id == 0);
+  // Its depot is still fetched from Episode One's listing: sharedinstall 2 is borrowed content, not a redistributable.
+  CHECK((BorrowedSourceApps(*other) == std::set<std::uint32_t>{380}));
+
+  // A depot that names its source but carries its own manifest, or one only on a branch, needs no other appinfo.
+  const auto own_listing = ParseAppInfo(9000, R"("appinfo"
+{
+  "appid" "9000"
+  "common" { "name" "Own listing" "type" "Game" }
+  "depots"
+  {
+    "9001" { "depotfromapp" "8000" "manifests" { "public" { "gid" "91" "size" "10" "download" "5" } } }
+    "9002" { "depotfromapp" "8100" "manifests" { "beta" { "gid" "92" "size" "10" "download" "5" } } }
+  }
+})");
+  CHECK(own_listing && BorrowedSourceApps(*own_listing).empty());
 }
 
 }  // namespace
