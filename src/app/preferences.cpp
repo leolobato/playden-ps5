@@ -18,20 +18,22 @@ std::string ToString(const Bytes& bytes) {
   return std::string(bytes.begin(), bytes.end());
 }
 
-// Versions 8 to 11: one "key=value" line per field, in this order, each ending in a newline. Version 9 adds
+// Versions 8 to 16: one "key=value" line per field, in this order, each ending in a newline. Version 9 adds
 // web_access (on in older files), version 10 content_language (English in older files, which is what they
 // downloaded), version 11 the launcher dialogs' "Don't show this again" (shown in older files), version 12 the kit
 // whose "Update your games" prompt was shown (none in older files, so they are offered it), version 13 the
 // community recipe fields (votes unasked, sharing not explained, no share name in older files), version 14 whether
 // the first test report said what it sends (not in older files) and how shares credit the player (share_as: none,
 // name or account; older files: their name when they kept one, else none) and whether Playden asks how a game ran
-// (ask_after_games; older files: unless recipe votes were off).
+// (ask_after_games; older files: unless recipe votes were off), version 15 whether the account appears invisible to
+// Steam friends (online in older files), version 16 whether an Online game's start shows the Steam account it signed
+// in as (on in older files).
 constexpr const char* kKeys[] = {"reduce_motion", "title_store_suffix", "cloud_saves_auto",
                                           "steam_sign_in_password", "downloads_slow_network", "steam_stay_signed_in",
                                           "beta_updates", "download_server", "web_access", "content_language",
                                           "hide_run_once_help", "hide_launcher_help", "runtime_prompt_kit",
                                           "recipe_votes", "sharing_explained", "share_name", "reports_explained",
-                                          "share_as", "ask_after_games"};
+                                          "share_as", "ask_after_games", "steam_invisible", "steam_online_notice"};
 
 bool ParseFlag(const std::string& value, bool* flag) {
   if (value != "0" && value != "1") return false;
@@ -52,7 +54,8 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
   if (serialized.compare(0, header.size(), header) != 0 || serialized.back() != '\n') return false;
   std::vector<std::string> values;
   std::size_t start = header.size();
-  // Version 11 added two fields, version 13 three and version 14 three; the others one each from version 8's eight.
+  // Version 11 added two fields, version 13 three and version 14 three; the others (15 and 16 too) one each from
+  // version 8's eight.
   const std::size_t count = static_cast<std::size_t>(version >= 14 ? version + 5 - missing
                                                      : version >= 13 ? version + 3 : version >= 11 ? version + 1 : version);
   for (std::size_t field = 0; field < count; ++field) {
@@ -104,6 +107,8 @@ bool ParseKeyed(const std::string& serialized, int version, Preferences* prefere
     }
     if (missing < 1 && !ParseFlag(values[18], &parsed.ask_after_games)) return false;
   }
+  if (version >= 15 && !ParseFlag(values[19], &parsed.steam_invisible)) return false;
+  if (version >= 16 && !ParseFlag(values[20], &parsed.steam_online_notice)) return false;
   *preferences = std::move(parsed);
   return true;
 }
@@ -133,7 +138,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
 
   std::string serialized = ToString(read.value());
   Preferences keyed;
-  if (ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, 1) || ParseKeyed(serialized, 14, &keyed, 2) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
+  if (ParseKeyed(serialized, 16, &keyed) || ParseKeyed(serialized, 15, &keyed) || ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, 1) || ParseKeyed(serialized, 14, &keyed, 2) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};
   bool beta_updates = false;
   if (serialized.rfind("version=7\n", 0) == 0) {
@@ -238,7 +243,7 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
   const std::string name = IsShareName(preferences.share_name) ? preferences.share_name : std::string();
   const char* votes = preferences.recipe_votes == RecipeVotesPreference::kOn ? "1"
                     : preferences.recipe_votes == RecipeVotesPreference::kOff ? "2" : "0";
-  const std::string text = std::string("version=14\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
+  const std::string text = std::string("version=16\nreduce_motion=") + (preferences.reduce_motion ? "1" : "0") +
                            "\ntitle_store_suffix=" + (preferences.title_store_suffix ? "1" : "0") +
                            "\ncloud_saves_auto=" + (preferences.cloud_saves_auto ? "1" : "0") +
                            "\nsteam_sign_in_password=" + (preferences.steam_sign_in_password ? "1" : "0") +
@@ -258,7 +263,9 @@ Result<void> PreferencesStore::Save(const Preferences& preferences) const {
                            "\nreports_explained=" + (preferences.reports_explained ? "1" : "0") +
                            "\nshare_as=" + (preferences.share_as == ShareAs::kAccount ? "account"
                                             : preferences.share_as == ShareAs::kName ? "name" : "none") +
-                           "\nask_after_games=" + (preferences.ask_after_games ? "1" : "0") + "\n";
+                           "\nask_after_games=" + (preferences.ask_after_games ? "1" : "0") +
+                           "\nsteam_invisible=" + (preferences.steam_invisible ? "1" : "0") +
+                           "\nsteam_online_notice=" + (preferences.steam_online_notice ? "1" : "0") + "\n";
   return storage_.WriteAtomic(kPreferencesPath, Bytes(text.begin(), text.end()));
 }
 

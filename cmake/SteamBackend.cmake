@@ -147,6 +147,7 @@ endif()
 # Authenticated CM session for the CM-only library facts (acquisition dates).
 add_library(playden_steam_cm STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_client.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_friends_source.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info_http.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_names.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/entitled_library.cpp"
@@ -230,6 +231,13 @@ function(playden_register_steam_backend_tests)
         add_test(NAME ${test_name} COMMAND ${test_name}_test)
     endforeach()
 
+    # The Steam host's core (tools/steam-host/core), the same C file steam.exe is built from.
+    add_executable(steam_host_core_test "${CMAKE_SOURCE_DIR}/tests/steam_host_core_test.cpp"
+        "${CMAKE_SOURCE_DIR}/tools/steam-host/core/shc.c")
+    target_compile_features(steam_host_core_test PRIVATE cxx_std_17 c_std_99)
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/tools/steam-host/core/shc.c" PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
+    add_test(NAME steam_host_core COMMAND steam_host_core_test)
+
     foreach(test_name session_store steam_auth)
         add_executable(${test_name}_test "${CMAKE_SOURCE_DIR}/tests/${test_name}_test.cpp")
         target_link_libraries(${test_name}_test PRIVATE playden_steam_core)
@@ -309,6 +317,9 @@ function(playden_register_steam_backend_tests)
         add_executable(cdn_client_test "${CMAKE_SOURCE_DIR}/tests/cdn_client_test.cpp")
         target_link_libraries(cdn_client_test PRIVATE playden_steam_cm)
         add_test(NAME cdn_client COMMAND cdn_client_test)
+        add_executable(friends_service_test "${CMAKE_SOURCE_DIR}/tests/friends_service_test.cpp")
+        target_link_libraries(friends_service_test PRIVATE playden_steam_cm)
+        add_test(NAME friends_service COMMAND friends_service_test)
         add_executable(download_server_service_test "${CMAKE_SOURCE_DIR}/tests/download_server_service_test.cpp")
         target_link_libraries(download_server_service_test PRIVATE playden_steam_core)
         add_test(NAME download_server_service COMMAND download_server_service_test)

@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Reduced Steam CM (connection manager) messages: the protobuf frame, hello, logon, heartbeat,
@@ -18,9 +19,13 @@ enum EMsg : std::uint32_t {
   kEMsgServiceMethodCallFromClient = 151,
   kEMsgClientHeartBeat = 703,
   kEMsgClientLogOff = 706,
+  kEMsgClientChangeStatus = 716,
   kEMsgClientLogOnResponse = 751,
   kEMsgClientLoggedOff = 757,
+  kEMsgClientPersonaState = 766,
+  kEMsgClientFriendsList = 767,
   kEMsgClientLicenseList = 780,
+  kEMsgClientRequestFriendData = 815,
   kEMsgClientGetDepotDecryptionKey = 5438,
   kEMsgClientGetDepotDecryptionKeyResponse = 5439,
   kEMsgClientLogon = 5514,
@@ -189,5 +194,58 @@ struct FreeLicenseResponse {
 };
 // Accepts the repeated IDs packed or unpacked.
 bool DecodeFreeLicenseResponse(const std::vector<std::uint8_t>& body, FreeLicenseResponse* response);
+
+// CMsgClientFriendsList (767), pushed after logon and on every change: incremental = 1, repeated friends = 2
+// {ulfriendid = 1 fixed64, efriendrelationship = 2}.
+inline constexpr std::uint32_t kFriendRelationshipFriend = 3;
+struct FriendRelation {
+  std::uint64_t steam_id = 0;
+  std::uint32_t relationship = 0;
+};
+struct FriendsList {
+  bool incremental = false;
+  std::vector<FriendRelation> friends;
+};
+bool DecodeFriendsList(const std::vector<std::uint8_t>& body, FriendsList* list);
+// An individual account (not a group or clan): the account type and universe bits of its SteamID.
+inline bool IndividualSteamId(std::uint64_t steam_id) { return (steam_id >> 52) == 0x011; }
+
+// EClientPersonaStateFlag: the groups a persona state carries.
+inline constexpr std::uint32_t kPersonaFlagStatus = 1;
+inline constexpr std::uint32_t kPersonaFlagPlayerName = 2;
+inline constexpr std::uint32_t kPersonaFlagPresence = 16;
+inline constexpr std::uint32_t kPersonaFlagGameExtraInfo = 256;
+inline constexpr std::uint32_t kPersonaFlagRichPresence = 4096;
+// What Playden asks for: status, name, presence (avatar, game), game extra info and rich presence, as the bridge.
+inline constexpr std::uint32_t kFriendDataRequested = kPersonaFlagStatus | kPersonaFlagPlayerName |
+                                                      kPersonaFlagPresence | kPersonaFlagGameExtraInfo |
+                                                      kPersonaFlagRichPresence;
+
+// CMsgClientPersonaState (766): status_flags = 1, repeated friends = 2. Each field is present only when sent.
+struct PersonaFriend {
+  std::uint64_t steam_id = 0;                           // 1, fixed64
+  std::optional<std::uint32_t> persona_state = {};      // 2
+  std::optional<std::uint32_t> game_app_id = {};        // 3, game_played_app_id
+  std::optional<std::string> player_name = {};          // 15
+  std::optional<std::vector<std::uint8_t>> avatar_hash = {};  // 31, SHA-1 bytes
+  std::optional<std::string> game_name = {};            // 55
+  std::optional<std::uint64_t> game_id = {};            // 56, fixed64
+  std::optional<std::uint64_t> lobby_id = {};           // 73, game_lobby_id, fixed64
+  // 71, rich_presence {key = 1, value = 2}; present when any entry came.
+  std::optional<std::vector<std::pair<std::string, std::string>>> rich_presence = {};
+};
+struct PersonaState {
+  std::optional<std::uint32_t> status_flags;
+  std::vector<PersonaFriend> friends;
+};
+bool DecodePersonaState(const std::vector<std::uint8_t>& body, PersonaState* state);
+
+// CMsgClientRequestFriendData (815): persona_state_requested = 1, repeated friends = 2 (fixed64, unpacked).
+std::vector<std::uint8_t> EncodeRequestFriendData(std::uint32_t requested, const std::vector<std::uint64_t>& steam_ids);
+
+// CMsgClientChangeStatus (716): persona_state = 1 (EPersonaState, 1 = Online, 7 = Invisible).
+inline constexpr std::uint32_t kPersonaStateOnline = 1;
+inline constexpr std::uint32_t kPersonaStateInvisible = 7;
+std::vector<std::uint8_t> EncodeChangeStatus(std::uint32_t persona_state);
 
 }  // namespace playden::steam::cm

@@ -18,7 +18,8 @@ KitAdmissionConfig DevelopmentKitAdmission() {
                                 kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode,
                                 kKitInputPlaystation, kKitDriverThreads, kKitGameRootUsbSearch,
                                 kKitDisplayVrr, kKitLaunchArguments4096, kKitLargeAddressAware,
-                                kKitEnvironmentFileBudgets, kKitNsiproxySwitch};
+                                kKitEnvironmentFileBudgets, kKitNsiproxySwitch, kKitTitleNotify,
+                                kKitHelperProcess};
   std::sort(config.known_capabilities.begin(), config.known_capabilities.end());
   return config;
 }

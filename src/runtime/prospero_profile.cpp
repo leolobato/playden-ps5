@@ -242,6 +242,7 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   std::vector<std::string> sections;
   std::string section;
   std::set<std::string> seen;
+  bool helper_program = false;
   std::set<std::string> application;
   std::string id, prefix, runtime, executable, working;
   std::size_t start = 0, debug_env_count = 0;
@@ -259,7 +260,7 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       if ((name != "application" && name != "display" && name != "input" && name != "debug" &&
            !(features.environment_section && name == "environment") &&
            !(features.audio_section && name == "audio") && !(features.runtime_version && name == "runtime") &&
-           !(features.launcher_section && name == "launcher")) ||
+           !(features.launcher_section && name == "launcher") && !(features.helper_section && name == "helper")) ||
           std::find(sections.begin(), sections.end(), name) != sections.end())
         return fail("section [" + name + "] unknown or repeated");
       if (sections.empty() != (name == "application")) return fail("[application] must come first");
@@ -341,6 +342,34 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       } else {
         return fail("unknown [display] key " + key);
       }
+    } else if (section == "helper") {
+      // A second program beside the game: a Windows path with a drive, a file below drive_c it writes when the game
+      // may start, and the seconds to wait for it (src/pw_game_profile.c helper_field in prospero-win).
+      if (key == "program") {
+        helper_program = true;
+        const bool drive = value.size() >= 4 && value.size() < 260 && std::isalpha(static_cast<unsigned char>(value[0])) &&
+                           value[1] == ':' && value[2] == '\\';
+        if (!drive) return bad("not a Windows path with a drive");
+        for (const unsigned char c : value)
+          if (c < 0x20 || c == 0x7f || c == '"' || c == '/') return bad("not a Windows path with a drive");
+      } else if (key == "ready") {
+        if (value.empty() || value.size() >= 260) return bad("not a path below drive_c");
+        std::size_t part = 0;
+        for (std::size_t i = 0; i <= value.size(); ++i) {
+          if (i < value.size() && value[i] != '/') {
+            const unsigned char c = static_cast<unsigned char>(value[i]);
+            if (!std::isalnum(c) && c != '.' && c != '-' && c != '_') return bad("not a path below drive_c");
+            continue;
+          }
+          if (i == part || (i - part <= 2 && value[part] == '.' && value[i - 1] == '.')) return bad("not a path below drive_c");
+          part = i + 1;
+        }
+      } else if (key == "wait") {
+        const long seconds = IsDigits(value, 3) ? std::atol(std::string(value).c_str()) : 0;
+        if (seconds < 1 || seconds > 120) return bad("not 1-120");
+      } else {
+        return fail("unknown [helper] key " + key);
+      }
     } else if (section == "launcher") {
       // The first program's input, written out: as [input], without a preset file.
       if (key == "label" || key == "game_label") {
@@ -414,6 +443,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
     }
   }
   if (sections.empty()) return fail("no [application] section");
+  if (std::find(sections.begin(), sections.end(), "helper") != sections.end() && !helper_program)
+    return fail("[helper] names no program");
   for (const char* required : {"id", "name", "executable", "working_directory", "prefix", "runtime", "architecture", "graphics"})
     if (!application.count(required)) return fail(std::string("missing ") + required);
   if (Lower(executable).size() < 4 || Lower(executable).compare(Lower(executable).size() - 4, 4, ".exe") != 0)

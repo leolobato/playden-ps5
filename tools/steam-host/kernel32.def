@@ -1,0 +1,20 @@
+LIBRARY kernel32.dll
+EXPORTS
+  CloseHandle
+  CreateFileW
+  DeleteFileW
+  ExitProcess
+  GetCurrentProcessId
+  GetLastError
+  GetModuleFileNameW
+  GetProcAddress
+  GetSystemTimeAsFileTime
+  GetTickCount64
+  LoadLibraryW
+  MoveFileExW
+  ReadFile
+  SetCurrentDirectoryW
+  SetDllDirectoryW
+  SetEnvironmentVariableW
+  SleepEx
+  WriteFile

@@ -4,6 +4,7 @@
 
 #undef fsync
 #include "homebrew/simulation.hpp"
+#include "runtime/game_settings.h"
 
 #include <cerrno>
 
@@ -238,6 +239,230 @@ const playden::homebrew::ViewRow* find_row(const Simulation& model, const std::s
 bool has_notice(const Simulation& model, const std::string& id) {
     const auto& notices = model.state().notices;
     return std::any_of(notices.begin(), notices.end(), [&id](const auto& notice) { return notice.id == id; });
+}
+
+// Steam features = Online on a game the store lists with Valve Anti-Cheat says the account could be banned, on the
+// choice and on the row once chosen. Without the store's word, Online keeps its own text.
+void live_vac_warns_on_online(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    playden::runtime::SetOnlineSteamEnabled(true);
+    auto model = make_live(base);
+    model.SetGameSettingsFile(base / "vac-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    // A runtime kit that runs Steam beside the game: Online is offered.
+    model.SetKitCapabilities(playden::runtime::KitCapabilitiesFromManifest({"dxvk", "helper-process"}, true));
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(220);
+    game.title = "Half-Life 2";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "VAC game library delivered");
+    model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}});
+    playden::homebrew::LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(220);
+    runtime.prepared = runtime.has_title = true;
+    runtime.runtime_current = true;
+    runtime.launch_entry_id = "game";
+    runtime.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    check(model.action("details:220"), "open the VAC game's details");
+    activate(model, "details-more");
+    activate(model, "game-settings");
+    const std::string warning = "This game uses Valve Anti-Cheat (VAC). Playing it online could get your account banned from this game.";
+    activate(model, "section-compatibility");
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});  // the console's answer: not running
+    const auto opens_picker = [&] {
+        activate(model, "setting-steam_features");
+        if (find_row(model, "unlock-setting")) activate(model, "unlock-setting");
+    };
+    opens_picker();
+    const auto* online = find_row(model, "choice-1");
+    check(online && online->title == "Online (experimental)" && online->subtitle.find(warning) == std::string::npos,
+          "without the store's word, Online keeps its own text");
+    check(model.action("circle"), "close the Steam features picker");
+    model.UpdateStoreDetails(SteamId(220), "A game.", {"Action"}, "full", true);
+    activate(model, "setting-steam_features");
+    online = find_row(model, "choice-1");
+    check(online && online->enabled && online->subtitle.rfind(warning, 0) == 0, "a VAC game's Online choice warns about bans");
+    check(find_row(model, "choice-0") && find_row(model, "choice-0")->subtitle.find(warning) == std::string::npos,
+          "Offline emulation doesn't warn");
+    activate(model, "choice-1");
+    const auto* row = find_row(model, "setting-steam_features");
+    check(row && row->value == "Online (experimental)" && row->subtitle.rfind(warning, 0) == 0,
+          "the Steam features row warns while a VAC game is on Online");
+    // Game invites shows only once the game is Online. A runtime kit without title-notify runs Ask as Off, and its
+    // picker offers only Join at once and Off.
+    const auto* invites = find_row(model, "setting-game_invites");
+    check(invites && invites->value == "Off" &&
+              invites->subtitle.find("Needs a runtime kit that shows game invites.") != std::string::npos,
+          "Game invites shows Off and why on a runtime kit without notifications");
+    activate(model, "setting-game_invites");
+    check(find_row(model, "choice-0") && !find_row(model, "choice-0")->enabled && find_row(model, "choice-1")->enabled &&
+              !find_row(model, "choice-2")->enabled && find_row(model, "choice-3")->enabled,
+          "only Join at once and Off can be picked");
+    check(model.action("circle"), "close the Game invites picker");
+    activate(model, "setting-steam_features");
+    activate(model, "choice-0");
+    check(!find_row(model, "setting-game_invites"), "Game invites is not listed for Offline emulation");
+    playden::runtime::SetOnlineSteamEnabled(false);
+}
+
+// Steam friends from the controller (online-steam): the Friends tab and a game's page list them; Join on a VAC game not
+// set to Online warns, sets Online and plays into the lobby; Invite friends takes 16 at most. Without online-steam,
+// none of it is shown and friends handed over are dropped.
+void live_friends_join_and_invite(const std::filesystem::path& base) {
+    namespace rt = playden::runtime;
+    using playden::homebrew::Friend;
+    using playden::homebrew::Route;
+    std::filesystem::create_directories(base);
+    check(::chmod(base.c_str(), 0700) == 0, "friends: private settings folder");
+    rt::SetOnlineSteamEnabled(true);
+    auto model = make_live(base);
+    model.SetGameSettingsFile(base / "friends-settings.json");
+    model.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    model.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"dxvk", "helper-process"}, true));
+    std::vector<rt::GameRecipe> recipes;
+    for (const std::uint32_t app : {220u, 440u}) {
+        rt::GameRecipe recipe;
+        recipe.id = rt::GeneratedRecipeId(app);
+        recipe.version = 1;
+        recipe.app_id = app;
+        recipe.launch_entries = {{"launch-1", "Game", "game.exe", "", ""}};
+        recipes.push_back(recipe);
+    }
+    model.SetGeneratedRecipes(recipes);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary half_life;
+    half_life.id = SteamId(220);
+    half_life.title = "Half-Life 2";
+    playden::GameSummary fortress;
+    fortress.id = SteamId(440);
+    fortress.title = "Team Fortress 2";
+    check(model.UpdateLibrary({{half_life, fortress}, false, {}, false, true, 100}), "friends: library delivered");
+    model.UpdateInstalls({}, {{SteamId(220), 1024, "internal", true}, {SteamId(440), 1024, "internal", true}});
+    std::vector<playden::homebrew::LiveRuntimeGame> runtimes;
+    for (const std::uint32_t app : {220u, 440u}) {
+        playden::homebrew::LiveRuntimeGame runtime;
+        runtime.game_id = SteamId(app);
+        runtime.prepared = runtime.has_title = runtime.ready = runtime.can_play = true;
+        runtime.status = "Ready";
+        runtime.runtime_current = true;
+        runtime.launch_entry_id = "launch-1";
+        runtime.activity = playden::homebrew::TitleActivity::Stopped;
+        runtimes.push_back(runtime);
+    }
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, runtimes);
+    model.UpdateStoreDetails(SteamId(220), "A game.", {"Action"}, "full", true);
+
+    std::vector<Friend> friends = {{1001, "Mara", 1, 220, "", 5001, std::string(40, 'a')}, {1002, "Rui", 1, 440, "", 5002, ""}};
+    for (std::uint64_t id = 2000; id < 2020; ++id) friends.push_back({id, "Friend " + std::to_string(id), 1, 0, "", 0, ""});
+    model.UpdateFriends(friends, true, false);
+    check(model.state().friends.size() == 22, "friends: the controller's friends reach the model");
+    for (int step = 0; step < 6 && model.state().navigation.route != Route::Friends; ++step) {
+        model.action("r1");
+    }
+    check(model.state().navigation.route == Route::Friends, "friends: R1 reaches the Friends tab");
+    check(find_row(model, "friend-1001") && find_row(model, "friend-1001")->action == "friend-join" &&
+              find_row(model, "friend-1001")->subtitle == "Playing Half-Life 2 · in a lobby",
+          "friends: a friend in a lobby of a library game can be joined");
+
+    {
+        // Appear invisible: a saved preference comes back as the model's state, and Triangle changes it as a preference
+        // to save.
+        auto restarted = make_live(base);
+        playden::PreferencesLoadResult loaded;
+        loaded.preferences.steam_invisible = true;
+        check(restarted.ApplyPreferences(restarted.BeginPreferencesLoad(), loaded) && restarted.state().steam_invisible &&
+                  !restarted.PreferencesDirty(),
+              "friends: a saved Appear invisible loads");
+        restarted.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+        for (int step = 0; step < 6 && restarted.state().navigation.route != Route::Friends; ++step) restarted.action("r1");
+        check(restarted.state().navigation.route == Route::Friends &&
+                  restarted.view().subtitle.rfind("You appear invisible", 0) == 0,
+              "friends: the Friends tab says the account appears invisible");
+        restarted.action("triangle");
+        check(!restarted.state().steam_invisible && !restarted.ExportPreferences().steam_invisible &&
+                  restarted.PreferencesDirty(),
+              "friends: Triangle appears online again, as a preference change to save");
+    }
+
+    {
+        // Settings › Online play › Steam sign-in notice: on by default, a saved Off comes back, and the row changes it as
+        // a preference to save.
+        auto settings = make_live(base);
+        check(settings.state().steam_online_notice && settings.ExportPreferences().steam_online_notice,
+              "notice: the Steam sign-in notice is on by default");
+        playden::PreferencesLoadResult loaded;
+        loaded.preferences.steam_online_notice = false;
+        check(settings.ApplyPreferences(settings.BeginPreferencesLoad(), loaded) && !settings.state().steam_online_notice,
+              "notice: a saved Off loads");
+        settings.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+        for (int step = 0; step < 8 && settings.state().navigation.route != Route::Settings; ++step) settings.action("r1");
+        const auto* row = find_row(settings, "settings-steam-online-notice");
+        check(row && row->kind == playden::homebrew::RowKind::Toggle && !row->selected && row->section == "Online play" &&
+                  row->subtitle == "Off: Online games start without the notification.",
+              "notice: Settings has the row under Online play, off");
+        activate(settings, "settings-steam-online-notice");
+        row = find_row(settings, "settings-steam-online-notice");
+        check(settings.state().steam_online_notice && settings.ExportPreferences().steam_online_notice &&
+                  settings.PreferencesDirty() && row && row->selected &&
+                  row->subtitle == "When an Online game starts, a notification shows the Steam account it signed in as.",
+              "notice: the row turns it on again, as a preference change to save");
+        // Without online-steam there is no row, and the action does nothing.
+        rt::SetOnlineSteamEnabled(false);
+        settings.action("r1");
+        settings.action("l1");
+        check(!find_row(settings, "settings-steam-online-notice"), "notice: without online-steam Settings has no row");
+        check(!settings.action("toggle-steam-online-notice") || settings.state().steam_online_notice,
+              "notice: without online-steam the action changes nothing");
+        rt::SetOnlineSteamEnabled(true);
+    }
+
+    // Join on Half-Life 2 (Offline emulation, Valve Anti-Cheat): the sheet warns, Use Online saves it and plays.
+    activate(model, "friend-1001");
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, runtimes);  // the console's answer: not running
+    check(find_row(model, "join-use-online") && model.view().subtitle.rfind("This game uses Valve Anti-Cheat (VAC).", 0) == 0,
+          "friends: Join on a VAC game not set to Online offers Online with the VAC warning");
+    activate(model, "join-use-online");
+    const auto& record = model.state().game_settings.at(SteamId(220));
+    check(record.overrides.count("steam_features") && record.overrides.at("steam_features") == "online",
+          "friends: Use Online for this game saves Steam features = Online");
+    const auto plays = model.TakeRuntimePlayRequests();
+    auto launches = model.TakeRuntimeOnlineLaunches();
+    check(plays.size() == 1 && plays.front() == SteamId(220) && launches.count(SteamId(220)) &&
+              launches[SteamId(220)].connect_lobby == 5001,
+          "friends: Join plays the game into the friend's lobby");
+    check(model.state().navigation.route == Route::Details && model.state().navigation.detail_id == SteamId(220),
+          "friends: the game's page shows the start");
+
+    // The page: Friends playing and Invite friends; the sheet takes 16 friends at most.
+    check(find_row(model, "friends-playing") && find_row(model, "friend-1001") && !find_row(model, "friend-1002"),
+          "friends: the game page lists the friends playing it");
+    check(find_row(model, "details-invite"), "friends: Invite friends beside Play once the game is Online");
+    activate(model, "details-invite");
+    for (std::uint64_t id = 2000; id < 2020; ++id) activate(model, "invite-friend-" + std::to_string(id));
+    const auto* left_out = find_row(model, "invite-friend-2019");
+    check(left_out && !left_out->selected && !left_out->enabled, "friends: a 17th friend can't be picked");
+    activate(model, "invite-play");
+    launches = model.TakeRuntimeOnlineLaunches();
+    check(launches.count(SteamId(220)) && launches[SteamId(220)].invites.size() == 16 &&
+              launches[SteamId(220)].connect_lobby == 0 && model.TakeRuntimePlayRequests().size() == 1,
+          "friends: Play and invite plays with 16 friends to invite");
+    // A plain Play asks the bridge nothing.
+    activate(model, "details-play");
+    check(model.TakeRuntimeOnlineLaunches().empty() && model.TakeRuntimePlayRequests().size() == 1,
+          "friends: Play alone carries no online launch");
+
+    // online-steam off: no tab, no rows, and friends handed over are dropped.
+    rt::SetOnlineSteamEnabled(false);
+    model.UpdateFriends(friends, true, false);
+    check(model.state().friends.empty(), "friends: without online-steam the model keeps no friends");
+    for (int step = 0; step < 6; ++step) {
+        model.action("circle");
+        model.action("r1");
+        check(model.state().navigation.route != Route::Friends, "friends: without online-steam there is no Friends tab");
+    }
+    check(model.action("details:220") && !find_row(model, "details-invite") && !find_row(model, "friends-playing"),
+          "friends: without online-steam a game page has no Invite friends or Friends playing");
 }
 
 // 120 Hz output and the Frame limit choices it brings can be chosen while the game's title waits for its kit
@@ -3525,6 +3750,8 @@ int main() {
     settings_survive_account_restore_and_cache_action_is_honest(base);
     live_settings_follow_the_prepared_title(base);
     live_120hz_waits_for_the_title_update(base / "display");
+    live_vac_warns_on_online(base / "vac");
+    live_friends_join_and_invite(base / "friends");
     live_refresh_rate_keeps_off_over_a_preset_cap(base / "capped");
     live_update_runtime_from_maintenance(base / "update-runtime");
     live_saved_settings_stay_ahead_of_the_title(base / "behind");

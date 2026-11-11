@@ -2,17 +2,21 @@
 #include "installs/install_record.h"
 #include "runtime_host_fixture.h"
 #include "msi_fixture.h"
+#include "stored_zip.h"
+#include "runtime/steam_client_install.h"
 #include "platform/managed_directory.h"
 #include "platform/ps5/title_allow_list.h"
 #include "platform/storage.h"
 #include "runtime/layout_migration.h"
 #include "runtime/artifact_hash.h"
+#include "runtime/steam_host.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -1530,6 +1534,143 @@ void ReplacedKitAsksForRestart() {
   CHECK(held.refusals.at(220).find("changed while Playden was running") != std::string::npos);
 }
 
+// Finish setup quits to Home, where the game waiting for the PS5 starts for the first time with nothing of Playden
+// running. A game set to Online gets the Steam session there, as Play would hand it, but only with the settings its
+// title published: newer ones reach it at Playden's next start. A game not set to Online, and a game that is not
+// waiting for the PS5, are left alone.
+void FinishSetupHandsOverForHome() {
+  Fixture fixture;
+  fixture.registers = false;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back(kKitHelperProcess);
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.session_data_root = fixture.root / "data";
+  std::mutex log_mutex;
+  std::vector<std::string> lines;
+  config.log = [&](const std::string& line) { std::lock_guard<std::mutex> lock(log_mutex); lines.push_back(line); };
+  const auto logged = [&](const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    return std::any_of(lines.begin(), lines.end(), [&](const std::string& line) { return line.rfind(prefix, 0) == 0; });
+  };
+  // Valve's client, downloaded by the preparation of a game set to Online.
+  const std::string client_dll = "MZ valve steamclient64";
+  const auto client_zip = playden::test::StoredZip({{"steamclient64.dll", client_dll}});
+  const std::string client_manifest = "\"win64\"\n{\n\t\"version\"\t\"1792618285\"\n\t\"bins_win64\"\n\t{\n\t\t\"file\"\t\"bins_win64.zip.t\"\n"
+                                      "\t\t\"size\"\t\"" + std::to_string(client_zip.size()) + "\"\n\t\t\"sha2\"\t\"" +
+                                      *HashArtifactBytes(client_zip) + "\"\n\t}\n}\n";
+  config.fetch_text = [&](const std::string&, std::size_t, const std::atomic<bool>&, std::string*) -> std::optional<std::string> {
+    return client_manifest;
+  };
+  config.fetch_range = [&](const std::string&, std::uint64_t offset, std::uint64_t length, const std::atomic<bool>&,
+                           std::string*) -> std::optional<std::string> { return client_zip.substr(offset, length); };
+  std::mutex settings_mutex;
+  // Half-Life 2's recipe keeps its own Steam library; the player changed it anyway.
+  const std::map<std::string, std::string> online = {{"steam_features", "online"}, {"unlock.steam_features", "1"}};
+  const std::map<std::string, std::string> offline = {{"steam_features", "game"}};
+  GameSettingsRecord saved;
+  saved.overrides = online;
+  config.settings_record = [&](const playden::GameId&) -> std::optional<GameSettingsRecord> {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    return saved;
+  };
+  config.online_session = []() -> std::optional<OnlineSession> {
+    OnlineSession session;
+    session.steam_id = 76561198000000001ull;
+    session.account_name = "player";
+    session.refresh_token = "eyJ.token";
+    session.login_id = 5;
+    return session;
+  };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  RuntimeHost host(config);
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto waiting = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.refusals.count(220) || s.installs[0].awaiting_registration);
+  }, 60);
+  if (waiting.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", waiting.refusals.at(220).c_str());
+  CHECK(!waiting.refusals.count(220) && waiting.installs[0].awaiting_registration);
+  const auto handoff = fixture.root / "data/playden/games/steam-220/library/prefixes/game/drive_c/playden/online-session.txt";
+  // At each Play: the preparation hands nothing over, so a start from Home would run without Steam.
+  CHECK(!fs::exists(handoff));
+
+  // Finish setup: the session, as Play writes it, for this start only.
+  CHECK(host.HandOverForHome(220, std::chrono::seconds(30)));
+  CHECK(logged("home handoff app=220 handed over"));
+  const auto text = Read(handoff);
+  CHECK(text.find("app_id=220\n") != std::string::npos && text.find("\nkeep=1\n") == std::string::npos);
+  CHECK(text.find("eyJ.token") != std::string::npos);
+  // Settings › Online play › Steam sign-in notice is on unless the saved choice says otherwise: the host names the
+  // account as the game starts.
+  CHECK(text.find("\nnotice=1\n") != std::string::npos);
+  CHECK(fs::remove(handoff));
+  host.SetSteamOnlineNotice(false);
+  CHECK(host.HandOverForHome(220, std::chrono::seconds(30)));
+  CHECK(Read(handoff).find("notice=") == std::string::npos);
+  host.SetSteamOnlineNotice(true);
+
+  // Settings saved after the title was published don't reach it before Playden starts again: no session for a title
+  // that may still be Offline.
+  CHECK(fs::remove(handoff));
+  {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.revision = 1;
+  }
+  CHECK(host.HandOverForHome(220, std::chrono::seconds(30)));
+  CHECK(logged("home handoff app=220 skipped: the title has older settings (revision 0, saved 1)"));
+  CHECK(!fs::exists(handoff));
+
+  // A game not set to Online is left as it was.
+  {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.revision = 0;
+    saved.overrides = offline;
+  }
+  const auto before = [&] { std::lock_guard<std::mutex> lock(log_mutex); return lines.size(); }();
+  CHECK(host.HandOverForHome(220, std::chrono::seconds(30)));
+  CHECK(!fs::exists(handoff));
+  {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    CHECK(std::none_of(lines.begin() + static_cast<std::ptrdiff_t>(before), lines.end(),
+                       [](const std::string& line) { return line.rfind("home handoff", 0) == 0; }));
+  }
+
+  // Registered once Playden quit: Ready, and Play hands the session over from now on.
+  {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.overrides = online;
+  }
+  fixture.registered = true;
+  host.Prepare(Hl2());
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(220) ||
+        (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 30);
+  CHECK(!ready.refusals.count(220) && ready.installs[0].state == PreparationState::kReady);
+  CHECK(host.HandOverForHome(220, std::chrono::seconds(30)));
+  CHECK(logged("home handoff app=220 skipped: not waiting for the PS5"));
+  CHECK(!fs::exists(handoff));
+  host.Shutdown();
+}
+
 void PreparesGameWithoutShippedRecipe() {
   Fixture fixture;
   auto config = fixture.Config();
@@ -1542,7 +1683,12 @@ void PreparesGameWithoutShippedRecipe() {
   config.package_operations.validate_bottle = [](const fs::path& bottle) {
     return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
   };
-  const auto kit = SyntheticKit(fixture.root / "kit");
+  // A kit whose title runs Steam beside the game (helper-process), for the Online cases below. It can turn the network
+  // adapters off (nsiproxy-switch), which the handoff passes on.
+  auto kit = SyntheticKit(fixture.root / "kit");
+  kit.capabilities.push_back(kKitHelperProcess);
+  kit.capabilities.push_back(kKitNsiproxySwitch);
+  std::sort(kit.capabilities.begin(), kit.capabilities.end());
   config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
   unsigned uuids = 0;
   config.uuid = [&uuids]() -> std::optional<std::string> {
@@ -1599,12 +1745,40 @@ void PreparesGameWithoutShippedRecipe() {
     return sdk_owned;
   };
 
+  // Valve's current client, as its manifest and package serve it (a stand-in DLL and its crash reporter), for the
+  // Online cases: read at a Play.
+  const std::string client_dll = "MZ valve steamclient64";
+  const auto client_zip = playden::test::StoredZip({{"steamclient64.dll", client_dll}, {"crashhandler64.dll", "MZ reporter"}});
+  const auto client_sha = *HashArtifactBytes(client_dll);
+  const std::string client_manifest = "\"win64\"\n{\n\t\"version\"\t\"1792618285\"\n\t\"bins_win64\"\n\t{\n\t\t\"file\"\t\"bins_win64.zip.t\"\n"
+                                      "\t\t\"size\"\t\"" + std::to_string(client_zip.size()) + "\"\n\t\t\"sha2\"\t\"" +
+                                      *HashArtifactBytes(client_zip) + "\"\n\t}\n}\n";
+  int manifest_reads = 0;
+  config.fetch_text = [&](const std::string& url, std::size_t, const std::atomic<bool>&, std::string*) -> std::optional<std::string> {
+    CHECK(url == std::string(kSteamClientCdn) + kSteamClientManifest);
+    ++manifest_reads;
+    return client_manifest;
+  };
+  config.fetch_range = [&](const std::string& url, std::uint64_t offset, std::uint64_t length, const std::atomic<bool>&,
+                           std::string*) -> std::optional<std::string> {
+    CHECK(url == std::string(kSteamClientCdn) + "bins_win64.zip.t");
+    return client_zip.substr(offset, length);
+  };
+
   std::map<std::string, std::string> saved_settings;
   config.settings_record = [&saved_settings](const playden::GameId&) -> std::optional<GameSettingsRecord> {
     if (saved_settings.empty()) return std::nullopt;
     GameSettingsRecord record;
     record.overrides = saved_settings;
     return record;
+  };
+  config.online_session = []() -> std::optional<OnlineSession> {
+    OnlineSession session;
+    session.steam_id = 76561198000000001ull;
+    session.account_name = "player";
+    session.refresh_token = "eyJ.token";
+    session.login_id = 5;
+    return session;
   };
   CHECK(chmod(game.c_str(), 0755) == 0);
   RuntimePrepareRequest request{4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"};
@@ -1654,12 +1828,27 @@ void PreparesGameWithoutShippedRecipe() {
   // Steam Input on Automatic: the map would lose the right stick, so the game gets none and reads the pad itself.
   CHECK(!fs::exists(game / "Bin/steam_settings/controller"));
   CHECK(logged("steamworks app=4242 steam input map left out: lost=1 drive/look"));
-  // The player asks for the game's own Steam files: Play puts them back before the game starts.
+  // The player asks for the game's own Steam files: Play puts them back before the game starts. What a Play asks of the
+  // online bridge (join a lobby, invite friends) is not written for a game that is not Online.
+  const auto handoff = fixture.root / "data/playden/games/steam-4242/library/prefixes/game/drive_c/playden/online-session.txt";
+  const auto launch_file = handoff.parent_path() / "online-launch.txt";
+  // Valve's Steam client saves its sign-in, a token, in the bottle, and its account list in the client folder: they go
+  // with Playden's handoff, the list once no game keeps its sign-in.
+  const auto client_token = handoff.parent_path().parent_path() / "users/prospero/AppData/Local/Steam/local.vdf";
+  const auto client_list = fixture.root / "data/playden/steam-client/client/config/loginusers.vdf";
+  const auto save_client_sign_in = [&] {
+    Write(client_token, "\"MachineUserConfigStore\"\n", 0600);
+    Write(client_list, "\"users\"\n", 0666);
+  };
+  const OnlineLaunch join_and_invite{109775241000000001ull, {76561198000000002ull, 76561198000000003ull}};
+  // A game that is no longer Online: its Play removes the token the client saved while it was.
+  save_client_sign_in();
   saved_settings = {{"steam_features", "game"}};
-  host.Play(4242);
+  host.Play(4242, {}, join_and_invite);
   WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
   CHECK(host.Handoff() && launches.size() == 1 && launches[0].first == "FAKE78001");
   CHECK(Read(game / "Bin/steam_api64.dll") == own_api);
+  CHECK(!fs::exists(handoff) && !fs::exists(launch_file) && !fs::exists(client_token));
   const auto session = launches[0].second[0].substr(std::strlen("session="));
   const auto sessions = fixture.root / "data/playden/games/steam-4242/logs/sessions";
   fs::create_directories(sessions);
@@ -1677,6 +1866,157 @@ void PreparesGameWithoutShippedRecipe() {
     return s.launch && s.launch->state != LaunchState::kRunning && s.launch->state != LaunchState::kLaunching;
   }, 30);
   CHECK(ended.launch->state == LaunchState::kExited);
+  // Online, kept for the Home screen: Play leaves the session in the bottle with keep=1, and the game's end keeps it.
+  // Game invites is Ask by default, which a runtime kit without title-notify runs as Off. The Play's request to the
+  // host goes beside it, owner-only, for this start only.
+  saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}};
+  save_client_sign_in();
+  host.Play(4242, {}, join_and_invite);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(host.Handoff() && launches.size() == 2 && fs::exists(client_token));
+  const auto kept_text = Read(handoff);
+  CHECK(kept_text.find("app_id=4242\n") != std::string::npos && kept_text.find("\nkeep=1\n") != std::string::npos);
+  // The Play took Valve's current client from its manifest: installed without its crash reporter, recorded in Playden's
+  // own state (version and DLL hash), and the handoff names the DLL so the host checks it. Before the install the kept
+  // handoff waited: the host has nothing to check against yet.
+  {
+    const auto client_folder = fixture.root / "data/playden/steam-client/client";
+    CHECK(manifest_reads >= 1 && logged("steam client app=4242 installed version=1792618285"));
+    CHECK(logged("online session app=4242 none: Valve's client is not installed yet"));
+    CHECK(Read(client_folder / "steamclient64.dll") == client_dll && !fs::exists(client_folder / "crashhandler64.dll"));
+    CHECK(Read(config.state_root / "steam-client") == "1792618285 " + client_sha + "\n");
+    struct stat status {};
+    CHECK(::stat((config.state_root / "steam-client").c_str(), &status) == 0 && (status.st_mode & 0777) == 0600);
+    CHECK(kept_text.find("\nclient_sha256=" + client_sha + "\n") != std::string::npos);
+    CHECK(host.Snapshot().steam_client_version == "1792618285");
+    // Logging isn't Verbose: no notify file for the title.
+    CHECK(!fs::exists(handoff.parent_path() / "steam-host.ready.notify"));
+  }
+  CHECK(kept_text.find("\ninvites=off\n") != std::string::npos && kept_text.find("\npersona=online\n") != std::string::npos);
+  {
+    // Dated, so the bridge can tell it from one a failed start left behind.
+    const auto launch_text = Read(launch_file);
+    const auto body = launch_text.find('\n');
+    CHECK(launch_text.rfind("written=", 0) == 0 && body != std::string::npos);
+    const auto written = std::strtoll(launch_text.c_str() + std::strlen("written="), nullptr, 10);
+    CHECK(written > 0 && std::llabs(written - static_cast<long long>(std::time(nullptr))) <= 60);
+    CHECK(launch_text.substr(body + 1) ==
+          "connect_lobby=109775241000000001\ninvite=76561198000000002\ninvite=76561198000000003\n");
+    struct stat status {};
+    CHECK(::stat(launch_file.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600);
+  }
+  // The title runs and exits (its session record, as the title shell writes it). It shows as active while it runs:
+  // seen stopped too often, a running session counts as ended.
+  const auto run_session = [&](const std::string& id) {
+    const auto phase = [&](const std::string& name) {
+      return R"({"schema_version":1,"session_id":")" + id +
+             R"(","install_id":"steam-4242","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
+             R"("runtime_bundle_id":"wine-wow64","phase":")" + name + "\"}\n";
+    };
+    fixture.activity->store(static_cast<int>(NativeActivity::kActive));
+    Write(sessions / (id + ".json"), phase("running"), 0600);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kRunning; }, 30);
+    fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    Write(sessions / (id + ".json"), phase("exited"), 0600);
+    WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.launch && s.launch->state != LaunchState::kRunning && s.launch->state != LaunchState::kLaunching;
+    }, 30);
+  };
+  run_session(launches[1].second[0].substr(std::strlen("session=")));
+  // The game ended without taking the request: it goes, the kept session stays.
+  for (int i = 0; i < 300 && fs::exists(launch_file); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(fs::exists(handoff) && !fs::exists(launch_file) && fs::exists(client_token));
+  // A Play that does not start leaves no request behind, even beside a kept session; one that asks nothing writes none
+  // and takes an earlier one away.
+  {
+    fixture.registered = false;  // the title is not installed: Play is refused after the handoff
+    const auto handled = host.Snapshot().plays_handled;
+    host.Play(4242, {}, join_and_invite);
+    const auto refused = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
+    fixture.registered = true;
+    CHECK(refused.play_refusals.count(4242) && !refused.handoff_ready && launches.size() == 2);
+    CHECK(fs::exists(handoff) && !fs::exists(launch_file));
+    CHECK(WriteOnlineLaunch(handoff.parent_path().parent_path().parent_path(), join_and_invite));
+    host.Play(4242);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    CHECK(host.Handoff() && launches.size() == 3 && !fs::exists(launch_file));
+    // The title ends (it may already be taken as ended without a record: the console's lists were just read again).
+    const auto id = launches[2].second[0].substr(std::strlen("session="));
+    Write(sessions / (id + ".json"),
+          R"({"schema_version":1,"session_id":")" + id +
+              R"(","install_id":"steam-4242","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
+              R"("runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n",
+          0600);
+    WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.launch && s.launch->state != LaunchState::kRunning && s.launch->state != LaunchState::kLaunching;
+    }, 30);
+  }
+  // Game invites changed in Game settings reaches the kept session at once, for the next start from the Home screen.
+  {
+    CHECK(Read(handoff).find("\ninvites=off\n") != std::string::npos);
+    saved_settings["game_invites"] = "join";
+    const auto maintained = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [maintained](const RuntimeSnapshot& s) { return s.maintenance_handled > maintained; }, 60);
+    CHECK(Read(handoff).find("\ninvites=join\n") != std::string::npos && !fs::exists(launch_file));
+    saved_settings.erase("game_invites");
+    // Appear invisible reaches a handoff written from then on.
+    CHECK(Read(handoff).find("\npersona=online\n") != std::string::npos);
+    host.SetSteamInvisible(true);
+    const auto again = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [again](const RuntimeSnapshot& s) { return s.maintenance_handled > again; }, 60);
+    CHECK(Read(handoff).find("\npersona=invisible\n") != std::string::npos);
+    host.SetSteamInvisible(false);
+    // Network adapters Off holds for the Steam host too (adapters=off); by default there's no such line, and the host
+    // lists them for Valve's client.
+    CHECK(Read(handoff).find("adapters=") == std::string::npos);
+    saved_settings["network_adapters"] = "off";
+    const auto adapters = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [adapters](const RuntimeSnapshot& s) { return s.maintenance_handled > adapters; }, 60);
+    CHECK(Read(handoff).find("\nadapters=off\n") != std::string::npos);
+    saved_settings.erase("network_adapters");
+  }
+  // Online at each Play: the client's saved sign-in goes as the settings apply, before anything is done about Valve's
+  // client (outside a Play no manifest is read, and the installed client stays).
+  {
+    saved_settings = {{"steam_features", "online"}};
+    save_client_sign_in();
+    auto maintained = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [maintained](const RuntimeSnapshot& s) { return s.maintenance_handled > maintained; }, 60);
+    CHECK(!fs::exists(handoff) && !fs::exists(client_token) && !fs::exists(client_list));
+    // Kept again: the handoff comes back, and the client's saved sign-in stays.
+    saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}};
+    save_client_sign_in();
+    maintained = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [maintained](const RuntimeSnapshot& s) { return s.maintenance_handled > maintained; }, 60);
+    CHECK(fs::exists(handoff) && fs::exists(client_token) && fs::exists(client_list));
+    // Logging = Verbose: the notify file is there for the title (the host adds its steps to it); otherwise it isn't.
+    const auto notify = handoff.parent_path() / "steam-host.ready.notify";
+    saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}, {"logging", "verbose"}};
+    maintained = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [maintained](const RuntimeSnapshot& s) { return s.maintenance_handled > maintained; }, 60);
+    struct stat status {};
+    CHECK(fs::exists(notify) && Read(notify).empty() && ::stat(notify.c_str(), &status) == 0 && (status.st_mode & 0777) == 0600);
+    saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}};
+    maintained = host.Snapshot().maintenance_handled;
+    host.Maintain(4242, RuntimeMaintenance::kApplySettings);
+    WaitFor(host, [maintained](const RuntimeSnapshot& s) { return s.maintenance_handled > maintained; }, 60);
+    CHECK(!fs::exists(notify) && fs::exists(handoff));
+  }
+  // A sign-out removes it, and the client's saved sign-in with it; signing in again does not bring it back without a
+  // Play.
+  CHECK(fs::exists(client_token) && fs::exists(client_list));
+  host.SetSteamAccount({}, 0);
+  for (int i = 0; i < 300 && fs::exists(client_list); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(!fs::exists(handoff) && !fs::exists(client_token) && !fs::exists(client_list));
+  host.SetSteamAccount("player", 76561198000000001ull);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  CHECK(!fs::exists(handoff));
   // Steam Input asked for: Play gives the map without the lost stick. Game's own: the next Play takes it away. The
   // files are written before the handoff.
   saved_settings = {{"steam_input", "on"}};
@@ -1699,7 +2039,98 @@ void PreparesGameWithoutShippedRecipe() {
   WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
   CHECK(!fs::exists(game / "Bin/steam_settings/controller"));
   CHECK(logged("steamworks app=4242 steam input off: settings"));
+  // Back to Online, kept for the Home screen, for the restarts below.
+  saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}};
   host.Shutdown();
+  // A kept file stays across a restart; once its game goes back to At each Play, Playden's next start removes it.
+  OnlineSession left;
+  left.app_id = 4242;
+  left.steam_id = 76561198000000001ull;
+  left.account_name = "player";
+  left.refresh_token = "eyJ.token";
+  left.login_id = 5;
+  left.keep = true;
+  CHECK(WriteOnlineSession(handoff.parent_path().parent_path().parent_path(), left) && fs::exists(handoff));
+  CHECK(WriteOnlineLaunch(handoff.parent_path().parent_path().parent_path(), join_and_invite));
+  save_client_sign_in();
+  {
+    RuntimeHost kept(config);  // still kept: a restart leaves it, but not a Play's request to the bridge
+    CHECK(kept.Start());
+    WaitFor(kept, Started);
+    CHECK(fs::exists(handoff) && !fs::exists(launch_file) && fs::exists(client_token) && fs::exists(client_list));
+    kept.Shutdown();
+  }
+  // Signed out (no stored session) by the next start: the kept file goes even while the game is still set to keep it.
+  {
+    auto signed_out = config;
+    signed_out.online_session = []() -> std::optional<OnlineSession> { return std::nullopt; };
+    RuntimeHost stale(signed_out);
+    CHECK(stale.Start());
+    WaitFor(stale, Started);
+    CHECK(!fs::exists(handoff) && !fs::exists(client_token) && !fs::exists(client_list));
+    stale.Shutdown();
+  }
+  // Without online-steam in features.txt a game set to keep it is not Online, so the next start removes the file and a
+  // Play's request to the bridge (a Play then hands over nothing, as for a game not set to Online above).
+  CHECK(WriteOnlineSession(handoff.parent_path().parent_path().parent_path(), left) && fs::exists(handoff));
+  CHECK(WriteOnlineLaunch(handoff.parent_path().parent_path().parent_path(), join_and_invite));
+  save_client_sign_in();
+  saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}, {"game_invites", "off"}};
+  SetOnlineSteamEnabled(false);
+  {
+    RuntimeHost flag_off(config);
+    CHECK(flag_off.Start());
+    WaitFor(flag_off, Started);
+    CHECK(!fs::exists(handoff) && !fs::exists(launch_file) && !fs::exists(client_token) && !fs::exists(client_list));
+    flag_off.Shutdown();
+  }
+  SetOnlineSteamEnabled(true);
+  // A runtime kit whose title shows notifications (title-notify) runs Game invites as chosen: a kept session the
+  // account's next sign-in rewrites says so for the Home screen too.
+  {
+    auto notify_kit = kit;
+    notify_kit.capabilities.push_back(kKitTitleNotify);
+    std::sort(notify_kit.capabilities.begin(), notify_kit.capabilities.end());
+    auto notify_config = config;
+    notify_config.admit_kit = [&notify_kit](std::string*) { return std::optional<RuntimeKit>(notify_kit); };
+    for (const auto& [chosen, written] : std::vector<std::pair<std::string, std::string>>{
+             {"show", "show"}, {"", "ask"}, {"off", "off"}}) {
+      saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}};
+      if (!chosen.empty()) saved_settings["game_invites"] = chosen;
+      CHECK(WriteOnlineSession(handoff.parent_path().parent_path().parent_path(), left));
+      CHECK(Read(handoff).find("invites=") == std::string::npos);
+      RuntimeHost notify(notify_config);
+      CHECK(notify.Start());
+      WaitFor(notify, Started);
+      notify.SetSteamAccount("player", 76561198000000001ull);
+      for (int i = 0; i < 500 && Read(handoff).find("invites=") == std::string::npos; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      CHECK(Read(handoff).find("\ninvites=" + written + "\n") != std::string::npos);
+      CHECK(!fs::exists(launch_file));  // a sign-in asks the bridge nothing
+      notify.Shutdown();
+    }
+    // Without the capability, Only show is Off.
+    saved_settings = {{"steam_features", "online"}, {"steam_sign_in", "kept"}, {"game_invites", "show"}};
+    CHECK(WriteOnlineSession(handoff.parent_path().parent_path().parent_path(), left));
+    RuntimeHost plain(config);
+    CHECK(plain.Start());
+    WaitFor(plain, Started);
+    plain.SetSteamAccount("player", 76561198000000001ull);
+    for (int i = 0; i < 500 && Read(handoff).find("invites=") == std::string::npos; ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(Read(handoff).find("\ninvites=off\n") != std::string::npos);
+    plain.Shutdown();
+  }
+  CHECK(WriteOnlineSession(handoff.parent_path().parent_path().parent_path(), left) && fs::exists(handoff));
+  saved_settings = {{"steam_features", "online"}};
+  {
+    RuntimeHost cleaned(config);
+    CHECK(cleaned.Start());
+    WaitFor(cleaned, Started);
+    CHECK(!fs::exists(handoff));
+    cleaned.Shutdown();
+  }
+  saved_settings = {{"steam_features", "game"}};
 
   // After a restart the saved recipe is found without Steam, and the title log carries the
   // session report followed by the engine's own log from the bottle.
@@ -1715,6 +2146,8 @@ void PreparesGameWithoutShippedRecipe() {
   const auto& title_log = title_logs.at("FAKE78001");
   CHECK(title_log.find("== session-0.log\nPW_REPORT/1 stopped") != std::string::npos);
   CHECK(title_log.find("AppData/LocalLow/Studio/Game/Player.log\nNullReferenceException at Boot") != std::string::npos);
+  // No Steam host ran: neither of its logs is there.
+  CHECK(title_log.find("== steam-host.log") == std::string::npos && title_log.find("== helper-wine.log") == std::string::npos);
   restarted.Prepare({4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"});
   const auto prepared = WaitFor(restarted, [](const RuntimeSnapshot& s) { return s.refusals.count(4242) != 0; });
   CHECK(prepared.refusals.at(4242) == "This game is already prepared.");
@@ -1763,6 +2196,29 @@ void PreparesGameWithoutShippedRecipe() {
   play_as(76561198000000001ull);
   CHECK(!fs::exists(game / "Bin/steam_settings/owned_app_ids.txt"));
   CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\n");
+  // A game that ran the Steam host (Steam features = Online): its log and the Wine log of its process follow.
+  Write(data / "library/prefixes/game/drive_c/playden/steam-host.log", "client: pinned\nlogon: ok\n", 0600);
+  Write(data / "library/helper-wine.log", "0024:err:module:import_dll Library x not found\n", 0600);
+  title_logs.clear();
+  RuntimeHost hosted(config);
+  CHECK(hosted.Start());
+  WaitFor(hosted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+  CHECK(title_logs.count("FAKE78001"));
+  CHECK(title_logs.at("FAKE78001").find("== steam-host.log\nclient: pinned\nlogon: ok") != std::string::npos);
+  CHECK(title_logs.at("FAKE78001").find("== helper-wine.log\n0024:err:module:import_dll") != std::string::npos);
+  hosted.Shutdown();
+  // A long Wine log keeps its start, where the host's libraries load, and its end.
+  Write(data / "library/helper-wine.log",
+        "0024:trace:loaddll:build_module Loaded vulkan-1.dll\n" + std::string(200 * 1024, '.') + "\nlast line\n", 0600);
+  title_logs.clear();
+  RuntimeHost long_log(config);
+  CHECK(long_log.Start());
+  WaitFor(long_log, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+  CHECK(title_logs.at("FAKE78001").find("== helper-wine.log\n0024:trace:loaddll:build_module Loaded vulkan-1.dll") !=
+        std::string::npos);
+  CHECK(title_logs.at("FAKE78001").find("bytes left out") != std::string::npos);
+  CHECK(title_logs.at("FAKE78001").find("\nlast line\n") != std::string::npos);
+  long_log.Shutdown();
 }
 
 // A game set up before Playden's defaults for its engine changed takes the new ones on the next Play: its saved
@@ -3921,6 +4377,7 @@ void RemovesTitleKeepingSaves() {
   const auto bottle = fixture.root / "data/playden/games/steam-220";
   const auto kept = fixture.root / "data/playden/games/steam-220.kept";
   const auto save = fs::path("library/prefixes/game/drive_c/users/steamuser/AppData/Roaming/Game/save.dat");
+  const auto client_token = fs::path("library/prefixes/game/drive_c/users/prospero/AppData/Local/Steam/local.vdf");
   const auto prepare = [](RuntimeHost& host) {
     host.Prepare(Hl2());
     const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
@@ -3992,10 +4449,12 @@ void RemovesTitleKeepingSaves() {
     CHECK(removed.installs.size() == 1 && removed.installs[0].step == "bottle");
     CHECK(removed.removal_failures.at(220).find("could not be kept") != std::string::npos);
     CHECK(!fixture.registered && *remover_calls == 2);
+    // Valve's Steam client's saved sign-in (an Online game) does not stay in a bottle kept without its game.
+    Write(bottle / client_token, "\"MachineUserConfigStore\"\n", 0600);
     removed = remove(host, true);
     CHECK(!removed.removal_failures.count(220) && removed.installs.empty());
     CHECK(*remover_calls == 2);  // the console no longer listed the title: never sent again
-    CHECK(!fs::exists(bottle) && Read(kept / save) == "player-save");
+    CHECK(!fs::exists(bottle) && Read(kept / save) == "player-save" && !fs::exists(kept / client_token));
     CHECK(removed.kept_bottles.size() == 1 && removed.kept_bottles[0].runtime_number == 220);
     CHECK(removed.kept_bottles[0].name == "Half-Life 2" && removed.kept_bottles[0].kept_at == 1760000000);
     CHECK(removed.kept_bottles[0].bytes > 0);
@@ -8288,6 +8747,8 @@ void LinkedRecipeAppliesUnderItsAlias() {
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
+  // The Online cases run with the experimental feature on; one case turns it off.
+  SetOnlineSteamEnabled(true);
   PlayerPresetsResolveRecords(false);
   PlayerPresetsResolveRecords(true);
   LeftoverDeletionSharesThePreparationAndUninstallQueue();
@@ -8323,6 +8784,7 @@ int main(int argc, char** argv) {
   AnyTitleKitMakesTheGameItsOwnTitle();
   DisplayVrrKitDeclaresTheTitleVrrSupported();
   PreparationEndsAwaitingRegistration();
+  FinishSetupHandsOverForHome();
   PreparesGameWithoutShippedRecipe();
   for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);
   UpdatedFilesSetUpTheLaunchAgain();

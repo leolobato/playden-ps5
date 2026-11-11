@@ -28,8 +28,10 @@
 #include "runtime/session_storage.h"
 #include "runtime/steam_input.h"
 #include "runtime/steam_stub.h"
+#include "runtime/steam_client_install.h"
 #include "runtime/steamworks.h"
 #include "runtime/self_heal.h"
+#include "steam/secret.h"
 #include "runtime/writable_folders.h"
 #include "runtime/title_parameters.h"
 #include "platform/managed_file_lock.h"
@@ -305,6 +307,16 @@ std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_ro
     text += "\n== " + (shown.empty() || *shown.begin() == ".." ? engine.parent_path().filename() / engine.filename() : shown).string() + "\n" +
             FileTail(engine, 64 * 1024);
   }
+  // Steam features = Online (runtime/steam_host.h): the Steam host's own log in the bottle, which never holds a token,
+  // and Wine's messages from its process, which the title writes beside the reports' folder (its start too: that is
+  // where the host's libraries load).
+  for (const auto& [name, path, head] : {std::tuple<const char*, fs::path, off_t>{
+                                             "steam-host.log", data_root / "library/prefixes/game/drive_c/playden/steam-host.log", 0},
+                                         {"helper-wine.log", data_root / "library/helper-wine.log", 32 * 1024}}) {
+    std::error_code error;
+    if (!fs::is_symlink(path, error) && fs::is_regular_file(path, error))
+      text += std::string("\n== ") + name + "\n" + FileTail(path, 32 * 1024, head);
+  }
   return text;
 }
 
@@ -542,6 +554,27 @@ void RuntimeHost::ClearPrepared() {
 
 namespace {
 constexpr const char* kPreparedHistory = "prepared-history";
+// Playden's record of the Steam client it installed (SteamClientRecord).
+constexpr const char* kSteamClientRecord = "steam-client";
+
+// Whether an Environment variables value (NAME=value entries separated by ';') sets name to value, both trimmed.
+bool EnvironmentSets(std::string_view entries, std::string_view name, std::string_view value) {
+  const auto trim = [](std::string_view text) {
+    while (!text.empty() && text.front() == ' ') text.remove_prefix(1);
+    while (!text.empty() && text.back() == ' ') text.remove_suffix(1);
+    return text;
+  };
+  std::size_t start = 0;
+  while (start <= entries.size()) {
+    const auto end = std::min(entries.find(';', start), entries.size());
+    const auto entry = entries.substr(start, end - start);
+    start = end + 1;
+    const auto equals = entry.find('=');
+    if (equals != std::string_view::npos && trim(entry.substr(0, equals)) == name)
+      return trim(entry.substr(equals + 1)) == value;
+  }
+  return false;
+}
 }  // namespace
 
 void RuntimeHost::LoadPreparedHistory() {
@@ -630,11 +663,11 @@ void RuntimeHost::HoldPreparations(bool hold) {
   wake_.notify_all();
 }
 
-void RuntimeHost::Play(std::uint32_t app_id, std::string setup_program) {
+void RuntimeHost::Play(std::uint32_t app_id, std::string setup_program, rt::OnlineLaunch online) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
-    play_requests_.push_back({app_id, std::move(setup_program)});
+    play_requests_.push_back({app_id, std::move(setup_program), std::move(online)});
   }
   wake_.notify_all();
 }
@@ -719,9 +752,13 @@ void RuntimeHost::Maintain(std::uint32_t app_id, RuntimeMaintenance action) {
 }
 
 void RuntimeHost::SetSteamAccount(std::string account_name, std::uint64_t steam_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  steam_account_name_ = std::move(account_name);
-  steam_id_ = steam_id;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    steam_account_name_ = std::move(account_name);
+    steam_id_ = steam_id;
+    steam_account_changed_ = true;
+  }
+  wake_.notify_all();
 }
 
 // A kit replaced after startup (an upload with --replace) keeps this Playden on the old kit's paths,
@@ -836,6 +873,214 @@ std::string RuntimeHost::SteamStubStep(const GameFiles& files) {
   return unpacked.ok ? std::string() : unpacked.message;
 }
 
+RuntimeHost::OnlineHandoff RuntimeHost::OnlineHandoffFor(Composition& c, const rt::RuntimeInstall& record,
+                                                         std::string* invites, bool* verbose, bool* adapters_off) {
+  const auto* recipe = RecipeOf(c, record);
+  if (!recipe) return OnlineHandoff::kNone;
+  auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+  const auto resolved = saved ? RecordPreset(c, &*saved) : std::nullopt;
+  static const std::map<std::string, std::string> none;
+  rt::EffectiveSettings settings;
+  rt::SettingsError error;
+  if (!rt::BuildEffectiveSettings(*recipe, resolved ? &*resolved : nullptr, saved ? saved->overrides : none, TitleKit(c, record),
+                                  &settings, &error) ||
+      settings.values.at("steam_features").value != "online")
+    return OnlineHandoff::kNone;
+  // The value the row shows: on a title without notifications (title-notify), Ask and Only show are Off.
+  if (invites) *invites = settings.values.at("game_invites").value;
+  if (verbose) *verbose = settings.values.at("logging").value == "verbose";
+  // The game's own choice about the console's network adapters holds for the Steam host too: it makes them listable
+  // (Valve's client needs them for peer-to-peer), unless the game is set to go without them.
+  if (adapters_off) {
+    const auto& adapters = settings.values.at("network_adapters");
+    const auto& environment = settings.values.at("environment");
+    *adapters_off = (adapters.available && adapters.value == "off") ||
+                    (environment.available && EnvironmentSets(environment.value, "PW_NSIPROXY_DISABLE", "1"));
+  }
+  return settings.values.at("steam_sign_in").value == "kept" ? OnlineHandoff::kKept : OnlineHandoff::kAtPlay;
+}
+
+bool RuntimeHost::OnlineSessionStep(Composition& c, const rt::RuntimeInstall& record) {
+  const auto prefix = HostPath(record.data_root) / "library/prefixes/game";
+  const auto number = std::to_string(record.runtime_number);
+  std::string invites;
+  bool verbose = false, adapters_off = false;
+  const auto handoff = OnlineHandoffFor(c, record, &invites, &verbose, &adapters_off);
+  if (handoff == OnlineHandoff::kNone) {
+    if (!rt::RemoveOnlineSignIn(prefix)) Log("online session app=" + number + " leftover could not be removed");
+    rt::SetHostNotify(prefix, false);
+    return false;
+  }
+  // Logging = Verbose: the title shows the Steam host's start, step by step, as notifications.
+  if (!rt::SetHostNotify(prefix, verbose)) Log("online session app=" + number + " the steps' notify file could not be set");
+  // Read before the batch took the effective-UID hold (the worker loop): the session store takes that hold under its
+  // own lock, so reading it here could wait on a sign-in that waits on this batch.
+  if (!batch_online_session_loaded_) {
+    Log("online session app=" + number + " skipped: the session was not read for this work");
+    return false;
+  }
+  auto session = batch_online_session_;
+  if (!session) {
+    if (!rt::RemoveOnlineSignIn(prefix)) Log("online session app=" + number + " leftover could not be removed");
+    Log("online session app=" + number + " none: not signed in to Steam, the emulator answers alone");
+    return false;
+  }
+  // The Steam app the emulator was set up with (a game from another store may name one in its settings).
+  session->app_id = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = snapshot_.steamworks_apps.find(record.runtime_number);
+    session->app_id = found != snapshot_.steamworks_apps.end() ? found->second.app_id : 0;
+  }
+  if (!session->app_id) session->app_id = GameOf(record).steam_app().value_or(0);
+  session->keep = handoff == OnlineHandoff::kKept;
+  session->invites = invites;
+  // The host loads Valve's client only when it is the file Playden installed: the hash from Playden's own record.
+  const auto client = SteamClientRecord();
+  if (!client) {
+    rt::RemoveOnlineSession(prefix);
+    steam::ZeroizeSecret(session->refresh_token);
+    Log("online session app=" + number + " none: Valve's client is not installed yet (the next Play downloads it)");
+    return false;
+  }
+  session->client_sha256 = client->second;
+  session->invisible = steam_invisible_.load(std::memory_order_acquire);
+  session->notice = steam_online_notice_.load(std::memory_order_acquire);
+  session->adapters_off = adapters_off;
+  const bool written = rt::WriteOnlineSession(prefix, *session);
+  steam::ZeroizeSecret(session->refresh_token);
+  Log("online session app=" + number +
+      (!written ? " could not be written: the emulator answers alone"
+                : session->keep ? " kept for the Home screen" : " handed over") +
+      (written ? " invites=" + invites + (session->invisible ? " persona=invisible" : " persona=online") +
+                     (session->adapters_off ? " adapters=off" : "") + (session->notice ? " notice=1" : "")
+               : std::string()));
+  return written;
+}
+
+void RuntimeHost::SetSteamInvisible(bool invisible) { steam_invisible_.store(invisible, std::memory_order_release); }
+void RuntimeHost::SetSteamOnlineNotice(bool notice) { steam_online_notice_.store(notice, std::memory_order_release); }
+
+void RuntimeHost::SyncOnlineSessions(Composition& c, bool startup) {
+  if (startup) PublishSteamClient();
+  bool keeps = false;  // a game keeps its sign-in for the Home screen
+  bool signed_in = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    signed_in = steam_id_ != 0;
+  }
+  for (const auto& record : c.repository.Snapshot()) {
+    const auto number = std::to_string(record.runtime_number);
+    const auto prefix = HostPath(record.data_root) / "library/prefixes/game";
+    // What a Play asked of the bridge once is never for a later start: at startup none is left, kept handoff or not.
+    if (bool removed = false; startup && !rt::RemoveOnlineLaunch(prefix, &removed))
+      Log("online launch app=" + number + " leftover could not be removed");
+    else if (removed)
+      Log("online launch app=" + number + " removed at startup");
+    if (OnlineHandoffFor(c, record) == OnlineHandoff::kKept) {
+      // Kept: the account's current session when it signs in (a renewed token); none after a sign-out, even one an
+      // earlier run did not act on. At startup the file stays, tightened, while a session is stored.
+      if (startup && startup_online_session_) {
+        keeps = true;
+        if (rt::OnlineSessionExists(prefix) && !rt::TightenOnlineSession(prefix))
+          Log("online session app=" + number + " kept file could not be tightened");
+        continue;
+      }
+      if (signed_in) {
+        keeps = true;
+        if (rt::OnlineSessionExists(prefix)) OnlineSessionStep(c, record);
+        continue;
+      }
+    } else if (!startup && signed_in) {
+      continue;  // a handoff Play just wrote is the game's to take
+    }
+    bool removed = false;
+    if (!rt::RemoveOnlineSignIn(prefix, &removed))
+      Log("online session app=" + number + " leftover could not be removed");
+    else if (removed)
+      Log("online session app=" + number + " removed " + (startup ? "at startup" : "after a sign-out"));
+  }
+  // A bottle kept after an uninstall is out of the records, so it lost its handoff when it was kept (KeepBottle).
+  // The client folder's account list goes with the last kept sign-in. Not while signed in after startup: a handoff Play
+  // just wrote may be in use.
+  if (!keeps && (startup || !signed_in) && !rt::RemoveSteamClientSignIn(SteamClientFolder().string()))
+    Log("steam client its saved sign-in could not be removed " + std::string(startup ? "at startup" : "after a sign-out"));
+}
+
+void RuntimeHost::OnlineLaunchStep(const rt::RuntimeInstall& record, bool handed, const rt::OnlineLaunch& online) {
+  const auto prefix = HostPath(record.data_root) / "library/prefixes/game";
+  const auto number = std::to_string(record.runtime_number);
+  // An earlier Play's request never carries over, even when this one asks nothing.
+  if (bool removed = false; !rt::RemoveOnlineLaunch(prefix, &removed))
+    Log("online launch app=" + number + " leftover could not be removed");
+  else if (removed)
+    Log("online launch app=" + number + " leftover removed");
+  // Only beside a handoff: without the session the bridge is not signed in and the game is not Online.
+  const auto text = rt::RenderOnlineLaunch(online);
+  if (!handed || text.empty()) return;
+  std::size_t invites = 0;
+  for (std::size_t at = 0; (at = text.find("invite=", at)) != std::string::npos; at += 7) ++invites;
+  Log("online launch app=" + number + (rt::WriteOnlineLaunch(prefix, online) ? " written" : " could not be written") +
+      " lobby=" + (online.connect_lobby ? "1" : "0") + " invites=" + std::to_string(invites));
+}
+
+bool RuntimeHost::HandOverOnline(Composition& c, const rt::RuntimeInstall& record, const rt::OnlineLaunch& online,
+                                 const char* when) {
+  SettleBottle(c, record, when);
+  const bool handed = OnlineSessionStep(c, record);
+  OnlineLaunchStep(record, handed, online);
+  return handed;
+}
+
+// Finish setup quits to Home, where the PS5 adds the game once Playden is gone and the player starts it for the first
+// time. Play is what hands an Online game its Steam session, so this quit does it instead, for that game only. Only
+// with the settings its title has published: newer ones reach the title at Playden's next start, so until then the
+// game runs as published, and a session beside an Offline title would only leave the token in the bottle. A game not
+// set to Online is left exactly as it was. An unused handoff goes at Playden's next start (SyncOnlineSessions).
+void RuntimeHost::HomeHandoff(Composition& c, std::uint32_t app) {
+  const auto number = std::to_string(app);
+  std::optional<rt::RuntimeInstall> record;
+  for (const auto& candidate : c.repository.Snapshot())
+    if (candidate.runtime_number == app) record = candidate;
+  if (!record || !AwaitingRegistration(*record)) {
+    Log("home handoff app=" + number + " skipped: not waiting for the PS5");
+    return;
+  }
+  if (OnlineHandoffFor(c, *record) == OnlineHandoff::kNone) return;
+  const auto saved = config_.settings_record ? config_.settings_record(GameOf(*record)) : std::nullopt;
+  if (!saved || saved->revision != record->settings_revision) {
+    Log("home handoff app=" + number + " skipped: the title has older settings (revision " +
+        std::to_string(record->settings_revision) + ", saved " + (saved ? std::to_string(saved->revision) : "none") + ")");
+    return;
+  }
+  if (!c.launch_journal) return;
+  const auto pending = c.launch_journal->LoadPending();
+  if (!pending.ok || pending.session) {
+    Log("home handoff app=" + number + " skipped: " + (pending.ok ? "a launch is pending" : "the launch record is unreadable"));
+    return;
+  }
+  const bool handed = HandOverOnline(c, *record, {}, "home");
+  Log("home handoff app=" + number + (handed ? " handed over" : " no session"));
+}
+
+bool RuntimeHost::HandOverForHome(std::uint32_t app, std::chrono::milliseconds limit) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (stopping_) return false;
+  home_handoff_requests_.push_back(app);
+  const auto target = ++home_handoffs_requested_;
+  wake_.notify_all();
+  return published_.wait_for(lock, limit, [&] { return stopping_ || snapshot_.home_handoffs_handled >= target; }) &&
+         snapshot_.home_handoffs_handled >= target;
+}
+
+void RuntimeHost::DropOnlineSession(const std::filesystem::path& bottle) {
+  bool removed = false;
+  if (!rt::RemoveOnlineSignIn(bottle / "library/prefixes/game", &removed))
+    Log("online session " + bottle.filename().string() + " could not be removed from the kept bottle");
+  else if (removed)
+    Log("online session " + bottle.filename().string() + " removed: the bottle is kept without its game");
+}
+
 // Steam-file step: the game's steam_api DLLs in the state its "Steam features" setting asks for, emulated
 // with its Steam app ID (SteamworksAppFor) and the signed-in account, or the game's own; then the legacy
 // steam.dll of a game from before Steamworks.
@@ -859,7 +1104,11 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     if (changed) Publish([&](RuntimeSnapshot& s) { s.steamworks_apps[record.runtime_number] = steam_app; });
   }
   // Without a Steam app ID there is nothing to emulate: the game keeps its own Steam files.
-  const bool emulate = files.settings.values.at("steam_features").value == "emulate" && steam_app.app_id != 0;
+  const auto& features = files.settings.values.at("steam_features").value;
+  // Online runs the Steam host beside the game: the game keeps its own Steam library, which finds Valve's client
+  // (runtime/steam_host.h). Online is only chosen on a title that runs it (BuildEffectiveSettings falls back otherwise).
+  const bool steam_host = features == "online" && files.settings.helper_process && steam_app.app_id != 0;
+  const bool emulate = features == "emulate" && steam_app.app_id != 0;
   rt::SteamworksResult result;
   // The emulator's files name the signed-in account; before it is known they keep what Play wrote.
   const bool emulator_waits = emulate && !steam_account_known;
@@ -947,17 +1196,33 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
       Log("steamworks app=" + std::to_string(record.runtime_number) + " steam input map left out: lost=" +
           std::to_string(lost_actions.size()) + " " + lost + (lost_actions.size() > 4 ? ",..." : ""));
     }
-    identity.online = files.settings.values.at("steam_network").value != "offline";
+    identity.network = files.settings.values.at("steam_network").value != "offline";
     result = rt::EmulateSteamworks(root.string(), emulator, identity);
   } else {
     result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);
+    // A game from another store has no Steam app of its own to name.
+    // Valve's library reads steam_appid.txt from the working folder: each program's own, and the one the chosen
+    // program starts in.
+    std::vector<std::string> start_folders;
+    for (const auto& program : files.programs) start_folders.push_back(std::filesystem::path(program).parent_path().generic_string());
+    if (!record.launch_working_directory.empty()) {
+      auto working = record.launch_working_directory;
+      std::replace(working.begin(), working.end(), '\\', '/');
+      start_folders.push_back(working);
+    } else if (record.launch_in_install_root) {
+      start_folders.emplace_back();
+    }
+    if (steam_host && result.ok && !other_store &&
+        !rt::WriteSteamAppIdBeside(root.string(), result.found, start_folders, steam_app.app_id))
+      Log("steamworks app=" + std::to_string(record.runtime_number) + " steam_appid.txt could not be written");
   }
   if (!emulator_waits) {
     std::string changed;
     for (const auto& path : result.changed) changed += (changed.empty() ? "" : ",") + path;
     std::string skipped;
     for (const auto& path : result.skipped) skipped += (skipped.empty() ? "" : ",") + path;
-    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (emulate ? "emulate" : "game") +
+    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" +
+        (steam_host ? "steam-host" : emulate ? "emulate" : "game") +
         (emulate && files.settings.values.at("steam_network").value == "offline" ? " network=offline" : "") +
         " found=" + std::to_string(result.found.size()) + " changed=" + (changed.empty() ? "-" : changed) +
         (skipped.empty() ? std::string() : " copies_skipped=" + skipped) + (result.ok ? std::string() : " failed=" + result.message));
@@ -1235,6 +1500,117 @@ void RuntimeHost::MfcStep(const GameFiles& files) {
   }
 }
 
+std::filesystem::path RuntimeHost::SteamClientFolder() const {
+  return HostPath(config_.package_paths.console_data_root + "/playden/steam-client/client");
+}
+
+// Playden's own record of the client it installed, in its private state: "<version> <steamclient64.dll SHA-256>". The
+// client folder is open to everyone; the record isn't. It counts only while that version is installed there.
+std::optional<std::pair<std::string, std::string>> RuntimeHost::SteamClientRecord() const {
+  const auto installed = rt::SteamClientInstalled(SteamClientFolder().string());
+  if (!installed) return std::nullopt;
+  FILE* file = std::fopen((config_.state_root / kSteamClientRecord).c_str(), "r");
+  if (!file) return std::nullopt;
+  char line[160] = {};
+  const bool read = std::fgets(line, sizeof line, file) != nullptr;
+  std::fclose(file);
+  if (!read) return std::nullopt;
+  std::string text(line);
+  while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+  const auto space = text.find(' ');
+  if (space == std::string::npos || text.substr(0, space) != *installed || text.size() - space - 1 != 64) return std::nullopt;
+  return std::make_pair(text.substr(0, space), text.substr(space + 1));
+}
+
+bool RuntimeHost::SaveSteamClientRecord(const std::string& version, const std::string& sha256) {
+  const auto path = config_.state_root / kSteamClientRecord;
+  const auto temporary = path.string() + ".playden-partial";
+  const std::string text = version + " " + sha256 + "\n";
+  const int out = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (out < 0) return false;
+  const bool ok = write(out, text.data(), text.size()) == static_cast<ssize_t>(text.size()) && fsync(out) == 0;
+  close(out);
+  if (!ok || std::rename(temporary.c_str(), path.c_str()) != 0) {
+    unlink(temporary.c_str());
+    return false;
+  }
+  return true;
+}
+
+void RuntimeHost::PublishSteamClient() {
+  const auto client = SteamClientRecord();
+  Publish([&](RuntimeSnapshot& s) { s.steam_client_version = client ? client->first : std::string(); });
+}
+
+void RuntimeHost::SteamClientStep(const GameFiles& files) {
+  const auto& features = files.settings.values.at("steam_features").value;
+  if (features != "online" || !files.settings.helper_process) return;
+  const auto app = std::to_string(files.record.runtime_number);
+  const auto folder = SteamClientFolder().string();
+  // The client's own saved sign-in stays only for a game that keeps its sign-in for the Home screen: the account list
+  // in its folder, and the token in the game's bottle. Removed first, whatever the install below does; the host does
+  // not sign in from one it finds for a game that is not kept (tools/steam-host).
+  const auto& sign_in = files.settings.values.at("steam_sign_in");
+  if (!(sign_in.available && sign_in.value == "kept")) {
+    const bool list = rt::RemoveSteamClientSignIn(folder);
+    const bool token = rt::RemoveSteamClientBottleSignIn(HostPath(files.record.data_root) / "library/prefixes/game");
+    if (!list || !token) Log("steam client app=" + app + " its saved sign-in could not be removed");
+  }
+  const bool downloads = redist_work_.downloads && config_.fetch_range;
+  const auto recorded = SteamClientRecord();
+  // Valve's current client, from its manifest, at a Play (downloads on). Without it (no network, or settings applied
+  // outside a Play) the installed client stays.
+  std::optional<rt::SteamClientManifest> manifest;
+  std::string reason = "not downloaded yet";
+  if (downloads && config_.fetch_text) {
+    if (const auto text = config_.fetch_text(std::string(rt::kSteamClientCdn) + rt::kSteamClientManifest, 64 * 1024,
+                                             cancel_downloads_, &reason)) {
+      manifest = rt::ParseSteamClientManifest(*text);
+      if (!manifest) reason = "Valve's client manifest could not be read";
+    }
+  }
+  if (!manifest || (recorded && recorded->first == manifest->version)) {
+    if (recorded) {
+      if (!manifest && downloads) Log("steam client app=" + app + " version=" + recorded->first + " kept: " + reason);
+    } else {
+      Log("steam client app=" + app + (downloads ? " skipped: " + reason : std::string(" waits for Play: ") + reason));
+      if (redist_work_.play_app) redist_work_.notice = kPlaySteamClientNotDownloaded;
+    }
+    PublishSteamClient();
+    return;
+  }
+  bool shown = false;
+  rt::RangeFetch fetch = [&](const std::string& url, std::uint64_t offset, std::uint64_t length,
+                             std::string* error) -> std::optional<std::string> {
+    if (cancel_downloads_) {
+      *error = "Playden is closing";
+      return std::nullopt;
+    }
+    if (redist_work_.play_app && !shown) {
+      shown = true;
+      Publish([&](RuntimeSnapshot& s) { s.play_progress[*redist_work_.play_app] = kPlayDownloadingSteamClient; });
+    }
+    return config_.fetch_range(url, offset, length, cancel_downloads_, error);
+  };
+  const auto began = std::chrono::steady_clock::now();
+  // Without Playden's record of the installed client it is put in again: the record is what the host checks against.
+  const auto result = rt::InstallSteamClient(folder, config_.runtime_dir + "/steam-host/steam.exe", fetch, *manifest,
+                                             /*replace=*/!recorded);
+  if (shown) Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(*redist_work_.play_app); });
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+  if (result.result == "installed" && !SaveSteamClientRecord(result.version, result.client_dll_sha256)) {
+    Log("steam client app=" + app + " installed version=" + result.version + " but its record could not be saved");
+  } else if (result.result == "installed") {
+    Log("steam client app=" + app + " installed version=" + result.version + (recorded ? " (was " + recorded->first + ")" : "") +
+        " files=" + std::to_string(result.files) + " ms=" + std::to_string(ms));
+  } else if (result.result != "already") {
+    Log("steam client app=" + app + " version=" + manifest->version + " skipped: " + result.detail +
+        (recorded && SteamClientRecord() ? "; keeps version=" + recorded->first : std::string()));
+    if (redist_work_.play_app && !SteamClientRecord()) redist_work_.notice = kPlaySteamClientNotDownloaded;
+  }
+  PublishSteamClient();
+}
+
 // Generic step: registry values the recipe carries (docs/community-recipes.md), written the way an install
 // script's are. What was written is tracked per install (runtime::RecipeRegistryState in the private runtime
 // state), so another recipe (a switch, or Playden's own after a community recipe) first removes the values the
@@ -1378,12 +1754,21 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   }
   if (auto refused = SteamStubStep(files); !refused.empty()) return refused;
   if (auto refused = SteamworksStep(files, steam_account_known); !refused.empty()) return refused;
+  // Steam sign-in follows the saved value at once, like the Steam files: kept now, or gone.
+  if (OnlineHandoffFor(c, record) == OnlineHandoff::kKept) {
+    if (steam_account_known) OnlineSessionStep(c, record);
+  } else if (bool removed = false; !rt::RemoveOnlineSignIn(HostPath(record.data_root) / "library/prefixes/game", &removed)) {
+    Log("online session app=" + std::to_string(record.runtime_number) + " could not be removed");
+  } else if (removed) {
+    Log("online session app=" + std::to_string(record.runtime_number) + " removed: no longer kept");
+  }
   if (auto refused = Ue3EulaStep(files); !refused.empty()) return refused;
   if (auto refused = Direct3D12Step(c, files); !refused.empty()) return refused;
   KitMonoStep(c, record, "prepare");
   if (auto refused = BottleEnvironmentStep(files); !refused.empty()) return refused;
   if (auto refused = InstallScriptsStep(files); !refused.empty()) return refused;
   MfcStep(files);
+  SteamClientStep(files);
   // After the redistributables (install scripts, MFC): one that writes an older runtime key doesn't stay.
   VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;
@@ -1743,7 +2128,7 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
   return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen || kit.display_fps_counter ||
-                 kit.launcher_mode || kit.input_playstation || kit.game_root_usb_search
+                 kit.launcher_mode || kit.input_playstation || kit.game_root_usb_search || kit.title_notify
              ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
              : kit;
 }
@@ -2970,7 +3355,8 @@ void RuntimeHost::PublishLaunch(Composition& c, const rt::LaunchSnapshot& launch
   });
 }
 
-void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::string& setup_program) {
+void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::string& setup_program,
+                          const rt::OnlineLaunch& online) {
   // The player waits on this Play: Microsoft's MFC may be downloaded for it, with a progress line.
   RedistWorkScope redist(redist_work_, true, app_id);
   std::optional<rt::RuntimeInstall> record;
@@ -3042,10 +3428,24 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
       }
       // Saves the game wrote and FTP edits made since, once nothing of the bottle is held and
       // only when Play goes ahead: a refused Play changes no modes.
+      std::optional<rt::RuntimeInstall> current;
       if (idle && settings.empty())
-        if (const auto current = c.records.Find(record->install_id)) SettleBottle(c, *current, "play");
+        if ((current = c.records.Find(record->install_id))) HandOverOnline(c, *current, online, "play");
       result = settings.empty() ? c.launch->Request(record->install_id)
                                 : rt::LaunchResult::Failure(rt::LaunchError::kPreflight, settings);
+      // What this Play asked of the bridge once is for this start only, kept handoff or not.
+      if (bool removed = false; current && !result.accepted &&
+                                !rt::RemoveOnlineLaunch(HostPath(current->data_root) / "library/prefixes/game", &removed))
+        Log("online launch app=" + std::to_string(app_id) + " could not be removed after a refused Play");
+      else if (removed)
+        Log("online launch app=" + std::to_string(app_id) + " removed: the Play was refused");
+      // A game that does not start leaves no session behind, unless it is kept for the Home screen.
+      bool removed = false;
+      if (current && !result.accepted && OnlineHandoffFor(c, *current) != OnlineHandoff::kKept &&
+          !rt::RemoveOnlineSignIn(HostPath(current->data_root) / "library/prefixes/game", &removed))
+        Log("online session app=" + std::to_string(app_id) + " could not be removed after a refused Play");
+      else if (removed)
+        Log("online session app=" + std::to_string(app_id) + " removed: the Play was refused");
     }
     if (result.accepted) {
       snapshot = c.launch->Snapshot();
@@ -3102,6 +3502,21 @@ bool RuntimeHost::PollLaunch(Composition& c) {
       if (const auto record = c.records.Find(snapshot.install_id);
           record && c.coordinator->Activity(record->title_id) == rt::NativeActivity::kStopped)
         SettleBottle(c, *record, "session");
+    // A title that failed before the game loaded the bridge leaves its Steam session behind. A kept one stays, but not
+    // what the Play asked of the bridge once.
+    if (const auto record = c.records.Find(snapshot.install_id);
+        record && OnlineHandoffFor(c, *record) != OnlineHandoff::kKept) {
+      bool removed = false;
+      if (!rt::RemoveOnlineSignIn(HostPath(record->data_root) / "library/prefixes/game", &removed))
+        Log("online session install=" + snapshot.install_id + " could not be removed after the session");
+      else if (removed)
+        Log("online session install=" + snapshot.install_id + " removed: the game ended without taking it");
+    } else if (bool removed = false;
+               record && !rt::RemoveOnlineLaunch(HostPath(record->data_root) / "library/prefixes/game", &removed)) {
+      Log("online launch install=" + snapshot.install_id + " could not be removed after the session");
+    } else if (removed) {
+      Log("online launch install=" + snapshot.install_id + " removed: the game ended without taking it");
+    }
     Log("play finished install=" + snapshot.install_id + " session=" + snapshot.session_id + " state=" +
         std::to_string(static_cast<int>(snapshot.state)) + " code=" + snapshot.code + " exit=" +
         (snapshot.exit_code ? std::to_string(*snapshot.exit_code) : std::string("unknown")) +
@@ -5023,6 +5438,7 @@ std::optional<RuntimeHost::RemovalFailure> RuntimeHost::KeepBottle(
     const std::filesystem::path& bottle, const std::string& install_id, const GameId& game,
     std::uint32_t runtime_number, const std::string& name, const std::string& operation_id) {
   const auto kept = bottle.parent_path() / (install_id + kKeptSuffix);
+  DropOnlineSession(bottle);
   std::error_code error;
   struct stat info{};
   // A Steam game's marker is as before; another store's also names its game.
@@ -5419,6 +5835,12 @@ void RuntimeHost::Run() {
 
 bool RuntimeHost::RunServices() {
   const auto hold = [this] { return config_.hold_effective_uid ? config_.hold_effective_uid() : nullptr; };
+  // Read before the hold (see the batch preload below): with no stored Steam session, kept handoffs go at startup.
+  if (config_.online_session) {
+    auto session = config_.online_session();
+    startup_online_session_ = session.has_value();
+    if (session) steam::ZeroizeSecret(session->refresh_token);
+  }
   auto startup_hold = hold();
   auto unavailable = [this](std::string reason) {
     Publish([&](RuntimeSnapshot& s) { s.status = RuntimeHostStatus::kUnavailable; s.reason = std::move(reason); });
@@ -5504,6 +5926,7 @@ bool RuntimeHost::RunServices() {
       Log("startup generated recipes loaded");
       PublishInstalls(c);
       Log("startup installs published");
+      SyncOnlineSessions(c, true);
       ResumeLeftoverDeletes(c);
       PublishLeftoverTitles(c);
       KeepUnrecordedBottles(c);
@@ -5715,9 +6138,12 @@ bool RuntimeHost::RunServices() {
     bool measure = false;
     std::vector<std::uint32_t> checks;
     bool names_changed = false;
+    bool account_changed = false;
+    bool prepare_pending = false;
     std::vector<PreparedGame> dismissals;
     bool clear_prepared = false;
     std::vector<std::shared_ptr<PendingRelocation>> relocations;
+    std::vector<std::uint32_t> home_handoffs;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       // Preparation changes install records that Handoff reads on the
@@ -5727,10 +6153,12 @@ bool RuntimeHost::RunServices() {
                !play_requests_.empty() ||
                cleanup_requested_ || measure_requested_ || !activity_requests_.empty() || title_names_changed_ ||
                installs_recheck_requested_ ||
+               steam_account_changed_ ||
                (!remove_requests_.empty() && !snapshot_.handoff_ready) ||
                (!kept_delete_requests_.empty() && !snapshot_.handoff_ready) ||
                !scan_requests_.empty() || !prepared_dismissals_.empty() || prepared_clear_requested_ ||
                (!maintenance_requests_.empty() && !snapshot_.handoff_ready) ||
+               (!home_handoff_requests_.empty() && !snapshot_.handoff_ready) ||
                (!relocation_requests_.empty() && !snapshot_.handoff_ready) ||
                (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) ||
                (drive_updates_pending_ && !snapshot_.handoff_ready && !launch_poll_ &&
@@ -5739,7 +6167,16 @@ bool RuntimeHost::RunServices() {
       if (launch_poll_) wake_.wait_for(lock, kLaunchPollInterval, ready);
       else if (drive_updates_pending_) wake_.wait_until(lock, drive_update_not_before_, [&] { return ready() || launch_poll_; });
       else wake_.wait(lock, [&] { return ready() || launch_poll_; });
-      if (stopping_) break;
+      if (stopping_) {
+        // A sign-out not acted on yet still takes the kept sessions with it.
+        if (steam_account_changed_ && !steam_id_ && composition) {
+          steam_account_changed_ = false;
+          lock.unlock();
+          const auto stop_hold = hold();
+          SyncOnlineSessions(*composition, false);
+        }
+        break;
+      }
       // Between batches, with no launch to hand off or follow: the services hold no work, and PS5
       // titles run their own copy of the runtime, so the kit's folder can change under them.
       if (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) {
@@ -5759,6 +6196,8 @@ bool RuntimeHost::RunServices() {
       scans.swap(scan_requests_);
       // Maintenance changes the bottle and install record, like removal.
       if (!snapshot_.handoff_ready) maintenance.swap(maintenance_requests_);
+      // A Home handoff writes into the bottle, like maintenance.
+      if (!snapshot_.handoff_ready) home_handoffs.swap(home_handoff_requests_);
       // A relocation rewrites the install record, like maintenance.
       if (!snapshot_.handoff_ready) relocations.swap(relocation_requests_);
       poll = launch_poll_;
@@ -5770,9 +6209,28 @@ bool RuntimeHost::RunServices() {
       names_changed = title_names_changed_ || installs_recheck_requested_;
       title_names_changed_ = false;
       installs_recheck_requested_ = false;
+      account_changed = steam_account_changed_;
+      steam_account_changed_ = false;
+      prepare_pending = !prepare_requests_.empty();
       dismissals.swap(prepared_dismissals_);
       clear_prepared = prepared_clear_requested_;
       prepared_clear_requested_ = false;
+    }
+    // Work that may hand a game the Steam session (OnlineSessionStep) reads it now, before the hold: the session
+    // store takes the hold under its own lock, and a sign-in in progress holds that lock. Wiped after the batch.
+    struct ForgetOnlineSession {
+      RuntimeHost* host;
+      ~ForgetOnlineSession() {
+        if (host->batch_online_session_) steam::ZeroizeSecret(host->batch_online_session_->refresh_token);
+        host->batch_online_session_.reset();
+        host->batch_online_session_loaded_ = false;
+      }
+    } forget_online_session{this};
+    if (composition && config_.online_session &&
+        (account_changed || prepare_pending || !plays.empty() || !maintenance.empty() || !relocations.empty() ||
+         !home_handoffs.empty())) {
+      batch_online_session_ = config_.online_session();
+      batch_online_session_loaded_ = true;
     }
     const auto batch_hold = hold();
     if (private_ready && (clear_prepared || !dismissals.empty())) {
@@ -5782,6 +6240,7 @@ bool RuntimeHost::RunServices() {
       PublishPrepared(composition.get());
     }
     if (names_changed && composition) PublishInstalls(*composition);
+    if (account_changed && composition) SyncOnlineSessions(*composition, false);
     for (const auto& [app, install_path] : scans) {
       const auto kit = composition && composition->kit
           ? rt::KitCapabilitiesFromManifest(composition->kit->capabilities, true) : rt::KitCapabilities{};
@@ -5823,7 +6282,7 @@ bool RuntimeHost::RunServices() {
     for (const auto& play : plays) {
       const auto app = play.app;
       if (composition) {
-        RunPlay(*composition, app, play.setup_program);
+        RunPlay(*composition, app, play.setup_program, play.online);
         poll = true;
       } else {
         Publish([&](RuntimeSnapshot& s) {
@@ -5840,10 +6299,12 @@ bool RuntimeHost::RunServices() {
         remove_requests_.insert(remove_requests_.begin(), removals.begin(), removals.end());
         kept_delete_requests_.insert(kept_delete_requests_.begin(), kept_deletes.begin(), kept_deletes.end());
         maintenance_requests_.insert(maintenance_requests_.begin(), maintenance.begin(), maintenance.end());
+        home_handoff_requests_.insert(home_handoff_requests_.begin(), home_handoffs.begin(), home_handoffs.end());
         relocation_requests_.insert(relocation_requests_.begin(), relocations.begin(), relocations.end());
         removals.clear();
         kept_deletes.clear();
         maintenance.clear();
+        home_handoffs.clear();
         relocations.clear();
       }
     }
@@ -5915,6 +6376,10 @@ bool RuntimeHost::RunServices() {
         ++s.maintenance_handled;
       });
     }
+    for (const auto app : home_handoffs) {
+      if (composition) HomeHandoff(*composition, app);
+      Publish([](RuntimeSnapshot& s) { ++s.home_handoffs_handled; });
+    }
     for (const auto& pending : relocations) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -5963,7 +6428,9 @@ bool RuntimeHost::RunServices() {
     std::optional<RuntimePrepareRequest> next;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      // A preparation that came after this batch read the Steam session waits for the next batch.
       if (!prepare_requests_.empty() && !snapshot_.handoff_ready && !prepares_held_ && !stopping_ &&
+          (batch_online_session_loaded_ || !composition || !config_.online_session) &&
           (remove_requests_.empty() ||
            prepare_order_.at(prepare_requests_.front().runtime_number) < remove_requests_.front().order)) {
         next = std::move(prepare_requests_.front());

@@ -81,6 +81,29 @@ int main() {
     options.mode_for = [](const std::string&, unsigned) -> std::optional<unsigned> { return std::nullopt; };
     CHECK(!Run({{"x", "1"}}, options).ok);
   }
+  // "\" between folders is refused, unless the zip is a Windows one; the name is then checked as with "/".
+  {
+    // Made on Windows: no unix modes.
+    const auto windows_entry = [](const char* name, const char* data) {
+      Entry entry{name, data};
+      entry.unix_made = false;
+      return entry;
+    };
+    const std::vector<Entry> valve = {windows_entry("bin\\shaders/", ""), windows_entry("bin\\a.dll", "a"),
+                                      windows_entry("top.dll", "t")};
+    std::string out;
+    CHECK(!Run(valve, {}, &out).ok && ListFolder(out).empty());
+    ZipExtractOptions windows;
+    windows.windows_separators = true;
+    const auto result = Run(valve, windows, &out);
+    CHECK(result.ok && result.files == 2 && result.folders == 1);
+    CHECK(IsFolder(out + "/bin/shaders") && Read(out + "/bin/a.dll") == "a" && Read(out + "/top.dll") == "t");
+    for (const char* bad : {"..\\evil", "a\\..\\b", "\\abs", "C:\\x", "a\\\\b"}) {
+      CHECK(!Run({windows_entry(bad, "x")}, windows, &out).ok);
+      CHECK(ListFolder(out).empty());
+    }
+    CHECK(!Run({windows_entry("bin\\a", "1"), windows_entry("bin/a", "2")}, windows).ok);  // the same name, read with "/"
+  }
   // A zip without unix modes gets 0644 files.
   {
     std::string out;

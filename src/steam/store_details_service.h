@@ -24,6 +24,8 @@ struct StoreDetails {
   std::string description;
   std::vector<std::string> genres;
   std::string controller_support;
+  // Steam lists category 8, "Valve Anti-Cheat enabled": its servers can ban an account for a changed game.
+  bool vac = false;
 };
 
 // The store's appdetails URL for one game, in English.

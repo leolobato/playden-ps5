@@ -789,4 +789,25 @@ void StaySignedInOffKeepsTheTokenInMemory() {
   }
   std::filesystem::remove_all(root);
 }
-int main() { StaySignedInOffKeepsTheTokenInMemory(); TitleNamesCarryTheirStore(); NoSteamSessionWithOtherGamesOpensHome(); FailedRestoreWithOtherGamesOpensHome(); OtherRestoreFailuresWithOtherGamesOpenHome(); SteamSignOutKeepsOtherGames(); PasswordSignInWithGuardCode(); PasswordFailuresAndCancel(); SlowLicenseCheckShowsAfterAFewSeconds(); CanceledStorageRetryKeepsSavedSessionIntent(); RevokedSessionCleanupRetriesAfterStorageRecovery(); StorageFailureKeepsVisibleAccount(); StorageFailureRetriesSavedSession(); ChallengeAndCancel(); AuthenticationRestoreAndSignOut(); FailedClearDoesNotSwitch(); SignInAgainKeepsTheAccount(); ExitHonorsClearWithoutStartingNewQr(); StorageFailureAndRevocation(); ConnectedLibraryAndOfflineRestart(); LicenseChangesRefreshTheLibrary(); OfflineRefreshFromTheLibraryReconnects(); ShutdownClearsLibraryBeforeSession(); RepeatedClearPreservesFirstIntent(); }
+// Friends tab › Appear invisible: the controller passes the choice on (to Playden's Steam session through the host)
+// once, then again only when it changes, as when the saved choice loads.
+void SteamPersonaFollowsThePreference() {
+  const auto root=std::filesystem::temp_directory_path()/("playden-steam-persona-"+std::to_string(getpid()));
+  std::filesystem::remove_all(root); std::filesystem::create_directories(root);
+  {
+    LocalSessionRepository repo(root.string());
+    Simulation model({}, {},ModelMode::Live); Backend backend;
+    Controller controller(model,backend,repo);
+    std::vector<bool> applied;
+    controller.SetSteamPersona([&](bool invisible) { applied.push_back(invisible); });
+    controller.Tick(); controller.Tick();
+    assert(applied==std::vector<bool>{false});
+    playden::PreferencesLoadResult loaded; loaded.preferences.steam_invisible=true;
+    assert(model.ApplyPreferences(model.BeginPreferencesLoad(),loaded) && model.state().steam_invisible);
+    controller.Tick(); controller.Tick();
+    assert((applied==std::vector<bool>{false,true}));
+    controller.Shutdown();
+  }
+  std::filesystem::remove_all(root);
+}
+int main() { SteamPersonaFollowsThePreference(); StaySignedInOffKeepsTheTokenInMemory(); TitleNamesCarryTheirStore(); NoSteamSessionWithOtherGamesOpensHome(); FailedRestoreWithOtherGamesOpensHome(); OtherRestoreFailuresWithOtherGamesOpenHome(); SteamSignOutKeepsOtherGames(); PasswordSignInWithGuardCode(); PasswordFailuresAndCancel(); SlowLicenseCheckShowsAfterAFewSeconds(); CanceledStorageRetryKeepsSavedSessionIntent(); RevokedSessionCleanupRetriesAfterStorageRecovery(); StorageFailureKeepsVisibleAccount(); StorageFailureRetriesSavedSession(); ChallengeAndCancel(); AuthenticationRestoreAndSignOut(); FailedClearDoesNotSwitch(); SignInAgainKeepsTheAccount(); ExitHonorsClearWithoutStartingNewQr(); StorageFailureAndRevocation(); ConnectedLibraryAndOfflineRestart(); LicenseChangesRefreshTheLibrary(); OfflineRefreshFromTheLibraryReconnects(); ShutdownClearsLibraryBeforeSession(); RepeatedClearPreservesFirstIntent(); }

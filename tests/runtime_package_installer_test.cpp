@@ -769,11 +769,16 @@ void SharedTreeWalksByPath() {
   Write(root / "Documents/notes.txt", "notes", 0600);
   Write(temporary.path / "private/secret", "secret", 0600);
   CHECK(::link((temporary.path / "private/secret").c_str(), (root / "Documents/secret").c_str()) == 0);
+  // Valve's Steam client saves its sign-in (a token) in AppData/Local/Steam: that stays the owner's.
+  Write(root / "AppData/Local/Steam/local.vdf", "token", 0644);
+  CHECK(::chmod((root / "AppData/Local/Steam").c_str(), 0755) == 0);
   SharedTreeOptions options;
 
   auto opened = OpenTreeToEveryone(root, options);
   CHECK(opened.ok && !opened.changed_under && opened.linked == 1);
   CHECK(ModeOf(root / "AppData/Roaming/Game") == 0777 && ModeOf(root / "AppData/Roaming/Game/save.dat") == 0666);
+  CHECK(ModeOf(root / "AppData/Local") == 0777 && ModeOf(root / "AppData/Local/Steam") == 0700 &&
+        ModeOf(root / "AppData/Local/Steam/local.vdf") == 0600);
   CHECK(ModeOf(root / "Documents/notes.txt") == 0666 && ModeOf(temporary.path / "private/secret") == 0600);
 
   // Documents is moved away (and an outside folder put in its place) while the walk is in it.

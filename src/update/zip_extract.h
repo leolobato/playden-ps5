@@ -14,6 +14,9 @@ struct ZipExtractOptions {
   // Only entries below this folder are unpacked, without it ("playden-ps5-0.3.0/FAKE77031/").
   // Must end with "/". Empty unpacks everything.
   std::string inner_prefix;
+  // Entry names may separate folders with "\" (zips made on Windows, like Valve's client packages); it reads as
+  // "/" before the name is checked.
+  bool windows_separators = false;
   std::uint64_t max_entries = 50000;
   std::uint64_t max_total_bytes = 8ull << 30;
   // The mode a file gets; nullopt refuses the file. By default the zip's own mode, or 0644.

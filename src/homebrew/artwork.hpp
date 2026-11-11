@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -27,11 +28,17 @@ inline constexpr std::uint32_t kMaxArtworkDimension = 1920;
 inline constexpr std::uint32_t kMaxArtworkAttempts = 3;
 inline constexpr std::chrono::milliseconds kArtworkRetryDelay{15'000};
 
+// A Steam friend's avatar has no game: its key holds an empty GameId and the avatar's source.
 struct ArtworkKey {
   std::uint64_t account_generation = 0;
   GameId game_id;
   std::string source;
 };
+
+// The medium avatar for a persona state's avatar hash (40 lowercase hex digits), or empty for any other hash.
+std::string AvatarArtworkSource(std::string_view hash);
+// Whether `source` is exactly such an avatar; `hash`, when given, receives its hash.
+bool IsAvatarArtworkSource(std::string_view source, std::string* hash = nullptr);
 
 bool operator==(const ArtworkKey&, const ArtworkKey&);
 

@@ -1,6 +1,7 @@
 #include "runtime/game_settings.h"
 
 #include "runtime/game_probe.h"
+#include "runtime/steam_host.h"
 #include "runtime/artifact_hash.h"
 #include "runtime/pe_architecture.h"
 
@@ -251,11 +252,36 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"2048", "2 GB", ""}, {"4096", "4 GB", ""}}, "game", 2));
   // Compatibility › Windows.
-  list.push_back(Choice("steam_features", "Steam features", "How the game reaches Steam without the Steam client.",
+  list.push_back(Choice("steam_features", "Steam features", "What answers the game when it calls Steam.",
                         "steam_api.dll · steam_api64.dll", G::kWindows,
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
+                         {"online", "Online (experimental)",
+                          "Runs Steam's own client beside the game, signed in as you. Only for games you trust."},
                          {"game", "Game's own files", "The game's Steam library, unchanged."}},
                         "game", 1, ApplyMode::kGameClosed));
+  // Online's handoff (runtime/online_session.h): read once and deleted by default, or kept so that a start from the
+  // PS5 Home screen, without Playden, signs in too.
+  list.push_back(Choice("steam_sign_in", "Steam sign-in",
+                        "When the game gets your Steam sign-in. Kept, it stays on the console while this is on: any "
+                        "program that can read the console's storage can use your Steam account.",
+                        "C:\\playden\\online-session.txt", G::kWindows,
+                        {{"play", "At each Play", "From Playden only. Started from the Home screen, it is offline."},
+                         {"kept", "Kept for the Home screen", "Online from the Home screen too. Signing out removes it."}},
+                        "play", 1, ApplyMode::kGameClosed));
+  // What the Steam host does with a friend's invite while the game runs, as online-session.txt's invites= says. Ask and
+  // Only show need a title that shows notifications (title-notify); without it both are Off.
+  list.push_back(Choice("game_invites", "Game invites", "What happens when a friend invites you while you play.",
+                        "C:\\playden\\online-session.txt · invites", G::kWindows,
+                        {{"ask", "Ask with L3 + R3",
+                          "The PS5 shows the invite. Press both sticks in within 15 seconds to join. The game does not "
+                          "see that press."},
+                         {"join", "Join at once", "Every invite is accepted. It can pull you out of a match."},
+                         {"show", "Only show",
+                          "The PS5 shows the invite and the game is not told. Join later from the game page."},
+                         {"off", "Off",
+                          "Invites are ignored: no notification, and the game is not told. Friends can still join a "
+                          "lobby you open."}},
+                        "ask", 1, ApplyMode::kGameClosed));
   // Online by default, as GameNative ships gbe_fork: games that check BLoggedOn() ("Steam is offline") get to their
   // online menus. Offline is for a game that waits on the network when it is told Steam is online.
   list.push_back(Choice("steam_network", "Steam network", "Whether the game is told Steam is online.",
@@ -660,7 +686,12 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     const auto stick = values.find("pointer_stick");
     if (stick == values.end() || stick->second.value == "none") return "Choose a pointer stick first.";
   }
+  if (id == "steam_sign_in" || id == "game_invites") {
+    const auto steam = values.find("steam_features");
+    if (steam == values.end() || steam->second.value != "online") return "Only with Steam features = Online.";
+  }
   if (id == "steam_network") {
+    if (!OnlineSteamEnabled()) return "Needs online-steam in features.txt.";
     const auto steam = values.find("steam_features");
     if (steam == values.end() || steam->second.value != "emulate") return "Only with Steam features = Offline emulation.";
   }
@@ -713,7 +744,22 @@ bool SettingShown(const SettingDefinition& definition, const KitCapabilities& ki
   if ((definition.id == "start_through_launcher" || definition.id == "launcher_controller_preset") &&
       !kit.launcher_mode && !kit.launcher_mode_needs_update)
     return false;
+  if (!OnlineSteamEnabled() &&
+      (definition.id == "steam_sign_in" || definition.id == "game_invites" || definition.id == "steam_network"))
+    return false;
   return definition.id.rfind("button.", 0) != 0 && definition.id != "program" && definition.id != "library_overrides";
+}
+
+namespace {
+std::atomic<bool> online_steam_enabled{false};
+}  // namespace
+
+void SetOnlineSteamEnabled(bool enabled) { online_steam_enabled = enabled; }
+
+bool OnlineSteamEnabled() { return online_steam_enabled; }
+
+bool SettingChoiceOffered(std::string_view id, std::string_view value) {
+  return id != "steam_features" || value != "online" || OnlineSteamEnabled();
 }
 
 bool IsUnlockKey(std::string_view key) {
@@ -747,6 +793,14 @@ std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& reci
 }
 
 std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::string_view id, std::string_view value) {
+  if (id == "steam_features") {
+    if (value != "online" || settings.helper_process || settings.helper_process_needs_update) return {};
+    return "Needs a runtime kit that runs Steam beside the game.";
+  }
+  if (id == "game_invites") {
+    if ((value != "ask" && value != "show") || settings.title_notify || settings.title_notify_needs_update) return {};
+    return "Needs a runtime kit that shows game invites.";
+  }
   if (id == "controller") {
     if (value != "playstation" || settings.input_playstation || settings.input_playstation_needs_update) return {};
     return "Needs a runtime kit with the PlayStation controller.";
@@ -769,7 +823,9 @@ std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::str
 }
 
 bool SettingChoiceWaitsForUpdate(const EffectiveSettings& settings, std::string_view id, std::string_view value) {
+  if (id == "steam_features") return value == "online" && settings.helper_process_needs_update;
   if (id == "controller") return value == "playstation" && settings.input_playstation_needs_update;
+  if (id == "game_invites") return (value == "ask" || value == "show") && settings.title_notify_needs_update;
   if (id != "frame_limit" || value == "off" || !settings.display_120hz_needs_update) return false;
   // The older runtime's OpenGL has no cap; with DXVK it caps 60 and 30 now, and only the display paces 120 and 40.
   return settings.graphics != "dxvk" || value == "120" || value == "40";
@@ -785,6 +841,8 @@ bool ValidateSettingValue(const GameRecipe& recipe, std::string_view id, std::st
   if (HasControl(value)) return fail("contains a control character");
   if (id == "launch_option") return FindEntry(recipe, value) ? true : fail("not a launch option of this game");
   if (definition->kind == SettingKind::kChoice) {
+    // A saved Online is ignored, not applied, while online-steam is off.
+    if (!SettingChoiceOffered(id, value)) return fail("needs online-steam in features.txt");
     for (const auto& choice : definition->choices)
       if (choice.value == value) return true;
     return fail("not one of the choices");
@@ -937,6 +995,10 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.display_120hz_needs_update = kit.display_120hz_needs_update;
   out.input_playstation = kit.input_playstation;
   out.input_playstation_needs_update = kit.input_playstation_needs_update;
+  out.title_notify = kit.title_notify;
+  out.title_notify_needs_update = kit.title_notify_needs_update;
+  out.helper_process = kit.helper_process;
+  out.helper_process_needs_update = kit.helper_process_needs_update;
 
   // A controller preset (runtime/input/<name>.input) brings its own mode, pointer stick and speed. Rows set less
   // deliberately than the preset show the preset's values, so the sheet tells the truth and Pointer speed can be tuned.
@@ -990,6 +1052,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
     }
     value.value = definition.playden_default;
   }
+  // Without online-steam the emulator stays off the network, as it did before the Steam network row.
+  if (!OnlineSteamEnabled()) out.values["steam_network"].value = "offline";
   // A choice that needs other values (Frame limit 120 needs 120 Hz output) falls back to the default, and the row
   // says why. The refresh row comes after Frame limit in the catalogue, so this runs once every row is resolved.
   // A choice that waits for the title's update (Frame limit 120 on an older runtime) is kept for then, and the
@@ -1009,6 +1073,39 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
       value.value = fallback;
       value.reason = std::move(reason);
     } else if (SettingChoiceWaitsForUpdate(out, id, value.value)) {
+      value.after_update = value.value;
+      value.value = fallback;
+      value.reason = kAppliesAfterKitUpdate;
+      value.waits_for_update = true;
+    }
+  }
+
+  // Online runs Valve's client beside the game (the Steam host): on a title whose runtime kit can't, the game's default
+  // applies and the row says why; a title still on an older runtime keeps the choice for its update.
+  if (auto& value = out.values["steam_features"]; value.available && value.value == "online") {
+    const auto own = recipe.defaults.find("steam_features");
+    const std::string fallback = own != recipe.defaults.end() && own->second != "online"
+                                     ? own->second : FindSetting("steam_features")->playden_default;
+    if (auto reason = SettingChoiceUnavailable(out, "steam_features", value.value); !reason.empty()) {
+      value.value = fallback;
+      value.reason = std::move(reason);
+    } else if (SettingChoiceWaitsForUpdate(out, "steam_features", value.value)) {
+      value.after_update = value.value;
+      value.value = fallback;
+      value.reason = kAppliesAfterKitUpdate;
+      value.waits_for_update = true;
+    }
+  }
+
+  // Game invites Ask and Only show need a title that shows notifications. Without one both are Off, never Join at once
+  // (an invite the player wasn't asked about would pull them out of a match), and the row says so; a title still on an
+  // older runtime keeps the choice for its update.
+  if (auto& value = out.values["game_invites"]; value.available) {
+    const std::string fallback = "off";
+    if (auto reason = SettingChoiceUnavailable(out, "game_invites", value.value); !reason.empty()) {
+      value.value = fallback;
+      value.reason = std::move(reason);
+    } else if (SettingChoiceWaitsForUpdate(out, "game_invites", value.value)) {
       value.after_update = value.value;
       value.value = fallback;
       value.reason = kAppliesAfterKitUpdate;
@@ -1446,6 +1543,14 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   const bool environment_section = !environment_lines.empty();
   if (environment_section) text += "\n[environment]\n" + environment_lines;
 
+  // Steam features = Online: the title runs the Steam host beside the game and holds the game until the host has
+  // signed in, or has said that it can't (runtime/steam_host.h). Only for a title whose runtime runs a helper.
+  const auto& steam_features = OptionalValue(settings, "steam_features");
+  const bool helper_section = settings.helper_process && steam_features.available && steam_features.value == "online";
+  if (helper_section)
+    text += std::string("\n[helper]\nprogram = ") + kSteamHostProgram + "\nready = " + kSteamHostReady +
+            "\nwait = " + std::to_string(kSteamHostWaitSeconds) + "\n";
+
   std::string why;
   ProsperoProfileFeatures features;
   features.environment_section = environment_section;
@@ -1463,6 +1568,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   // also takes a profile up to 16384 bytes with short arguments.
   features.long_arguments = settings.long_profile || settings.arguments.size() > kProsperoMaxArgumentBytes;
   features.launcher_section = launcher_section;
+  features.helper_section = helper_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
   return true;
@@ -2994,6 +3100,28 @@ bool SaveGameSettingsFile(const std::string& path, const std::map<GameId, GameSe
   return true;
 }
 
+bool DropOnlineSteamSettings(GameSettingsRecord* record) {
+  auto& overrides = record->overrides;
+  const auto features = overrides.find("steam_features");
+  const bool online = features != overrides.end() && features->second == "online";
+  if (!online && !overrides.count("steam_sign_in") && !overrides.count("game_invites")) return false;
+  // "Change anyway" on a game whose recipe sets Steam features was only there to pick Online.
+  if (online) overrides.erase(features), overrides.erase(kUnlockPrefix + std::string("steam_features"));
+  overrides.erase("steam_sign_in");
+  overrides.erase("game_invites");
+  ++record->revision;
+  return true;
+}
+
+bool DropOnlineSteamSettingsFile(const std::string& path, std::size_t* changed, std::string* reason) {
+  *changed = 0;
+  std::map<GameId, GameSettingsRecord> records;
+  if (!LoadGameSettingsFile(path, &records, reason)) return false;
+  for (auto& [game, record] : records)
+    if (DropOnlineSteamSettings(&record)) ++*changed;
+  return *changed == 0 || SaveGameSettingsFile(path, records, reason);
+}
+
 bool MigrateLegacyGameSettingsFile(const std::string& legacy_path,
                                    const std::string& private_path,
                                    std::string* reason) {
@@ -3694,9 +3822,10 @@ namespace playden::runtime {
 const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
   static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFpsCounter, kKitDisplayFramegen,
-                                                 kKitInputPlaystation, kKitInputRumble, kKitLauncherMode,
-                                                 kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
-                                                 kKitInputTuning, kKitInputWheel, kKitEnvironment};
+                                                 kKitHelperProcess, kKitInputPlaystation, kKitInputRumble,
+                                                 kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
+                                                 kKitInputTuning, kKitInputWheel, kKitEnvironment,
+                                                 kKitTitleNotify};
   return names;
 }
 
@@ -3729,6 +3858,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.display_fps_counter = has(kKitDisplayFpsCounter);
   kit.launcher_mode = has(kKitLauncherMode);
   kit.input_playstation = has(kKitInputPlaystation);
+  kit.title_notify = has(kKitTitleNotify);
+  kit.helper_process = has(kKitHelperProcess);
   kit.launch_arguments_4096 = has(kKitLaunchArguments4096);
   kit.large_address_aware = has(kKitLargeAddressAware);
   kit.nsiproxy_switch = has(kKitNsiproxySwitch);
@@ -3767,6 +3898,14 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.input_playstation) {
     kit.input_playstation = false;
     kit.input_playstation_needs_update = true;
+  }
+  if (!title_runtime_current && kit.helper_process) {
+    kit.helper_process = false;
+    kit.helper_process_needs_update = true;
+  }
+  if (!title_runtime_current && kit.title_notify) {
+    kit.title_notify = false;
+    kit.title_notify_needs_update = true;
   }
   if (!title_runtime_current && kit.launch_arguments_4096) {
     kit.launch_arguments_4096 = false;
@@ -3924,6 +4063,11 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
     if (fields.count(definition.id) || !row.available || row.source == ValueSource::kPlayden ||
         row.value == definition.playden_default)
       continue;
+    // Online and the sign-in hand the player's Steam account to the game: each player turns that on for themselves,
+    // and chooses what the game does with their invites.
+    if (definition.id == "steam_sign_in" || definition.id == "game_invites" ||
+        (definition.id == "steam_features" && row.value == "online"))
+      continue;
     shared.defaults[definition.id] = row.value;
   }
   for (const auto& id : recipe.locked)
@@ -3970,7 +4114,13 @@ CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const Effec
     if (found_after == after.values.end() || !found_after->second.available) continue;
     if (found_before != before.values.end() && ChosenValue(found_before->second) == ChosenValue(found_after->second))
       continue;
-    shared.defaults[definition.id] = ChosenValue(found_after->second);
+    // Online and the sign-in hand the player's Steam account to the game: each player turns that on for themselves,
+    // and chooses what the game does with their invites.
+    const auto value = ChosenValue(found_after->second);
+    if (definition.id == "steam_sign_in" || definition.id == "game_invites" ||
+        (definition.id == "steam_features" && value == "online"))
+      continue;
+    shared.defaults[definition.id] = value;
   }
   out.status = "untested";
   return out;

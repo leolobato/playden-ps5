@@ -816,6 +816,294 @@ void SharedSessionCountsLicenseChanges() {
   assert(CountSent(script, cm::kEMsgClientLogon) == 2);
 }
 
+constexpr std::uint64_t kMara = 0x0110000100000001ull;
+constexpr std::uint64_t kRui = 0x0110000100000002ull;
+constexpr std::uint64_t kJun = 0x0110000100000003ull;
+constexpr std::uint64_t kClan = 0x0170000000000004ull;
+
+std::vector<std::uint8_t> FriendsListFrame(bool incremental, const std::vector<std::pair<std::uint64_t, std::uint32_t>>& friends) {
+  proto::Writer body;
+  body.AddVarint(1, incremental ? 1 : 0);
+  for (const auto& [id, relationship] : friends) {
+    proto::Writer entry;
+    entry.AddFixed64(1, id);
+    entry.AddVarint(2, relationship);
+    body.AddMessage(2, entry);
+  }
+  return ServerFrame(cm::kEMsgClientFriendsList, body.bytes());
+}
+
+std::vector<std::uint8_t> PersonaFrame(std::uint32_t flags, const std::vector<proto::Writer>& entries) {
+  proto::Writer body;
+  body.AddVarint(1, flags);
+  for (const auto& entry : entries) body.AddMessage(2, entry);
+  return ServerFrame(cm::kEMsgClientPersonaState, body.bytes());
+}
+
+std::vector<std::uint8_t> AvatarBytes() {
+  std::vector<std::uint8_t> avatar(20);
+  for (std::size_t i = 0; i < avatar.size(); ++i) avatar[i] = static_cast<std::uint8_t>(0xa0 + i);
+  return avatar;
+}
+
+proto::Writer MaraPlaying() {
+  proto::Writer entry;
+  entry.AddFixed64(1, kMara);
+  entry.AddVarint(2, 1);
+  entry.AddVarint(3, 440);
+  entry.AddString(15, "Mara");
+  entry.AddBytes(31, AvatarBytes());
+  entry.AddFixed64(56, 440);
+  entry.AddFixed64(73, 0x0186000000000009ull);
+  return entry;
+}
+
+const CmFriend* FindFriend(const CmFriends& friends, std::uint64_t id) {
+  for (const auto& person : friends.friends)
+    if (person.steam_id == id) return &person;
+  return nullptr;
+}
+
+template <typename Ready>
+bool WaitUntil(Ready ready) {
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!ready() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(5ms);
+  return ready();
+}
+
+// Without online-steam the session ignores the friends list Steam pushes and never asks for persona states.
+void FriendsOffSendsNoFriendRequest() {
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9)),
+                      FriendsListFrame(false, {{kMara, 3}, {kRui, 3}})};
+  script->on_service = {ServerFrame(cm::kEMsgServiceMethodResponse, {}, std::nullopt, 1)};
+  auto shared = MakeCmSharedSession();
+  SetCmPersonaState(*shared, cm::kPersonaStateOnline);  // needs friends on as well
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  assert(Ping(client, cancel) == CmError::kNone);
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->Queue(PersonaFrame(cm::kFriendDataRequested, {MaraPlaying()}));
+  }
+  std::this_thread::sleep_for(400ms);
+  assert(CountSent(script, cm::kEMsgClientRequestFriendData) == 0);
+  assert(CountSent(script, cm::kEMsgClientChangeStatus) == 0);
+  assert(CmFriendChanges(*shared) == 0 && CmFriendsOf(*shared).friends.empty() && CmFriendsOf(*shared).account == 0);
+}
+
+// With online-steam: the pushed list asks once for the friends' persona states, the states Steam then pushes
+// are kept by the bridge's rule, and a new logon asks again. Nothing is asked on a timer.
+void FriendsOnRequestsPersonaStatesAfterTheList() {
+  LogCapture log;
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9)),
+                      FriendsListFrame(false, {{kMara, 3}, {kRui, 3}, {kJun, 2}, {kClan, 3}})};
+  script->on_service = {ServerFrame(cm::kEMsgServiceMethodResponse, {}, std::nullopt, 1)};
+  CmSessionOptions options;
+  options.friends = true;
+  auto shared = MakeCmSharedSession(options);
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  assert(!CmSharedSessionLoggedOn(*shared));
+  assert(Ping(client, cancel) == CmError::kNone);
+  assert(CmSharedSessionLoggedOn(*shared));
+  assert(WaitUntil([&] { return CountSent(script, cm::kEMsgClientRequestFriendData) == 1; }));
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    const auto& sent = *std::find_if(script->sent.begin(), script->sent.end(), [](const cm::Frame& frame) {
+      return frame.emsg == cm::kEMsgClientRequestFriendData;
+    });
+    // Friends only: not the pending request (2) or the clan.
+    assert(sent.body == cm::EncodeRequestFriendData(cm::kFriendDataRequested, {kMara, kRui}));
+    assert(sent.header.steam_id == kAccountSteamId && sent.header.session_id == 77);
+  }
+  assert(WaitUntil([&] { return CmFriendsOf(*shared).friends.size() == 2; }));
+  assert(CmFriendsOf(*shared).account == kAccountSteamId);
+
+  // A friend in a game and a lobby, and this account's own entry, which is not a friend.
+  proto::Writer self;
+  self.AddFixed64(1, kAccountSteamId);
+  self.AddString(15, "Me");
+  auto changes = CmFriendChanges(*shared);
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->Queue(PersonaFrame(cm::kFriendDataRequested, {MaraPlaying(), self}));
+  }
+  assert(WaitUntil([&] { return CmFriendChanges(*shared) > changes; }));
+  auto friends = CmFriendsOf(*shared);
+  assert(friends.friends.size() == 2 && !FindFriend(friends, kAccountSteamId));
+  const auto* mara = FindFriend(friends, kMara);
+  assert(mara && mara->name == "Mara" && mara->persona_state == 1 && mara->app_id == 440 && mara->game_id == 440);
+  assert(mara->lobby_id == 0x0186000000000009ull && mara->avatar_hash == "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3");
+
+  // Only the status: the name, game and lobby stay.
+  proto::Writer away;
+  away.AddFixed64(1, kMara);
+  away.AddVarint(2, 3);
+  changes = CmFriendChanges(*shared);
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->Queue(PersonaFrame(cm::kPersonaFlagStatus, {away}));
+  }
+  assert(WaitUntil([&] { return CmFriendChanges(*shared) > changes; }));
+  friends = CmFriendsOf(*shared);
+  mara = FindFriend(friends, kMara);
+  assert(mara->persona_state == 3 && mara->name == "Mara" && mara->lobby_id != 0 && mara->app_id == 440);
+  assert(!mara->avatar_hash.empty());
+
+  // Presence and game info without a game: the game and lobby are cleared, and so is the avatar it did not carry.
+  proto::Writer stopped;
+  stopped.AddFixed64(1, kMara);
+  changes = CmFriendChanges(*shared);
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->Queue(PersonaFrame(cm::kPersonaFlagPresence | cm::kPersonaFlagGameExtraInfo, {stopped}));
+  }
+  assert(WaitUntil([&] { return CmFriendChanges(*shared) > changes; }));
+  friends = CmFriendsOf(*shared);
+  mara = FindFriend(friends, kMara);
+  assert(mara->app_id == 0 && mara->lobby_id == 0 && mara->game_id == 0 && mara->avatar_hash.empty());
+  assert(mara->persona_state == 3 && mara->name == "Mara");
+
+  // An accepted friend request arrives incrementally: only the new friend is asked for. A removed one goes.
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    script->Queue(FriendsListFrame(true, {{kJun, 3}, {kRui, 0}}));
+  }
+  assert(WaitUntil([&] { return CountSent(script, cm::kEMsgClientRequestFriendData) == 2; }));
+  {
+    std::lock_guard<std::mutex> lock(script->mutex);
+    assert(script->sent.back().emsg == cm::kEMsgClientRequestFriendData);
+    assert(script->sent.back().body == cm::EncodeRequestFriendData(cm::kFriendDataRequested, {kJun}));
+  }
+  assert(WaitUntil([&] {
+    const auto now = CmFriendsOf(*shared);
+    return now.friends.size() == 2 && FindFriend(now, kJun) && !FindFriend(now, kRui);
+  }));
+
+  // Idle for a while: nothing more is asked.
+  std::this_thread::sleep_for(300ms);
+  assert(CountSent(script, cm::kEMsgClientRequestFriendData) == 2);
+
+  // A new logon (here a rotated token) gets the list again and asks again.
+  auto rotated = Session();
+  rotated.refresh_token = "synthetic.rotated.token";
+  assert(client.WithServiceSession(rotated, 3000, cancel, [](const CmClient::ServiceCall& call, std::uint64_t) {
+    std::vector<std::uint8_t> reply;
+    return call("Cloud.Ping#1", {}, &reply, nullptr);
+  }) == CmError::kNone);
+  assert(WaitUntil([&] { return CountSent(script, cm::kEMsgClientRequestFriendData) == 3; }));
+  // Each logon shows the account online again, so Steam keeps sending friends' online states.
+  assert(CountSent(script, cm::kEMsgClientChangeStatus) == 2);
+
+  // The log counts; it never names a friend or their SteamID.
+  const auto lines = log.Take();
+  assert(HasLine(lines, "owner=shared friends list friends=2 incremental=0"));
+  assert(HasLine(lines, "owner=shared friends request ids=2 result=none"));
+  bool persona_line = false;
+  for (const auto& line : lines) {
+    assert(line.find("Mara") == std::string::npos && line.find(std::to_string(kMara)) == std::string::npos);
+    if (line.rfind("owner=shared friends persona messages=1 entries=2 name=2 state=1 app=1 lobby=1 avatar=1", 0) == 0)
+      persona_line = true;
+  }
+  assert(persona_line);
+}
+
+// With friends on, the shared session shows the account online after each logon without being asked: Steam sends
+// friends' online states only to an online session (on the console every friend showed offline without it).
+void ShowOnlineSendsChangeStatusAfterLogon() {
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9))};
+  script->on_service = {ServerFrame(cm::kEMsgServiceMethodResponse, {}, std::nullopt, 1)};
+  CmSessionOptions options;
+  options.friends = true;
+  auto shared = MakeCmSharedSession(options);
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  assert(Ping(client, cancel) == CmError::kNone);
+  assert(CountSent(script, cm::kEMsgClientChangeStatus) == 1);
+  std::lock_guard<std::mutex> lock(script->mutex);
+  const auto& sent = *std::find_if(script->sent.begin(), script->sent.end(), [](const cm::Frame& frame) {
+    return frame.emsg == cm::kEMsgClientChangeStatus;
+  });
+  assert(sent.body == cm::EncodeChangeStatus(cm::kPersonaStateOnline));
+}
+
+// State 0 still sends nothing.
+void ShowOnlineCanBeTurnedOff() {
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9))};
+  script->on_service = {ServerFrame(cm::kEMsgServiceMethodResponse, {}, std::nullopt, 1)};
+  CmSessionOptions options;
+  options.friends = true;
+  auto shared = MakeCmSharedSession(options);
+  SetCmPersonaState(*shared, 0);
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  assert(Ping(client, cancel) == CmError::kNone);
+  assert(CountSent(script, cm::kEMsgClientChangeStatus) == 0);
+}
+
+std::vector<std::vector<std::uint8_t>> ChangeStatusBodies(const std::shared_ptr<Script>& script) {
+  std::lock_guard<std::mutex> lock(script->mutex);
+  std::vector<std::vector<std::uint8_t>> bodies;
+  for (const auto& frame : script->sent)
+    if (frame.emsg == cm::kEMsgClientChangeStatus) bodies.push_back(frame.body);
+  return bodies;
+}
+
+// Invisible (Friends tab › Appear invisible): the status after the logon is Invisible, which friends see as offline.
+void InvisibleSendsInvisibleAfterLogon() {
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9))};
+  script->on_service = {ServerFrame(cm::kEMsgServiceMethodResponse, {}, std::nullopt, 1)};
+  CmSessionOptions options;
+  options.friends = true;
+  auto shared = MakeCmSharedSession(options);
+  SetCmPersonaState(*shared, cm::kPersonaStateInvisible);
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  assert(Ping(client, cancel) == CmError::kNone);
+  const auto bodies = ChangeStatusBodies(script);
+  assert(bodies.size() == 1 && bodies[0] == cm::EncodeChangeStatus(cm::kPersonaStateInvisible));
+  assert(cm::EncodeChangeStatus(cm::kPersonaStateInvisible) == (std::vector<std::uint8_t>{0x08, 0x07}));
+}
+
+// A change while the session is logged on goes out on the same session, without a new logon and without a call: the
+// idle session sends it on its next turn. Back to Online sends Online again; 0 sends nothing more.
+void PersonaChangeWhileLoggedOnIsSent() {
+  auto script = std::make_shared<Script>();
+  script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9))};
+  script->on_service = {ServerFrame(cm::kEMsgServiceMethodResponse, {}, std::nullopt, 1)};
+  CmSessionOptions options;
+  options.friends = true;
+  auto shared = MakeCmSharedSession(options);
+  auto client = MakeClient(script);
+  client.SetSharedSession(shared);
+  std::atomic<bool> cancel{false};
+  assert(Ping(client, cancel) == CmError::kNone);
+  assert(ChangeStatusBodies(script).size() == 1);
+  SetCmPersonaState(*shared, cm::kPersonaStateInvisible);
+  assert(WaitUntil([&] { return ChangeStatusBodies(script).size() == 2; }));
+  assert(ChangeStatusBodies(script)[1] == cm::EncodeChangeStatus(cm::kPersonaStateInvisible));
+  assert(CountSent(script, cm::kEMsgClientLogon) == 1);
+  // Sent once: the next turns don't send it again.
+  std::this_thread::sleep_for(300ms);
+  assert(ChangeStatusBodies(script).size() == 2 && CountSent(script, cm::kEMsgClientLogon) == 1);
+  SetCmPersonaState(*shared, cm::kPersonaStateOnline);
+  assert(WaitUntil([&] { return ChangeStatusBodies(script).size() == 3; }));
+  assert(ChangeStatusBodies(script)[2] == cm::EncodeChangeStatus(cm::kPersonaStateOnline));
+  SetCmPersonaState(*shared, 0);
+  std::this_thread::sleep_for(300ms);
+  assert(ChangeStatusBodies(script).size() == 3 && CountSent(script, cm::kEMsgClientLogon) == 1);
+}
+
 // A call waiting while another holds the shared session (a long library license scan, issue #47)
 // can be canceled, and its deadline starts only once it has the session.
 void WaitingForTheSharedSessionIsCancelableAndUntimed() {
@@ -1397,6 +1685,15 @@ int main(int argc, char** argv) {
   ResetCmBackoff();
   SharedSessionLogsOnAgainForNewCredentials();
   SharedSessionCountsLicenseChanges();
+  ResetCmBackoff();
+  FriendsOffSendsNoFriendRequest();
+  ResetCmBackoff();
+  FriendsOnRequestsPersonaStatesAfterTheList();
+  ResetCmBackoff();
+  ShowOnlineSendsChangeStatusAfterLogon();
+  ShowOnlineCanBeTurnedOff();
+  InvisibleSendsInvisibleAfterLogon();
+  PersonaChangeWhileLoggedOnIsSent();
   ResetCmBackoff();
   WaitingForTheSharedSessionIsCancelableAndUntimed();
   ResetCmBackoff();

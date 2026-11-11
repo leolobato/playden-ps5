@@ -355,6 +355,43 @@ void HeroHasNoHeaderFallback() {
   assert(cdn.urls.size() == 1 && !cdn.asked("/header.jpg"));
 }
 
+// A friend's avatar: keyed by its hash (no game), cached as avatar_<hash>.jpg, with no header.jpg fallback.
+void AvatarsAreKeyedByHash() {
+  const std::string hash = "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3";
+  const auto source = AvatarArtworkSource(hash);
+  assert(source == "https://avatars.steamstatic.com/" + hash + "_medium.jpg");
+  std::string parsed;
+  assert(IsAvatarArtworkSource(source, &parsed) && parsed == hash);
+  assert(AvatarArtworkSource("A0A1A2A3A4A5A6A7A8A9AAABACADAEAFB0B1B2B3").empty());
+  assert(AvatarArtworkSource(hash.substr(1)).empty());
+  assert(!IsAvatarArtworkSource("https://avatars.steamstatic.com/" + hash + "_full.jpg"));
+  assert(!IsAvatarArtworkSource("https://avatars.steamstatic.com/../" + hash.substr(3) + "_medium.jpg"));
+
+  CacheFolder folder;
+  FakeCdn cdn;
+  cdn.answer = [](const std::string& url) { return EndsWith(url, "_medium.jpg") ? Status(200, SmallJpeg()) : Status(500); };
+  HttpArtworkBackend backend(cdn.perform(), folder.art.string());
+  std::atomic<bool> cancel{false};
+  // Not with a game, and not another host or size.
+  assert(!backend.Load({1, SteamId(42), source}, cancel));
+  assert(!backend.Load({1, playden::GameId{}, "https://avatars.steamstatic.com/" + hash + "_full.jpg"}, cancel));
+  assert(!backend.Load({1, playden::GameId{}, "https://cdn.cloudflare.steamstatic.com/steam/apps/42/library_600x900.jpg"}, cancel));
+  assert(cdn.urls.empty());
+  const auto image = backend.Load({1, playden::GameId{}, source}, cancel);
+  assert(image);
+  assert(cdn.urls == std::vector<std::string>{source});
+  assert(folder.Read("avatar_" + hash + ".jpg") == SmallJpeg());
+  // Cached: no second download.
+  assert(backend.Load({1, playden::GameId{}, source}, cancel) && cdn.urls.size() == 1);
+
+  CacheFolder missing_folder;
+  FakeCdn missing;
+  missing.answer = [](const std::string&) { return Status(404); };
+  HttpArtworkBackend missing_backend(missing.perform(), missing_folder.art.string());
+  assert(!missing_backend.Load({1, playden::GameId{}, source}, cancel));
+  assert(missing.urls.size() == 1 && !missing.asked("/header.jpg"));
+}
+
 void OtherFailuresKeepTheCachedCover() {
   for (const bool timeout : {false, true}) {
     CacheFolder folder;
@@ -430,6 +467,7 @@ int main(int argc, char** argv) {
   VeryWideBannerKeepsARow();
   SaveIsSkippedWhileTheEffectiveUidIsHeld();
   HeroHasNoHeaderFallback();
+  AvatarsAreKeyedByHash();
   OtherFailuresKeepTheCachedCover();
   BadDownloadKeepsTheCachedCover();
   ExpiredCacheIsReplacedByANewCover();

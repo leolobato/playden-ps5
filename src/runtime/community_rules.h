@@ -51,6 +51,10 @@ std::vector<std::string> CommunityRecipeRefusals(const CommunityRecipe& communit
 // Playden's own, so they are not listed.
 std::vector<std::string> CommunityRecipeFlags(const CommunityRecipe& community);
 
+// The experimental feature (its features.txt line) the recipe's values need, or empty when it needs none. Steam
+// network needs online-steam. Players without that feature are not offered the recipe.
+std::string CommunityRecipeFeature(const CommunityRecipe& community);
+
 // Why the kit a game's title runs with cannot run a community recipe, as a sentence for the
 // player, or empty when it can: requirements the kit's template lacks (UnmetRecipeRequirements),
 // or a min_kit newer than title_kit_version. An unknown version (a kit before 0.10) fits no

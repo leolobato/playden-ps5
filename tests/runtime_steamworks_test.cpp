@@ -94,11 +94,11 @@ int main(int argc, char** argv) {
   CHECK(Read(plugin / "steam_settings/configs.main.ini") ==
         "[main::connectivity]\ndisable_lan_only=0\noffline=0\ndisable_networking=0\n");
   // Steam network = Offline: Steam offline, the emulator's networking off; back online again.
-  identity.online = false;
+  identity.network = false;
   CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
   CHECK(Read(plugin / "steam_settings/configs.main.ini") ==
         "[main::connectivity]\ndisable_lan_only=0\noffline=1\ndisable_networking=1\n");
-  identity.online = true;
+  identity.network = true;
   CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
   CHECK(Read(plugin / "steam_settings/configs.main.ini").find("offline=0\ndisable_networking=0\n") != std::string::npos);
   CHECK(Read(plugin / "steam_settings/depots.txt") == "2062431\n");
@@ -352,6 +352,67 @@ int main(int argc, char** argv) {
     Write(game / "Other/steam_api64.dll", GameDll(true, "other"));
     swapped = EmulateSteamworks(game.string(), emulator, hashed);
     CHECK(swapped.ok && (swapped.skipped == hashed.steam_api_copies) && !fs::exists(game / copy));
+  }
+
+  {  // The Steam host's mode: steam_appid.txt beside each of the game's own libraries and in each program's folder
+     // (the working folder the library reads it from), a game's own file kept, and no write through a link.
+    const auto game = root / "steam-host";
+    Write(game / "bin/steam_api64.dll", GameDll(true, "host"));
+    Write(game / "steam_api.dll", GameDll(false, "host32"));
+    Write(game / "steam_appid.txt", "999");
+    Write(game / "Game/Binaries/Win64/Game-Win64-Shipping.exe", "MZ");
+    fs::create_directories(root / "elsewhere");
+    fs::create_directory_symlink(root / "elsewhere", game / "linked");
+    Write(root / "elsewhere/steam_api64.dll", GameDll(true, "linked"));
+    Write(root / "elsewhere/Game.exe", "MZ");
+    fs::create_directories(root / "outside");
+    CHECK(WriteSteamAppIdBeside(game.string(), {"bin/steam_api64.dll", "steam_api.dll", "linked/steam_api64.dll"},
+                                {"Game/Binaries/Win64", "linked", "", "../outside", "/data"}, 548430));
+    CHECK(Read(game / "bin/steam_appid.txt") == "548430" && Read(game / "steam_appid.txt") == "999");
+    CHECK(Read(game / "Game/Binaries/Win64/steam_appid.txt") == "548430");
+    CHECK(!fs::exists(root / "elsewhere/steam_appid.txt") && !fs::exists(root / "outside/steam_appid.txt"));
+    CHECK(!WriteSteamAppIdBeside(game.string(), {"steam_api.dll"}, {}, 0));
+  }
+
+  {  // The retired online bridge, any build of it, is Playden's: never kept as the game's original, and its emulator copy
+     // goes when the game gets its own DLL back.
+    const auto game = root / "bridged";
+    const auto own = GameDll(true, "own-bridged");
+    const std::string bridge = "a playden-online-bridge build";
+    Write(game / "steam_api64.dll", bridge);
+    Write(game / "steam_api64_gbe.dll", emulator64);
+    Write(game / "steam_api64.dll.orig", own);
+    auto swapped = EmulateSteamworks(game.string(), emulator, identity);
+    CHECK(swapped.ok && (swapped.changed == std::vector<std::string>{"steam_api64.dll"}));
+    CHECK(Read(game / "steam_api64.dll") == emulator64 && Read(game / "steam_api64.dll.orig") == own);
+    CHECK(!fs::exists(game / "steam_api64_gbe.dll"));
+    Write(game / "steam_api64.dll", bridge);
+    Write(game / "steam_api64_gbe.dll", emulator64);
+    auto restored = RestoreSteamworks(game.string());
+    CHECK(restored.ok && Read(game / "steam_api64.dll") == own && !fs::exists(game / "steam_api64_gbe.dll"));
+    // A game update replaces the bridge with the game's new DLL while the emulator copy stays: the new DLL has no
+    // marker, so it is kept as the game's original.
+    const auto updated = GameDll(true, "own-after-game-update");
+    Write(game / "steam_api64.dll", updated);
+    Write(game / "steam_api64_gbe.dll", emulator64);
+    swapped = EmulateSteamworks(game.string(), emulator, identity);
+    CHECK(swapped.ok && Read(game / "steam_api64.dll.orig") == updated && Read(game / "steam_api64.dll") == emulator64);
+    // A bridge whose emulator copy is gone (or another build of the emulator) is still Playden's: the saved original
+    // stays the game's.
+    Write(game / "steam_api64.dll", bridge);
+    fs::remove(game / "steam_api64_gbe.dll");
+    Write(game / "steam_api64.dll.orig", own);
+    restored = RestoreSteamworks(game.string());
+    CHECK(restored.ok && Read(game / "steam_api64.dll") == own && Read(game / "steam_api64.dll.orig") == own);
+    Write(game / "steam_api64.dll", bridge);
+    swapped = EmulateSteamworks(game.string(), emulator, identity);
+    CHECK(swapped.ok && Read(game / "steam_api64.dll") == emulator64 && Read(game / "steam_api64.dll.orig") == own);
+    // Without the marker, an unknown DLL is the game's, whatever sits beside it.
+    const auto other = root / "not-bridged";
+    Write(other / "steam_api64.dll", own);
+    Write(other / "steam_api64_gbe.dll", "something else");
+    CHECK(EmulateSteamworks(other.string(), emulator, identity).ok && Read(other / "steam_api64.dll.orig") == own);
+    CHECK(fs::exists(other / "steam_api64_gbe.dll"));
   }
 
   fs::remove_all(root);

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "homebrew/simulation.hpp"
+#include "runtime/game_settings.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -2918,6 +2919,200 @@ void my_presets_game_settings(const std::filesystem::path& fixtures, const std::
           "my presets: the 50th is the last");
 }
 
+namespace {
+
+constexpr std::uint64_t kMara = 76561198000000001ULL;   // Amber Valley (Online), in a lobby
+constexpr std::uint64_t kLena = 76561198000000004ULL;   // Paper Satellites (Offline emulation), in a lobby
+constexpr std::uint64_t kPia = 76561198000000005ULL;    // Łódź Nights (not installed), in a lobby
+constexpr std::uint64_t kJun = 76561198000000006ULL;    // a game not in the library
+constexpr std::uint64_t kKofi = 76561198000000008ULL;   // away
+
+}  // namespace
+
+// Without online-steam there is no Friends tab, scenario, page row or button.
+void friends_hidden_without_online_steam(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using playden::homebrew::Route;
+    playden::runtime::SetOnlineSteamEnabled(false);
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    simulation.scenario("default");
+    check(playden::homebrew::TabRoutes().size() == 5, "FR without online-steam the tab bar has five tabs");
+    check(!simulation.scenario("friends"), "FR the friends scenario needs online-steam");
+    check(!simulation.action("route:friends"), "FR there is no Friends route without online-steam");
+    for (int step = 0; step < 5; ++step) {
+        simulation.action("r1");
+        check(simulation.state().navigation.route != Route::Friends, "FR R1 never reaches Friends");
+    }
+    check(simulation.state().navigation.route == Route::Home, "FR five R1 presses go round to Home");
+    simulation.action("details:900009");
+    check(!has_row(simulation, "details-invite") && !has_row(simulation, "friends-playing"),
+          "FR a game page has no Invite friends or Friends playing");
+}
+
+void friends_tab_join_and_invite(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using playden::homebrew::Route;
+    playden::runtime::SetOnlineSteamEnabled(true);
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    check(simulation.scenario("friends"), "FR the friends scenario loads");
+    check(playden::homebrew::TabRoutes().size() == 6 && playden::homebrew::TabIndex(Route::Friends) == 4 &&
+              playden::homebrew::TabIndex(Route::Settings) == 5,
+          "FR Friends is a tab between Saves and Settings");
+    check(simulation.state().navigation.route == Route::Friends, "FR the Friends tab is open");
+    check(has_row(simulation, "friends-filter-0") && has_row(simulation, "friends-filter-1") && has_row(simulation, "friends-filter-2"),
+          "FR the rail has Online, In my games and All");
+    check(has_row(simulation, "friend-" + std::to_string(kMara)) && has_row(simulation, "friend-" + std::to_string(kKofi)) &&
+              !has_row(simulation, "friend-76561198000000009"),
+          "FR Online lists the online and away friends, not the offline ones");
+    check(simulation.state().navigation.focus_key.rfind("friend-", 0) == 0, "FR the tab opens on a friend");
+    const auto status = [&](std::uint64_t id) {
+        for (const auto& row : simulation.view().rows)
+            if (row.key == "friend-" + std::to_string(id)) return row.subtitle;
+        return std::string();
+    };
+    check(status(kMara) == "Playing Amber Valley · in a lobby", "FR a friend in a lobby says the game and the lobby");
+    check(status(kJun) == "Playing Harbor Kings", "FR a game outside the library is named by the friend's status");
+    check(status(kKofi) == "Away", "FR an away friend says Away");
+
+    // Triangle: Appear invisible and back; the subtitle says which, and the choice is a saved preference.
+    const auto legend = [&](const std::string& text) {
+        const auto& legends = simulation.view().legends;
+        return std::find(legends.begin(), legends.end(), text) != legends.end();
+    };
+    const auto subtitle = simulation.view().subtitle;
+    check(!simulation.state().steam_invisible && subtitle.rfind("You appear online · ", 0) == 0 &&
+              subtitle.find(" online · ") != std::string::npos && subtitle.find(" friends") != std::string::npos,
+          "FR the subtitle says the account appears online, then the friends' counts");
+    check(legend("Triangle Appear invisible") && !legend("Triangle Appear online"), "FR Triangle offers Appear invisible");
+    const auto focus = simulation.state().navigation.focus_key;
+    simulation.action("triangle");
+    check(simulation.state().steam_invisible && simulation.ExportPreferences().steam_invisible,
+          "FR Triangle makes the account appear invisible, as a preference");
+    check(simulation.view().subtitle.rfind("You appear invisible · ", 0) == 0 && legend("Triangle Appear online") &&
+              !legend("Triangle Appear invisible"),
+          "FR the subtitle says invisible, and Triangle offers Appear online");
+    check(simulation.state().navigation.focus_key == focus && simulation.state().navigation.route == Route::Friends,
+          "FR Triangle leaves the focus where it was");
+    simulation.action("triangle");
+    check(!simulation.state().steam_invisible && !simulation.ExportPreferences().steam_invisible &&
+              simulation.view().subtitle.rfind("You appear online · ", 0) == 0 && legend("Triangle Appear invisible"),
+          "FR Triangle again appears online");
+
+    // Sections: In my games keeps only friends in library games; All adds the offline ones.
+    check(simulation.action("focus:friends-filter-0") && simulation.action("down"), "FR Down on the rail moves to In my games");
+    check(simulation.state().navigation.friends_filter == 1 && !has_row(simulation, "friend-" + std::to_string(kJun)) &&
+              has_row(simulation, "friend-" + std::to_string(kLena)),
+          "FR In my games lists friends playing library games");
+    simulation.action("down");
+    check(simulation.state().navigation.friends_filter == 2 && has_row(simulation, "friend-76561198000000009"),
+          "FR All lists offline friends too");
+    simulation.action("right");
+    check(simulation.state().navigation.focus_key.rfind("friend-", 0) == 0, "FR Right enters the friends");
+    simulation.action("left");
+    check(simulation.state().navigation.focus_key == "friends-filter-2", "FR Left from the first column returns to the rail");
+    simulation.action("right");
+    for (int step = 0; step < 10 && !simulation.state().navigation.tabs_focused; ++step) simulation.action("up");
+    check(simulation.state().navigation.tabs_focused && simulation.state().navigation.tab_focus == 4 &&
+              simulation.state().navigation.focus_key.rfind("friend-", 0) == 0,
+          "FR Up from the top friends reaches the Friends tab in the tab bar");
+    simulation.action("right");
+    simulation.action("right");
+    check(simulation.state().navigation.tab_focus == 5, "FR Settings is the last of six tabs");
+    simulation.action("cross");
+    check(simulation.state().navigation.route == Route::Settings, "FR Cross opens Settings");
+    simulation.action("l1");
+    check(simulation.state().navigation.route == Route::Friends, "FR L1 from Settings returns to Friends");
+    const auto pia = [&]() -> const playden::homebrew::ViewRow* {
+        for (const auto& row : simulation.view().rows) if (row.key == "friend-" + std::to_string(kPia)) return &row;
+        return nullptr;
+    }();
+    check(pia && pia->value.empty() && pia->action == "friend-join", "FR no Join on a lobby of a game that isn't installed");
+
+    // Join a lobby of a game set to Online: Play with the lobby to connect to.
+    simulation.action("focus:friend-" + std::to_string(kMara));
+    simulation.action("cross");
+    check(!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == "join-lobby" &&
+              simulation.view().title == "Join Mara's lobby" && has_row(simulation, "join-start") &&
+              !has_row(simulation, "join-use-online"),
+          "FR Cross on a friend in a lobby opens the Join sheet with Start game and join");
+    simulation.action("focus:join-start");
+    simulation.action("cross");
+    auto launches = simulation.TakeRuntimeOnlineLaunches();
+    check(launches.size() == 1 && launches.count(playden::GameId::Steam(900009)) &&
+              launches[playden::GameId::Steam(900009)].connect_lobby == 109775241000000001ULL &&
+              launches[playden::GameId::Steam(900009)].invites.empty(),
+          "FR Start game and join plays Amber Valley into Mara's lobby");
+    check(simulation.state().navigation.modals.empty() && simulation.state().session_game_id == playden::GameId::Steam(900009),
+          "FR the game starts");
+
+    // Join a lobby of a game on Offline emulation: Use Online for this game saves it, then joins.
+    check(simulation.scenario("friends"), "FR the friends scenario loads again");
+    simulation.action("focus:friend-" + std::to_string(kLena));
+    simulation.action("cross");
+    check(has_row(simulation, "join-use-online") && !has_row(simulation, "join-start"),
+          "FR a game not set to Online offers Use Online for this game");
+    simulation.action("focus:join-use-online");
+    simulation.action("cross");
+    const auto record = simulation.state().game_settings.find(playden::GameId::Steam(900011));
+    check(record != simulation.state().game_settings.end() && record->second.overrides.count("steam_features") &&
+              record->second.overrides.at("steam_features") == "online",
+          "FR Use Online for this game saves Steam features = Online");
+    launches = simulation.TakeRuntimeOnlineLaunches();
+    check(launches.count(playden::GameId::Steam(900011)) && launches[playden::GameId::Steam(900011)].connect_lobby == 109775241000000004ULL,
+          "FR and then joins Lena's lobby");
+
+    // A game that isn't installed: the sheet says so and offers no Join.
+    check(simulation.scenario("friends"), "FR the friends scenario loads a third time");
+    simulation.action("focus:friend-" + std::to_string(kPia));
+    simulation.action("cross");
+    check(!has_row(simulation, "join-start") && !has_row(simulation, "join-use-online") &&
+              simulation.view().subtitle.find("Install") == 0,
+          "FR a game not installed explains and offers no Join");
+    simulation.action("circle");
+
+    // The game page: Friends playing, Join on the one in a lobby, Invite friends beside Play.
+    simulation.action("details:900009");
+    check(has_row(simulation, "friends-playing") && has_row(simulation, "friend-" + std::to_string(kMara)) &&
+              !has_row(simulation, "friend-" + std::to_string(kLena)),
+          "FR a game page lists only the friends playing it");
+    const auto& rows = simulation.view().rows;
+    const auto play = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.key == "details-play"; });
+    check(play != rows.end() && std::next(play) != rows.end() && std::next(play)->key == "details-invite",
+          "FR Invite friends sits beside Play on a game set to Online");
+    simulation.action("focus:details-play");
+    simulation.action("down");
+    check(simulation.state().navigation.focus_key == "friend-" + std::to_string(kMara), "FR Down from the buttons reaches the friends");
+    simulation.action("up");
+    check(simulation.state().navigation.focus_key == "details-play", "FR Up returns to Play");
+    simulation.action("details:900011");
+    check(!has_row(simulation, "details-invite"), "FR a game not set to Online has no Invite friends");
+
+    // Invite: pick two friends, Play and invite them.
+    simulation.action("details:900009");
+    simulation.action("focus:details-invite");
+    simulation.action("cross");
+    check(!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == "invite-friends",
+          "FR Invite friends opens its sheet");
+    const auto* play_row = [&]() -> const playden::homebrew::ViewRow* {
+        for (const auto& row : simulation.view().rows) if (row.key == "invite-play") return &row;
+        return nullptr;
+    }();
+    check(play_row && !play_row->enabled, "FR Play and invite waits for a friend");
+    simulation.action("focus:invite-friend-" + std::to_string(kKofi));
+    simulation.action("cross");
+    simulation.action("focus:invite-friend-" + std::to_string(kJun));
+    simulation.action("cross");
+    simulation.action("focus:invite-play");
+    check(simulation.view().rows[static_cast<std::size_t>(simulation.view().focused_row)].title == "Play and invite 2",
+          "FR the button counts the friends picked");
+    simulation.action("cross");
+    launches = simulation.TakeRuntimeOnlineLaunches();
+    check(launches.count(playden::GameId::Steam(900009)) && launches[playden::GameId::Steam(900009)].connect_lobby == 0 &&
+              launches[playden::GameId::Steam(900009)].invites.size() == 2 &&
+              std::count(launches[playden::GameId::Steam(900009)].invites.begin(), launches[playden::GameId::Steam(900009)].invites.end(), kKofi) &&
+              std::count(launches[playden::GameId::Steam(900009)].invites.begin(), launches[playden::GameId::Steam(900009)].invites.end(), kJun),
+          "FR Play and invite passes the two friends");
+    playden::runtime::SetOnlineSteamEnabled(false);
+}
+
 int main(int argc, char** argv) {
     check(argc == 2, "fixture directory argument is required");
     const std::filesystem::path fixtures(argv[1]);
@@ -2988,6 +3183,10 @@ int main(int argc, char** argv) {
     t13_settings_sections_rail(fixtures, profile);
     clean();
     t14_tab_bar_from_the_top_of_a_page(fixtures, profile);
+    clean();
+    friends_hidden_without_online_steam(fixtures, profile);
+    clean();
+    friends_tab_join_and_invite(fixtures, profile);
     clean();
     t15_password_sign_in(fixtures, profile);
     clean();

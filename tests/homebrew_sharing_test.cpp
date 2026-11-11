@@ -555,6 +555,7 @@ void share_and_vote(const std::filesystem::path& base) {
                   report.based_on->revision == kRevision && report.installed_on == "console" && !sent[2].attach_logs,
               "the report names the game, the result, the recipe and where it is installed");
         check(report.origin == "prompt", "an answer to the after-game prompt says so");
+        check(report.versions.empty(), "a game that isn't Online names no Steam client");
         std::lock_guard<std::mutex> lock(api.mutex);
         check(api.requests.size() == 2 && api.requests[1].url.find("/v1/reports") != std::string::npos,
               "a report that works sends no logs");
@@ -1133,6 +1134,8 @@ void report_with_logs(const std::filesystem::path& base) {
     report.kit = "0.19";
     report.firmware = "13.60";
     report.playden_version = "0.10.0";
+    // A game set to Online names Valve's Steam client version: after the logs' facts.
+    report.versions = {{"Steam client", "1792618285"}};
     service.Submit(std::move(request));
     service.Wait();
     const auto results = service.TakeResults();
@@ -1154,6 +1157,8 @@ void report_with_logs(const std::filesystem::path& base) {
     const std::string body(api.requests[1].body.begin(), api.requests[1].body.end());
     check(contains(body, "\"attachment\":\"att_9\"") && contains(body, "\"versions\":[[") && !contains(body, "leoaccount"),
           "the report names the logs and carries the versions");
+    check(contains(body, "[\"Steam client\",\"1792618285\"]") && body.find("Playden version") < body.find("Steam client"),
+          "the report's own row comes after the logs' facts");
     check(contains(body, "capability-number-1") && !contains(body, "capability-number-39") && contains(body, "\u2026"),
           "a long fact is shortened to fit a version row, not refused");
     service.Shutdown();

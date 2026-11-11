@@ -137,8 +137,10 @@ bool CheckedImageBytes(int width, int height, std::size_t& bytes) {
   return true;
 }
 
-// The game's own CDN art: its cover, its library hero and its logo, and nothing else.
+// The game's own CDN art: its cover, its library hero and its logo, and nothing else; or a friend's medium
+// avatar, keyed by its hash alone.
 bool CanonicalKey(const ArtworkKey& key) {
+  if (key.account_generation != 0 && key.game_id == GameId{} && IsAvatarArtworkSource(key.source)) return true;
   if (key.account_generation == 0 || !key.game_id.valid() ||
       key.source.size() > kMaxArtworkSourceBytes) return false;
   const std::string base = "https://cdn.cloudflare.steamstatic.com/steam/apps/" +
@@ -149,6 +151,8 @@ bool CanonicalKey(const ArtworkKey& key) {
 }
 
 std::string CacheFileName(const ArtworkKey& key) {
+  if (std::string hash; key.account_generation != 0 && key.game_id == GameId{} && IsAvatarArtworkSource(key.source, &hash))
+    return "avatar_" + hash + ".jpg";
   if (key.account_generation == 0 || !key.game_id.valid() || key.source.empty()) return {};
   const std::string id = ToKey(key.game_id);
   if (id.empty()) return {};

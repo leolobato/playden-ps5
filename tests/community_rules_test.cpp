@@ -331,6 +331,23 @@ void Rules(const std::string& fixtures) {
   community.recipe.defaults["environment"] = "VKD3D_CONFIG=dxr;PW_MEDIA_DISABLE=1;MESA_GL_VERSION_OVERRIDE=4.5";
   CHECK(Mentions(CommunityRecipeRefusals(community), "MESA_GL_VERSION_OVERRIDE") &&
         CommunityRecipeRefusals(community).size() == 1);
+  // Online and the sign-in stay each player's own; the emulator's network value can be shared.
+  community = good;
+  community.recipe.defaults["steam_features"] = "online";
+  CHECK(Mentions(CommunityRecipeRefusals(community), "steam_features to online"));
+  community = good;
+  community.recipe.defaults["steam_sign_in"] = "kept";
+  CHECK(Mentions(CommunityRecipeRefusals(community), "defaults sets steam_sign_in"));
+  community = good;
+  community.recipe.defaults["game_invites"] = "join";
+  CHECK(Mentions(CommunityRecipeRefusals(community), "defaults sets game_invites") &&
+        CommunityRecipeFeature(community) == "online-steam");
+  community = good;
+  community.recipe.defaults["steam_features"] = "emulate";
+  community.recipe.defaults["steam_network"] = "offline";
+  CHECK(CommunityRecipeRefusals(community).empty());
+  // Steam network is offered only to players with online-steam in features.txt.
+  CHECK(CommunityRecipeFeature(community) == "online-steam" && CommunityRecipeFeature(good).empty());
   // A program's AppDefaults key is its own; letter case doesn't matter.
   community = good;
   community.recipe.registry = {{"Software\\Wine\\AppDefaults\\DARKWOOD.EXE\\Direct3D", "VideoMemorySize", "\"4096\""}};

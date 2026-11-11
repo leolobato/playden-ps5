@@ -129,6 +129,14 @@ void Controller::Start(app::PersistenceService* persistence_service) {
     });
 }
 Controller::~Controller() { Shutdown(); }
+bool Controller::HandOverForHome(const GameId& game) {
+  if (!runtime_) return false;
+  bool busy = false;
+  const auto app = RuntimeApp(*runtime_, game, &busy);
+  if (!app || *app == 0) return false;
+  return runtime_->HandOverForHome(*app, std::chrono::seconds(10));
+}
+
 void Controller::Shutdown() {
   if (shut_down_) return;
   shut_down_ = true;
@@ -159,6 +167,7 @@ void Controller::Shutdown() {
   };
   // The server source may inspect the install snapshot for its fallback payload.
   if(download_servers_) step("download-servers", [&] { download_servers_->Shutdown(); });
+  if(friends_) step("friends", [&] { friends_->Shutdown(); });
   if(web_) step("web", [&] { web_->Shutdown(); });
   if(library_) step("library", [&] { library_->Shutdown(); library_->Tick(); AdvanceClear(); });
   if(persistence_) step("persistence", [&] { persistence_->FlushAndShutdown(); AdvanceOrganizationClear(); });
@@ -398,7 +407,9 @@ void Controller::Tick() {
   TickImports();
   TickInstalls();
   TickDownloadServers();
+  TickFriends();
   TickWebAccess();
+  TickSteamPersona();
   TickSelfUpdate();
   lap(5);
   TickGate();
@@ -1129,9 +1140,12 @@ void Controller::TickRuntime() {
   auto plays = model_.TakeRuntimePlayRequests();
   {
     auto programs = model_.TakeRuntimeSetupPrograms();
+    auto online = model_.TakeRuntimeOnlineLaunches();
     for (const auto id : plays) {
       if (const auto found = programs.find(id); found != programs.end()) setup_programs_[id] = found->second;
       else setup_programs_.erase(id);
+      if (const auto found = online.find(id); found != online.end()) online_launches_[id] = std::move(found->second);
+      else online_launches_.erase(id);
     }
   }
   // A game whose update is putting its files in place doesn't start (the details page says so).
@@ -1415,13 +1429,17 @@ void Controller::TickRuntime() {
       model_.NotifyPlayStopped(id, moving ? "The game is moving to another drive. Play once the move finishes."
                                           : "The game's update is putting its files in place. Play once it finishes.");
       setup_programs_.erase(id);
+      online_launches_.erase(id);
       continue;
     }
     play_queued_.insert(id);
     ++plays_requested_;
     const auto program = setup_programs_.find(id);
-    runtime_->Play(*app, program == setup_programs_.end() ? std::string() : program->second);
+    const auto online = online_launches_.find(id);
+    runtime_->Play(*app, program == setup_programs_.end() ? std::string() : program->second,
+                   online == online_launches_.end() ? playden::runtime::OnlineLaunch{} : std::move(online->second));
     if (program != setup_programs_.end()) setup_programs_.erase(program);
+    if (online != online_launches_.end()) online_launches_.erase(online);
   }
   plays_ready_ = std::move(later);
   {
@@ -1761,6 +1779,7 @@ void Controller::TickRuntime() {
   }
   else
     kit.unavailable_reason = snapshot.status == RuntimeHostStatus::kReady ? snapshot.kit_reason : std::string{};
+  kit.steam_client = snapshot.steam_client_version;
   model_.SetKitInfo(std::move(kit));
   announce_ready();
 }
@@ -2154,6 +2173,21 @@ bool Controller::DownloadServerTestAllowed() const {
   }
   return true;
 }
+void Controller::TickSteamPersona() {
+  // Not before the saved choice is known: the default would show an invisible player online.
+  if (persistence_ && !model_.PreferencesLoaded()) return;
+  // Settings › Online play › Steam sign-in notice, for the runtime host's next handoffs.
+  const bool notice = model_.state().steam_online_notice;
+  if (runtime_ && applied_steam_online_notice_ != notice) {
+    applied_steam_online_notice_ = notice;
+    runtime_->SetSteamOnlineNotice(notice);
+  }
+  const bool invisible = model_.state().steam_invisible;
+  if (applied_steam_invisible_ == invisible) return;
+  applied_steam_invisible_ = invisible;
+  if (steam_persona_) steam_persona_(invisible);
+  if (runtime_) runtime_->SetSteamInvisible(invisible);
+}
 void Controller::TickWebAccess() {
   if (!web_) return;
   // Not before the saved choice is known: a player who turned it off must not get an open port at each start.
@@ -2525,7 +2559,7 @@ void Controller::TickStoreDetails() {
   }
   for (auto& details : store_details_->Pump())
     model_.UpdateStoreDetails(details.id, std::move(details.description), std::move(details.genres),
-                              std::move(details.controller_support));
+                              std::move(details.controller_support), details.vac);
 }
 void Controller::TickAppDetails() {
   if (!app_details_) {
@@ -2913,6 +2947,22 @@ void Controller::TickLicenseChanges() {
   if (now < *license_refresh_at_ || phase_ != Phase::Idle || library_->Busy() || library_->NeedsRenewal()) return;
   license_refresh_at_.reset();
   library_->Refresh();
+}
+void Controller::TickFriends() {
+  if (!friends_) return;
+  const auto& account = model_.state().account(Store::kSteam);
+  if (friends_account_ != account.id) {
+    friends_account_ = account.id;
+    friends_->Invalidate();
+  }
+  friends_->SetWanted(established_auth_ == AuthState::SignedIn && !account.id.empty());
+  if (friends_->Revision() == friends_snapshot_.revision) return;
+  friends_snapshot_ = friends_->Snapshot();
+  std::vector<Friend> people;
+  people.reserve(friends_snapshot_.friends.size());
+  for (const auto& view : friends_snapshot_.friends)
+    people.push_back({view.steam_id, view.name, view.persona_state, view.app_id, view.game_name, view.lobby_id, view.avatar_hash});
+  model_.UpdateFriends(std::move(people), friends_snapshot_.connected, friends_snapshot_.needs_sign_in);
 }
 void Controller::TickSelfUpdate() {
   if (!self_update_) return;

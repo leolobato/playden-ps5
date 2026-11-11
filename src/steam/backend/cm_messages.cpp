@@ -491,4 +491,118 @@ bool DecodeFreeLicenseResponse(const std::vector<std::uint8_t>& body, FreeLicens
   return true;
 }
 
+bool DecodeFriendsList(const std::vector<std::uint8_t>& body, FriendsList* list) {
+  proto::Reader reader(body, kLimits);
+  proto::Field field;
+  FriendsList decoded;
+  while (reader.Next(&field)) {
+    if (field.number == 1) {
+      if (!IsVarint(field)) return false;
+      decoded.incremental = field.value != 0;
+      continue;
+    }
+    if (field.number != 2) continue;
+    if (decoded.friends.size() >= kMaxRepeatedEntries) return false;
+    proto::Reader child;
+    if (!reader.Submessage(field, &child)) return false;
+    FriendRelation relation;
+    proto::Field entry;
+    while (child.Next(&entry)) {
+      if (entry.number == 1) {
+        if (!IsFixed64(entry)) return false;
+        relation.steam_id = entry.value;
+      } else if (entry.number == 2) {
+        if (!IsVarint(entry)) return false;
+        relation.relationship = static_cast<std::uint32_t>(entry.value);
+      }
+    }
+    if (!child.ok()) return false;
+    decoded.friends.push_back(relation);
+  }
+  if (!reader.ok()) return false;
+  *list = std::move(decoded);
+  return true;
+}
+
+namespace {
+
+constexpr std::size_t kMaxRichPresenceEntries = 64;
+
+bool DecodePersonaFriend(proto::Reader& child, PersonaFriend* out) {
+  PersonaFriend decoded;
+  proto::Field entry;
+  while (child.Next(&entry)) {
+    switch (entry.number) {
+      case 1: if (!IsFixed64(entry)) return false; decoded.steam_id = entry.value; break;
+      case 2: if (!IsVarint(entry)) return false; decoded.persona_state = static_cast<std::uint32_t>(entry.value); break;
+      case 3: if (!IsVarint(entry)) return false; decoded.game_app_id = static_cast<std::uint32_t>(entry.value); break;
+      case 15: if (!IsBytes(entry)) return false; decoded.player_name = entry.AsString(); break;
+      case 31: if (!IsBytes(entry)) return false; decoded.avatar_hash = Bytes(entry); break;
+      case 55: if (!IsBytes(entry)) return false; decoded.game_name = entry.AsString(); break;
+      case 56: if (!IsFixed64(entry)) return false; decoded.game_id = entry.value; break;
+      case 73: if (!IsFixed64(entry)) return false; decoded.lobby_id = entry.value; break;
+      case 71: {
+        if (!IsBytes(entry)) return false;
+        if (!decoded.rich_presence) decoded.rich_presence.emplace();
+        if (decoded.rich_presence->size() >= kMaxRichPresenceEntries) break;
+        proto::Reader kv;
+        if (!child.Submessage(entry, &kv)) return false;
+        std::string key;
+        std::string value;
+        proto::Field pair;
+        while (kv.Next(&pair)) {
+          if (pair.number == 1 && IsBytes(pair)) key = pair.AsString();
+          if (pair.number == 2 && IsBytes(pair)) value = pair.AsString();
+        }
+        if (!kv.ok()) return false;
+        if (!key.empty()) decoded.rich_presence->emplace_back(std::move(key), std::move(value));
+        break;
+      }
+      default: break;
+    }
+  }
+  if (!child.ok()) return false;
+  *out = std::move(decoded);
+  return true;
+}
+
+}  // namespace
+
+bool DecodePersonaState(const std::vector<std::uint8_t>& body, PersonaState* state) {
+  proto::Reader reader(body, kLimits);
+  proto::Field field;
+  PersonaState decoded;
+  while (reader.Next(&field)) {
+    if (field.number == 1) {
+      if (!IsVarint(field)) return false;
+      decoded.status_flags = static_cast<std::uint32_t>(field.value);
+      continue;
+    }
+    if (field.number != 2) continue;
+    if (decoded.friends.size() >= kMaxRepeatedEntries) return false;
+    proto::Reader child;
+    if (!reader.Submessage(field, &child)) return false;
+    PersonaFriend entry;
+    if (!DecodePersonaFriend(child, &entry)) return false;
+    decoded.friends.push_back(std::move(entry));
+  }
+  if (!reader.ok()) return false;
+  *state = std::move(decoded);
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeRequestFriendData(std::uint32_t requested, const std::vector<std::uint64_t>& steam_ids) {
+  proto::Writer body(kMaxFrameBytes);
+  body.AddVarint(1, requested);
+  for (const auto id : steam_ids) body.AddFixed64(2, id);
+  if (!body.ok()) return {};
+  return body.bytes();
+}
+
+std::vector<std::uint8_t> EncodeChangeStatus(std::uint32_t persona_state) {
+  proto::Writer body;
+  body.AddVarint(1, persona_state);
+  return body.bytes();
+}
+
 }  // namespace playden::steam::cm

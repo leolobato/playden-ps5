@@ -66,6 +66,12 @@ struct Preferences {
   // Whether Playden asks how a game ran after it ends (version 14). Separate from recipe_votes: "Don't ask again"
   // stops the question, not votes. Older files: asked unless recipe votes were off.
   bool ask_after_games = true;
+  // How the account shows to Steam friends while Playden runs (version 15, online-steam only): Online (the default)
+  // or Invisible, which friends see as offline. Friends tab › Triangle.
+  bool steam_invisible = false;
+  // Whether an Online game's start shows the Steam account it signed in as (version 16, online-steam only; on in older
+  // files). Settings › Online play › Steam sign-in notice.
+  bool steam_online_notice = true;
 };
 
 enum class PreferencesLoadStatus {

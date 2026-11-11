@@ -186,12 +186,13 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   Check(store.Save(preferences).ok(), "sign-in method preference saves");
   const auto saved = storage.Read("preferences.conf");
   Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()) ==
-                          "version=14\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
+                          "version=16\nreduce_motion=0\ntitle_store_suffix=0\ncloud_saves_auto=1\nsteam_sign_in_password=1\n"
                           "downloads_slow_network=0\nsteam_stay_signed_in=1\nbeta_updates=0\ndownload_server=\nweb_access=1\n"
                           "content_language=english\nhide_run_once_help=0\nhide_launcher_help=0\nruntime_prompt_kit=\n"
                           "recipe_votes=0\nsharing_explained=0\nshare_name=\nreports_explained=0\nshare_as=none\n"
-                          "ask_after_games=1\n",
-        "version 14 format includes Automatic download server, web access, English, the community fields and reports");
+                          "ask_after_games=1\nsteam_invisible=0\nsteam_online_notice=1\n",
+        "version 16 format includes Automatic download server, web access, English, the community fields, reports, "
+        "the Steam friends status and the Steam sign-in notice (on)");
   const auto loaded = store.Load();
   Check(loaded.status == playden::PreferencesLoadStatus::kLoaded && loaded.preferences.steam_sign_in_password &&
             loaded.preferences.cloud_saves_auto,
@@ -342,6 +343,57 @@ void CommunityPreferencesPersistAndVersionSixStillLoads() {
     Check(store.Save(off).ok() && !store.Load().preferences.ask_after_games &&
               store.Load().preferences.recipe_votes == playden::RecipeVotesPreference::kOn,
           "asking off and votes on survive restart apart");
+  }
+  {
+    // A released version 14 file (every field): loads, and the account appears online to Steam friends.
+    const std::string fourteen = "version=14\nreduce_motion=1\ntitle_store_suffix=0\ncloud_saves_auto=0\n"
+                                 "steam_sign_in_password=0\ndownloads_slow_network=0\nsteam_stay_signed_in=1\n"
+                                 "beta_updates=0\ndownload_server=\nweb_access=1\ncontent_language=english\nhide_run_once_help=0\n"
+                                 "hide_launcher_help=0\nruntime_prompt_kit=\nrecipe_votes=1\nsharing_explained=1\nshare_name=Leo\n"
+                                 "reports_explained=1\nshare_as=name\nask_after_games=0\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(fourteen.begin(), fourteen.end())).ok(), "v14 fixture is written");
+    const auto kept = store.Load();
+    Check(kept.status == playden::PreferencesLoadStatus::kLoaded && kept.preferences.reduce_motion &&
+              !kept.preferences.ask_after_games && kept.preferences.share_as == playden::ShareAs::kName &&
+              !kept.preferences.steam_invisible,
+          "a version 14 file loads, appearing online to Steam friends");
+    // Invisible survives a restart, and Online again too.
+    playden::Preferences invisible = kept.preferences;
+    invisible.steam_invisible = true;
+    Check(store.Save(invisible).ok() && store.Load().status == playden::PreferencesLoadStatus::kLoaded &&
+              store.Load().preferences.steam_invisible && !store.Load().preferences.ask_after_games,
+          "appearing invisible survives restart");
+    invisible.steam_invisible = false;
+    Check(store.Save(invisible).ok() && !store.Load().preferences.steam_invisible, "appearing online again survives restart");
+    // A version 15 file with a value that is not 0 or 1 is corrupt, as for every other flag.
+    std::string bad = fourteen;
+    bad.replace(0, 10, "version=15");
+    bad += "steam_invisible=2\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(bad.begin(), bad.end())).ok(), "bad v15 fixture is written");
+    Check(store.Load().status == playden::PreferencesLoadStatus::kDefaultCorrupt, "a version 15 flag must be 0 or 1");
+    // A version 15 file (before the sign-in notice): loads, with the notice on.
+    std::string fifteen = fourteen;
+    fifteen.replace(0, 10, "version=15");
+    fifteen += "steam_invisible=1\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(fifteen.begin(), fifteen.end())).ok(), "v15 fixture is written");
+    const auto older = store.Load();
+    Check(older.status == playden::PreferencesLoadStatus::kLoaded && older.preferences.steam_invisible &&
+              older.preferences.steam_online_notice,
+          "a version 15 file loads, with the Steam sign-in notice on");
+    // Off survives a restart, and on again too.
+    playden::Preferences quiet = older.preferences;
+    quiet.steam_online_notice = false;
+    Check(store.Save(quiet).ok() && store.Load().status == playden::PreferencesLoadStatus::kLoaded &&
+              !store.Load().preferences.steam_online_notice && store.Load().preferences.steam_invisible,
+          "the sign-in notice off survives restart");
+    quiet.steam_online_notice = true;
+    Check(store.Save(quiet).ok() && store.Load().preferences.steam_online_notice, "the sign-in notice on again survives restart");
+    std::string bad_notice = fifteen;
+    bad_notice.replace(0, 10, "version=16");
+    bad_notice += "steam_online_notice=2\n";
+    Check(storage.WriteAtomic("preferences.conf", playden::Bytes(bad_notice.begin(), bad_notice.end())).ok(),
+          "bad v16 fixture is written");
+    Check(store.Load().status == playden::PreferencesLoadStatus::kDefaultCorrupt, "a version 16 flag must be 0 or 1");
   }
   {
     // Version 8 (download server) still loads, with votes not asked yet.
@@ -515,8 +567,8 @@ void OlderPreferencesUseAutomaticDownloadServer() {
           "migration retains old fields and defaults later fields");
     Check(store.Save(loaded.preferences).ok(), "migrated preferences save");
     const auto saved = storage.Read("preferences.conf");
-    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=14\n", 0) == 0,
-          "saving a migrated file writes version 14");
+    Check(saved.ok() && std::string(saved.value().begin(), saved.value().end()).rfind("version=16\n", 0) == 0,
+          "saving a migrated file writes version 16");
     Check(loaded.preferences.web_access, "every older preference version has web access on");
     Check(loaded.preferences.content_language == "english", "every older preference version downloads English");
   }

@@ -18,6 +18,7 @@
 #include "gfx/font.hpp"
 #include "gfx/gl.hpp"
 #include "gfx/renderer.hpp"
+#include "ui/components/badge.hpp"
 #include "ui/components/detail_list.hpp"
 #include "ui/components/grid.hpp"
 #include "ui/components/keyboard.hpp"
@@ -37,6 +38,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -493,7 +495,7 @@ class Render::Impl
         draw_background();
         const bool root = state.navigation.route == Route::Home || state.navigation.route == Route::Library ||
                           state.navigation.route == Route::Downloads || state.navigation.route == Route::Saves ||
-                          state.navigation.route == Route::Settings;
+                          state.navigation.route == Route::Settings || state.navigation.route == Route::Friends;
         if (root)
             draw_top_navigation(scene, state.navigation.route, state.reduced_motion);
 
@@ -519,6 +521,9 @@ class Render::Impl
             break;
         case Route::Saves:
             draw_saves(route_view, state);
+            break;
+        case Route::Friends:
+            draw_friends(route_view, state);
             break;
         case Route::SaveDetails:
             draw_save_details(route_view, state);
@@ -919,12 +924,12 @@ class Render::Impl
     }
 
     // Tab icons drawn from primitives, after the SF Symbols the macOS tabs use.
-    void tab_icon(int tab, float x, float cy, gfx::Color ink)
+    void tab_icon(Route route, float x, float cy, gfx::Color ink)
     {
         constexpr float w = 1.8F;
-        switch (tab)
+        switch (route)
         {
-        case 0: // house
+        case Route::Home: // house
             scene_.line(x + 1.0F, cy - 1.0F, x + 13.0F, cy - 11.0F, w, ink);
             scene_.line(x + 13.0F, cy - 11.0F, x + 25.0F, cy - 1.0F, w, ink);
             scene_.line(x + 5.0F, cy - 4.0F, x + 5.0F, cy + 11.0F, w, ink);
@@ -934,24 +939,30 @@ class Render::Impl
             scene_.line(x + 15.5F, cy + 11.0F, x + 15.5F, cy + 4.0F, w, ink);
             scene_.line(x + 10.5F, cy + 4.0F, x + 15.5F, cy + 4.0F, w, ink);
             break;
-        case 1: // grid
+        case Route::Library: // grid
             for (int index = 0; index < 4; ++index)
                 scene_.bordered_rect({x + 2.0F + (index % 2) * 13.0F, cy - 11.0F + (index / 2) * 13.0F, 10.0F, 10.0F},
                                      2.5F, ink.with_alpha(0.0F), w, ink);
             break;
-        case 2: // arrow down to a line
+        case Route::Downloads: // arrow down to a line
             scene_.line(x + 13.0F, cy - 11.0F, x + 13.0F, cy + 5.0F, w, ink);
             scene_.line(x + 6.0F, cy - 2.0F, x + 13.0F, cy + 5.0F, w, ink);
             scene_.line(x + 20.0F, cy - 2.0F, x + 13.0F, cy + 5.0F, w, ink);
             scene_.line(x + 3.0F, cy + 11.0F, x + 23.0F, cy + 11.0F, w, ink);
             break;
-        case 3: // cloud
+        case Route::Saves: // cloud
             scene_.line(x + 4.0F, cy + 9.0F, x + 22.0F, cy + 9.0F, w, ink);
             scene_.ring(x + 6.5F, cy + 3.0F, 6.0F, w, ink);
             scene_.ring(x + 13.0F, cy - 3.0F, 8.0F, w, ink);
             scene_.ring(x + 20.0F, cy + 3.0F, 6.0F, w, ink);
             scene_.rounded_rect({x + 3.0F, cy + 3.5F, 20.0F, 4.5F}, 0.0F, kBackground);
             scene_.line(x + 4.0F, cy + 9.0F, x + 22.0F, cy + 9.0F, w, ink);
+            break;
+        case Route::Friends: // two people: heads over shoulders
+            scene_.ring(x + 17.5F, cy - 5.0F, 4.5F, w, ink);
+            scene_.arc(x + 17.5F, cy + 11.0F, 8.5F, w, -1.5708F, 3.1416F, ink, false);
+            scene_.ring(x + 9.0F, cy - 4.0F, 5.0F, w, ink);
+            scene_.arc(x + 9.0F, cy + 12.0F, 9.0F, w, -1.5708F, 3.1416F, ink, false);
             break;
         default: // gear
             for (int tooth = 0; tooth < 8; ++tooth)
@@ -969,15 +980,8 @@ class Render::Impl
     // The macOS top bar: icon and label per tab; the current one sits in a quiet box.
     void draw_top_navigation(ui::Canvas &, Route route, bool)
     {
-        int selected = 0;
-        if (route == Route::Library)
-            selected = 1;
-        else if (route == Route::Downloads)
-            selected = 2;
-        else if (route == Route::Saves)
-            selected = 3;
-        else if (route == Route::Settings)
-            selected = 4;
+        const std::vector<Route> routes = TabRoutes();
+        const int selected = TabIndex(route);
         std::size_t pending = 0;
         if (current_state_->simulation_mode)
             pending = 1;
@@ -990,16 +994,27 @@ class Render::Impl
                                   cloud.status == CloudStatus::Failed))
                 ++needs_you;
         const bool saves_busy = current_state_->saves_job.kind != SavesJobKind::None;
-        static constexpr std::array<const char *, 5> names = {"Home", "Library", "Queue", "Saves", "Settings"};
+        // Friends: how many are online, in green as on the PS5.
+        std::size_t online = 0;
+        for (const Friend &person : current_state_->friends)
+            online += person.persona_state != 0;
         float x = kSafeX;
         constexpr float cy = 82.0F;
-        for (int tab = 0; tab < 5; ++tab)
+        for (int tab = 0; tab < static_cast<int>(routes.size()); ++tab)
         {
+            const Route tab_route = routes[static_cast<std::size_t>(tab)];
+            const char *name = tab_route == Route::Home ? "Home" : tab_route == Route::Library ? "Library"
+                             : tab_route == Route::Downloads ? "Queue" : tab_route == Route::Saves ? "Saves"
+                             : tab_route == Route::Friends ? "Friends" : "Settings";
             const bool active = tab == selected;
-            const float label = fonts_.display.measure(names[static_cast<std::size_t>(tab)], 30.0F);
-            const std::string count = tab == 2 && pending > 0 ? std::to_string(pending)
-                                    : tab == 3 && !saves_busy && needs_you > 0 ? std::to_string(needs_you) : std::string{};
-            const float badge = tab == 3 && saves_busy ? 34.0F
+            const bool saves_tab = tab_route == Route::Saves;
+            const bool friends_tab = tab_route == Route::Friends;
+            const float label = fonts_.display.measure(name, 30.0F);
+            const std::string count = tab_route == Route::Downloads && pending > 0 ? std::to_string(pending)
+                                    : saves_tab && !saves_busy && needs_you > 0 ? std::to_string(needs_you)
+                                    : friends_tab && online > 0 ? std::to_string(online) : std::string{};
+            const float badge = saves_tab && saves_busy ? 34.0F
+                              : friends_tab && !count.empty() ? fonts_.semibold.measure(count, 20.0F) + 12.0F
                               : count.empty() ? 0.0F : fonts_.semibold.measure(count, 16.0F) + 26.0F;
             const float width = 22.0F + 26.0F + 10.0F + label + badge + 22.0F;
             const gfx::Rect box{x, cy - 26.0F, width, 52.0F};
@@ -1014,11 +1029,13 @@ class Render::Impl
             if (tab_focused)
                 stats_.focused_control_key = "tab-" + std::to_string(tab);
             const gfx::Color ink = active ? kText : kSecondary;
-            tab_icon(tab, x + 22.0F, cy, ink);
-            ui::text(scene_, fonts_.display, names[static_cast<std::size_t>(tab)], x + 58.0F, cy + 11.0F, 30.0F, ink);
-            if (tab == 3 && saves_busy)
+            tab_icon(tab_route, x + 22.0F, cy, ink);
+            ui::text(scene_, fonts_.display, name, x + 58.0F, cy + 11.0F, 30.0F, ink);
+            if (saves_tab && saves_busy)
                 spinner(x + 58.0F + label + 22.0F, cy, 10.0F, kBlue);
-            if (!count.empty())
+            if (friends_tab && !count.empty())
+                ui::text(scene_, fonts_.semibold, count, x + 58.0F + label + 12.0F, cy + 8.0F, 20.0F, kGreen);
+            else if (!count.empty())
             {
                 const float badge_x = x + 58.0F + label + 10.0F;
                 scene_.rounded_rect({badge_x, cy - 14.0F, badge - 10.0F, 28.0F}, 14.0F, kAccent);
@@ -2752,6 +2769,138 @@ class Render::Impl
             scene_.gradient_rect(rect, 6.0F, id_color(id), gfx::Color::rgb(0x24201D));
     }
 
+    // A friend's picture: their Steam avatar once it is cached, else their initials on a colour from their name
+    // (the design system's Avatar), with a presence dot on the rim.
+    void friend_avatar(gfx::DrawList &list, const State &state, std::uint64_t steam_id, const gfx::Rect &rect, gfx::Color backing)
+    {
+        const auto found = std::find_if(state.friends.begin(), state.friends.end(),
+                                        [steam_id](const Friend &person) { return person.steam_id == steam_id; });
+        if (found == state.friends.end())
+            return;
+        ui::Avatar &avatar = avatars_[steam_id];
+        avatar.style.theme = theme_;
+        avatar.style.reduced_motion = state.reduced_motion;
+        avatar.style.backing = backing;
+        avatar.style.status_scale = 0.26F;
+        avatar.set_bounds(rect);
+        avatar.set_name(found->name);
+        std::uint32_t texture = 0;
+        if (live_artwork_ && !state.simulation_mode && !found->avatar_hash.empty())
+            if (const std::string source = AvatarArtworkSource(found->avatar_hash); !source.empty())
+                texture = live_artwork_->TextureFor(GameId{}, source);
+        avatar.set_image(texture, gfx::kFullUv);
+        const std::uint32_t persona = found->persona_state;
+        avatar.set_presence(persona == 0 ? ui::Presence::offline
+                            : persona == 2 ? ui::Presence::busy
+                            : persona == 3 || persona == 4 ? ui::Presence::away : ui::Presence::online);
+        avatar.update(frame_dt_);
+        ui::Canvas canvas{list, fonts_, renderer_.glass_texture(), clock_};
+        avatar.draw(canvas);
+    }
+
+    static std::uint64_t friend_id(const ViewRow &row)
+    {
+        return row.key.rfind("friend-", 0) == 0 ? std::strtoull(row.key.c_str() + 7, nullptr, 10) : 0;
+    }
+
+    gfx::Color friend_tone(std::string_view tone) const
+    {
+        return tone == "good" ? kGreen : tone == "attention" ? kAmber : tone == "quiet" ? kMuted : kSecondary;
+    }
+
+    // One friend: avatar, name, status in its colour, and Join for a lobby the player can join.
+    void draw_friend_card(const State &state, const ViewRow &row, const gfx::Rect &box, float amount, float avatar_size)
+    {
+        focus_glow(scene_, box, amount, true);
+        scene_.rounded_rect(box, 10.0F, amount > 0.01F ? gfx::Color::rgb(0x2A2623) : kPanel);
+        const float pad = (box.h - avatar_size) * 0.5F;
+        friend_avatar(scene_, state, friend_id(row), {box.x + pad, box.y + pad, avatar_size, avatar_size},
+                      amount > 0.01F ? gfx::Color::rgb(0x2A2623) : kPanel);
+        const bool join = row.value == "Join";
+        const float join_w = join ? fonts_.display.measure("Join", 24.0F) + 40.0F : 0.0F;
+        const float text_x = box.x + pad * 2.0F + avatar_size - 4.0F;
+        const float text_w = box.x + box.w - text_x - (join ? join_w + 24.0F : 0.0F) - 20.0F;
+        dynamic_text(row.title, text_x, box.cy() - 4.0F, 30.0F, kText, text_w);
+        const ui::FontRef &face = font_for(row.subtitle, fonts_.regular);
+        ui::text(scene_, face, face.font->fit(row.subtitle, 21.0F, text_w), text_x, box.cy() + 28.0F, 21.0F, friend_tone(row.tone));
+        if (join)
+        {
+            const gfx::Rect pill{box.x + box.w - 24.0F - join_w, box.cy() - 22.0F, join_w, 44.0F};
+            if (amount > 0.01F)
+                scene_.rounded_rect(pill, 8.0F, kAccent);
+            else
+                scene_.bordered_rect(pill, 8.0F, kText.with_alpha(0.0F), 2.0F, kText.with_alpha(0.2F));
+            ui::text(scene_, fonts_.display, "Join", pill.cx(), pill.cy() + 9.0F, 24.0F,
+                     amount > 0.01F ? theme_.on_primary : kText, gfx::Align::center);
+        }
+        focus_ring(scene_, box, amount, true);
+    }
+
+    // The Friends tab (online-steam): its rail (Online, In my games, All) and two columns of friends.
+    void draw_friends(const ViewData &view, const State &state)
+    {
+        const auto focused_key = [&]() -> std::string {
+            if (view.focused_row < 0 || static_cast<std::size_t>(view.focused_row) >= view.rows.size()) return {};
+            return view.rows[static_cast<std::size_t>(view.focused_row)].key;
+        }();
+        const auto focus_of = [&](const ViewRow &row) {
+            const bool focused = route_focus_ && focused_key == row.key;
+            if (focused)
+                stats_.focused_control_key = row.key;
+            return control_focus(row.key, focused);
+        };
+        std::vector<const ViewRow *> tiles;
+        float rail_y = 160.0F;
+        for (const ViewRow &row : view.rows)
+        {
+            if (row.key.rfind("friends-filter-", 0) == 0)
+            {
+                const gfx::Rect entry{kSafeX, rail_y, 300.0F, 60.0F};
+                const float amount = focus_of(row);
+                focus_glow(scene_, entry, amount, true);
+                scene_.rounded_rect(entry, 8.0F, kBackground);
+                if (row.selected)
+                    scene_.rounded_rect(entry, 8.0F, kText.with_alpha(0.10F));
+                focus_ring(scene_, entry, amount, true);
+                ui::text(scene_, fonts_.display, fit(fonts_.display, row.title, 28.0F, 225.0F), kSafeX + 22.0F, rail_y + 40.0F,
+                         28.0F, row.selected ? kText : kSecondary);
+                ui::text(scene_, fonts_.regular, row.value, kSafeX + 278.0F, rail_y + 38.0F, 20.0F, kMuted, gfx::Align::right);
+                rail_y += 66.0F;
+            }
+            else
+                tiles.push_back(&row);
+        }
+        if (!view.subtitle.empty())
+            ui::paragraph(scene_, fonts_.regular, view.subtitle, kSafeX, rail_y + 40.0F, 22.0F, 300.0F, 30.0F, kSecondary, 2);
+
+        constexpr float left = 444.0F, top = 160.0F, gap_x = 26.0F, pitch = 130.0F, height = 112.0F;
+        constexpr float width = (1824.0F - left - gap_x) * 0.5F;
+        constexpr float viewport = 6 * pitch;
+        if (tiles.size() == 1 && tiles.front()->kind == RowKind::Status)
+        {
+            ui::text(scene_, fonts_.regular, tiles.front()->title, left + 8.0F, top + 50.0F, 26.0F, kSecondary);
+            return;
+        }
+        int focus_index = 0;
+        for (std::size_t index = 0; index < tiles.size(); ++index)
+            if (tiles[index]->key == focused_key)
+                focus_index = static_cast<int>(index);
+        const float rows_total = static_cast<float>((tiles.size() + 1) / 2);
+        const float focus_top = static_cast<float>(focus_index / 2) * pitch;
+        const float offset = list_scroll("friends", focus_top, focus_top + height, viewport,
+                                         tiles.empty() ? 0.0F : rows_total * pitch - (pitch - height), state.reduced_motion);
+        scene_.push_clip({0.0F, top - 16.0F, kWidth, viewport + 8.0F});
+        for (std::size_t index = 0; index < tiles.size(); ++index)
+        {
+            const float y = top + static_cast<float>(index / 2) * pitch - offset;
+            if (y + pitch < top - 16.0F || y > top + viewport)
+                continue;
+            const gfx::Rect box{left + static_cast<float>(index % 2) * (width + gap_x), y, width, height};
+            draw_friend_card(state, *tiles[index], box, focus_of(*tiles[index]), 68.0F);
+        }
+        scene_.pop_clip();
+    }
+
     // The Saves tab: filter chips and Sync all over one list of games with saves on this console.
     void draw_saves(const ViewData &view, const State &state)
     {
@@ -3311,7 +3460,7 @@ class Render::Impl
         // Where Circle returns, over the hero.
         const Route origin = state.navigation.detail_origin;
         const char *back = origin == Route::Home ? "Home" : origin == Route::Downloads ? "Queue" :
-                           origin == Route::Settings ? "Settings" : "Library";
+                           origin == Route::Settings ? "Settings" : origin == Route::Friends ? "Friends" : "Library";
         ui::draw_button(scene_, fonts_, ui::GlyphStyle::mono(kText, kBackground), ui::Button::circle, kSafeX, 74.0F, 36.0F);
         ui::text(scene_, fonts_.semibold, back, kSafeX + 48.0F, 82.0F, 22.0F, kText);
 
@@ -3344,7 +3493,7 @@ class Render::Impl
         float x = kSafeX;
         for (const ViewRow &row : view.rows)
         {
-            if (row.kind != RowKind::Action && row.kind != RowKind::Toggle)
+            if ((row.kind != RowKind::Action && row.kind != RowKind::Toggle) || row.key.rfind("friend-", 0) == 0)
                 continue;
             const bool primary = row.key == "details-install" || row.key == "details-play" ||
                                  row.key == "details-download";
@@ -3486,47 +3635,88 @@ class Render::Impl
                 y += 42.0F;
             }
         }
+        // Friends playing this game (online-steam), under the actions: three cards at a time, keeping the focused one.
+        std::vector<const ViewRow *> friends;
+        const ViewRow *friends_heading = nullptr;
+        for (const ViewRow &row : view.rows)
+        {
+            if (row.key == "friends-playing")
+                friends_heading = &row;
+            else if (row.key.rfind("friend-", 0) == 0)
+                friends.push_back(&row);
+        }
+        if (friends_heading != nullptr && !friends.empty())
+        {
+            section_label(friends_heading->title + " · " + friends_heading->value, kSafeX, y + 28.0F);
+            const std::string focused_key = view.focused_row >= 0 && static_cast<std::size_t>(view.focused_row) < view.rows.size()
+                ? view.rows[static_cast<std::size_t>(view.focused_row)].key : std::string();
+            std::size_t first = 0;
+            for (std::size_t index = 0; index < friends.size(); ++index)
+                if (friends[index]->key == focused_key && index >= 3)
+                    first = index - 2;
+            constexpr float card_gap = 20.0F;
+            const float card_w = (1128.0F - 2.0F * card_gap) / 3.0F;
+            for (std::size_t index = first; index < friends.size() && index < first + 3; ++index)
+            {
+                const ViewRow &row = *friends[index];
+                const bool focused = route_focus_ && row.key == focused_key;
+                if (focused)
+                    stats_.focused_control_key = row.key;
+                const gfx::Rect box{kSafeX + static_cast<float>(index - first) * (card_w + card_gap), y + 48.0F, card_w, 96.0F};
+                draw_friend_card(state, row, box, control_focus(row.key, focused), 56.0F);
+            }
+            if (friends.size() > 3)
+                ui::text(scene_, fonts_.regular, std::to_string(first + 1) + "–" + std::to_string(std::min(friends.size(), first + 3)) +
+                             " of " + std::to_string(friends.size()), kSafeX + 1128.0F, y + 28.0F, 18.0F, kMuted, gfx::Align::right);
+            y += 48.0F + 96.0F + 24.0F;
+        }
         const std::string description = game == nullptr || game->description.empty() ?
                                             "Description unavailable." : game->description;
         const auto detail_scroll = state.navigation.scroll_offsets.find("details-content");
         // Keep description pagination aligned with the model and above the footer hints.
         constexpr float column_bottom = 975.0F;
-        const int description_lines = state.simulation_mode ? 3 : 2;
-        const std::size_t page_size = DetailsDescriptionPage(state.simulation_mode);
-        const int requested_page = detail_scroll == state.navigation.scroll_offsets.end() ? 0 :
-                                       std::max(0, detail_scroll->second);
-        const int max_page = description.empty() ? 0 :
-                                 static_cast<int>((description.size() - 1) / page_size);
-        const int page = std::min(requested_page, max_page);
-        const std::size_t offset = utf8_boundary(description, static_cast<std::size_t>(page) * page_size);
-        const std::size_t end = utf8_boundary(description, std::min(description.size(), offset + page_size));
-        std::string page_text = description.substr(offset, end - offset);
-        if (offset > 0)
-            page_text.insert(0, "…");
-        if (offset + page_size < description.size())
-            page_text += "…";
-        const ui::FontRef &body = font_for(page_text, fonts_.regular);
-        const float text_bottom = ui::paragraph(scene_, body, page_text, kSafeX, y + 20.0F, 26.0F, 1128.0F, 37.0F,
-                                                gfx::Color::rgb(0xD6D0C8), description_lines);
-        y = std::max(y + 20.0F + 37.0F, text_bottom) + 18.0F;
-        if (description.size() > page_size)
+        // Friends playing takes the description's room: what is left of the column, at least one line.
+        const int description_lines = friends.empty() ? (state.simulation_mode ? 3 : 2)
+            : std::clamp(static_cast<int>((column_bottom - y - 20.0F) / 37.0F), 0, state.simulation_mode ? 3 : 2);
+        // No room left under Friends playing: the description is left out.
+        if (description_lines > 0)
         {
-            ui::text(scene_, fonts_.regular, "L2/R2 Read more · page " + std::to_string(page + 1) + " of " +
-                         std::to_string(max_page + 1), kSafeX, y + 6.0F, 18.0F, kMuted);
-            y += 30.0F;
-        }
-        if (game != nullptr && y + 42.0F <= column_bottom)
-        {
-            float tag_x = kSafeX;
-            for (std::size_t index = 0; index < game->genres.size() && index < 4; ++index)
+            const std::size_t page_size = DetailsDescriptionPage(state.simulation_mode);
+            const int requested_page = detail_scroll == state.navigation.scroll_offsets.end() ? 0 :
+                                           std::max(0, detail_scroll->second);
+            const int max_page = description.empty() ? 0 :
+                                     static_cast<int>((description.size() - 1) / page_size);
+            const int page = std::min(requested_page, max_page);
+            const std::size_t offset = utf8_boundary(description, static_cast<std::size_t>(page) * page_size);
+            const std::size_t end = utf8_boundary(description, std::min(description.size(), offset + page_size));
+            std::string page_text = description.substr(offset, end - offset);
+            if (offset > 0)
+                page_text.insert(0, "…");
+            if (offset + page_size < description.size())
+                page_text += "…";
+            const ui::FontRef &body = font_for(page_text, fonts_.regular);
+            const float text_bottom = ui::paragraph(scene_, body, page_text, kSafeX, y + 20.0F, 26.0F, 1128.0F, 37.0F,
+                                                    gfx::Color::rgb(0xD6D0C8), description_lines);
+            y = std::max(y + 20.0F + 37.0F, text_bottom) + 18.0F;
+            if (description.size() > page_size)
             {
-                const std::string &genre = game->genres[index];
-                const float width = fonts_.semibold.measure(genre, 20.0F) + 32.0F;
-                if (tag_x + width > kSafeX + 1128.0F)
-                    break;
-                scene_.rounded_rect({tag_x, y, width, 42.0F}, 6.0F, kText.with_alpha(0.1F));
-                ui::text(scene_, fonts_.semibold, genre, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
-                tag_x += width + 12.0F;
+                ui::text(scene_, fonts_.regular, "L2/R2 Read more · page " + std::to_string(page + 1) + " of " +
+                             std::to_string(max_page + 1), kSafeX, y + 6.0F, 18.0F, kMuted);
+                y += 30.0F;
+            }
+            if (game != nullptr && y + 42.0F <= column_bottom)
+            {
+                float tag_x = kSafeX;
+                for (std::size_t index = 0; index < game->genres.size() && index < 4; ++index)
+                {
+                    const std::string &genre = game->genres[index];
+                    const float width = fonts_.semibold.measure(genre, 20.0F) + 32.0F;
+                    if (tag_x + width > kSafeX + 1128.0F)
+                        break;
+                    scene_.rounded_rect({tag_x, y, width, 42.0F}, 6.0F, kText.with_alpha(0.1F));
+                    ui::text(scene_, fonts_.semibold, genre, tag_x + 16.0F, y + 28.0F, 20.0F, kText);
+                    tag_x += width + 12.0F;
+                }
             }
         }
 
@@ -3831,7 +4021,7 @@ class Render::Impl
         if (view.surface != "home" && view.surface != "library" && view.surface != "downloads" &&
             view.surface != "settings" && view.surface != "details" && view.surface != "qr" &&
             view.surface != "startup" && view.surface != "session" && view.surface != "saves" &&
-            view.surface != "save-details" && view.surface != "manage-games")
+            view.surface != "save-details" && view.surface != "manage-games" && view.surface != "friends")
             draw_sheet_overlay(view);
 
         // Live notifications wait behind dialogs (they also stop counting down there).
@@ -4119,8 +4309,9 @@ class Render::Impl
             ui::text(overlay_, fonts_.display, view.title, panel.x + 48.0F, 142.0F, 48.0F, kText);
         // Read-only facts sit above the rows, which are all things to press.
         const float facts_height = draw_sheet_facts(view.facts, {panel.x + 32.0F, 160.0F + drop, panel.w - 64.0F});
+        float subtitle_bottom = 0.0F;
         if (!view.subtitle.empty())
-            ui::paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F,
+            subtitle_bottom = ui::paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F,
                           (view.facts.empty() ? 190.0F : 160.0F + facts_height + 32.0F) + drop, 23.0F,
                           panel.w - 96.0F, 32.0F, kSecondary, view.surface == "install" ? (view.facts.empty() ? 6 : 2) : 3);
         if (view.surface == "storage")
@@ -4137,7 +4328,10 @@ class Render::Impl
         else
         {
             // Below the facts and a two-line message; six rows, the most an install sheet has, still fit.
-            const float rows_top = view.surface != "install" ? 292.0F : view.facts.empty() ? 414.0F : 444.0F;
+            float rows_top = view.surface != "install" ? 292.0F : view.facts.empty() ? 414.0F : 444.0F;
+            // Join and Invite friends: the rows start under their facts and message, however long they are.
+            if (view.surface == "join-lobby" || view.surface == "invite-friends")
+                rows_top = std::max(rows_top, std::max(subtitle_bottom, 160.0F + facts_height) + 36.0F - drop);
             draw_overlay_rows(view, {panel.x + 40.0F, rows_top + drop, panel.w - 80.0F, 942.0F - rows_top - drop});
         }
         if (view.comparison)
@@ -4542,7 +4736,8 @@ class Render::Impl
             std::replace(label.begin(), label.end(), '-', ' ');
         // A program's file name ("setup.exe") is shown as it is on the drive.
         if (!label.empty() && label.front() >= 'a' && label.front() <= 'z' && row.action.rfind("import-program-", 0) != 0 &&
-            row.action.rfind("steam-program-", 0) != 0 && row.action.rfind("setup-program-", 0) != 0)
+            row.action.rfind("steam-program-", 0) != 0 && row.action.rfind("setup-program-", 0) != 0 &&
+            row.action.rfind("invite-friend-", 0) != 0)
             label.front() = static_cast<char>(label.front() - 'a' + 'A');
         return label;
     }
@@ -4590,6 +4785,8 @@ class Render::Impl
         const bool import_sheet = view.surface == "import-games" || view.surface == "import-programs" ||
                                   view.surface == "import-choice" || view.surface == "steam-programs" ||
                                   view.surface == "setup-programs";
+        // Join and Invite friends: a line under a row that says what it does.
+        const bool friends_sheet = view.surface == "join-lobby" || view.surface == "invite-friends";
         // About: each fact as its name over its value and note, at the row's full width, wrapped and never cut.
         const bool about_sheet = view.surface == "about";
         const auto about_lines = [&](const std::string &text, float size) {
@@ -4629,9 +4826,9 @@ class Render::Impl
                 return 30.0F;
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
                 return 54.0F;
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc") &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc" || view.surface == "invite-friends") &&
                                   row.kind == RowKind::Toggle;
-            const bool described = (settings_sheet || checkbox || import_sheet ||
+            const bool described = (settings_sheet || checkbox || import_sheet || friends_sheet ||
                                     row.key == "install-settings") && !row.subtitle.empty();
             return (described ? 96.0F + hint_extra(row) + lines_extra(row) : 72.0F) + 12.0F;
         };
@@ -4733,9 +4930,9 @@ class Render::Impl
             // Game settings rows carry an effect line under the name (or the reason a row is
             // disabled), an accent dot when the player changed the value, and a tag.
             // Kept game data: each game is a checkbox row with its kept date under the name.
-            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc") &&
+            const bool checkbox = (view.surface == "kept-data" || view.surface == "leftover-titles" || (view.surface == "collections" && row.action.rfind("collection-toggle-", 0) == 0) || view.surface == "install-dlc" || view.surface == "manage-dlc" || view.surface == "invite-friends") &&
                                   row.kind == RowKind::Toggle;
-            const bool described = (settings_sheet || checkbox || import_sheet ||
+            const bool described = (settings_sheet || checkbox || import_sheet || friends_sheet ||
                                     row.key == "install-settings") && !row.subtitle.empty() && row.kind != RowKind::Heading;
             const gfx::Rect rect{bounds.x, y, bounds.w, described ? 96.0F + hint_extra(row) + lines_extra(row) : 72.0F};
             const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
@@ -4948,6 +5145,7 @@ class Render::Impl
     std::string sheet_scroll_key_;  // the sheet the scroll belongs to
     float sheet_scroll_ = 0.0F;
     ui::DetailList sheet_facts_;
+    std::map<std::uint64_t, ui::Avatar> avatars_;  // Friends: one per friend, so each keeps its presence dot's motion
     std::vector<ViewFact> sheet_facts_shown_;
     float sheet_scroll_target_ = 0.0F;
     int last_width_ = 0;

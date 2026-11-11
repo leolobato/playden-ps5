@@ -84,7 +84,8 @@ std::optional<runtime::CommunityRecipe> CheckRecipeFile(std::string_view bytes, 
 
 std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
     const RecipeIndex& index, const RecipeStore& store, const VoteTotals* totals,
-    const std::function<void(const std::string&)>& log) {
+    const std::function<void(const std::string&)>& log,
+    const std::function<bool(const std::string& feature)>& feature_enabled) {
   std::map<GameRef, std::vector<RecipeSummary>> games;
   for (const auto& [game, listed] : index.games) {
     for (const auto& entry : listed.recipes) {
@@ -94,6 +95,11 @@ std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
       const auto community = CheckRecipeFile(*bytes, &error);
       if (!community || community->recipe.id != entry.id || community->game != game) {
         if (log) log("community recipes: " + entry.id + " skipped: " + (community ? "not the recipe the index lists" : error));
+        continue;
+      }
+      if (const auto feature = runtime::CommunityRecipeFeature(*community);
+          !feature.empty() && !(feature_enabled && feature_enabled(feature))) {
+        if (log) log("community recipes: " + entry.id + " not offered: needs " + feature + " in features.txt");
         continue;
       }
       RecipeSummary summary;
@@ -242,7 +248,7 @@ void CommunityRecipeService::LoadFromDisk() {
     totals = ParseVoteSummary(*votes, nullptr, &votes_generated_at);
     if (totals) compat = ParseCompatList(*votes);
   }
-  auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
+  auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log, config_.feature_enabled);
   std::size_t count = 0;
   for (const auto& [game, list] : games) count += list.size();
   Log("community recipes: loaded " + current->tag + " from disk (" + std::to_string(count) + " recipes)");
@@ -467,7 +473,7 @@ bool CommunityRecipeService::Refresh(std::string* error) {
       totals = ParseVoteSummary(*stored, nullptr, &votes_generated_at);
       if (totals) compat = ParseCompatList(*stored);
     }
-  auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log);
+  auto games = BuildSummaries(*index, *store_, totals ? &*totals : nullptr, config_.log, config_.feature_enabled);
   Publish([&](RecipeSnapshot& s) {
     s.games = std::move(games);
     s.game_names = IndexGameNames(*index);

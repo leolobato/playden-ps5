@@ -241,9 +241,9 @@ bool SetTraversableMode(const fs::path& folder, mode_t mode) {
   return ok;
 }
 const std::vector<fs::path>& PrivateProfilePaths() {
-  // Main writes no launcher sign-in tokens inside drive_c/users/prospero yet. Add each
-  // credential file or dedicated credential subtree here when its writer is introduced.
-  static const std::vector<fs::path> paths;
+  // Valve's Steam client (Steam features = Online) saves its sign-in, a token, in AppData/Local/Steam
+  // (local.vdf). Add each other credential file or dedicated credential subtree here when its writer is introduced.
+  static const std::vector<fs::path> paths{"AppData/Local/Steam"};
   return paths;
 }
 bool IsPrivateProfilePath(const fs::path& relative, const std::vector<fs::path>& private_paths) {

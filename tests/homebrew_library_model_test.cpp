@@ -2461,6 +2461,7 @@ void live_ready_to_play_quits_to_home() {
     check(requests.size() == 1 && requests[0].kind == CloudRequestKind::Sync && requests[0].game_id == SteamId(42), "Play syncs saves first");
     check(!model.state().quit_requested && model.state().navigation.modals.back().title == "Syncing Cloud saves…",
           "Play waits for the sync in a dialog");
+    check(!model.FinishSetupGame(), "no game is handed anything before the quit");
     model.UpdateCloud({{SteamId(42), CloudStatus::UpToDate, "Saves are up to date"}});
     check(!model.state().quit_requested, "a result that is not the sync's answer does not count");
     model.NotifyCloudAnswered(SteamId(43), CloudStatus::Synced);
@@ -2468,6 +2469,8 @@ void live_ready_to_play_quits_to_home() {
     model.UpdateCloud({{SteamId(42), CloudStatus::Synced, "1 save downloaded"}});
     model.NotifyCloudAnswered(SteamId(42), CloudStatus::Synced);
     check(model.state().quit_requested && model.state().navigation.modals.empty(), "Play quits to Home once saves are in step");
+    // The game starts from Home next: Playden hands it what Play would first, as it quits.
+    check(model.FinishSetupGame() == SteamId(42), "the quit is Finish setup's, for this game");
     // A choice or a failure lets the player play without syncing.
     auto choosing = make_live();
     sync_automatically(choosing);
@@ -2552,6 +2555,7 @@ void live_ready_to_play_quits_to_home() {
     check(requests.size() == 1 && requests[0].game_id == SteamId(43), "Play in the prompt syncs the announced game");
     prompted.NotifyCloudAnswered(SteamId(43), CloudStatus::Synced);
     check(prompted.state().quit_requested, "Play in the prompt quits to Home");
+    check(prompted.FinishSetupGame() == SteamId(43), "the prompt's Play is Finish setup for the announced game");
     // Quitting would cut off another game's preparation: the quit waits for it in a dialog.
     auto busy = make_live();
     busy.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
@@ -2571,6 +2575,7 @@ void live_ready_to_play_quits_to_home() {
     busy.UpdateRuntime(RuntimeState::Ready, {waiting, prepared});
     check(busy.state().quit_requested && !busy.state().quit_waiting && busy.state().navigation.modals.empty(),
           "Playden quits once the preparation is done");
+    check(busy.FinishSetupGame() == SteamId(42), "a quit that waited is still Finish setup's");
     // Games queued while none is being prepared (between two): the quit waits until the queue is held.
     auto queued = make_live();
     queued.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
@@ -2598,6 +2603,9 @@ void live_ready_to_play_quits_to_home() {
     activate(cancelled, "cancel");
     cancelled.UpdateRuntime(RuntimeState::Ready, {waiting, prepared});
     check(!cancelled.state().quit_requested && !cancelled.state().quit_waiting, "Cancel keeps Playden open");
+    // A quit from outside afterwards (web access) is not Finish setup: no game is handed anything.
+    cancelled.RequestQuit();
+    check(cancelled.state().quit_requested && !cancelled.FinishSetupGame(), "a later quit from outside names no game");
     // A game held behind another game's preparation says what it waits for.
     auto held = make_live();
     held.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});

@@ -21,6 +21,13 @@ int main() {
   CHECK(details && details->id == SteamId(220));
   CHECK(details->description == "Half-Life 2 & friends: the \"best\" game.");
   CHECK(details->genres == std::vector<std::string>{"Action"} && details->controller_support == "full");
+  CHECK(!details->vac);  // no categories
+  // Category 8 is "Valve Anti-Cheat enabled".
+  const auto vac = ParseStoreDetails(240, R"({"240":{"success":true,"data":{"steam_appid":240,"categories":[)"
+                                          R"({"id":1,"description":"Multi-player"},{"id":8,"description":"Valve Anti-Cheat enabled"}]}}})");
+  CHECK(vac && vac->vac);
+  const auto other = ParseStoreDetails(240, R"({"240":{"success":true,"data":{"steam_appid":240,"categories":[{"id":2,"description":"Single-player"}]}}})");
+  CHECK(other && !other->vac);
   CHECK(!ParseStoreDetails(221, body));  // another game's answer
   CHECK(!ParseStoreDetails(220, R"({"220":{"success":false}})"));
   CHECK(!ParseStoreDetails(220, R"({"220":{"success":true,"data":{"steam_appid":221}}})"));

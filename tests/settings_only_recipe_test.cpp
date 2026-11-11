@@ -342,6 +342,23 @@ void Share() {
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"resolution", "1280x720"}}, kit, &after, &error));
   const auto kept = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(kept.recipe.graphics.empty() && !Has(SerializeCommunityRecipe(kept), "\"graphics\""));
+  // Online and the sign-in stay each player's own; Offline emulation and its Steam network value are shared.
+  SetOnlineSteamEnabled(true);
+  kit.helper_process = true;  // Online runs Steam beside the game
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, kit, &before, &error));
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "online"},
+                                                        {"steam_sign_in", "kept"}, {"game_invites", "off"}}, kit, &after,
+                               &error));
+  CHECK(ChosenValue(after.values.at("steam_features")) == "online" && ChosenValue(after.values.at("steam_sign_in")) == "kept");
+  CHECK(ChosenValue(after.values.at("game_invites")) == "off");
+  const auto online = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(!online.recipe.defaults.count("steam_features") && !online.recipe.defaults.count("steam_sign_in") &&
+        !online.recipe.defaults.count("game_invites"));
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "emulate"},
+                                                        {"steam_network", "offline"}}, kit, &after, &error));
+  const auto offline = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(offline.recipe.defaults.count("steam_network") && offline.recipe.defaults.at("steam_network") == "offline");
+  SetOnlineSteamEnabled(false);
 }
 
 }  // namespace

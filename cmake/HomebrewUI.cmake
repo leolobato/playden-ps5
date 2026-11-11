@@ -261,14 +261,15 @@ target_link_libraries(playden_homebrew_controller PUBLIC
 
 # Worker-owned per-game runtime composition (OWNER records, native inventory, kit layer).
 add_library(playden_homebrew_runtime_host STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/runtime_host.cpp"
-    "${CMAKE_SOURCE_DIR}/src/homebrew/gog_icon.cpp"
+    "${CMAKE_SOURCE_DIR}/src/homebrew/gog_icon.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/steam_client_install.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/writable_folders.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
 target_compile_features(playden_homebrew_runtime_host PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_runtime_host PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordinator playden_runtime_settings_publication
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
-    playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store)
+    playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
+    playden_self_update)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -643,6 +644,12 @@ if(BUILD_TESTING)
     add_executable(runtime_steamworks_test tests/runtime_steamworks_test.cpp)
     target_link_libraries(runtime_steamworks_test PRIVATE playden_runtime_steamworks)
     add_test(NAME runtime_steamworks COMMAND runtime_steamworks_test "${CMAKE_SOURCE_DIR}/runtime/steamworks")
+    add_executable(runtime_steam_client_install_test tests/runtime_steam_client_install_test.cpp)
+    target_link_libraries(runtime_steam_client_install_test PRIVATE playden_homebrew_runtime_host)
+    add_test(NAME runtime_steam_client_install COMMAND runtime_steam_client_install_test)
+    add_executable(runtime_online_session_test tests/runtime_online_session_test.cpp)
+    target_link_libraries(runtime_online_session_test PRIVATE playden_runtime_steamworks)
+    add_test(NAME runtime_online_session COMMAND runtime_online_session_test)
     add_executable(runtime_steam_stub_test tests/runtime_steam_stub_test.cpp)
     target_link_libraries(runtime_steam_stub_test PRIVATE playden_runtime_steamworks playden_curl_8_22)
     add_test(NAME runtime_steam_stub COMMAND runtime_steam_stub_test)

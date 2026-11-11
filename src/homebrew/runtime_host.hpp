@@ -11,6 +11,7 @@
 #include "runtime/launch_service.h"
 #include "runtime/my_presets.h"
 #include "runtime/leftover_titles.h"
+#include "runtime/online_session.h"
 #include "runtime/package_installer.h"
 #include "runtime/recipe_choice.h"
 #include "runtime/redist_install.h"
@@ -144,6 +145,11 @@ struct RuntimeHostConfig {
   std::function<std::optional<std::string>(const std::string& url, std::uint64_t offset, std::uint64_t length,
                                            const std::atomic<bool>& cancel, std::string* error)>
       fetch_range;
+  // One HTTPS GET of a small file of unknown length (at most max_bytes): Valve's Steam client manifest, read at a Play of
+  // an Online game to take Valve's current client. Empty: the installed client stays, and none is downloaded.
+  std::function<std::optional<std::string>(const std::string& url, std::size_t max_bytes, const std::atomic<bool>& cancel,
+                                           std::string* error)>
+      fetch_text;
   // The redistributables MFC comes from, by architecture; kept under <console data>/playden/redist.
   std::vector<runtime::VcRedist> vc_redists = runtime::MicrosoftVcRedists();
   // How long a failed download is not tried again (a preparation runs its steps more than once).
@@ -181,6 +187,9 @@ struct RuntimeHostConfig {
   // SQLite and the native readers run on this worker. PS5 std::thread stacks are
   // too small for them, so the worker uses an explicit stack size.
   std::size_t stack_bytes = 1024 * 1024;
+  // The signed-in account's Steam session for games set to Steam features = Online (worker only): handed to the Steam
+  // host beside the game at Play (runtime/online_session.h). Empty function or nothing: those games start offline.
+  std::function<std::optional<runtime::OnlineSession>()> online_session;
 };
 
 struct RuntimeInstallView {
@@ -334,6 +343,8 @@ struct RuntimeSnapshot {
   std::string reason;  // why the runtime services are unavailable
   bool kit_available = false;
   std::string kit_reason;  // why preparation is unavailable
+  // The Steam client version Playden installed for Online games (Valve's manifest version); empty when none is.
+  std::string steam_client_version;
   // Games published again in the background after their USB drive changed places: how many of how many.
   std::size_t drive_updates_done = 0;
   std::size_t drive_updates_total = 0;
@@ -395,6 +406,8 @@ struct RuntimeSnapshot {
   // Maintenance per runtime number, and how many requests the worker has finished.
   std::map<std::uint32_t, RuntimeMaintenanceView> maintenance;
   std::uint64_t maintenance_handled = 0;
+  // How many HandOverForHome requests the worker has finished.
+  std::uint64_t home_handoffs_handled = 0;
   // Bytes in each game's Windows user folders (installed and kept), from the latest MeasureSaves.
   std::map<std::uint32_t, std::uint64_t> save_bytes;
   // What Play does before the launch is requested, per runtime number, while it runs: a game whose
@@ -437,6 +450,9 @@ inline constexpr const char* kPlayUpdatingForLayout = "Updating this game for Pl
 inline constexpr const char* kPlayInstallingPhysx = "Installing PhysX…";
 inline constexpr const char* kPlayInstallingComponent = "Installing a component…";
 inline constexpr const char* kPlayDownloadingMfc = "Downloading Microsoft's MFC for this game…";
+inline constexpr const char* kPlayDownloadingSteamClient = "Downloading Steam's client for online play…";
+inline constexpr const char* kPlaySteamClientNotDownloaded =
+    "Steam's client could not be downloaded, so the game starts offline. Play again to retry.";
 inline constexpr const char* kPlayMfcNotDownloaded = "Microsoft's MFC could not be downloaded. Play again to retry.";
 inline constexpr const char* kPlayMfcNotInstalled = "Microsoft's MFC could not be installed for this game.";
 
@@ -538,12 +554,22 @@ class RuntimeHost {
   // Queues Play of a Ready game. With setup_program (a program in the game folder, relative to it), the title starts
   // that program once instead, with the Mouse controller preset, and the game's saved settings come back with the
   // next publication: the next Play, or the next start of Playden (RuntimeInstall::setup_program).
-  void Play(std::uint32_t runtime_number, std::string setup_program = {});
+  // online: what this Play asks for once (runtime/online_session.h OnlineLaunch), written only when the
+  // game is set to Online and gets the Steam session.
+  void Play(std::uint32_t runtime_number, std::string setup_program = {}, runtime::OnlineLaunch online = {});
   // A game's files changed outside the runtime (an update finished): the installs are checked again, so
   // RuntimeInstallView::files_changed follows.
   void RecheckInstalls();
   // The signed-in Steam account, for the Steamworks emulator's settings (empty when signed out).
   void SetSteamAccount(std::string account_name, std::uint64_t steam_id);
+  // How the account shows to Steam friends in Online games (Friends tab › Appear invisible): written into each handoff
+  // from now on (runtime/online_session.h). A handoff kept for the Home screen keeps the choice it was written with
+  // until it is written again: at the game's next Play, a change of its settings or the account's next sign-in (each
+  // Playden start). Safe from any thread.
+  void SetSteamInvisible(bool invisible);
+  // Settings › Online play › Steam sign-in notice: whether each handoff from now on asks the Steam host to show the
+  // account it signed in as (notice=1). On until the saved choice says otherwise; kept handoffs as above. Any thread.
+  void SetSteamOnlineNotice(bool notice);
   // Queues removal of a game's PS5 title. Its bottle (saves and settings) is kept
   // unless delete_saves; an interrupted removal continues with its first choice.
   void Remove(std::uint32_t runtime_number, bool delete_saves);
@@ -562,6 +588,10 @@ class RuntimeHost {
   // Queues maintenance of a prepared game. Each action is refused while the game's
   // title runs or its state is unknown.
   void Maintain(std::uint32_t runtime_number, RuntimeMaintenance action);
+  // Finish setup quits to Home, where the game starts for the first time with nothing of Playden running: a game set
+  // to Online gets the Steam session Play would hand it (HomeHandoff). Called as Playden quits, on the application
+  // thread; waits up to `limit` for the worker. False when it didn't answer in time: the game then starts as before.
+  bool HandOverForHome(std::uint32_t runtime_number, std::chrono::milliseconds limit);
   // A game's runtime number, which every call above takes: a Steam game's app ID; for a game from
   // another store, the number of its install record, or a new one, saved before it is returned.
   // Any thread. A new number is written to installs.json under the effective-UID hold, so it waits
@@ -774,9 +804,43 @@ class RuntimeHost {
   std::string RecipeFilesStep(const GameFiles& files);
   std::string DotnetHeapStep(const GameFiles& files);
   void MfcStep(const GameFiles& files);  // an upgrade: never stops the start
+  // Steam features = Online with the Steam host: Valve's client files in place (downloaded at Play), and no saved
+  // sign-in of the client's unless the game keeps its sign-in for the Home screen. Never stops the start.
+  void SteamClientStep(const GameFiles& files);
+  std::filesystem::path SteamClientFolder() const;  // shared by every Online game, on internal storage
+  // Playden's own record of the client it installed (version, steamclient64.dll's SHA-256), while that version is the
+  // one installed; the host checks the DLL against it.
+  std::optional<std::pair<std::string, std::string>> SteamClientRecord() const;
+  bool SaveSteamClientRecord(const std::string& version, const std::string& sha256);
+  void PublishSteamClient();  // RuntimeSnapshot::steam_client_version
   // Steam-file steps.
   std::string SteamStubStep(const GameFiles& files);
   std::string SteamworksStep(const GameFiles& files, bool steam_account_known);  // and the legacy steam.dll
+  // How a game gets the Steam session: not at all (not set to Online), at Play only, or kept for the Home screen.
+  enum class OnlineHandoff { kNone, kAtPlay, kKept };
+  // invites (optional): Game invites as the game's title runs it (ask, join, show or off), when there is a handoff.
+  // verbose (optional): the game's Logging is Verbose, so the title shows the Steam host's steps.
+  // adapters_off (optional): Network adapters is Off, or Environment variables set PW_NSIPROXY_DISABLE = 1.
+  OnlineHandoff OnlineHandoffFor(Composition& composition, const runtime::RuntimeInstall& record,
+                                 std::string* invites = nullptr, bool* verbose = nullptr, bool* adapters_off = nullptr);
+  // At Play, as the game starts: the Steam session for a game set to Online, or no leftover one for any other. True
+  // when the session was handed over.
+  bool OnlineSessionStep(Composition& composition, const runtime::RuntimeInstall& record);
+  // At startup and when the Steam account changes: handoffs no game took go, kept ones get the current session, and
+  // with no account every one goes. A Steam sign-in goes with its handoff: the token Valve's client saved in the bottle,
+  // and its account list in the client folder once no game keeps its sign-in.
+  void SyncOnlineSessions(Composition& composition, bool startup);
+  void DropOnlineSession(const std::filesystem::path& bottle);  // before a bottle is kept without its game
+  // At Play, after OnlineSessionStep: no earlier Play's one-launch file, and this Play's when the session was handed
+  // over (handed) and it asks something.
+  void OnlineLaunchStep(const runtime::RuntimeInstall& record, bool handed, const runtime::OnlineLaunch& online);
+  // What a start gets from Playden, nothing of the game running: the bottle's modes settled, then the Steam session
+  // (OnlineSessionStep) and this start's one-launch file (OnlineLaunchStep). At Play, and for the first start from
+  // Home after Finish setup (HomeHandoff). True when the session was handed over.
+  bool HandOverOnline(Composition& composition, const runtime::RuntimeInstall& record,
+                      const runtime::OnlineLaunch& online, const char* when);
+  // HandOverForHome's work, on the worker: only for a game waiting for the PS5 whose title has its saved settings.
+  void HomeHandoff(Composition& composition, std::uint32_t runtime_number);
   std::string InstallScriptsStep(const GameFiles& files);                        // and redistributables
   // The Steam app ID the game's emulator uses.
   SteamworksAppView SteamworksAppFor(const GameFiles& files) const;
@@ -811,7 +875,8 @@ class RuntimeHost {
   void HealBottle(Composition& composition, const std::string& data_root, const std::string& title_id);
   runtime::LaunchEvidence Evidence(Composition& composition, const runtime::RuntimeInstall& record,
                                    const std::string& session_id);
-  void RunPlay(Composition& composition, std::uint32_t runtime_number, const std::string& setup_program = {});
+  void RunPlay(Composition& composition, std::uint32_t runtime_number, const std::string& setup_program = {},
+               const runtime::OnlineLaunch& online = {});
   // Removes a game's PS5 title; empty when it has none left, otherwise why not.
   // moving: the title goes because its game was installed again elsewhere (journal "remove-move"),
   // so Prepare, not Uninstall, finishes a removal that stopped part way.
@@ -918,6 +983,7 @@ class RuntimeHost {
   struct PlayRequest {
     std::uint32_t app = 0;
     std::string setup_program;  // Play(…, setup_program)
+    runtime::OnlineLaunch online;  // Play(…, online)
   };
   std::vector<PlayRequest> play_requests_;
   struct RemovalRequest {
@@ -932,6 +998,8 @@ class RuntimeHost {
   std::vector<std::uint32_t> kept_delete_requests_;
   std::vector<std::pair<std::uint32_t, std::string>> scan_requests_;
   std::vector<std::pair<std::uint32_t, RuntimeMaintenance>> maintenance_requests_;
+  std::vector<std::uint32_t> home_handoff_requests_;
+  std::uint64_t home_handoffs_requested_ = 0;
   std::vector<std::uint32_t> activity_requests_;
   std::vector<std::shared_ptr<PendingRelocation>> relocation_requests_;  // guarded by mutex_
   int work_percent_ = -1;  // worker thread only: the published work percent, -1 for none
@@ -949,8 +1017,15 @@ class RuntimeHost {
   std::map<std::uint32_t, std::string> title_names_;  // guarded by mutex_
   std::string steam_account_name_;                     // guarded by mutex_
   std::uint64_t steam_id_ = 0;                         // guarded by mutex_
+  std::atomic<bool> steam_invisible_{false};
+  std::atomic<bool> steam_online_notice_{true};
   bool title_names_changed_ = false;
   bool installs_recheck_requested_ = false;
+  bool steam_account_changed_ = false;  // guarded by mutex_: kept Steam sessions follow the account
+  // The Steam session for this batch of work, read before its effective-UID hold (worker thread only).
+  std::optional<runtime::OnlineSession> batch_online_session_;
+  bool batch_online_session_loaded_ = false;
+  bool startup_online_session_ = true;  // a stored Steam session at startup, read before its hold
   // Guards the worker's launch service and preflight cache for Handoff.
   std::mutex launch_mutex_;
   runtime::LaunchService* launch_ = nullptr;

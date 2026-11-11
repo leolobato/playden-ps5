@@ -347,10 +347,16 @@ void SharingService::Handle(SharingRequest request) {
       std::string zip;
       std::vector<std::pair<std::string, std::string>> facts;
       const bool have_logs = ReportLogs(request.logs_app, request.logs_name, request.attach_logs ? &zip : nullptr, &facts);
-      if (report.versions.empty())
+      // The logs' facts (summary.md), then the report's own rows (the Steam client of an Online game).
+      {
+        auto own = std::move(report.versions);
+        report.versions.clear();
         for (const auto& fact : facts)
           if (report.versions.size() < community::kReportMaxVersionRows)
             report.versions.emplace_back(ShortenedFact(fact.first, 40), ShortenedFact(fact.second, kReportFactMaxCharacters));
+        for (auto& row : own)
+          if (report.versions.size() < community::kReportMaxVersionRows) report.versions.push_back(std::move(row));
+      }
       if (request.attach_logs) {
         if (!have_logs) {
           result.report.error = LocalError("logs", "The logs could not be collected on this console.");

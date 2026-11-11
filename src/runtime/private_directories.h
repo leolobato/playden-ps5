@@ -51,8 +51,8 @@ struct SharedTreeResult {
   std::size_t skipped = 0;
   std::size_t linked = 0;
 };
-// Launcher credentials under the Windows profile. Empty until a launcher writes credentials
-// here; game saves and emulator settings are not sign-in tokens.
+// Launcher credentials under the Windows profile, relative to it: kept 0700/0600 when the rest of the profile is
+// opened to everyone, and never served over the network. Game saves and emulator settings are not sign-in tokens.
 const std::vector<std::filesystem::path>& PrivateProfilePaths();
 bool IsPrivateProfilePath(const std::filesystem::path& relative,
                           const std::vector<std::filesystem::path>& private_paths);

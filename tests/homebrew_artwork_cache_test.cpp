@@ -96,6 +96,27 @@ std::uint32_t AwaitTexture(LiveArtworkCache& cache, std::uint64_t generation,
   return 0;
 }
 
+class AvatarArtwork final : public ArtworkBackend {
+ public:
+  std::optional<ArtworkImage> Load(const ArtworkKey& key, const std::atomic<bool>&) override {
+    assert(key.game_id == GameId{} && IsAvatarArtworkSource(key.source));
+    return Image(2, 7);
+  }
+};
+
+// A friend's avatar has no game: an empty GameId is accepted for an avatar source only.
+void AvatarsNeedNoGame() {
+  AvatarArtwork backend;
+  ArtworkService service(backend);
+  FakeTextures textures;
+  LiveArtworkCache cache(service, textures);
+  cache.BeginFrame(1);
+  assert(cache.TextureFor(GameId{}, "https://avatars.steamstatic.com/x_medium.jpg") == 0);
+  cache.EndFrame();
+  assert(cache.Stats().visible_count == 0);
+  assert(AwaitTexture(cache, 1, GameId{}, AvatarArtworkSource(std::string(40, 'a'))) != 0);
+}
+
 void DeduplicatesAndUploadsOnlyOnUiThread() {
   ControlledArtwork backend;
   ArtworkService service(backend);
@@ -281,6 +302,7 @@ void FailedLoadIsReported() {
 }
 
 int main() {
+  AvatarsNeedNoGame();
   FailedLoadIsReported();
   DeduplicatesAndUploadsOnlyOnUiThread();
   UploadCountIsBoundedPerFrame();

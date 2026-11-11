@@ -7,6 +7,9 @@
 namespace playden::steam {
 namespace {
 
+// The store's category for "Valve Anti-Cheat enabled".
+constexpr std::uint64_t kVacCategory = 8;
+
 // The store writes HTML: tags go, common entities become their characters, and runs
 // of whitespace collapse, as the macOS app shows it.
 std::string PlainText(std::string_view html) {
@@ -64,6 +67,10 @@ std::optional<StoreDetails> ParseStoreDetails(std::uint32_t id, std::string_view
         details.genres.push_back(PlainText(name->text()));
   if (const auto* support = data->Find("controller_support"); support && support->is_string())
     details.controller_support = support->text();
+  if (const auto* categories = data->Find("categories"); categories && categories->is_array())
+    for (const auto& category : categories->array())
+      if (const auto* id = category.Find("id"); id && id->AsUint64() == std::optional<std::uint64_t>(kVacCategory))
+        details.vac = true;
   return details;
 }
 

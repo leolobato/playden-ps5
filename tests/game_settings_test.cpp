@@ -54,6 +54,8 @@ void WritePe(const std::filesystem::path& path, bool pe64) {
 int main(int argc, char** argv) {
   const std::filesystem::path source = argc > 1 ? argv[1] : ".";
   std::string reason;
+  // The Steam network and Online cases run with the experimental feature on; the last block turns it off.
+  SetOnlineSteamEnabled(true);
 
   GameRecipe hl2;
   CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-220-hl2-v1.json"), &hl2, &reason));
@@ -86,8 +88,8 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "steam_network", "steam_input", "windows_version", "text_scale", "locale", "cpu_topology", "address_space", "cpu",
-        "network_adapters", "logging",
+        "steam_features", "steam_sign_in", "game_invites", "steam_network", "steam_input", "windows_version", "text_scale",
+        "locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);
@@ -268,6 +270,49 @@ int main(int argc, char** argv) {
     launcher_features.launcher_section = true;
     const std::string bad_label = std::string("[application]\n") + "\n[launcher]\nlabel = a\"b\n";
     CHECK(!CheckProsperoProfile(bad_label, &why, launcher_features));
+  }
+  // Steam features = Online: with a runtime that runs a helper, the profile starts the Steam host beside the game and
+  // holds the game until it is ready; without one, nothing is written. The section is refused unless the renderer says so.
+  {
+    const auto helper_kit = KitCapabilitiesFromManifest({kKitHelperProcess}, false);
+    CHECK(helper_kit.helper_process && !KitCapabilitiesFromManifest({kKitInputRumble}, false).helper_process);
+    CHECK(std::find(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end(), kKitHelperProcess) !=
+          SettingsKitCapabilityNames().end());
+    const auto stale = KitForTitleRuntime(helper_kit, false);
+    CHECK(!stale.helper_process && stale.helper_process_needs_update && KitForTitleRuntime(helper_kit, true).helper_process);
+    const std::map<std::string, std::string> online = {{"unlock.steam_features", "on"}, {"steam_features", "online"}};
+    CHECK(BuildEffectiveSettings(hl2, nullptr, online, helper_kit, &settings, &error) && settings.helper_process);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[helper]\nprogram = Z:\\data\\playden\\steam-client\\client\\steam.exe\n"
+                            "ready = playden/steam-host.ready\nwait = 60\n") != std::string::npos);
+    // Without the Steam host, Online falls back to the game's default and says why; a title still on an older runtime
+    // keeps Online for its update.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, online, KitCapabilities{}, &settings, &error) && !settings.helper_process);
+    CHECK(settings.values.at("steam_features").value != "online" &&
+          settings.values.at("steam_features").reason == "Needs a runtime kit that runs Steam beside the game.");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[helper]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, online, stale, &settings, &error));
+    CHECK(settings.values.at("steam_features").value != "online" && settings.values.at("steam_features").waits_for_update &&
+          settings.values.at("steam_features").after_update == "online");
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "emulate"}}, helper_kit,
+                                 &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[helper]") == std::string::npos);
+    std::string why;
+    const std::string base = profile.text;
+    ProsperoProfileFeatures helper_features;
+    helper_features.helper_section = true;
+    const std::string program = "program = C:\\Tools\\a b.exe\n";
+    CHECK(!CheckProsperoProfile(base + "\n[helper]\n" + program, &why, {}));
+    CHECK(CheckProsperoProfile(base + "\n[helper]\n" + program, &why, helper_features));
+    CHECK(CheckProsperoProfile(base + "\n[helper]\n" + program + "ready = a/b.ready\nwait = 120\n", &why, helper_features));
+    for (const char* bad : {"", "program = tools\\a.exe\n", "program = C:/a.exe\n", "program = C:\\a\"b.exe\n",
+                            "program = C:\\a.exe\nready = ../b\n", "program = C:\\a.exe\nready = /b\n",
+                            "program = C:\\a.exe\nready = a//b\n", "program = C:\\a.exe\nready = a\\b\n",
+                            "program = C:\\a.exe\nwait = 0\n", "program = C:\\a.exe\nwait = 121\n",
+                            "program = C:\\a.exe\nother = 1\n", "program = C:\\a.exe\nprogram = C:\\b.exe\n"})
+      CHECK(!CheckProsperoProfile(base + "\n[helper]\n" + bad, &why, helper_features));
   }
   // Playden's tables of preset rows and buttons match the shipped input files.
   for (const auto& [name, buttons] : ControllerPresetButtons()) {
@@ -2720,6 +2765,24 @@ int main(int argc, char** argv) {
                                  {"arguments", "-game hl2 {resolution}"}, {"dll_overrides", "d3d9=n;xinput1_3=n"}},
                                  KitCapabilities{}, &settings, &error));
     auto community = BuildCommunityRecipe(hl2, settings, kHalfLife2, "Half-Life 2");
+    {  // Online and the sign-in are not shared; Offline emulation and its network value are.
+      EffectiveSettings steam;
+      const auto host_kit = KitCapabilitiesFromManifest({kKitHelperProcess}, false);
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "online"},
+                                   {"steam_sign_in", "kept"}}, host_kit, &steam, &error));
+      CHECK(steam.values.at("steam_features").value == "online" && steam.values.at("steam_sign_in").value == "kept");
+      const auto online = BuildCommunityRecipe(hl2, steam, kHalfLife2, "Half-Life 2").recipe;
+      CHECK(!online.defaults.count("steam_features") && !online.defaults.count("steam_sign_in"));
+      // Nor what the game does with the player's invites.
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "online"},
+                                   {"game_invites", "off"}}, host_kit, &steam, &error));
+      CHECK(steam.values.at("game_invites").value == "off" && steam.values.at("game_invites").source == ValueSource::kUser);
+      CHECK(!BuildCommunityRecipe(hl2, steam, kHalfLife2, "Half-Life 2").recipe.defaults.count("game_invites"));
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "emulate"},
+                                   {"steam_network", "offline"}}, KitCapabilities{}, &steam, &error));
+      const auto offline = BuildCommunityRecipe(hl2, steam, kHalfLife2, "Half-Life 2").recipe;
+      CHECK(offline.defaults.at("steam_features") == "emulate" && offline.defaults.at("steam_network") == "offline");
+    }
     {  // What the files showed travels without the graphics value, which has its own field (#67).
       auto detected = hl2;
       detected.detected = "d3d9 graphics=dxvk";
@@ -3144,6 +3207,102 @@ int main(int argc, char** argv) {
       for (const auto& value : removed) CHECK(value.data.empty());
       CHECK(RecipeRegistryInterim(nullptr, after_b).values == after_b.values);
     }
+  }
+
+  // Game invites (title-notify): listed beside the Steam rows, Ask by default, and only with Steam features = Online.
+  // Ask and Only show need a title that shows notifications: without one both are Off (never Join at once), and
+  // the row says so; on a title still on an older runtime the choice waits for its update.
+  {
+    GameRecipe ffxiii;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-292120-ffxiii-v1.json"), &ffxiii, &reason));
+    const auto* invites = FindSetting("game_invites");
+    CHECK(invites && invites->label == "Game invites" && invites->playden_default == "ask");
+    CHECK(invites->group == FindSetting("steam_sign_in")->group);
+    CHECK(invites->choices.size() == 4 && invites->choices[0].value == "ask" && invites->choices[1].value == "join" &&
+          invites->choices[2].value == "show" && invites->choices[3].value == "off");
+    CHECK(invites->choices[0].label == "Ask with L3 + R3" && invites->choices[1].label == "Join at once" &&
+          invites->choices[2].label == "Only show" && invites->choices[3].label == "Off");
+    CHECK(SettingShown(*invites, KitCapabilities{}));
+    const auto notify = KitCapabilitiesFromManifest({kKitTitleNotify}, false);
+    CHECK(notify.title_notify && !KitCapabilitiesFromManifest({kKitInputRumble}, false).title_notify);
+    CHECK(std::find(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end(), kKitTitleNotify) !=
+          SettingsKitCapabilityNames().end());
+    const auto stale = KitForTitleRuntime(notify, false);
+    CHECK(!stale.title_notify && stale.title_notify_needs_update);
+    CHECK(KitForTitleRuntime(notify, true).title_notify);
+    EffectiveSettings settings;
+    SettingsError error;
+    const auto effective = [&](std::map<std::string, std::string> overrides, const KitCapabilities& kit) {
+      overrides["unlock.steam_features"] = "on";  // the recipe locks Steam features
+      CHECK(BuildEffectiveSettings(ffxiii, nullptr, overrides, kit, &settings, &error));
+      return settings.values.at("game_invites");
+    };
+    // Not Online: the row does not apply.
+    auto row = effective({{"steam_features", "emulate"}, {"game_invites", "off"}}, notify);
+    CHECK(!row.available && row.reason == "Only with Steam features = Online.");
+    // With notifications every choice applies as chosen; Ask is the default.
+    row = effective({{"steam_features", "online"}}, notify);
+    CHECK(row.available && row.value == "ask" && row.reason.empty());
+    for (const char* value : {"ask", "join", "show", "off"}) {
+      row = effective({{"steam_features", "online"}, {"game_invites", value}}, notify);
+      CHECK(row.value == value && row.reason.empty() && !row.waits_for_update);
+      CHECK(SettingChoiceUnavailable(settings, "game_invites", value).empty());
+    }
+    // Without them only Join at once and Off: Ask (also the default) and Only show are Off.
+    row = effective({{"steam_features", "online"}}, KitCapabilities{});
+    CHECK(row.available && row.value == "off" && row.reason == "Needs a runtime kit that shows game invites.");
+    row = effective({{"steam_features", "online"}, {"game_invites", "ask"}}, KitCapabilities{});
+    CHECK(row.value == "off" && row.reason == "Needs a runtime kit that shows game invites.");
+    row = effective({{"steam_features", "online"}, {"game_invites", "show"}}, KitCapabilities{});
+    CHECK(row.value == "off" && row.reason == "Needs a runtime kit that shows game invites.");
+    CHECK(!SettingChoiceUnavailable(settings, "game_invites", "ask").empty() &&
+          !SettingChoiceUnavailable(settings, "game_invites", "show").empty());
+    CHECK(SettingChoiceUnavailable(settings, "game_invites", "join").empty() &&
+          SettingChoiceUnavailable(settings, "game_invites", "off").empty());
+    row = effective({{"steam_features", "online"}, {"game_invites", "off"}}, KitCapabilities{});
+    CHECK(row.value == "off" && row.reason.empty());
+    // A title on an older runtime: the same fallback until its update, the choice kept for it.
+    row = effective({{"steam_features", "online"}, {"game_invites", "show"}}, stale);
+    CHECK(row.value == "off" && row.waits_for_update && row.after_update == "show" && ChosenValue(row) == "show");
+    CHECK(row.reason == kAppliesAfterKitUpdate && SettingChoiceWaitsForUpdate(settings, "game_invites", "show"));
+    row = effective({{"steam_features", "online"}, {"game_invites", "join"}}, stale);
+    CHECK(row.value == "join" && !row.waits_for_update);
+  }
+
+  // Without online-steam: no Online choice, Steam sign-in and Steam network are not listed, a saved Online is ignored
+  // and the emulator stays off the network.
+  {
+    SetOnlineSteamEnabled(false);
+    GameRecipe ffxiii;
+    CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-292120-ffxiii-v1.json"), &ffxiii, &reason));
+    CHECK(!SettingChoiceOffered("steam_features", "online") && SettingChoiceOffered("steam_features", "emulate"));
+    CHECK(!SettingShown(*FindSetting("steam_sign_in"), KitCapabilities{}));
+    CHECK(!SettingShown(*FindSetting("steam_network"), KitCapabilities{}));
+    CHECK(!SettingShown(*FindSetting("game_invites"), KitCapabilities{}));
+    CHECK(SettingShown(*FindSetting("steam_features"), KitCapabilities{}));
+    CHECK(!ValidateSettingValue(ffxiii, "steam_features", "online", &reason));
+    EffectiveSettings settings;
+    SettingsError error;
+    CHECK(BuildEffectiveSettings(ffxiii, nullptr,
+                                 {{"steam_features", "online"}, {"unlock.steam_features", "on"}, {"steam_sign_in", "kept"},
+                                  {"steam_network", "online"}},
+                                 KitCapabilities{}, &settings, &error));
+    CHECK(settings.values.at("steam_features").value == "emulate");
+    CHECK(settings.values.at("steam_sign_in").value == "play");
+    CHECK(settings.values.at("steam_network").value == "offline" && !settings.values.at("steam_network").available);
+    // The saved Online goes, with its sign-in; Steam network stays for when the feature is back.
+    GameSettingsRecord record;
+    record.overrides = {{"steam_features", "online"}, {"unlock.steam_features", "on"}, {"steam_sign_in", "kept"},
+                        {"game_invites", "off"}, {"steam_network", "offline"}};
+    CHECK(DropOnlineSteamSettings(&record) && record.revision == 1);
+    CHECK(record.overrides == (std::map<std::string, std::string>{{"steam_network", "offline"}}));
+    CHECK(!DropOnlineSteamSettings(&record) && record.revision == 1);
+    record.overrides = {{"steam_features", "emulate"}};
+    CHECK(!DropOnlineSteamSettings(&record));
+    record.overrides = {{"steam_features", "emulate"}, {"game_invites", "join"}};
+    CHECK(DropOnlineSteamSettings(&record) && record.overrides.size() == 1);
+    SetOnlineSteamEnabled(true);
+    CHECK(SettingChoiceOffered("steam_features", "online"));
   }
 
   std::puts("game settings tests passed");

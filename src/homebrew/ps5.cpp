@@ -17,6 +17,7 @@
 #include "platform/ps5/title_runtime.h"
 #include "platform/ps5/native_startup.h"
 #include "runtime/game_probe.h"
+#include "runtime/game_settings.h"
 #include "runtime/settings_storage.h"
 #include "runtime/writable_folders.h"
 #include "homebrew/runtime_host.hpp"
@@ -45,12 +46,14 @@
 #include "core/input.hpp"
 #include "steam/backend/auth_client.h"
 #include "steam/backend/cm_app_details.h"
+#include "steam/backend/cm_friends_source.h"
 #include "steam/backend/download_server_source.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
 #include "steam/backend/steam_cloud_runner.h"
 #include "steam/backend/library_client.h"
 #include "steam/local_session_repository.h"
+#include "steam/secret.h"
 #include "library/cache.h"
 #include "platform/ps5/display_egl.hpp"
 #include "platform/ps5/pad.hpp"
@@ -266,6 +269,25 @@ int main() {
     // After the grant, user data, logs and games live outside the app folder (0.6 layout).
     log_root = playden::ps5::EffectiveLogRoot(paths);
     const std::string user_root = playden::ps5::EffectiveUserRoot(paths);
+    // Experimental features: one name per line in /data/playden/features.txt (open to FTP and the file manager;
+    // user/ is not), read once before any game settings are evaluated. Nightlies and local dev builds
+    // (PLAYDEN_DEV_BUILD) have every feature on.
+    playden::app::ExperimentalFeatures features =
+        playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD);
+#if !PLAYDEN_UI_SIMULATION
+    {
+        std::vector<std::string> unknown;
+        const auto& features_root = paths.runtime_data_root.empty() ? user_root : paths.runtime_data_root;
+        features = playden::app::ReadExperimentalFeatures(
+            features_root + "/" + playden::app::kExperimentalFeaturesFileName, features, &unknown);
+        if (features.community_recipes)
+            playden::app::AppendLogLine(log_root, "launch.log", "experimental feature community-recipes on");
+        if (features.online_steam) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature online-steam on");
+        for (const auto& name : unknown)
+            playden::app::AppendLogLine(log_root, "launch.log", "experimental feature unknown: " + name.substr(0, 64));
+    }
+    playden::runtime::SetOnlineSteamEnabled(features.online_steam);
+#endif
     const std::string art_cache_dir = paths.runtime_data_root.empty() ? std::string{} : (paths.runtime_data_root + "/art");
     // Startup checkpoints: a launch that never shows its first frame can be told
     // apart from one that never opened the display.
@@ -282,22 +304,7 @@ int main() {
 #else
         playden::homebrew::Simulation simulation({}, {}, playden::homebrew::ModelMode::Live);
 #endif
-        // Experimental features: one name per line in /data/playden/features.txt (open to FTP and the file manager;
-        // user/ is not), read once before anything asks. Nightlies and local dev builds (PLAYDEN_DEV_BUILD) have every
-        // feature on.
-        playden::app::ExperimentalFeatures features =
-            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD);
 #if !PLAYDEN_UI_SIMULATION
-        {
-            std::vector<std::string> unknown;
-            const auto& features_root = paths.runtime_data_root.empty() ? user_root : paths.runtime_data_root;
-            features = playden::app::ReadExperimentalFeatures(
-                features_root + "/" + playden::app::kExperimentalFeaturesFileName, features, &unknown);
-            if (features.community_recipes)
-                playden::app::AppendLogLine(log_root, "launch.log", "experimental feature community-recipes on");
-            for (const auto& name : unknown)
-                playden::app::AppendLogLine(log_root, "launch.log", "experimental feature unknown: " + name.substr(0, 64));
-        }
         simulation.SetCommunityRecipesEnabled(features.community_recipes);
 #endif
         {
@@ -323,6 +330,14 @@ int main() {
             playden::app::AppendLogLine(log_root, "launch.log",
                 "private game settings unavailable: " + settings_reason);
         else playden::app::AppendLogLine(log_root, "launch.log", "game settings storage initialized");
+        if (settings_file && !playden::runtime::OnlineSteamEnabled()) {
+            std::size_t dropped = 0;
+            if (!playden::runtime::DropOnlineSteamSettingsFile(settings_file->string(), &dropped, &settings_reason))
+                playden::app::AppendLogLine(log_root, "launch.log", "online Steam settings not reset: " + settings_reason);
+            else if (dropped)
+                playden::app::AppendLogLine(log_root, "launch.log", "online Steam settings reset for " +
+                                                                    std::to_string(dropped) + " games: online-steam is off");
+        }
         // The layout move held something back this start: say so where the logs are read.
         if (!native_access.notice.empty()) {
             playden::app::AppendLogLine(log_root, "runtime.log", "layout notice: " + native_access.notice);
@@ -342,7 +357,10 @@ int main() {
             playden::app::AppendLogLine(log_root, "steam-cm.log", line);
         });
         // One logged-on Steam connection for the whole run, shared by every CM client below (#51).
-        const auto steam_cm = playden::steam::MakeCmSharedSession();
+        // With online-steam the shared session also keeps the friends list; off, it never asks Steam for friends.
+        playden::steam::CmSessionOptions steam_cm_options;
+        steam_cm_options.friends = playden::runtime::OnlineSteamEnabled();
+        const auto steam_cm = playden::steam::MakeCmSharedSession(steam_cm_options);
         playden::steam::CmClient auth_cm(paths.trust_store, auth_storage);
         auth_cm.SetOwner("auth");
         auth_cm.SetSharedSession(steam_cm);
@@ -396,9 +414,16 @@ int main() {
         playden::LibraryCache library_cache(library_storage);
         playden::LibraryService library_service(library_backend,library_sessions,&library_cache);
         playden::PreferencesStore preferences(library_storage);
+        bool saved_steam_invisible = false;
+        bool saved_steam_online_notice = true;
         {
             // A download resumed at startup starts before the UI has loaded the settings: it reads the saved ones.
             const auto saved = preferences.Load().preferences;
+            // So does the Steam session's first logon, and a kept handoff written at sign-in (Appear invisible).
+            saved_steam_invisible = saved.steam_invisible;
+            saved_steam_online_notice = saved.steam_online_notice;
+            if (steam_cm_options.friends && saved.steam_invisible)
+                playden::steam::SetCmPersonaState(*steam_cm, playden::steam::cm::kPersonaStateInvisible);
             downloads_slow_network.store(saved.downloads_slow_network);
             {
                 std::lock_guard lock(download_server_mutex);
@@ -533,6 +558,9 @@ int main() {
         const std::string community_root = user_root + "/community-recipes";
         auto community_objects = std::make_shared<playden::community::RecipeStore>(community_root);
         auto community_keep = std::make_shared<playden::homebrew::CommunityKeepSet>();
+        // The runtime worker's own view of the session, for games set to Steam features = Online.
+        playden::LocalSessionRepository online_sessions(user_root, {}, &session_vault);
+        playden::Storage online_storage(user_root);
         // Per-game runtime: private bottles and PS5 titles from the admitted kit.
         // Its worker owns OWNER records, native inventory and publication.
         std::unique_ptr<playden::homebrew::RuntimeHost> runtime_host;
@@ -587,6 +615,67 @@ int main() {
                 return true;
             };
             config.runtime_dir = paths.title_root + "/runtime";
+            // A game set to Steam features = Online signs in with the account's refresh token and Playden's device
+            // fields, under a login ID of its own so neither session replaces the other.
+            config.online_session = [&online_sessions, &online_storage,
+                                     test_file = (paths.runtime_data_root.empty() ? user_root : paths.runtime_data_root) +
+                                                 "/steam-host-test-session.txt"]() -> std::optional<rt::OnlineSession> {
+#if PLAYDEN_DEV_BUILD
+                // Development builds only: a test account's session in <data>/steam-host-test-session.txt
+                // (account_name=, steam_id=, refresh_token= lines) goes to the game instead of the signed-in
+                // account's, so a console run can sign Steam's client in without the console's own account.
+                if (std::FILE* file = std::fopen(test_file.c_str(), "rb")) {
+                    char text[4096];
+                    const std::size_t size = std::fread(text, 1, sizeof text - 1, file);
+                    std::fclose(file);
+                    text[size] = 0;
+                    rt::OnlineSession test;
+                    char* rest = nullptr;
+                    for (char* line = strtok_r(text, "\r\n", &rest); line; line = strtok_r(nullptr, "\r\n", &rest)) {
+                        const std::string entry(line);
+                        const auto equals = entry.find('=');
+                        if (equals == std::string::npos) continue;
+                        const auto key = entry.substr(0, equals), value = entry.substr(equals + 1);
+                        if (key == "account_name") test.account_name = value;
+                        else if (key == "steam_id") test.steam_id = std::strtoull(value.c_str(), nullptr, 10);
+                        else if (key == "refresh_token") test.refresh_token = value;
+                    }
+                    std::memset(text, 0, sizeof text);
+                    if (!test.account_name.empty() && test.steam_id && !test.refresh_token.empty()) {
+                        playden::app::AppendLogLine(log_root, "runtime.log", "online session from the test file (dev build)");
+                        const auto device =
+                            playden::steam::MakeDeviceIdentity(playden::steam::LoadOrCreateDeviceSeed(online_storage));
+                        test.machine_name = device.machine_name;
+                        test.machine_id = device.machine_id;
+                        test.login_id = rt::BridgeLoginId(device.login_id);
+                        return test;
+                    }
+                }
+#endif
+                auto loaded = online_sessions.Load();
+                if (!loaded.ok() || !loaded.value()) return std::nullopt;
+                auto& stored = *loaded.value();
+                // The loaded copy holds both tokens: wiped on every way out.
+                struct Wipe {
+                    playden::StoredSession& session;
+                    ~Wipe() {
+                        playden::steam::ZeroizeSecret(session.refresh_token);
+                        playden::steam::ZeroizeSecret(session.access_token);
+                    }
+                } wipe{stored};
+                if (stored.refresh_token.empty()) return std::nullopt;
+                const auto device =
+                    playden::steam::MakeDeviceIdentity(playden::steam::LoadOrCreateDeviceSeed(online_storage));
+                rt::OnlineSession session;
+                session.steam_id = stored.steam_id;
+                session.account_name = stored.account_name;
+                session.refresh_token = stored.refresh_token;
+                session.machine_name = device.machine_name;
+                session.machine_id = device.machine_id;
+                session.login_id = rt::BridgeLoginId(device.login_id);
+                session.cell_id = stored.cell_id.value_or(0);
+                return session;
+            };
             config.settings_record = [file = settings_file](const playden::GameId& game) -> std::optional<rt::GameSettingsRecord> {
                 std::map<playden::GameId, rt::GameSettingsRecord> records; std::string reason;
                 if (!file || !rt::LoadGameSettingsFile(file->string(), &records, &reason)) return std::nullopt;
@@ -715,6 +804,43 @@ int main() {
                 *error = "too many redirects";
                 return std::nullopt;
             };
+            // Valve's Steam client manifest (a few KB, its length unknown): one HTTPS GET on the worker, redirects only to
+            // other HTTPS addresses; Playden reads the version and the package's SHA-256 from it.
+            config.fetch_text = [client = std::make_shared<std::unique_ptr<playden::steam::HttpClient>>(),
+                                 trust = paths.trust_store](const std::string& url, std::size_t max_bytes,
+                                                            const std::atomic<bool>& cancel,
+                                                            std::string* error) -> std::optional<std::string> {
+                if (!*client) *client = std::make_unique<playden::steam::HttpClient>(trust);
+                std::string target = url;
+                for (int hop = 0; hop <= 5; ++hop) {
+                    if (target.rfind("https://", 0) != 0) {
+                        *error = "not an HTTPS address";
+                        return std::nullopt;
+                    }
+                    playden::steam::HttpRequest request;
+                    request.url = target;
+                    request.headers = {{"User-Agent", "Playden"}};
+                    request.timeout_ms = playden::steam::kMaxHttpTimeoutMs;
+                    request.max_response_bytes = max_bytes;
+                    const auto response = (*client)->Perform(request, cancel);
+                    const long status = response.status_code;
+                    if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                        target.clear();
+                        for (const auto& [name, value] : response.headers)
+                            if (strcasecmp(name.c_str(), "location") == 0) target = value;
+                        continue;
+                    }
+                    if (!response.ok() || status != 200) {
+                        *error = "status " + std::to_string(status) + " error " +
+                                 std::to_string(static_cast<int>(response.error)) + " bytes " +
+                                 std::to_string(response.body.size());
+                        return std::nullopt;
+                    }
+                    return std::string(response.body.begin(), response.body.end());
+                }
+                *error = "too many redirects";
+                return std::nullopt;
+            };
             // An any-title kit's helper serves the game titles listed here (root-owned).
             config.write_title_allow_list = playden::ps5::WriteTitleAllowList;
             config.hold_effective_uid = playden::ps5::HoldEffectiveUid;
@@ -754,6 +880,8 @@ int main() {
                 return playden::homebrew::TitleRemoverResult{outcome.sent, outcome.code, outcome.detail};
             };
             runtime_host = std::make_unique<playden::homebrew::RuntimeHost>(std::move(config));
+            runtime_host->SetSteamInvisible(saved_steam_invisible);
+            runtime_host->SetSteamOnlineNotice(saved_steam_online_notice);
             if (!runtime_host->Start())
                 playden::app::AppendLogLine(log_root, "runtime.log", "runtime worker could not start");
         }
@@ -789,6 +917,9 @@ int main() {
             // The sharing ID (Phase 5) never reaches a log: every line goes through the redaction.
             community_config.log = [](const std::string& line) {
                 playden::app::AppendLogLine(log_root, "community.log", playden::diagnostics::RedactSecrets(line));
+            };
+            community_config.feature_enabled = [online_steam = features.online_steam](const std::string& feature) {
+                return feature == "online-steam" && online_steam;
             };
             // Garbage collection after a refresh keeps what games use, once the runtime knows its installs.
             community_config.referenced = playden::homebrew::CommunityKeepCallback(community_keep);
@@ -934,6 +1065,20 @@ int main() {
             return newest ? *newest->id.steam_app() : 0u;
         });
         playden::steam::DownloadServerService servers(servers_source, servers_sessions);
+        // Steam friends, online-steam only: kept on the shared session, read by the friends worker.
+        std::unique_ptr<playden::steam::CmClient> friends_cm;
+        std::unique_ptr<playden::LocalSessionRepository> friends_sessions;
+        std::unique_ptr<playden::steam::CmFriendsSource> friends_source;
+        std::unique_ptr<playden::steam::FriendsService> friends;
+        if (playden::runtime::OnlineSteamEnabled()) {
+            friends_cm = std::make_unique<playden::steam::CmClient>(paths.trust_store, library_storage);
+            friends_cm->SetOwner("friends");
+            friends_cm->SetSharedSession(steam_cm);
+            friends_sessions = std::make_unique<playden::LocalSessionRepository>(user_root, playden::LocalSessionRepository::DiagnosticReport{}, &session_vault);
+            friends_source = std::make_unique<playden::steam::CmFriendsSource>(*friends_cm, steam_cm);
+            friends = std::make_unique<playden::steam::FriendsService>(*friends_source, *friends_sessions);
+            friends->SetLog([](const std::string& line) { playden::app::AppendLogLine(log_root, "steam-cm.log", line); });
+        }
         servers.SetLog([](std::uint32_t app, const char* step, const char* category, const char* detail) {
             char line[640];
             std::snprintf(line, sizeof(line), "app=%u step=%s result=%s detail=%s", app, step, category, detail);
@@ -1022,6 +1167,7 @@ int main() {
         playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
         services.SetDownloadServers(&servers);
+        services.SetFriends(friends.get());
         if (!web_probe_on) services.SetWebAccess(&web);
         services.SetLocalLibrary(local_library);
         playden::steam::StoreDetailsService store_details(playden::homebrew::StoreFetch(paths.trust_store));
@@ -1036,6 +1182,12 @@ int main() {
         services.SetShutdownLog([](const std::string& line) { playden::app::AppendLogLine(log_root, "launch.log", line); });
         // "Saved UI data is unavailable" names no file or reason: the log does.
         services.SetPersistenceLog([](const std::string& line) { playden::app::AppendLogLine(log_root, "launch.log", line); });
+        // Friends tab › Appear invisible: Playden's own Steam session shows the choice at once (online-steam only).
+        services.SetSteamPersona([steam_cm, friends = steam_cm_options.friends](bool invisible) {
+            if (friends)
+                playden::steam::SetCmPersonaState(*steam_cm, invisible ? playden::steam::cm::kPersonaStateInvisible
+                                                                       : playden::steam::cm::kPersonaStateOnline);
+        });
         services.SetStaySignedIn([&sessions](bool stay) {
             const auto moved = sessions.SetPersist(stay);
             playden::app::AppendLogLine(log_root, "auth.log", std::string("stay signed in ") + (stay ? "on" : "off") +
@@ -1249,6 +1401,10 @@ int main() {
             web_probe.Stop();
             playden::app::AppendLogLine(log_root, "web.log", "probe stopped");
         }
+        // Finish setup's game starts from Home next: it gets what Play would hand it first.
+        if (const auto game = simulation.FinishSetupGame())
+            playden::app::AppendLogLine(log_root, "launch.log", "home handoff game=" + playden::ToKey(*game) +
+                                                                    (services.HandOverForHome(*game) ? " done" : " not answered"));
         services.Shutdown();
         web.Shutdown();
         // The install service stops before the Local store goes (`stores` is destroyed before

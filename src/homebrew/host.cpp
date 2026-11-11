@@ -19,12 +19,14 @@
 #include "homebrew/sharing_service.hpp"
 #include "update/version.h"
 #include "diagnostics/redaction.h"
+#include "runtime/game_settings.h"
 #include "runtime/settings_storage.h"
 #include "homebrew/input_adapter.hpp"
 #include "homebrew/json.hpp"
 
 #include "steam/backend/auth_client.h"
 #include "steam/backend/cm_app_details.h"
+#include "steam/backend/cm_friends_source.h"
 #include "steam/backend/download_server_source.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
@@ -401,6 +403,10 @@ bool write_render_snapshot(const playden::homebrew::Render& renderer,
 int main(int argc, char** argv) {
     auto options = parse_options(argc, argv);
     if (!options) return 2;
+    // Experimental features: one name per line in features.txt in the data folder, read once, before any game
+    // settings are evaluated. Simulation keeps every feature it shows on; nightlies and local dev builds
+    // (PLAYDEN_DEV_BUILD, on in the homebrew-host preset) have every feature on, as on the PS5.
+    playden::app::ExperimentalFeatures features = playden::app::DefaultExperimentalFeatures(true);
     if (!options->simulation) {
         // The host CLI explicitly selects this trusted destination. Resolve its
         // existing aliases before choosing the managed root; bottle/JSON paths
@@ -408,6 +414,17 @@ int main(int argc, char** argv) {
         std::error_code error;
         options->data_directory = std::filesystem::weakly_canonical(options->data_directory, error);
         if (error) { std::fprintf(stderr, "live data directory is unavailable\n"); return 2; }
+        std::vector<std::string> unknown;
+        features = playden::app::ReadExperimentalFeatures(
+            (options->data_directory / playden::app::kExperimentalFeaturesFileName).string(),
+            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD), &unknown);
+        for (const auto& name : unknown) std::fprintf(stderr, "unknown experimental feature: %s\n", name.substr(0, 64).c_str());
+        if (features.community_recipes) std::fprintf(stderr, "experimental feature community-recipes on\n");
+        if (features.online_steam) std::fprintf(stderr, "experimental feature online-steam on\n");
+        playden::runtime::SetOnlineSteamEnabled(features.online_steam);
+    } else if (options->scenario == "friends") {
+        // The friends scenario shows what online-steam adds (the Friends tab, Join, Invite friends); others keep it off.
+        playden::runtime::SetOnlineSteamEnabled(true);
     }
 
     const auto mode = options->simulation ? playden::homebrew::ModelMode::Simulation
@@ -434,7 +451,10 @@ int main(int argc, char** argv) {
     // until after install_runner is destroyed.
     DownloadTuningState download_tuning_state;
     std::unique_ptr<playden::Storage> auth_storage;
-    const auto steam_cm = playden::steam::MakeCmSharedSession();
+    // With online-steam the shared session also keeps the friends list; off, it never asks Steam for friends.
+    playden::steam::CmSessionOptions steam_cm_options;
+    steam_cm_options.friends = playden::runtime::OnlineSteamEnabled();
+    const auto steam_cm = playden::steam::MakeCmSharedSession(steam_cm_options);
     std::unique_ptr<playden::steam::CmClient> auth_cm;
     std::unique_ptr<playden::steam::AuthClient> auth;
     std::unique_ptr<playden::SessionVault> session_vault;  // declared first: every session repository uses it
@@ -473,6 +493,11 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::LocalSessionRepository> servers_sessions;
     std::unique_ptr<playden::steam::CdnDownloadServerSource> servers_source;
     std::unique_ptr<playden::steam::DownloadServerService> servers;
+    // Steam friends, online-steam only.
+    std::unique_ptr<playden::steam::CmClient> friends_cm;
+    std::unique_ptr<playden::LocalSessionRepository> friends_sessions;
+    std::unique_ptr<playden::steam::CmFriendsSource> friends_source;
+    std::unique_ptr<playden::steam::FriendsService> friends;
     std::unique_ptr<playden::web::Service> web;
     std::unique_ptr<playden::steam::CmClient> cloud_cm;
     std::unique_ptr<playden::steam::HttpClient> cloud_http;
@@ -524,24 +549,16 @@ int main(int argc, char** argv) {
     SDL_GL_SetSwapInterval(options->headless ? 0 : 1);
     hui::gfx::set_glsl_prefix("#version 410 core\n");
 
-    // Experimental features: one name per line in features.txt in the data folder, read once here. Simulation keeps
-    // every feature on, so its scenarios show them; nightlies and local dev builds (PLAYDEN_DEV_BUILD, on in the
-    // homebrew-host preset) have every feature on, as on the PS5.
-    playden::app::ExperimentalFeatures features = playden::app::DefaultExperimentalFeatures(true);
-    if (!options->simulation) {
-        std::vector<std::string> unknown;
-        features = playden::app::ReadExperimentalFeatures(
-            (options->data_directory / playden::app::kExperimentalFeaturesFileName).string(),
-            playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD), &unknown);
-        for (const auto& name : unknown) std::fprintf(stderr, "unknown experimental feature: %s\n", name.substr(0, 64).c_str());
-        if (features.community_recipes) std::fprintf(stderr, "experimental feature community-recipes on\n");
-        simulation.SetCommunityRecipesEnabled(features.community_recipes);
-    }
+    if (!options->simulation) simulation.SetCommunityRecipesEnabled(features.community_recipes);
 
     if (!options->simulation) {
         std::string settings_reason;
         const auto settings_file = playden::runtime::PrepareGameSettingsStorage(options->data_directory, &settings_reason);
         if (!settings_file) std::fprintf(stderr, "private game settings unavailable: %s\n", settings_reason.c_str());
+        std::size_t dropped = 0;
+        if (settings_file && !playden::runtime::OnlineSteamEnabled() &&
+            !playden::runtime::DropOnlineSteamSettingsFile(settings_file->string(), &dropped, &settings_reason))
+            std::fprintf(stderr, "online Steam settings not reset: %s\n", settings_reason.c_str());
         simulation.SetGameSettingsFile(settings_file.value_or(std::filesystem::path{}));
         if (settings_file)
             for (const auto& line : playden::runtime::MyPresetsLoadLog(
@@ -597,6 +614,9 @@ int main(int argc, char** argv) {
         {
             // A download resumed at startup starts before the UI has loaded the settings: it reads the saved ones.
             const auto saved = preferences->Load().preferences;
+            // So does the Steam session's first logon (Appear invisible).
+            if (steam_cm_options.friends && saved.steam_invisible)
+                playden::steam::SetCmPersonaState(*steam_cm, playden::steam::cm::kPersonaStateInvisible);
             download_tuning_state.downloads_slow_network.store(saved.downloads_slow_network);
             {
                 std::lock_guard lock(download_tuning_state.mutex);
@@ -719,6 +739,15 @@ int main(int argc, char** argv) {
             std::snprintf(line, sizeof(line), "app=%u step=%s result=%s detail=%s", app, step, category, detail);
             playden::app::AppendLogLine(log_directory, "install.log", line);
         });
+        if (playden::runtime::OnlineSteamEnabled()) {
+            friends_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
+            friends_cm->SetOwner("friends");
+            friends_cm->SetSharedSession(steam_cm);
+            friends_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
+            friends_source = std::make_unique<playden::steam::CmFriendsSource>(*friends_cm, steam_cm);
+            friends = std::make_unique<playden::steam::FriendsService>(*friends_source, *friends_sessions);
+            friends->SetLog([log_directory](const std::string& line) { playden::app::AppendLogLine(log_directory, "steam-cm.log", line); });
+        }
         cloud_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
         cloud_cm->SetOwner("cloud");
         cloud_cm->SetSharedSession(steam_cm);
@@ -770,6 +799,7 @@ int main(int argc, char** argv) {
                                                                    cloud.get(), nullptr, auth_log);
         services->SetLocalLibrary(local);
         services->SetDownloadServers(servers.get());
+        services->SetFriends(friends.get());
         {
             // Web access on the Mac: the same page over the host's logs folder, on 127.0.0.1's network too.
             playden::web::ServiceConfig web_config;
@@ -787,6 +817,12 @@ int main(int argc, char** argv) {
             web = std::make_unique<playden::web::Service>(std::move(web_config));
             services->SetWebAccess(web.get());
         }
+        // Friends tab › Appear invisible: Playden's own Steam session shows the choice at once (online-steam only).
+        services->SetSteamPersona([steam_cm, friends = steam_cm_options.friends](bool invisible) {
+            if (friends)
+                playden::steam::SetCmPersonaState(*steam_cm, invisible ? playden::steam::cm::kPersonaStateInvisible
+                                                                       : playden::steam::cm::kPersonaStateOnline);
+        });
         services->SetStaySignedIn([repository = sessions.get(), log_directory](bool stay) {
             const auto moved = repository->SetPersist(stay);
             playden::app::AppendLogLine(log_directory, "auth.log", std::string("stay signed in ") + (stay ? "on" : "off") +
@@ -816,6 +852,9 @@ int main(int argc, char** argv) {
                 return client->Perform(request, cancel);
             };
             config.log = community_log;
+            config.feature_enabled = [online_steam = features.online_steam](const std::string& feature) {
+                return feature == "online-steam" && online_steam;
+            };
             auto keep = std::make_shared<playden::homebrew::CommunityKeepSet>();
             config.referenced = playden::homebrew::CommunityKeepCallback(keep);
             const auto endpoints = config.endpoints;
@@ -991,6 +1030,8 @@ int main(int argc, char** argv) {
     const bool snapshot_written = write_snapshot(simulation, options->snapshot);
     if (controller) SDL_GameControllerClose(controller);
     SDL_StopTextInput();
+    // Finish setup's game starts from Home next: it gets what Play would hand it first.
+    if (const auto game = simulation.FinishSetupGame(); game && services) services->HandOverForHome(*game);
     if (services) services->Shutdown();
     if (web) web->Shutdown();
     if (community) community->Shutdown();  // before its HTTP client goes

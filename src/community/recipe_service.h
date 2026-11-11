@@ -41,6 +41,9 @@ struct RecipeServiceConfig {
   std::function<std::optional<std::set<std::string>>()> referenced;
   std::string user_agent = "Playden";
   std::size_t worker_stack_bytes = 1 << 20;
+  // Whether an experimental feature (a features.txt line, runtime::CommunityRecipeFeature) is on. A recipe that needs
+  // one that is off is not offered; a game that already uses it keeps it. Nothing: every feature is off.
+  std::function<bool(const std::string& feature)> feature_enabled;
   // Test hook: stops a refresh's write of that step (RecipeStore::before_write).
   std::function<bool(const std::string& step)> before_write;
 };
@@ -130,11 +133,13 @@ class CommunityRecipeService {
 };
 
 // The summaries of a release: every index entry whose object is in the store and passes the
-// checks (its file's game the one it is listed under), in index order, with votes when totals has them. Used at load
-// and after a refresh.
+// checks (its file's game the one it is listed under), in index order, with votes when totals has them. A recipe
+// that needs an experimental feature feature_enabled doesn't name (or with no feature_enabled) is left out. Used at
+// load and after a refresh.
 std::map<GameRef, std::vector<RecipeSummary>> BuildSummaries(
     const RecipeIndex& index, const RecipeStore& store, const VoteTotals* totals,
-    const std::function<void(const std::string&)>& log);
+    const std::function<void(const std::string&)>& log,
+    const std::function<bool(const std::string& feature)>& feature_enabled = {});
 
 // ParseCommunityRecipe and CommunityRecipeRefusals (console options) on bytes (the id made from the file's game);
 // the reason in *error. The caller compares the game with the path or index entry it came from.

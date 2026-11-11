@@ -135,7 +135,8 @@ ZipExtractResult ExtractZip(const std::string& zip_path, const std::string& dest
   for (mz_uint i = 0; i < count; ++i) {
     mz_zip_archive_file_stat stat{};
     if (!mz_zip_reader_file_stat(&archive.zip, i, &stat)) return fail("unreadable entry " + std::to_string(i));
-    const std::string name = stat.m_filename;
+    std::string name = stat.m_filename;
+    if (options.windows_separators) std::replace(name.begin(), name.end(), '\\', '/');
     if (!SafeEntryName(name)) return fail("unsafe entry name: " + name);
     if (name.compare(0, options.inner_prefix.size(), options.inner_prefix) != 0) continue;
     std::string relative = name.substr(options.inner_prefix.size());

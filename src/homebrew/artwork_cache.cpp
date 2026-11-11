@@ -131,7 +131,8 @@ void LiveArtworkCache::BeginFrame(std::uint64_t account_generation) {
 std::uint32_t LiveArtworkCache::TextureFor(GameId game_id, std::string_view source,
                                            std::uint32_t* width, std::uint32_t* height) {
   auto& state = *state_;
-  if (state.generation == 0 || !game_id.valid() || source.empty() ||
+  // An avatar is keyed by its hash alone, with an empty GameId.
+  if (state.generation == 0 || !(game_id.valid() || (game_id == GameId{} && IsAvatarArtworkSource(source))) || source.empty() ||
       source.size() > kMaxArtworkSourceBytes || source.find('\0') != std::string_view::npos)
     return 0;
   ArtworkKey key{state.generation, game_id, std::string(source)};

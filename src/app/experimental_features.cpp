@@ -25,6 +25,7 @@ ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, Experiment
     while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.remove_suffix(1);
     if (line.empty() || line.front() == '#') continue;
     if (line == "community-recipes") features.community_recipes = true;
+    else if (line == "online-steam") features.online_steam = true;
     else if (unknown) unknown->emplace_back(line);
   }
   return features;

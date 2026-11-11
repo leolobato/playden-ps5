@@ -107,6 +107,14 @@ struct KitCapabilities {
   // controller. Counts only for a title that runs this kit's runtime, like display_120hz.
   bool input_playstation = false;
   bool input_playstation_needs_update = false;
+  // The title shows a PS5 notification a program asks for and answers an invite with L3 + R3 (kKitTitleNotify), so
+  // Game invites can ask or only show. Counts only for a title that runs this kit's runtime, like display_120hz.
+  bool title_notify = false;
+  bool title_notify_needs_update = false;
+  // The title runs a second program beside the game ([helper], kKitHelperProcess): the Steam host of Steam features =
+  // Online. Counts only for a title that runs this kit's runtime, like display_120hz.
+  bool helper_process = false;
+  bool helper_process_needs_update = false;
 };
 
 struct SettingChoice {
@@ -135,6 +143,14 @@ const SettingDefinition* FindSetting(std::string_view id);
 // coming; one the kit, the game or Playden cannot apply yet is disabled with its reason
 // (EffectiveValue::available). Button rows live under Button mapping.
 bool SettingShown(const SettingDefinition& definition, const KitCapabilities& kit);
+
+// online-steam in features.txt (app/experimental_features.h), set once at startup before any settings are evaluated.
+// Off: Steam features has no Online choice, Steam sign-in and Steam network are not listed, and the emulator stays off
+// the network.
+void SetOnlineSteamEnabled(bool enabled);
+bool OnlineSteamEnabled();
+// Whether a setting's choice is offered at all (Steam features = Online only with online-steam).
+bool SettingChoiceOffered(std::string_view id, std::string_view value);
 
 // The 17 controller buttons prospero-win binds, as setting ids "button.<name>".
 // The rows a controller preset sets, by preset id: setting id → value.
@@ -362,6 +378,14 @@ struct EffectiveSettings {
   // The title's runtime takes [input] mode = playstation (KitCapabilities::input_playstation).
   bool input_playstation = false;
   bool input_playstation_needs_update = false;
+  // The title's runtime shows a program's notifications (KitCapabilities::title_notify): Game invites Ask and
+  // Only show need it.
+  bool title_notify = false;
+  bool title_notify_needs_update = false;
+  // The title's runtime runs the Steam host beside the game (KitCapabilities::helper_process): Steam features = Online
+  // needs it.
+  bool helper_process = false;
+  bool helper_process_needs_update = false;
 };
 
 // The launch entry id of a program the player chose from the game folder.
@@ -401,7 +425,9 @@ std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& reci
                                                           PresetCapture capture);
 
 // Why one choice of a row cannot apply with the other effective values (Frame limit 120 and 40 need 120 Hz output,
-// Controller PlayStation a kit with input-playstation), or empty when it can. BuildEffectiveSettings turns such a saved choice into the Playden default, with this reason.
+// Controller PlayStation a kit with input-playstation, Game invites Ask and Only show a runtime with title-notify), or
+// empty when it can. BuildEffectiveSettings turns such a saved choice into the Playden default (Game invites: Ask and
+// Only show into Off), with this reason.
 // On a title that still runs an older runtime, a choice that needs the kit's (Frame limit 120 with 120 Hz output
 // chosen) is not unavailable: it waits for the update (SettingChoiceWaitsForUpdate).
 std::string SettingChoiceUnavailable(const EffectiveSettings& settings, std::string_view id, std::string_view value);
@@ -813,6 +839,14 @@ inline constexpr const char* kKitLauncherMode = "launcher-mode";
 // The title takes [input] mode = playstation: the game's Wine finds the DualSense as a wired DualShock 4 on its HID
 // bus, with the controller's own reports, and XInput reports no controller. Runtimes without it refuse the value.
 inline constexpr const char* kKitInputPlaystation = "input-playstation";
+// The title shows a PS5 notification a program in the game's bottle asks for, and while that program holds an invite
+// open, L3 + R3 answers it without reaching the game or opening the in-game menu. Without it Game invites offers only
+// Join at once and Off.
+inline constexpr const char* kKitTitleNotify = "title-notify";
+// The title reads [helper]: a second Windows program beside the game, in a local process on the same Wine server, and
+// holds the game until that program is ready. The Steam host (Steam features = Online) runs this way. Runtimes without
+// it refuse a profile with the section.
+inline constexpr const char* kKitHelperProcess = "helper-process";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the
@@ -822,8 +856,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter and input_playstation are off
-// and their _needs_update say why.
+// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation and
+// title_notify are off and their _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 
 // Everything one game's settings put on disk for its next launch.
@@ -884,6 +918,11 @@ bool LoadGameSettingsFile(const std::string& path, std::map<GameId, GameSettings
                           std::string* reason);
 bool SaveGameSettingsFile(const std::string& path, const std::map<GameId, GameSettingsRecord>& records,
                           std::string* reason);
+// Without online-steam, a game's Steam features = Online, its Steam sign-in and Game invites go back to the game's
+// default, so Online has to be chosen again once the feature is back. True when the record changed.
+bool DropOnlineSteamSettings(GameSettingsRecord* record);
+// The same for every game in the file, saved only when one changed. *changed counts the games.
+bool DropOnlineSteamSettingsFile(const std::string& path, std::size_t* changed, std::string* reason);
 // One-time import from the legacy approved state tree into an already-created
 // private settings root. The owned legacy file must be 0600/0644; the private
 // destination must be absent and is published as 0600. The source is preserved.

@@ -217,6 +217,17 @@ std::uint32_t RemainingMs(Clock::time_point deadline) {
 std::mutex g_log_mutex;
 std::function<void(const std::string&)> g_log;
 
+void SharedLog(const std::string& line) {
+  std::lock_guard<std::mutex> lock(g_log_mutex);
+  if (g_log) g_log("owner=shared " + line);
+}
+
+// Friends kept per session, at most: a full list holds up to 2000; the rest is room for persona states of others.
+constexpr std::size_t kMaxKnownFriends = 4000;
+// Persona state messages logged one by one after a logon, then a summary at most this often.
+constexpr std::uint64_t kLoggedPersonaMessages = 3;
+constexpr auto kPersonaLogInterval = std::chrono::seconds(60);
+
 // Process-wide backoff after Steam refuses a logon for a reason that isn't the credentials.
 std::mutex g_backoff_mutex;
 int g_refusals = 0;
@@ -387,6 +398,9 @@ class CmClient::Session {
       if (ready()) return CmError::kNone;
       if (logged_off_) return CmError::kNetwork;
       if (cancel_->load(std::memory_order_acquire)) return CmError::kCanceled;
+      if (const auto sent = SendPersonaState(); sent != CmError::kNone) return sent;
+      if (!friend_requests_.empty() && logon_ && logon_->eresult == cm::kEResultOk)
+        if (const auto sent = RequestFriendData(); sent != CmError::kNone) return sent;
       if (heartbeat_seconds_ > 0 && Clock::now() >= next_heartbeat_) {
         if (const auto sent = Send(cm::kEMsgClientHeartBeat, cm::EncodeHeartBeat());
             sent != CmError::kNone)
@@ -420,7 +434,25 @@ class CmClient::Session {
       return cm::CredentialRefusal(logon_->eresult) ? CmError::kRejected : CmError::kNetwork;
     heartbeat_seconds_ = logon_->heartbeat_seconds;
     next_heartbeat_ = Clock::now() + std::chrono::seconds(heartbeat_seconds_);
-    return CmError::kNone;
+    logon_at_ = Clock::now();
+    return SendPersonaState();
+  }
+
+  // With friends on and logged on: sends the persona state the shared session asks for when it is not the one last
+  // sent (after each logon, and after a change while logged on). 0 sends nothing. A send that failed is tried again
+  // on the next turn.
+  CmError SendPersonaState() {
+    const auto state = persona_state_ ? persona_state_->load(std::memory_order_acquire) : 0;
+    if (!friends_enabled_ || state == 0 || state == sent_persona_state_ || !logon_ ||
+        logon_->eresult != cm::kEResultOk || logon_pending_)
+      return CmError::kNone;
+    const auto sent = Send(cm::kEMsgClientChangeStatus, cm::EncodeChangeStatus(state));
+    SharedLog(std::string("friends change_status ") +
+              (state == cm::kPersonaStateInvisible ? "invisible" : state == cm::kPersonaStateOnline ? "online"
+                                                                                                     : "other") +
+              " result=" + CmErrorName(sent));
+    if (sent == CmError::kNone) sent_persona_state_ = state;
+    return sent;
   }
 
   CmError Licenses(std::vector<cm::License>* licenses) {
@@ -510,6 +542,22 @@ class CmClient::Session {
   // means the session is still fine.
   CmError Idle() { return WaitFor([] { return false; }); }
 
+  // The shared session only, with online-steam: keeps the friends list Steam pushes after logon and asks
+  // for the friends' persona states. Set before the logon.
+  void EnableFriends() { friends_enabled_ = true; }
+  // With friends on: the persona state to show friends (ClientChangeStatus after the logon and after each change),
+  // read on every turn. It belongs to the shared session, which outlives this one.
+  void FollowPersonaState(const std::atomic<std::uint32_t>* state) { persona_state_ = state; }
+  // Changes whenever the friends or their persona states change.
+  std::uint64_t friends_serial() const { return friends_serial_; }
+  CmFriends Friends() const {
+    CmFriends out;
+    out.account = friends_listed_ ? steam_id_ : 0;
+    for (const auto& [id, known] : friends_)
+      if (known.relationship == cm::kFriendRelationshipFriend) out.friends.push_back(known.person);
+    return out;
+  }
+
  private:
   struct ServiceJob {
     std::uint64_t id = 0;
@@ -527,6 +575,136 @@ class CmClient::Session {
     bool done = false;
     CmError error = CmError::kNone;
   };
+
+  struct KnownFriend {
+    CmFriend person;
+    std::uint32_t relationship = 0;
+  };
+  // What persona states carried since the last log line. No names or IDs, only counts.
+  struct PersonaStats {
+    std::uint64_t messages = 0;
+    std::uint64_t entries = 0;
+    std::uint64_t name = 0;
+    std::uint64_t state = 0;
+    std::uint64_t app = 0;
+    std::uint64_t lobby = 0;
+    std::uint64_t avatar = 0;
+    std::uint64_t rich = 0;
+    std::uint32_t flags = 0;
+  };
+
+  KnownFriend* Known(std::uint64_t id) {
+    if (const auto found = friends_.find(id); found != friends_.end()) return &found->second;
+    if (friends_.size() >= kMaxKnownFriends) return nullptr;
+    auto& known = friends_[id];
+    known.person.steam_id = id;
+    return &known;
+  }
+
+  // Steam pushes the list after logon (and again on a change); the persona states are asked for once per
+  // friend added, never again on a timer.
+  void HandleFriendsList(const std::vector<std::uint8_t>& body) {
+    cm::FriendsList list;
+    if (!cm::DecodeFriendsList(body, &list)) {
+      SharedLog("friends list unreadable");
+      return;
+    }
+    if (!list.incremental)
+      for (auto& entry : friends_) entry.second.relationship = 0;
+    for (const auto& relation : list.friends) {
+      if (!cm::IndividualSteamId(relation.steam_id)) continue;
+      auto* known = Known(relation.steam_id);
+      if (!known) continue;
+      const bool added = known->relationship != cm::kFriendRelationshipFriend;
+      known->relationship = relation.relationship;
+      if (relation.relationship == cm::kFriendRelationshipFriend && (added || !list.incremental))
+        friend_requests_.insert(relation.steam_id);
+    }
+    friends_listed_ = true;
+    ++friends_serial_;
+    std::size_t count = 0;
+    for (const auto& entry : friends_) count += entry.second.relationship == cm::kFriendRelationshipFriend;
+    SharedLog("friends list friends=" + std::to_string(count) + " incremental=" + (list.incremental ? "1" : "0"));
+  }
+
+  // The IDs stay pending until the request went out, so a send that ran out of time is tried on the next turn.
+  CmError RequestFriendData() {
+    const std::vector<std::uint64_t> ids(friend_requests_.begin(), friend_requests_.end());
+    const auto body = cm::EncodeRequestFriendData(cm::kFriendDataRequested, ids);
+    if (body.empty()) return CmError::kProtocol;
+    const auto sent = Send(cm::kEMsgClientRequestFriendData, body);
+    SharedLog("friends request ids=" + std::to_string(ids.size()) + " result=" + CmErrorName(sent));
+    if (sent == CmError::kNone) friend_requests_.clear();
+    return sent;
+  }
+
+  // A group the update carries (status_flags names it, or one of its fields came) replaces the friend's;
+  // a missing field in it is cleared. Groups not carried stay. A name is only ever replaced by a name.
+  void HandlePersonaState(const std::vector<std::uint8_t>& body) {
+    cm::PersonaState state;
+    if (!cm::DecodePersonaState(body, &state)) {
+      SharedLog("friends persona unreadable");
+      return;
+    }
+    const std::uint32_t flags = state.status_flags.value_or(0);
+    bool changed = false;
+    for (auto& entry : state.friends) {
+      ++persona_stats_.entries;
+      persona_stats_.name += entry.player_name.has_value();
+      persona_stats_.state += entry.persona_state.has_value();
+      persona_stats_.app += entry.game_app_id.has_value() || entry.game_id.has_value();
+      persona_stats_.lobby += entry.lobby_id.has_value() && *entry.lobby_id != 0;
+      persona_stats_.avatar += entry.avatar_hash.has_value();
+      persona_stats_.rich += entry.rich_presence.has_value();
+      if (entry.steam_id == steam_id_ || !cm::IndividualSteamId(entry.steam_id)) continue;
+      auto* known = Known(entry.steam_id);
+      if (!known) continue;
+      auto& person = known->person;
+      if ((flags & cm::kPersonaFlagStatus) || entry.persona_state) person.persona_state = entry.persona_state.value_or(0);
+      if (entry.player_name) person.name = std::move(*entry.player_name);
+      if ((flags & cm::kPersonaFlagPresence) || entry.avatar_hash) {
+        const auto& hash = entry.avatar_hash;
+        const bool real = hash && hash->size() == 20 &&
+                          std::any_of(hash->begin(), hash->end(), [](std::uint8_t byte) { return byte != 0; });
+        person.avatar_hash = real ? Hex(hash->data(), hash->size()) : std::string{};
+      }
+      if ((flags & (cm::kPersonaFlagPresence | cm::kPersonaFlagGameExtraInfo)) || entry.game_app_id || entry.game_id ||
+          entry.lobby_id || entry.game_name) {
+        person.game_id = entry.game_id.value_or(0);
+        person.app_id = entry.game_app_id.value_or(0);
+        // A Steam game's GameID is its app ID with type 0 (bits 24-31).
+        if (person.app_id == 0 && person.game_id != 0 && ((person.game_id >> 24) & 0xff) == 0)
+          person.app_id = static_cast<std::uint32_t>(person.game_id & 0xffffff);
+        person.game_name = entry.game_name.value_or(std::string{});
+        person.lobby_id = entry.lobby_id.value_or(0);
+      }
+      if ((flags & cm::kPersonaFlagRichPresence) || entry.rich_presence)
+        person.rich_presence = entry.rich_presence ? std::move(*entry.rich_presence)
+                                                   : std::vector<std::pair<std::string, std::string>>{};
+      changed = true;
+    }
+    if (changed) ++friends_serial_;
+    ++persona_stats_.messages;
+    ++persona_messages_;
+    persona_stats_.flags = flags;
+    LogPersonaStats();
+  }
+
+  // The first few messages after a logon one by one, then a summary at most once a minute while they keep
+  // coming: enough to tell whether Steam keeps sending updates.
+  void LogPersonaStats() {
+    const auto now = Clock::now();
+    if (persona_messages_ > kLoggedPersonaMessages && now < next_persona_log_) return;
+    next_persona_log_ = now + kPersonaLogInterval;
+    const auto since = std::chrono::duration_cast<std::chrono::seconds>(now - logon_at_).count();
+    SharedLog("friends persona messages=" + std::to_string(persona_stats_.messages) +
+              " entries=" + std::to_string(persona_stats_.entries) + " name=" + std::to_string(persona_stats_.name) +
+              " state=" + std::to_string(persona_stats_.state) + " app=" + std::to_string(persona_stats_.app) +
+              " lobby=" + std::to_string(persona_stats_.lobby) + " avatar=" + std::to_string(persona_stats_.avatar) +
+              " rich=" + std::to_string(persona_stats_.rich) + " flags=" + HexFlags(persona_stats_.flags) +
+              " total=" + std::to_string(persona_messages_) + " since_logon_s=" + std::to_string(since));
+    persona_stats_ = {};
+  }
 
   void Handle(const std::uint8_t* data, std::size_t size, std::uint32_t depth) {
     if (depth >= kMultiDepth) {
@@ -589,6 +767,12 @@ class CmClient::Session {
         ++license_serial_;
         break;
       }
+      case cm::kEMsgClientFriendsList:
+        if (friends_enabled_) HandleFriendsList(frame.body);
+        break;
+      case cm::kEMsgClientPersonaState:
+        if (friends_enabled_) HandlePersonaState(frame.body);
+        break;
       case cm::kEMsgClientLoggedOff: {
         logged_off_ = true;
         std::int32_t eresult = cm::kEResultFail;
@@ -652,6 +836,17 @@ class CmClient::Session {
   std::optional<Job> job_;
   std::optional<ServiceJob> service_;
   CmError fatal_ = CmError::kNone;
+  Clock::time_point logon_at_{};
+  bool friends_enabled_ = false;
+  const std::atomic<std::uint32_t>* persona_state_ = nullptr;
+  std::uint32_t sent_persona_state_ = 0;  // what this logon last sent; 0 for nothing yet
+  bool friends_listed_ = false;
+  std::map<std::uint64_t, KnownFriend> friends_;
+  std::set<std::uint64_t> friend_requests_;  // friends whose persona states are still to ask for
+  std::uint64_t friends_serial_ = 0;
+  PersonaStats persona_stats_;
+  std::uint64_t persona_messages_ = 0;
+  Clock::time_point next_persona_log_{};
 };
 
 CmClient::CmClient(std::string ca_bundle, const Storage& device_storage)
@@ -662,7 +857,7 @@ CmClient::CmClient(CmClientHooks hooks, cm::DeviceIdentity device)
 
 class CmSharedSession {
  public:
-  CmSharedSession() : pump_([this] { Pump(); }) {}
+  explicit CmSharedSession(CmSessionOptions options) : options_(options), pump_([this] { Pump(); }) {}
   ~CmSharedSession() {
     {
       std::lock_guard<std::mutex> lock(stop_mutex_);
@@ -677,6 +872,10 @@ class CmSharedSession {
  private:
   friend class CmClient;
   friend std::uint64_t CmLicenseChanges(const CmSharedSession& shared);
+  friend std::uint64_t CmFriendChanges(const CmSharedSession& shared);
+  friend CmFriends CmFriendsOf(const CmSharedSession& shared);
+  friend bool CmSharedSessionLoggedOn(const CmSharedSession& shared);
+  friend void SetCmPersonaState(CmSharedSession& shared, std::uint32_t state);
   // Keeps an idle session alive: answers the server and sends heartbeats on its interval. A call
   // waiting for the session never waits more than one short turn.
   void Pump() {
@@ -689,8 +888,12 @@ class CmSharedSession {
         if (lock && session_) {
           session_->Rebind(Clock::now() + std::chrono::milliseconds(100), kNoCancel);
           const auto idle = session_->Idle();
-          if (idle != CmError::kTimeout && idle != CmError::kNone) Drop();
-          else NoteLicenses();
+          if (idle != CmError::kTimeout && idle != CmError::kNone) {
+            Drop();
+          } else {
+            NoteLicenses();
+            NoteFriends();
+          }
         }
       }
       stop_lock.lock();
@@ -712,9 +915,23 @@ class CmSharedSession {
     licensed_account_ = account;
     licensed_packages_ = std::move(packages);
   }
+  // Publishes the session's friends when they changed. Called with mutex_ held, where NoteLicenses is.
+  void NoteFriends() {
+    if (!session_ || session_->friends_serial() == noted_friends_serial_) return;
+    noted_friends_serial_ = session_->friends_serial();
+    auto friends = session_->Friends();
+    {
+      std::lock_guard<std::mutex> lock(friends_mutex_);
+      friends_ = std::move(friends);
+    }
+    friend_changes_.fetch_add(1, std::memory_order_acq_rel);
+  }
   void Drop() {
     NoteLicenses();
+    NoteFriends();
     noted_serial_ = 0;
+    noted_friends_serial_ = 0;
+    logged_on_.store(false, std::memory_order_release);
     if (transport_) CmClient::EndSession(session_.get(), transport_.get(), [](const std::string& line) {
       std::lock_guard<std::mutex> lock(g_log_mutex);
       if (g_log) g_log("owner=shared " + line);
@@ -732,16 +949,46 @@ class CmSharedSession {
   std::uint64_t licensed_account_ = 0;
   std::set<std::uint32_t> licensed_packages_;
   std::atomic<std::uint64_t> license_changes_{0};
+  const CmSessionOptions options_;
+  std::uint64_t noted_friends_serial_ = 0;
+  mutable std::mutex friends_mutex_;  // only around friends_, never held with mutex_ waiting
+  CmFriends friends_;
+  std::atomic<std::uint64_t> friend_changes_{0};
+  std::atomic<bool> logged_on_{false};
+  std::atomic<std::uint32_t> persona_state_{0};
   std::mutex stop_mutex_;
   std::condition_variable stop_wake_;
   bool stop_ = false;
   std::thread pump_;
 };
 
-std::shared_ptr<CmSharedSession> MakeCmSharedSession() { return std::make_shared<CmSharedSession>(); }
+std::shared_ptr<CmSharedSession> MakeCmSharedSession(CmSessionOptions options) {
+  auto shared = std::make_shared<CmSharedSession>(options);
+  // Steam sends friends' online states only to a session that set a status itself: without ClientChangeStatus every
+  // friend's persona state comes without a status, and the Friends tab shows them all offline.
+  SetCmPersonaState(*shared, options.friends ? cm::kPersonaStateOnline : 0);
+  return shared;
+}
 
 std::uint64_t CmLicenseChanges(const CmSharedSession& shared) {
   return shared.license_changes_.load(std::memory_order_acquire);
+}
+
+std::uint64_t CmFriendChanges(const CmSharedSession& shared) {
+  return shared.friend_changes_.load(std::memory_order_acquire);
+}
+
+CmFriends CmFriendsOf(const CmSharedSession& shared) {
+  std::lock_guard<std::mutex> lock(shared.friends_mutex_);
+  return shared.friends_;
+}
+
+bool CmSharedSessionLoggedOn(const CmSharedSession& shared) {
+  return shared.logged_on_.load(std::memory_order_acquire);
+}
+
+void SetCmPersonaState(CmSharedSession& shared, std::uint32_t state) {
+  shared.persona_state_.store(state, std::memory_order_release);
 }
 
 void CmClient::EndSession(Session* session, MessageTransport* transport,
@@ -794,9 +1041,14 @@ CmError CmClient::Acquire(const StoredSession& stored, const std::atomic<bool>& 
   const std::string key = std::to_string(stored.steam_id) + ":" + stored.refresh_token;
   if (shared_->session_ && key == shared_->key_ && shared_->session_->usable()) {
     shared_->session_->Rebind(deadline, cancel);
-    lease->session = shared_->session_.get();
-    lease->reused = true;
-    return CmError::kNone;
+    // A persona state changed while the session sat between calls goes out before this call's work; a session that
+    // can't send it is opened again below (which sends it after the logon).
+    if (shared_->session_->SendPersonaState() == CmError::kNone) {
+      lease->session = shared_->session_.get();
+      lease->reused = true;
+      shared_->logged_on_.store(true, std::memory_order_release);
+      return CmError::kNone;
+    }
   }
   // Another account or a rotated token: the old session ends before the new logon.
   shared_->Drop();
@@ -808,6 +1060,7 @@ CmError CmClient::Acquire(const StoredSession& stored, const std::atomic<bool>& 
   }
   shared_->key_ = key;
   lease->session = shared_->session_.get();
+  shared_->logged_on_.store(true, std::memory_order_release);
   return CmError::kNone;
 }
 
@@ -815,8 +1068,12 @@ void CmClient::Release(Lease* lease, CmError result) {
   if (lease->hold.owns_lock()) {
     // The shared session stays for the next call unless this one left it in an unknown state.
     const bool clean = result == CmError::kNone || result == CmError::kRejected;
-    if (!clean || !lease->session || !lease->session->usable()) shared_->Drop();
-    else shared_->NoteLicenses();
+    if (!clean || !lease->session || !lease->session->usable()) {
+      shared_->Drop();
+    } else {
+      shared_->NoteLicenses();
+      shared_->NoteFriends();
+    }
     lease->session = nullptr;
     lease->hold.unlock();
     return;
@@ -911,6 +1168,11 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
   }
 
   *opened = std::make_unique<Session>(**transport, deadline, cancel);
+  // Only the shared session keeps friends; a call's own session never asks for them.
+  if (shared_ && opened == &shared_->session_ && shared_->options_.friends) {
+    (*opened)->EnableFriends();
+    (*opened)->FollowPersonaState(&shared_->persona_state_);
+  }
   if (const auto hello = (*opened)->Send(cm::kEMsgClientHello, cm::EncodeHello());
       hello != CmError::kNone) {
     Log(std::string("step=hello error=") + CmErrorName(hello));

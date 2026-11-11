@@ -20,6 +20,9 @@ struct ExperimentalFeatures {
   // Line community-recipes: community recipes, sharing, votes, test reports and the Playden account
   // (docs/community-recipes.md). My presets is not part of it.
   bool community_recipes = false;
+  // Line online-steam: Steam features = Online (Steam's client beside the game), Steam sign-in and Steam network
+  // (runtime::SetOnlineSteamEnabled). Off in every build unless the file names it.
+  bool online_steam = false;
 };
 
 // What a build has on before features.txt: nightlies and local dev builds (all_on) have every feature on.

@@ -267,6 +267,7 @@ struct Harness {
   std::set<std::string> referenced;
   bool use_referenced = false;
   std::function<bool(const std::string&)> before_write;
+  std::function<bool(const std::string&)> feature_enabled;
 
   std::unique_ptr<CommunityRecipeService> Make(const std::string& root) {
     RecipeServiceConfig config;
@@ -282,6 +283,7 @@ struct Harness {
     config.now = [this] { return now.load(); };
     if (use_referenced) config.referenced = [this] { return referenced; };
     config.before_write = before_write;
+    config.feature_enabled = feature_enabled;
     config.worker_stack_bytes = 512 << 10;
     return std::make_unique<CommunityRecipeService>(std::move(config));
   }
@@ -387,6 +389,10 @@ int main(int argc, char** argv) {
                                       "community-steam-274520-hostile");
   const std::string other_app = Replace(Replace(good, good_id, "community-steam-10-other"), "274520", "10");
   const std::string imported = Slurp(fixtures + "/recipes/imported/tmnt-mutant-melee/arrow-keys.json");
+  // Steam network needs online-steam in features.txt: not offered without it.
+  const std::string network = Replace(Replace(good, good_id, "community-steam-274520-network"),
+                                      R"("steam_features": "emulate")", R"("steam_features": "emulate", "steam_network": "offline")");
+  CHECK(network.find("steam_network") != std::string::npos);
   const GameRef tmnt{"imported", "tmnt-mutant-melee"};
   // A settings-only recipe (format 2) loads beside format 1 ones; a version this build doesn't read is dropped alone,
   // as an older build drops a format 2 file.
@@ -395,6 +401,23 @@ int main(int argc, char** argv) {
   const std::string future = Replace(Slurp(fixtures + "/hostile/format-unknown.json"), settings_only_id,
                                      "community-steam-274520-future");
   CHECK(!settings_only.empty() && future.find("community-steam-274520-future") != std::string::npos);
+  // A recipe that needs a feature that is off is not offered; with the feature on, it is.
+  for (const bool online_steam : {false, true}) {
+    Harness features;
+    features.feature_enabled = [online_steam](const std::string& feature) { return feature == "online-steam" && online_steam; };
+    Publish(features.network, features.site, "r20261108.1",
+            {{"recipes/steam/274520/120hz-left-stick-pointer.json", good_id, good, ""},
+             {"recipes/steam/274520/network.json", "community-steam-274520-network", network, ""}},
+            {});
+    auto service = features.Make(TempRoot("community-features"));
+    service->Start();
+    service->Wait();
+    const auto snapshot = service->Snapshot();
+    CHECK(Find(*snapshot, GameRef::Steam(274520), good_id));
+    CHECK((Find(*snapshot, GameRef::Steam(274520), "community-steam-274520-network") != nullptr) == online_steam);
+    CHECK(features.Logged("community-steam-274520-network not offered: needs online-steam in features.txt") != online_steam);
+    service->Shutdown();
+  }
   const std::string root = TempRoot("community-service");
   CHECK(!root.empty());
 

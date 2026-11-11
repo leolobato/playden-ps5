@@ -51,6 +51,11 @@ std::string FormatDownloadRate(std::optional<std::uint64_t> rate, std::optional<
 }
 
 namespace {
+
+// Steam features = Online on a game the store lists with Valve Anti-Cheat: VAC can ban the account from that game (not
+// from Steam). Named in full, since not every player knows the abbreviation.
+constexpr const char* kVacOnlineWarning =
+    "This game uses Valve Anti-Cheat (VAC). Playing it online could get your account banned from this game.";
 // "Go back to Playden <previous>" is for development: release builds (NDEBUG) don't offer it.
 #ifdef NDEBUG
 constexpr bool kOfferGoBack = false;
@@ -162,6 +167,7 @@ std::string route_name(Route route) {
     case Route::Saves: return "saves";
     case Route::SaveDetails: return "save-details";
     case Route::ManageGames: return "manage-games";
+    case Route::Friends: return "friends";
     }
     return "home";
 }
@@ -2948,6 +2954,12 @@ std::map<GameId, std::string> Simulation::TakeRuntimeSetupPrograms() {
     return programs;
 }
 
+std::map<GameId, rt::OnlineLaunch> Simulation::TakeRuntimeOnlineLaunches() {
+    auto launches = std::move(pending_runtime_online_launches_);
+    pending_runtime_online_launches_.clear();
+    return launches;
+}
+
 bool Simulation::TakeRuntimeCleanupRequest() {
     const bool requested = pending_runtime_cleanup_;
     pending_runtime_cleanup_ = false;
@@ -3275,6 +3287,7 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
         const bool waiting = !state_.navigation.modals.empty() && state_.navigation.modals.back().title == quit_wait_title_;
         if (!waiting) {
             state_.quit_waiting = false;
+            finish_setup_game_ = {};  // cancelled
         } else if (std::none_of(state_.runtime_games.begin(), state_.runtime_games.end(),
                                 [](const auto& entry) { return entry.second.status == "Preparing"; })) {
             state_.quit_waiting = false;
@@ -4332,10 +4345,10 @@ bool Simulation::UpdateAppDetails(GameId id, std::optional<std::uint64_t> downlo
 }
 
 void Simulation::UpdateStoreDetails(GameId id, std::string description, std::vector<std::string> genres,
-                                    std::string controller_support) {
+                                    std::string controller_support, bool vac) {
     if (!live()) return;
     auto& facts = store_facts_[id];
-    facts = {std::move(description), std::move(genres), std::move(controller_support)};
+    facts = {std::move(description), std::move(genres), std::move(controller_support), vac};
     for (auto& game : state_.games) {
         if (game.id != id) continue;
         if (!facts.description.empty()) game.description = facts.description;
@@ -4619,8 +4632,14 @@ void Simulation::refresh_download_servers(const std::string& focus) {
 
 void Simulation::RequestQuit() {
     if (state_.quit_requested || state_.quit_waiting) return;
+    finish_setup_game_ = {};  // a quit from outside is no game's Finish setup
     quit_to_home();
     rebuild_view();
+}
+
+std::optional<GameId> Simulation::FinishSetupGame() const {
+    if (!state_.quit_requested || !finish_setup_game_.valid()) return std::nullopt;
+    return finish_setup_game_;
 }
 
 void Simulation::ApplyLiveWebAccess(const LiveWebAccess& snapshot) {
@@ -4658,7 +4677,8 @@ playden::Preferences Simulation::ExportPreferences() const {
             state_.downloads_slow_network, state_.stay_signed_in, state_.beta_updates, state_.download_server,
             state_.web_access, state_.content_language, state_.hide_run_once_help, state_.hide_launcher_help,
             state_.runtime_prompt_kit, state_.recipe_votes, state_.sharing_explained, state_.share_name,
-            state_.reports_explained, state_.share_as, state_.ask_after_games};
+            state_.reports_explained, state_.share_as, state_.ask_after_games, state_.steam_invisible,
+            state_.steam_online_notice};
 }
 
 void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot& snapshot) {
@@ -4898,6 +4918,8 @@ bool Simulation::ApplyPreferences(PersistenceLoadToken token,
         state_.reports_explained = loaded.preferences.reports_explained;
         state_.share_as = loaded.preferences.share_as;
         state_.ask_after_games = loaded.preferences.ask_after_games;
+        state_.steam_invisible = loaded.preferences.steam_invisible;
+        state_.steam_online_notice = loaded.preferences.steam_online_notice;
         state_.share_name = loaded.preferences.share_name;
         captured_preferences_ = loaded.preferences;
         preferences_saved_revision_ = preferences_revision_;
@@ -5172,7 +5194,9 @@ bool Simulation::record_live_persistence() {
                                       after_preferences.share_name != captured_preferences_.share_name ||
                                       after_preferences.reports_explained != captured_preferences_.reports_explained ||
                                       after_preferences.share_as != captured_preferences_.share_as ||
-                                      after_preferences.ask_after_games != captured_preferences_.ask_after_games);
+                                      after_preferences.ask_after_games != captured_preferences_.ask_after_games ||
+                                      after_preferences.steam_invisible != captured_preferences_.steam_invisible ||
+                                      after_preferences.steam_online_notice != captured_preferences_.steam_online_notice);
 
     if (organization_changed && !snapshot_within_model_bounds(after_organization)) {
         apply_organization_snapshot(captured_organization_);
@@ -5209,6 +5233,8 @@ bool Simulation::record_live_persistence() {
                 state_.reports_explained = captured_preferences_.reports_explained;
                 state_.share_as = captured_preferences_.share_as;
                 state_.ask_after_games = captured_preferences_.ask_after_games;
+                state_.steam_invisible = captured_preferences_.steam_invisible;
+                state_.steam_online_notice = captured_preferences_.steam_online_notice;
                 organization_journal_full_ = true;
                 force_organization_reset_ = false;
                 force_organization_selection_ = false;
@@ -6308,6 +6334,12 @@ bool Simulation::scenario(const std::string& name) {
             if (auto* volume = find_volume(state_, "internal")) volume->used_bytes = volume->capacity_bytes - 1'073'741'824;
         }
         open_install_sheet(*state_.navigation.detail_id, install_sheet_actions(*state_.navigation.detail_id));
+    } else if (name == "friends") {
+        // Steam friends (online-steam only): the Friends tab, Join and Invite friends.
+        if (!rt::OnlineSteamEnabled()) { last_error_ = "The friends scenario needs online-steam"; return false; }
+        seed_friends_scenario();
+        // Online runs Steam beside the game, which takes a runtime kit that can.
+        kit_.helper_process = true;
     } else if (name == "my-presets" || name == "my-presets-save" || name == "my-presets-full") {
         seed_my_presets_scenario(name);
     } else if (name.rfind("recipes-", 0) == 0) {
@@ -7031,9 +7063,72 @@ void Simulation::rebuild_view() {
                 view_.subtitle += " A vote sends the recipe, your vote and reason, the runtime kit, firmware and Playden versions and a random "
                                   "sharing ID; no Steam ID or account name.";
         }
+        // Join a friend's lobby: who, which game, and what Join does; or why it can't from here.
+        const Friend* join_person = modal.id == "join-lobby" ? find_friend(join_friend_) : nullptr;
+        const GameId join_game = join_person ? friend_game(*join_person) : GameId{};
+        if (modal.id == "join-lobby") {
+            view_.eyebrow = "Join a friend";
+            const auto* game = find_game(state_, join_game);
+            const std::string title = game ? game->title : "The game";
+            if (join_person) view_.facts.push_back({"Friend", join_person->name});
+            if (game) view_.facts.push_back({"Game", game->title});
+            const auto refusal = join_refusal(join_game);
+            const bool online = game_online(join_game);
+            if (game && refusal.empty()) {
+                const auto* definition = rt::FindSetting("steam_features");
+                rt::EffectiveSettings values;
+                if (definition && EffectiveSettingsFor(join_game, &values))
+                    view_.facts.push_back({"Steam features", choice_label(*definition, values.values["steam_features"].value)});
+            }
+            if (!refusal.empty()) view_.subtitle = refusal;
+            else if (online) view_.subtitle = title + " starts and joins this lobby. If the lobby is full or closed by then, the game says so.";
+            else if (std::count(modal.action_keys.begin(), modal.action_keys.end(), "join-use-online"))
+                view_.subtitle = uses_vac(join_game) ? std::string(kVacOnlineWarning)
+                    : "Joining needs Steam features set to Online. " + title + " keeps it for the next times you play.";
+            else view_.subtitle = "Joining needs Steam features set to Online. This game's recipe sets it: change it in Game settings first.";
+        }
+        // Invite friends: the game's name above; the friends picked get their invite once the game has a lobby.
+        if (modal.id == "invite-friends") {
+            const auto game = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+            if (const auto* found = find_game(state_, game)) view_.eyebrow = found->title;
+            rt::EffectiveSettings values;
+            const bool notify = EffectiveSettingsFor(game, &values) && values.title_notify;
+            view_.subtitle = std::string("Steam sends an invite only for a lobby. The friends you pick get theirs when the game opens or joins its first lobby") +
+                             (notify ? ", and the PS5 shows who was invited." : ".");
+        }
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
+            if (modal.id == "join-lobby") {
+                if (action_key == "join-start") item.title = "Start game and join";
+                if (action_key == "join-use-online") {
+                    item.title = "Use Online for this game";
+                    item.subtitle = "Then starts the game and joins.";
+                }
+                if (action_key == "cancel" && modal.action_keys.size() == 1) item.title = "Close";
+            }
+            if (modal.id == "invite-friends") {
+                if (action_key.rfind("invite-friend-", 0) == 0) {
+                    const auto id = std::strtoull(action_key.c_str() + std::strlen("invite-friend-"), nullptr, 10);
+                    const auto* person = find_friend(id);
+                    item.kind = RowKind::Toggle;
+                    item.title = person ? person->name : "A friend";
+                    if (person) {
+                        auto [status, tone] = friend_status(*person);
+                        item.subtitle = std::move(status);
+                        item.tone = tone == "good" ? tone : std::string();
+                    }
+                    item.selected = invite_choice_.contains(id);
+                    item.enabled = item.selected || invite_choice_.size() < rt::kOnlineLaunchMaxInvites;
+                } else if (action_key == "invite-play") {
+                    std::size_t chosen = 0;
+                    for (const auto id : invite_choice_) chosen += find_friend(id) != nullptr;
+                    item.title = chosen ? "Play and invite " + std::to_string(chosen) : "Play and invite";
+                    item.enabled = chosen > 0;
+                    if (invite_choice_.size() >= rt::kOnlineLaunchMaxInvites)
+                        item.subtitle = std::to_string(rt::kOnlineLaunchMaxInvites) + " friends at most.";
+                }
+            }
             if (action_key == "runtime-prompt-update")
                 item.title = "Update " + std::to_string(runtime_prompt_games_) + (runtime_prompt_games_ == 1 ? " game" : " games");
             // The preparation sheet's own Cancel takes the game out of the queue; its last row only closes it.
@@ -7648,6 +7743,7 @@ void Simulation::rebuild_view() {
                 item.modified = value.source == rt::ValueSource::kUser || value.unlocked;
                 if (value.unlocked) item.subtitle = value.reason;
                 if (id == "architecture") item.subtitle = "Follows the program you choose.";
+                if (id == "steam_features" && value.value == "online" && uses_vac(settings_game)) item.subtitle = kVacOnlineWarning;
                 if (id == "start_check") {
                     const auto setup = game_setups_.find(settings_game);
                     std::string problem = setup != game_setups_.end() && setup->second.draft ? setup->second.refusal : std::string();
@@ -7744,6 +7840,8 @@ void Simulation::rebuild_view() {
                         item.enabled = false;
                     } else if (rt::SettingChoiceWaitsForUpdate(settings_values, modal.setting_id, value)) {
                         item.subtitle = rt::kAppliesAfterKitUpdate;
+                    } else if (modal.setting_id == "steam_features" && value == "online" && uses_vac(settings_game)) {
+                        item.subtitle = kVacOnlineWarning;
                     }
                 }
                 const bool button = modal.setting_id.rfind("button.", 0) == 0;
@@ -8315,6 +8413,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "content-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "manage-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Cancel"};
+        else if (modal.id == "invite-friends") view_.legends = {"Cross Select", "Circle Cancel"};
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
@@ -8894,10 +8993,48 @@ void Simulation::rebuild_view() {
                              (listed->second.reports == 1 ? " player" : " players");
             cell.enabled = false;
         }
+        // Invite friends, beside Play, for a game set to Online (online-steam).
+        if (game && invite_offered(game->id)) {
+            const auto play = std::find_if(view_.rows.begin(), view_.rows.end(), [](const ViewRow& item) { return item.key == "details-play"; });
+            if (play != view_.rows.end() && play->enabled && !play->action.empty()) {
+                ViewRow invite;
+                invite.key = "details-invite";
+                invite.kind = RowKind::Action;
+                invite.title = "Invite friends";
+                invite.action = "invite-friends";
+                invite.game_id = game->id;
+                view_.rows.insert(play + 1, std::move(invite));
+            }
+        }
         row("details-favorite", RowKind::Toggle, "Favorite", "favorite").selected = game && state_.library.favorites.contains(game->id);
         if (!live()) row("details-simulate-launch", RowKind::Action, "Simulate launch", "launch");
         row("details-more", RowKind::Action, "More", "context");
         view_.legends = {"Cross Select", "Options Actions", "Circle Back"};
+        // Friends playing this game (online-steam): Join for those in a lobby.
+        if (game && rt::OnlineSteamEnabled()) {
+            std::vector<const Friend*> playing;
+            for (const auto* person : friends_in_section(1))
+                if (friend_game(*person) == game->id) playing.push_back(person);
+            if (!playing.empty()) {
+                auto& heading = row("friends-playing", RowKind::Status, "Friends playing", "");
+                heading.value = std::to_string(playing.size());
+                heading.enabled = false;
+                for (const auto* person : playing) {
+                    auto& card = row("friend-" + std::to_string(person->steam_id), person->lobby_id ? RowKind::Action : RowKind::Status,
+                                     person->name, person->lobby_id ? "friend-join" : "");
+                    const auto [status, tone] = friend_status(*person, false);
+                    card.subtitle = status;
+                    card.tone = tone;
+                    card.game_id = game->id;
+                    if (person->lobby_id && join_refusal(game->id).empty()) card.value = "Join";
+                    else card.enabled = false;
+                }
+                const auto focused = std::find_if(view_.rows.begin(), view_.rows.end(),
+                                                  [this](const ViewRow& item) { return item.key == state_.navigation.focus_key; });
+                if (focused != view_.rows.end() && focused->action == "friend-join")
+                    view_.legends = {focused->value == "Join" ? "Cross Join " + focused->title : std::string("Cross Open"), "Circle Back"};
+            }
+        }
     } else if (state_.navigation.route == Route::Downloads) {
         // Queue: Downloads, then Preparation, one expanded at a time, then the drives. Rows come in screen
         // order (heading, card, the expanded section's rows), so Up and Down follow what is on screen.
@@ -9025,6 +9162,62 @@ void Simulation::rebuild_view() {
         view_.legends = {"Cross Open", job.kind == SavesJobKind::None ? "Triangle Sync all" : "Triangle Stop", "Circle Back", "L1/R1 Sections"};
         if (job.kind == SavesJobKind::None && !saves_awaiting_account().empty())
             view_.legends.insert(view_.legends.begin() + 2, "Square Upload all");
+    } else if (state_.navigation.route == Route::Friends) {
+        view_.title = "Friends";
+        static constexpr std::array<const char*, 3> sections = {"Online", "In my games", "All"};
+        auto& section = state_.navigation.friends_filter;
+        section = std::clamp(section, 0, 2);
+        std::size_t online = 0;
+        for (const auto& person : state_.friends) online += person.persona_state != 0;
+        // How the account shows to friends first (Triangle changes it), then the friends' counts.
+        view_.subtitle = state_.steam_invisible ? "You appear invisible" : "You appear online";
+        if (!state_.friends.empty())
+            view_.subtitle += " · " + std::to_string(online) + " online · " + std::to_string(state_.friends.size()) +
+                              (state_.friends.size() == 1 ? " friend" : " friends");
+        for (int index = 0; index < 3; ++index) {
+            auto& entry = row("friends-filter-" + std::to_string(index), RowKind::Choice, sections[static_cast<std::size_t>(index)],
+                              "friends-filter");
+            entry.value = std::to_string(friends_in_section(index).size());
+            entry.selected = index == section;
+        }
+        for (const auto* person : friends_in_section(section)) {
+            const auto game = friend_game(*person);
+            const bool joinable = person->lobby_id && game.valid();
+            auto& tile = row("friend-" + std::to_string(person->steam_id), RowKind::Action, person->name,
+                             joinable ? "friend-join" : game.valid() ? "friend-open" : "");
+            const auto [status, tone] = friend_status(*person);
+            tile.subtitle = status;
+            tile.tone = tone;
+            tile.game_id = game;
+            // Join only where it can start the game; the sheet says why elsewhere.
+            if (joinable && join_refusal(game).empty()) tile.value = "Join";
+        }
+        if (view_.rows.size() == sections.size()) {
+            const char* empty = state_.friends_need_sign_in ? "Sign in to Steam to see your friends."
+                              : !state_.friends_connected && state_.friends.empty() ? "Connecting to Steam…"
+                              : section == 0 ? "No friends online"
+                              : section == 1 ? "No friends are playing your games" : "No friends yet";
+            row("friends-empty", RowKind::Status, empty, "").enabled = false;
+        }
+        // The tab opens on its first friend.
+        if (state_.navigation.focus_key.empty() || std::none_of(view_.rows.begin(), view_.rows.end(), [this](const ViewRow& item) {
+                return item.key == state_.navigation.focus_key;
+            }))
+            state_.navigation.focus_key = view_.rows.size() > sections.size() && view_.rows[sections.size()].kind == RowKind::Action
+                ? view_.rows[sections.size()].key : "friends-filter-" + std::to_string(section);
+        const auto focused = std::find_if(view_.rows.begin(), view_.rows.end(),
+                                          [this](const ViewRow& item) { return item.key == state_.navigation.focus_key; });
+        view_.legends.clear();
+        if (focused != view_.rows.end() && focused->action == "friend-join") {
+            view_.legends.push_back(focused->value == "Join" ? "Cross Join " + focused->title : std::string("Cross Open"));
+            view_.legends.push_back("Square Open game");
+        } else if (focused != view_.rows.end() && focused->action == "friend-open") {
+            view_.legends.push_back("Cross Open game");
+        } else if (focused != view_.rows.end() && focused->kind == RowKind::Choice) {
+            view_.legends.push_back("Cross Select");
+        }
+        view_.legends.push_back(state_.steam_invisible ? "Triangle Appear online" : "Triangle Appear invisible");
+        view_.legends.push_back("Circle Back");
     } else if (state_.navigation.route == Route::SaveDetails) {
         const auto id = state_.navigation.save_id;
         const auto* game = find_game(state_, id);
@@ -9083,6 +9276,16 @@ void Simulation::rebuild_view() {
                 : "Connect Steam";
         if (state_.account().authentication != AuthState::SignedOut)
             add("settings-signout", RowKind::Action, "Sign out…", "signout-confirm").dangerous = true;
+        // Online play (online-steam): a notification as an Online game starts, naming the Steam account it signed in as.
+        if (live() && rt::OnlineSteamEnabled()) {
+            section = "Online play";
+            auto& notice = add("settings-steam-online-notice", RowKind::Toggle, "Steam sign-in notice",
+                               "toggle-steam-online-notice");
+            notice.selected = state_.steam_online_notice;
+            notice.subtitle = state_.steam_online_notice
+                ? "When an Online game starts, a notification shows the Steam account it signed in as."
+                : "Off: Online games start without the notification.";
+        }
         section = "Library";
         {
             // Windows games in a drive's playden/import or the console drop folder: the Import sheet.
@@ -10131,6 +10334,7 @@ void Simulation::cancel() {
         state_.navigation.route = state_.navigation.route == Route::Session ? Route::Details : state_.navigation.detail_origin;
         state_.navigation.focus_key = state_.navigation.route == Route::Details ? "details-play" : game_key(state_.navigation.selected_game_id);
         if (state_.navigation.route == Route::Downloads && !queue_return_focus_.empty()) state_.navigation.focus_key = queue_return_focus_;
+        if (state_.navigation.route == Route::Friends) state_.navigation.focus_key = friends_return_focus_;
         queue_return_focus_.clear();
     } else if (state_.navigation.route != Route::Home) {
         state_.navigation.route = Route::Home;
@@ -10138,10 +10342,21 @@ void Simulation::cancel() {
     }
 }
 
-namespace {
-int route_tab(Route route) {
-    return route == Route::Library ? 1 : route == Route::Downloads ? 2 : route == Route::Saves ? 3 : route == Route::Settings ? 4 : 0;
+std::vector<Route> TabRoutes() {
+    std::vector<Route> routes = {Route::Home, Route::Library, Route::Downloads, Route::Saves};
+    if (rt::OnlineSteamEnabled()) routes.push_back(Route::Friends);
+    routes.push_back(Route::Settings);
+    return routes;
 }
+
+int TabIndex(Route route) {
+    const auto routes = TabRoutes();
+    const auto found = std::find(routes.begin(), routes.end(), route);
+    return found == routes.end() ? 0 : static_cast<int>(found - routes.begin());
+}
+
+namespace {
+int route_tab(Route route) { return TabIndex(route); }
 }  // namespace
 
 void Simulation::move(int delta_x, int delta_y, bool repeat) {
@@ -10204,7 +10419,9 @@ void Simulation::move(int delta_x, int delta_y, bool repeat) {
     if (tab_bar_shown()) {
         auto& navigation = state_.navigation;
         if (navigation.tabs_focused) {
-            if (delta_x != 0) navigation.tab_focus = std::clamp(navigation.tab_focus + (delta_x > 0 ? 1 : -1), 0, 4);
+            if (delta_x != 0)
+                navigation.tab_focus = std::clamp(navigation.tab_focus + (delta_x > 0 ? 1 : -1), 0,
+                                                  static_cast<int>(TabRoutes().size()) - 1);
             else if (delta_y > 0) navigation.tabs_focused = false;
             return;
         }
@@ -10213,9 +10430,11 @@ void Simulation::move(int delta_x, int delta_y, bool repeat) {
             const auto index = navigation.selected_index;
             const auto shelf = navigation.home_shelf;
             const bool library_rail = navigation.library_rail_focused, settings_rail = navigation.settings_rail_focused;
+            const int friends_filter = navigation.friends_filter;
             move_content(delta_x, delta_y);
             if (navigation.focus_key == focus && navigation.selected_index == index && navigation.home_shelf == shelf &&
-                navigation.library_rail_focused == library_rail && navigation.settings_rail_focused == settings_rail) {
+                navigation.library_rail_focused == library_rail && navigation.settings_rail_focused == settings_rail &&
+                navigation.friends_filter == friends_filter) {
                 navigation.tabs_focused = true;
                 navigation.tab_focus = route_tab(navigation.route);
             }
@@ -10229,23 +10448,40 @@ bool Simulation::tab_bar_shown() const {
     const auto route = state_.navigation.route;
     return state_.navigation.modals.empty() && !state_.editor.active &&
            (route == Route::Home || route == Route::Library || route == Route::Downloads || route == Route::Saves ||
-            route == Route::Settings);
+            route == Route::Settings || (route == Route::Friends && rt::OnlineSteamEnabled()));
 }
 
 void Simulation::move_content(int delta_x, int delta_y) {
     if (move_browser(state_, delta_x, delta_y)) return;
     if (state_.navigation.route == Route::Settings && move_settings(delta_x, delta_y)) return;
     if (state_.navigation.route == Route::Saves && move_saves(delta_x, delta_y)) return;
+    if (state_.navigation.route == Route::Friends && move_friends(delta_x, delta_y)) return;
     if (state_.navigation.route == Route::ManageGames && move_manage(delta_x, delta_y)) return;
     const int columns = state_.navigation.route == Route::Library ? 6 : 1;
     const int delta = delta_y != 0 ? delta_y * columns : delta_x;
     if (view_.rows.empty()) return;
     // The game page draws only its buttons in a row; status notes between them are not stops.
     if (state_.navigation.route == Route::Details && delta != 0) {
+        // Friends playing (cards under the buttons) is a row of its own: Down enters it, Up returns to the buttons.
+        const auto card = [](const ViewRow& item) { return item.key.rfind("friend-", 0) == 0; };
         const auto button = [](const ViewRow& item) { return item.kind == RowKind::Action || item.kind == RowKind::Toggle; };
-        int target = view_.focused_row;
-        for (int next = view_.focused_row + delta; next >= 0 && next < static_cast<int>(view_.rows.size()); next += delta)
-            if (button(view_.rows[static_cast<std::size_t>(next)])) { target = next; break; }
+        const int here = std::clamp(view_.focused_row, 0, static_cast<int>(view_.rows.size()) - 1);
+        const bool on_card = card(view_.rows[static_cast<std::size_t>(here)]);
+        int target = here;
+        if (delta_y > 0 && !on_card) {
+            for (int index = 0; index < static_cast<int>(view_.rows.size()) && target == here; ++index)
+                if (button(view_.rows[static_cast<std::size_t>(index)]) && card(view_.rows[static_cast<std::size_t>(index)])) target = index;
+        } else if (delta_y < 0 && on_card) {
+            for (int index = 0; index < static_cast<int>(view_.rows.size()); ++index) {
+                const auto& item = view_.rows[static_cast<std::size_t>(index)];
+                if (!button(item) || card(item)) continue;
+                if (target == here || item.key == "details-play") target = index;
+                if (item.key == "details-play") break;
+            }
+        }
+        for (int next = here + delta; target == here && next >= 0 && next < static_cast<int>(view_.rows.size()); next += delta)
+            if (button(view_.rows[static_cast<std::size_t>(next)]) && card(view_.rows[static_cast<std::size_t>(next)]) == on_card)
+                target = next;
         if (target == view_.focused_row) return;
         state_.navigation.selected_index = target;
         state_.navigation.focus_key = view_.rows[static_cast<std::size_t>(target)].key;
@@ -10306,12 +10542,12 @@ void Simulation::change_route(int delta) {
     if (state_.editor.active || !state_.navigation.modals.empty()) return;
     // The password form and its Steam Guard steps are left with Cancel, which stops the sign-in and wipes them.
     if (state_.navigation.route == Route::SignIn && state_.sign_in.step != SignInStep::Qr) return;
-    constexpr Route routes[] = {Route::Home, Route::Library, Route::Downloads, Route::Saves, Route::Settings};
-    constexpr int count = static_cast<int>(std::size(routes));
-    auto found = std::find(std::begin(routes), std::end(routes), state_.navigation.route);
-    int index = found == std::end(routes) ? 0 : static_cast<int>(std::distance(std::begin(routes), found));
+    const auto routes = TabRoutes();
+    const int count = static_cast<int>(routes.size());
+    auto found = std::find(routes.begin(), routes.end(), state_.navigation.route);
+    int index = found == routes.end() ? 0 : static_cast<int>(std::distance(routes.begin(), found));
     index = ((index + delta) % count + count) % count;
-    state_.navigation.route = routes[index];
+    state_.navigation.route = routes[static_cast<std::size_t>(index)];
     state_.navigation.selected_index = 0;
     state_.navigation.focus_key.clear();
     state_.navigation.settings_rail_focused = false;
@@ -10463,7 +10699,10 @@ void Simulation::settle_quit_sync(GameId id, std::optional<CloudStatus> status) 
                          state_.navigation.modals.back().action_keys.size() == 2 &&
                          state_.navigation.modals.back().action_keys.front() == "saves-quit-anyway";
     quit_sync_game_ = {};
-    if (!waiting) return;  // the player cancelled
+    if (!waiting) {  // the player cancelled
+        finish_setup_game_ = {};
+        return;
+    }
     if (status && (*status == CloudStatus::Synced || *status == CloudStatus::UpToDate || *status == CloudStatus::Unsupported)) {
         state_.navigation.modals.clear();
         quit_to_home();
@@ -10517,7 +10756,7 @@ void Simulation::open_game_settings() {
 void Simulation::activate() {
     if (tab_bar_shown() && state_.navigation.tabs_focused) {
         // Cross opens the focused tab and moves focus onto its page.
-        const int target = std::clamp(state_.navigation.tab_focus, 0, 4);
+        const int target = std::clamp(state_.navigation.tab_focus, 0, static_cast<int>(TabRoutes().size()) - 1);
         const int current = route_tab(state_.navigation.route);
         state_.navigation.tabs_focused = false;
         if (target != current) change_route(target - current);
@@ -11100,6 +11339,55 @@ void Simulation::activate() {
         completed.clear();
         // Finished uninstalls go too; stopped ones still need the player.
         std::erase_if(state_.ended_uninstalls, [](const EndedUninstall& ended) { return ended.stopped.empty(); });
+    } else if (action_name == "friends-filter") {
+        state_.navigation.friends_filter = std::clamp(std::atoi(selected.key.c_str() + std::strlen("friends-filter-")), 0, 2);
+        state_.navigation.focus_key.clear();  // its first friend
+    } else if (action_name == "friend-join") {
+        open_join_sheet(std::strtoull(selected.key.c_str() + std::strlen("friend-"), nullptr, 10));
+    } else if (action_name == "friend-open") {
+        open_friend_game(selected.game_id);
+    } else if (action_name == "invite-friends") {
+        open_invite_sheet(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
+    } else if (action_name.rfind("invite-friend-", 0) == 0) {
+        const auto id = std::strtoull(action_name.c_str() + std::strlen("invite-friend-"), nullptr, 10);
+        if (!invite_choice_.erase(id) && invite_choice_.size() < rt::kOnlineLaunchMaxInvites) invite_choice_.insert(id);
+    } else if (action_name == "invite-play") {
+        const auto game = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        rt::OnlineLaunch online;
+        for (const auto* person : friends_in_section(2))
+            if (invite_choice_.contains(person->steam_id)) online.invites.push_back(person->steam_id);
+        if (online.invites.empty() || !invite_offered(game)) return;
+        play_online(game, std::move(online));
+    } else if (action_name == "join-start" || action_name == "join-use-online") {
+        const auto* person = find_friend(join_friend_);
+        const auto game = person ? friend_game(*person) : GameId{};
+        if (!person || !person->lobby_id || !join_refusal(game).empty()) return;
+        if (action_name == "join-use-online" && !game_online(game)) {
+            // Steam features applies with the game closed; the sheet asked the console whether it runs.
+            std::string refusal;
+            if (!game_closed(game, &refusal)) {
+                push_notice({"join-" + ToKey(game), "Online can't be set now", "", false, kLiveNoticeSeconds, false, refusal});
+                return;
+            }
+            const auto previous_game = state_.navigation.selected_game_id;
+            state_.navigation.selected_game_id = game;
+            const auto had = state_.game_settings.find(game);
+            const std::optional<rt::GameSettingsRecord> before =
+                had == state_.game_settings.end() ? std::nullopt : std::make_optional(had->second);
+            set_game_setting("steam_features", "online");
+            // Play reads the settings from disk: without them the game would start without the Steam session.
+            if (!game_online(game) || !save_profile()) {
+                if (before) state_.game_settings[game] = *before;
+                else state_.game_settings.erase(game);
+                state_.navigation.selected_game_id = previous_game;
+                close_modal();
+                show_alert("The setting could not be saved", "Steam features is not set to Online. Try again from Game settings.");
+                return;
+            }
+        } else if (!game_online(game)) {
+            return;
+        }
+        play_online(game, rt::OnlineLaunch{person->lobby_id, {}});
     } else if (action_name == "saves-filter") {
         state_.navigation.saves_filter = std::clamp(std::atoi(selected.key.c_str() + std::strlen("saves-filter-")), 0,
                                                     static_cast<int>(kSavesFilters.size()) - 1);
@@ -11255,6 +11543,7 @@ void Simulation::activate() {
                 previous->second.play_detail.clear();
             pending_runtime_play_requests_.push_back(id);
             pending_runtime_setup_programs_.erase(id);
+            pending_runtime_online_launches_.erase(id);
         }
     } else if (action_name == "details-update") {
         const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
@@ -11457,6 +11746,9 @@ void Simulation::activate() {
                            (cloud == state_.cloud.end() || cloud->second.status != CloudStatus::Unsupported);
         state_.navigation.modals.clear();
         ready_prompt_game_ = {};
+        const auto runtime_game = state_.runtime_games.find(id);
+        finish_setup_game_ = runtime_game != state_.runtime_games.end() && runtime_game->second.awaiting_registration
+            ? id : GameId{};
         if (!syncs) {
             quit_to_home();
         } else {
@@ -12283,6 +12575,10 @@ void Simulation::activate() {
     else if (action_name == "toggle-motion") { state_.reduced_motion = !state_.reduced_motion; save_profile(); }
     else if (action_name == "toggle-title-store") { state_.title_store_suffix = !state_.title_store_suffix; save_profile(); }
     else if (action_name == "toggle-cloud-saves") { state_.cloud_saves_auto = !state_.cloud_saves_auto; save_profile(); }
+    else if (action_name == "toggle-steam-online-notice" && live() && rt::OnlineSteamEnabled()) {
+        state_.steam_online_notice = !state_.steam_online_notice;
+        save_profile();
+    }
     else if (action_name == "toggle-web-access") { state_.web_access = !state_.web_access; save_profile(); }
     else if (action_name == "toggle-recipe-votes") {
         state_.recipe_votes = state_.recipe_votes == playden::RecipeVotesPreference::kOn ? playden::RecipeVotesPreference::kOff
@@ -12871,6 +13167,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         else if (route == "downloads") state_.navigation.route = Route::Downloads;
         else if (route == "settings") state_.navigation.route = Route::Settings;
         else if (route == "saves") state_.navigation.route = Route::Saves;
+        else if (route == "friends" && rt::OnlineSteamEnabled()) state_.navigation.route = Route::Friends;
         else { last_error_ = "Unknown route: " + route; return false; }
         clear_sign_in_secrets();
         state_.navigation.modals.clear(); state_.editor.active = false; state_.navigation.focus_key.clear(); rebuild_view(); return true;
@@ -12978,6 +13275,13 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
                                                                                      : CloudRequestKind::StopJob, {}});
     else if (logical_action == "search") { if (!state_.editor.active && state_.navigation.route == Route::Library && state_.navigation.modals.empty()) start_editor("Search", state_.library.query); }
     else if (logical_action == "triangle" && !state_.editor.active && state_.navigation.modals.empty() &&
+             state_.navigation.route == Route::Friends) {
+        // Appear invisible / Appear online: the controller passes it on to Steam (online-steam's session and the Steam
+        // host of the next Online game).
+        state_.steam_invisible = !state_.steam_invisible;
+        save_profile();
+    }
+    else if (logical_action == "triangle" && !state_.editor.active && state_.navigation.modals.empty() &&
              state_.navigation.route == Route::ManageGames) {
         // Triangle runs the open tab's action from anywhere on the screen; the dialog returns to the row.
         if (state_.navigation.manage_tab == ManageTab::Uninstall) ask_manage_uninstall();
@@ -13072,6 +13376,11 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
             save_profile();
         } else if (live() && state_.navigation.modals.empty() && state_.navigation.route == Route::Saves) {
             ask_upload_all();
+        } else if (state_.navigation.modals.empty() && state_.navigation.route == Route::Friends &&
+                   state_.navigation.focus_key.rfind("friend-", 0) == 0) {
+            const auto found = std::find_if(view_.rows.begin(), view_.rows.end(),
+                                            [this](const ViewRow& item) { return item.key == state_.navigation.focus_key; });
+            if (found != view_.rows.end()) open_friend_game(found->game_id);
         } else if (state_.navigation.modals.empty() && state_.navigation.route == Route::ManageGames) {
             manage_select_all();
         }
@@ -13981,6 +14290,11 @@ std::optional<GameRef> Simulation::sharing_ref(GameId id) const {
     return SharingGameRef(id, steam_app_of(id), game ? game->title : std::string());
 }
 
+bool Simulation::uses_vac(GameId id) const {
+    const auto facts = store_facts_.find(id);
+    return facts != store_facts_.end() && facts->second.vac;
+}
+
 const std::vector<CommunityRecipeOffer>* Simulation::community_offers(GameId id) const {
     if (!community_enabled_) return nullptr;
     const auto ref = community_ref(id);
@@ -14773,6 +15087,11 @@ bool Simulation::game_settings_row_shown(const rt::SettingDefinition& definition
         rt::EffectiveSettings values;
         if (!EffectiveSettingsFor(game, &values) || values.values["start_through_launcher"].value != "on") return false;
     }
+    // Game invites only for a game set to Steam features = Online.
+    if (definition.id == "game_invites") {
+        rt::EffectiveSettings values;
+        if (!EffectiveSettingsFor(game, &values) || values.values["steam_features"].value != "online") return false;
+    }
     return rt::SettingShown(definition, kit_) && (definition.id != "start_check" || known_problem(game));
 }
 
@@ -15015,6 +15334,7 @@ void Simulation::open_setting(const std::string& id) {
             if (launch && recipe.launch_entries[index].id == rt::kProgramEntryId &&
                 in_folder(recipe.launch_entries[index].executable))
                 continue;
+            if (!launch && !rt::SettingChoiceOffered(id, definition->choices[index].value)) continue;
             const auto& choice = launch ? recipe.launch_entries[index].id : definition->choices[index].value;
             if (choice == rt::ChosenValue(value) ||
                 (picked && BottlePath(recipe.launch_entries[index].executable) == BottlePath(values.launch->executable)))
@@ -15839,6 +16159,10 @@ void Simulation::send_feedback() {
     if (draft.recipe) request.based_on = draft.recipe;
     request.author = share_as_effective() == playden::ShareAs::kName ? state_.share_name : std::string();
     request.kit = state_.kit.version.empty() ? std::string("unknown") : state_.kit.version;
+    // A game set to Online runs Valve's current Steam client: which version, for a report about it.
+    if (game_online(id))
+        request.versions.emplace_back("Steam client", state_.kit.steam_client.empty() ? std::string("not installed")
+                                                                                     : state_.kit.steam_client);
     request.firmware = console_firmware_.empty() ? std::string("unknown") : console_firmware_;
     request.playden_version = !sharing_playden_version_.empty() ? sharing_playden_version_
                             : !state_.self_update.current.empty() ? state_.self_update.current : std::string("unknown");
@@ -16516,6 +16840,261 @@ std::string PreparationProgressWords(bool has_record, const std::string& step) {
     if (words.empty() || words == "Preparing") return words;
     return "Step " + std::to_string(has_record ? PreparationStepNumber(step) : 1) + " of " +
            std::to_string(kPreparationSteps) + " · " + words;
+}
+
+// Friends (online-steam): the Friends tab, Friends playing on a game's page, and the Join and Invite sheets.
+
+void Simulation::UpdateFriends(std::vector<Friend> friends, bool connected, bool need_sign_in) {
+    if (!live()) return;
+    if (!rt::OnlineSteamEnabled()) friends.clear(), connected = false, need_sign_in = false;
+    state_.friends = std::move(friends);
+    state_.friends_connected = connected;
+    state_.friends_need_sign_in = need_sign_in;
+}
+
+GameId Simulation::friend_game(const Friend& person) const {
+    if (person.app_id == 0) return {};
+    if (find_game(state_, GameId::Steam(person.app_id))) return GameId::Steam(person.app_id);
+    // A copy from another store or an imported folder whose Steam app ID is the friend's game.
+    for (const auto& game : state_.games)
+        if (steam_app_of(game.id) == person.app_id) return game.id;
+    return {};
+}
+
+const Friend* Simulation::find_friend(std::uint64_t steam_id) const {
+    const auto found = std::find_if(state_.friends.begin(), state_.friends.end(),
+                                    [steam_id](const Friend& person) { return person.steam_id == steam_id; });
+    return found == state_.friends.end() ? nullptr : &*found;
+}
+
+std::pair<std::string, std::string> Simulation::friend_status(const Friend& person, bool with_game) const {
+    if (person.persona_state == 0) return {"Offline", "quiet"};
+    if (person.app_id != 0 || !person.game_name.empty()) {
+        const auto game = friend_game(person);
+        const auto* found = game.valid() ? find_game(state_, game) : nullptr;
+        if (!with_game) return {person.lobby_id ? "In a lobby" : "Playing", "good"};
+        const std::string name = found ? found->title : !person.game_name.empty() ? person.game_name : std::string("a game");
+        return {"Playing " + name + (person.lobby_id ? " · in a lobby" : ""), "good"};
+    }
+    if (person.persona_state == 2) return {"Busy", "attention"};
+    if (person.persona_state == 3 || person.persona_state == 4) return {"Away", "attention"};
+    return {"Online", ""};
+}
+
+std::vector<const Friend*> Simulation::friends_in_section(int section) const {
+    std::vector<const Friend*> out;
+    for (const auto& person : state_.friends) {
+        if (section == 0 && person.persona_state == 0) continue;
+        if (section == 1 && (person.persona_state == 0 || !friend_game(person).valid())) continue;
+        out.push_back(&person);
+    }
+    // In a lobby of a library game, playing, online, away, offline; then by name.
+    const auto rank = [this](const Friend& person) {
+        if (person.persona_state == 0) return 4;
+        if (person.app_id != 0 || !person.game_name.empty()) return person.lobby_id && friend_game(person).valid() ? 0 : 1;
+        return person.persona_state == 1 || person.persona_state > 4 ? 2 : 3;
+    };
+    const auto folded = [](std::string value) {
+        for (auto& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return value;
+    };
+    std::stable_sort(out.begin(), out.end(), [&](const Friend* left, const Friend* right) {
+        const int a = rank(*left), b = rank(*right);
+        return a != b ? a < b : folded(left->name) < folded(right->name);
+    });
+    return out;
+}
+
+std::string Simulation::join_refusal(GameId game) const {
+    const auto* found = find_game(state_, game);
+    if (!found) return "This game is not in your library.";
+    if (!is_installed(state_, game) && !external_game(game)) return "Install " + found->title + " to join.";
+    if (update_locked(game)) return held_play_text(state_, game);
+    if (live()) {
+        const auto runtime = state_.runtime_games.find(game);
+        if (runtime == state_.runtime_games.end() || !runtime->second.ready)
+            return "Play " + found->title + " once from its page so Playden sets it up. Then you can join.";
+        return {};
+    }
+    const auto* installation = find_installation(state_, game);
+    if (installation && !installation->runtime_ready) return "Playden needs its runtime kit to start games.";
+    return {};
+}
+
+bool Simulation::game_online(GameId game) const {
+    if (!rt::OnlineSteamEnabled()) return false;
+    rt::EffectiveSettings values;
+    return EffectiveSettingsFor(game, &values) && values.values["steam_features"].value == "online";
+}
+
+bool Simulation::invite_offered(GameId game) const {
+    return rt::OnlineSteamEnabled() && !state_.friends.empty() && game_online(game) && join_refusal(game).empty();
+}
+
+// The Friends tab: its rail (Online, In my games, All) and two columns of friends. Up and Down on the rail switch the
+// section; Right enters the friends, Left from the first column returns to the rail. Up from the top reaches the tab bar.
+bool Simulation::move_friends(int delta_x, int delta_y) {
+    if (view_.rows.empty()) return true;
+    const auto rail = [](const ViewRow& item) { return item.key.rfind("friends-filter-", 0) == 0; };
+    std::vector<int> tiles;
+    for (int index = 0; index < static_cast<int>(view_.rows.size()); ++index)
+        if (view_.rows[static_cast<std::size_t>(index)].key.rfind("friend-", 0) == 0) tiles.push_back(index);
+    const int current = std::clamp(view_.focused_row, 0, static_cast<int>(view_.rows.size()) - 1);
+    const auto focus = [this](int index) {
+        state_.navigation.selected_index = index;
+        state_.navigation.focus_key = view_.rows[static_cast<std::size_t>(index)].key;
+    };
+    if (rail(view_.rows[static_cast<std::size_t>(current)])) {
+        if (delta_y != 0) {
+            const int section = std::clamp(state_.navigation.friends_filter + (delta_y > 0 ? 1 : -1), 0, 2);
+            if (section == state_.navigation.friends_filter) return true;
+            state_.navigation.friends_filter = section;
+            state_.navigation.focus_key = "friends-filter-" + std::to_string(section);
+            state_.navigation.selected_index = section;
+        } else if (delta_x > 0 && !tiles.empty()) {
+            focus(tiles.front());
+        }
+        return true;
+    }
+    const auto here = std::find(tiles.begin(), tiles.end(), current);
+    if (here == tiles.end()) return true;
+    const int place = static_cast<int>(here - tiles.begin());
+    const int count = static_cast<int>(tiles.size());
+    if (delta_x < 0 && place % 2 == 0) {
+        state_.navigation.focus_key = "friends-filter-" + std::to_string(state_.navigation.friends_filter);
+        state_.navigation.selected_index = state_.navigation.friends_filter;
+        return true;
+    }
+    int target = place;
+    if (delta_x != 0) target = place + (delta_x > 0 ? 1 : -1);
+    else if (delta_y != 0) target = place + (delta_y > 0 ? 2 : -2);
+    if (delta_x > 0 && place % 2 == 1) target = place;  // the second column is the right edge
+    if (target < 0 || target >= count) {
+        // Down from a row with no friend below lands on the last one.
+        // Up from the top row stays, so the tab bar takes the focus (Simulation::move).
+        if (delta_y > 0 && place / 2 < (count - 1) / 2) target = count - 1;
+        else return true;
+    }
+    if (target != place) focus(tiles[static_cast<std::size_t>(target)]);
+    return true;
+}
+
+void Simulation::open_join_sheet(std::uint64_t steam_id) {
+    const auto* person = find_friend(steam_id);
+    if (!person || !person->lobby_id) return;
+    join_friend_ = steam_id;
+    const auto game = friend_game(*person);
+    std::vector<std::string> actions;
+    if (join_refusal(game).empty()) {
+        const auto* online = rt::FindSetting("steam_features");
+        rt::EffectiveSettings values;
+        // A recipe that sets Steam features keeps it: Game settings' Change anyway is the way past it, not Join.
+        const bool can_set = online && EffectiveSettingsFor(game, &values) &&
+                             !(values.values["steam_features"].locked && !values.values["steam_features"].unlocked) &&
+                             rt::SettingChoiceUnavailable(values, "steam_features", "online").empty();
+        if (game_online(game)) actions.push_back("join-start");
+        else if (can_set) actions.push_back("join-use-online");
+    }
+    actions.push_back("cancel");
+    // The game's title may be running: Use Online for this game asks the console first.
+    if (live() && game.valid()) pending_activity_requests_.push_back(game);
+    open_modal({"join-lobby", "Join " + person->name + "'s lobby", state_.navigation.focus_key, std::move(actions), 0, false});
+}
+
+void Simulation::open_friend_game(GameId game) {
+    if (!game.valid() || !find_game(state_, game)) return;
+    if (live()) force_organization_selection_ = true;
+    friends_return_focus_ = state_.navigation.focus_key;
+    state_.navigation.detail_origin = Route::Friends;
+    state_.navigation.detail_id = game;
+    state_.navigation.selected_game_id = game;
+    state_.navigation.route = Route::Details;
+    details_primary_pending_ = live();
+    state_.navigation.focus_key = live() ? "details-favorite" : (is_installed(state_, game) ? "details-play" : "details-install");
+}
+
+void Simulation::open_invite_sheet(GameId game) {
+    if (!invite_offered(game)) return;
+    // Friends no longer listed drop out of the choice; the rest stay picked while Playden runs.
+    std::erase_if(invite_choice_, [this](std::uint64_t id) { return !find_friend(id); });
+    std::vector<std::string> actions;
+    for (const auto* person : friends_in_section(2)) actions.push_back("invite-friend-" + std::to_string(person->steam_id));
+    actions.push_back("invite-play");
+    actions.push_back("cancel");
+    open_modal({"invite-friends", "Invite friends", "details-invite", std::move(actions), 0, false});
+}
+
+void Simulation::play_online(GameId game, rt::OnlineLaunch online) {
+    while (!state_.navigation.modals.empty()) close_modal();
+    if (!game.valid() || !find_game(state_, game) || update_locked(game)) return;
+    // The game's page shows the start, as Play does.
+    if (state_.navigation.route != Route::Details || state_.navigation.detail_id != game) {
+        if (state_.navigation.route == Route::Friends) friends_return_focus_ = state_.navigation.focus_key;
+        state_.navigation.detail_origin = state_.navigation.route == Route::Details ? state_.navigation.detail_origin
+                                                                                    : state_.navigation.route;
+        state_.navigation.route = Route::Details;
+        state_.navigation.detail_id = game;
+    }
+    state_.navigation.selected_game_id = game;
+    state_.navigation.focus_key = "details-play";
+    pending_runtime_online_launches_[game] = std::move(online);
+    if (live()) {
+        if (auto previous = state_.runtime_games.find(game); previous != state_.runtime_games.end())
+            previous->second.play_detail.clear();
+        pending_runtime_play_requests_.push_back(game);
+        pending_runtime_setup_programs_.erase(game);
+    } else {
+        state_.session_game_id = game;
+        state_.session = SessionState::Preparing;
+        state_.navigation.route = Route::Session;
+        state_.navigation.focus_key = "session-return";
+    }
+}
+
+void Simulation::seed_friends_scenario() {
+    // Amber Valley (installed, set to Online) has two friends in lobbies and one in its menus; Paper Satellites
+    // (installed, Offline emulation) one in a lobby; Łódź Nights (not installed) one; one plays a game not in the
+    // library; the rest are online, away or offline.
+    state_.account().authentication = AuthState::SignedIn;
+    state_.navigation.modals.clear();
+    state_.jobs.clear();
+    state_.friends_connected = true;
+    state_.friends_need_sign_in = false;
+    state_.friends = {
+        {76561198000000001ULL, "Mara", 1, 900009, "", 109775241000000001ULL, ""},
+        {76561198000000002ULL, "tomcat_88", 1, 900009, "", 109775241000000002ULL, ""},
+        {76561198000000003ULL, "Rui", 1, 900009, "", 0, ""},
+        {76561198000000004ULL, "Lena", 1, 900011, "", 109775241000000004ULL, ""},
+        {76561198000000005ULL, "Pia", 1, 900006, "", 109775241000000005ULL, ""},
+        {76561198000000006ULL, "Jun", 1, 4000001, "Harbor Kings", 0, ""},
+        {76561198000000007ULL, "ana.v", 1, 0, "", 0, ""},
+        {76561198000000008ULL, "Kofi", 3, 0, "", 0, ""},
+        {76561198000000009ULL, "Sven", 0, 0, "", 0, ""},
+        {76561198000000010ULL, "Ines", 0, 0, "", 0, ""},
+    };
+    for (const auto app : {900009U, 900011U}) {
+        // Playden's own recipe, as preparing a real install makes, which leaves Steam features to the player.
+        rt::GameRecipe own;
+        own.id = rt::GeneratedRecipeId(app);
+        own.version = 1;
+        own.app_id = app;
+        own.name = find_game(state_, GameId::Steam(app)) ? find_game(state_, GameId::Steam(app))->title : "Game";
+        own.launch_entries = {{"game", own.name, "Game.exe", ""}};
+        own.arguments = "{resolution}";
+        own.graphics = "dxvk";
+        generated_recipes_[GameId::Steam(app)] = std::move(own);
+        std::erase_if(state_.installations, [app](const Installation& item) { return item.game_id == GameId::Steam(app); });
+        state_.installations.push_back({GameId::Steam(app), "internal", 6'000'000'000, true, true, true});
+    }
+    state_.game_settings[GameId::Steam(900009)].overrides["steam_features"] = "online";
+    state_.game_settings.erase(GameId::Steam(900011));
+    invite_choice_.clear();
+    join_friend_ = 0;
+    friends_return_focus_.clear();
+    state_.navigation.route = Route::Friends;
+    state_.navigation.friends_filter = 0;
+    state_.navigation.selected_index = 0;
+    state_.navigation.focus_key.clear();
 }
 
 } // namespace playden::homebrew

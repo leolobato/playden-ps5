@@ -187,9 +187,10 @@ bool WriteSettings(const fs::path& folder, const SteamworksIdentity& identity, c
                            "\n\n[user::saves]\nlocal_save_path=" + kSteamworksSavePath + "\n";
   std::string apps = "[app::dlcs]\nunlock_all=0\n";
   for (const auto dlc : Sorted(identity.owned_dlc)) apps += std::to_string(dlc) + "=dlc" + std::to_string(dlc) + "\n";
-  const char* const online = identity.online ? "0" : "1";
-  const std::string main = std::string("[main::connectivity]\ndisable_lan_only=0\noffline=") + online +
-                           "\ndisable_networking=" + online + "\n";
+  const char* const offline = identity.network ? "0" : "1";
+  const char* const no_networking = identity.network ? "0" : "1";
+  const std::string main = std::string("[main::connectivity]\ndisable_lan_only=0\noffline=") + offline +
+                           "\ndisable_networking=" + no_networking + "\n";
   static const char* const kLanguages =
       "arabic\nbulgarian\nschinese\ntchinese\nczech\ndanish\ndutch\nenglish\nfinnish\nfrench\ngerman\ngreek\n"
       "hungarian\nitalian\njapanese\nkoreana\nnorwegian\npolish\nportuguese\nbrazilian\nromanian\nrussian\n"
@@ -218,10 +219,36 @@ struct Emulator {
   std::string sha256;
 };
 
-// Playden's emulator, the current build or a retired one.
+// Playden's emulator or online bridge, the current build or a retired one.
 bool IsPlaydenEmulator(const std::string& digest, const std::vector<std::string>& retired) {
-  return digest == kSteamApi32Sha256 || digest == kSteamApi64Sha256 ||
+  return digest == kSteamApi32Sha256 || digest == kSteamApi64Sha256 || digest == kSteamOnlineBridge64Sha256 ||
+         digest == kSteamOnlineBridge32Sha256 ||
          std::find(retired.begin(), retired.end(), digest) != retired.end();
+}
+
+// Where Playden's online bridge keeps the emulator it forwards to, beside the game's DLL.
+fs::path BridgeEmulatorPath(const fs::path& dll, bool pe64) {
+  return dll.parent_path() / (pe64 ? kSteamOnlineEmulator64Name : kSteamOnlineEmulator32Name);
+}
+
+// Playden's file in the game's DLL slot: its emulator, or any build of the retired online bridge (its marker). A bridge
+// is never kept as the game's original, even without the emulator copy it kept beside it; a game update's own DLL has
+// no marker, so it is.
+bool IsPlaydensDll(const std::string& digest, std::string_view bytes, const fs::path& dll, bool pe64,
+                   const std::vector<std::string>& retired) {
+  (void)dll;
+  (void)pe64;
+  return IsPlaydenEmulator(digest, retired) || bytes.find(kSteamOnlineBridgeMarker) != std::string_view::npos;
+}
+
+// Removes the emulator copy beside the game's DLL; a file there that is not Playden's emulator is left alone.
+bool RemoveBridgeEmulator(const fs::path& dll, bool pe64, const std::vector<std::string>& retired) {
+  const auto beside = BridgeEmulatorPath(dll, pe64);
+  if (!Exists(beside)) return true;
+  const auto bytes = IsRegular(beside) ? ReadFile(beside, kMaxDllBytes) : std::nullopt;
+  const auto digest = bytes ? HashArtifactBytes(*bytes) : std::nullopt;
+  if (!digest || !IsPlaydenEmulator(*digest, retired)) return true;
+  return ::unlink(beside.c_str()) == 0 || errno == ENOENT;
 }
 
 std::optional<Emulator> LoadEmulator(const std::string& emulator_dir, bool pe64) {
@@ -341,13 +368,14 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
     const bool pe64 = Lower(path.filename().string()) == "steam_api64.dll";
     const auto emulator = LoadEmulator(emulator_dir, pe64);
     if (!emulator) return fail("Playden's Steam emulator files are missing or damaged; reinstall Playden.");
+    const Emulator& installed = *emulator;
     const auto current = ReadFile(path, kMaxDllBytes);
     if (!current) return fail("Playden could not read the game's " + relative + ".");
     const auto digest = HashArtifactBytes(*current);
     if (!digest) return fail("Playden could not check the game's " + relative + ".");
     std::string original;
-    if (IsPlaydenEmulator(*digest, retired)) {
-      // Playden's own (an earlier build after a Playden update): the game's DLL is the .orig.
+    if (IsPlaydensDll(*digest, *current, path, pe64, retired)) {
+      // Playden's own (an earlier build after a Playden update, or the online bridge): the game's DLL is the .orig.
       const auto kept = IsRegular(orig) ? ReadFile(orig, kMaxDllBytes) : std::nullopt;
       if (!kept) return fail("The game's original " + relative + " is missing; verify the download.");
       // An earlier Playden kept its own emulator as the original. The game's interface versions
@@ -355,10 +383,12 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
       const auto kept_digest = HashArtifactBytes(*kept);
       if (!kept_digest || IsPlaydenEmulator(*kept_digest, retired))
         return fail("An earlier Playden lost the game's own " + relative + "; reinstall the game to get it back.");
-      if (*digest != emulator->sha256) {
-        if (!WriteAtomic(path, emulator->bytes)) return fail("Playden could not set up Steam features for this game.");
+      if (*digest != installed.sha256) {
+        if (!WriteAtomic(path, installed.bytes)) return fail("Playden could not set up Steam features for this game.");
         result.changed.push_back(relative);
       }
+      // A retired bridge's emulator copy goes once the bridge has left.
+      if (!RemoveBridgeEmulator(path, pe64, retired)) return fail("Playden could not remove the game's Steam online files.");
       original = *kept;
     } else {
       if (Architecture(*current) != (pe64 ? "pe64" : "pe32")) continue;  // not a Steam API library this name promises
@@ -366,7 +396,7 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
       const auto kept = IsRegular(orig) ? ReadFile(orig, kMaxDllBytes) : std::nullopt;
       if ((!kept || *kept != *current) && !WriteAtomic(orig, *current))
         return fail("Playden could not keep a copy of the game's " + relative + ".");
-      if (!WriteAtomic(path, emulator->bytes)) return fail("Playden could not set up Steam features for this game.");
+      if (!WriteAtomic(path, installed.bytes)) return fail("Playden could not set up Steam features for this game.");
       result.changed.push_back(relative);
       original = *current;
     }
@@ -470,6 +500,26 @@ SteamworksResult RemoveLegacySteam(const std::string& install_root, const std::v
   return result;
 }
 
+bool WriteSteamAppIdBeside(const std::string& install_root, const std::vector<std::string>& found,
+                           const std::vector<std::string>& start_folders, std::uint32_t app_id) {
+  if (!app_id) return false;
+  bool ok = true;
+  const fs::path root(install_root);
+  std::vector<fs::path> files;
+  for (const auto& library : found) files.push_back(fs::path(library).parent_path() / "steam_appid.txt");
+  for (const auto& folder : start_folders) files.push_back(fs::path(folder) / "steam_appid.txt");
+  for (const auto& relative : files) {
+    if (relative.is_absolute() || std::any_of(relative.begin(), relative.end(), [](const fs::path& part) {
+          return part == "..";
+        }))
+      continue;
+    // Only through real folders: a link inside the game folder could point a write anywhere.
+    if (!RealFoldersTo(root, relative.generic_string())) continue;
+    if (!Exists(root / relative) && !WriteAtomic(root / relative, std::to_string(app_id))) ok = false;
+  }
+  return ok;
+}
+
 SteamworksResult RestoreSteamworks(const std::string& install_root, const std::vector<std::string>& retired,
                                    const std::vector<std::string>& steam_api_copies) {
   SteamworksResult result;
@@ -490,9 +540,10 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
   }
   for (const auto& relative : result.found) {
     const auto path = root / relative;
+    const bool pe64 = Lower(path.filename().string()) == "steam_api64.dll";
     const auto current = ReadFile(path, kMaxDllBytes);
     const auto digest = current ? HashArtifactBytes(*current) : std::nullopt;
-    if (!digest || !IsPlaydenEmulator(*digest, retired)) continue;  // already the game's own
+    if (!digest || !IsPlaydensDll(*digest, *current, path, pe64, retired)) continue;  // already the game's own
     const auto kept = ReadFile(fs::path(path.string() + ".orig"), kMaxDllBytes);
     const auto kept_digest = kept ? HashArtifactBytes(*kept) : std::nullopt;
     if (kept_digest && IsPlaydenEmulator(*kept_digest, retired)) {
@@ -501,6 +552,10 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
     }
     if (!kept || !WriteAtomic(path, *kept)) {
       result.message = "Playden could not put back the game's own " + relative + "; verify the download.";
+      return result;
+    }
+    if (!RemoveBridgeEmulator(path, pe64, retired)) {
+      result.message = "Playden could not remove the game's Steam online files.";
       return result;
     }
     result.changed.push_back(relative);

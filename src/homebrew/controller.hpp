@@ -17,6 +17,7 @@
 #include "stores/local/library_source.h"
 #include "steam/download_rate.h"
 #include "steam/download_server_service.h"
+#include "steam/friends_service.h"
 #include "update/update_service.h"
 #include "web/service.h"
 #include "community/recipe_service.h"
@@ -79,11 +80,19 @@ class Controller {
   void Tick();
   // Microseconds each part of the last Tick took, for slow-frame diagnostics.
   std::string LastTickProfile() const;
+  // As Playden quits after Finish setup (Simulation::FinishSetupGame): the game gets what Play would hand it before its
+  // first start from Home (RuntimeHost::HandOverForHome). Blocks a few seconds at most; false when the runtime didn't
+  // answer, or the game has no runtime number.
+  bool HandOverForHome(const GameId& game);
   void Shutdown();
   // Steam store descriptions, genres and controller support for the games the player opens.
   void SetStoreDetails(steam::StoreDetailsService* store_details) { store_details_ = store_details; }
   // The server list and measurements run on their own worker; only their public snapshot enters the UI.
   void SetDownloadServers(steam::DownloadServerService* servers) { download_servers_ = servers; }
+  // Steam friends (online-steam only; otherwise never set): wanted while signed in. The latest snapshot is
+  // kept here for the UI; no credentials are in it.
+  void SetFriends(steam::FriendsService* friends) { friends_ = friends; }
+  const steam::FriendsSnapshot& friends() const { return friends_snapshot_; }
   // Playden's own update: the controller passes the player's requests on and shows its state.
   void SetSelfUpdate(update::UpdateService* self_update) { self_update_ = self_update; }
   // Settings › Web access turns it on and off (once the saved preferences are read); the signed-in account's
@@ -109,6 +118,13 @@ class Controller {
   void SetPersistenceLog(std::function<void(const std::string&)> log);
   // The player turned "Stay signed in" on or off: the host moves the Steam session to disk or memory.
   void SetStaySignedIn(std::function<void(bool)> apply) { stay_signed_in_ = std::move(apply); }
+  // How the account shows to Steam friends (Friends tab › Appear invisible), once the saved choice is known and at
+  // each change: the host passes it to Playden's own Steam session (steam::SetCmPersonaState). The runtime host gets it
+  // too, for the Steam host of the next Online game.
+  void SetSteamPersona(std::function<void(bool invisible)> apply) {
+    steam_persona_ = std::move(apply);
+    applied_steam_invisible_.reset();
+  }
   // Counts changes to the account's Steam licenses (steam::CmLicenseChanges): the library refreshes
   // once they settle for `delay`, so a game added on another device shows up.
   void SetLicenseChanges(std::function<std::uint64_t()> changes,
@@ -171,9 +187,17 @@ class Controller {
   std::optional<LiveDownloadServers> shown_download_servers_;
   void TickSelfUpdate();
   void TickLicenseChanges();
+  void TickFriends();
+  steam::FriendsService* friends_ = nullptr;
+  steam::FriendsSnapshot friends_snapshot_;
+  std::string friends_account_;
   std::function<void(const std::string&)> shutdown_log_;
   std::function<void(const std::string&)> persistence_log_;
   std::function<void(bool)> stay_signed_in_;
+  std::function<void(bool)> steam_persona_;
+  std::optional<bool> applied_steam_invisible_;  // what steam_persona_ and the runtime host last got
+  std::optional<bool> applied_steam_online_notice_;  // what the runtime host last got (Steam sign-in notice)
+  void TickSteamPersona();
   std::function<std::uint64_t()> license_changes_;
   std::chrono::steady_clock::duration license_refresh_delay_{};
   std::optional<std::uint64_t> seen_license_changes_;
@@ -295,6 +319,9 @@ class Controller {
   // Plays that run a program from the game folder once (Simulation::TakeRuntimeSetupPrograms), until handed to the
   // runtime; a plain Play of the game drops its entry.
   std::map<GameId, std::string> setup_programs_;
+  // Plays that ask the online bridge to join a lobby or invite friends (Simulation::TakeRuntimeOnlineLaunches), until
+  // handed to the runtime; a Play of the game without one drops its entry.
+  std::map<GameId, playden::runtime::OnlineLaunch> online_launches_;
   std::set<GameId> play_without_sync_;
   // Games are prepared without a button press: once their download finishes (games
   // downloading now, then games waiting to be prepared), and when Play finds one not

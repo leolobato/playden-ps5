@@ -33,8 +33,10 @@ int main() {
   // One name per line, surrounding whitespace and CRLF trimmed, comments and blank lines skipped.
   std::vector<std::string> unknown;
   auto features = ParseExperimentalFeatures("# mine\n\n  community-recipes \r\nonline-steam\nCommunity-Recipes", {}, &unknown);
-  CHECK(features.community_recipes);
-  CHECK(unknown.size() == 2 && unknown[0] == "online-steam" && unknown[1] == "Community-Recipes");
+  CHECK(features.community_recipes && features.online_steam);
+  CHECK(unknown == std::vector<std::string>{"Community-Recipes"});
+  // Online Steam features is off in every build until the file names it.
+  CHECK(!DefaultExperimentalFeatures(true).online_steam && !ParseExperimentalFeatures("#online-steam\nonline-steam-2\n").online_steam);
   CHECK(!ParseExperimentalFeatures("#community-recipes\n").community_recipes);
   CHECK(!ParseExperimentalFeatures("community-recipes-x").community_recipes);
   // A line only turns a feature on: a nightly's default stays on with any file.

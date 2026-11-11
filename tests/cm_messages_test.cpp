@@ -184,6 +184,92 @@ void ManifestRequestCodeNamesTheBranch() {
   assert(cm::EncodeManifestRequestCodeRequest(440, 441, 11, "4.04") == with("4.04"));
 }
 
+// CMsgClientFriendsList (767), CMsgClientPersonaState (766), CMsgClientRequestFriendData (815) and
+// CMsgClientChangeStatus (716): field numbers from SteamKit2's steammessages_clientserver_friends.proto, as the
+// online bridge (tools/steam-online/core/sol_friends.c) reads them.
+void FriendsMessages() {
+  assert(cm::kEMsgClientChangeStatus == 716 && cm::kEMsgClientPersonaState == 766 &&
+         cm::kEMsgClientFriendsList == 767 && cm::kEMsgClientRequestFriendData == 815);
+  constexpr std::uint64_t kFriend = 0x0110000100000001ull;
+  constexpr std::uint64_t kClan = 0x0170000000000002ull;
+
+  proto::Writer first;
+  first.AddFixed64(1, kFriend);
+  first.AddVarint(2, 3);
+  proto::Writer second;
+  second.AddFixed64(1, kClan);
+  second.AddVarint(2, 3);
+  proto::Writer list_body;
+  list_body.AddVarint(1, 1);
+  list_body.AddMessage(2, first);
+  list_body.AddMessage(2, second);
+  cm::FriendsList list;
+  assert(cm::DecodeFriendsList(list_body.bytes(), &list));
+  assert(list.incremental && list.friends.size() == 2);
+  assert(list.friends[0].steam_id == kFriend && list.friends[0].relationship == cm::kFriendRelationshipFriend);
+  assert(cm::IndividualSteamId(kFriend) && !cm::IndividualSteamId(kClan));
+  // A SteamID that is not a fixed64 is malformed.
+  proto::Writer bad_entry;
+  bad_entry.AddVarint(1, 5);
+  proto::Writer bad_list;
+  bad_list.AddMessage(2, bad_entry);
+  assert(!cm::DecodeFriendsList(bad_list.bytes(), &list));
+
+  std::vector<std::uint8_t> avatar(20);
+  for (std::size_t i = 0; i < avatar.size(); ++i) avatar[i] = static_cast<std::uint8_t>(0xa0 + i);
+  proto::Writer kv;
+  kv.AddString(1, "connect");
+  kv.AddString(2, "+connect_lobby 9");
+  proto::Writer persona;
+  persona.AddFixed64(1, kFriend);
+  persona.AddVarint(2, 1);
+  persona.AddVarint(3, 440);
+  persona.AddString(15, "Mara");
+  persona.AddBytes(31, avatar);
+  persona.AddString(55, "A mod");
+  persona.AddFixed64(56, 440);
+  persona.AddMessage(71, kv);
+  persona.AddFixed64(73, 0x0186000000000009ull);
+  proto::Writer persona_body;
+  persona_body.AddVarint(1, cm::kFriendDataRequested);
+  persona_body.AddMessage(2, persona);
+  cm::PersonaState state;
+  assert(cm::DecodePersonaState(persona_body.bytes(), &state));
+  assert(state.status_flags == cm::kFriendDataRequested && state.friends.size() == 1);
+  const auto& entry = state.friends[0];
+  assert(entry.steam_id == kFriend && entry.persona_state == 1u && entry.game_app_id == 440u);
+  assert(entry.player_name == std::string("Mara") && entry.avatar_hash == avatar);
+  assert(entry.game_name == std::string("A mod") && entry.game_id == 440u && entry.lobby_id == 0x0186000000000009ull);
+  assert(entry.rich_presence && entry.rich_presence->size() == 1 &&
+         entry.rich_presence->at(0).first == "connect" && entry.rich_presence->at(0).second == "+connect_lobby 9");
+  // Fields not sent stay absent, so a merge can tell them from zero.
+  proto::Writer bare;
+  bare.AddFixed64(1, kFriend);
+  proto::Writer bare_body;
+  bare_body.AddMessage(2, bare);
+  assert(cm::DecodePersonaState(bare_body.bytes(), &state) && !state.status_flags && state.friends.size() == 1);
+  assert(!state.friends[0].persona_state && !state.friends[0].player_name && !state.friends[0].lobby_id &&
+         !state.friends[0].avatar_hash && !state.friends[0].rich_presence);
+  // A lobby that is not a fixed64 is malformed.
+  proto::Writer wrong;
+  wrong.AddFixed64(1, kFriend);
+  wrong.AddVarint(73, 9);
+  proto::Writer wrong_body;
+  wrong_body.AddMessage(2, wrong);
+  assert(!cm::DecodePersonaState(wrong_body.bytes(), &state));
+
+  // persona_state_requested = 1 (0x1113), then each friend as an unpacked fixed64 field 2.
+  assert(cm::kFriendDataRequested == (1u | 2u | 16u | 256u | 4096u));
+  const std::vector<std::uint8_t> request{0x08, 0x93, 0x22, 0x11, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x10, 0x01};
+  assert(cm::EncodeRequestFriendData(cm::kFriendDataRequested, {kFriend}) == request);
+  assert(cm::EncodeRequestFriendData(cm::kFriendDataRequested, {}) == (std::vector<std::uint8_t>{0x08, 0x93, 0x22}));
+}
+
+void ChangeStatusMessage() {
+  // persona_state = 1: Online.
+  assert(cm::EncodeChangeStatus(cm::kPersonaStateOnline) == (std::vector<std::uint8_t>{0x08, 0x01}));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -197,4 +283,6 @@ int main(int argc, char** argv) {
   TruncatedMessagesFail();
   FreeLicenseRequestAndResponse();
   ManifestRequestCodeNamesTheBranch();
+  FriendsMessages();
+  ChangeStatusMessage();
 }

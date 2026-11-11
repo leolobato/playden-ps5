@@ -14,7 +14,8 @@ bool Contains(const std::deque<ArtworkKey>& values, const ArtworkKey& key) {
 }
 
 bool ValidKey(const ArtworkKey& key) {
-  return key.account_generation != 0 && key.game_id.valid() &&
+  return key.account_generation != 0 &&
+         (key.game_id.valid() || (key.game_id == GameId{} && IsAvatarArtworkSource(key.source))) &&
          !key.source.empty() && key.source.size() <= kMaxArtworkSourceBytes &&
          key.source.find('\0') == std::string::npos;
 }
@@ -49,7 +50,30 @@ std::optional<ArtworkImage> LoadGuarded(ArtworkBackend& backend,
 #endif
 }
 
+constexpr std::string_view kAvatarPrefix = "https://avatars.steamstatic.com/";
+constexpr std::string_view kAvatarSuffix = "_medium.jpg";
+
+bool AvatarHash(std::string_view hash) {
+  return hash.size() == 40 &&
+         std::all_of(hash.begin(), hash.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
 }  // namespace
+
+std::string AvatarArtworkSource(std::string_view hash) {
+  if (!AvatarHash(hash)) return {};
+  return std::string(kAvatarPrefix) + std::string(hash) + std::string(kAvatarSuffix);
+}
+
+bool IsAvatarArtworkSource(std::string_view source, std::string* hash) {
+  if (source.size() != kAvatarPrefix.size() + 40 + kAvatarSuffix.size() || source.substr(0, kAvatarPrefix.size()) != kAvatarPrefix ||
+      source.substr(source.size() - kAvatarSuffix.size()) != kAvatarSuffix)
+    return false;
+  const auto found = source.substr(kAvatarPrefix.size(), 40);
+  if (!AvatarHash(found)) return false;
+  if (hash) *hash = std::string(found);
+  return true;
+}
 
 bool operator==(const ArtworkKey& left, const ArtworkKey& right) {
   return left.account_generation == right.account_generation &&

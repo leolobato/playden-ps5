@@ -40,6 +40,9 @@ int main(int argc, char** argv) {
           config.known_capabilities.end());
   // A kit with 120 Hz output is admitted with that capability, not as an ignored one.
   CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitDisplay120Hz) == 1);
+  // A kit whose title shows the online bridge's notifications is admitted with that capability too.
+  CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitTitleNotify) == 1);
+  CHECK(std::is_sorted(config.known_capabilities.begin(), config.known_capabilities.end()));
 
   const std::filesystem::path root = argv[2];
   if (!std::filesystem::exists(root / "manifest.json")) {

@@ -16,6 +16,15 @@ namespace playden::runtime {
 inline constexpr const char* kSteamApi32Sha256 = "d778ba3007cc46b7587f23698493c6734752213e34eaec2d5e59a036da11df44";
 inline constexpr const char* kSteamApi64Sha256 = "ca4698c8d8db8270735c3570922748300abd10dc9d16c2f3a95a6a564be144d2";
 
+// The online bridge that nightlies put in the game's DLL slot for Steam features = Online before the Steam host
+// replaced it. It is never installed now: a DLL with its marker is Playden's and goes back to the game's own (the
+// .orig), and the emulator copy it kept beside it goes too. Its last builds, 64-bit and 32-bit:
+inline constexpr const char* kSteamOnlineBridge64Sha256 = "762b02bd0eb6ec742c6f2b8e46c8b8d817850424c7d7833fbe7b4a665bb47f71";
+inline constexpr const char* kSteamOnlineBridge32Sha256 = "770d43c73909bdcb37ae3e2cdff7e3ac91dc58247ef1ffea19ac37270b07063c";
+inline constexpr const char* kSteamOnlineBridgeMarker = "playden-online-bridge";  // text in every bridge build
+inline constexpr const char* kSteamOnlineEmulator64Name = "steam_api64_gbe.dll";
+inline constexpr const char* kSteamOnlineEmulator32Name = "steam_api_gbe.dll";
+
 // The emulator builds earlier Playden versions shipped (32-bit, 64-bit). A game they set up
 // still has one as its DLL: it is Playden's, replaced like the current one and never kept as
 // the game's original. Add the outgoing pins here whenever the two above change.
@@ -61,9 +70,10 @@ struct SteamworksIdentity {
   // The game's Steam Input action sets (SteamInputActionSets), as steam_settings/controller/<name>.txt. With them the
   // emulator answers Steam Input with the controller it reads through XInput; with none it reports no controller.
   std::vector<std::pair<std::string, std::string>> steam_input_sets;  // action set name, file text
-  // Game settings › Steam network = Online: Steam is online and the emulator's own networking (lobbies, P2P, server
-  // announcements between emulators on the same network) is on. Off: Steam is offline, no networking.
-  bool online = true;
+  // Game settings › Steam network = Online (Offline emulation only): Steam is online and the emulator's own networking
+  // (lobbies, P2P, server announcements between emulators on the same network) is on. Off: Steam is offline, no
+  // networking.
+  bool network = true;
 };
 
 struct SteamworksResult {
@@ -87,8 +97,17 @@ SteamworksResult EmulateSteamworks(const std::string& install_root, const std::s
                                    const SteamworksIdentity& identity,
                                    const std::vector<std::string>& retired = RetiredSteamApiSha256());
 
-// Puts each .orig back over a swapped DLL (the emulator or a retired build); .orig and
-// steam_settings/ stay. A file at one of steam_api_copies that holds a kept .orig is removed.
+// The Steam host's mode (runtime/steam_host.h): the game keeps its own Steam library, which asks the running client
+// about the app in steam_appid.txt; without that file it would ask Steam to start the game again and quit. The library
+// reads it from the game's working folder, which need not be its own (an Unreal game's library is elsewhere). Writes one
+// with app_id beside each library in found (relative paths, as SteamworksResult lists them) and in each of
+// start_folders (relative folders, "" for the game folder) that has none; never through a link, an absolute path or
+// "..". False when one could not be written.
+bool WriteSteamAppIdBeside(const std::string& install_root, const std::vector<std::string>& found,
+                           const std::vector<std::string>& start_folders, std::uint32_t app_id);
+
+// Puts each .orig back over a swapped DLL (the emulator, a retired build or the retired online bridge, whose emulator copy
+// goes too); .orig and steam_settings/ stay. A file at one of steam_api_copies that holds a kept .orig is removed.
 SteamworksResult RestoreSteamworks(const std::string& install_root,
                                    const std::vector<std::string>& retired = RetiredSteamApiSha256(),
                                    const std::vector<std::string>& steam_api_copies = {});
