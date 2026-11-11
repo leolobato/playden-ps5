@@ -8218,6 +8218,13 @@ void Simulation::rebuild_view() {
                     if (record != state_.game_settings.end() && runtime_game != state_.runtime_games.end() &&
                         record->second.revision > runtime_game->second.settings_revision)
                         item.subtitle = "Changes apply on next launch";
+                    // Waiting for the PS5: what changed now would miss the game's first start (open_game_settings).
+                    // In Game actions the value is drawn where the subtitle would be: the reason takes its place.
+                    if (runtime_game != state_.runtime_games.end() && runtime_game->second.awaiting_registration) {
+                        item.enabled = false;
+                        item.value = "After Finish setup";
+                        item.subtitle = "Opens once the PS5 has added the game";
+                    }
                 }
             } else if (action_key == "play-detailed-logs") {
                 const auto runtime_game = state_.runtime_games.find(state_.navigation.selected_game_id);
@@ -10738,6 +10745,19 @@ void Simulation::NotifyCloudRefused(GameId id) {
 
 
 void Simulation::open_game_settings() {
+    // A game waiting for the PS5 has published its settings, and the PS5 adds it only once Playden quits: settings
+    // changed now could reach it only at Playden's next start, after its first start from Home. They wait until then.
+    if (live()) {
+        const auto id = state_.navigation.selected_game_id;
+        if (const auto runtime_game = state_.runtime_games.find(id);
+            runtime_game != state_.runtime_games.end() && runtime_game->second.awaiting_registration) {
+            const auto* game = find_game(state_, id);
+            push_notice({"settings-" + ToKey(id), "Game settings opens after Finish setup", "", false, kLiveNoticeSeconds, false,
+                         (game ? game->title : std::string("The game")) +
+                             " · Changes made now would miss its first start. Press Finish setup, then open Playden again to change them."});
+            return;
+        }
+    }
     expanded_settings_sections_.clear();
     const auto opened = state_.game_settings.find(state_.navigation.selected_game_id);
     settings_opened_record_ = opened == state_.game_settings.end() ? rt::GameSettingsRecord{} : opened->second;

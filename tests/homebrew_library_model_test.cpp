@@ -2454,6 +2454,19 @@ void live_ready_to_play_quits_to_home() {
     check(play && play->enabled && play->action == "quit-to-home" && play->title == "Finish setup" && play->value == "Quits to Home", "Finish setup explains quitting to Home");
     check(find_row(model, "details-setup")->value == "Waiting for the PS5", "setup says the title waits for the PS5");
     check(model.state().navigation.focus_key == "details-play", "focus rests on Play");
+    // Game settings waits for the PS5: its title is published, and changes made now would miss the first start from Home.
+    activate(model, "details-more");
+    const auto* settings_row = find_row(model, "game-settings");
+    check(settings_row && !settings_row->enabled && settings_row->subtitle == "Opens once the PS5 has added the game" &&
+              settings_row->value == "After Finish setup",
+          "Game settings says it waits for the PS5, where Game actions shows it");
+    model.action("focus:game-settings");
+    model.action("cross");
+    check(std::none_of(model.state().navigation.modals.begin(), model.state().navigation.modals.end(),
+                       [](const auto& modal) { return modal.id == "game-settings"; }),
+          "Game settings doesn't open while the game waits for the PS5");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    check(model.action("focus:details-play"), "back on Play");
     // Its saves sync first (#50): Play waits in a dialog, then quits once they are in step.
     model.UpdateCloud({{SteamId(42), CloudStatus::UpToDate, "Saves are up to date"}});
     activate(model, "details-play");
