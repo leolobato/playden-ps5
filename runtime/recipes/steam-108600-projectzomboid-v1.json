@@ -18,5 +18,5 @@
     "windows_version": "win7"
   },
   "locked": [],
-  "game_files": ["zombie/DebugFileWatcher.class"]
+  "retired_game_files": {"zombie/DebugFileWatcher.class": "598b38e10d4cdbda29743824ad7d936a6d3ea1381268c859bbfd7f3b835c5d44"}
 }

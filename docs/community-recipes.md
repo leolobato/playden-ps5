@@ -122,6 +122,7 @@ Recipe fields:
 | `ini` | Values the game's own INI files get when the game's files are prepared, written only when the key is missing or empty: `{"BmGame/Config/UserEngine.ini": {"Engine.Engine": {"Language": "int"}}}`. See [INI values](#ini-values). |
 | `steam_api_copies` | Shipped recipes only. Paths in the game folder that get a copy of the game's own Steam library while the emulator answers the game: `["Sandfall/Binaries/Win64/steam_api64.dll"]`. See [Steam library copies](#steam-library-copies). |
 | `game_files` | Shipped recipes only. Paths in the game folder that get a file Playden ships: `["zombie/DebugFileWatcher.class"]`. See [Game files](#game-files). |
+| `retired_game_files` | Shipped recipes only. Files an earlier version of the recipe placed with `game_files`, each with the SHA-256 of the file Playden shipped: `{"zombie/DebugFileWatcher.class": "598b…5d44"}`. Playden removes its copy. See [Game files](#game-files). |
 
 Community fields:
 
@@ -512,10 +513,8 @@ settings doesn't show, and a community recipe is only offered, so the game would
 ## Game files
 
 Use `game_files` only for a game that can't run on the console without a changed file, and only when nothing else in
-this file can do it. Project Zomboid watches its folders for changes by holding one handle on each of its 1704 media
-folders. A PS5 title can hold about 250 open files, so the game quits while it starts. The game looks for classes in
-its own folder first, so a watcher that watches nothing stands in for the game's. That only stops the game reloading
-files that change while it runs.
+this file can do it. Project Zomboid used it until the runtime kit could watch its 1704 media folders: Playden placed
+a `zombie/DebugFileWatcher.class` that watched nothing, which the game found before its own.
 
 Playden copies each file from `runtime/recipes/files/<recipe id>/<path>` to `<path>` in the game folder when it
 prepares the game or applies its settings:
@@ -529,10 +528,15 @@ prepares the game or applies its settings:
   the game later.
 - Uninstalling the game removes the file with the rest of the folder.
 
-Rules: the path is inside the game folder, with `/` between folders and no `.` or `..` part. At most 4 paths, each
-once. A community recipe with this field is refused, for the same reason as `steam_api_copies`. The source of a file
-that isn't plain text goes in `tools/recipe-files/<recipe id>`, with what builds it. Write it yourself: no part of
-the game goes in Playden's repository.
+When the game no longer needs a file, move it from `game_files` to `retired_game_files` with the SHA-256 of the file
+Playden shipped, and remove the file from `runtime/recipes/files/` and `tools/recipe-files/`. Each time Playden prepares
+the game or applies its settings, it removes a file at that path whose bytes have that SHA-256. A file with other bytes
+is the game's or the player's and stays, and Playden logs `recipe files ... kept=`. A link is never followed.
+
+Rules: the path is inside the game folder, with `/` between folders and no `.` or `..` part. At most 4 paths in each
+field, each once, and a path is not in both. A community recipe with either field is refused, for the same reason as
+`steam_api_copies`. The source of a file that isn't plain text goes in `tools/recipe-files/<recipe id>`, with what
+builds it. Write it yourself: no part of the game goes in Playden's repository.
 
 ## Shipped recipes
 

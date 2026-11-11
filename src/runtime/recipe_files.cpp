@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "runtime/recipe_files.h"
 
+#include "runtime/artifact_hash.h"
+
 #include <cerrno>
 #include <fcntl.h>
 #include <filesystem>
@@ -107,6 +109,34 @@ RecipeFilesResult ApplyRecipeFiles(const std::string& game_root, const std::stri
     if (folders == Folders::kFailed || !WriteAtomic(path, *source)) {
       result.ok = false;
       result.message = "Playden could not put a file this game needs at " + relative + ".";
+      return result;
+    }
+    result.changed.push_back(relative);
+  }
+  return result;
+}
+
+RecipeFilesResult RetireRecipeFiles(const std::string& game_root,
+                                    const std::vector<std::pair<std::string, std::string>>& retired) {
+  RecipeFilesResult result;
+  const fs::path root(game_root);
+  for (const auto& [relative, sha256] : retired) {
+    const auto path = root / relative;
+    struct stat info {};
+    if (::lstat(path.c_str(), &info) != 0) {
+      if (errno == ENOENT || errno == ENOTDIR) continue;
+      result.skipped.push_back(relative + ": Playden could not look at it");
+      continue;
+    }
+    const auto current = S_ISREG(info.st_mode) ? ReadRegular(path) : std::nullopt;
+    const auto hash = current ? HashArtifactBytes(*current) : std::nullopt;
+    if (!hash || *hash != sha256) {
+      result.skipped.push_back(relative + ": the game has its own");
+      continue;
+    }
+    if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
+      result.ok = false;
+      result.message = "Playden could not remove a file it placed at " + relative + ".";
       return result;
     }
     result.changed.push_back(relative);

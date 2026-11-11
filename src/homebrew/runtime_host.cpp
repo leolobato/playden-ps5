@@ -1683,8 +1683,20 @@ std::string RuntimeHost::RecipeIniStep(const GameFiles& files) {
 
 // Generic step: files Playden ships for a game that can't run on the console without them (docs/community-recipes.md).
 std::string RuntimeHost::RecipeFilesStep(const GameFiles& files) {
-  if (!files.game_files_recipe || files.game_files_recipe->game_files.empty()) return {};
+  if (!files.game_files_recipe) return {};
   const auto& recipe = *files.game_files_recipe;
+  if (!recipe.retired_game_files.empty()) {
+    const auto retired = rt::RetireRecipeFiles(files.root.string(), recipe.retired_game_files);
+    if (!retired.changed.empty() || !retired.skipped.empty() || !retired.ok) {
+      std::string removed, kept;
+      for (const auto& file : retired.changed) removed += (removed.empty() ? "" : ",") + file;
+      for (const auto& file : retired.skipped) kept += (kept.empty() ? "" : ",") + file;
+      Log("recipe files app=" + std::to_string(files.record.runtime_number) + " retired=" + (removed.empty() ? "-" : removed) +
+          (kept.empty() ? std::string() : " kept=" + kept) + (retired.ok ? std::string() : " failed=" + retired.message));
+    }
+    if (!retired.ok) return retired.message;
+  }
+  if (recipe.game_files.empty()) return {};
   const auto applied = rt::ApplyRecipeFiles(files.root.string(), config_.runtime_dir + "/recipes/files/" + recipe.id, recipe.game_files);
   std::string changed, skipped;
   for (const auto& file : applied.changed) changed += (changed.empty() ? "" : ",") + file;

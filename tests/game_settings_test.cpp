@@ -1915,18 +1915,21 @@ int main(int argc, char** argv) {
     shared.replace(shared.size() - 1, 1, R"(,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
     CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("steam_api_copies") != std::string::npos);
   }
-  // Project Zomboid runs out of open files watching its folders, so Playden ships a watcher that watches nothing.
+  // Project Zomboid watches each of its folders, which the runtime kit now does without a file each. 42.22 signs the
+  // game's classes, so the watcher that watched nothing, which Playden placed before, stops the game: it goes.
   {
     GameRecipe zomboid;
     CHECK(ParseGameRecipe(ReadText(source / "runtime/recipes/steam-108600-projectzomboid-v1.json"), &zomboid, &reason));
-    CHECK(zomboid.game_files == std::vector<std::string>{"zombie/DebugFileWatcher.class"});
-    const auto shipped = ReadText(source / "runtime/recipes/files/steam-108600-projectzomboid-v1/zombie/DebugFileWatcher.class");
-    CHECK(shipped.size() > 4 && shipped.compare(0, 4, "\xCA\xFE\xBA\xBE") == 0);
-    // Java 17, so that it loads on every Java the game could bring.
-    CHECK(static_cast<unsigned char>(shipped[6]) == 0 && static_cast<unsigned char>(shipped[7]) == 61);
-    // The field survives a round trip, and only names a path inside the game's folders.
+    CHECK(zomboid.game_files.empty());
+    const std::vector<std::pair<std::string, std::string>> stub{
+        {"zombie/DebugFileWatcher.class", "598b38e10d4cdbda29743824ad7d936a6d3ea1381268c859bbfd7f3b835c5d44"}};
+    CHECK(zomboid.retired_game_files == stub);
+    // The field survives a round trip.
     GameRecipe again;
-    CHECK(ParseGameRecipe(SerializeGameRecipe(zomboid), &again, &reason) && again.game_files == zomboid.game_files);
+    CHECK(ParseGameRecipe(SerializeGameRecipe(zomboid), &again, &reason) && again.retired_game_files == stub);
+  }
+  // A shipped recipe can place files in the game folder, and retire those an earlier version placed.
+  {
     const auto with_files = [](const std::string& paths, const std::string& id = "steam-108600-test-v1") {
       return R"({"recipe_id":")" + id + R"(","recipe_version":1,"app_id":108600,"launch_entries":[{"id":"game","label":"G","executable":"g.exe"}],)"
              R"("architecture":"pe64","runtime":"wine-wow64","prefix":"game","graphics":"opengl","game_files":)" + paths + "}";
@@ -1942,6 +1945,32 @@ int main(int argc, char** argv) {
     auto shared = with_files(R"(["a.class"])");
     shared.replace(shared.size() - 1, 1, R"(,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
     CHECK(!ParseCommunityRecipe(shared, &community, &reason) && reason.find("game_files") != std::string::npos);
+
+    const std::string hash(64, 'a');
+    const auto with_retired = [&](const std::string& retired, const std::string& id = "steam-108600-test-v1",
+                                  const std::string& placed = "[]") {
+      return R"({"recipe_id":")" + id + R"(","recipe_version":1,"app_id":108600,"launch_entries":[{"id":"game","label":"G","executable":"g.exe"}],)"
+             R"("architecture":"pe64","runtime":"wine-wow64","prefix":"game","graphics":"opengl","game_files":)" + placed +
+             R"(,"retired_game_files":)" + retired + "}";
+    };
+    CHECK(ParseGameRecipe(with_retired(R"({"a.class":")" + hash + R"(","b/c.class":")" + hash + R"("})"), &parsed, &reason));
+    CHECK(parsed.retired_game_files.size() == 2);
+    for (const std::string bad : std::vector<std::string>{
+             R"(["a.class"])", R"({"../a.class":")" + hash + R"("})", R"({"/a.class":")" + hash + R"("})",
+          R"({"a.class":")" + std::string(63, 'a') + R"("})", R"({"a.class":")" + std::string(64, 'A') + R"("})",
+          R"({"a.class":1})", R"({"a.class":")" + hash + R"(","A.CLASS":")" + hash + R"("})",
+          R"({"a":")" + hash + R"(","b":")" + hash + R"(","c":")" + hash + R"(","d":")" + hash + R"(","e":")" + hash + R"("})"})
+      CHECK(!ParseGameRecipe(with_retired(bad), &parsed, &reason));
+    // A path is placed or retired, not both.
+    CHECK(!ParseGameRecipe(with_retired(R"({"a.class":")" + hash + R"("})", "steam-108600-test-v1", R"(["A.class"])"),
+                           &parsed, &reason));
+    // Only Playden's own recipes remove a file from the game folder.
+    CHECK(!ParseGameRecipe(with_retired(R"({"a.class":")" + hash + R"("})", "community-steam-108600-test"), &parsed, &reason));
+    auto shared_retired = with_retired(R"({"a.class":")" + hash + R"("})");
+    shared_retired.replace(shared_retired.size() - 1, 1,
+                           R"(,"executable":"g.exe","community":{"format_version":1,"status":"works"}})");
+    CHECK(!ParseCommunityRecipe(shared_retired, &community, &reason) &&
+          reason.find("retired_game_files") != std::string::npos);
   }
   // Batman: Arkham City is Asylum's sibling: BatmanAC.exe starts BmLauncher.exe and exits too while UserEngine.ini has
   // no Language.

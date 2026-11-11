@@ -1915,7 +1915,7 @@ bool ParseRecipeFile(std::string_view text, GameRecipe* recipe, std::string* rea
         return fail(std::string("a settings-only recipe (community.format_version 2) can't carry ") + field +
                     ": Playden takes it from its own recipe for the copy");
     // What the bottle and the game folder get belongs to a recipe that names its program.
-    for (const char* field : {"registry", "ini", "game_files", "steam_api_copies"})
+    for (const char* field : {"registry", "ini", "game_files", "retired_game_files", "steam_api_copies"})
       if (root->get(field))
         return fail(std::string("a settings-only recipe (community.format_version 2) can't carry ") + field +
                     ": only a recipe with its own program (format_version 1) can");
@@ -2016,6 +2016,23 @@ bool ParseRecipeFile(std::string_view text, GameRecipe* recipe, std::string* rea
       if (out.game_files.size() >= kMaxRecipeGameFiles) return fail("game_files has too many paths");
       if (!identities.insert(LowerAscii(*item.string())).second) return fail("game_files names a path twice");
       out.game_files.push_back(*item.string());
+    }
+  }
+  if (const auto* retired = root->get("retired_game_files")) {
+    if (!retired->object()) return fail("retired_game_files must be an object of paths and SHA-256 hashes");
+    if (IsCommunityRecipeId(out.id)) return fail("a community recipe can't carry retired_game_files");
+    std::set<std::string> identities;
+    for (const auto& path : out.game_files) identities.insert(LowerAscii(path));
+    for (const auto& [path, hash] : *retired->object()) {
+      std::string name;
+      if (!RecipePathInGameFolder(path, &name)) return fail("retired_game_files needs paths inside the game folder");
+      if (!hash.string() || hash.string()->size() != 64 ||
+          hash.string()->find_first_not_of("0123456789abcdef") != std::string::npos)
+        return fail("retired_game_files needs the lowercase SHA-256 of each file");
+      if (out.retired_game_files.size() >= kMaxRecipeGameFiles) return fail("retired_game_files has too many paths");
+      if (!identities.insert(LowerAscii(path)).second)
+        return fail("retired_game_files names a path twice, or one game_files places");
+      out.retired_game_files.emplace_back(path, *hash.string());
     }
   }
   if (out.dll_overrides.size() && !IsProsperoDllOverrides(out.dll_overrides)) return fail("recipe dll_overrides are invalid");
@@ -2276,6 +2293,13 @@ std::string SerializeGameRecipe(const GameRecipe& recipe) {
     for (std::size_t index = 0; index < recipe.game_files.size(); ++index)
       text += (index ? "," : "") + quoted(recipe.game_files[index]);
     text += "]";
+  }
+  if (!recipe.retired_game_files.empty()) {
+    text += ",\"retired_game_files\":{";
+    for (std::size_t index = 0; index < recipe.retired_game_files.size(); ++index)
+      text += (index ? "," : "") + quoted(recipe.retired_game_files[index].first) + ":" +
+              quoted(recipe.retired_game_files[index].second);
+    text += "}";
   }
   return text + "}\n";
 }
@@ -4292,6 +4316,7 @@ bool ParseCommunityRecipe(std::string_view text, CommunityRecipe* community, std
   if (!ParseRecipeFile(text, &out.recipe, reason, settings_only)) return false;
   if (!out.recipe.steam_api_copies.empty()) return fail("a community recipe can't carry steam_api_copies");
   if (!out.recipe.game_files.empty()) return fail("a community recipe can't carry game_files");
+  if (!out.recipe.retired_game_files.empty()) return fail("a community recipe can't carry retired_game_files");
   // ParseGameRecipe read the game object's shape; app_id and steam_appid are refused there.
   const auto* game = root->get("game");
   if (!game || !game->object()) return fail("community recipe needs \"game\": {\"store\", \"key\", \"name\"}");

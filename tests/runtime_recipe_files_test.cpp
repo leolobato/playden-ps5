@@ -110,6 +110,41 @@ int main() {
     CHECK(::chmod(game.c_str(), 0755) == 0);
     CHECK(!result.ok && result.message.find(relative) != std::string::npos);
   }
+  // A file an earlier recipe placed is removed while it still has the bytes Playden shipped, and only then.
+  {
+    const std::string ours = "ae0bec9e9d33c56354bd612c8a6010840324fc5b9786ce0a18b696b304b09397";  // SHA-256 of "ours"
+    const std::vector<std::pair<std::string, std::string>> retired{{relative, ours}};
+    const auto game = base / "retired";
+    Write(game / relative, "ours");
+    const auto result = RetireRecipeFiles(game.string(), retired);
+    CHECK(result.ok && result.changed == std::vector<std::string>{relative} && result.skipped.empty());
+    CHECK(!fs::exists(game / relative) && fs::is_directory(game / "zombie"));
+    // Gone already: nothing to do and nothing to report, with or without its folder.
+    const auto again = RetireRecipeFiles(game.string(), retired);
+    CHECK(again.ok && again.changed.empty() && again.skipped.empty());
+    fs::remove_all(game / "zombie");
+    const auto no_folder = RetireRecipeFiles(game.string(), retired);
+    CHECK(no_folder.ok && no_folder.changed.empty() && no_folder.skipped.empty());
+  }
+  {
+    // The game's own file, or one the player changed, stays.
+    const auto game = base / "retired-own";
+    Write(game / relative, "the game's");
+    const auto result = RetireRecipeFiles(game.string(), {{relative, std::string(64, '0')}});
+    CHECK(result.ok && result.changed.empty() && result.skipped.size() == 1 && Read(game / relative) == "the game's");
+  }
+  {
+    // A link to a file with Playden's bytes is not followed, and neither link nor file goes.
+    const auto game = base / "retired-link";
+    const auto outside = base / "retired-outside";
+    Write(outside, "ours");
+    fs::create_directories(game / "zombie");
+    fs::create_symlink(outside, game / relative);
+    const auto result = RetireRecipeFiles(
+        game.string(), {{relative, "ae0bec9e9d33c56354bd612c8a6010840324fc5b9786ce0a18b696b304b09397"}});
+    CHECK(result.ok && result.changed.empty() && result.skipped.size() == 1);
+    CHECK(fs::is_symlink(game / relative) && Read(outside) == "ours");
+  }
   fs::remove_all(base);
   return 0;
 }
