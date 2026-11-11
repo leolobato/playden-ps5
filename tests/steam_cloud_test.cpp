@@ -906,9 +906,107 @@ void SkipsOtherPlatformLocations() {
   std::filesystem::remove_all(base);
 }
 
+// A check that never reached Steam says why (#822): Steam asking for a pause, a name the console's DNS
+// server won't resolve, no answer in time, an unreadable answer and no sign-in each have their own
+// message, and the log line names the stage. Only a lost connection stays "not reachable".
+void SessionFailuresSayWhy() {
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-why-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(base);
+  GameSaveLocation location{kApp, (base / "game").string(), (base / "prefix").string(), (base / "state").string()};
+  std::filesystem::create_directories(location.game_root);
+  const StoredSession session{kSteamId, "account", "refresh", "access", {}};
+  const std::atomic<bool> cancel{false};
+  FakeCloud cloud;
+  struct Case {
+    CmError error;
+    CmFailure failure;
+    const char* message;
+    const char* detail;
+  };
+  const Case cases[] = {
+      {CmError::kNetwork, {CmStage::kDirectory, HttpError::kTimeout, 28, 0},
+       "Steam did not answer in time. Try again.", "app-info error=network stage=directory transport=timeout curl=28"},
+      // The first refusal (busy, rate limited) starts Steam's pause: it already says to wait.
+      {CmError::kNetwork, {CmStage::kLogon, HttpError::kNone, 0, 84, true},
+       "Steam asked Playden to wait before connecting again. Try again in a few minutes.",
+       "app-info error=network stage=logon eresult=84 refused=1"},
+      {CmError::kCanceled, {}, "Cloud sync stopped.", "app-info error=canceled"},
+      {CmError::kNetwork, {CmStage::kConnect, HttpError::kNameResolutionFailed, 0, 0},
+       "The PS5 couldn't find Steam's servers. Check its DNS settings, then try again.",
+       "app-info error=network stage=connect transport=name_resolution_failed"},
+      {CmError::kNetwork, {CmStage::kDirectory, HttpError::kNameResolutionFailed, 6, 0},
+       "The PS5 couldn't find Steam's servers. Check its DNS settings, then try again.",
+       "app-info error=network stage=directory transport=name_resolution_failed curl=6"},
+      {CmError::kNetwork, {CmStage::kBackoff, HttpError::kNone, 0, 0},
+       "Steam asked Playden to wait before connecting again. Try again in a few minutes.",
+       "app-info error=network stage=backoff"},
+      {CmError::kNetwork, {CmStage::kConnect, HttpError::kConnectionFailed, 0, 0}, "Steam is not reachable. Try again.",
+       "app-info error=network stage=connect transport=connection_failed"},
+      {CmError::kTimeout, {CmStage::kRequest, HttpError::kNone, 0, 0}, "Steam did not answer in time. Try again.",
+       "app-info error=timeout stage=request"},
+      {CmError::kProtocol, {CmStage::kRequest, HttpError::kNone, 0, 20},
+       "Steam sent an answer Playden could not read. Try again.", "app-info error=protocol stage=request eresult=20"},
+      {CmError::kNoSession, {}, "Sign in to Steam to sync saves.", "app-info error=no_session"},
+  };
+  for (const auto& test : cases) {
+    auto hooks = cloud.Hooks();
+    hooks.app_info = [&](const StoredSession&, std::uint32_t, const std::atomic<bool>&, CmError* error) {
+      *error = test.error;
+      return std::optional<CloudSaveInfo>{};
+    };
+    hooks.failure = [&] { return test.failure; };
+    CloudSync sync(hooks);
+    const auto plan = sync.Check(session, location, cancel);
+    if (plan.message != test.message || plan.detail != test.detail)
+      std::fprintf(stderr, "message=%s detail=%s\n", plan.message.c_str(), plan.detail.c_str());
+    CHECK(plan.status == PlanStatus::kFailed && plan.message == test.message && plan.detail == test.detail);
+    CHECK(plan.canceled == (test.error == CmError::kCanceled));
+  }
+
+  // The save list's session that could not be opened (the request never ran) says why too.
+  {
+    auto hooks = cloud.Hooks();
+    hooks.session = [](const StoredSession&, std::uint32_t, const std::atomic<bool>&,
+                       const std::function<CmError(const CmClient::ServiceCall&, std::uint64_t)>&) { return CmError::kRejected; };
+    hooks.failure = [] { return CmFailure{CmStage::kLogon, HttpError::kNone, 0, 5}; };
+    const auto plan = CloudSync(hooks).Check(session, location, cancel);
+    CHECK(plan.message.rfind("Steam turned down the sign-in.", 0) == 0 && plan.detail == "list error=rejected stage=logon eresult=5");
+    // A list request Steam refused on an open session stays as it was, with its detail.
+    hooks.failure = [] { return CmFailure{}; };
+    const auto refused = CloudSync(hooks).Check(session, location, cancel);
+    CHECK(refused.message == "Steam refused the Cloud save list." && refused.detail == "list error=rejected");
+  }
+
+  // The transfer's session that could not be opened says why as well.
+  CloudSync sync(cloud.Hooks());
+  cloud.files["remote.dat"] = {Bytes("api storage"), 1'200, false};
+  const auto plan = sync.Check(session, location, cancel);
+  CHECK(plan.status == PlanStatus::kReady);
+  auto hooks = cloud.Hooks();
+  hooks.session = [](const StoredSession&, std::uint32_t, const std::atomic<bool>&,
+                     const std::function<CmError(const CmClient::ServiceCall&, std::uint64_t)>&) { return CmError::kNetwork; };
+  hooks.failure = [] { return CmFailure{CmStage::kConnect, HttpError::kNameResolutionFailed, 0, 0}; };
+  CloudSync failing(hooks);
+  const auto outcome = failing.Apply(session, location, plan, Resolution::kAutomatic, false, cancel);
+  CHECK(!outcome.ok && outcome.message == "The PS5 couldn't find Steam's servers. Check its DNS settings, then try again." &&
+        outcome.detail == "session error=network stage=connect transport=name_resolution_failed" && !outcome.canceled);
+
+  // A download the caller canceled is a canceled outcome, not a failure to keep.
+  auto stopped = cloud.Hooks();
+  stopped.http = [](const HttpRequest&, const std::atomic<bool>&) {
+    HttpResponse response;
+    response.error = HttpError::kCanceled;
+    return response;
+  };
+  const auto canceled = CloudSync(stopped).Apply(session, location, plan, Resolution::kAutomatic, false, cancel);
+  CHECK(!canceled.ok && canceled.canceled);
+  std::filesystem::remove_all(base);
+}
+
 }  // namespace
 
 int main() {
+  SessionFailuresSayWhy();
   ManagedPrefixAndPlanBinding();
   MessagesRoundTrip();
   ParsesUfsAndMaps();

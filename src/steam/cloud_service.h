@@ -54,6 +54,7 @@ struct CloudReport {
   std::uint64_t local_bytes = 0, remote_bytes = 0, local_latest = 0, remote_latest = 0;
   bool first_sync = false;     // a conflict with no earlier sync on this device: both sides already had saves
   bool first_overwrite = false;  // a conflict because this console's first upload would replace Cloud saves
+  bool canceled = false;  // failed only because the service canceled it (Playden quitting): never saved
   // Filled in by the service.
   std::int64_t last_sync = 0;  // Unix time saves were last in step (synced or found up to date)
   std::int64_t checked = 0;    // Unix time of the last finished check

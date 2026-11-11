@@ -37,6 +37,28 @@ enum class CmError {
 
 const char* CmErrorName(CmError error);
 
+// Where a client's last call stopped, so a caller can tell a blocked name, a closed connection and
+// Steam asking for a pause apart. Never an endpoint, address, token or account identity.
+enum class CmStage {
+  kNone,
+  kBackoff,    // Open() refused at once: Steam asked every client to wait (CmBackoffActive)
+  kDirectory,  // the CM list from api.steampowered.com
+  kConnect,    // the WebSocket to every listed CM
+  kHello,
+  kLogon,
+  kRequest,    // a request on the logged-on session
+};
+struct CmFailure {
+  CmStage stage = CmStage::kNone;
+  HttpError transport = HttpError::kNone;  // directory and connect: the transport's category
+  int transport_code = 0;                  // directory: curl's code
+  int eresult = 0;                         // a request Steam refused: its EResult
+  bool refused = false;  // Steam turned the call away (busy, rate limited, HTTP error) and every client now waits
+};
+const char* CmStageName(CmStage stage);
+// "stage=connect transport=name_resolution_failed", for log lines; empty for kNone.
+std::string CmFailureText(const CmFailure& failure);
+
 // Receives one line per CM logon and per refusal, for steam-cm.log: the owner, the step, the error
 // and Steam's result code. Never a token, account name, the account's SteamID or an endpoint. Family
 // sharing lines name the owning family member's account ID, so a shared game can be traced. Process-wide.
@@ -286,6 +308,10 @@ class CmClient final : public AcquisitionSource {
   CmError WithServiceSession(const StoredSession& session, std::uint32_t deadline_ms, const std::atomic<bool>& cancel,
                              const std::function<CmError(const ServiceCall& call, std::uint64_t steam_id)>& work);
 
+  // Where this client's last call stopped: the session open, or (FetchAppInfo) its PICS requests.
+  // Cleared when a call starts. Read it from the thread that made the call.
+  CmFailure last_failure() const { return last_failure_; }
+
  private:
   AppInfoBuffers FetchAppInfo(const StoredSession& session, const std::vector<std::uint32_t>& app_ids,
                               const std::atomic<bool>& cancel, bool by_hash);
@@ -324,6 +350,7 @@ class CmClient final : public AcquisitionSource {
   const Storage* device_storage_ = nullptr;
   std::optional<cm::DeviceIdentity> device_;
   std::unique_ptr<HttpClient> http_;
+  CmFailure last_failure_;
 };
 
 // Adapts CM renewal to the auth worker: a refused CM logon means the credentials are gone; network

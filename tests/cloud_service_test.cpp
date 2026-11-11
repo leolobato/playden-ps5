@@ -1,10 +1,12 @@
 #include "steam/cloud_service.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <unistd.h>
 #include <vector>
@@ -51,9 +53,26 @@ class Runner final : public CloudRunner {
   std::vector<GameId> checked;
   int check_delay_ms = 0;
   int removes = 0;
+  // Set: Check waits for the service to cancel it, then fails, as canceled or not.
+  bool wait_for_cancel = false;
+  bool fail_as_canceled = false;
+  std::atomic<bool> waiting{false};
   std::function<void(std::uint64_t, std::uint64_t)> progress;
-  CloudReport Check(const StoredSession&, const CloudLocation& location, const std::atomic<bool>&) override {
+  CloudReport Check(const StoredSession&, const CloudLocation& location, const std::atomic<bool>& cancel) override {
     if (check_delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(check_delay_ms));
+    if (wait_for_cancel) {
+      waiting.store(true);
+      const auto deadline = std::chrono::steady_clock::now() + 2s;
+      while (!cancel.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(1ms);
+      CHECK(cancel.load());
+      std::lock_guard<std::mutex> lock(mutex);
+      ++checks;
+      CloudReport report;
+      report.state = CloudState::kFailed;
+      report.message = fail_as_canceled ? "Cloud sync stopped." : "A Cloud save could not be written on this device.";
+      report.canceled = fail_as_canceled;
+      return report;
+    }
     std::lock_guard<std::mutex> lock(mutex);
     ++checks;
     checked.push_back(location.id);
@@ -273,8 +292,42 @@ void Jobs() {
 
 }  // namespace
 
+// Playden quitting during a check cancels it; the failure that causes is not saved, so the next start
+// doesn't show "Couldn't sync" for a check that never finished. A real failure that lands while Playden
+// quits is still saved.
+void CanceledCheckIsNotSaved() {
+  const auto base = std::filesystem::temp_directory_path() / ("playden-cloud-cancel-" + std::to_string(getpid()));
+  std::filesystem::remove_all(base);
+  std::filesystem::create_directories(base);
+  const CloudLocation game{SteamId(9), "/games/9", (base / "9").string(), "/bottle"};
+  Sessions sessions;
+  const auto quit_during_check = [&](bool canceled, bool job) {
+    Runner runner;
+    runner.wait_for_cancel = true;
+    runner.fail_as_canceled = canceled;
+    CloudService service(runner, sessions);
+    if (job) service.StartJob(CloudJobKind::kSyncAll, {game});
+    else service.Sync(game);
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!runner.waiting.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(1ms);
+    CHECK(runner.waiting.load());
+    service.Shutdown();
+    CHECK(runner.checks == 1);
+  };
+  quit_during_check(true, false);
+  CHECK(!std::filesystem::exists(base / "9/cloud-status.txt"));
+  quit_during_check(true, true);  // a job stopped the same way keeps nothing either
+  CHECK(!std::filesystem::exists(base / "9/cloud-status.txt"));
+  quit_during_check(false, false);
+  std::ifstream saved(base / "9/cloud-status.txt");
+  const std::string text((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+  CHECK(text.find("state=failed") != std::string::npos);
+  std::filesystem::remove_all(base);
+}
+
 int main() {
   Jobs();
+  CanceledCheckIsNotSaved();
   Sessions sessions;
   Runner runner;
   CloudService service(runner, sessions);

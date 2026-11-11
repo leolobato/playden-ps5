@@ -27,6 +27,9 @@ struct CloudHooks {
   std::function<std::int64_t()> now;
   // Optional step markers for diagnosing failures on the console (no names or identifiers).
   std::function<void(const char* step)> trace;
+  // Optional: where the last session open or app info request stopped (CmClient::last_failure), so a
+  // failure that never reached Steam says why and its log line names the stage.
+  std::function<CmFailure()> failure;
 };
 
 // Where one game's saves live on this device.
@@ -66,6 +69,8 @@ enum class PlanStatus {
 struct CloudPlan {
   PlanStatus status = PlanStatus::kFailed;
   std::string message;  // short, user-facing
+  std::string detail;   // for the log only: the step and what failed (no address, token or account)
+  bool canceled = false;  // failed because the caller canceled it, not because of Steam or this device
   std::uint64_t change_number = 0;
   std::string account_key;
   bool requires_account_confirmation = false;
@@ -91,6 +96,7 @@ struct CloudOutcome {
   bool ok = false;
   std::string message;  // short, user-facing
   std::string detail;   // for the log only: the file and what failed
+  bool canceled = false;  // failed because the caller canceled a request, not because of Steam or this device
   std::size_t downloaded = 0, uploaded = 0, removed_local = 0, removed_remote = 0;
   // Both sides once the transfers are done (when ok).
   std::size_t local_files = 0, remote_files = 0;

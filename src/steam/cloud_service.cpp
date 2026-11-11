@@ -383,6 +383,8 @@ void CloudService::RunJob(const StoredSession& session, const Request& request) 
       continue;
     }
     auto report = CheckAndApply(session, location, cancel_);
+    // Playden quitting stopped the check: not a result to keep.
+    if (report.state == CloudState::kFailed && report.canceled) break;
     failures = report.state == CloudState::kFailed ? failures + 1 : 0;
     std::lock_guard<std::mutex> lock(mutex_);
     Finish(location, std::move(report));
@@ -481,6 +483,9 @@ void CloudService::Run() {
         active_ = {};
       }
     }
+    // Playden quitting stopped the work: a failure it caused is not saved for the next start. Any other
+    // failure is kept, even one that lands while Playden quits.
+    if (report.state == CloudState::kFailed && report.canceled) return;
     std::lock_guard<std::mutex> lock(mutex_);
     Finish(request.location, std::move(report));
   }

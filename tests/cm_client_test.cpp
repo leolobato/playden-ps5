@@ -55,6 +55,7 @@ std::vector<std::uint8_t> LogonResponseBody(std::int32_t eresult, std::int32_t h
 struct Script {
   std::mutex mutex;
   int failing_connects = 0;
+  HttpError connect_error = HttpError::kConnectionFailed;  // what a failing connect reports
   int connects = 0;
   bool closed = false;
   std::vector<cm::Frame> sent;
@@ -81,7 +82,7 @@ class FakeTransport final : public MessageTransport {
     std::lock_guard<std::mutex> lock(script_->mutex);
     assert(url.rfind("wss://", 0) == 0 && url.find("/cmsocket/") != std::string::npos);
     ++script_->connects;
-    if (script_->failing_connects-- > 0) return HttpError::kConnectionFailed;
+    if (script_->failing_connects-- > 0) return script_->connect_error;
     return HttpError::kNone;
   }
   HttpError Send(const std::vector<std::uint8_t>& message, std::uint32_t,
@@ -1211,6 +1212,92 @@ void BusyLogonBacksOffEveryClient() {
   assert(!CmBackoffActive());
 }
 
+// A call that never reached Steam names where it stopped (#822), in last_failure() and steam-cm.log: a name
+// the console's DNS server won't resolve, at the CM directory or at every CM, and Steam's pause. Never an
+// endpoint or address.
+void FailedOpenNamesItsStage() {
+  ResetCmBackoff();
+  std::vector<std::string> lines;
+  std::mutex lines_mutex;
+  SetCmLog([&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    lines.push_back(line);
+  });
+  std::atomic<bool> cancel{false};
+  {
+    auto script = HappyScript();
+    CmClientHooks hooks;
+    hooks.directory = [](const HttpRequest&, const std::atomic<bool>&) {
+      HttpResponse response;
+      response.error = HttpError::kNameResolutionFailed;
+      response.transport_code = 6;
+      response.address = "0.0.0.0";
+      return response;
+    };
+    hooks.transport = [script] { return std::make_unique<FakeTransport>(script); };
+    hooks.deadline_ms = 3000;
+    CmClient client(hooks, MakeDeviceIdentity(kSeed));
+    client.SetOwner("cloud");
+    assert(client.FetchAppInfo(Session(), {10}, cancel).error == CmError::kNetwork);
+    const auto failure = client.last_failure();
+    assert(failure.stage == CmStage::kDirectory && failure.transport == HttpError::kNameResolutionFailed &&
+           failure.transport_code == 6);
+    assert(CmFailureText(failure) == "stage=directory transport=name_resolution_failed curl=6");
+    assert(!CmBackoffActive());  // the network, not Steam turning us away
+  }
+  {
+    auto script = HappyScript();
+    script->failing_connects = 2;
+    script->connect_error = HttpError::kNameResolutionFailed;
+    auto client = MakeClient(script);
+    client.SetOwner("cloud");
+    assert(client.FetchAppInfo(Session(), {10}, cancel).error == CmError::kNetwork);
+    const auto failure = client.last_failure();
+    assert(failure.stage == CmStage::kConnect && failure.transport == HttpError::kNameResolutionFailed);
+  }
+  {
+    auto script = std::make_shared<Script>();
+    script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(84, 9))};
+    auto client = MakeClient(script);
+    assert(client.FetchAppInfo(Session(), {10}, cancel).error == CmError::kNetwork);
+    assert(client.last_failure().stage == CmStage::kLogon && client.last_failure().eresult == 84 &&
+           client.last_failure().refused);
+    assert(client.FetchAppInfo(Session(), {10}, cancel).error == CmError::kNetwork);
+    assert(client.last_failure().stage == CmStage::kBackoff);
+    // A call refused before it starts doesn't keep the previous call's failure.
+    assert(client.FetchAppInfo(Session(), {}, cancel).error == CmError::kProtocol);
+    assert(client.last_failure().stage == CmStage::kNone);
+    ResetCmBackoff();
+  }
+  {
+    // The CM directory turning us away (HTTP 429) starts the pause as well.
+    auto script = HappyScript();
+    CmClientHooks hooks;
+    hooks.directory = [](const HttpRequest&, const std::atomic<bool>&) {
+      HttpResponse response;
+      response.status_code = 429;
+      return response;
+    };
+    hooks.transport = [script] { return std::make_unique<FakeTransport>(script); };
+    hooks.deadline_ms = 3000;
+    CmClient client(hooks, MakeDeviceIdentity(kSeed));
+    assert(client.FetchAppInfo(Session(), {10}, cancel).error == CmError::kNetwork);
+    assert(client.last_failure().stage == CmStage::kDirectory && client.last_failure().refused);
+  }
+  {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    assert(lines.size() >= 4);
+    assert(lines[0] == "owner=cloud step=directory error=network http=0 transport=name_resolution_failed curl=6");
+    assert(lines[1] == "owner=cloud step=connect error=network transport=name_resolution_failed endpoints=2");
+    for (const auto& line : lines) {
+      assert(line.find("0.0.0.0") == std::string::npos && line.find("example.invalid") == std::string::npos);
+      assert(line.find("synthetic") == std::string::npos);
+    }
+  }
+  SetCmLog(nullptr);
+  ResetCmBackoff();
+}
+
 void LogOffInsteadOfLogonResponseBacksOff() {
   ResetCmBackoff();
   auto script = std::make_shared<Script>();
@@ -1706,4 +1793,6 @@ int main(int argc, char** argv) {
   DirectoryErrorBacksOff();
   ResetCmBackoff();
   LogOffInsteadOfLogonResponseBacksOff();
+  ResetCmBackoff();
+  FailedOpenNamesItsStage();
 }

@@ -467,6 +467,38 @@ std::string AccountKey(std::uint64_t steam_id) {
 constexpr const char* kSignInRefused =
     "Steam turned down the sign-in. Playden tries again next time it starts; if this keeps happening, use Settings, Account, Sign in again.";
 
+namespace {
+
+// Why a Cloud call could not use a Steam session, for the player: Steam asking for a pause, a name the
+// console's DNS server would not resolve, no answer in time, an answer Playden could not read, and only
+// then plain unreachable.
+std::string SessionFailureMessage(CmError error, const CmFailure& failure) {
+  switch (error) {
+    case CmError::kNoSession: return "Sign in to Steam to sync saves.";
+    case CmError::kRejected: return kSignInRefused;
+    case CmError::kCanceled: return "Cloud sync stopped.";
+    case CmError::kTimeout: return "Steam did not answer in time. Try again.";
+    case CmError::kProtocol: return "Steam sent an answer Playden could not read. Try again.";
+    default: break;
+  }
+  if (failure.stage == CmStage::kBackoff || failure.refused)
+    return "Steam asked Playden to wait before connecting again. Try again in a few minutes.";
+  if ((failure.stage == CmStage::kDirectory || failure.stage == CmStage::kConnect) &&
+      failure.transport == HttpError::kNameResolutionFailed)
+    return "The PS5 couldn't find Steam's servers. Check its DNS settings, then try again.";
+  if (failure.transport == HttpError::kTimeout) return "Steam did not answer in time. Try again.";
+  return "Steam is not reachable. Try again.";
+}
+
+// "error=network stage=connect transport=name_resolution_failed", for the log.
+std::string SessionFailureDetail(const char* step, CmError error, const CmFailure& failure) {
+  std::string detail = std::string(step) + " error=" + CmErrorName(error);
+  if (const auto text = CmFailureText(failure); !text.empty()) detail += " " + text;
+  return detail;
+}
+
+}  // namespace
+
 CloudSync::CloudSync(CmClient& cm, HttpClient& http) {
   hooks_.session = [&cm](const StoredSession& session, std::uint32_t deadline_ms, const std::atomic<bool>& cancel,
                          const std::function<CmError(const CmClient::ServiceCall&, std::uint64_t)>& work) {
@@ -483,6 +515,7 @@ CloudSync::CloudSync(CmClient& cm, HttpClient& http) {
     return std::nullopt;
   };
   hooks_.http = [&http](const HttpRequest& request, const std::atomic<bool>& cancel) { return http.Perform(request, cancel); };
+  hooks_.failure = [&cm] { return cm.last_failure(); };
 }
 
 CloudSync::CloudSync(CloudHooks hooks) : hooks_(std::move(hooks)) {}
@@ -492,17 +525,22 @@ CloudSync::CloudSync(CloudHooks hooks) : hooks_(std::move(hooks)) {}
 
 CloudPlan CloudSync::Check(const StoredSession& session, const GameSaveLocation& location, const std::atomic<bool>& cancel) {
   CloudPlan plan;
-  const auto fail = [&](PlanStatus status, std::string message) {
+  const auto fail = [&](PlanStatus status, std::string message, std::string detail = {}) {
     plan.status = status;
     plan.message = std::move(message);
+    plan.detail = std::move(detail);
     plan.decisions.clear();
     return plan;
   };
+  const auto failure = [&] { return hooks_.failure ? hooks_.failure() : CmFailure{}; };
   PLAYDEN_CLOUD_TRACE("app-info");
   CmError info_error = CmError::kNone;
   const auto info = hooks_.app_info(session, location.app_id, cancel, &info_error);
-  if (info_error == CmError::kRejected) return fail(PlanStatus::kFailed, kSignInRefused);
-  if (info_error != CmError::kNone) return fail(PlanStatus::kFailed, "Steam is not reachable. Try again.");
+  if (info_error != CmError::kNone) {
+    plan.canceled = info_error == CmError::kCanceled;
+    const auto why = failure();
+    return fail(PlanStatus::kFailed, SessionFailureMessage(info_error, why), SessionFailureDetail("app-info", info_error, why));
+  }
   if (!info || !info->declared) return fail(PlanStatus::kUnsupported, "This game does not use Steam Cloud.");
 
   PLAYDEN_CLOUD_TRACE("list");
@@ -518,8 +556,17 @@ CloudPlan CloudSync::Check(const StoredSession& session, const GameSaveLocation&
     remote = DecodeChangelistResponse(reply);
     return remote ? CmError::kNone : CmError::kProtocol;
   });
-  if (listed == CmError::kRejected) return fail(PlanStatus::kFailed, "Steam refused the Cloud save list.");
-  if (listed != CmError::kNone || !remote) return fail(PlanStatus::kFailed, "Steam did not return the Cloud save list. Try again.");
+  if (listed != CmError::kNone || !remote) {
+    plan.canceled = listed == CmError::kCanceled;
+    const auto why = failure();
+    // The session itself could not be opened (the list request never ran): say why, as for the app info.
+    if (listed != CmError::kNone && why.stage != CmStage::kNone && why.stage != CmStage::kRequest)
+      return fail(PlanStatus::kFailed, SessionFailureMessage(listed, why), SessionFailureDetail("list", listed, why));
+    if (listed == CmError::kRejected)
+      return fail(PlanStatus::kFailed, "Steam refused the Cloud save list.", SessionFailureDetail("list", listed, why));
+    return fail(PlanStatus::kFailed, "Steam did not return the Cloud save list. Try again.",
+                SessionFailureDetail("list", listed == CmError::kNone ? CmError::kProtocol : listed, why));
+  }
 
   PLAYDEN_CLOUD_TRACE("mapping");
   const auto mapping = BuildSaveMapping(*info, location.app_id, steam_id);
@@ -741,8 +788,21 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
   std::string failure;
   std::string detail;  // for the log: which file and what failed (never a URL path or header: they carry tokens)
   std::optional<RemoteFileList> final_list;
+  // Set when a request stopped because the caller canceled it: that failure is not Steam's or this device's.
+  bool canceled = false;
+  const auto http = [&](const HttpRequest& request) {
+    auto response = hooks_.http(request, cancel);
+    if (response.error == HttpError::kCanceled) canceled = true;
+    return response;
+  };
   const auto result = hooks_.session(session, kSessionDeadlineMs, cancel,
-                                     [&](const CmClient::ServiceCall& call, std::uint64_t steam_id) {
+                                     [&](const CmClient::ServiceCall& session_call, std::uint64_t steam_id) {
+    const CmClient::ServiceCall call = [&](const std::string& method, const std::vector<std::uint8_t>& body,
+                                           std::vector<std::uint8_t>* reply, int* eresult) {
+      const auto error = session_call(method, body, reply, eresult);
+      if (error == CmError::kCanceled) canceled = true;
+      return error;
+    };
     if (AccountKey(steam_id) != plan.account_key) {
       failure = "The signed-in Steam account changed. Check again.";
       return CmError::kRejected;
@@ -800,7 +860,7 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
       request.headers = ticket->headers;
       request.timeout_ms = kMaxHttpTimeoutMs;
       request.max_response_bytes = static_cast<std::size_t>(std::max<std::uint64_t>(ticket->file_size, 1));
-      const auto response = hooks_.http(request, cancel);
+      const auto response = http(request);
       if (!response.ok() || response.status_code != 200) {
         // A DNS server that blocks the storage host (a sinkhole address) fails here every time.
         failure = response.error == HttpError::kNameResolutionFailed
@@ -939,7 +999,7 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
           request.body = block.explicit_body ? *block.explicit_body
                                              : std::vector<std::uint8_t>(data.begin() + static_cast<std::ptrdiff_t>(block.offset),
                                                                          data.begin() + static_cast<std::ptrdiff_t>(block.offset + block.length));
-          const auto response = hooks_.http(request, cancel);
+          const auto response = http(request);
           if (!response.ok() || response.status_code < 200 || response.status_code >= 300) {
             detail = "file=" + decision.remote_name + " upload http error=" + HttpFailureName(response) +
                      " status=" + std::to_string(response.status_code) + " host=" + block.host +
@@ -987,7 +1047,13 @@ CloudOutcome CloudSync::Apply(const StoredSession& session, const GameSaveLocati
     return CmError::kNone;
   });
   if (backed_up) PruneBackups(location.state_root);
-  if (result != CmError::kNone) return fail(failure.empty() ? "Steam is not reachable. Try again." : failure, detail);
+  if (result != CmError::kNone) {
+    outcome.canceled = canceled || result == CmError::kCanceled;
+    if (!failure.empty()) return fail(failure, detail);
+    // The work never ran: the session could not be opened.
+    const auto why = hooks_.failure ? hooks_.failure() : CmFailure{};
+    return fail(SessionFailureMessage(result, why), SessionFailureDetail("session", result, why));
+  }
 
   // The verified common state becomes the next baseline: every Cloud file that maps locally and
   // now matches its local copy.

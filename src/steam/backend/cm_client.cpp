@@ -276,6 +276,29 @@ const char* CmErrorName(CmError error) {
   return "protocol";
 }
 
+const char* CmStageName(CmStage stage) {
+  switch (stage) {
+    case CmStage::kNone: return "none";
+    case CmStage::kBackoff: return "backoff";
+    case CmStage::kDirectory: return "directory";
+    case CmStage::kConnect: return "connect";
+    case CmStage::kHello: return "hello";
+    case CmStage::kLogon: return "logon";
+    case CmStage::kRequest: return "request";
+  }
+  return "none";
+}
+
+std::string CmFailureText(const CmFailure& failure) {
+  if (failure.stage == CmStage::kNone) return {};
+  std::string text = std::string("stage=") + CmStageName(failure.stage);
+  if (failure.transport != HttpError::kNone) text += std::string(" transport=") + HttpErrorName(failure.transport);
+  if (failure.transport_code != 0) text += " curl=" + std::to_string(failure.transport_code);
+  if (failure.eresult != 0) text += " eresult=" + std::to_string(failure.eresult);
+  if (failure.refused) text += " refused=1";
+  return text;
+}
+
 void SetCmLog(std::function<void(const std::string& line)> log) {
   std::lock_guard<std::mutex> lock(g_log_mutex);
   g_log = std::move(log);
@@ -1021,6 +1044,7 @@ void CmClient::CloseSession(Lease* lease) {
 
 CmError CmClient::Acquire(const StoredSession& stored, const std::atomic<bool>& cancel,
                           Clock::time_point deadline, Lease* lease) {
+  last_failure_ = {};
   if (!shared_) {
     lease->reused = false;
     const auto opened = Open(stored, cancel, deadline, &lease->owned_transport, &lease->owned_session);
@@ -1093,12 +1117,16 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
   }
   if (CmBackoffActive()) {
     Log("step=backoff error=network");
+    last_failure_.stage = CmStage::kBackoff;
     return CmError::kNetwork;
   }
   const auto fingerprint = TokenFingerprint(stored.refresh_token);
   {
     std::lock_guard<std::mutex> lock(g_backoff_mutex);
-    if (g_refused_tokens.count(fingerprint)) return CmError::kRejected;
+    if (g_refused_tokens.count(fingerprint)) {
+      last_failure_.stage = CmStage::kLogon;
+      return CmError::kRejected;
+    }
   }
 
   HttpRequest request;
@@ -1118,9 +1146,19 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
   }
   if (!response.ok() || response.status_code != 200) {
     if (response.error == HttpError::kCanceled) return CmError::kCanceled;
-    Log("step=directory error=network http=" + std::to_string(response.status_code));
+    last_failure_.stage = CmStage::kDirectory;
+    last_failure_.transport = response.error;
+    last_failure_.transport_code = response.transport_code;
+    // The transport's category and curl's code, never the address: a blocked name shows as name_resolution_failed.
+    Log("step=directory error=network http=" + std::to_string(response.status_code) +
+        (response.ok() ? std::string{}
+                       : std::string(" transport=") + HttpErrorName(response.error) +
+                             (response.transport_code ? " curl=" + std::to_string(response.transport_code) : std::string{})));
     // An HTTP answer that isn't 200 (429, 5xx) is Steam turning us away, not a lost network.
-    if (response.ok()) NoteRefusal();
+    if (response.ok()) {
+      NoteRefusal();
+      last_failure_.refused = true;
+    }
     return CmError::kNetwork;
   }
   const std::string_view body(response.body.empty() ? ""
@@ -1139,6 +1177,7 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
     }
   }
   if (endpoints.empty()) {
+    last_failure_.stage = CmStage::kDirectory;
     Log("step=directory error=protocol");
     return CmError::kProtocol;
   }
@@ -1146,6 +1185,7 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
   *transport = hooks_.transport ? hooks_.transport() : std::make_unique<WebSocketClient>(ca_bundle_);
   if (!*transport) return CmError::kProtocol;
   CmError connect_error = CmError::kNetwork;
+  HttpError connect_transport = HttpError::kNone;
   bool connected = false;
   for (const auto& endpoint : endpoints) {
     const auto remaining = RemainingMs(deadline);
@@ -1153,8 +1193,8 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
       connect_error = CmError::kTimeout;
       break;
     }
-    connect_error = FromTransport((*transport)->Connect("wss://" + endpoint + "/cmsocket/",
-                                                        remaining, cancel));
+    connect_transport = (*transport)->Connect("wss://" + endpoint + "/cmsocket/", remaining, cancel);
+    connect_error = FromTransport(connect_transport);
     if (connect_error == CmError::kNone) {
       connected = true;
       break;
@@ -1162,8 +1202,15 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
     if (connect_error == CmError::kCanceled) break;
   }
   if (!connected) {
-    if (connect_error != CmError::kCanceled)
-      Log(std::string("step=connect error=") + CmErrorName(connect_error));
+    if (connect_error != CmError::kCanceled) {
+      last_failure_.stage = CmStage::kConnect;
+      last_failure_.transport = connect_transport;
+      // The last endpoint's transport category (never the endpoint): name_resolution_failed for a blocked name.
+      Log(std::string("step=connect error=") + CmErrorName(connect_error) +
+          (connect_transport != HttpError::kNone ? std::string(" transport=") + HttpErrorName(connect_transport)
+                                                 : std::string{}) +
+          " endpoints=" + std::to_string(endpoints.size()));
+    }
     return connect_error;
   }
 
@@ -1175,6 +1222,7 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
   }
   if (const auto hello = (*opened)->Send(cm::kEMsgClientHello, cm::EncodeHello());
       hello != CmError::kNone) {
+    last_failure_.stage = CmStage::kHello;
     Log(std::string("step=hello error=") + CmErrorName(hello));
     return hello;
   }
@@ -1185,13 +1233,18 @@ CmError CmClient::Open(const StoredSession& stored, const std::atomic<bool>& can
   } else if (logon != CmError::kCanceled) {
     const auto eresult = (*opened)->logon_eresult();
     const auto off = (*opened)->logged_off_eresult();
+    last_failure_.stage = CmStage::kLogon;
+    last_failure_.eresult = eresult.value_or(off.value_or(0));
     Log(std::string("step=logon error=") + CmErrorName(logon) +
         " eresult=" + std::to_string(eresult.value_or(0)) + " " + fingerprint +
         (off ? " logged_off_eresult=" + std::to_string(*off) : std::string{}));
     // Refused for a reason other than the credentials: Steam is busy or limiting us. Steam may
     // answer the logon with a log-off instead of a logon response.
     const auto refusal = eresult ? eresult : off;
-    if (refusal && *refusal != cm::kEResultOk && !cm::CredentialRefusal(*refusal)) NoteRefusal();
+    if (refusal && *refusal != cm::kEResultOk && !cm::CredentialRefusal(*refusal)) {
+      NoteRefusal();
+      last_failure_.refused = true;
+    }
     if (logon == CmError::kRejected) {
       std::lock_guard<std::mutex> lock(g_backoff_mutex);
       g_refused_tokens.insert(fingerprint);
@@ -1352,6 +1405,7 @@ AppInfoBuffers CmClient::FetchAppInfoPics(const StoredSession& stored, const std
 AppInfoBuffers CmClient::FetchAppInfo(const StoredSession& stored, const std::vector<std::uint32_t>& app_ids,
                                      const std::atomic<bool>& cancel, bool by_hash) {
   AppInfoBuffers result;
+  last_failure_ = {};
   if (app_ids.empty() || app_ids.size() > kMaxAppInfoBatch) return result;  // kProtocol
   const auto deadline = Clock::now() + std::chrono::milliseconds(hooks_.deadline_ms);
   Lease lease;
@@ -1374,14 +1428,25 @@ AppInfoBuffers CmClient::FetchAppInfo(const StoredSession& stored, const std::ve
       call != CmError::kNone) {
     // A kept session the server dropped while idle: one fresh try, since this call only reads.
     if (reused && (call == CmError::kNetwork || call == CmError::kTimeout)) {
+      Log(std::string("step=app_info at=access_token error=") + CmErrorName(call) + " reused=1 retry=1");
       CloseSession(&lease);
       return FetchAppInfo(stored, app_ids, cancel, by_hash);
     }
-    return finish(call == CmError::kRejected ? CmError::kProtocol : call);
+    const auto error = call == CmError::kRejected ? CmError::kProtocol : call;
+    last_failure_.stage = CmStage::kRequest;
+    if (call == CmError::kRejected) last_failure_.eresult = session->last_eresult();
+    if (call != CmError::kCanceled)
+      Log(std::string("step=app_info at=access_token error=") + CmErrorName(call) + " reused=" + (reused ? "1" : "0") +
+          (call == CmError::kRejected ? " eresult=" + std::to_string(session->last_eresult()) : std::string{}));
+    return finish(error);
   }
   std::vector<cm::AppRequest> tokens;
   std::vector<std::uint32_t> denied;
-  if (!cm::DecodePicsAccessTokenResponse(reply, &tokens, &denied)) return finish(CmError::kProtocol);
+  if (!cm::DecodePicsAccessTokenResponse(reply, &tokens, &denied)) {
+    last_failure_.stage = CmStage::kRequest;
+    Log("step=app_info at=access_token error=protocol decode=0");
+    return finish(CmError::kProtocol);
+  }
   std::vector<cm::AppRequest> requests;
   for (const auto id : app_ids) {
     cm::AppRequest request{id, 0};
@@ -1391,8 +1456,12 @@ AppInfoBuffers CmClient::FetchAppInfo(const StoredSession& stored, const std::ve
   }
   std::vector<cm::PicsResponse> parts;
   if (const auto pics = session->PicsBody(cm::EncodePicsAppsRequest(requests), &parts);
-      pics != CmError::kNone)
+      pics != CmError::kNone) {
+    last_failure_.stage = CmStage::kRequest;
+    if (pics != CmError::kCanceled)
+      Log(std::string("step=app_info at=pics error=") + CmErrorName(pics) + " reused=" + (reused ? "1" : "0"));
     return finish(pics);
+  }
   const std::set<std::uint32_t> wanted(app_ids.begin(), app_ids.end());
   std::map<std::uint32_t, std::string> why;
   std::map<std::uint32_t, const cm::PicsApp*> offloaded;

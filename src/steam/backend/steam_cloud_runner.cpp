@@ -26,6 +26,7 @@ CloudReport Report(const cloud::CloudPlan& plan) {
   // No baseline for this account yet and both sides differ: the first sync on this device.
   report.first_sync = plan.status == cloud::PlanStatus::kConflict && plan.requires_account_confirmation;
   report.first_overwrite = plan.status == cloud::PlanStatus::kConflict && plan.first_overwrite;
+  report.canceled = plan.status == cloud::PlanStatus::kFailed && plan.canceled;
   return report;
 }
 
@@ -69,7 +70,9 @@ CloudReport SteamCloudRunner::Check(const StoredSession& session, const CloudLoc
   current_app_ = App(location);
   auto plan = sync_.Check(session, SaveLocation(location), cancel);
   auto report = Report(plan);
-  if (log_) log_(App(location), (std::string("check-") + StateName(report.state)).c_str(), report.message);
+  if (log_)
+    log_(App(location), (std::string("check-") + StateName(report.state)).c_str(),
+         plan.detail.empty() ? report.message : report.message + " (" + plan.detail + ")");
   plans_[App(location)] = {std::move(plan), SaveLocation(location)};
   return report;
 }
@@ -106,6 +109,7 @@ CloudReport SteamCloudRunner::Apply(const StoredSession& session, const CloudLoc
   plans_.erase(found);  // a plan is used once; the next sync checks again
   report.state = outcome.ok ? CloudState::kSynced : CloudState::kFailed;
   report.message = outcome.message;
+  report.canceled = !outcome.ok && outcome.canceled;
   if (outcome.ok) {  // both sides as they are now, not as the check found them
     report.local_files = outcome.local_files;
     report.remote_files = outcome.remote_files;
