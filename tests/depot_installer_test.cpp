@@ -529,9 +529,11 @@ void BorrowedDepotRefusedIsSkipped(const std::filesystem::path& root) {
       if (depot.optional) {
         asked_optional = true;
         result.skipped.push_back(depot.depot_id);
+        result.answers.emplace_back(depot.depot_id, "app=877620 key=refused eresult=15 skipped");
         continue;
       }
       result.grants.push_back({depot.depot_id, depot.manifest_gid, kKey, 77});
+      result.answers.emplace_back(depot.depot_id, "app=440 key=ok code=ok");
     }
     return result;
   };
@@ -542,7 +544,22 @@ void BorrowedDepotRefusedIsSkipped(const std::filesystem::path& root) {
   const auto outcome = installer.Run({}, target, cancel);
   CHECK(outcome.error == InstallError::kNone && asked_optional);
   CHECK(outcome.skipped_depots == std::vector<std::uint32_t>{442});
+  CHECK(outcome.depot_answers.size() == 2 && outcome.depot_answers[1].first == 442 &&
+        outcome.depot_answers[1].second == "app=877620 key=refused eresult=15 skipped");
   CHECK(Read(root / "data/level.dat") == "level-one");
+  // A refusal that stops the install still says what Steam answered, for install.log.
+  auto stopped_hooks = world.Hooks();
+  stopped_hooks.access = [](const StoredSession&, std::uint32_t, const std::vector<DepotRequest>&,
+                            const std::atomic<bool>&) {
+    DepotAccessResult result;
+    result.error = CmError::kRejected;
+    result.answers.emplace_back(441, "app=440 key=refused eresult=2");
+    return result;
+  };
+  DepotInstaller stopped(stopped_hooks);
+  const auto refused = stopped.Run({}, Target(root.string() + "-stopped"), cancel);
+  CHECK(refused.error != InstallError::kNone && refused.depot_answers.size() == 1 &&
+        refused.depot_answers[0].second == "app=440 key=refused eresult=2");
 }
 
 // An install whose only granted depot is a DLC's (the game's borrowed depot refused) fails instead of finishing
@@ -632,6 +649,10 @@ void UpdateWaitsForUnfetchedDlc() {
   CHECK(!UpdateNeedsUnfetchedDlc(record, 440, {}));
   // A record from before sources (0) is the game's own listing.
   CHECK(!UpdateNeedsUnfetchedDlc(record, 440, {0}));
+  // A depot taken from another app is the game's content, listed by that app: without its appinfo the update waits.
+  playden::installs::InstalledRecord borrowed;
+  borrowed.depots = {{393081, 81, 393080, 393080}, {393103, 3, 393080, 393100}};
+  CHECK(UpdateNeedsUnfetchedDlc(borrowed, 393080, {393100}));
 }
 
 // The DLC a run leaves out. An update adds what its install left out, so DLC turned off stays off; a DLC change

@@ -1,0 +1,127 @@
+"appinfo"
+{
+	"appid"		"9050"
+	"common"
+	{
+		"name"		"DOOM 3"
+		"type"		"game"
+	}
+	"config"
+	{
+		"installdir"		"Doom 3"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"Doom3.exe"
+			}
+		}
+	}
+	"depots"
+	{
+		"9051"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8286038173018646412"
+					"size"		"1579920089"
+					"download"		"0"
+				}
+			}
+		}
+		"9056"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6238535048975668384"
+					"size"		"36410437"
+					"download"		"0"
+				}
+			}
+		}
+		"9052"
+		{
+			"config"
+			{
+				"language"		"english"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"234565912299936290"
+					"size"		"4580929"
+					"download"		"0"
+				}
+			}
+		}
+		"9053"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1051348798445073166"
+					"size"		"92597506"
+					"download"		"0"
+				}
+			}
+		}
+		"9054"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6013538961173469274"
+					"size"		"36410437"
+					"download"		"0"
+				}
+			}
+		}
+		"9055"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8209211353725172101"
+					"size"		"89340020"
+					"download"		"0"
+				}
+			}
+		}
+		"9057"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5681427843027684907"
+					"size"		"96106383"
+					"download"		"0"
+				}
+			}
+		}
+	}
+}

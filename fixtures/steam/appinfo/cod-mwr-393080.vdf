@@ -1,0 +1,201 @@
+"appinfo"
+{
+	"appid"		"393080"
+	"common"
+	{
+		"name"		"Call of Duty: Modern Warfare Remastered (2017)"
+		"type"		"Game"
+	}
+	"config"
+	{
+		"installdir"		"Call of Duty Modern Warfare Remastered"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"h1_sp64_ship.exe"
+				"config"
+				{
+					"oslist"		"windows"
+					"osarch"		"64"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"228986"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"228990"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"393081"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2030128057851411344"
+					"size"		"20213541"
+					"download"		"8940784"
+				}
+			}
+		}
+		"393082"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7585958111912015831"
+					"size"		"22447224793"
+					"download"		"17725697008"
+				}
+			}
+		}
+		"393103"
+		{
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393104"
+		{
+			"config"
+			{
+				"language"		"english"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393105"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393106"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393107"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393108"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393109"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393110"
+		{
+			"config"
+			{
+				"language"		"polish"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393111"
+		{
+			"config"
+			{
+				"language"		"japanese"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393112"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393113"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393114"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393115"
+		{
+			"config"
+			{
+				"language"		"arabic"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393116"
+		{
+			"config"
+			{
+				"language"		"brazilian"
+			}
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+		"393117"
+		{
+			"depotfromapp"		"393100"
+			"sharedinstall"		"2"
+		}
+	}
+}

@@ -1,0 +1,236 @@
+"appinfo"
+{
+	"appid"		"420"
+	"common"
+	{
+		"name"		"Half-Life 2: Episode Two"
+		"type"		"Tool"
+	}
+	"config"
+	{
+		"installdir"		"Half-Life 2"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"hl2.exe"
+				"arguments"		"-game ep2 -steam"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+			"1"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-game ep2 -steam"
+				"config"
+				{
+					"oslist"		"macos"
+				}
+			}
+			"2"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-game ep2 -steam"
+				"config"
+				{
+					"oslist"		"linux"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"221"
+		{
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"222"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"223"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"224"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"225"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"226"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"227"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"228"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"389"
+		{
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"380"
+		{
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"381"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"382"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"383"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"384"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"420"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5401366820066204187"
+					"size"		"3175997749"
+					"download"		"1914186784"
+				}
+			}
+		}
+		"421"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3785722811354167350"
+					"size"		"451577384"
+					"download"		"326500720"
+				}
+			}
+		}
+		"422"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3441685239460551354"
+					"size"		"450682288"
+					"download"		"336658896"
+				}
+			}
+		}
+		"423"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1912720665726462040"
+					"size"		"198621491"
+					"download"		"182881088"
+				}
+			}
+		}
+		"424"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1258244556687904014"
+					"size"		"456982804"
+					"download"		"337649744"
+				}
+			}
+		}
+	}
+}

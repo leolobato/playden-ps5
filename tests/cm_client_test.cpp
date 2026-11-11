@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -69,6 +70,8 @@ struct Script {
   std::chrono::milliseconds pics_delay{0};
   // When set, answers each PICS request instead of on_pics.
   std::function<std::vector<std::uint8_t>(const cm::Frame&)> pics_reply;
+  // When set, answers each request (emsg or service call) instead of on_emsg and on_service.
+  std::function<std::vector<std::uint8_t>(const cm::Frame&)> reply;
 
   void Queue(std::vector<std::uint8_t> frame, std::chrono::milliseconds delay = 0ms) {
     inbox.emplace_back(std::chrono::steady_clock::now() + delay, std::move(frame));
@@ -96,10 +99,14 @@ class FakeTransport final : public MessageTransport {
       script_->Queue(script_->pics_reply(frame), script_->pics_delay);
     else if (frame.emsg == cm::kEMsgClientPICSProductInfoRequest)
       for (const auto& reply : script_->on_pics) script_->Queue(reply, script_->pics_delay);
-    if (frame.emsg == cm::kEMsgServiceMethodCallFromClient)
-      for (const auto& reply : script_->on_service) script_->Queue(reply);
-    if (const auto found = script_->on_emsg.find(frame.emsg); found != script_->on_emsg.end())
-      for (const auto& reply : found->second) script_->Queue(reply);
+    if (script_->reply && frame.emsg != cm::kEMsgClientLogon) {
+      if (auto answer = script_->reply(frame); !answer.empty()) script_->Queue(std::move(answer));
+    } else {
+      if (frame.emsg == cm::kEMsgServiceMethodCallFromClient)
+        for (const auto& reply : script_->on_service) script_->Queue(reply);
+      if (const auto found = script_->on_emsg.find(frame.emsg); found != script_->on_emsg.end())
+        for (const auto& reply : found->second) script_->Queue(reply);
+    }
     script_->raw_sent.push_back(message);
     script_->sent.push_back(std::move(frame));
     return HttpError::kNone;
@@ -1694,6 +1701,79 @@ void DepotAccessAsksEachDepotUnderItsOwnApp() {
   assert(named);
 }
 
+// A borrowed depot is asked for under the app it comes from, and again under the game when Steam refuses it there; a
+// refusal of its manifest request code skips it like a refused key. install.log gets each depot's answers.
+void BorrowedDepotIsAskedAgainUnderTheGame() {
+  LogCapture log;
+  std::atomic<bool> cancel{false};
+  // key_ok: the apps Steam gives the key under; code_ok: the apps it gives a request code under.
+  const auto serve = [](std::set<std::uint32_t> key_ok, std::set<std::uint32_t> code_ok) {
+    auto script = std::make_shared<Script>();
+    script->on_logon = {ServerFrame(cm::kEMsgClientLogOnResponse, LogonResponseBody(1, 9))};
+    script->reply = [key_ok, code_ok](const cm::Frame& frame) {
+      const auto job = frame.header.jobid_source;
+      if (frame.emsg == cm::kEMsgClientGetDepotDecryptionKey) {
+        const bool ok = std::any_of(key_ok.begin(), key_ok.end(), [&](std::uint32_t app) {
+          return frame.body == cm::EncodeDepotKeyRequest(441, app);
+        });
+        proto::Writer key;
+        key.AddVarint(1, static_cast<std::uint32_t>(ok ? cm::kEResultOk : cm::kEResultAccessDenied));
+        key.AddVarint(2, 441);
+        key.AddBytes(3, std::vector<std::uint8_t>(32, 0x5a));
+        return ServerFrame(cm::kEMsgClientGetDepotDecryptionKeyResponse, key.bytes(), std::nullopt, job);
+      }
+      if (frame.emsg == cm::kEMsgServiceMethodCallFromClient) {
+        const bool ok = std::any_of(code_ok.begin(), code_ok.end(), [&](std::uint32_t app) {
+          return frame.body == cm::EncodeManifestRequestCodeRequest(app, 441, 11);
+        });
+        if (!ok) return ServerFrame(cm::kEMsgServiceMethodResponse, {}, cm::kEResultAccessDenied, job);
+        proto::Writer code;
+        code.AddVarint(1, 77);
+        return ServerFrame(cm::kEMsgServiceMethodResponse, code.bytes(), std::nullopt, job);
+      }
+      return std::vector<std::uint8_t>{};
+    };
+    return script;
+  };
+  DepotRequest borrowed{441, 11, true, 5001};
+  // Refused under the app it comes from, granted under the game.
+  auto client = MakeClient(serve({440}, {440}));
+  const auto retried = client.FetchDepotAccess(Session(), 440, {borrowed}, cancel);
+  assert(retried.ok() && retried.grants.size() == 1 && retried.skipped.empty());
+  assert(retried.answers.size() == 1 && retried.answers[0].first == 441);
+  assert(retried.answers[0].second == "app=5001 key=refused eresult=15 then app=440 key=ok code=ok");
+  // Refused under both: skipped, and the game installs without it.
+  auto refused = MakeClient(serve({}, {}));
+  const auto skipped = refused.FetchDepotAccess(Session(), 440, {borrowed}, cancel);
+  assert(skipped.ok() && skipped.grants.empty() && skipped.skipped == std::vector<std::uint32_t>{441});
+  assert(skipped.answers[0].second == "app=5001 key=refused eresult=15 then app=440 key=refused eresult=15 skipped");
+  // The key granted but the request code refused under both: skipped too.
+  auto no_code = MakeClient(serve({5001, 440}, {}));
+  const auto code_refused = no_code.FetchDepotAccess(Session(), 440, {borrowed}, cancel);
+  assert(code_refused.ok() && code_refused.skipped == std::vector<std::uint32_t>{441});
+  assert(code_refused.answers[0].second ==
+         "app=5001 key=ok code error=rejected eresult=15 then app=440 key=ok code error=rejected eresult=15 skipped");
+  // Granted where it comes from: asked once.
+  auto direct = MakeClient(serve({5001}, {5001}));
+  const auto granted = direct.FetchDepotAccess(Session(), 440, {borrowed}, cancel);
+  assert(granted.ok() && granted.grants.size() == 1 && granted.answers[0].second == "app=5001 key=ok code=ok");
+  // Any other refusal says nothing about the licence: it stops the call, so an update doesn't delete the depot's files.
+  auto failing = MakeClient(DepotScript(cm::kEResultFail, 1));
+  const auto failed = failing.FetchDepotAccess(Session(), 440, {borrowed}, cancel);
+  assert(failed.error == CmError::kRejected && failed.skipped.empty());
+  assert(failed.answers.size() == 1 && failed.answers[0].second == "app=5001 key=refused eresult=2");
+  // The game's own depot refused still stops the call, and its answer is kept for install.log.
+  auto own = MakeClient(serve({}, {}));
+  const auto stopped = own.FetchDepotAccess(Session(), 440, {{441, 11}}, cancel);
+  assert(stopped.error == CmError::kRejected && stopped.answers.size() == 1 &&
+         stopped.answers[0].second == "app=440 key=refused eresult=15");
+  std::vector<std::string> lines;
+  for (auto& line : log.Take())
+    if (line.find("step=depot_key") != std::string::npos) lines.push_back(std::move(line));
+  assert(lines.size() >= 2 && lines[0] == "owner=cm step=depot_key app=5001 depot=441 result=refused eresult=15" &&
+         lines[1] == "owner=cm step=depot_key app=440 depot=441 result=ok");
+}
+
 void DeviceSeedPersistsPerInstall() {
   const auto root = std::filesystem::temp_directory_path() / "playden-cm-seed-test";
   std::filesystem::remove_all(root);
@@ -1760,6 +1840,7 @@ int main(int argc, char** argv) {
   DepotAccessReturnsKeysAndManifestCodes();
   ResetCmBackoff();
   DepotAccessAsksEachDepotUnderItsOwnApp();
+  BorrowedDepotIsAskedAgainUnderTheGame();
   DepotAccessNamesTheBranch();
   ResetCmBackoff();
   FreeLicenseGrantWaitsForTheNewLicenseList();

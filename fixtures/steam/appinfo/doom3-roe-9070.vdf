@@ -1,0 +1,86 @@
+"appinfo"
+{
+	"appid"		"9070"
+	"common"
+	{
+		"name"		"DOOM 3: Resurrection of Evil"
+		"type"		"game"
+	}
+	"config"
+	{
+		"installdir"		"Doom 3"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"Doom3.exe"
+				"arguments"		"+set fs_game d3xp"
+			}
+		}
+	}
+	"depots"
+	{
+		"9051"
+		{
+			"depotfromapp"		"9050"
+			"sharedinstall"		"2"
+		}
+		"9071"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4235632539331474360"
+					"size"		"538386323"
+					"download"		"0"
+				}
+			}
+		}
+		"9052"
+		{
+			"config"
+			{
+				"language"		"english"
+			}
+			"depotfromapp"		"9050"
+			"sharedinstall"		"2"
+		}
+		"9053"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"9050"
+			"sharedinstall"		"2"
+		}
+		"9054"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"9050"
+			"sharedinstall"		"2"
+		}
+		"9055"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"depotfromapp"		"9050"
+			"sharedinstall"		"2"
+		}
+		"9057"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"9050"
+			"sharedinstall"		"2"
+		}
+	}
+}

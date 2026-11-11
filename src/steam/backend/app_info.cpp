@@ -128,8 +128,10 @@ DepotInfo ParseDepot(std::uint32_t id, const VdfNode& value) {
   depot.os_arch = ChildString(config, "osarch");
   depot.language = ChildString(config, "language");
   depot.realm = ChildString(config, "realm");
-  depot.shared_install = value.String("sharedinstall") == std::string_view("1");
+  if (const auto shared = value.String("sharedinstall")) depot.shared_install_value = std::string(*shared);
+  depot.shared_install = depot.shared_install_value == "1";
   depot.depot_from_app = ChildU32(&value, "depotfromapp");
+  depot.low_violence = ChildU32(config, "lowviolence").value_or(0) != 0;
   depot.dlc_app_id = ChildU32(&value, "dlcappid");
   depot.is_dlc = depot.dlc_app_id.has_value();
   depot.optional_dlc = ChildU32(config, "optionaldlc").value_or(0) != 0;
@@ -484,20 +486,96 @@ bool InLanguage(const DepotInfo& depot, const std::string& language) {
 
 }  // namespace
 
-void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game) {
+void KeepBorrowedDepots(const AppInfo& borrower, AppInfo* source) {
   std::vector<DepotInfo> kept;
-  for (DepotInfo& depot : game->depots) {
-    const bool borrowed = std::any_of(demo.depots.begin(), demo.depots.end(), [&](const DepotInfo& listed) {
-      return listed.id == depot.id && listed.depot_from_app == game->app_id && !listed.manifest_gid &&
-             listed.branches.empty();
+  for (DepotInfo& depot : source->depots) {
+    const bool borrowed = std::any_of(borrower.depots.begin(), borrower.depots.end(), [&](const DepotInfo& listed) {
+      return listed.id == depot.id && listed.depot_from_app == source->app_id && !listed.shared_install &&
+             !listed.manifest_gid && listed.branches.empty();
     });
     if (!borrowed) continue;
-    // Still borrowed: an account that doesn't get its key installs the demo without it.
-    depot.depot_from_app = game->app_id;
+    // Still borrowed: an account that doesn't get its key installs without it.
+    depot.depot_from_app = source->app_id;
     kept.push_back(std::move(depot));
   }
-  game->depots = std::move(kept);
-  game->dlc_app_ids.clear();
+  source->depots = std::move(kept);
+  source->dlc_app_ids.clear();
+}
+
+std::vector<std::uint32_t> BorrowedDepotSources(const AppInfo& app) {
+  std::vector<std::uint32_t> sources;
+  for (const DepotInfo& depot : app.depots) {
+    if (!depot.depot_from_app || *depot.depot_from_app == 0 || *depot.depot_from_app == app.app_id) continue;
+    if (depot.shared_install || depot.manifest_gid || !depot.branches.empty()) continue;
+    const auto source = *depot.depot_from_app;
+    if (std::find(app.dlc_app_ids.begin(), app.dlc_app_ids.end(), source) != app.dlc_app_ids.end()) continue;
+    if (std::find(sources.begin(), sources.end(), source) == sources.end()) sources.push_back(source);
+  }
+  return sources;
+}
+
+std::vector<std::uint32_t> RelatedApps(const AppInfo& app) {
+  std::vector<std::uint32_t> ids;
+  for (const auto dlc : app.dlc_app_ids)
+    if (dlc != app.app_id && std::find(ids.begin(), ids.end(), dlc) == ids.end()) ids.push_back(dlc);
+  for (const auto source : BorrowedDepotSources(app))
+    if (std::find(ids.begin(), ids.end(), source) == ids.end()) ids.push_back(source);
+  return ids;
+}
+
+void PrepareRelatedApp(const AppInfo& app, AppInfo* related) {
+  const auto sources = BorrowedDepotSources(app);
+  if (std::find(sources.begin(), sources.end(), related->app_id) != sources.end()) KeepBorrowedDepots(app, related);
+}
+
+std::vector<BorrowedDepotReport> DescribeBorrowedDepots(const AppInfo& app, const std::vector<AppInfo>& related,
+                                                        const SelectionResult& result,
+                                                        const std::optional<std::set<std::uint32_t>>& owned_depots,
+                                                        const std::string& branch) {
+  std::vector<BorrowedDepotReport> reports;
+  const std::string wanted = branch.empty() ? std::string("public") : branch;
+  for (const DepotInfo& depot : app.depots) {
+    if (!depot.depot_from_app || *depot.depot_from_app == app.app_id) continue;
+    const auto source_id = *depot.depot_from_app;
+    std::string detail = "depot=" + std::to_string(depot.id) + " from=" + std::to_string(source_id) +
+                         " sharedinstall=" + (depot.shared_install_value.empty() ? "-" : depot.shared_install_value);
+    // Where the manifest on the branch is listed: the app's own listing, else the source app's.
+    std::string manifest;
+    if (UsableManifest(depot, wanted)) {
+      manifest = std::to_string(app.app_id) + "/" + wanted;
+    } else {
+      const auto source = std::find_if(related.begin(), related.end(),
+                                       [&](const AppInfo& info) { return info.app_id == source_id; });
+      if (source == related.end()) {
+        manifest = depot.shared_install ? "not-read(shared)" : "not-read(no-appinfo)";
+      } else {
+        const auto listed = std::find_if(source->depots.begin(), source->depots.end(),
+                                         [&](const DepotInfo& info) { return info.id == depot.id; });
+        if (listed == source->depots.end()) manifest = "none(not-listed)";
+        else if (UsableManifest(*listed, wanted)) manifest = std::to_string(source_id) + "/" + wanted;
+        else manifest = "none(" + wanted + ")";
+      }
+    }
+    detail += " manifest=" + manifest + " licence=" +
+              (!owned_depots ? "unknown" : owned_depots->count(depot.id) ? "listed" : "not-listed");
+    BorrowedDepotReport report;
+    report.depot = depot.id;
+    const bool selected = std::any_of(result.depots.begin(), result.depots.end(),
+                                      [&](const DepotInfo& info) { return info.id == depot.id; });
+    if (selected) {
+      report.outcome = "selected";
+    } else {
+      // A listing taken in place of another is rejected as a duplicate: the other listing's reason is the outcome.
+      std::string reason;
+      for (const auto& rejected : result.rejected)
+        if (rejected.id == depot.id && (reason.empty() || reason == "duplicate")) reason = rejected.reason;
+      report.outcome = "rejected";
+      detail += " reason=" + (reason.empty() ? std::string("none") : reason);
+    }
+    report.detail = std::move(detail);
+    reports.push_back(std::move(report));
+  }
+  return reports;
 }
 
 bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, const std::set<std::uint32_t>& owned_apps,
@@ -543,6 +621,9 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
       const auto owner = same->owner_app;
       std::swap(*same, depot);
       same->owner_app = owner;
+      // What the first listing says about installing it still holds: a shared install stays out of the game's folder.
+      same->shared_install = same->shared_install || depot.shared_install;
+      same->low_violence = same->low_violence || depot.low_violence;
     }
     reject(depot, "duplicate");
     return true;
@@ -575,6 +656,9 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
     // Magicraft's Steam China build has no oslist: installed with the global one, its files land over it (#694).
     if (!RealmIsGlobal(depot.realm)) { reject(depot, "realm"); continue; }
     if (depot.shared_install) { reject(depot, "shared"); continue; }
+    // Steam installs a low-violence build only in the regions that need one. A game's own such depot goes by the
+    // licence; a borrowed one passes the licence gate, so it stays out here (Counter-Strike's depot 6 from Half-Life).
+    if (depot.low_violence && from_app.count(depot.id)) { reject(depot, "lowviolence"); continue; }
     if (owned_depots && owned_depots->count(depot.id) == 0 && from_app.count(depot.id) == 0) { reject(depot, "licence"); continue; }
     if (depot.owner_app != app.app_id && owned_apps.count(depot.owner_app) == 0) { reject(depot, "dlc"); continue; }
     if (depot.owner_app != app.app_id && selection.excluded_dlc.count(depot.owner_app)) { reject(depot, "dlc-off"); continue; }

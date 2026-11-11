@@ -27,8 +27,12 @@ struct DepotInfo {
   std::string os_arch;
   std::string language;  // "" = all languages
   std::string realm;     // "steamglobal", "steamchina"; "" = global
+  // sharedinstall "1": Steam installs the depot once, in the folder of the app it comes from (the Steamworks
+  // redistributables). "2", with depotfromapp, is the other app's content installed in this app's own folder.
   bool shared_install = false;
+  std::string shared_install_value;  // sharedinstall as appinfo writes it; empty when absent
   std::optional<std::uint32_t> depot_from_app;
+  bool low_violence = false;  // config/lowviolence: the build for low-violence regions
   bool is_dlc = false;
   std::optional<std::uint32_t> dlc_app_id;
   // config/optionaldlc: the DLC this depot belongs to doesn't download by itself (tools, language packs).
@@ -118,10 +122,23 @@ struct AppInfo {
 // Parses a PICS app buffer (text VDF with optional trailing NULs) whose root is "appinfo".
 std::optional<AppInfo> ParseAppInfo(std::uint32_t app_id, std::string_view buffer);
 
-// A demo can take its content from its game: its appinfo lists the depot with depotfromapp and no manifest on any branch, and the
-// game's appinfo holds the manifest. Trims the game's appinfo to those depots, for SelectDepots' dlc_apps, which
-// installs the listing that has a manifest. The rest of the game stays out, even for an account that owns it.
-void KeepDepotsDemoBorrows(const AppInfo& demo, AppInfo* game);
+// An app can take content from another app: its appinfo lists the depot with depotfromapp and no manifest on any branch,
+// and the other app's appinfo holds the manifest (sharedinstall 2: a demo and its game, DOOM 3: Resurrection of Evil
+// and DOOM 3, a single-player and a multiplayer app with one install folder). Trims `source`'s appinfo to those depots,
+// for SelectDepots' dlc_apps, which installs the listing that has a manifest. The rest of the other app stays out, even
+// for an account that owns it.
+void KeepBorrowedDepots(const AppInfo& borrower, AppInfo* source);
+
+// The apps that hold the manifests of the depots `app` borrows, in listing order: the depotfromapp of each depot
+// with no manifest on any branch, except shared installs (they go in the other app's folder) and the app's own DLC
+// (read whole as DLC).
+std::vector<std::uint32_t> BorrowedDepotSources(const AppInfo& app);
+// The appinfo SelectDepots reads beside the app's: its DLC (listofdlc), then BorrowedDepotSources.
+std::vector<std::uint32_t> RelatedApps(const AppInfo& app);
+// Readies the appinfo of one of RelatedApps for SelectDepots' dlc_apps: an app depots are borrowed from is trimmed
+// to them; a DLC stays whole.
+void PrepareRelatedApp(const AppInfo& app, AppInfo* related);
+
 
 // Steam `oslist`: empty means every platform; otherwise a comma list that must name windows.
 bool OsListMatchesWindows(std::string_view os_list);
@@ -138,7 +155,7 @@ struct DepotSelection {
 };
 
 struct SelectionResult {
-  // A depot left out, and why: os, realm, shared, licence, dlc, dlc-off, branch, language, arch or
+  // A depot left out, and why: os, realm, shared, lowviolence, licence, dlc, dlc-off, branch, language, arch or
   // duplicate.
   struct Rejected {
     std::uint32_t id = 0;
@@ -153,9 +170,9 @@ struct SelectionResult {
 };
 
 // Windows depot selection over the game's depots and those its DLC apps list (`dlc_apps`, the
-// appinfo of DLC from the game's listofdlc). Each depot passes, in order: os, shared install,
-// licence (an owned depot or depotfromapp; every depot when the licenses are unknown), DLC
-// ownership, the player's excluded DLC, and a manifest on the branch. A depot listed twice is kept once, from a listing
+// appinfo of DLC from the game's listofdlc, and the apps it borrows depots from). Each depot passes, in order: os,
+// realm, shared install, low violence (a borrowed depot), licence (an owned depot or depotfromapp; every depot when the
+// licenses are unknown), DLC ownership, the player's excluded DLC, and a manifest on the branch. A depot listed twice is kept once, from a listing
 // with a manifest on the branch; two different manifests for one depot fail the selection.
 //
 // Then per owner (the game, or one DLC): the content language, then a usable 64-bit Windows
@@ -172,6 +189,19 @@ struct SelectionResult {
 bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, const std::set<std::uint32_t>& owned_apps,
                   const std::optional<std::set<std::uint32_t>>& owned_depots, const DepotSelection& selection,
                   SelectionResult* result);
+
+// For install.log: each depot `app` lists from another app, what became of it in `result` (SelectDepots over
+// `related`, on `branch`). `outcome` is "selected" or "rejected"; `detail` names the depot, its source app, its
+// sharedinstall, where its manifest was found, whether the licenses list it, and why it was rejected.
+struct BorrowedDepotReport {
+  std::uint32_t depot = 0;
+  std::string outcome;
+  std::string detail;
+};
+std::vector<BorrowedDepotReport> DescribeBorrowedDepots(const AppInfo& app, const std::vector<AppInfo>& related,
+                                                        const SelectionResult& result,
+                                                        const std::optional<std::set<std::uint32_t>>& owned_depots,
+                                                        const std::string& branch);
 
 // What an install in one content language selects on a branch, in bytes.
 struct LanguageBytes {

@@ -1,0 +1,337 @@
+"appinfo"
+{
+	"appid"		"10"
+	"common"
+	{
+		"name"		"Counter-Strike"
+		"type"		"game"
+	}
+	"config"
+	{
+		"installdir"		"Half-Life"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"hl.exe"
+				"arguments"		"-steam -game cstrike"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+			"1"
+			{
+				"executable"		"hl.sh"
+				"arguments"		"-steam -game cstrike"
+				"config"
+				{
+					"oslist"		"macos"
+				}
+			}
+			"2"
+			{
+				"executable"		"hl.sh"
+				"arguments"		"-steam -game cstrike"
+				"config"
+				{
+					"oslist"		"linux"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"228988"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"1"
+		{
+			"config"
+			{
+				"language"		""
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"11"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3018093494972814332"
+					"size"		"292340389"
+					"download"		"149760208"
+				}
+			}
+		}
+		"95"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7685864384078520360"
+					"size"		"26459518"
+					"download"		"14626816"
+				}
+			}
+		}
+		"3"
+		{
+			"config"
+			{
+				"language"		""
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"8"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+				"language"		""
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"2"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"language"		""
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"9"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+				"language"		""
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"6"
+		{
+			"config"
+			{
+				"lowviolence"		"1"
+				"language"		""
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"72"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"73"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"74"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"75"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"77"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"78"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"79"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"141"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"70"
+			"sharedinstall"		"2"
+		}
+		"12"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7476629819067189879"
+					"size"		"2573248"
+					"download"		"1451920"
+				}
+			}
+		}
+		"13"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1596103708518313909"
+					"size"		"6335639"
+					"download"		"5369424"
+				}
+			}
+		}
+		"14"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4163740413628378088"
+					"size"		"2137436"
+					"download"		"1191920"
+				}
+			}
+		}
+		"15"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2951655054604220030"
+					"size"		"2087297"
+					"download"		"1137440"
+				}
+			}
+		}
+		"17"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8232848132911478974"
+					"size"		"10864020"
+					"download"		"8988336"
+				}
+			}
+		}
+		"18"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"9210252686867714338"
+					"size"		"2954322"
+					"download"		"2251424"
+				}
+			}
+		}
+		"19"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5149037574830114753"
+					"size"		"2651129"
+					"download"		"2010848"
+				}
+			}
+		}
+		"142"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8052183366346984139"
+					"size"		"365340"
+					"download"		"60320"
+				}
+			}
+		}
+	}
+}

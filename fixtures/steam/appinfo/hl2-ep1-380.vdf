@@ -1,0 +1,302 @@
+"appinfo"
+{
+	"appid"		"380"
+	"common"
+	{
+		"name"		"Half-Life 2: Episode One"
+		"type"		"Tool"
+	}
+	"config"
+	{
+		"installdir"		"Half-Life 2"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"hl2.exe"
+				"arguments"		"-game episodic -steam"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+			"1"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-game episodic -steam"
+				"config"
+				{
+					"oslist"		"macos"
+				}
+			}
+			"2"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-game episodic -steam"
+				"config"
+				{
+					"oslist"		"linux"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"221"
+		{
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"222"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"223"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"224"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"225"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"226"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"227"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"228"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"229"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"230"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"231"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"232"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"depotfromapp"		"220"
+			"sharedinstall"		"2"
+		}
+		"389"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1776767667551246449"
+					"size"		"1131299555"
+					"download"		"757078880"
+				}
+			}
+		}
+		"380"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2711482073477362647"
+					"size"		"623429837"
+					"download"		"284474240"
+				}
+			}
+		}
+		"381"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4542662715823929389"
+					"size"		"526699030"
+					"download"		"388127888"
+				}
+			}
+		}
+		"382"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7879117186494235404"
+					"size"		"527018100"
+					"download"		"431863328"
+				}
+			}
+		}
+		"383"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5648275856895286705"
+					"size"		"553813108"
+					"download"		"503928176"
+				}
+			}
+		}
+		"384"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8194814195373219380"
+					"size"		"526837766"
+					"download"		"405212960"
+				}
+			}
+		}
+		"385"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8040188575247072415"
+					"size"		"531001541"
+					"download"		"418348144"
+				}
+			}
+		}
+		"386"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4397951831235071015"
+					"size"		"515598492"
+					"download"		"396109568"
+				}
+			}
+		}
+		"387"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2428320507620716570"
+					"size"		"531975781"
+					"download"		"409503088"
+				}
+			}
+		}
+		"388"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"655845870984522337"
+					"size"		"527251023"
+					"download"		"411178432"
+				}
+			}
+		}
+	}
+}

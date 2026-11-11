@@ -1109,7 +1109,7 @@ void TestDemoInstallsTheDepotsItBorrows() {
   CHECK(SelectDepots(*demo, {}, {7000}, std::nullopt, DepotSelection{}, &result));
   CHECK((Ids(result.depots) == U32s{7001}));
   CHECK(RejectedAs(result, 6001) == "branch");
-  KeepDepotsDemoBorrows(*demo, &*game);
+  KeepBorrowedDepots(*demo, &*game);
   CHECK(game->depots.size() == 1 && game->depots[0].id == 6001 && game->dlc_app_ids.empty());
   // An account with only the demo: the depot comes under the game's app and stays optional.
   const std::vector<AppInfo> listings{*game};
@@ -1131,9 +1131,10 @@ void TestDemoInstallsTheDepotsItBorrows() {
   "depots" { "6001" { "manifests" { "public" { "gid" "61" "size" "20" "download" "9" } } } }
 })");
   CHECK(whole_game);
-  KeepDepotsDemoBorrows(own_beta, &*whole_game);
+  KeepBorrowedDepots(own_beta, &*whole_game);
   CHECK(whole_game->depots.empty());
-  // Another app that borrows a depot, here Half-Life 2's episode depot, is not a demo: nothing changes for it.
+  // Another app that borrows a depot, here Half-Life 2's episode depot, is not a demo, but reads the app it borrows from
+  // the same way.
   const auto other = ParseAppInfo(220, R"("appinfo"
 {
   "appid" "220"
@@ -1141,6 +1142,164 @@ void TestDemoInstallsTheDepotsItBorrows() {
   "depots" { "389" { "depotfromapp" "380" "sharedinstall" "2" } }
 })");
   CHECK(other && other->demo_of_app_id == 0);
+  CHECK((BorrowedDepotSources(*other) == U32s{380}));
+}
+
+// The appinfo SelectDepots reads beside an app's own, as the install runner and the details fetch it: each related app
+// readied by PrepareRelatedApp.
+std::vector<AppInfo> Related(const AppInfo& app, std::vector<AppInfo> fetched) {
+  for (AppInfo& related : fetched) PrepareRelatedApp(app, &related);
+  return fetched;
+}
+
+std::string ReportFor(const std::vector<BorrowedDepotReport>& reports, std::uint32_t depot) {
+  for (const auto& report : reports)
+    if (report.depot == depot) return report.outcome + " " + report.detail;
+  return "";
+}
+
+// DOOM 3: Resurrection of Evil (9070) lists DOOM 3's depots (9050) with depotfromapp, sharedinstall 2 and no manifest:
+// the base game it runs on (Doom3.exe +set fs_game d3xp) and its language files. Its own depot is only the expansion.
+void TestBorrowedDepotsComeFromTheirApp() {
+  const AppInfo roe = Fixture(9070, "doom3-roe-9070.vdf");
+  const AppInfo doom3 = Fixture(9050, "doom3-9050.vdf");
+  CHECK(roe.depots[0].shared_install_value == "2" && !roe.depots[0].shared_install);
+  CHECK((BorrowedDepotSources(roe) == U32s{9050}));
+  CHECK((RelatedApps(roe) == U32s{9050}));
+  SelectionResult result;
+  // Without DOOM 3's appinfo only the expansion installs: the bug.
+  CHECK(SelectDepots(roe, {}, {9070, 9050}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{9071}));
+  CHECK(RejectedAs(result, 9051) == "branch");
+  const auto related = Related(roe, {doom3});
+  CHECK((Ids(related[0].depots) == U32s{9051, 9052, 9053, 9054, 9055, 9057}));  // not 9056, which RoE doesn't list
+  CHECK(SelectDepots(roe, related, {9070, 9050}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{9051, 9071, 9052}));
+  CHECK(result.effective_language == "english");
+  for (const auto& depot : result.depots) CHECK(depot.owner_app == 9070);
+  CHECK(result.depots[0].source_app == 9050 && result.depots[0].manifest_gid == 8286038173018646412u);
+  CHECK(result.depots[1].source_app == 9070);
+  // DOOM 3 is no DLC of RoE: it has no row to turn off.
+  CHECK(OfferedDlc(roe, related, {9070, 9050}, std::nullopt, DepotSelection{}, {}).empty());
+  // The language comes from the borrowed depots too.
+  DepotSelection german;
+  german.language = "german";
+  CHECK(SelectDepots(roe, related, {9070, 9050}, std::nullopt, german, &result));
+  CHECK((Ids(result.depots) == U32s{9051, 9071, 9054}));
+  // An account whose licenses don't list the borrowed depots still selects them: Steam decides with the key.
+  CHECK(SelectDepots(roe, related, {9070}, std::set<std::uint32_t>{9071}, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{9051, 9071, 9052}));
+  const auto reports = DescribeBorrowedDepots(roe, related, result, std::set<std::uint32_t>{9071}, "public");
+  CHECK(reports.size() == 6);
+  CHECK(ReportFor(reports, 9051) ==
+        "selected depot=9051 from=9050 sharedinstall=2 manifest=9050/public licence=not-listed");
+  // A listing taken from the other app shows as a duplicate in the rejections; the report gives the real reason.
+  CHECK(ReportFor(reports, 9054) ==
+        "rejected depot=9054 from=9050 sharedinstall=2 manifest=9050/public licence=not-listed reason=language");
+  // Without the other app's appinfo: said so, apart from a manifest missing on the branch.
+  SelectionResult bare;
+  SelectDepots(roe, {}, {9070}, std::set<std::uint32_t>{9051, 9071}, DepotSelection{}, &bare);
+  const auto unread = DescribeBorrowedDepots(roe, {}, bare, std::set<std::uint32_t>{9051, 9071}, "public");
+  CHECK(ReportFor(unread, 9051) ==
+        "rejected depot=9051 from=9050 sharedinstall=2 manifest=not-read(no-appinfo) licence=listed reason=branch");
+  CHECK(ReportFor(DescribeBorrowedDepots(roe, related, bare, std::nullopt, "beta"), 9051) ==
+        "rejected depot=9051 from=9050 sharedinstall=2 manifest=none(beta) licence=unknown reason=branch");
+}
+
+// A depot listed as a shared install stays out of the game's folder, even when the app it comes from is read for another
+// depot the game borrows.
+void TestSharedInstallStaysOutOfABorrowedSource() {
+  const auto game = ParseAppInfo(8000, R"("appinfo"
+{
+  "appid" "8000"
+  "common" { "name" "Game" "type" "Game" }
+  "depots"
+  {
+    "8001" { "manifests" { "public" { "gid" "81" "size" "10" "download" "5" } } }
+    "9001" { "depotfromapp" "9000" "sharedinstall" "2" }
+    "9002" { "depotfromapp" "9000" "sharedinstall" "1" }
+  }
+})");
+  auto source = ParseAppInfo(9000, R"("appinfo"
+{
+  "appid" "9000"
+  "common" { "name" "Other" "type" "Game" }
+  "depots"
+  {
+    "9001" { "manifests" { "public" { "gid" "91" "size" "10" "download" "5" } } }
+    "9002" { "manifests" { "public" { "gid" "92" "size" "10" "download" "5" } } }
+  }
+})");
+  CHECK(game && source);
+  CHECK((BorrowedDepotSources(*game) == U32s{9000}));
+  SelectionResult result;
+  CHECK(SelectDepots(*game, Related(*game, {*source}), {8000}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{8001, 9001}));
+  CHECK(RejectedAs(result, 9002) == "shared");
+  // Read whole (a DLC is not trimmed), the shared listing still says where it goes.
+  CHECK(SelectDepots(*game, {*source}, {8000}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{8001, 9001}));
+}
+
+// Call of Duty: Modern Warfare Remastered (393080) takes its shared content, with steam_api64.dll, from its multiplayer
+// app (393100), which has the same install folder. Only what 393080 lists comes in: not the multiplayer binaries, nor
+// the multiplayer DLC. The Steamworks redistributables (sharedinstall 1) stay out, and their app isn't read.
+void TestModernWarfareRemasteredTakesItsSharedContent() {
+  const AppInfo mwr = Fixture(393080, "cod-mwr-393080.vdf");
+  const AppInfo mp = Fixture(393100, "cod-mwr-mp-393100.vdf");
+  CHECK((BorrowedDepotSources(mwr) == U32s{393100}));
+  const auto related = Related(mwr, {mp});
+  CHECK(related[0].depots.size() == 15 && related[0].dlc_app_ids.empty());
+  SelectionResult result;
+  CHECK(SelectDepots(mwr, related, {393080, 393100}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{393081, 393082, 393103, 393104, 393117}));
+  CHECK(RejectedAs(result, 228986) == "shared" && RejectedAs(result, 228990) == "shared");
+  for (const std::uint32_t id : {393101u, 393102u, 594970u, 393118u}) CHECK(RejectedAs(result, id).empty());
+  // The languages offered are the borrowed ones: the game's own depots are neutral.
+  CHECK(result.languages.size() == 13 && result.languages[0] == "english");
+  CHECK(OfferedDlc(mwr, related, {393080, 393100}, std::nullopt, DepotSelection{}, {}).empty());
+  const auto reports = DescribeBorrowedDepots(mwr, related, result, std::nullopt, "public");
+  CHECK(reports.size() == 17);
+  CHECK(ReportFor(reports, 228986) ==
+        "rejected depot=228986 from=228980 sharedinstall=1 manifest=not-read(shared) licence=unknown reason=shared");
+  CHECK(ReportFor(reports, 393117) ==
+        "selected depot=393117 from=393100 sharedinstall=2 manifest=393100/public licence=unknown");
+}
+
+// Half-Life 2 (220) lists its episodes' depots (380, 420) and Lost Coast's (340) from their apps, and each of those apps
+// lists Half-Life 2's depots back from 220. Reading them doesn't conflict or bring Half-Life 2's depots in twice.
+void TestHalfLife2TakesItsEpisodes() {
+  const AppInfo hl2 = Fixture(220, "hl2-220.vdf");
+  CHECK((BorrowedDepotSources(hl2) == U32s{380, 420, 340}));
+  const auto related = Related(hl2, {Fixture(380, "hl2-ep1-380.vdf"), Fixture(420, "hl2-ep2-420.vdf"),
+                                     Fixture(340, "hl2-lostcoast-340.vdf")});
+  CHECK((Ids(related[0].depots) == U32s{389, 380, 381, 382, 383, 384, 385, 386, 387, 388}));
+  CHECK((Ids(related[1].depots) == U32s{420, 421, 422, 423, 424}));
+  SelectionResult result;
+  CHECK(SelectDepots(hl2, related, {220}, std::nullopt, DepotSelection{}, &result));
+  CHECK((Ids(result.depots) == U32s{233, 234, 221, 222, 389, 380, 420, 340}));
+  CHECK(OfferedDlc(hl2, related, {220}, std::nullopt, DepotSelection{}, {}).empty());
+  DepotSelection french;
+  french.language = "french";
+  CHECK(SelectDepots(hl2, related, {220}, std::nullopt, french, &result));
+  CHECK((Ids(result.depots) == U32s{233, 234, 221, 222, 227, 389, 381, 380, 420, 421, 340, 341}));
+}
+
+// Counter-Strike (10) runs on Half-Life's files (70), hl.exe among them. Half-Life's low-violence depot stays out: a
+// borrowed depot passes the licence gate, which is what keeps it out of Half-Life itself where the region needs none.
+void TestCounterStrikeTakesHalfLife() {
+  const AppInfo cstrike = Fixture(10, "cstrike-10.vdf");
+  CHECK((BorrowedDepotSources(cstrike) == U32s{70}));
+  const auto related = Related(cstrike, {Fixture(70, "half-life-70.vdf")});
+  SelectionResult result;
+  CHECK(SelectDepots(cstrike, related, {10}, std::nullopt, DepotSelection{}, &result));
+  const auto ids = Ids(result.depots);
+  CHECK(std::find(ids.begin(), ids.end(), 2u) != ids.end());  // hl.exe's Windows depot
+  CHECK(std::any_of(result.rejected.begin(), result.rejected.end(), [](const SelectionResult::Rejected& rejected) {
+    return rejected.id == 6 && rejected.reason == "lowviolence";
+  }));
+  CHECK(ReportFor(DescribeBorrowedDepots(cstrike, related, result, std::nullopt, "public"), 6) ==
+        "rejected depot=6 from=70 sharedinstall=2 manifest=70/public licence=unknown reason=lowviolence");
 }
 
 }  // namespace
@@ -1153,6 +1312,11 @@ int main(int argc, char** argv) {
   g_fixtures = argv[1];
   TestParse();
   TestDemoInstallsTheDepotsItBorrows();
+  TestBorrowedDepotsComeFromTheirApp();
+  TestSharedInstallStaysOutOfABorrowedSource();
+  TestModernWarfareRemasteredTakesItsSharedContent();
+  TestHalfLife2TakesItsEpisodes();
+  TestCounterStrikeTakesHalfLife();
   TestParseDefaultsAndFailures();
   TestDlcForApp();
   TestSelect();

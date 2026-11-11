@@ -120,6 +120,8 @@ struct InstallOutcome {
   InstallProgress progress;
   std::string detail;  // short and identifier-free
   std::vector<std::uint32_t> skipped_depots;  // borrowed depots the account was refused, installed without
+  // What Steam answered for each depot's key and request code (DepotAccessResult::answers), also when access failed.
+  std::vector<std::pair<std::uint32_t, std::string>> depot_answers;
 };
 
 // One file an install keeps from its depots: the depot (its index in the merged list) whose entry won.

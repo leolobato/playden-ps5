@@ -1,0 +1,319 @@
+"appinfo"
+{
+	"appid"		"70"
+	"common"
+	{
+		"name"		"Half-Life"
+		"type"		"game"
+	}
+	"config"
+	{
+		"installdir"		"Half-Life"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"hl.exe"
+				"arguments"		"-steam"
+				"config"
+				{
+					"oslist"		"windows"
+				}
+			}
+			"1"
+			{
+				"executable"		"hl.sh"
+				"arguments"		"-steam"
+				"config"
+				{
+					"oslist"		"macos"
+				}
+			}
+			"2"
+			{
+				"executable"		"hl.sh"
+				"arguments"		"-steam"
+				"config"
+				{
+					"oslist"		"linux"
+				}
+			}
+		}
+	}
+	"extended"
+	{
+		"listofdlc"		"632440"
+	}
+	"depots"
+	{
+		"228988"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"depotfromapp"		"228980"
+			"sharedinstall"		"1"
+		}
+		"1"
+		{
+			"config"
+			{
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2667117727132184734"
+					"size"		"513399519"
+					"download"		"264641152"
+				}
+			}
+		}
+		"3"
+		{
+			"config"
+			{
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6081070194444336449"
+					"size"		"893958"
+					"download"		"148112"
+				}
+			}
+		}
+		"71"
+		{
+			"config"
+			{
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3982364535202188842"
+					"size"		"16428421"
+					"download"		"4188240"
+				}
+			}
+		}
+		"96"
+		{
+			"config"
+			{
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6298465564582633871"
+					"size"		"9067684"
+					"download"		"5963504"
+				}
+			}
+		}
+		"9"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1083345737969856561"
+					"size"		"55480049"
+					"download"		"19253680"
+				}
+			}
+		}
+		"8"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1360709870205537514"
+					"size"		"127612567"
+					"download"		"42477296"
+				}
+			}
+		}
+		"2"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"724247850320422500"
+					"size"		"49814373"
+					"download"		"19297632"
+				}
+			}
+		}
+		"6"
+		{
+			"config"
+			{
+				"lowviolence"		"1"
+				"language"		""
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8518478957342391261"
+					"size"		"52196711"
+					"download"		"27950128"
+				}
+			}
+		}
+		"72"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"491735997354925434"
+					"size"		"39331832"
+					"download"		"29617440"
+				}
+			}
+		}
+		"73"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3587203030189636184"
+					"size"		"54692939"
+					"download"		"36527248"
+				}
+			}
+		}
+		"74"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6929797608257779911"
+					"size"		"52412233"
+					"download"		"35264800"
+				}
+			}
+		}
+		"75"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6599379689843151742"
+					"size"		"48016168"
+					"download"		"37926368"
+				}
+			}
+		}
+		"77"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8307934900153578333"
+					"size"		"45708546"
+					"download"		"32815776"
+				}
+			}
+		}
+		"78"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2582370374354695075"
+					"size"		"45515236"
+					"download"		"33761760"
+				}
+			}
+		}
+		"79"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6488358189498321283"
+					"size"		"45707416"
+					"download"		"32815632"
+				}
+			}
+		}
+		"141"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"3921686991280371259"
+					"size"		"45052"
+					"download"		"10352"
+				}
+			}
+		}
+	}
+}

@@ -16,3 +16,8 @@ Text VDF as `ParseAppInfo` takes it (root `"appinfo"`), trimmed to the keys depo
   DX12 binaries depot; branch `4.04` carries the content and an x64 binaries depot only it lists; `legacy` uses the old
   format (a bare manifest ID) for the content only; `beta` needs a password; `secret` has only encrypted manifests; and
   `macold` has a Mac depot only.
+- `doom3-roe-9070.vdf` + `doom3-9050.vdf`, `cod-mwr-393080.vdf` + `cod-mwr-mp-393100.vdf`, `hl2-220.vdf` +
+  `hl2-ep1-380.vdf`, `hl2-ep2-420.vdf`, `hl2-lostcoast-340.vdf`, `cstrike-10.vdf` + `half-life-70.vdf`: Steam's public
+  appinfo for these apps (November 2026), trimmed to the depots, their public manifests and the launch entries. Each
+  first app lists depots of the other with `depotfromapp`, `sharedinstall 2` and no manifest; the other app holds the
+  manifests. Both apps of a pair have the same `installdir`.

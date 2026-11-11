@@ -863,6 +863,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     requests.push_back({depot.id, *depot.manifest_gid, depot.depot_from_app.has_value(), depot.source_app, target.branch});
   }
   const auto access = hooks_.access(session, target.app_id, requests, cancel);
+  outcome.depot_answers = access.answers;
   if (!access.ok()) {
     outcome.error = FromCm(access.error);
     outcome.detail = access.detail.empty() ? "depot access failed" : access.detail;

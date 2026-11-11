@@ -1,0 +1,499 @@
+"appinfo"
+{
+	"appid"		"220"
+	"common"
+	{
+		"name"		"Half-Life 2"
+		"type"		"Game"
+	}
+	"config"
+	{
+		"installdir"		"Half-Life 2"
+		"launch"
+		{
+			"0"
+			{
+				"executable"		"hl2.exe"
+				"arguments"		"-steam -game hl2_complete"
+				"config"
+				{
+					"oslist"		"windows"
+					"BetaKey"		"default"
+				}
+			}
+			"1"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-game hl2 -steam"
+				"config"
+				{
+					"oslist"		"macos"
+				}
+			}
+			"2"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-steam -game hl2_complete"
+				"config"
+				{
+					"oslist"		"linux"
+				}
+			}
+			"3"
+			{
+				"executable"		"hl2.exe"
+				"arguments"		"-steam -game hl2"
+				"config"
+				{
+					"oslist"		"windows"
+					"BetaKey"		"steam_legacy"
+				}
+			}
+			"4"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-steam -game hl2"
+				"config"
+				{
+					"oslist"		"linux"
+					"BetaKey"		"steam_legacy"
+				}
+			}
+			"5"
+			{
+				"executable"		"hl2.exe"
+				"arguments"		"-steam -game hl2_complete"
+				"config"
+				{
+					"oslist"		"windows"
+					"BetaKey"		"test"
+				}
+			}
+			"6"
+			{
+				"executable"		"hl2.sh"
+				"arguments"		"-steam -game hl2_complete"
+				"config"
+				{
+					"oslist"		"linux"
+					"BetaKey"		"test"
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"233"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1358845133936836982"
+					"size"		"3220135556"
+					"download"		"1906414992"
+				}
+			}
+		}
+		"234"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"488462887721122399"
+					"size"		"3175"
+					"download"		"944"
+				}
+			}
+		}
+		"221"
+		{
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"4622516436473900521"
+					"size"		"5437140737"
+					"download"		"2751430624"
+				}
+			}
+		}
+		"222"
+		{
+			"config"
+			{
+				"oslist"		"windows"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6432688940779947022"
+					"size"		"333424562"
+					"download"		"205502384"
+				}
+			}
+		}
+		"223"
+		{
+			"config"
+			{
+				"oslist"		"macos"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5765085572202220494"
+					"size"		"313254292"
+					"download"		"181296416"
+				}
+			}
+		}
+		"224"
+		{
+			"config"
+			{
+				"oslist"		"linux"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2413749032760673540"
+					"size"		"336987213"
+					"download"		"194427600"
+				}
+			}
+		}
+		"225"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"1805911430347137415"
+					"size"		"815201947"
+					"download"		"706746416"
+				}
+			}
+		}
+		"226"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"2714357289061426116"
+					"size"		"767863769"
+					"download"		"658763808"
+				}
+			}
+		}
+		"227"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"7050670928848178928"
+					"size"		"766271181"
+					"download"		"646144000"
+				}
+			}
+		}
+		"228"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6436857496404272512"
+					"size"		"768779276"
+					"download"		"652717808"
+				}
+			}
+		}
+		"229"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"8840945565145076094"
+					"size"		"770717838"
+					"download"		"616690080"
+				}
+			}
+		}
+		"230"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6084315296130989856"
+					"size"		"720479895"
+					"download"		"611625920"
+				}
+			}
+		}
+		"231"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"6094809064806846880"
+					"size"		"777664596"
+					"download"		"652136960"
+				}
+			}
+		}
+		"232"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"manifests"
+			{
+				"public"
+				{
+					"gid"		"5674666767121162923"
+					"size"		"768973777"
+					"download"		"661302656"
+				}
+			}
+		}
+		"389"
+		{
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"381"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"382"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"383"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"384"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"385"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"386"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"387"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"388"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"380"
+		{
+			"depotfromapp"		"380"
+			"sharedinstall"		"2"
+		}
+		"420"
+		{
+			"depotfromapp"		"420"
+			"sharedinstall"		"2"
+		}
+		"421"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"420"
+			"sharedinstall"		"2"
+		}
+		"422"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"420"
+			"sharedinstall"		"2"
+		}
+		"423"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"420"
+			"sharedinstall"		"2"
+		}
+		"424"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"420"
+			"sharedinstall"		"2"
+		}
+		"340"
+		{
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"341"
+		{
+			"config"
+			{
+				"language"		"french"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"342"
+		{
+			"config"
+			{
+				"language"		"german"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"343"
+		{
+			"config"
+			{
+				"language"		"russian"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"344"
+		{
+			"config"
+			{
+				"language"		"spanish"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"345"
+		{
+			"config"
+			{
+				"language"		"italian"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"346"
+		{
+			"config"
+			{
+				"language"		"koreana"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"347"
+		{
+			"config"
+			{
+				"language"		"schinese"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+		"348"
+		{
+			"config"
+			{
+				"language"		"tchinese"
+			}
+			"depotfromapp"		"340"
+			"sharedinstall"		"2"
+		}
+	}
+}

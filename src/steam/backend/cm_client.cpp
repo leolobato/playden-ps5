@@ -1306,67 +1306,103 @@ DepotAccessResult CmClient::FetchDepotAccess(const StoredSession& stored, std::u
   auto& session = lease.session;
   // Each depot's key and manifest request code result, with Steam's EResult, for every install.
   for (const auto& depot : depots) {
-    // A DLC app's own depot is asked for under that app.
-    const std::uint32_t depot_app = depot.app_id ? depot.app_id : app_id;
-    auto note = [this, depot_app](const char* step, std::uint32_t depot_id, const std::string& outcome) {
-      Log(std::string("step=") + step + " app=" + std::to_string(depot_app) + " depot=" + std::to_string(depot_id) +
-          " " + outcome);
+    // A DLC app's own depot is asked for under that app. A borrowed one Steam refuses under the app that lists
+    // it is asked again under the game before it is skipped.
+    std::vector<std::uint32_t> ask_under{depot.app_id ? depot.app_id : app_id};
+    if (depot.optional && ask_under[0] != app_id) ask_under.push_back(app_id);
+    std::string answer;
+    const auto answered = [&](std::uint32_t depot_app, const std::string& text) {
+      answer += (answer.empty() ? "" : " then ") + std::string("app=") + std::to_string(depot_app) + " " + text;
     };
-    DepotGrant grant;
-    grant.depot_id = depot.depot_id;
-    grant.manifest_gid = depot.manifest_gid;
-    std::vector<std::uint8_t> reply;
-    if (const auto call = session->Call(cm::kEMsgClientGetDepotDecryptionKey, {},
-                                        cm::EncodeDepotKeyRequest(depot.depot_id, depot_app),
-                                        cm::kEMsgClientGetDepotDecryptionKeyResponse, &reply);
-        call != CmError::kNone) {
-      // Steam's EResult rides only on a refusal; other failures never reached it.
-      note("depot_key", depot.depot_id,
-           std::string("error=") + CmErrorName(call) +
-               (call == CmError::kRejected ? " eresult=" + std::to_string(session->last_eresult()) : ""));
-      return finish(call);
+    const auto settle = [&] { result.answers.emplace_back(depot.depot_id, answer); };
+    bool granted = false;
+    for (std::size_t attempt = 0; attempt < ask_under.size() && !granted; ++attempt) {
+      const std::uint32_t depot_app = ask_under[attempt];
+      const bool last = attempt + 1 == ask_under.size();
+      auto note = [this, depot_app](const char* step, std::uint32_t depot_id, const std::string& outcome) {
+        Log(std::string("step=") + step + " app=" + std::to_string(depot_app) + " depot=" + std::to_string(depot_id) +
+            " " + outcome);
+      };
+      DepotGrant grant;
+      grant.depot_id = depot.depot_id;
+      grant.manifest_gid = depot.manifest_gid;
+      std::vector<std::uint8_t> reply;
+      if (const auto call = session->Call(cm::kEMsgClientGetDepotDecryptionKey, {},
+                                          cm::EncodeDepotKeyRequest(depot.depot_id, depot_app),
+                                          cm::kEMsgClientGetDepotDecryptionKeyResponse, &reply);
+          call != CmError::kNone) {
+        // Steam's EResult rides only on a refusal; other failures never reached it.
+        const auto text = std::string("error=") + CmErrorName(call) +
+                          (call == CmError::kRejected ? " eresult=" + std::to_string(session->last_eresult()) : "");
+        note("depot_key", depot.depot_id, text);
+        answered(depot_app, "key " + text);
+        settle();
+        return finish(call);
+      }
+      cm::DepotKeyResponse key;
+      if (!cm::DecodeDepotKeyResponse(reply, &key)) {
+        note("depot_key", depot.depot_id, "error=protocol");
+        answered(depot_app, "key error=protocol");
+        settle();
+        return finish(CmError::kProtocol);
+      }
+      if (key.eresult == cm::kEResultAccessDenied && depot.optional) {
+        // The last refusal skips the depot (Slay the Spire's 877621 for an account without the app it comes from).
+        // Any other result is no answer about the licence: it stops the install, so an update keeps the files.
+        note("depot_key", depot.depot_id,
+             std::string("result=") + (last ? "skipped" : "refused") + " eresult=" + std::to_string(key.eresult));
+        answered(depot_app, "key=refused eresult=" + std::to_string(key.eresult));
+        continue;
+      }
+      if (key.eresult != cm::kEResultOk) {
+        note("depot_key", depot.depot_id, "result=refused eresult=" + std::to_string(key.eresult));
+        answered(depot_app, "key=refused eresult=" + std::to_string(key.eresult));
+        settle();
+        result.detail = "depot key refused eresult=" + std::to_string(key.eresult);
+        return finish(CmError::kRejected);
+      }
+      if (key.depot_id != depot.depot_id || key.key.size() != grant.key.size()) {
+        note("depot_key", depot.depot_id, "error=protocol");
+        answered(depot_app, "key error=protocol");
+        settle();
+        return finish(CmError::kProtocol);
+      }
+      note("depot_key", depot.depot_id, "result=ok");
+      std::copy(key.key.begin(), key.key.end(), grant.key.begin());
+      reply.clear();
+      if (const auto call = session->ServiceMethod(
+              "ContentServerDirectory.GetManifestRequestCode#1",
+              cm::EncodeManifestRequestCodeRequest(depot_app, depot.depot_id, depot.manifest_gid, depot.branch), &reply);
+          call != CmError::kNone) {
+        const auto eresult = std::to_string(session->last_eresult());
+        const bool refused = call == CmError::kRejected;
+        const auto text = std::string("error=") + CmErrorName(call) + (refused ? " eresult=" + eresult : "");
+        note("manifest_code", depot.depot_id, text);
+        answered(depot_app, "key=ok code " + text);
+        // A borrowed depot's request code denied is a refusal like its key's.
+        if (refused && depot.optional && session->last_eresult() == cm::kEResultAccessDenied) continue;
+        settle();
+        if (refused) result.detail = "manifest request code refused eresult=" + eresult;
+        return finish(call);
+      }
+      if (!cm::DecodeManifestRequestCodeResponse(reply, &grant.manifest_request_code) ||
+          grant.manifest_request_code == 0) {
+        note("manifest_code", depot.depot_id, "result=refused code=0");
+        answered(depot_app, "key=ok code=0");
+        settle();
+        result.detail = "manifest request code refused";
+        return finish(CmError::kRejected);
+      }
+      note("manifest_code", depot.depot_id, "result=ok");
+      answered(depot_app, "key=ok code=ok");
+      result.grants.push_back(grant);
+      granted = true;
     }
-    cm::DepotKeyResponse key;
-    if (!cm::DecodeDepotKeyResponse(reply, &key)) {
-      note("depot_key", depot.depot_id, "error=protocol");
-      return finish(CmError::kProtocol);
-    }
-    if (key.eresult == cm::kEResultAccessDenied && depot.optional) {
-      note("depot_key", depot.depot_id, "result=skipped eresult=" + std::to_string(key.eresult));
+    if (!granted) {
+      answer += " skipped";
       result.skipped.push_back(depot.depot_id);
-      continue;
     }
-    if (key.eresult != cm::kEResultOk) {
-      note("depot_key", depot.depot_id, "result=refused eresult=" + std::to_string(key.eresult));
-      result.detail = "depot key refused eresult=" + std::to_string(key.eresult);
-      return finish(CmError::kRejected);
-    }
-    if (key.depot_id != depot.depot_id || key.key.size() != grant.key.size()) {
-      note("depot_key", depot.depot_id, "error=protocol");
-      return finish(CmError::kProtocol);
-    }
-    note("depot_key", depot.depot_id, "result=ok");
-    std::copy(key.key.begin(), key.key.end(), grant.key.begin());
-    reply.clear();
-    if (const auto call = session->ServiceMethod(
-            "ContentServerDirectory.GetManifestRequestCode#1",
-            cm::EncodeManifestRequestCodeRequest(depot_app, depot.depot_id, depot.manifest_gid, depot.branch), &reply);
-        call != CmError::kNone) {
-      const auto eresult = std::to_string(session->last_eresult());
-      const bool refused = call == CmError::kRejected;
-      note("manifest_code", depot.depot_id,
-           std::string("error=") + CmErrorName(call) + (refused ? " eresult=" + eresult : ""));
-      if (refused) result.detail = "manifest request code refused eresult=" + eresult;
-      return finish(call);
-    }
-    if (!cm::DecodeManifestRequestCodeResponse(reply, &grant.manifest_request_code) ||
-        grant.manifest_request_code == 0) {
-      note("manifest_code", depot.depot_id, "result=refused code=0");
-      result.detail = "manifest request code refused";
-      return finish(CmError::kRejected);
-    }
-    note("manifest_code", depot.depot_id, "result=ok");
-    result.grants.push_back(grant);
+    settle();
   }
   return finish(CmError::kNone);
 }
