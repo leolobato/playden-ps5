@@ -2127,11 +2127,7 @@ rt::KitCapabilities RuntimeHost::TitleKit(const Composition& c, const rt::Runtim
   if (!c.kit) return {};
   const auto kit = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
   // The title's markers are read only when the kit has something an older runtime would refuse.
-  return kit.display_120hz || kit.profile_version_2 || kit.input_rumble || kit.display_framegen || kit.display_fps_counter ||
-                 kit.launcher_mode || kit.input_playstation || kit.game_root_usb_search || kit.title_notify ||
-                 kit.touchpad_switch
-             ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record))
-             : kit;
+  return rt::KitDependsOnTitleRuntime(kit) ? rt::KitForTitleRuntime(kit, TitleRuntimeCurrent(c, record)) : kit;
 }
 
 // With no working folder set, the profile runs the program from its own folder

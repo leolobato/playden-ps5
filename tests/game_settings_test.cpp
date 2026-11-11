@@ -337,6 +337,20 @@ int main(int argc, char** argv) {
     chain_features.launcher_chain_off = true;
     CHECK(!CheckProsperoProfile("[application]\n\n[launcher]\nchain = on\n", &why, chain_features));
   }
+  // A kit whose only newer capability needs the title on its runtime still makes the host read the title's markers:
+  // otherwise a profile line the older title refuses goes out (helper-process alone once skipped the check).
+  {
+    for (const char* name : {kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble, kKitDisplayFramegen, kKitDisplayFpsCounter,
+                             kKitLauncherMode, kKitTouchpadSwitch, kKitInputPlaystation, kKitTitleNotify, kKitHelperProcess,
+                             kKitGameRootUsbSearch, kKitLaunchArguments4096, kKitLargeAddressAware, kKitNsiproxySwitch,
+                             kKitEnvironmentFileBudgets}) {
+      if (!KitDependsOnTitleRuntime(KitCapabilitiesFromManifest({name}, false)))
+        std::fprintf(stderr, "%s alone doesn't check the title's runtime\n", name);
+      CHECK(KitDependsOnTitleRuntime(KitCapabilitiesFromManifest({name}, false)));
+    }
+    CHECK(!KitDependsOnTitleRuntime(KitCapabilities{}));
+    CHECK(!KitDependsOnTitleRuntime(KitCapabilitiesFromManifest({kKitDxvkConfig, kKitWineMono, kKitOpenGLZink}, true)));
+  }
   // Steam features = Online: with a runtime that runs a helper, the profile starts the Steam host beside the game and
   // holds the game until it is ready; without one, nothing is written. The section is refused unless the renderer says so.
   {

@@ -20,11 +20,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
 #include <optional>
 #include <set>
+#include <type_traits>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
@@ -3910,6 +3912,14 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.environment_file_budgets = has(kKitEnvironmentFileBudgets);
   kit.registry = bottle_access;
   return kit;
+}
+
+bool KitDependsOnTitleRuntime(const KitCapabilities& kit) {
+  // Byte for byte: every member is a bool, so equal capabilities have equal bytes, and a capability added to
+  // KitForTitleRuntime counts here without a second list to keep in step.
+  static_assert(std::has_unique_object_representations_v<KitCapabilities>, "KitCapabilities holds only bools");
+  const auto older = KitForTitleRuntime(kit, false);
+  return std::memcmp(&older, &kit, sizeof kit) != 0;
 }
 
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current) {

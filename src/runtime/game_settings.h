@@ -872,6 +872,9 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation and
 // title_notify are off and their _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
+// Whether any capability the kit has counts only for a title on its runtime: whether KitForTitleRuntime would turn
+// something off for an older title. Reading the title's markers is worth it only then.
+bool KitDependsOnTitleRuntime(const KitCapabilities& kit);
 
 // Everything one game's settings put on disk for its next launch.
 struct SettingsLaunchPlan {
