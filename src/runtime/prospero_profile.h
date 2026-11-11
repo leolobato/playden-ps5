@@ -85,6 +85,7 @@ struct ProsperoProfileFeatures {
   bool display_framegen = false;     // [display] framegen = off|2|3|4 (kit capability display-framegen)
   bool display_fps_counter = false;  // [display] fps_counter = true|false (kit capability display-fps-counter)
   bool launcher_section = false;     // [launcher] (kit launcher-mode)
+  bool launcher_chain_off = false;   // [launcher] chain = off (kit capability touchpad-switch)
   bool helper_section = false;       // [helper] program, ready, wait (kit capability helper-process)
   bool input_playstation = false;    // [input] mode = playstation (kit capability input-playstation)
   bool runtime_version = false;      // [runtime] version = 1|2 (kit capability profile-version-2)

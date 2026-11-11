@@ -42,6 +42,8 @@ int main(int argc, char** argv) {
   CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitDisplay120Hz) == 1);
   // A kit whose title shows the online bridge's notifications is admitted with that capability too.
   CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitTitleNotify) == 1);
+  // And one whose title swaps presets with the touchpad: otherwise Touchpad hold never turns on.
+  CHECK(std::count(config.known_capabilities.begin(), config.known_capabilities.end(), kKitTouchpadSwitch) == 1);
   CHECK(std::is_sorted(config.known_capabilities.begin(), config.known_capabilities.end()));
 
   const std::filesystem::path root = argv[2];

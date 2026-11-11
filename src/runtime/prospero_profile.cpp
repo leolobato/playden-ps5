@@ -371,8 +371,11 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         return fail("unknown [helper] key " + key);
       }
     } else if (section == "launcher") {
-      // The first program's input, written out: as [input], without a preset file.
-      if (key == "label" || key == "game_label") {
+      // The first program's input, written out: as [input], without a preset file. chain = off: no launcher, only
+      // the touchpad switch to these lines.
+      if (key == "chain" && features.launcher_chain_off) {
+        if (value != "off") return bad("not off");
+      } else if (key == "label" || key == "game_label") {
         if (value.empty() || value.size() >= 32 ||
             value.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -") != std::string_view::npos)
           return bad("not a short name");

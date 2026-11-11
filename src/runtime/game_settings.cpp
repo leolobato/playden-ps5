@@ -157,6 +157,14 @@ std::vector<SettingDefinition> BuildCatalogue() {
                          {"mouse", "Mouse", "Left stick moves the pointer; Cross clicks, Circle right-clicks, Options Enter."},
                          {"arrows", "Arrow keys", "D-pad sends the arrows; Cross Z, Circle X, Triangle C, Options Enter."}},
                         "none"));
+  // A second preset for menus the controller can't use, a hold away; the [launcher] lines with chain = off.
+  list.push_back(Choice("touchpad_hold", "Touchpad hold",
+                        "Hold the touchpad for 2 seconds to swap to another preset, for menus.", "", G::kControls,
+                        {{"off", "Off", "The touchpad works as the game's own button."},
+                         {"mouse", "Switch to Mouse",
+                          "Left stick moves the pointer; Cross clicks, Circle right-clicks, D-pad sends keyboard arrows, "
+                          "Triangle Esc. Hold the touchpad again to go back."}},
+                        "off"));
   // Controls › Button mapping.
   static const std::map<std::string, std::string> button_names = {
       {"cross", "Cross"},   {"circle", "Circle"}, {"square", "Square"},   {"triangle", "Triangle"},
@@ -654,6 +662,13 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     if (id == "launcher_controller_preset" && values.at("start_through_launcher").value != "on")
       return "Turn on Start through a launcher first.";
   }
+  if (id == "touchpad_hold") {
+    if (kit.touchpad_switch_needs_update) return kAppliesAfterKitUpdate;
+    if (!kit.touchpad_switch) return "Needs a newer runtime kit that switches presets with the touchpad.";
+    if (const auto launcher = values.find("start_through_launcher");
+        launcher != values.end() && launcher->second.available && launcher->second.value == "on")
+      return "Start through a launcher already switches presets with the touchpad.";
+  }
   if (id == "performance_overlay" && graphics == "gdi") return "Only available with DXVK or OpenGL.";
   // DXVK's overlay is drawn by its Direct3D 9-11 presenter, not by vkd3d-proton's swapchain, so a Direct3D 12 game gets
   // the driver's counter, which is only the frame rate, from a runtime that has it. The Direct3D 12 row comes
@@ -720,6 +735,14 @@ const std::map<std::string, std::map<std::string, std::string>>& ControllerPrese
       {"mouse", {{"cross", "mouse_left"}, {"circle", "mouse_right"}, {"square", "mouse_middle"}, {"r2", "mouse_left"},
                  {"l2", "mouse_right"}, {"options", "enter"}}},
   };
+  return buttons;
+}
+
+const std::map<std::string, std::string>& TouchpadMenuButtons() {
+  static const std::map<std::string, std::string> buttons = {
+      {"cross", "mouse_left"}, {"circle", "mouse_right"}, {"square", "mouse_middle"}, {"r2", "mouse_left"},
+      {"l2", "mouse_right"},   {"options", "enter"},      {"triangle", "escape"},     {"up", "up"},
+      {"down", "down"},        {"left", "left"},          {"right", "right"}};
   return buttons;
 }
 
@@ -1437,6 +1460,24 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     for (const auto& button : ProsperoButtons())
       if (buttons.count(button)) text += button + " = " + buttons.at(button) + "\n";
   }
+  // Touchpad hold: the same section without a launcher. The game starts on [input]; holding the touchpad swaps to the
+  // menu preset written out here, and back. Start through a launcher has its own switch, so it wins.
+  const auto& touchpad_hold = OptionalValue(settings, "touchpad_hold");
+  const bool touchpad_section = !launcher_section && touchpad_hold.available && touchpad_hold.value == "mouse";
+  if (touchpad_section) {
+    text += "\n[launcher]\nchain = off\nlabel = Mouse\n";
+    if (value("controller_preset") != "none") {
+      for (const auto& option : FindSetting("controller_preset")->choices)
+        if (option.value == value("controller_preset")) text += "game_label = " + option.label + "\n";
+    } else {
+      text += "game_label = Game controls\n";
+    }
+    text += "mode = keyboard\nmouse = left_stick\nmouse_speed = 900\n";
+    for (const auto& button : ProsperoButtons()) {
+      const auto binding = TouchpadMenuButtons().find(button);
+      if (binding != TouchpadMenuButtons().end()) text += button + " = " + binding->second + "\n";
+    }
+  }
 
   const bool audio_section = settings.values.at("volume").available && value("volume") != "100";
   if (audio_section) text += "\n[audio]\nvolume = " + value("volume") + "\n";
@@ -1568,7 +1609,8 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them; such a runtime
   // also takes a profile up to 16384 bytes with short arguments.
   features.long_arguments = settings.long_profile || settings.arguments.size() > kProsperoMaxArgumentBytes;
-  features.launcher_section = launcher_section;
+  features.launcher_section = launcher_section || touchpad_section;
+  features.launcher_chain_off = touchpad_section;
   features.helper_section = helper_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
@@ -3826,7 +3868,7 @@ const std::vector<std::string>& SettingsKitCapabilityNames() {
                                                  kKitHelperProcess, kKitInputPlaystation, kKitInputRumble,
                                                  kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
                                                  kKitInputTuning, kKitInputWheel, kKitEnvironment,
-                                                 kKitTitleNotify};
+                                                 kKitTitleNotify, kKitTouchpadSwitch};
   return names;
 }
 
@@ -3858,6 +3900,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.display_framegen = has(kKitDisplayFramegen);
   kit.display_fps_counter = has(kKitDisplayFpsCounter);
   kit.launcher_mode = has(kKitLauncherMode);
+  kit.touchpad_switch = has(kKitTouchpadSwitch);
   kit.input_playstation = has(kKitInputPlaystation);
   kit.title_notify = has(kKitTitleNotify);
   kit.helper_process = has(kKitHelperProcess);
@@ -3895,6 +3938,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.launcher_mode) {
     kit.launcher_mode = false;
     kit.launcher_mode_needs_update = true;
+  }
+  if (!title_runtime_current && kit.touchpad_switch) {
+    kit.touchpad_switch = false;
+    kit.touchpad_switch_needs_update = true;
   }
   if (!title_runtime_current && kit.input_playstation) {
     kit.input_playstation = false;

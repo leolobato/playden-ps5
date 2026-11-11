@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
         "launch_option", "program", "start_through_launcher", "launcher_controller_preset", "extra_arguments",
         "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
-        "controller", "controller_preset",
+        "controller", "controller_preset", "touchpad_hold",
         "pointer_stick", "pointer_speed", "stick_deadzone", "rumble", "invert_stick", "trigger_deadzone", "wheel_stick",
         "volume",
         "start_check",
@@ -284,6 +284,58 @@ int main(int argc, char** argv) {
     launcher_features.launcher_section = true;
     const std::string bad_label = std::string("[application]\n") + "\n[launcher]\nlabel = a\"b\n";
     CHECK(!CheckProsperoProfile(bad_label, &why, launcher_features));
+  }
+  // Touchpad hold: the menu preset a touchpad hold swaps to, without a launcher ([launcher] chain = off). Only with the
+  // kit and a title on its runtime; Start through a launcher has its own switch and wins.
+  {
+    const auto touchpad_kit = KitCapabilitiesFromManifest({kKitTouchpadSwitch, kKitLauncherMode}, false);
+    CHECK(touchpad_kit.touchpad_switch && !KitCapabilitiesFromManifest({kKitLauncherMode}, false).touchpad_switch);
+    const auto older_title = KitForTitleRuntime(touchpad_kit, false);
+    CHECK(!older_title.touchpad_switch && older_title.touchpad_switch_needs_update);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, touchpad_kit, &settings, &error));
+    CHECK(settings.values.at("touchpad_hold").value == "off" && settings.values.at("touchpad_hold").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[launcher]") == std::string::npos);
+    // On: the game keeps its own [input]; the menu preset is written out, with the D-pad as arrows and Triangle as Esc.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"touchpad_hold", "mouse"}}, touchpad_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[launcher]\nchain = off\nlabel = Mouse\ngame_label = Game controls\nmode = keyboard\n"
+                            "mouse = left_stick\nmouse_speed = 900\ncross = mouse_left\ncircle = mouse_right\n"
+                            "square = mouse_middle\ntriangle = escape\nl2 = mouse_right\nr2 = mouse_left\nup = up\n"
+                            "down = down\nleft = left\nright = right\noptions = enter\n") != std::string::npos);
+    CHECK(profile.text.find("\n[input]\nmode = xinput\nmouse = none\n") != std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"touchpad_hold", "mouse"}, {"controller_preset", "gamepad"}}, touchpad_kit,
+                                 &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[launcher]\nchain = off\nlabel = Mouse\ngame_label = Gamepad\n") != std::string::npos);
+    // Start through a launcher: one section, the launcher's, and the row says why it is off.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"touchpad_hold", "mouse"}, {"start_through_launcher", "on"}}, touchpad_kit,
+                                 &settings, &error));
+    CHECK(!settings.values.at("touchpad_hold").available &&
+          settings.values.at("touchpad_hold").reason ==
+              "Start through a launcher already switches presets with the touchpad.");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("chain = off") == std::string::npos &&
+          profile.text.find("[launcher]") == profile.text.rfind("[launcher]") && profile.text.find("[launcher]") != std::string::npos);
+    // Without the kit, or with a title on an older runtime, the row is off and nothing is written.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"touchpad_hold", "mouse"}}, KitCapabilities{}, &settings, &error));
+    CHECK(!settings.values.at("touchpad_hold").available &&
+          settings.values.at("touchpad_hold").reason == "Needs a newer runtime kit that switches presets with the touchpad.");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[launcher]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"touchpad_hold", "mouse"}}, older_title, &settings, &error));
+    CHECK(!settings.values.at("touchpad_hold").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[launcher]") == std::string::npos);
+    // chain = off is only accepted when the renderer says so, and only as off.
+    std::string why;
+    ProsperoProfileFeatures launcher_only;
+    launcher_only.launcher_section = true;
+    const std::string chain_off = "[application]\n\n[launcher]\nchain = off\n";
+    CHECK(!CheckProsperoProfile(chain_off, &why, launcher_only));
+    ProsperoProfileFeatures chain_features = launcher_only;
+    chain_features.launcher_chain_off = true;
+    CHECK(!CheckProsperoProfile("[application]\n\n[launcher]\nchain = on\n", &why, chain_features));
   }
   // Steam features = Online: with a runtime that runs a helper, the profile starts the Steam host beside the game and
   // holds the game until it is ready; without one, nothing is written. The section is refused unless the renderer says so.
@@ -2876,6 +2928,12 @@ int main(int argc, char** argv) {
       CHECK(!BuildCommunityRecipe(from_generated, chosen, kHalfLife2, "Half-Life 2").recipe.defaults.count("steam_input"));
       CHECK(BuildEffectiveSettings(from_generated, nullptr, {{"steam_input", "off"}}, KitCapabilities{}, &chosen, &error));
       CHECK(BuildCommunityRecipe(from_generated, chosen, kHalfLife2, "Half-Life 2").recipe.defaults.at("steam_input") == "off");
+      // Touchpad hold came later still: off stays out of a share, a player's choice goes with it.
+      const auto touchpad_kit = KitCapabilitiesFromManifest({kKitTouchpadSwitch}, false);
+      CHECK(BuildEffectiveSettings(from_generated, nullptr, {}, touchpad_kit, &chosen, &error));
+      CHECK(!BuildCommunityRecipe(from_generated, chosen, kHalfLife2, "Half-Life 2").recipe.defaults.count("touchpad_hold"));
+      CHECK(BuildEffectiveSettings(from_generated, nullptr, {{"touchpad_hold", "mouse"}}, touchpad_kit, &chosen, &error));
+      CHECK(BuildCommunityRecipe(from_generated, chosen, kHalfLife2, "Half-Life 2").recipe.defaults.at("touchpad_hold") == "mouse");
     }
     // Registry values and requirements stay with the game when it is exported.
     auto with_extras = from_generated;

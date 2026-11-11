@@ -103,6 +103,10 @@ struct KitCapabilities {
   bool environment_file_budgets_needs_update = false;
   bool launcher_mode = false;  // [launcher]: the game starts through a launcher (kKitLauncherMode)
   bool launcher_mode_needs_update = false;  // the kit has it, but the game's title still runs an older runtime
+  // [launcher] chain = off: holding the touchpad swaps to a second preset, without a launcher (kKitTouchpadSwitch).
+  // Counts only for a title that runs this kit's runtime, like launcher_mode.
+  bool touchpad_switch = false;
+  bool touchpad_switch_needs_update = false;
   bool display_framegen_needs_update = false;
   // [input] mode = playstation: the game finds the DualSense as a DualShock 4 on its HID bus, and no XInput
   // controller. Counts only for a title that runs this kit's runtime, like display_120hz.
@@ -159,6 +163,9 @@ bool SettingChoiceOffered(std::string_view id, std::string_view value);
 // The rows a controller preset sets, by preset id: setting id → value.
 const std::map<std::string, std::map<std::string, std::string>>& ControllerPresetInputs();
 const std::map<std::string, std::map<std::string, std::string>>& ControllerPresetButtons();
+// Touchpad hold's menu preset, the [launcher] buttons it writes: the Mouse preset's clicks, the D-pad as keyboard
+// arrows and Triangle as Esc.
+const std::map<std::string, std::string>& TouchpadMenuButtons();
 const std::vector<std::string>& ProsperoButtons();
 
 struct LaunchEntry {
@@ -839,6 +846,9 @@ inline constexpr const char* kKitDisplayFpsCounter = "display-fps-counter";
 // The title reads [launcher]: the exec chain only for a game that asks for it, a second input for the first
 // program, and the touchpad hold that swaps them. Runtimes without it refuse a profile with the section.
 inline constexpr const char* kKitLauncherMode = "launcher-mode";
+// The title reads [launcher] chain = off: no exec chain, the game starts on [input], and holding the touchpad swaps to
+// the [launcher] lines and back (Touchpad hold). Runtimes without it refuse a profile with the key.
+inline constexpr const char* kKitTouchpadSwitch = "touchpad-switch";
 // The title takes [input] mode = playstation: the game's Wine finds the DualSense as a wired DualShock 4 on its HID
 // bus, with the controller's own reports, and XInput reports no controller. Runtimes without it refuse the value.
 inline constexpr const char* kKitInputPlaystation = "input-playstation";
