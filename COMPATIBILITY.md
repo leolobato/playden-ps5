@@ -658,6 +658,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 
 | Kit | What changed for games |
 | --- | --- |
+| 0.24 | Project Zomboid no longer runs out of open files: the runtime kit watches its folders itself. Game settings › Touchpad hold can swap to a mouse preset while the game runs. Bottles need no Recreate. |
 | 0.23 | Euro Truck Simulator 2 starts with many mods or with all its DLCs, and creates and loads profiles: files a game reads through an I/O completion port no longer use up the open-file limit. Bottles need no Recreate. |
 | 0.22 | Fallout's intro movies play at their full speed: code that rewrites itself every frame no longer slows the translator down. Game settings › Network adapters › Off keeps a 64-bit game from listing the console's network adapters, for a game that hangs at start with them. Bottles need no Recreate. |
 | 0.21 | 32-bit games can have 4 GB of address space (Game settings › Address space › 4 GB), launch arguments can be 4096 characters, and Environment variables take `WINE_LARGE_ADDRESS_AWARE` and the open-file budgets. BIT.TRIP RUNNER and other games that compile D3DX effects start, Unreal games that check for a mouse (Chained Together) take clicks, Slay the Spire no longer reports a network error, Fallout runs on the translator, and Metro 2033 Redux starts (DXVK 2.6.2 with a shared-fence fix). New game setups have Arial, Times New Roman and Courier New. Games keep working with no Recreate; use Recreate bottle on a game set up before to get the new fonts and DXVK. |
