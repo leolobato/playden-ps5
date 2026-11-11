@@ -49,7 +49,10 @@ void check(bool condition, const char* message) {
     }
 }
 
+bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key);
+
 void activate(Simulation& model, const std::string& key) {
+    settings_page_with(model, key);
     check(model.action("focus:" + key), "requested live row must exist");
     check(model.action("cross"), "requested live row must activate");
 }
@@ -230,7 +233,41 @@ void settings_survive_account_restore_and_cache_action_is_honest(const std::file
           "live settings wait until the game has a prepared PS5 title");
 }
 
-const playden::homebrew::ViewRow* find_row(const Simulation& model, const std::string& key) {
+// Game settings has two pages: the summary, and over it the list that Change settings… opens. Tests name rows on
+// either page; this goes to the page that has the row, as a player would, and stays put when neither has it.
+bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key) {
+    const auto shown = [&] {
+        for (const auto& row : simulation.view().rows)
+            if (row.key == key) return true;
+        return false;
+    };
+    if (shown()) return true;
+    const auto& modals = simulation.state().navigation.modals;
+    if (modals.empty()) return false;
+    // A row on neither page leaves the page and its focus as they were.
+    const std::string start_id = modals.back().id;
+    const std::string start_focus = simulation.state().navigation.focus_key;
+    const auto restore = [&] {
+        if (!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == start_id)
+            simulation.action("focus:" + start_focus);
+        return false;
+    };
+    if (modals.back().id == "game-settings-list") {
+        simulation.action("circle");
+        if (shown()) return true;
+        simulation.action("focus:change-settings");
+        simulation.action("cross");
+    } else if (modals.back().id == "game-settings" && simulation.action("focus:change-settings") && simulation.action("cross")) {
+        if (shown()) return true;
+        simulation.action("circle");
+    } else {
+        return false;
+    }
+    return shown() || restore();
+}
+
+const playden::homebrew::ViewRow* find_row(Simulation& model, const std::string& key) {
+    settings_page_with(model, key);
     const auto& rows = model.view().rows;
     const auto found = std::find_if(rows.begin(), rows.end(), [&key](const auto& row) { return row.key == key; });
     return found == rows.end() ? nullptr : &*found;
@@ -793,6 +830,8 @@ void live_settings_follow_the_prepared_title(const std::filesystem::path& base) 
 
     activate(model, "setting-resolution");
     activate(model, "choice-0");
+    check(model.action("circle") && model.state().navigation.modals.back().id == "game-settings", "back from the list");
+    check(model.TakeMaintenanceRequests().empty(), "leaving the list applies nothing yet");
     check(model.action("circle"), "close the settings sheet");
     check(model.TakeMaintenanceRequests() ==
               std::vector<std::pair<playden::homebrew::GameId, MaintenanceKind>>{{SteamId(220), MaintenanceKind::ApplySettings}},
@@ -891,7 +930,7 @@ void live_saved_settings_stay_ahead_of_the_title(const std::filesystem::path& ba
     activate(model, "game-settings");
     activate(model, "setting-resolution");
     activate(model, "choice-0");
-    check(model.action("circle"), "behind: close the settings sheet");
+    check(model.action("circle") && model.action("circle"), "behind: close the list and the settings sheet");
     check(read_revision(SteamId(240)) == 2, "a change that reaches the title's revision is saved above it");
     check(find_row(model, "game-settings")->subtitle == "Changes apply on next launch",
           "the lifted change waits for the next launch");
@@ -950,7 +989,7 @@ void live_program_change_applies_like_other_settings(const std::filesystem::path
     check(find_row(model, "setting-launch_option")->badge.empty() &&
               find_row(model, "setting-launch_option")->value == "FalloutNV.exe",
           "program: the Program row is an ordinary setting");
-    check(model.action("circle") && model.state().navigation.modals.size() == 1 &&
+    check(model.action("circle") && model.action("circle") && model.state().navigation.modals.size() == 1 &&
               model.state().navigation.modals.back().id == "context",
           "program: closing the sheet asks nothing");
     check(model.TakeMaintenanceRequests() == Requests{{SteamId(22380), MaintenanceKind::ApplySettings}},
@@ -968,7 +1007,7 @@ void live_program_change_applies_like_other_settings(const std::filesystem::path
           "picker: the choice is named by its program, not its id, and applies on next launch");
     activate(model, "value-reset");
     check(find_row(model, "setting-launch_option")->value == "Fallout: New Vegas", "program: reset goes back to Steam's");
-    check(model.action("circle") && model.state().navigation.modals.back().id == "context" &&
+    check(model.action("circle") && model.action("circle") && model.state().navigation.modals.back().id == "context" &&
               model.TakeMaintenanceRequests() == Requests{{SteamId(22380), MaintenanceKind::ApplySettings}},
           "program: the reset applies the same way");
 }
@@ -1615,8 +1654,9 @@ void live_names_program_found_instead_of_steam_default(const std::filesystem::pa
     activate(model, "details-more");
     activate(model, "game-settings");
     (void)model.TakeActivityRequests();
-    check(find_row(model, "setting-launch_option")->subtitle ==
-              "Found in the game's files: Steam's default program only starts the game.",
+    // The list opens on the Program row, which then also names its technical keys.
+    check(find_row(model, "setting-launch_option")->subtitle.rfind(
+              "Found in the game's files: Steam's default program only starts the game.", 0) == 0,
           "swap: the Program row says why");
     activate(model, "setting-launch_option");
     activate(model, "choice-1");
@@ -2440,6 +2480,7 @@ void live_imported_game_steam_app_id(const std::filesystem::path& base) {
               !find_view_row(model, "uninstall") && !find_view_row(model, "manage-saves"),
           "an imported game playing in place has Game settings and Remove from library, no Saves link");
     activate(model, "game-settings");
+    activate(model, "change-settings");
     const auto* row = find_view_row(model, "steam-app-id");
     check(row && row->title == "Steam app ID" && row->value == "None" &&
               row->subtitle == "Only for games that need Steam. Most run without it." && find_view_row(model, "setting-launch_option"),

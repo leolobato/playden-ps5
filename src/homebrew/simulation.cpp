@@ -746,7 +746,10 @@ std::uint32_t parse_dlc_action(std::string_view action, std::string_view prefix 
 constexpr const char* kAccountLinkTitle = "Link a Playden account";
 static bool is_account_link_dialog(const ModalEntry& modal) { return modal.id == "confirmation" && modal.title == kAccountLinkTitle; }
 
-bool SheetDecoration(const std::string& key) { return key.rfind("heading-", 0) == 0 || key == "divider"; }
+// The Game settings summary's lines (summary-*) are text too.
+bool SheetDecoration(const std::string& key) {
+    return key.rfind("heading-", 0) == 0 || key == "divider" || key.rfind("summary-", 0) == 0;
+}
 
 std::string action_label(const std::string& key) {
     static const std::map<std::string, std::string> labels = {
@@ -774,7 +777,7 @@ std::string action_label(const std::string& key) {
         {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
         {"heading-reason", "What went wrong"}, {"heading-report", "Report"}, {"heading-recipe", "Recipe"},
         {"shared-recipe", "Shared recipe"}, {"sharing-reset-confirm", "Reset"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"save-my-preset", "Save as my preset…"},
+        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"change-settings", "Change settings…"}, {"heading-your-changes", "Your changes"}, {"save-my-preset", "Save as my preset…"},
         {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
@@ -6809,7 +6812,8 @@ void Simulation::rebuild_view() {
         // The chooser opened from the Install sheet is for the game being installed.
         const GameId settings_game = modal.id == "preset-picker" && chooser_game_.valid() ? chooser_game_
                                                                                          : state_.navigation.selected_game_id;
-        const bool settings_modal = modal.id == "game-settings" || modal.id == "preset-picker" || modal.id == "button-mapping" ||
+        const bool settings_modal = modal.id == "game-settings" || modal.id == "game-settings-list" ||
+                                    modal.id == "preset-picker" || modal.id == "button-mapping" ||
                                     modal.id == "controller-tuning" ||
                                     modal.id == "game-maintenance" || !modal.setting_id.empty();
         rt::EffectiveSettings settings_values;
@@ -6833,6 +6837,11 @@ void Simulation::rebuild_view() {
                 : "For a game's launcher, settings or installer: pick it from the game folder. It runs one time with the Mouse preset; Play and Game settings stay as they are.";
         if (modal.id == "game-settings" || modal.id == "game-maintenance") {
             if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
+        } else if (modal.id == "game-settings-list") {
+            // The count follows each change, so the list says how far it is from the preset.
+            if (const auto* game = find_game(state_, settings_game)) view_.subtitle = game->title;
+            const auto changes = settings_summary(settings_game).size();
+            if (changes > 0) view_.subtitle += " \u00b7 " + std::to_string(changes) + " changed";
         } else if (!modal.setting_id.empty()) {
             if (const auto* definition = rt::FindSetting(modal.setting_id)) {
                 // A launch option by the name the picker shows, not its id.
@@ -7096,6 +7105,12 @@ void Simulation::rebuild_view() {
             view_.subtitle = std::string("Steam sends an invite only for a lobby. The friends you pick get theirs when the game opens or joins its first lobby") +
                              (notify ? ", and the PS5 shows who was invited." : ".");
         }
+        // The Game settings summary, worked out once for its rows.
+        std::optional<std::vector<SettingsSummaryLine>> summary_lines;
+        const auto summary = [&]() -> const std::vector<SettingsSummaryLine>& {
+            if (!summary_lines) summary_lines = settings_summary(settings_game);
+            return *summary_lines;
+        };
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
@@ -7132,7 +7147,8 @@ void Simulation::rebuild_view() {
             if (action_key == "runtime-prompt-update")
                 item.title = "Update " + std::to_string(runtime_prompt_games_) + (runtime_prompt_games_ == 1 ? " game" : " games");
             // The preparation sheet's own Cancel takes the game out of the queue; its last row only closes it.
-            if (modal.id == "prep-actions" && action_key == "cancel") item.title = "Close";
+            if ((modal.id == "prep-actions" || modal.id == "game-settings") && action_key == "cancel") item.title = "Close";
+            if (modal.id == "game-settings-list" && action_key == "cancel") item.title = "Back";
             if (modal.id == "job-actions")
                 if (const auto label = move_action_label(action_key); !label.empty())
                     if (const auto* job = find_job(state_, action_key.substr(action_key.find('-', 4) + 1)); job && job->move)
@@ -7566,12 +7582,12 @@ void Simulation::rebuild_view() {
                 const auto base = base_of(settings_game);
                 const std::string name = base_name(settings_game, base);
                 item.value = settings_custom ? "Custom · from " + name : name;
-                item.subtitle = "What the settings below start from.";
+                item.subtitle = "What the settings start from.";
                 if (!base.community.id.empty()) {
                     // A recipe's title is long: the value is the title alone, the subtitle says the rest.
                     constexpr std::string_view prefix = "Community: ";
                     item.value = name.rfind(prefix, 0) == 0 ? name.substr(prefix.size()) : name;
-                    item.subtitle = settings_custom ? "A community recipe, with your changes." : "A community recipe. The settings below start from it.";
+                    item.subtitle = settings_custom ? "A community recipe, with your changes." : "A community recipe. The settings start from it.";
                     // Another game's: which one, and the program it starts here.
                     if (const auto note = ProgramNoteFor(settings_game, base.community.revision); !note.empty())
                         item.lines.push_back(note);
@@ -7803,16 +7819,52 @@ void Simulation::rebuild_view() {
             } else if (settings_ready && (action_key == "section-compatibility" || action_key == "section-advanced")) {
                 item.kind = RowKind::Heading;
                 const bool advanced = action_key == "section-advanced";
+                const auto inside = [advanced](rt::SettingGroup group) {
+                    return advanced ? group == rt::SettingGroup::kAdvanced
+                                    : group == rt::SettingGroup::kCompatibility || group == rt::SettingGroup::kGraphics ||
+                                          group == rt::SettingGroup::kSteam || group == rt::SettingGroup::kWindows;
+                };
                 int count = 0;
-                for (const auto& definition : rt::SettingsCatalogue()) {
-                    const bool inside = advanced ? definition.group == rt::SettingGroup::kAdvanced
-                                                 : definition.group == rt::SettingGroup::kCompatibility ||
-                                                       definition.group == rt::SettingGroup::kGraphics ||
-                                                       definition.group == rt::SettingGroup::kSteam ||
-                                                       definition.group == rt::SettingGroup::kWindows;
-                    if (inside && game_settings_row_shown(definition, settings_game)) ++count;
+                for (const auto& definition : rt::SettingsCatalogue())
+                    if (inside(definition.group) && game_settings_row_shown(definition, settings_game)) ++count;
+                const bool expanded = expanded_settings_sections_.count(action_key) != 0;
+                item.value = expanded ? "Hide" : "Show " + std::to_string(count);
+                // Collapsed, it names the changes inside: the summary's lines can't be selected to go there.
+                if (!expanded) {
+                    std::string names;
+                    int changed = 0;
+                    for (const auto& line : summary())
+                        if (inside(line.group)) {
+                            names += (changed++ == 0 ? "" : ", ") + line.label;
+                        }
+                    if (changed > 0) {
+                        item.subtitle = std::to_string(changed) + " changed: " + names;
+                        item.tone = "attention";
+                    }
                 }
-                item.value = expanded_settings_sections_.count(action_key) ? "Hide" : "Show " + std::to_string(count);
+            } else if (settings_ready && action_key == "heading-your-changes") {
+                item.kind = RowKind::Separator;
+                item.action.clear();
+                item.enabled = false;
+                const auto changes = summary().size();
+                if (changes > 0) item.value = std::to_string(changes);
+            } else if (settings_ready && action_key.rfind("summary-", 0) == 0) {
+                // A line of the summary: the setting and its value, as text (the focus passes over it).
+                item.kind = RowKind::Status;
+                item.action.clear();
+                item.enabled = false;
+                if (action_key == "summary-none") {
+                    item.title = "Every setting follows";
+                    item.value = base_name(settings_game, base_of(settings_game));
+                } else {
+                    for (const auto& line : summary())
+                        if (line.key == action_key) {
+                            item.title = line.label;
+                            item.value = line.value;
+                        }
+                }
+            } else if (settings_ready && action_key == "change-settings") {
+                item.subtitle = "Every setting, by section.";
             } else if (SheetDecoration(action_key)) {
                 // Names the rows below it, or (a divider) only sets them apart; never focused (move skips it).
                 item.kind = RowKind::Separator;
@@ -7874,6 +7926,8 @@ void Simulation::rebuild_view() {
                 item.dangerous = true;
             } else if (settings_ready && action_key == "reset-settings") {
                 item.enabled = can_reset_settings(settings_game);
+                item.subtitle = item.enabled ? "Removes your changes; the preset stays."
+                                             : "Nothing to reset: the settings follow the preset.";
             } else if (settings_ready && action_key == "effective-command") {
                 item.kind = RowKind::Text;
                 item.title = "Effective command";
@@ -8407,7 +8461,8 @@ void Simulation::rebuild_view() {
                 if (const auto offer = chooser_offer(settings_game, focused.substr(7))) build_recipe_comparison(settings_game, *offer);
         }
         view_.legends = {"Cross Select", "Circle Cancel"};
-        if (modal.id == "game-settings") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Close"};
+        if (modal.id == "game-settings") view_.legends = {"Cross Select", "Circle Close"};
+        else if (modal.id == "game-settings-list") view_.legends = {"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "preset-picker")
             view_.legends = modal.action_keys[static_cast<std::size_t>(modal.focused_action)].rfind("mypreset-my-", 0) == 0
                                 ? std::vector<std::string>{"Cross Choose", "Triangle Manage", "L1/R1 Jump", "Circle Back"}
@@ -10770,8 +10825,19 @@ void Simulation::open_game_settings() {
     // A shared recipe's pull request: its state, asked again at most every few minutes.
     request_submission_status(state_.navigation.selected_game_id, false);
     request_program_scan_for_other_recipes(state_.navigation.selected_game_id);
-    // From Game actions it opens on top of that sheet, so Circle returns there.
-    open_modal({"game-settings", "Game settings", state_.navigation.focus_key, game_settings_actions(), 0, false});
+    // From Game actions it opens on top of that sheet, so Circle returns there. It opens on the summary with the
+    // focus on Change settings…: the changes are right above it, and every setting is one press away.
+    auto actions = game_settings_actions();
+    const auto change = std::find(actions.begin(), actions.end(), "change-settings");
+    const int focused = change == actions.end() ? 0 : static_cast<int>(change - actions.begin());
+    open_modal({"game-settings", "Game settings", state_.navigation.focus_key, std::move(actions), focused, false});
+}
+
+// Every setting, by section, over the summary: Circle comes back to it, and closing the summary applies the changes.
+void Simulation::open_settings_list() {
+    // Only over the summary: Game settings may have refused to open (a game waiting for the PS5).
+    if (state_.navigation.modals.empty() || state_.navigation.modals.back().id != "game-settings") return;
+    open_modal({"game-settings-list", "Change settings", state_.navigation.focus_key, game_settings_list_actions(), 0, false});
 }
 
 void Simulation::activate() {
@@ -11817,6 +11883,7 @@ void Simulation::activate() {
             state_.navigation.selected_game_id = game;
             if (action_name == "start-failed-settings") {
                 open_game_settings();
+                open_settings_list();
             } else {
                 // Straight to the report, as after "No, it didn't start": no question first, logs included.
                 open_feedback(game, true, false);
@@ -12469,6 +12536,8 @@ void Simulation::activate() {
                 modal.action_keys = setting_value_actions("dll_overrides");
                 modal.focused_action = std::min(modal.focused_action, static_cast<int>(modal.action_keys.size()) - 1);
                 state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
+                // The summary and the list under the picker follow (a last override removed is no change).
+                refresh_game_settings();
             }
         }
     } else if (action_name == "value-reset" && !state_.navigation.modals.empty()) {
@@ -12546,6 +12615,8 @@ void Simulation::activate() {
             set_game_setting(id, launch ? recipe.launch_entries[index].id : definition->choices[index].value);
         }
         close_modal(); refresh_game_settings(); save_profile();
+    } else if (action_name == "change-settings") {
+        open_settings_list();
     } else if (action_name == "section-compatibility" || action_name == "section-advanced") {
         if (!expanded_settings_sections_.erase(action_name)) expanded_settings_sections_.insert(action_name);
         refresh_game_settings();
@@ -12753,6 +12824,7 @@ void Simulation::activate() {
         feedback_.reset();
         state_.navigation.selected_game_id = game;
         open_game_settings();
+        open_settings_list();
     }
     else if (feedback_ && action_name == "feedback-send") {
         if (!state_.reports_explained && feedback_->ticket == 0) open_feedback_privacy();
@@ -13273,7 +13345,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
     else if (logical_action == "l2") move(0, -4);
     else if (logical_action == "r2") move(0, 4);
     else if ((logical_action == "l1" || logical_action == "r1") && !state_.navigation.modals.empty() &&
-             (state_.navigation.modals.back().id == "game-settings" || state_.navigation.modals.back().id == "preset-picker" ||
+             (state_.navigation.modals.back().id == "game-settings-list" || state_.navigation.modals.back().id == "preset-picker" ||
               state_.navigation.modals.back().id == "game-maintenance" ||
               state_.navigation.modals.back().id == "content-language" ||
               state_.navigation.modals.back().id == "install-language" ||
@@ -13314,7 +13386,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
              state_.navigation.modals.back().id == "preset-picker" && state_.navigation.focus_key.rfind("mypreset-my-", 0) == 0)
         open_my_preset_menu(state_.navigation.focus_key.substr(9));
     else if (logical_action == "triangle" && !state_.editor.active && !state_.navigation.modals.empty() &&
-             (state_.navigation.modals.back().id == "game-settings" || state_.navigation.modals.back().id == "controller-tuning" ||
+             (state_.navigation.modals.back().id == "game-settings-list" || state_.navigation.modals.back().id == "controller-tuning" ||
               !state_.navigation.modals.back().setting_id.empty())) {
         // Triangle returns the focused setting (or the open picker's setting) to the preset value.
         const auto& modal = state_.navigation.modals.back();
@@ -15037,7 +15109,6 @@ bool Simulation::EffectiveSettingsFor(GameId id, rt::EffectiveSettings* settings
 }
 
 std::vector<std::string> Simulation::game_settings_actions() const {
-    using G = rt::SettingGroup;
     const auto game = state_.navigation.selected_game_id;
     std::vector<std::string> actions = {"preset-picker"};
     // A chosen community recipe that isn't used, a switch that didn't finish, a newer revision.
@@ -15045,15 +15116,19 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     else if (const auto runtime = state_.runtime_games.find(game);
              runtime != state_.runtime_games.end() && !runtime->second.recipe_switch_failure.empty())
         actions.push_back("recipe-status");
-    // Community recipes: a newer revision, the vote for the recipe in use, and the state of this game's shared recipe.
+    // Community recipes: a newer revision and the vote for the recipe in use.
     // Off (features.txt), none of them: a recipe the game already uses stays its base, with no update or vote.
     if (community_enabled_) {
         if (updated_offer(game)) actions.push_back("recipe-update");
         if (VoteTargetFor(game)) actions.push_back("recipe-vote");
-        if (const auto record = state_.game_settings.find(game);
-            record != state_.game_settings.end() && !record->second.shared_recipe.submission_id.empty())
-            actions.push_back("shared-recipe");
     }
+    // What the player changed on top of the preset, as text the focus passes over; then every setting, one press away.
+    actions.push_back("heading-your-changes");
+    const auto summary = settings_summary(game);
+    if (summary.empty()) actions.push_back("summary-none");
+    for (const auto& line : summary) actions.push_back(line.key);
+    actions.push_back("divider");
+    actions.push_back("change-settings");
     // My presets: save the game's settings as one, or put its own changes into the one it uses. Save is left out while
     // the presets file can't be read (Playden said so at startup): it could only refuse.
     switch (MyPresetActionFor(game)) {
@@ -15061,6 +15136,21 @@ std::vector<std::string> Simulation::game_settings_actions() const {
         case MyPresetAction::kUpdate: actions.push_back("update-my-preset"); break;
         case MyPresetAction::kNone: break;
     }
+    // Share recipe sends the game's settings for review; Shared recipe follows the one sent.
+    if (community_enabled_) {
+        if (sharing_ref(game)) actions.push_back("share-recipe");
+        if (const auto record = state_.game_settings.find(game);
+            record != state_.game_settings.end() && !record->second.shared_recipe.submission_id.empty())
+            actions.push_back("shared-recipe");
+    }
+    actions.insert(actions.end(), {"divider", "reset-settings", "cancel"});
+    return actions;
+}
+
+std::vector<std::string> Simulation::game_settings_list_actions() const {
+    using G = rt::SettingGroup;
+    const auto game = state_.navigation.selected_game_id;
+    std::vector<std::string> actions;
     const auto rows = [&](G group) {
         for (const auto& definition : rt::SettingsCatalogue())
             if (definition.group == group && game_settings_row_shown(definition, game)) actions.push_back("setting-" + definition.id);
@@ -15097,11 +15187,66 @@ std::vector<std::string> Simulation::game_settings_actions() const {
         actions.push_back("effective-command");
         actions.push_back("export-recipe");
     }
-    // Share recipe sends the game's settings for review, set apart just above Reset; the file export stays for FTP.
-    if (community_enabled_ && sharing_ref(game)) actions.insert(actions.end(), {"divider", "share-recipe", "divider"});
-    actions.push_back("reset-settings");
-    actions.push_back("cancel");
+    actions.insert(actions.end(), {"divider", "cancel"});
     return actions;
+}
+
+std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId id) const {
+    std::vector<SettingsSummaryLine> lines;
+    const auto record = state_.game_settings.find(id);
+    if (record == state_.game_settings.end()) return lines;
+    // Reset's rule: a stored choice is a change unless Reset keeps it (an imported game's own program).
+    const auto kept = reset_overrides(id);
+    std::set<std::string> changed;
+    for (const auto& [setting, value] : record->second.overrides) {
+        const auto found = kept.find(setting);
+        // "Change anyway" on a locked row is a change of that row, even before a value is chosen.
+        const bool unlock = setting.rfind(rt::kUnlockPrefix, 0) == 0;
+        if (found == kept.end() || found->second != value) changed.insert(unlock ? setting.substr(std::string(rt::kUnlockPrefix).size()) : setting);
+    }
+    if (changed.empty()) return lines;
+    rt::EffectiveSettings values;
+    const bool known = EffectiveSettingsFor(id, &values);
+    int buttons = 0, tuning = 0;
+    bool program = false;
+    for (const auto& definition : rt::SettingsCatalogue()) {
+        if (!changed.count(definition.id)) continue;
+        // Button mapping and Controller tuning are one row each in the list: one line each here.
+        if (definition.id.rfind("button.", 0) == 0) { ++buttons; continue; }
+        if (definition.group == rt::SettingGroup::kControllerTuning) { ++tuning; continue; }
+        SettingsSummaryLine line{"summary-" + definition.id, definition.id, definition.label, {}, definition.group};
+        // A launch option and a program from the game folder are both the Program row.
+        if (definition.id == "launch_option" || definition.id == "program") {
+            if (program) continue;
+            program = true;
+            line = {"summary-launch_option", "launch_option", "Program", {}, definition.group};
+            const auto own = record->second.overrides.find(definition.id);
+            line.value = known && values.launch ? values.launch->label
+                       : own != record->second.overrides.end() ? own->second : std::string("Choose a program");
+            lines.push_back(std::move(line));
+            continue;
+        }
+        // What the player chose, even where the runtime kit can't use it yet (the row is hidden or waits for it); an
+        // unlocked row with no choice yet shows the value it has.
+        const auto own = record->second.overrides.find(definition.id);
+        const auto current = known ? values.values.find(definition.id) : values.values.end();
+        const std::string chosen = own != record->second.overrides.end() ? own->second
+                                 : current != values.values.end() ? rt::ChosenValue(current->second) : std::string();
+        if (definition.id == "program_folder") line.value = chosen.empty() ? "Program's folder" : chosen == "." ? "Game folder" : chosen;
+        else if (definition.kind == rt::SettingKind::kText) line.value = chosen.empty() ? "Empty" : chosen;
+        else line.value = choice_label(definition, chosen);
+        lines.push_back(std::move(line));
+    }
+    // Where the list has them: after the Controls rows, before Sound.
+    auto after_controls = std::find_if(lines.begin(), lines.end(), [](const SettingsSummaryLine& line) {
+        return line.group != rt::SettingGroup::kGame && line.group != rt::SettingGroup::kDisplay &&
+               line.group != rt::SettingGroup::kControls;
+    });
+    std::vector<SettingsSummaryLine> controller;
+    if (buttons > 0) controller.push_back({"summary-buttons", "", "Button mapping", std::to_string(buttons) + (buttons == 1 ? " button" : " buttons"), rt::SettingGroup::kButtonMapping});
+    if (tuning > 0) controller.push_back({"summary-tuning", "", "Controller tuning", std::to_string(tuning) + " changed", rt::SettingGroup::kControllerTuning});
+    lines.insert(after_controls, controller.begin(), controller.end());
+    return lines;
 }
 
 // Whether the sheet lists a setting's row: Known problems only for a game that has one.
@@ -16719,9 +16864,9 @@ std::string Simulation::vote_words(const cm::CastVote* vote) const {
 
 void Simulation::refresh_game_settings() {
     for (auto& modal : state_.navigation.modals) {
-        if (modal.id != "game-settings") continue;
+        if (modal.id != "game-settings" && modal.id != "game-settings-list") continue;
         const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
-        modal.action_keys = game_settings_actions();
+        modal.action_keys = modal.id == "game-settings" ? game_settings_actions() : game_settings_list_actions();
         const auto found = std::find(modal.action_keys.begin(), modal.action_keys.end(), focused);
         modal.focused_action = found == modal.action_keys.end() ? 0 : static_cast<int>(found - modal.action_keys.begin());
         if (&modal == &state_.navigation.modals.back()) state_.navigation.focus_key = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];

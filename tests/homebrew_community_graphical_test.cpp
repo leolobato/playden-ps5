@@ -35,7 +35,41 @@ std::string read_text(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-const playden::homebrew::ViewRow* find_row(const playden::homebrew::Simulation& simulation, const std::string& key) {
+// Game settings has two pages: the summary, and over it the list that Change settings… opens. Tests name rows on
+// either page; this goes to the page that has the row, as a player would, and stays put when neither has it.
+bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key) {
+    const auto shown = [&] {
+        for (const auto& row : simulation.view().rows)
+            if (row.key == key) return true;
+        return false;
+    };
+    if (shown()) return true;
+    const auto& modals = simulation.state().navigation.modals;
+    if (modals.empty()) return false;
+    // A row on neither page leaves the page and its focus as they were.
+    const std::string start_id = modals.back().id;
+    const std::string start_focus = simulation.state().navigation.focus_key;
+    const auto restore = [&] {
+        if (!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == start_id)
+            simulation.action("focus:" + start_focus);
+        return false;
+    };
+    if (modals.back().id == "game-settings-list") {
+        simulation.action("circle");
+        if (shown()) return true;
+        simulation.action("focus:change-settings");
+        simulation.action("cross");
+    } else if (modals.back().id == "game-settings" && simulation.action("focus:change-settings") && simulation.action("cross")) {
+        if (shown()) return true;
+        simulation.action("circle");
+    } else {
+        return false;
+    }
+    return shown() || restore();
+}
+
+const playden::homebrew::ViewRow* find_row(playden::homebrew::Simulation& simulation, const std::string& key) {
+    settings_page_with(simulation, key);
     for (const auto& row : simulation.view().rows)
         if (row.key == key) return &row;
     return nullptr;
@@ -96,9 +130,9 @@ int main(int argc, char** argv) {
         capture("recipes-offline", "preset-picker", "preset-playden-default");
         check(model.view().subtitle.find("Offline") != std::string::npos && find_row(model, one), "the offline copy is offered");
         capture("recipes-switch", "confirmation", "recipe-switch-confirm");
-        capture("recipes-settings", "game-settings", "preset-picker");
+        capture("recipes-settings", "game-settings", "change-settings");
         check(find_row(model, "recipe-update") != nullptr, "an updated recipe is offered in Game settings");
-        capture("recipes-fallback", "game-settings", "preset-picker");
+        capture("recipes-fallback", "game-settings", "change-settings");
         check(find_row(model, "recipe-status") != nullptr, "the fallback reason is in Game settings");
         capture("recipes-details", "details", "details");
         check(find_row(model, "details-recipe") && find_row(model, "details-recipe")->title == "Recipe available",

@@ -4235,7 +4235,7 @@ class Render::Impl
     {
         static const std::map<std::string, std::string> names = {
             {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-tuning", "Game settings"},
-            {"game-settings", "Playden"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
+            {"game-settings", "Playden"}, {"game-settings-list", "Game settings"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
             {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
             {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"}, {"share-as", "Community"},
@@ -4343,37 +4343,46 @@ class Render::Impl
     // A sheet's read-only labels and values, as the design system's DetailList. Returns the height they take.
     float draw_sheet_facts(const std::vector<ViewFact> &facts, const FactsBounds &bounds)
     {
+        return draw_facts(sheet_facts_, sheet_facts_shown_, facts, bounds);
+    }
+
+    // The height of one read-only label and value in a sheet.
+    float fact_pitch() const { return sheet_facts_.style.row_height + sheet_facts_.style.gap; }
+
+    float draw_facts(ui::DetailList &list, std::vector<ViewFact> &shown, const std::vector<ViewFact> &facts,
+                     const FactsBounds &bounds)
+    {
         if (facts.empty())
             return 0.0F;
-        sheet_facts_.style.theme = theme_;
-        sheet_facts_.style.panel = false;
-        sheet_facts_.style.scroll_thumb = false;
-        sheet_facts_.style.max_lines = 1;
-        if (facts != sheet_facts_shown_)
+        list.style.theme = theme_;
+        list.style.panel = false;
+        list.style.scroll_thumb = false;
+        list.style.max_lines = 1;
+        if (facts != shown)
         {
             // Only a different set of facts plays the list's entrance; a size that changes just changes.
-            const bool same_rows = facts.size() == sheet_facts_shown_.size();
+            const bool same_rows = facts.size() == shown.size();
             if (!same_rows)
             {
                 std::vector<ui::DetailItem> items;
                 for (const ViewFact &fact : facts)
                     items.push_back({fact.label, fact.value});
-                sheet_facts_.set_items(std::move(items));
+                list.set_items(std::move(items));
             }
             for (std::size_t index = 0; index < facts.size(); ++index)
             {
-                auto &item = sheet_facts_.item(static_cast<int>(index));
+                auto &item = list.item(static_cast<int>(index));
                 item.label = facts[index].label;
                 item.value = facts[index].value;
                 item.color = facts[index].warn ? kRed : gfx::Color{0.0F, 0.0F, 0.0F, 0.0F};
             }
-            sheet_facts_shown_ = facts;
+            shown = facts;
         }
-        const float height = static_cast<float>(facts.size()) * (sheet_facts_.style.row_height + sheet_facts_.style.gap);
-        sheet_facts_.set_bounds({bounds.x, bounds.y, bounds.w, height});
-        sheet_facts_.update(frame_dt_);
+        const float height = static_cast<float>(facts.size()) * (list.style.row_height + list.style.gap);
+        list.set_bounds({bounds.x, bounds.y, bounds.w, height});
+        list.update(frame_dt_);
         ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
-        sheet_facts_.draw(canvas);
+        list.draw(canvas);
         return height;
     }
 
@@ -4775,7 +4784,8 @@ class Render::Impl
     void draw_overlay_rows(const ViewData &view, const gfx::Rect &bounds, bool scrolls = true)
     {
         // The Share and vote sheets lay out like Game settings: a line under each name, the value on the right.
-        const bool settings_sheet = view.surface == "game-settings" || view.surface == "choice-picker" ||
+        const bool settings_sheet = view.surface == "game-settings" || view.surface == "game-settings-list" ||
+                                    view.surface == "choice-picker" ||
                                     view.surface == "download-server" ||
                                     view.surface == "preset-picker" || view.surface == "button-mapping" ||
                                     view.surface == "controller-tuning" ||
@@ -4819,8 +4829,10 @@ class Render::Impl
         const auto pitch = [&](const ViewRow &row) {
             if (about_sheet && row.kind == RowKind::Status)
                 return about_height(row) + 12.0F;
+            if (settings_sheet && row.key.rfind("summary-", 0) == 0)
+                return fact_pitch();
             if (settings_sheet && row.kind == RowKind::Heading)
-                return 54.0F + 12.0F;
+                return (row.subtitle.empty() ? 54.0F : 84.0F) + 12.0F;
             // An untitled separator is a divider: a line, shorter than a heading.
             if (row.kind == RowKind::Separator && row.title.empty())
                 return 30.0F;
@@ -4874,18 +4886,39 @@ class Render::Impl
         {
             const ViewRow &row = view.rows[static_cast<std::size_t>(index)];
             float y = bounds.y + tops[static_cast<std::size_t>(index)] - scroll;
+            const auto summary_line = [&](int at) {
+                return settings_sheet && at >= 0 && at < static_cast<int>(view.rows.size()) &&
+                       view.rows[static_cast<std::size_t>(at)].key.rfind("summary-", 0) == 0;
+            };
+            if (summary_line(index))
+            {
+                // The player's changes: read-only labels and values, drawn once for the whole run of lines.
+                if (summary_line(index - 1))
+                    continue;
+                std::vector<ViewFact> facts;
+                for (int line = index; summary_line(line); ++line)
+                {
+                    const ViewRow &fact = view.rows[static_cast<std::size_t>(line)];
+                    facts.push_back({fact.title, fact.value});
+                }
+                draw_facts(summary_facts_, summary_facts_shown_, facts, {bounds.x + 8.0F, y, bounds.w - 16.0F});
+                continue;
+            }
             if (y + pitch(row) < bounds.y - 32.0F || y > bounds.y + bounds.h + 32.0F)
                 continue;
             if (settings_sheet && row.kind == RowKind::Heading)
             {
-                // Collapsible section header: focusable, shows "Show n" or "Hide".
-                const gfx::Rect rect{bounds.x, y, bounds.w, 54.0F};
+                // Collapsible section header: focusable, shows "Show n" or "Hide", and the changes inside when closed.
+                const gfx::Rect rect{bounds.x, y, bounds.w, row.subtitle.empty() ? 54.0F : 84.0F};
                 const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
                 focus_glow(overlay_, rect, amount);
                 ui::text(overlay_, fonts_.display, ui::upper(row.title), rect.x + 24.0F, rect.y + 35.0F,
                          20.0F, kSecondary, gfx::Align::left, 2.4F);
                 ui::text(overlay_, fonts_.regular, row.value, rect.x + rect.w - 24.0F, rect.y + 35.0F, 18.0F,
                          kMuted, gfx::Align::right);
+                if (!row.subtitle.empty())
+                    marked_text(overlay_, fonts_.regular, row.subtitle, rect.x + 24.0F, rect.y + 68.0F, 19.0F,
+                                row.tone == "attention" ? kAccent : kSecondary, gfx::Align::left, rect.w - 48.0F);
                 focus_ring(overlay_, rect, amount);
                 y += rect.h + 12.0F;
                 continue;
@@ -4922,8 +4955,14 @@ class Render::Impl
             }
             if (row.kind == RowKind::Heading || row.kind == RowKind::Separator)
             {
-                ui::text(overlay_, fonts_.display, ui::upper(row.title), bounds.x + 12.0F, y + 28.0F,
+                const std::string words = ui::upper(row.title);
+                ui::text(overlay_, fonts_.display, words, bounds.x + 12.0F, y + 28.0F,
                          18.0F, kMuted, gfx::Align::left, 1.8F);
+                // Game settings' "Your changes": how many, in the accent colour.
+                if (row.kind == RowKind::Separator && !row.value.empty())
+                    ui::text(overlay_, fonts_.regular, row.value,
+                             bounds.x + 12.0F + fonts_.display.measure(words, 18.0F) + 1.8F * static_cast<float>(words.size()) + 14.0F,
+                             y + 28.0F, 19.0F, kAccent);
                 y += 54.0F;
                 continue;
             }
@@ -5147,6 +5186,9 @@ class Render::Impl
     ui::DetailList sheet_facts_;
     std::map<std::uint64_t, ui::Avatar> avatars_;  // Friends: one per friend, so each keeps its presence dot's motion
     std::vector<ViewFact> sheet_facts_shown_;
+    // Game settings: the player's changes, between the sheet's rows.
+    ui::DetailList summary_facts_;
+    std::vector<ViewFact> summary_facts_shown_;
     float sheet_scroll_target_ = 0.0F;
     int last_width_ = 0;
     int last_height_ = 0;

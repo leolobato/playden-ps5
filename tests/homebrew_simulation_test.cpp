@@ -112,8 +112,12 @@ void public_contract_and_snapshot(const std::filesystem::path& fixtures,
           "snapshot marks the state as a UI simulation");
 }
 
+bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key);
+
 void activate(playden::homebrew::Simulation& simulation, const std::string& key) {
-    check(simulation.action("focus:" + key), "test focus key exists");
+    settings_page_with(simulation, key);
+    if (!simulation.action("focus:" + key)) std::fprintf(stderr, "missing row %s on %s\n", key.c_str(), simulation.view().surface.c_str());
+    check(simulation.state().navigation.focus_key == key, "test focus key exists");
     check(simulation.action("cross"), "focused action activates");
 }
 
@@ -313,7 +317,41 @@ void load_settings_data(playden::homebrew::Simulation& simulation, const std::fi
     simulation.SetSettingsData(std::move(presets), {std::move(recipe)});
 }
 
-const playden::homebrew::ViewRow* find_row(const playden::homebrew::Simulation& simulation, const std::string& key) {
+// Game settings has two pages: the summary, and over it the list that Change settings… opens. Tests name rows on
+// either page; this goes to the page that has the row, as a player would, and stays put when neither has it.
+bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key) {
+    const auto shown = [&] {
+        for (const auto& row : simulation.view().rows)
+            if (row.key == key) return true;
+        return false;
+    };
+    if (shown()) return true;
+    const auto& modals = simulation.state().navigation.modals;
+    if (modals.empty()) return false;
+    // A row on neither page leaves the page and its focus as they were.
+    const std::string start_id = modals.back().id;
+    const std::string start_focus = simulation.state().navigation.focus_key;
+    const auto restore = [&] {
+        if (!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == start_id)
+            simulation.action("focus:" + start_focus);
+        return false;
+    };
+    if (modals.back().id == "game-settings-list") {
+        simulation.action("circle");
+        if (shown()) return true;
+        simulation.action("focus:change-settings");
+        simulation.action("cross");
+    } else if (modals.back().id == "game-settings" && simulation.action("focus:change-settings") && simulation.action("cross")) {
+        if (shown()) return true;
+        simulation.action("circle");
+    } else {
+        return false;
+    }
+    return shown() || restore();
+}
+
+const playden::homebrew::ViewRow* find_row(playden::homebrew::Simulation& simulation, const std::string& key) {
+    settings_page_with(simulation, key);
     for (const auto& row : simulation.view().rows)
         if (row.key == key) return &row;
     return nullptr;
@@ -358,13 +396,15 @@ void t08_nested_settings_restore_openers(const std::filesystem::path& fixtures,
     // Triangle resets the focused row to the preset value.
     check(simulation.action("focus:setting-resolution") && simulation.action("triangle"), "T08 triangle resets");
     check(!simulation.state().game_settings.at(SteamId(900001)).overrides.count("resolution"), "T08 reset removes the override");
-    simulation.action("circle");
+    simulation.action("circle");  // the list returned to the summary
     simulation.action("circle");  // Game settings returned to Game actions
+    simulation.action("circle");
     simulation.action("details:900002");
     activate(simulation, "details-more");
     activate(simulation, "game-settings");
     activate(simulation, "setting-extra_arguments");
     check(simulation.state().editor.value.empty(), "T08 custom arguments do not leak to another game");
+    simulation.action("circle");
     simulation.action("circle");
     simulation.action("circle");
     playden::homebrew::Simulation restored(fixtures, profile);
@@ -380,16 +420,33 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     simulation.action("details:900001");
     activate(simulation, "details-more");
     activate(simulation, "game-settings");
+    // Game settings opens on a summary, with the focus on Change settings…; nothing is changed yet.
+    check(simulation.state().navigation.modals.back().action_keys ==
+              std::vector<std::string>{"preset-picker", "heading-your-changes", "summary-none", "divider", "change-settings",
+                                       "save-my-preset", "share-recipe", "divider", "reset-settings", "cancel"},
+          "T08b Game settings opens on the summary");
+    check(simulation.state().navigation.focus_key == "change-settings", "T08b the summary opens on Change settings");
+    check(find_row(simulation, "summary-none") && find_row(simulation, "summary-none")->value == "Playden default" &&
+              find_row(simulation, "cancel")->title == "Close",
+          "T08b with no changes the summary names the preset");
+    check(simulation.view().legends == std::vector<std::string>{"Cross Select", "Circle Close"}, "T08b the summary's buttons");
+    simulation.action("up");
+    check(simulation.state().navigation.focus_key == "preset-picker", "T08b the summary's lines never take the focus");
+    activate(simulation, "change-settings");
+    check(simulation.state().navigation.modals.back().id == "game-settings-list" &&
+              simulation.view().legends == std::vector<std::string>{"Cross Change", "Triangle Reset", "L1/R1 Jump", "Circle Back"},
+          "T08b Change settings opens the list");
     // Rows by topic: the frame-rate rows sit together in Display, and focus steps over the headings.
     const auto& keys = simulation.state().navigation.modals.back().action_keys;
-    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 24));
-    check(top == std::vector<std::string>{"preset-picker", "save-my-preset", "heading-game", "setting-launch_option", "setting-extra_arguments",
+    const std::vector<std::string> top(keys.begin(), keys.begin() + std::min<std::size_t>(keys.size(), 22));
+    check(top == std::vector<std::string>{"heading-game", "setting-launch_option", "setting-extra_arguments",
                                           "heading-display", "setting-resolution", "setting-refresh", "setting-frame_limit",
                                           "setting-framegen", "setting-vsync", "setting-performance_overlay", "setting-overlay_detail",
                                           "setting-scaling", "setting-window_view", "heading-controls", "setting-controller",
                                           "setting-controller_preset", "button-mapping", "controller-tuning", "heading-sound",
                                           "setting-volume", "section-compatibility", "section-advanced"},
           "T08b the sheet groups rows by topic");
+    check(keys.back() == "cancel" && find_row(simulation, "cancel")->title == "Back", "T08b the list ends with Back");
     check(find_row(simulation, "heading-display") && find_row(simulation, "heading-display")->title == "Display" &&
               !find_row(simulation, "heading-display")->enabled,
           "T08b topic headings only label rows");
@@ -403,9 +460,9 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     simulation.action("focus:setting-window_view");
     simulation.action("down");
     check(simulation.state().navigation.focus_key == "setting-controller", "T08b Down steps over a heading");
-    simulation.action("focus:setting-launch_option");
+    simulation.action("focus:setting-controller");
     simulation.action("up");
-    check(simulation.state().navigation.focus_key == "save-my-preset", "T08b Up steps over a heading");
+    check(simulation.state().navigation.focus_key == "setting-window_view", "T08b Up steps over a heading");
     // Compatibility expands inline; graphics is locked by the recipe and scaling is
     // disabled on DXVK with its reason.
     check(!find_row(simulation, "setting-graphics"), "T08b Compatibility starts collapsed");
@@ -436,7 +493,16 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     activate(simulation, "setting-graphics");
     check(simulation.state().navigation.modals.back().title == "Change anyway?", "T08b a locked row asks before it changes");
     simulation.action("circle");
-    check(simulation.state().navigation.modals.back().id == "game-settings", "T08b locked rows do not open a picker");
+    check(simulation.state().navigation.modals.back().id == "game-settings-list", "T08b locked rows do not open a picker");
+    // Change anyway, then back out without a value: the unlock is a change, and the summary lists the row.
+    activate(simulation, "setting-graphics");
+    activate(simulation, "unlock-setting");
+    while (simulation.state().navigation.modals.back().id != "game-settings-list") simulation.action("circle");
+    simulation.action("circle");
+    check(simulation.state().navigation.modals.back().id == "game-settings" && find_row(simulation, "summary-graphics") &&
+              !find_row(simulation, "summary-graphics")->value.empty() && find_row(simulation, "reset-settings")->enabled,
+          "T08b an unlocked row is in the summary");
+    activate(simulation, "change-settings");
     // Launch options come from the recipe.
     activate(simulation, "setting-launch_option");
     check(find_row(simulation, "choice-1") && find_row(simulation, "choice-1")->title == "Lost Coast", "T08b launch options list recipe entries");
@@ -503,6 +569,7 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     check(find_row(simulation, "button-mapping")->modified, "T08b changed bindings mark the row");
     check(!find_row(simulation, "clear-shader-cache"), "T08b maintenance is not in the settings sheet");
     // Maintenance lives on the game page, each action behind a confirmation.
+    simulation.action("circle");  // the list returned to the summary
     simulation.action("circle");
     activate(simulation, "game-maintenance");
     check(find_row(simulation, "maintenance-shader") && find_row(simulation, "maintenance-shader")->badge == "Game must be closed",
@@ -560,7 +627,8 @@ void settings_sheet_details(const std::filesystem::path& fixtures, const std::fi
     simulation.action("cross");
     check(simulation.state().navigation.modals.back().id == "preset-picker", "the community row does nothing");
     simulation.action("circle");
-    simulation.action("focus:save-my-preset");
+    activate(simulation, "change-settings");
+    simulation.action("focus:setting-launch_option");
     simulation.action("r1");
     check(simulation.state().navigation.modals.back().focused_action == 6, "R1 jumps five rows");
     simulation.action("l1");
@@ -619,7 +687,8 @@ void settings_save_failure_does_not_claim_success(const std::filesystem::path& f
     std::filesystem::create_directory(profile);
     activate(simulation, "setting-resolution");
     activate(simulation, "choice-2");
-    simulation.action("circle");
+    simulation.action("circle");  // the list
+    simulation.action("circle");  // Game settings
     check(std::none_of(simulation.state().notices.begin(), simulation.state().notices.end(),
                        [](const auto& notice) { return notice.id == "settings-saved"; }),
           "failed settings persistence cannot announce saved");
@@ -954,6 +1023,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     simulation.action("circle");
     simulation.action("circle");
     simulation.action("circle");
+    simulation.action("circle");
     const auto overrides = [&]() -> const std::map<std::string, std::string>& {
         return simulation.state().game_settings.at(SteamId(900001)).overrides;
     };
@@ -1046,6 +1116,13 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
           "T52 the recipe's overrides are listed");
     activate(simulation, "override-remove-0");
     check(overrides().at("dll_overrides").empty(), "T52 a recipe override can be removed");
+    {
+        // The summary under the picker follows at once: removing the recipe's override is a change.
+        const auto& modals = simulation.state().navigation.modals;
+        const auto summary = std::find_if(modals.begin(), modals.end(), [](const auto& modal) { return modal.id == "game-settings"; });
+        check(summary != modals.end() && std::count(summary->action_keys.begin(), summary->action_keys.end(), "summary-dll_overrides") == 1,
+              "T52 the summary lists the removed override");
+    }
     activate(simulation, "override-add");
     simulation.text("dinput8=n,b");
     simulation.action("done");
@@ -1676,7 +1753,7 @@ void leftover_titles_simulation_uses_controller_navigation(const std::filesystem
 // an installed game, the Install sheet's Settings row, an updated recipe and the fallback reason.
 std::string rev(char digit) { return std::string(64, digit); }
 
-bool has_row(const playden::homebrew::Simulation& simulation, const std::string& key) { return find_row(simulation, key) != nullptr; }
+bool has_row(playden::homebrew::Simulation& simulation, const std::string& key) { return find_row(simulation, key) != nullptr; }
 
 void community_recipes_chooser(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
@@ -2004,10 +2081,62 @@ void reset_keeps_the_imported_program(const std::filesystem::path& fixtures, con
     activate(simulation, "details-more");
     activate(simulation, "game-settings");
     check(find_row(simulation, "reset-settings") && find_row(simulation, "reset-settings")->enabled, "Reset is offered");
+    check(find_row(simulation, "summary-launch_option") && find_row(simulation, "summary-resolution"),
+          "the summary lists the picked program and the resolution");
     activate(simulation, "reset-settings");
     check(overrides() == std::map<std::string, std::string>{{"program", "NightSky.exe"}},
           "Reset goes back to the program the game was added with");
     check(!find_row(simulation, "reset-settings")->enabled, "then there is nothing left to reset");
+    // The summary follows Reset's rule: the program the game was added with is not a change.
+    check(find_row(simulation, "summary-none") && !find_row(simulation, "summary-launch_option"),
+          "the summary lists no change for the program the game was added with");
+    std::filesystem::remove(settings_file);
+}
+
+// The summary on Game settings: one line per change in the list's order, Button mapping and Controller tuning as one
+// line each; the focus passes over it, the list counts the changes, and a collapsed section names its own.
+void settings_summary_lists_changes(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    load_settings_data(simulation, fixtures);
+    rt::GameSettingsRecord record;
+    record.overrides = {{"windows_version", "win7"}, {"button.touchpad", "f5"}, {"button.l3", "vk:0x41"},
+                        {"pointer_speed", "1800"}, {"resolution", "2560x1440"}};
+    const auto settings_file = profile.string() + ".summary.settings";
+    std::string reason;
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "seed the summary's settings");
+    simulation.SetGameSettingsFile(settings_file);
+    simulation.action("details:900001");
+    activate(simulation, "details-more");
+    activate(simulation, "game-settings");
+    const auto& keys = simulation.state().navigation.modals.back().action_keys;
+    const auto heading = std::find(keys.begin(), keys.end(), "heading-your-changes");
+    check(heading != keys.end() && std::vector<std::string>(heading, heading + 6) ==
+              std::vector<std::string>{"heading-your-changes", "summary-resolution", "summary-buttons", "summary-tuning",
+                                       "summary-windows_version", "divider"},
+          "the summary lists the changes in the list's order");
+    check(find_row(simulation, "heading-your-changes")->value == "4" &&
+              find_row(simulation, "summary-resolution")->value == "2560×1440" &&
+              find_row(simulation, "summary-buttons")->title == "Button mapping" &&
+              find_row(simulation, "summary-buttons")->value == "2 buttons" &&
+              find_row(simulation, "summary-tuning")->value == "1 changed" &&
+              find_row(simulation, "summary-windows_version")->value == "Windows 7",
+          "each line names the setting and its value");
+    check(!simulation.action("focus:summary-resolution"), "a summary line can't take the focus");
+    simulation.action("up");
+    check(simulation.state().navigation.focus_key == "preset-picker", "Up from Change settings passes over the summary");
+    activate(simulation, "change-settings");
+    check(simulation.view().subtitle.find(" · 4 changed") != std::string::npos, "the list counts the changes");
+    const auto* compatibility = find_row(simulation, "section-compatibility");
+    check(compatibility && compatibility->subtitle == "1 changed: Windows version" &&
+              (!find_row(simulation, "section-advanced") || find_row(simulation, "section-advanced")->subtitle.empty()),
+          "a collapsed section names the changes inside");
+    activate(simulation, "section-compatibility");
+    check(find_row(simulation, "section-compatibility")->subtitle.empty(), "an open section shows its rows instead");
+    activate(simulation, "reset-settings");
+    check(simulation.state().navigation.modals.back().id == "game-settings" && find_row(simulation, "summary-none") &&
+              find_row(simulation, "heading-your-changes")->value.empty(),
+          "after Reset the summary says nothing is changed");
     std::filesystem::remove(settings_file);
 }
 
@@ -2527,7 +2656,10 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
               has_row(simulation, "feedback-change-settings"),
           "it didn't start: logs are required, Change settings is offered");
     activate(simulation, "feedback-change-settings");
-    check(top().id == "game-settings", "Change settings opens Game settings");
+    // It promises settings: the list opens over the summary, and Circle comes back to the summary.
+    check(top().id == "game-settings-list" &&
+              simulation.state().navigation.modals[simulation.state().navigation.modals.size() - 2].id == "game-settings",
+          "Change settings opens the settings list over Game settings");
     // It ran well with the player's own changes: a report, and the offer to share them as a recipe.
     check(simulation.scenario("feedback-good"), "feedback-good scenario loads");
     check(has_row(simulation, "feedback-recipe") && !find_row(simulation, "feedback-logs")->selected,
@@ -2607,17 +2739,17 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
               find_row(simulation, "feedback-send")->subtitle.find("second report") != std::string::npos &&
               find_row(simulation, "feedback-send")->subtitle.find("vote") == std::string::npos,
           "a failed report says why in a report's words and offers Try again");
-    // Share recipe sits just above Reset all to preset, between two dividers, with Advanced collapsed.
+    // On the summary, Share recipe follows Change settings… and the preset rows, before the divider above Reset.
     check(simulation.scenario("share-new"), "share-new scenario loads for Game settings");
     simulation.action("circle");
     {
         const auto& keys = top().action_keys;
         const auto share = std::find(keys.begin(), keys.end(), "share-recipe");
-        const auto advanced = std::find(keys.begin(), keys.end(), "section-advanced");
-        check(top().id == "game-settings" && share != keys.end() && share > advanced && share - keys.begin() >= 1 &&
-                  share + 2 < keys.end() && *(share - 1) == "divider" && *(share + 1) == "divider" && *(share + 2) == "reset-settings" &&
+        const auto change = std::find(keys.begin(), keys.end(), "change-settings");
+        check(top().id == "game-settings" && share != keys.end() && change < share && share + 2 < keys.end() &&
+                  *(share + 1) == "divider" && *(share + 2) == "reset-settings" &&
                   !simulation.state().navigation.focus_key.empty(),
-              "Share recipe is above Reset all to preset, set apart by dividers, outside Advanced");
+              "Share recipe is on the summary, above the divider before Reset all to preset");
         check(std::count(keys.begin(), keys.end(), "share-recipe") == 1, "and listed once");
     }
     // What is sent lists only what the recipe carries: a row the game's title can't use yet (it waits for its runtime
@@ -2665,8 +2797,12 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
     check(top().id == "feedback" && simulation.state().navigation.focus_key == "feedback-good", "and after It ran well too");
     activate(simulation, "feedback-problems");
     activate(simulation, "feedback-change-settings");
-    check(top().id == "game-settings" && simulation.state().navigation.selected_game_id == game && has_row(simulation, "preset-picker"),
-          "Change settings opens the game's settings from anywhere");
+    {
+        const auto& modals = simulation.state().navigation.modals;
+        check(top().id == "game-settings-list" && modals.size() >= 2 && modals[modals.size() - 2].id == "game-settings" &&
+                  simulation.state().navigation.selected_game_id == game,
+              "Change settings opens the game's settings list, over its summary, from anywhere");
+    }
     // Share feedback… in the game's actions opens the same sheet any time.
     check(simulation.scenario("share-new"), "share-new scenario loads for the game actions");
     while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
@@ -3170,6 +3306,7 @@ int main(int argc, char** argv) {
     community_recipes_search_and_link(fixtures, profile);
     community_old_share_is_the_steam_games(fixtures, profile);
     reset_keeps_the_imported_program(fixtures, profile);
+    settings_summary_lists_changes(fixtures, profile);
     clean();
     community_recipes_one_base(fixtures, profile);
     clean();

@@ -2055,7 +2055,18 @@ private:
     void commit_editor();
     void show_setting_validation(std::string message, std::string detail);
     void advance_jobs();
+    // Game settings opens on a summary (the preset, the player's changes, actions); Change settings… opens the list.
     [[nodiscard]] std::vector<std::string> game_settings_actions() const;
+    [[nodiscard]] std::vector<std::string> game_settings_list_actions() const;
+    // One line per change the player made (Reset's rule): the summary's rows, in catalogue order.
+    struct SettingsSummaryLine {
+        std::string key;    // summary-<setting id>, summary-buttons, summary-tuning
+        std::string id;     // the setting, or empty for Button mapping and Controller tuning
+        std::string label;
+        std::string value;
+        playden::runtime::SettingGroup group = playden::runtime::SettingGroup::kGame;
+    };
+    [[nodiscard]] std::vector<SettingsSummaryLine> settings_summary(GameId id) const;
     [[nodiscard]] std::vector<std::string> kept_manager_actions() const;
     [[nodiscard]] std::vector<std::string> leftover_manager_actions() const;
     [[nodiscard]] bool leftover_queued(const std::string& title_id) const;
@@ -2261,6 +2272,7 @@ private:
     std::string runtime_prompt_shown_kit_;
     void show_alert(std::string title, std::string body, GameId settings_game = {});
     void open_game_settings();
+    void open_settings_list();
     void show_alert_prompt();
     void open_live_log(const std::string& topic, GameId game_id);
     void load_live_log();

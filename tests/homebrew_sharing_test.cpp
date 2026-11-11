@@ -61,13 +61,48 @@ std::string read_text(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-const playden::homebrew::ViewRow* find_row(const Simulation& model, const std::string& key) {
+// Game settings has two pages: the summary, and over it the list that Change settings… opens. Tests name rows on
+// either page; this goes to the page that has the row, as a player would, and stays put when neither has it.
+bool settings_page_with(playden::homebrew::Simulation& simulation, const std::string& key) {
+    const auto shown = [&] {
+        for (const auto& row : simulation.view().rows)
+            if (row.key == key) return true;
+        return false;
+    };
+    if (shown()) return true;
+    const auto& modals = simulation.state().navigation.modals;
+    if (modals.empty()) return false;
+    // A row on neither page leaves the page and its focus as they were.
+    const std::string start_id = modals.back().id;
+    const std::string start_focus = simulation.state().navigation.focus_key;
+    const auto restore = [&] {
+        if (!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == start_id)
+            simulation.action("focus:" + start_focus);
+        return false;
+    };
+    if (modals.back().id == "game-settings-list") {
+        simulation.action("circle");
+        if (shown()) return true;
+        simulation.action("focus:change-settings");
+        simulation.action("cross");
+    } else if (modals.back().id == "game-settings" && simulation.action("focus:change-settings") && simulation.action("cross")) {
+        if (shown()) return true;
+        simulation.action("circle");
+    } else {
+        return false;
+    }
+    return shown() || restore();
+}
+
+const playden::homebrew::ViewRow* find_row(Simulation& model, const std::string& key) {
+    settings_page_with(model, key);
     for (const auto& row : model.view().rows)
         if (row.key == key) return &row;
     return nullptr;
 }
 
 void activate(Simulation& model, const std::string& key) {
+    settings_page_with(model, key);
     if (!model.action("focus:" + key)) {
         std::fprintf(stderr, "missing row %s on %s\n", key.c_str(), model.view().surface.c_str());
         check(false, "requested row exists");
@@ -1436,7 +1471,7 @@ void start_failed(const std::filesystem::path& base) {
     // Change settings from the report leaves the dialog too.
     activate(model, "start-failed-report");
     activate(model, "feedback-change-settings");
-    check(top().id == "game-settings" &&
+    check(top().id == "game-settings-list" &&
               std::none_of(model.state().navigation.modals.begin(), model.state().navigation.modals.end(),
                            [](const auto& modal) { return modal.id == "start-failed" || modal.id == "feedback"; }),
           "Change settings from the report closes the report and the dialog");
@@ -1445,7 +1480,8 @@ void start_failed(const std::filesystem::path& base) {
     model.NotifyStartFailed(kGame, "");
     check(top().id == "start-failed" && contains(top().body, "It stopped before it got going."), "without a reason it says so plainly");
     activate(model, "start-failed-settings");
-    check(top().id == "game-settings" && model.state().navigation.selected_game_id == kGame, "Change settings opens Game settings");
+    check(top().id == "game-settings-list" && model.state().navigation.selected_game_id == kGame,
+          "Change settings opens the settings list");
     while (!model.state().navigation.modals.empty()) model.action("circle");
     check(model.state().navigation.modals.empty(), "and no question follows");
 }

@@ -73,12 +73,17 @@ int main(int argc, char** argv) {
     const auto game = simulation.state().navigation.selected_game_id;
     choose(simulation, "details-more");
     choose(simulation, "game-settings");
+    require(simulation.state().navigation.focus_key == "change-settings", "Game settings opens on Change settings");
+    choose(simulation, "change-settings");
     choose(simulation, "setting-extra_arguments");
     simulation.text("é星ر");
     press(simulation, "square");
     require(simulation.state().editor.value == "é星", "controller backspace preserves complete UTF-8 codepoints");
     press(simulation, "circle");
     require(simulation.state().navigation.focus_key == "setting-extra_arguments", "keyboard Cancel restores exact modal opener");
+    press(simulation, "circle");
+    require(simulation.state().navigation.modals.back().id == "game-settings" &&
+            simulation.state().navigation.focus_key == "change-settings", "Circle on the list returns to the summary");
     press(simulation, "circle");
     require(!simulation.state().navigation.modals.empty() && simulation.state().navigation.modals.back().id == "context" &&
             simulation.state().navigation.focus_key == "game-settings", "Circle on Game settings returns to Game actions");
