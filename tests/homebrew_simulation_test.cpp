@@ -422,7 +422,7 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
     activate(simulation, "game-settings");
     // Game settings opens on a summary, with the focus on Change settings…; nothing is changed yet.
     check(simulation.state().navigation.modals.back().action_keys ==
-              std::vector<std::string>{"preset-picker", "heading-your-changes", "summary-none", "divider", "change-settings",
+              std::vector<std::string>{"preset-picker", "heading-your-changes", "summary-none", "change-settings",
                                        "save-my-preset", "share-recipe", "divider", "reset-settings", "cancel"},
           "T08b Game settings opens on the summary");
     check(simulation.state().navigation.focus_key == "change-settings", "T08b the summary opens on Change settings");
@@ -2113,7 +2113,7 @@ void settings_summary_lists_changes(const std::filesystem::path& fixtures, const
     const auto heading = std::find(keys.begin(), keys.end(), "heading-your-changes");
     check(heading != keys.end() && std::vector<std::string>(heading, heading + 6) ==
               std::vector<std::string>{"heading-your-changes", "summary-resolution", "summary-buttons", "summary-tuning",
-                                       "summary-windows_version", "divider"},
+                                       "summary-windows_version", "change-settings"},
           "the summary lists the changes in the list's order");
     check(find_row(simulation, "heading-your-changes")->value == "4" &&
               find_row(simulation, "summary-resolution")->value == "2560×1440" &&

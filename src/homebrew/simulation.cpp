@@ -15127,7 +15127,6 @@ std::vector<std::string> Simulation::game_settings_actions() const {
     const auto summary = settings_summary(game);
     if (summary.empty()) actions.push_back("summary-none");
     for (const auto& line : summary) actions.push_back(line.key);
-    actions.push_back("divider");
     actions.push_back("change-settings");
     // My presets: save the game's settings as one, or put its own changes into the one it uses. Save is left out while
     // the presets file can't be read (Playden said so at startup): it could only refuse.
