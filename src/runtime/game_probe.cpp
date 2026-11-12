@@ -78,6 +78,7 @@ struct Section {
   std::uint32_t address = 0;
   std::uint32_t size = 0;
   std::uint32_t raw = 0;
+  std::uint32_t raw_size = 0;  // bytes the file holds for it (SizeOfRawData)
   std::uint32_t flags = 0;
 };
 
@@ -92,7 +93,7 @@ struct PeFacts {
   // A writable section shared between processes that doesn't fill whole console pages.
   bool unaligned_shared = false;
   bool pe64 = false;                 // PE32+ (x64), otherwise PE32 (x86)
-  bool watcom = false;               // linked by Watcom (its BEGTEXT or DGROUP section)
+  bool watcom = false;               // linked by Watcom (its BEGTEXT or DGROUP section, or its banner at the entry)
   std::uint64_t resource_offset = 0;  // file offset of the resource directory, 0 when there is none
   std::uint32_t resource_size = 0;
   std::vector<std::string> imports;  // lower case
@@ -136,6 +137,7 @@ PeFacts ReadPe(const std::string& path, bool delay_imports = false) {
     section.address = U32(row + 12);
     section.size = std::max(U32(row + 8), U32(row + 16));
     section.raw = U32(row + 20);
+    section.raw_size = U32(row + 16);
     section.flags = U32(row + 36);
     const auto mapped = (U32(row + 8) + 0xfffu) & ~0xfffu;
     if ((section.flags & kSharedWritable) == kSharedWritable &&
@@ -152,6 +154,19 @@ PeFacts ReadPe(const std::string& path, bool delay_imports = false) {
   };
   for (const auto& section : list)
     if (entry >= section.address && entry - section.address < section.size) facts.entry_section = section.name;
+  // Watcom's startup jumps over its banner, so a program linked with other section names (NFS3's Modern Patch has
+  // .code and .data) still carries "WATCOM C/C++32 Run-Time system" a few bytes after its entry point.
+  // Only the entry section's own file bytes count: past them is another section, or memory the file doesn't hold.
+  for (const auto& section : list) {
+    if (facts.watcom || !entry || entry < section.address || entry - section.address >= section.raw_size) continue;
+    static constexpr std::string_view kBanner = "WATCOM C/C++32 Run-Time system";
+    unsigned char near_entry[64] = {};
+    const auto left = section.raw_size - (entry - section.address);
+    const auto count = program.ReadSome(static_cast<std::uint64_t>(section.raw) + (entry - section.address), near_entry,
+                                        std::min<std::size_t>(sizeof(near_entry), left));
+    const std::string_view window(reinterpret_cast<const char*>(near_entry), count);
+    facts.watcom = window.find(kBanner) != std::string_view::npos;
+  }
   facts.valid = true;
   if (const auto resource_rva = directory(2))
     if (const auto at = file_offset(resource_rva)) {

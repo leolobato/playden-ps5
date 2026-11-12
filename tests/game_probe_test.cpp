@@ -35,7 +35,12 @@ struct PeSpec {
   std::vector<std::string> delay_imports;  // delay-loaded DLLs (descriptors at RVA 0x2a00)
   std::string resource;      // the resource directory's bytes, at RVA 0x2c00 (at most 0x400)
   std::string code_section = ".text";  // the first section's name (Watcom's linker calls it BEGTEXT)
+  std::uint32_t code_raw_size = 0x1000;  // the first section's SizeOfRawData
 };
+
+// Watcom's startup at a program's entry: a near jump over its banner (NFS3's Modern Patch, 0x4f7fa0).
+const std::string kWatcomEntry =
+    std::string("\xe9\xfb\xd8\x01\x00\x03\x10\x40\x00", 9) + "WATCOM C/C++32 Run-Time system. (c) Copyright";
 
 void Put32(std::string* bytes, std::size_t at, std::uint32_t value) {
   for (int i = 0; i < 4; ++i) (*bytes)[at + i] = static_cast<char>((value >> (8 * i)) & 0xff);
@@ -69,6 +74,7 @@ void WritePe(const fs::path& path, const PeSpec& spec) {
     Put32(&bytes, table + row * 40 + 20, raw);
   };
   section(0, spec.bind_entry ? ".bind" : spec.code_section.c_str(), 0x1000, 0x400);
+  Put32(&bytes, table + 16, spec.code_raw_size);
   section(1, ".rdata", 0x2000, static_cast<std::uint32_t>(spec.data_at));
   if (spec.shared_data) Put32(&bytes, table + 40 + 36, 0xd0000040);
   bytes.replace(0x400, spec.text.size(), spec.text);
@@ -363,6 +369,27 @@ int main() {
     x64.code_section = "BEGTEXT";
     WritePe(root / "w64.exe", x64);
     CHECK(!ProbeGame(root.string(), "w64.exe").watcom && DefaultsFor(ProbeGame(root.string(), "w64.exe")).cpu.empty());
+    // NFS3's Modern Patch is linked by Watcom with .code and .data sections; its entry jumps over Watcom's banner.
+    PeSpec nfs3{false, {"USER32.dll", "DDRAW.dll"}};
+    nfs3.code_section = ".code";
+    nfs3.text = std::string(0x10, '\x90') + kWatcomEntry;
+    WritePe(root / "nfs3.exe", nfs3);
+    const auto modern = ProbeGame(root.string(), "nfs3.exe");
+    CHECK(modern.watcom && DefaultsFor(modern).cpu == "translator");
+    // The banner elsewhere in a program (a string in its data) says nothing; nor does a 64-bit program's.
+    PeSpec quoted{false, {"USER32.dll"}};
+    quoted.text = std::string(0x100, '\x90') + kWatcomEntry;
+    WritePe(root / "quoted.exe", quoted);
+    CHECK(!ProbeGame(root.string(), "quoted.exe").watcom);
+    PeSpec banner64{true, {"USER32.dll"}};
+    banner64.text = nfs3.text;
+    WritePe(root / "b64.exe", banner64);
+    CHECK(!ProbeGame(root.string(), "b64.exe").watcom);
+    // Only the entry section's file bytes count: a banner past them is in another section or not in the file.
+    PeSpec short_raw = nfs3;
+    short_raw.code_raw_size = 0x20;
+    WritePe(root / "short.exe", short_raw);
+    CHECK(!ProbeGame(root.string(), "short.exe").watcom);
   }
   {  // Godot and Source.
     const auto root = fresh();
@@ -528,6 +555,18 @@ int main() {
     CHECK(old.defaults.at("cpu") == "translator" && old.detected == "ddraw,watcom graphics=auto" && old.graphics == "dxvk");
     CHECK(!RefreshRecipeDefaults(root.string(), kit, &old));
     // A Native the recipe already says, a 32-bit program that isn't Watcom's and a 64-bit recipe stay as they are.
+    // One linked with other section names (NFS3's Modern Patch), saved before as an unknown engine.
+    PeSpec nfs3{false, {"USER32.dll", "DDRAW.dll"}};
+    nfs3.code_section = ".code";
+    nfs3.text = std::string(0x10, '\x90') + kWatcomEntry;
+    WritePe(root / "nfs3.exe", nfs3);
+    GameRecipe modern;
+    CHECK(GenerateGameRecipe(4026531863u, "NFS3", {{"", "", "nfs3.exe", "", ""}}, root.string(), &modern, &reason, kit));
+    CHECK(modern.defaults.at("cpu") == "translator");
+    modern.defaults.erase("cpu");
+    modern.detected = "unknown graphics=dxvk";
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &modern));
+    CHECK(modern.defaults.at("cpu") == "translator" && modern.detected == "watcom graphics=dxvk");
     auto native = recipe;
     native.defaults["cpu"] = "native";
     native.detected = "ddraw graphics=auto";
