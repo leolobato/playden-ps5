@@ -20,6 +20,7 @@ add_library(playden_runtime_publication_verifier STATIC
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_title_publication.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_title_launch.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_game_profile.c"
+    "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_steam_view.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_app_profile.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_profile_catalog.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_wine_launch.c"
@@ -80,6 +81,7 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
         "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_title_publication.c"
         "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_title_launch.c"
         "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_game_profile.c"
+        "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_steam_view.c"
         "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_app_profile.c"
         "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_profile_catalog.c"
         "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_wine_launch.c"
@@ -102,9 +104,11 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
             "${PLAYDEN_PROSPERO_SOURCE_DIR}/tests/test_pw_${contract}.c"
             "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_${contract}.c")
         if(contract STREQUAL "game_profile")
-            list(APPEND contract_sources "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_app_profile.c")
+            list(APPEND contract_sources "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_app_profile.c"
+                "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_steam_view.c")
         elseif(contract STREQUAL "profile_catalog")
             list(APPEND contract_sources "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_game_profile.c"
+                "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_steam_view.c"
                 "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_app_profile.c")
         endif()
         add_executable(prospero_${contract}_contract ${contract_sources})

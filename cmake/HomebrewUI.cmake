@@ -113,6 +113,7 @@ add_library(playden_runtime_settings_publication_journal STATIC
     "${CMAKE_SOURCE_DIR}/src/runtime/settings_publication_journal.cpp"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_title_launch.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_game_profile.c"
+    "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_steam_view.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_app_profile.c"
     "${PLAYDEN_PROSPERO_SOURCE_DIR}/src/pw_wine_launch.c")
 target_include_directories(playden_runtime_settings_publication_journal PUBLIC "${CMAKE_SOURCE_DIR}/src"
