@@ -236,8 +236,8 @@ Sharing a game whose recipe is a settings-only one depends on whether the player
 `dll_overrides` in Game settings):
 
 - **Program kept** (Playden's program, or the one the recipe names): the share is a settings-only recipe too
-  (`BuildSettingsOnlyRecipe`). It has the base's defaults, every other row the player changed (not Extra arguments,
-  the player's own row), and `graphics` when that changed, and the base's own program rows as they are. Picking the
+  (`BuildSettingsOnlyRecipe`). It has the base's defaults, every other row the player changed (not Extra arguments
+  or the performance overlay, the player's own rows), and `graphics` when that changed, and the base's own program rows as they are. Picking the
   same program the recipe names, however its path is written, is no change. The usual rules apply, so Suggest changes is offered
   (and pre-selected unless graphics changed), and the recipe stays settings-only when the change is merged. Without
   changes, Playden offers a thumbs up.

@@ -15806,7 +15806,8 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
     static const std::set<std::string> covered = {"launch_option", "program", "dll_overrides", "library_overrides", "architecture"};
     static const std::set<std::string> program_rows = {"program_folder", "program_arguments", "arguments", "graphics"};
     for (const auto& definition : rt::SettingsCatalogue()) {
-        if (covered.count(definition.id)) continue;
+        // The player's own rows (the performance overlay, Extra arguments...) are not shared, so no change either.
+        if (covered.count(definition.id) || rt::IsPersonalSettingRow(definition.id)) continue;
         const auto& value = after.values.at(definition.id);
         // A row the game's title can't use yet (it waits for its runtime kit update) stays out of the recipe, so it
         // isn't a change the share sends either.

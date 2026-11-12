@@ -984,6 +984,8 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
       const auto found = source.find(definition.id);
       if (found == source.end()) return true;
       std::string reason;
+      // A recipe's Online while online-steam is off is ignored, as a saved one is: the game keeps working.
+      if (kind == ValueSource::kRecipe && !SettingChoiceOffered(definition.id, found->second)) return true;
       if (!ValidateSettingValue(recipe, definition.id, found->second, &reason)) return false;
       value.value = found->second;
       value.source = kind;
@@ -2046,6 +2048,9 @@ bool ParseRecipeFile(std::string_view text, GameRecipe* recipe, std::string* rea
       if (value.empty() || HasControl(value)) return fail("default launch_option: not a launch option id");
       continue;
     }
+    // Online is one of the choices; whether this Playden offers it (online-steam) is decided where the recipe is
+    // offered and applied, so a recipe downloaded with it off is still kept.
+    if (!SettingChoiceOffered(id, value)) continue;
     if (!ValidateSettingValue(out, id, value, &why)) return fail("default " + id + ": " + why);
   }
   // A settings-only recipe without graphics takes Playden's.
@@ -4200,20 +4205,15 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
   shared.graphics = settings.graphics;
   // What the files showed, without the graphics value: that has its own field.
   shared.detected = recipe.detected.substr(0, recipe.detected.find(" graphics="));
-  // The recipe fields above carry the program, arguments and overrides; the rest are defaults. Extra arguments is the
-  // player's own row, which no community recipe carries.
+  // The recipe fields above carry the program, arguments and overrides; the rest are defaults, but not the player's
+  // own rows. Steam features = Online is shared: some games only work with it.
   static const std::set<std::string> fields = {"launch_option", "program", "program_folder", "program_arguments",
-                                               "arguments", "extra_arguments", "architecture", "dll_overrides",
-                                               "library_overrides", "graphics", "start_check", "logging"};
+                                               "arguments", "architecture", "dll_overrides", "library_overrides",
+                                               "graphics"};
   for (const auto& definition : SettingsCatalogue()) {
     const auto& row = settings.values.at(definition.id);
-    if (fields.count(definition.id) || !row.available || row.source == ValueSource::kPlayden ||
-        row.value == definition.playden_default)
-      continue;
-    // Online and the sign-in hand the player's Steam account to the game: each player turns that on for themselves,
-    // and chooses what the game does with their invites.
-    if (definition.id == "steam_sign_in" || definition.id == "game_invites" ||
-        (definition.id == "steam_features" && row.value == "online"))
+    if (fields.count(definition.id) || IsPersonalSettingRow(definition.id) || !row.available ||
+        row.source == ValueSource::kPlayden || row.value == definition.playden_default)
       continue;
     shared.defaults[definition.id] = row.value;
   }
@@ -4230,6 +4230,11 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
 bool IsProgramRow(std::string_view id) {
   return id == "launch_option" || id == "program" || id == "program_folder" || id == "program_arguments" ||
          id == "architecture" || id == "arguments" || id == "dll_overrides";
+}
+
+bool IsPersonalSettingRow(std::string_view id) {
+  return id == "extra_arguments" || id == "start_check" || id == "logging" || id == "performance_overlay" ||
+         id == "overlay_detail" || id == "steam_sign_in" || id == "game_invites";
 }
 
 CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const EffectiveSettings& before,
@@ -4250,24 +4255,20 @@ CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const Effec
   // Graphics is a field of its own: the base's, or the player's when they changed it.
   shared.graphics = after.graphics != before.graphics ? after.graphics : base.recipe.graphics;
   shared.defaults = base.recipe.defaults;
+  // Not even from the base: a recipe shared before a row became the player's own may still carry it.
+  for (auto it = shared.defaults.begin(); it != shared.defaults.end();)
+    it = IsPersonalSettingRow(it->first) ? shared.defaults.erase(it) : std::next(it);
   shared.requirements = base.recipe.requirements;
-  // Rows that are local or written elsewhere: the program rows stay the base's, graphics has its field, and Extra
-  // arguments is the player's own row, which no community recipe carries.
-  static const std::set<std::string> skipped = {"graphics", "extra_arguments", "start_check", "logging"};
+  // Rows written elsewhere or not at all: the program rows stay the base's, graphics has its field, and the player's
+  // own rows are not shared. Steam features = Online is: some games only work with it.
   for (const auto& definition : SettingsCatalogue()) {
-    if (IsProgramRow(definition.id) || skipped.count(definition.id)) continue;
+    if (IsProgramRow(definition.id) || definition.id == "graphics" || IsPersonalSettingRow(definition.id)) continue;
     const auto found_after = after.values.find(definition.id);
     const auto found_before = before.values.find(definition.id);
     if (found_after == after.values.end() || !found_after->second.available) continue;
     if (found_before != before.values.end() && ChosenValue(found_before->second) == ChosenValue(found_after->second))
       continue;
-    // Online and the sign-in hand the player's Steam account to the game: each player turns that on for themselves,
-    // and chooses what the game does with their invites.
-    const auto value = ChosenValue(found_after->second);
-    if (definition.id == "steam_sign_in" || definition.id == "game_invites" ||
-        (definition.id == "steam_features" && value == "online"))
-      continue;
-    shared.defaults[definition.id] = value;
+    shared.defaults[definition.id] = ChosenValue(found_after->second);
   }
   out.status = "untested";
   return out;

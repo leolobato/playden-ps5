@@ -331,10 +331,10 @@ void Rules(const std::string& fixtures) {
   community.recipe.defaults["environment"] = "VKD3D_CONFIG=dxr;PW_MEDIA_DISABLE=1;MESA_GL_VERSION_OVERRIDE=4.5";
   CHECK(Mentions(CommunityRecipeRefusals(community), "MESA_GL_VERSION_OVERRIDE") &&
         CommunityRecipeRefusals(community).size() == 1);
-  // Online and the sign-in stay each player's own; the emulator's network value can be shared.
+  // Online can be shared; the sign-in and invites stay each player's own; the emulator's network value can be shared.
   community = good;
   community.recipe.defaults["steam_features"] = "online";
-  CHECK(Mentions(CommunityRecipeRefusals(community), "steam_features to online"));
+  CHECK(CommunityRecipeRefusals(community).empty() && CommunityRecipeFeature(community) == "online-steam");
   community = good;
   community.recipe.defaults["steam_sign_in"] = "kept";
   CHECK(Mentions(CommunityRecipeRefusals(community), "defaults sets steam_sign_in"));

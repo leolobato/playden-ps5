@@ -342,7 +342,8 @@ void Share() {
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"resolution", "1280x720"}}, kit, &after, &error));
   const auto kept = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(kept.recipe.graphics.empty() && !Has(SerializeCommunityRecipe(kept), "\"graphics\""));
-  // Online and the sign-in stay each player's own; Offline emulation and its Steam network value are shared.
+  // Online is shared; the sign-in and invites stay each player's own; Offline emulation and its Steam network value
+  // are shared.
   SetOnlineSteamEnabled(true);
   kit.helper_process = true;  // Online runs Steam beside the game
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, kit, &before, &error));
@@ -352,13 +353,27 @@ void Share() {
   CHECK(ChosenValue(after.values.at("steam_features")) == "online" && ChosenValue(after.values.at("steam_sign_in")) == "kept");
   CHECK(ChosenValue(after.values.at("game_invites")) == "off");
   const auto online = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
-  CHECK(!online.recipe.defaults.count("steam_features") && !online.recipe.defaults.count("steam_sign_in") &&
+  CHECK(online.recipe.defaults.at("steam_features") == "online" && !online.recipe.defaults.count("steam_sign_in") &&
         !online.recipe.defaults.count("game_invites"));
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "emulate"},
                                                         {"steam_network", "offline"}}, kit, &after, &error));
   const auto offline = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(offline.recipe.defaults.count("steam_network") && offline.recipe.defaults.at("steam_network") == "offline");
   SetOnlineSteamEnabled(false);
+  // The performance overlay is the player's own: a recipe fixes the game.
+  kit.dxvk_config = true;
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, kit, &before, &error));
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"performance_overlay", "on"}, {"overlay_detail", "full"}}, kit,
+                               &after, &error));
+  CHECK(after.values.at("performance_overlay").value == "on" && after.values.at("overlay_detail").available);
+  const auto overlay = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(!overlay.recipe.defaults.count("performance_overlay") && !overlay.recipe.defaults.count("overlay_detail"));
+  // Nor from a base shared before the overlay became the player's own.
+  auto old_base = base;
+  old_base.recipe.defaults["performance_overlay"] = "on";
+  old_base.recipe.defaults["overlay_detail"] = "full";
+  const auto from_old = BuildSettingsOnlyRecipe(old_base, before, before, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(!from_old.recipe.defaults.count("performance_overlay") && !from_old.recipe.defaults.count("overlay_detail"));
 }
 
 }  // namespace

@@ -2581,6 +2581,21 @@ void community_sharing(const std::filesystem::path& fixtures, const std::filesys
           "Suggest changes is chosen and keeps the recipe's title");
     check(find_row(simulation, "share-what")->lines.front() == "Your changes: Resolution 1920×1080",
           "the sheet lists the player's changes against the recipe");
+    {  // The performance overlay is the player's own: not a change a share sends.
+        simulation.action("circle");
+        for (const char* section : {"section-compatibility", "section-advanced"})
+            if (!has_row(simulation, "setting-performance_overlay")) activate(simulation, section);
+        activate(simulation, "setting-performance_overlay");
+        activate(simulation, "choice-1");  // On
+        while (top().id != "game-settings") simulation.action("circle");
+        playden::runtime::EffectiveSettings overlay;
+        check(simulation.EffectiveSettingsFor(game, &overlay) &&
+                  playden::runtime::ChosenValue(overlay.values.at("performance_overlay")) == "on",
+              "the overlay is on");
+        activate(simulation, "share-recipe");
+        check(find_row(simulation, "share-what")->lines.front() == "Your changes: Resolution 1920×1080",
+              "the overlay is not listed among the changes");
+    }
     activate(simulation, "share-choice-new");
     check(find_row(simulation, "share-choice-new")->selected && find_row(simulation, "share-title")->value == "Optional",
           "a new recipe's title is optional");

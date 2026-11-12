@@ -766,6 +766,10 @@ CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const Effec
 // The rows that choose the program or how it starts, which a settings-only recipe takes from Playden's recipe: a
 // player's change to one makes a share name its program.
 bool IsProgramRow(std::string_view id);
+// The player's own rows, which no community recipe carries and a share doesn't count as a change: Extra arguments,
+// Known problems, Logging, the performance overlay, and the Steam sign-in and invites (they hand over the player's
+// Steam account). A recipe fixes the game.
+bool IsPersonalSettingRow(std::string_view id);
 // A community recipe as the recipe of one installed game: recipe.app_id its runtime number, recipe.game the game.
 void BindCommunityRecipe(CommunityRecipe* community, const GameId& game, std::uint32_t runtime_number);
 // A settings-only recipe (IsSettingsOnlyRecipe) is written without the fields Playden fills in, as format_version 2.

@@ -2896,14 +2896,14 @@ int main(int argc, char** argv) {
                                  {"arguments", "-game hl2 {resolution}"}, {"dll_overrides", "d3d9=n;xinput1_3=n"}},
                                  KitCapabilities{}, &settings, &error));
     auto community = BuildCommunityRecipe(hl2, settings, kHalfLife2, "Half-Life 2");
-    {  // Online and the sign-in are not shared; Offline emulation and its network value are.
+    {  // Online is shared, the sign-in is not; Offline emulation and its network value are shared too.
       EffectiveSettings steam;
       const auto host_kit = KitCapabilitiesFromManifest({kKitHelperProcess}, false);
       CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "online"},
                                    {"steam_sign_in", "kept"}}, host_kit, &steam, &error));
       CHECK(steam.values.at("steam_features").value == "online" && steam.values.at("steam_sign_in").value == "kept");
       const auto online = BuildCommunityRecipe(hl2, steam, kHalfLife2, "Half-Life 2").recipe;
-      CHECK(!online.defaults.count("steam_features") && !online.defaults.count("steam_sign_in"));
+      CHECK(online.defaults.at("steam_features") == "online" && !online.defaults.count("steam_sign_in"));
       // Nor what the game does with the player's invites.
       CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "online"},
                                    {"game_invites", "off"}}, host_kit, &steam, &error));
@@ -2913,6 +2913,14 @@ int main(int argc, char** argv) {
                                    {"steam_network", "offline"}}, KitCapabilities{}, &steam, &error));
       const auto offline = BuildCommunityRecipe(hl2, steam, kHalfLife2, "Half-Life 2").recipe;
       CHECK(offline.defaults.at("steam_features") == "emulate" && offline.defaults.at("steam_network") == "offline");
+    }
+    {  // The performance overlay is the player's own: a recipe fixes the game.
+      EffectiveSettings overlay;
+      CHECK(BuildEffectiveSettings(hl2, nullptr, {{"performance_overlay", "on"}, {"overlay_detail", "full"}},
+                                   KitCapabilitiesFromManifest({kKitDxvkConfig}, false), &overlay, &error));
+      CHECK(overlay.values.at("performance_overlay").value == "on" && overlay.values.at("overlay_detail").available);
+      const auto shared = BuildCommunityRecipe(hl2, overlay, kHalfLife2, "Half-Life 2").recipe;
+      CHECK(!shared.defaults.count("performance_overlay") && !shared.defaults.count("overlay_detail"));
     }
     {  // What the files showed travels without the graphics value, which has its own field (#67).
       auto detected = hl2;
@@ -3429,6 +3437,17 @@ int main(int argc, char** argv) {
     CHECK(settings.values.at("steam_network").value == "offline" && !settings.values.at("steam_network").available);
     // The saved Online goes, with its sign-in; Steam network stays for when the feature is back.
     GameSettingsRecord record;
+    // A recipe's Online is kept when it is read, and ignored while online-steam is off: the game still starts.
+    {
+      auto online_recipe = ffxiii;
+      online_recipe.defaults["steam_features"] = "online";
+      GameRecipe reread;
+      CHECK(ParseGameRecipe(SerializeGameRecipe(online_recipe), &reread, &reason));
+      CHECK(reread.defaults.at("steam_features") == "online");
+      EffectiveSettings ignored;
+      CHECK(BuildEffectiveSettings(reread, nullptr, {}, KitCapabilities{}, &ignored, &error));
+      CHECK(ignored.values.at("steam_features").value != "online");
+    }
     record.overrides = {{"steam_features", "online"}, {"unlock.steam_features", "on"}, {"steam_sign_in", "kept"},
                         {"game_invites", "off"}, {"steam_network", "offline"}};
     CHECK(DropOnlineSteamSettings(&record) && record.revision == 1);
