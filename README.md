@@ -49,6 +49,9 @@ private Windows environment and its own tile on the PS5 Home screen.
   co-op or split screen, through XInput and the HID gamepad APIs (runtime kit 0.18 or newer). Player 2 must sign in to the PS5 as another user (or a guest) with their own DualSense.
 - **Mouse and keyboard.** Plug a USB mouse and keyboard into the PS5, or use a controller preset: the left stick as a
   mouse, or the D-pad as the arrow keys.
+- **Online play (experimental).** Playden can run Valve's own Steam client beside a game, so the game reaches
+  Steam's servers, lobbies and friends as on a PC. You choose it per game. It is off by default and has risks of its
+  own. See [Online play](#online-play-experimental).
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
   account is needed. See [Import Windows games](#import-windows-games).
 - **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC. USB
@@ -77,13 +80,15 @@ you sign in:
   signed in", then sign in again each time Playden starts.
 - **It replaces a game's Steam API.** When Playden prepares a game, it puts
   [gbe_fork](https://github.com/Detanup01/gbe_fork), a Steamworks emulator, in place of the game's `steam_api.dll` and
-  `steam_api64.dll`. The original files are kept next to them as `.orig`. gbe_fork is set to offline mode with its
-  networking turned off. The game then runs without the Steam client and without Steam's checks. This is the default
-  for most games; Game settings › Steam features › **Game's own files** puts the original files back. Replacing a
+  `steam_api64.dll`. The original files are kept next to them as `.orig`. gbe_fork never reaches Steam's servers.
+  The game then runs without the Steam client and without Steam's checks. This is the default
+  for most games; Game settings › Online › Steam features › **Game's own files** puts the original files back. Replacing a
   game's Steam API can be against the Steam Subscriber Agreement. In some countries, it can also count as getting
   around a protection measure. Decide for yourself if you accept this.
-- **No online play.** Online multiplayer does not work, and games with anti-cheat do not work. If you want to try
-  them anyway, use a separate Steam account.
+- **Online play is off by default, and experimental.** Without it, online multiplayer does not work. With it, Valve's
+  Steam client runs on the console, signed in as you, and a game with Valve Anti-Cheat could get your account banned
+  from that game. Games with any other anti-cheat do not work. Read [Online play](#online-play-experimental) first,
+  and consider a separate Steam account.
 - **It writes to your Steam Cloud saves.** Playden uploads saves after you play. A bug can overwrite good saves with
   older or broken ones. Back up saves you care about. When Playden shows a conflict, read it before you choose.
 - **It needs a jailbroken console with root-level helpers.** A running game can get elevated rights on the console.
@@ -125,6 +130,35 @@ Other versions can work, but these are the ones we know.
   environment and the per-game app shell. Playden checks that the installed kit is complete before it uses it.
 - **Microsoft's MFC library.** Wine doesn't include it. When a game needs it, Playden downloads Microsoft's Visual C++
   redistributable (about 25 MB, once per console) and installs only its MFC files into that game's Windows folder.
+
+## Online play (experimental)
+
+By default, games run offline: an emulator answers a game's Steam calls on the console, and it never reaches Valve.
+Official servers, Steam lobbies and Steam friends are out of reach.
+
+Online changes that for each game you choose it for:
+
+- **It runs Valve's own Steam client.** Playden downloads Valve's unmodified Steam client from Valve (about 64 MB)
+  and runs it next to the game, signed in as you. The game keeps its original Steam files and talks to that
+  client as on a Windows PC. Tickets, friends, lobbies, relays and game coordinators all come from Valve's code.
+- **It hands the game your Steam sign-in.** Playden puts your sign-in in a private file in the game's
+  Windows environment. The helper reads it once and deletes it.
+
+What can go wrong, in short:
+
+| Risk | How likely |
+| --- | --- |
+| An account ban, in a game without Valve Anti-Cheat | Unlikely |
+| A kick or a permanent ban from a game that uses Valve Anti-Cheat (VAC) | Unknown |
+| Someone on your home network takes your Steam sign-in from the console | Low |
+
+These are judgements, not measurements. Games with kernel-level anti-cheat, or any anti-cheat other than Valve's,
+are not supported.
+
+Choose Game settings › Online › Steam features › **Online (experimental)** to enable it for each game.
+
+**Read [docs/online-play.md](docs/online-play.md) if you'd like more information.** It explains how Steam online play works,
+what each risk means and what Playden does about it, and how to turn Online on.
 
 ## Install
 
@@ -368,7 +402,8 @@ build/homebrew-host/playden-homebrew --simulation --scenario signed-out
 ## Known issues
 
 - If you plug in or swap USB drives while Playden is open, restart Playden so it sees them.
-- Online multiplayer and games with anti-cheat do not work. See [Before you use it](#before-you-use-it).
+- Online multiplayer works only in games set to [Online](#online-play-experimental), and not in every game. Games
+  with anti-cheat other than Valve's do not work.
 - Uninstall games from Playden. Title folders belong to Playden; FTP and file managers can't delete them.
   Leftover titles appear in Settings › Storage. Deleting a leftover removes its title folder and Home tile;
   its saves and settings move to Kept game data, where you can delete them or get them back by installing the game

@@ -2,7 +2,7 @@
 /* Playden's Steam host: steam.exe for the folder that holds Valve's Steam client files.
  *
  * It runs beside a game set to Steam features = Online, in a second process on the game's Wine server (the title's
- * [helper], docs/online-play.md). It loads Valve's unmodified steamclient64.dll, signs the account in with the session
+ * [helper]). It loads Valve's unmodified steamclient64.dll, signs the account in with the session
  * Playden handed over, tells Windows programs where Steam is (the registry values the Steamworks library reads) and
  * keeps the client's callbacks running. The game's own steam_api then finds a running Steam, as on a PC.
  *

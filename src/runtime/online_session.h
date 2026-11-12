@@ -45,7 +45,7 @@ struct OnlineSession {
 
 // What one Play from Playden asks for once, beside the handoff (C:\playden\online-launch.txt, 0600): join a friend's
 // lobby, and invite friends to the first lobby the game opens or joins. The Steam host reads it and deletes it whatever
-// keep says, passes the lobby to the game and sends the invites (docs/online-play.md); Playden writes it only at a Play
+// keep says, passes the lobby to the game and sends the invites; Playden writes it only at a Play
 // that hands over the session, and removes a leftover wherever it removes a handoff, and whenever a Play does not start
 // or ends.
 struct OnlineLaunch {
