@@ -1806,6 +1806,24 @@ void web_import(const std::filesystem::path& base) {
     check(decision.kind == cm::ShareKind::kNewRecipe && !decision.send_based_on, "a share makes a new recipe");
     check(!model.VoteTargetFor(kGame), "nobody votes on an imported recipe");
 
+    // From the games list: the game the recipe names, or why none.
+    {
+        int status = 0;
+        std::string message;
+        check(model.GameForRecipe(base_choice->revision, &status, &message) == std::optional<GameId>(kGame),
+              "a recipe for Darkwood finds Darkwood");
+        std::string other_game = file;
+        for (std::size_t at; (at = other_game.find("274520")) != std::string::npos;) other_game.replace(at, 6, "220");
+        const auto other_kept = cm::PrepareImportedRecipe(other_game, nullptr);
+        check(other_kept.has_value(), "another game's recipe prepares");
+        cm::RecipeStore writer(root);
+        std::string error;
+        check(writer.Prepare(&error) && writer.WriteObjects({other_kept->bytes}, &error), "and is kept");
+        check(!model.GameForRecipe(cm::Sha256Hex(other_kept->bytes), &status, &message) && status == 404 &&
+                  contains(message, "isn't on this console"),
+              "a recipe for a game not on the console finds none");
+    }
+
     // The same file again changes nothing.
     check(send("steam-274520", file).status == 200, "the same file again is fine");
     // Another game's recipe, an unknown game, a file that isn't a recipe: refused, the choice stays.

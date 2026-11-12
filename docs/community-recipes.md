@@ -68,9 +68,12 @@ its own file with its own slug.
 A recipe file can go straight to a game from Playden's web page, without a pull request. This works with community
 recipes on or off.
 
-1. Open the web page (Settings › Web access), pair the browser in the **Files** tab, and open the game.
-2. Under **Recipe**, choose **Import recipe** and pick the file: an Export as recipe file, a file from
-   playden-ps5-recipes, or one somebody sent you.
+1. Open the web page (Settings › Web access) and pair the browser in the **Game files** tab.
+2. Choose **Import recipe** and pick the file: an Export as recipe file, a file from playden-ps5-recipes, or one
+   somebody sent you.
+   - Above the games list, the recipe goes to the game it names: a Steam game by its app ID, an imported game by its
+     Steam app ID or name. If no game on the console matches, or more than one copy does, Playden says so.
+   - On a game's page, under **Recipe**, the recipe goes to that game.
 
 The game uses the recipe at once and keeps the changes you made that still apply. The TV shows a notification.
 

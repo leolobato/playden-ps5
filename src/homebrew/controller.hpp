@@ -185,6 +185,7 @@ class Controller {
   void TickWebAccess();
   void TickRecipeImports();
   std::shared_ptr<WebRecipeImports> recipe_imports_;
+  std::set<std::string> web_setting_up_;  // the FileGame ids being set up, as TickWebFiles last reported them
   // Reports what the page's Files tab offers, about once a second, and keeps the running games current while it is in use.
   void TickWebFiles();
   std::chrono::steady_clock::time_point web_files_next_{};

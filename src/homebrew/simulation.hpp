@@ -1479,6 +1479,10 @@ public:
     // (community::PrepareImportedRecipe): the game uses it now, keeping the player's changes that still apply, and a
     // notification on the TV says so. Returns the HTTP status and a sentence for the browser.
     std::pair<int, std::string> ImportRecipe(GameId id, const std::string& revision);
+    // The game on this console a kept recipe is for (its GameRef: a Steam game's app ID, an imported game's Steam app ID
+    // or name key), among the installed games and the ones whose bottle Playden kept. Nothing, with an HTTP status and a
+    // sentence for the browser, when no game or more than one is.
+    std::optional<GameId> GameForRecipe(const std::string& revision, int* status, std::string* message);
     // The base the game's last "Export as recipe" was made from (RecipeBaseFor at that time).
     [[nodiscard]] std::optional<playden::runtime::CommunityRecipeChoice> ExportedRecipeBase(GameId id) const;
     // Why the wanted community recipe is not what the game runs with: the runtime's reason from the last

@@ -46,6 +46,7 @@ struct FileCatalog {
 struct RecipeImportAnswer {
   int status = 500;
   std::string message;
+  std::string game;  // the FileGame id of the game that uses it now; empty when none does
 };
 // The largest recipe file the page may send (the recipe service's limit).
 inline constexpr std::size_t kMaxRecipeUploadBytes = 16 << 10;
@@ -57,8 +58,8 @@ struct FilesConfig {
   Pairing::Options pairing;
   FileStore::Options store;  // tests; try_hold and free_space above take its fields' place
   std::function<std::int64_t()> now;  // seconds since 1970, stamped on zip entries
-  // Uses a recipe file for a game (its FileGame id), on the calling server worker; the controller answers. Empty: the
-  // route answers 503.
+  // Uses a recipe file for a game (its FileGame id, or empty: the game the recipe is for), on the calling server worker;
+  // the controller answers. Empty: the route answers 503.
   std::function<RecipeImportAnswer(const std::string& game, std::string file)> import_recipe;
 };
 

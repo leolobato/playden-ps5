@@ -226,7 +226,7 @@ yet, so most people should use the release download.
 ### Saves and game configs
 
 Open Playden's web page from a phone or computer on the same network: Settings › Web access shows the address and a
-QR code. In the **Files** tab, pair the browser with the 6-digit code the TV shows. The pairing ends when Playden closes.
+QR code. In the **Game files** tab, pair the browser with the 6-digit code the TV shows. The pairing ends when Playden closes.
 
 Pick a game to download, upload, replace or delete its files. Playden answers only while it is open, and starting a
 game closes it.

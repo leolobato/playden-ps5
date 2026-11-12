@@ -36,8 +36,6 @@ h1 small { color: var(--soft); font-weight: 400; font-size: 14px; margin-left: 8
 nav { display: flex; gap: 4px 20px; flex-wrap: wrap; font-size: 14px; }
 nav span { color: var(--soft); white-space: nowrap; }
 nav span.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); padding-bottom: 2px; }
-nav span.later { opacity: .55; }
-nav span.later em { font-style: normal; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; margin-left: 4px; }
 nav a { color: var(--soft); text-decoration: none; white-space: nowrap; }
 nav a:hover { color: var(--ink); }
 nav a.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); padding-bottom: 2px; }
@@ -201,7 +199,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     <h1>Playden<small id="where">on PS5</small></h1>
     <div class="top-end">
       <button class="chip" type="button" id="transfers-chip" aria-expanded="false" hidden></button>
-      <nav aria-label="Sections"><a href="#/logs" id="tab-logs">Logs</a><span class="later">Recipes<em>later</em></span><a href="#/files" id="tab-files">Files</a></nav>
+      <nav aria-label="Sections"><a href="#/logs" id="tab-logs">Logs</a><a href="#/files" id="tab-files">Game files</a></nav>
     </div>
     <section class="panel" id="transfers-panel" aria-label="Uploads" hidden></section>
   </header>
@@ -540,22 +538,23 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const head = element("thead");
     const paintHead = () => {
       const column = (label, key, down, kind) => sortHead(label, key, files.sortGames, down, (sort) => { files.sortGames = sort; paintHead(); paint(); }, kind);
-      head.replaceChildren(element("tr", {}, column("Game", "name", false), column("Installed on", "where", false), column("Cloud", "cloud", false),
+      head.replaceChildren(element("tr", {}, column("Game", "name", false), column("Store", "store", false), column("Installed on", "where", false), column("Cloud", "cloud", false),
         column("Last played", "played", true), column("Windows user folders", "bytes", true, "num")));
     };
     const paint = () => {
       const shown = (files.games.games || []).filter((game) => game.name.toLowerCase().includes(filter));
-      if (files.sortGames) shown.sort(sortBy(files.sortGames, (game, key) => ({ name: game.name, where: whereLabel(game), cloud: game.cloud ? "Cloud sync" : "No Cloud sync", played: game.last_played, bytes: game.windows_user_bytes })[key], (game) => game.name));
+      if (files.sortGames) shown.sort(sortBy(files.sortGames, (game, key) => ({ name: game.name, store: storeLabel(game), where: whereLabel(game), cloud: game.cloud ? "Cloud sync" : "No Cloud sync", played: game.last_played, bytes: game.windows_user_bytes })[key], (game) => game.name));
       else shown.sort((left, right) => Number(right.running) - Number(left.running) || (right.last_played || 0) - (left.last_played || 0) || left.name.localeCompare(right.name));
       body.replaceChildren(...shown.map((game) => element("tr", {},
         element("td", { class: "entry-name" }, element("a", { href: gameHash(game.id), text: game.name }), ...gameBadges(game),
           element("span", { text: game.app ? `app ${game.app}` : game.id })),
+        element("td", { class: "soft when", text: storeLabel(game) }),
         element("td", { class: "soft when" , text: whereLabel(game) }),
         element("td", { class: "soft when", text: game.cloud ? "Cloud sync" : "No Cloud sync" }),
         element("td", { class: "soft when", text: game.last_played ? when(game.last_played) : "—" }),
         element("td", { class: "num soft size", text: game.windows_user_bytes !== undefined ? longSize(game.windows_user_bytes) : "" }))));
       if (!shown.length)
-        body.append(element("tr", {}, element("td", { class: "empty", colspan: "5", text: filter ? "No game has that name." : "No games with files yet." })));
+        body.append(element("tr", {}, element("td", { class: "empty", colspan: "6", text: filter ? "No game has that name." : "No games with files yet." })));
     };
     search.addEventListener("input", () => { filter = search.value.toLowerCase(); paint(); });
     const load = async () => {
@@ -564,11 +563,15 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     };
     try { await load(); } catch (error) { return report(error); }
     if (token !== files.route) return;
+    // A recipe file goes to the game it is for.
+    const listRecipe = recipeImport(null, (answer) => answer.game
+      ? [`${answer.message} `, element("a", { href: gameHash(answer.game), text: "Open the game" })] : [answer.message]);
     clear();
     paintHead();
     pane.append(element("div", { class: "title-row" }, element("h2", { text: "Game files" })),
       element("p", { class: "lede", text: "Saves, configs and mods for each game. Pick a game to download, replace or add files." }),
-      element("div", { class: "bar" }, search),
+      element("div", { class: "bar" }, search, listRecipe.button, listRecipe.picker),
+      listRecipe.status,
       element("table", { class: "files" },
         head,
         body),
@@ -641,8 +644,10 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     if (!bottleRoots.length && !gameRoot) pane.append(element("p", { class: "lede", text: "This game has no folders to show yet." }));
     pane.append(recipeSection(game));
   };
-  // A recipe file for the game: Playden uses it at once and says so on the TV.
-  const recipeSection = (game) => {
+  const storeLabel = (game) => (game.kind === "imported" ? "Imported" : "Steam");
+  // Import recipe: a file goes to the game named, or (gameId null) to the game the recipe is for. Playden uses it at
+  // once and says so on the TV.
+  const recipeImport = (gameId, describe = (answer) => [answer.message]) => {
     const status = element("p", { class: "note", role: "status", text: "" });
     const picker = element("input", { type: "file", accept: ".json,application/json", hidden: "", "aria-label": "Recipe file" });
     const send = button("Import recipe", () => picker.click());
@@ -654,20 +659,26 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       send.disabled = true;
       status.textContent = `Sending ${file.name}…`;
       try {
-        const answer = await api(`/api/files/recipe?${q({ game: game.id })}`, { method: "POST", headers: { "X-Playden-Action": "files", "Content-Type": "application/json" }, body: file });
-        status.textContent = answer.message || "The game uses this recipe now.";
+        const answer = await api(`/api/files/recipe${gameId ? `?${q({ game: gameId })}` : ""}`,
+          { method: "POST", headers: { "X-Playden-Action": "files", "Content-Type": "application/json" }, body: file });
+        status.replaceChildren(...describe(answer));
       } catch (error) {
         if (error.status !== 401) status.textContent = error.message;
       } finally {
         send.disabled = false;
       }
     });
+    return { button: send, picker, status };
+  };
+  const recipeSection = (game) => {
+    const recipe = recipeImport(game.id);
     return element("div", {},
       element("div", { class: "sub", text: "Recipe" }),
       element("p", { class: "note", text: "Import a recipe file, such as one from Export as recipe or the recipes repository. The game uses it on the PS5 right away, and keeps your changes that still apply." }),
-      element("div", { class: "bar" }, send, picker),
-      status);
+      element("div", { class: "bar" }, recipe.button, recipe.picker),
+      recipe.status);
   };
+
   const runningNote = () => element("div", { class: "problem", role: "status" },
     element("p", { text: "This game is running on the PS5, in the background." }),
     element("p", { class: "note", text: "It can overwrite files you change here. To be safe, close it on the PS5 first." }));

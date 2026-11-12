@@ -2221,13 +2221,29 @@ void Controller::TickWebAccess() {
 void Controller::TickRecipeImports() {
   if (!recipe_imports_) return;
   for (const auto& pending : recipe_imports_->Take()) {
-    const auto id = ParseInstallId(pending.game);
+    std::optional<GameId> id;
+    if (pending.game.empty()) {
+      // From the games list: the game the recipe is for, unless it is being set up (the game's page checks that itself).
+      int status = 500;
+      std::string message;
+      id = model_.GameForRecipe(pending.revision, &status, &message);
+      if (!id) {
+        recipe_imports_->Answer(pending.ticket, {status, std::move(message)});
+        continue;
+      }
+      if (web_setting_up_.count(ToInstallId(*id))) {
+        recipe_imports_->Answer(pending.ticket, {409, "Playden is setting up this game. Try again when it finishes."});
+        continue;
+      }
+    } else {
+      id = ParseInstallId(pending.game);
+    }
     if (!id) {
       recipe_imports_->Answer(pending.ticket, {404, "No such game."});
       continue;
     }
     auto [status, message] = model_.ImportRecipe(*id, pending.revision);
-    recipe_imports_->Answer(pending.ticket, {status, std::move(message)});
+    recipe_imports_->Answer(pending.ticket, {status, std::move(message), status == 200 ? ToInstallId(*id) : std::string()});
   }
 }
 void Controller::TickWebFiles() {
@@ -2296,6 +2312,9 @@ void Controller::TickWebFiles() {
       runtime_->CheckActivity(runtime->installs[web_activity_next_++].runtime_number);
     }
   }
+  web_setting_up_.clear();
+  for (const auto& [id, game] : games)
+    if (game.setting_up) web_setting_up_.insert(game.id);
   catalog.games.reserve(games.size());
   for (auto& [id, game] : games) {
     if (game.name.empty()) game.name = game.id;

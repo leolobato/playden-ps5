@@ -101,6 +101,11 @@ int main(int argc, char** argv) {
   fs::create_directories(base / "logs");
   config.server.first_port = config.server.last_port = wanted;
   config.server.loopback_only = true;
+  // Import recipe: any file is used by the game named, or by GTA IV from the games list; a file with "bad" is refused.
+  config.files.import_recipe = [](const std::string& game, std::string file) -> RecipeImportAnswer {
+    if (file.find("bad") != std::string::npos) return {422, "This file isn't a Playden recipe."};
+    return {200, "The game now uses this recipe.", game.empty() ? std::string("steam-12210") : game};
+  };
   Service service(std::move(config));
   service.SetFileCatalog(catalog);
   service.SetEnabled(true);

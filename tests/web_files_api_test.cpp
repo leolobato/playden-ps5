@@ -95,7 +95,7 @@ int main() {
   config.files.import_recipe = [&recipes](const std::string& game, std::string file) -> RecipeImportAnswer {
     recipes.emplace_back(game, file);
     if (file == "bad") return {422, "This file isn't a Playden recipe."};
-    return {200, "Darkwood now uses this recipe."};
+    return {200, "Darkwood now uses this recipe.", "steam-274520"};
   };
   fs::create_directories(base / "logs");
   Service service(std::move(config));
@@ -327,7 +327,7 @@ int main() {
     CHECK(Status(Exchange(port, "POST /api/files/recipe?game=steam-274520 HTTP/1.1\r\n" + host + "X-Playden-Action: files\r\nCookie: " + cookie + "\r\n\r\n")) == 411);
     CHECK(recipes.empty());
     answer = post("/api/files/recipe?game=steam-274520", cookie, "{\"recipe_id\":\"x\"}");
-    CHECK(Status(answer) == 200 && Body(answer) == "{\"message\":\"Darkwood now uses this recipe.\"}");
+    CHECK(Status(answer) == 200 && Body(answer) == "{\"message\":\"Darkwood now uses this recipe.\",\"game\":\"steam-274520\"}");
     CHECK(recipes.size() == 1 && recipes[0].first == "steam-274520" && recipes[0].second == "{\"recipe_id\":\"x\"}");
     answer = post("/api/files/recipe?game=steam-274520", cookie, "bad");
     CHECK(Status(answer) == 422 && Body(answer).find("isn't a Playden recipe") != std::string::npos);
@@ -338,6 +338,10 @@ int main() {
     CHECK(Status(post("/api/files/recipe?game=steam-274520", cookie, "{}")) == 409);
     service.SetFileCatalog(catalog);
     CHECK(recipes.size() == 2);
+    // From the games list, no game named: the controller finds the game the recipe is for.
+    answer = post("/api/files/recipe", cookie, "{}");
+    CHECK(Status(answer) == 200 && Body(answer).find("\"game\":\"steam-274520\"") != std::string::npos);
+    CHECK(recipes.size() == 3 && recipes[2].first.empty());
   }
 
   // A game's setup: file actions say so at once, and the game's page still opens without touching the disk.

@@ -14920,6 +14920,33 @@ void Simulation::set_base(GameId id, const BaseChoice& base, const std::vector<r
     }
 }
 
+std::optional<GameId> Simulation::GameForRecipe(const std::string& revision, int* status, std::string* message) {
+    if (const auto cached = community_objects_.find(revision); cached != community_objects_.end() && !cached->second)
+        community_objects_.erase(cached);
+    rt::CommunityObjectState object_state;
+    const auto* object = community_object(revision, &object_state);
+    if (!object) {
+        *status = 500;
+        *message = "Playden couldn't read the recipe it kept.";
+        return std::nullopt;
+    }
+    std::vector<GameId> found;
+    for (const auto& game : state_.games) {
+        if (!is_installed(state_, game.id) && !state_.runtime_games.count(game.id)) continue;
+        if (const auto ref = community_ref(game.id); ref && *ref == object->game) found.push_back(game.id);
+    }
+    if (found.size() == 1) return found.front();
+    const auto name = object->game_name.empty() ? std::string("its game") : object->game_name;
+    if (found.empty()) {
+        *status = 404;
+        *message = "The recipe is for " + name + ", which isn't on this console.";
+    } else {
+        *status = 409;
+        *message = "More than one copy of " + name + " is on this console. Import the recipe from the game's own page.";
+    }
+    return std::nullopt;
+}
+
 std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::string& revision) {
     const auto* game = find_game(state_, id);
     if (!id.valid() || !game) return {404, "Playden doesn't know this game."};
