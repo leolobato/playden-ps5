@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.24, installed as playden-kit. Kit 0.23 with the Wine modules and any-title shell of prospero-win: the Steam host's second program (Wine patches 1010 to 1015, the profile's [helper] section, bdj.elf, capabilities helper-process and title-notify), Steam peer-to-peer fixes (1016 to 1018), the title's [launcher] chain = off with capability touchpad-switch (shell 52b93d0), and wineserver from 17ab677 (Wine patch 1019: the server watches many directories, so Project Zomboid no longer runs out of open files). The template, DXVK and Mono are 0.23's, so bottles need no Recreate.",
-    "manifest_sha256": "52ce441e6f748e0ab67a0f7c0a2a85bc1dfb1cd0d210a41fbf8d1c1a9fef3674",
-    "files_sha256": "671af182015a30660e70293fdb9e723b29dbe4bd190d08ca13728df60f4966c9",
+    "status": "Kit 0.25, installed as playden-kit. Kit 0.24 with the any-title shell of prospero-win 2ddfbbf (the title reads [steam] install_dir and shows a Steam game in C:\\Program Files (x86)\\Steam\\steamapps\\common, capability steam-library-path) and ntdll.prx and wineserver.prx of df71ecc (a virtual link is found in any letter case). The template, DXVK and Mono are 0.24's, so bottles need no Recreate.",
+    "manifest_sha256": "aead3c0b94b7164648257109897e71c30dd3c076694bc1cf73c46e0e965ee541",
+    "files_sha256": "fd9f19e54d8e85665cae81bf463a6adaf5eec07de36239df413d99567073de22",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -254,6 +254,7 @@
       "per_game_title",
       "profile-version-2",
       "settings-profile-environment",
+      "steam-library-path",
       "title-any-id",
       "title-notify",
       "touchpad-switch",
@@ -264,9 +265,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "52b93d0e135e17917cae9f38517de5c897583a37",
-    "runtime_artifact_revision": "17ab677-kit-0.24",
-    "runtime_inventory_source": "Kit 0.24: staged by build/kit-0.24/stage.py, the files of the last development build before it under the release name. That chain started from kit 0.23 and checked each step against a clean cross build: the 244a115 Wine modules (iphlpapi for both PE architectures, ntdll.prx, wineserver.prx) and shell, then the 52b93d0 shell (no Wine change), then wineserver.prx from the 17ab677 tree (kit-h/wine-ps5-813-1, identical to the previous step in every other module). Earlier kits: see this file's git history.",
+    "wrapper_revision": "2ddfbbff2d91a73949c58b58b0af232168861949",
+    "runtime_artifact_revision": "df71ecc-kit-0.25",
+    "runtime_inventory_source": "Kit 0.25: staged by build/kit-0.25/stage.py, the files of dev kit 0.24-dev.20261112.828 under the release name. That kit started from kit 0.24 and checked each step against a clean build: the any-title shell of 2ddfbbf (kit-h/source-826-shell, eboot.bin and its build record only), then ntdll.prx and wineserver.prx from the df71ecc cross build (kit-h/wine-ps5-826-1, identical to kit 0.24 in every other module). Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",

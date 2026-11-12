@@ -677,6 +677,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 
 | Kit | What changed for games |
 | --- | --- |
+| 0.25 | A Steam game installed from now on runs from `steamapps\common`, where Steam puts it, so The Talos Principle finds Steam and gets past its login screen. Game settings › Steam library folder turns this on for a game installed before. Bottles need no Recreate. |
 | 0.24 | Project Zomboid no longer runs out of open files: the runtime kit watches its folders itself. Game settings › Touchpad hold can swap to a mouse preset while the game runs. Bottles need no Recreate. |
 | 0.23 | Euro Truck Simulator 2 starts with many mods or with all its DLCs, and creates and loads profiles: files a game reads through an I/O completion port no longer use up the open-file limit. Bottles need no Recreate. |
 | 0.22 | Fallout's intro movies play at their full speed: code that rewrites itself every frame no longer slows the translator down. Game settings › Network adapters › Off keeps a 64-bit game from listing the console's network adapters, for a game that hangs at start with them. Bottles need no Recreate. |
