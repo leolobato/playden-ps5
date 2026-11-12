@@ -470,6 +470,8 @@ struct RuntimePrepareRequest {
   // No option is for the public branch: `launches` are every branch's, and Steam doesn't say
   // which program starts the game.
   bool launches_any_branch = false;
+  // A Steam game's folder name in a Steam library (installdir), when Steam's app details gave it.
+  std::string steam_install_dir;
   // The game; a default one stands for the Steam game runtime_number names.
   GameId game;
 };

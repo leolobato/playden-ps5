@@ -1,5 +1,6 @@
 #include "runtime/game_probe.h"
 
+#include "runtime/prospero_profile.h"
 #include "runtime/steam_stub.h"
 
 #include <algorithm>
@@ -565,6 +566,29 @@ bool ProgramLooksLikeGame(const fs::path& path, const PeFacts& facts) {
 
 }  // namespace
 
+// The folder names the title linked in the bottle's steamapps\common (prospero-win src/pw_steam_view.h): what Wine
+// named the game by. Empty without a readable table.
+static std::vector<std::string> SteamLibraryLinks(const std::string& prefix_dir) {
+  std::vector<std::string> names;
+  const auto table = fs::path(prefix_dir) / "drive_c/Program Files (x86)/Steam/steamapps/common/.pw-symlinks";
+  std::error_code error;
+  if (!fs::is_regular_file(fs::symlink_status(table, error))) return names;
+  std::FILE* file = std::fopen(table.c_str(), "rb");
+  if (!file) return names;
+  char buffer[4096];
+  const std::string text(buffer, std::fread(buffer, 1, sizeof(buffer), file));
+  std::fclose(file);
+  std::size_t at = 0;
+  while (at < text.size()) {
+    const auto end = std::min(text.find('\n', at), text.size());
+    const auto line = text.substr(at, end - at);
+    const auto tab = line.find('\t');
+    if (tab != std::string::npos && IsProsperoSteamInstallDir(line.substr(0, tab))) names.push_back(line.substr(0, tab));
+    at = end + 1;
+  }
+  return names;
+}
+
 std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::string& console_root,
                                    const std::string& host_root) {
   const auto note = fs::path(prefix_dir) / ".pw-exec-refused";
@@ -582,11 +606,20 @@ std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::str
     static constexpr std::string_view kHeader = "pw-exec-refused 1\nimage=";
     if (text.rfind(kHeader, 0) != 0 || text.back() != '\n') return {};
     auto image = text.substr(kHeader.size(), text.size() - kHeader.size() - 1);
-    if (image.find('\n') != std::string::npos || image.size() < 3 || Lower(image.substr(0, 3)) != "z:\\") return {};
-    std::replace(image.begin(), image.end(), '\\', '/');
-    image.erase(0, 2);  // Z:
+    if (image.find('\n') != std::string::npos) return {};
+    // A title with [steam] shows the game to Wine in steamapps\common: the program is named there.
     auto root = console_root;
     while (!root.empty() && root.back() == '/') root.pop_back();
+    for (const auto& name : SteamLibraryLinks(prefix_dir)) {
+      const auto view = Lower(std::string(kProsperoSteamCommon) + "\\" + name + "\\");
+      if (image.size() > view.size() && Lower(image.substr(0, view.size())) == view) {
+        image = "Z:" + root + "/" + image.substr(view.size());
+        break;
+      }
+    }
+    std::replace(image.begin(), image.end(), '\\', '/');
+    if (image.size() < 3 || Lower(image.substr(0, 3)) != "z:/") return {};
+    image.erase(0, 2);  // Z:
     if (root.empty() || image.size() <= root.size() + 1 || image[root.size()] != '/' ||
         Lower(image.substr(0, root.size())) != Lower(root))
       return {};

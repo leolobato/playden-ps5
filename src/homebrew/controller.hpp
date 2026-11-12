@@ -298,6 +298,8 @@ class Controller {
   std::map<GameId, std::vector<steam::LaunchOption>> launch_options_;
   // Games whose Steam options are all for other branches: preparing may ask for the program.
   std::set<GameId> launches_any_branch_;
+  // Steam's folder name for each game (installdir), from app details: a preparation records it for the title.
+  std::map<GameId, std::string> steam_install_dirs_;
   std::map<GameId, std::string> launch_options_reason_;
   std::set<GameId> prepare_after_details_;
   // announce: tell the player when this preparation leaves the game ready to play

@@ -1192,6 +1192,27 @@ int main() {
     WritePe(root / "game/Game-Win64-Shipping.exe", {false, {"KERNEL32.dll"}});
     note("Z:\\data\\games\\1\\Game-Win64-Shipping.exe");
     CHECK(take() == "Game-Win64-Shipping.exe");
+    // A title with [steam] shows the game in steamapps\common through links in the bottle: a program named there, in
+    // any case and by any of the links' names, counts; with no link there, it doesn't.
+    note("C:\\Program Files (x86)\\Steam\\steamapps\\common\\The Game\\bin\\Game.exe");
+    CHECK(take().empty());
+    const auto common = prefix / "drive_c/Program Files (x86)/Steam/steamapps/common";
+    fs::create_directories(common);
+    std::ofstream(common / ".pw-symlinks", std::ios::binary) << "1\t/data/games/1\nThe Game\t/data/games/1\n";
+    note("C:\\Program Files (x86)\\Steam\\steamapps\\common\\The Game\\bin\\Game.exe");
+    CHECK(take() == "bin/Game.exe");
+    note("c:\\program files (x86)\\steam\\steamapps\\common\\the game\\bin\\Game.exe");
+    CHECK(take() == "bin/Game.exe");
+    note("C:\\Program Files (x86)\\Steam\\steamapps\\common\\1\\bin\\Game.exe");
+    CHECK(take() == "bin/Game.exe");
+    note("Z:\\data\\games\\1\\bin\\Game.exe");
+    CHECK(take() == "bin/Game.exe");
+    // Another folder there, or the library folder itself: nothing.
+    note("C:\\Program Files (x86)\\Steam\\steamapps\\common\\Other\\bin\\Game.exe");
+    CHECK(take().empty());
+    note("C:\\Program Files (x86)\\Steam\\steamapps\\common\\The Game\\");
+    CHECK(take().empty());
+    fs::remove_all(prefix / "drive_c");
     // A program that can't be read keeps the note for a later start.
     { std::ofstream(root / "game/Broken.exe", std::ios::binary) << "x"; }
     note("Z:\\data\\games\\1\\Broken.exe");

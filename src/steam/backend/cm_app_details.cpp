@@ -193,6 +193,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
       if (depot.owner != 0) startable.insert(depot.owner);
   details.windows_installable = EligibleLaunches(*app, startable, branch, &launches, &reason, &details.launches_any_branch);
   if (!details.windows_installable) details.reason = "No Windows launch configuration.";
+  details.install_dir = app->install_dir;
   for (const auto& launch : launches)
     details.launches.push_back({launch.executable, launch.arguments, launch.working_directory,
                                 launch.description.value_or(std::string())});

@@ -2231,6 +2231,67 @@ void PreparesGameWithoutShippedRecipe() {
   long_log.Shutdown();
 }
 
+// A Steam game on a runtime kit that shows it in steamapps\\common (steam-library-path): its profile names its folder
+// there, Steam's installdir when the preparation had it (kept on the record for later publications), the app ID
+// otherwise. The profile keeps the game's real paths. A kit without the capability writes no [steam].
+void SteamGameShownInSteamLibrary() {
+  struct Case { bool capability; const char* folder; const char* expected; };
+  for (const Case& test : {Case{true, "The Named Game", "\n[steam]\ninstall_dir = The Named Game\n"},
+                           Case{true, "", "\n[steam]\ninstall_dir = 4250\n"}, Case{false, "The Named Game", nullptr}}) {
+    Fixture fixture;
+    auto config = fixture.Config();
+    config.host_namespace_prefix = fixture.root;
+    config.package_paths.console_data_root = "/data";
+    config.package_paths.host_data_root = fixture.root / "data";
+    config.package_operations.hash_file = HashArtifactFile;
+    config.package_operations.hash_bytes = HashArtifactBytes;
+    config.package_operations.free_space_unverifiable = true;
+    config.package_operations.validate_bottle = [](const fs::path& bottle) {
+      return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+    };
+    auto kit = SyntheticKit(fixture.root / "kit");
+    if (test.capability) {
+      kit.capabilities.push_back(kKitSteamLibraryPath);
+      std::sort(kit.capabilities.begin(), kit.capabilities.end());
+    }
+    config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+    unsigned uuids = 0;
+    config.uuid = [&uuids]() -> std::optional<std::string> {
+      ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+    };
+    config.unix_time = [] { return std::int64_t{1760000000}; };
+    config.session_data_root = fixture.root / "data";
+    config.launch_title = [](const std::string&, const std::vector<std::string>&) { return TitleResult{true, 0, "launch"}; };
+    std::string pe(0x80 + 26, '\0');
+    pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+    pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+    const auto game = fixture.root / "data/homebrew/FAKE77031/games/4250";
+    Write(game / "Bin/Game.exe", pe, 0644);
+    CHECK(chmod(game.c_str(), 0755) == 0);
+    config.settings_record = [](const playden::GameId&) -> std::optional<GameSettingsRecord> { return GameSettingsRecord{}; };
+    RuntimePrepareRequest request{4250, "/data/homebrew/FAKE77031/games/4250", "internal", "Named Game"};
+    request.launches = {{"", "", "Bin/Game.exe", "", ""}};
+    request.steam_install_dir = test.folder;
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(request);
+    const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4250) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (ready.refusals.count(4250)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(4250).c_str());
+    CHECK(ready.installs.size() == 1 && ready.installs[0].state == PreparationState::kReady);
+    const auto profile =
+        Read(fixture.root / "data/playden/games/steam-4250/library/profiles/playden-steam-4250.profile");
+    CHECK(profile.find("executable = Z:\\data\\homebrew\\FAKE77031\\games\\4250\\Bin\\Game.exe\n") != std::string::npos);
+    CHECK(test.expected ? profile.find(test.expected) != std::string::npos : profile.find("[steam]") == std::string::npos);
+    host.Shutdown();
+    // The name stays on the record for later publications, also from a kit without the capability.
+    const auto installs = Read(config.state_root / "installs.json");
+    CHECK((installs.find("\"steam_install_dir\":\"The Named Game\"") != std::string::npos) == (test.folder[0] != 0));
+  }
+}
+
 // A game set up before Playden's defaults for its engine changed takes the new ones on the next Play: its saved
 // recipe is refreshed and its title published again, with no Recreate bottle, and a player's extra arguments stay.
 // A game with no saved settings takes them too (1). Settings older than the title's can't be published, so the recipe
@@ -8797,6 +8858,7 @@ int main(int argc, char** argv) {
   FinishSetupHandsOverForHome();
   PreparesGameWithoutShippedRecipe();
   for (int scenario = 0; scenario <= 3; ++scenario) OlderEngineDefaultsArePublishedOnPlay(scenario);
+  SteamGameShownInSteamLibrary();
   UpdatedFilesSetUpTheLaunchAgain();
   PreparesProgramChosenInSettings();
   SettingsChangeMakesNoFolderThroughLinkAboveGame();

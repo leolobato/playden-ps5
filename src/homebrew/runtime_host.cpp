@@ -106,6 +106,13 @@ GameId GameOf(const GameId& game, std::uint32_t runtime_number) {
 GameId GameOf(const rt::RuntimeInstall& record) { return GameOf(record.game, record.runtime_number); }
 // The game a request names.
 GameId GameOf(const RuntimePrepareRequest& request) { return GameOf(request.game, request.runtime_number); }
+// Where a title that reads [steam] shows a Steam game in steamapps\common: Steam's folder name for it, or its app ID
+// for a game prepared before Playden recorded the name (a game that looks for steamapps\common in its path finds it
+// either way). Empty for another store's game, or a title whose runtime does not read [steam].
+std::string SteamLibraryFolder(const rt::KitCapabilities& kit, const rt::RuntimeInstall& record) {
+  if (!kit.steam_library_path || GameOf(record).store != Store::kSteam || !record.runtime_number) return {};
+  return record.steam_install_dir.empty() ? std::to_string(record.runtime_number) : record.steam_install_dir;
+}
 // Why the kit cannot run a recipe Playden ships (its requirements), for the player; empty when it
 // can. The kit's own recipe is skipped: the kit's packager checked its template against it.
 std::string KitLacksForRecipe(const rt::GameRecipe& recipe, const rt::VerifiedKitView& kit) {
@@ -2269,7 +2276,8 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   const auto resolved = RecordPreset(c, &input.record);
   input.preset = resolved ? &*resolved : nullptr;
   input.kit = TitleKit(c, record);
-  input.target = {record.default_profile_id, record.install_path, UsbSearchRoot(c, record)};
+  input.target = {record.default_profile_id, record.install_path, UsbSearchRoot(c, record),
+                  SteamLibraryFolder(input.kit, record)};
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
@@ -2798,7 +2806,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   overrides["program_folder"] = next.launch_in_install_root ? std::string(".") : next.launch_working_directory;
   input.preset = preset;
   input.kit = kit;
-  input.target = {next.default_profile_id, next.install_path, UsbSearchRoot(c, next)};
+  input.target = {next.default_profile_id, next.install_path, UsbSearchRoot(c, next), SteamLibraryFolder(input.kit, next)};
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
@@ -4321,6 +4329,14 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     }
     existing.reset();
   }
+  // Steam's folder name for the game, which a title with [steam] shows it in: recorded whenever a preparation has it.
+  const std::string steam_install_dir =
+      rt::IsProsperoSteamInstallDir(request.steam_install_dir) ? request.steam_install_dir : std::string();
+  if (existing && !steam_install_dir.empty() && existing->steam_install_dir != steam_install_dir) {
+    auto named = *existing;
+    named.steam_install_dir = steam_install_dir;
+    if (c.records.Update(named).ok) existing = named;
+  }
   rt::InstallServiceResult started = rt::InstallServiceResult::Success();
   bool game_root_owned = true;
   const auto tighten_working = [&](const std::string& working) -> std::string {
@@ -4647,6 +4663,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     reserve.launch_in_install_root = launch.in_install_root;
     reserve.install_path = request.install_path;
     reserve.volume_id = request.volume_id;
+    reserve.steam_install_dir = steam_install_dir;
     // Titles removed during this run go last: a kit with fixed titles still gets one back.
     std::vector<std::string> retired;
     for (auto& title : rt::KitTitleCandidates(c.kit->view)) {

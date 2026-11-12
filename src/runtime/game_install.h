@@ -93,6 +93,9 @@ struct RuntimeInstall {
   // Mouse controller preset (Run launcher or setup), relative to the install root. The next publication puts the
   // saved settings back and clears it, whatever their revision. Stored only when set.
   std::string setup_program;
+  // A Steam game's folder name in a Steam library (its app info's installdir), from the preparation that last read
+  // it: where a runtime with [steam] shows the game (ProfileTarget::steam_install_dir). Stored only when set.
+  std::string steam_install_dir;
 };
 
 // The title range reserved for Playden games; excludes the launcher itself.
@@ -124,6 +127,7 @@ struct ReserveRequest {
   bool launch_in_install_root = false;
   std::string install_path;
   std::string volume_id;
+  std::string steam_install_dir;  // RuntimeInstall::steam_install_dir; empty when unknown
   std::vector<std::string> kit_title_variants;
 };
 

@@ -2614,6 +2614,7 @@ void Controller::TickAppDetails() {
     launch_options_.clear();
     launch_options_reason_.clear();
     launches_any_branch_.clear();
+    steam_install_dirs_.clear();
     // An updated game's setup that waited for these details was never asked of the runtime: it is asked again.
     for (const auto& id : prepare_after_details_) refresh_asked_.erase(id);
     prepare_after_details_.clear();
@@ -2723,6 +2724,7 @@ void Controller::TickAppDetails() {
                               {details.update.newer, details.update.new_dlc, 0, 0, details.update.target, false}, !check_waits);
       if (details.launches_any_branch) launches_any_branch_.insert(details.id);
       else launches_any_branch_.erase(details.id);
+      if (!details.install_dir.empty()) steam_install_dirs_[details.id] = details.install_dir;
       launch_options_[details.id] = details.launches;
       launch_options_reason_.erase(details.id);
     } else if (!launch_options_.count(details.id)) {
@@ -2815,6 +2817,8 @@ void Controller::SubmitPrepare(GameId id, bool announce) {
   // Steam's launch options and app details are for Steam games only: another store's game starts the
   // program the player picks in Game settings.
   const bool steam = id.store == Store::kSteam;
+  if (const auto folder = steam_install_dirs_.find(id); steam && folder != steam_install_dirs_.end())
+    request.steam_install_dir = folder->second;
   if (!steam)
     request.launch_reason = "Choose the program that starts this game in Game settings.";
   else if (const auto reason = launch_options_reason_.find(id); reason != launch_options_reason_.end())

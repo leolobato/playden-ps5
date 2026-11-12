@@ -63,7 +63,9 @@ bool ProgramUsesPhysx(const std::string& install_root, const std::string& execut
 // The program a game's last run couldn't start, from the note the title's Wine leaves in the bottle: what a launcher
 // without launcher mode asked for. Relative to host_root, as spelled in the note, when it's a program in the game's
 // folder (console_root on the console, host_root as seen here) that draws or has an engine, so a crash reporter or an
-// updater isn't taken for the game. The note names one run: this removes it.
+// updater isn't taken for the game. The note names one run: this removes it. A title with [steam] shows the game in
+// the bottle's steamapps\common through the links it wrote there (any of their names: the bottle is the game's own),
+// so a program named there counts too.
 std::string TakeRefusedGameProgram(const std::string& prefix_dir, const std::string& console_root,
                                    const std::string& host_root);
 

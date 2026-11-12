@@ -1598,6 +1598,17 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     text += std::string("\n[helper]\nprogram = ") + kSteamHostProgram + "\nready = " + kSteamHostReady +
             "\nwait = " + std::to_string(kSteamHostWaitSeconds) + "\n";
 
+  // A Steam game is shown to Wine in steamapps\common, where some games look for themselves before they use Steam
+  // (The Talos Principle). The profile keeps the real paths; the title links the folder. Left out when a path there
+  // would be too long for the runtime, which then starts the game from its real folder anyway.
+  bool steam_section = false;
+  if (!target.steam_install_dir.empty() && IsProsperoSteamInstallDir(target.steam_install_dir)) {
+    const auto view = std::string(kProsperoSteamCommon) + "\\" + target.steam_install_dir;
+    steam_section = (view + "\\" + Backslashes(*executable)).size() <= kProsperoMaxPathBytes &&
+                    (working.empty() ? view : view + "\\" + Backslashes(working)).size() <= kProsperoMaxPathBytes;
+  }
+  if (steam_section) text += "\n[steam]\ninstall_dir = " + target.steam_install_dir + "\n";
+
   std::string why;
   ProsperoProfileFeatures features;
   features.environment_section = environment_section;
@@ -1617,6 +1628,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.launcher_section = launcher_section || touchpad_section;
   features.launcher_chain_off = touchpad_section;
   features.helper_section = helper_section;
+  features.steam_section = steam_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
   return true;
@@ -3990,6 +4002,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.vkd3d_proton = has(kKitVkd3dProton);
   kit.driver_threads = has(kKitDriverThreads);
   kit.game_root_usb_search = has(kKitGameRootUsbSearch);
+  kit.steam_library_path = has(kKitSteamLibraryPath);
   kit.display_120hz = has(kKitDisplay120Hz);
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);
@@ -4019,6 +4032,8 @@ bool KitDependsOnTitleRuntime(const KitCapabilities& kit) {
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current) {
   // An older title refuses the search form outright, and nothing the player chose waits on it.
   if (!title_runtime_current) kit.game_root_usb_search = false;
+  // Nor does an older title read [steam]: the game keeps its Z: paths until its runtime is updated.
+  if (!title_runtime_current) kit.steam_library_path = false;
   if (!title_runtime_current && kit.display_120hz) {
     kit.display_120hz = false;
     kit.display_120hz_needs_update = true;

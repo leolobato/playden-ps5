@@ -76,6 +76,8 @@ struct AppDetails {
   // No option was for the public branch, so `launches` are every branch's: Steam doesn't say
   // which program starts the game.
   bool launches_any_branch = false;
+  // The game's folder in a Steam library (config/installdir), where a runtime shows it to Wine; empty if unknown.
+  std::string install_dir;
   // The content languages the game's Windows depots carry, as Steam names them ("german"), in
   // listing order; empty when nothing is localised. An install can pick one of them.
   std::vector<std::string> languages;

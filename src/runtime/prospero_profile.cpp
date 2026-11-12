@@ -243,6 +243,7 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   std::string section;
   std::set<std::string> seen;
   bool helper_program = false;
+  bool steam_install_dir = false;
   std::set<std::string> application;
   std::string id, prefix, runtime, executable, working;
   std::size_t start = 0, debug_env_count = 0;
@@ -260,7 +261,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       if ((name != "application" && name != "display" && name != "input" && name != "debug" &&
            !(features.environment_section && name == "environment") &&
            !(features.audio_section && name == "audio") && !(features.runtime_version && name == "runtime") &&
-           !(features.launcher_section && name == "launcher") && !(features.helper_section && name == "helper")) ||
+           !(features.launcher_section && name == "launcher") && !(features.helper_section && name == "helper") &&
+           !(features.steam_section && name == "steam")) ||
           std::find(sections.begin(), sections.end(), name) != sections.end())
         return fail("section [" + name + "] unknown or repeated");
       if (sections.empty() != (name == "application")) return fail("[application] must come first");
@@ -370,6 +372,10 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       } else {
         return fail("unknown [helper] key " + key);
       }
+    } else if (section == "steam") {
+      if (key != "install_dir") return fail("unknown [steam] key " + key);
+      if (!IsProsperoSteamInstallDir(value)) return bad("not a folder name");
+      steam_install_dir = true;
     } else if (section == "launcher") {
       // The first program's input, written out: as [input], without a preset file. chain = off: no launcher, only
       // the touchpad switch to these lines.
@@ -448,6 +454,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
   if (sections.empty()) return fail("no [application] section");
   if (std::find(sections.begin(), sections.end(), "helper") != sections.end() && !helper_program)
     return fail("[helper] names no program");
+  if (std::find(sections.begin(), sections.end(), "steam") != sections.end() && !steam_install_dir)
+    return fail("[steam] names no install_dir");
   for (const char* required : {"id", "name", "executable", "working_directory", "prefix", "runtime", "architecture", "graphics"})
     if (!application.count(required)) return fail(std::string("missing ") + required);
   if (Lower(executable).size() < 4 || Lower(executable).compare(Lower(executable).size() - 4, 4, ".exe") != 0)

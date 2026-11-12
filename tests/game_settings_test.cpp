@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
     for (const char* name : {kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble, kKitDisplayFramegen, kKitDisplayFpsCounter,
                              kKitLauncherMode, kKitTouchpadSwitch, kKitInputPlaystation, kKitTitleNotify, kKitHelperProcess,
                              kKitGameRootUsbSearch, kKitLaunchArguments4096, kKitLargeAddressAware, kKitNsiproxySwitch,
-                             kKitEnvironmentFileBudgets}) {
+                             kKitEnvironmentFileBudgets, kKitSteamLibraryPath}) {
       if (!KitDependsOnTitleRuntime(KitCapabilitiesFromManifest({name}, false)))
         std::fprintf(stderr, "%s alone doesn't check the title's runtime\n", name);
       CHECK(KitDependsOnTitleRuntime(KitCapabilitiesFromManifest({name}, false)));
@@ -396,6 +396,56 @@ int main(int argc, char** argv) {
                             "program = C:\\a.exe\nwait = 0\n", "program = C:\\a.exe\nwait = 121\n",
                             "program = C:\\a.exe\nother = 1\n", "program = C:\\a.exe\nprogram = C:\\b.exe\n"})
       CHECK(!CheckProsperoProfile(base + "\n[helper]\n" + bad, &why, helper_features));
+  }
+  // A Steam game shown in steamapps\common: the target names its folder only for a title whose runtime reads [steam]
+  // (the host decides, SteamLibraryFolder); the profile keeps the real paths and adds the section. The section is
+  // refused unless the renderer says so, and left out when a path there would be too long for the runtime.
+  {
+    const auto steam_kit = KitCapabilitiesFromManifest({kKitSteamLibraryPath}, false);
+    CHECK(steam_kit.steam_library_path && !KitCapabilitiesFromManifest({kKitHelperProcess}, false).steam_library_path);
+    CHECK(!KitForTitleRuntime(steam_kit, false).steam_library_path && KitForTitleRuntime(steam_kit, true).steam_library_path);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, steam_kit, &settings, &error));
+    auto steam_target = target;
+    steam_target.steam_install_dir = "Half-Life 2";
+    CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
+    CHECK(profile.text.find("\n[steam]\ninstall_dir = Half-Life 2\n") != std::string::npos);
+    CHECK(profile.text.find("executable = Z:\\data\\homebrew\\FAKE77031\\games\\220\\") != std::string::npos);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("[steam]") == std::string::npos);
+    // 46 bytes of C:\Program Files (x86)\Steam\steamapps\common\, the folder and the program: a folder name that fits
+    // alone but not with the program keeps the game at its real path.
+    steam_target.steam_install_dir = std::string(128, 'a');
+    CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
+    CHECK(profile.text.find("[steam]") != std::string::npos);
+    {
+      auto deep = settings;
+      auto entry = std::make_shared<LaunchEntry>(*settings.launch);
+      // 45 + 1 + 128 + 1 + 84 = 259 bytes fit, one more doesn't.
+      entry->executable = std::string(80, 'b') + ".exe";
+      deep.launch_storage = entry;
+      deep.launch = entry.get();
+      CHECK(RenderProsperoProfile(hl2, deep, steam_target, &profile, &reason));
+      CHECK(profile.text.find("[steam]") != std::string::npos);
+      entry->executable = std::string(81, 'b') + ".exe";
+      CHECK(RenderProsperoProfile(hl2, deep, steam_target, &profile, &reason));
+      CHECK(profile.text.find("[steam]") == std::string::npos);
+    }
+    steam_target.steam_install_dir = "a/b";
+    CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
+    CHECK(profile.text.find("[steam]") == std::string::npos);
+    std::string why;
+    const std::string base = profile.text;
+    ProsperoProfileFeatures steam_features;
+    steam_features.steam_section = true;
+    CHECK(!CheckProsperoProfile(base + "\n[steam]\ninstall_dir = Half-Life 2\n", &why, {}));
+    CHECK(CheckProsperoProfile(base + "\n[steam]\ninstall_dir = Half-Life 2\n", &why, steam_features));
+    CHECK(CheckProsperoProfile(base + "\n[steam]\ninstall_dir = 257510\n", &why, steam_features));
+    for (const char* bad : {"", "install_dir =\n", "install_dir = ..\n", "install_dir = a\\b\n", "install_dir = a/b\n",
+                            "install_dir = C:\n", "install_dir = a\"b\n", "install_dir = trailing.\n", "other = 1\n",
+                            "install_dir = a\ninstall_dir = b\n"})
+      CHECK(!CheckProsperoProfile(base + "\n[steam]\n" + bad, &why, steam_features));
+    CHECK(IsProsperoSteamInstallDir("The Talos Principle") && IsProsperoSteamInstallDir(std::string(128, 'a')) &&
+          !IsProsperoSteamInstallDir(std::string(129, 'a')) && !IsProsperoSteamInstallDir("a\tb"));
   }
   // Playden's tables of preset rows and buttons match the shipped input files.
   for (const auto& [name, buttons] : ControllerPresetButtons()) {

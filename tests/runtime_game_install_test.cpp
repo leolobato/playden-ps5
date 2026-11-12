@@ -541,6 +541,19 @@ void MovedRecordsRewriteTogetherAndKeepTheirMark() {
   CHECK(reloaded.Update(setup).ok());
   const auto unset = storage.ReadDurable("installs.json", 1 << 20);
   CHECK(unset.ok() && std::string(unset.value().begin(), unset.value().end()).find("setup_program") == std::string::npos);
+
+  // Steam's folder name for the game (installdir), kept only while set and only as one folder name.
+  auto named = *reloaded.Find("install-a"); named.steam_install_dir = "Half-Life 2";
+  auto path = named; path.steam_install_dir = "Half-Life 2/bin";
+  CHECK(!reloaded.Update(path).ok());
+  CHECK(reloaded.Update(named).ok());
+  RuntimeInstallRepository by_name(storage, "installs.json", Free);
+  CHECK(by_name.Load().ok() && by_name.Find("install-a")->steam_install_dir == "Half-Life 2" &&
+        by_name.Find("install-b")->steam_install_dir.empty());
+  named.steam_install_dir.clear();
+  CHECK(by_name.Update(named).ok());
+  const auto unnamed = storage.ReadDurable("installs.json", 1 << 20);
+  CHECK(unnamed.ok() && std::string(unnamed.value().begin(), unnamed.value().end()).find("steam_install_dir") == std::string::npos);
 }
 
 std::string ReadText(const std::string& path) {

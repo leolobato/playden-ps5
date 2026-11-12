@@ -62,6 +62,9 @@ struct KitCapabilities {
   bool title_any_id = false;     // one title shell for every game; no fixed set of titles
   // The title finds a USB game's drive when it starts, so it can be published naming no mount.
   bool game_root_usb_search = false;
+  // [steam] install_dir: the title shows a Steam game in steamapps\common (kKitSteamLibraryPath). Counts only for a
+  // title that runs this kit's runtime; nothing the player chose waits on it, so it has no needs_update.
+  bool steam_library_path = false;
   bool game_root_unowned = false;  // games start from drives that record no file owners (exFAT)
   bool bottle_profile_shared = false;  // the bottle's 4 folders to its user profile may be 0711
   bool opengl_zink = false;        // OpenGL games draw through Mesa's Zink, not the PS5 OpenGL SDK
@@ -465,6 +468,9 @@ struct ProfileTarget {
   std::string install_root;  // console path of the game files
   // What the profile names instead, when not that: a USB game's search form (/mnt/usb/<folder>).
   std::string published_root;
+  // A Steam game's folder in steamapps\common, for a title whose runtime shows it there ([steam], kit capability
+  // steam-library-path); empty: the game is seen at its real path only.
+  std::string steam_install_dir;
 };
 
 // The full prospero profile: [application], [display], [input] and [debug].
@@ -872,6 +878,10 @@ inline constexpr const char* kKitTitleNotify = "title-notify";
 // holds the game until that program is ready. The Steam host (Steam features = Online) runs this way. Runtimes without
 // it refuse a profile with the section.
 inline constexpr const char* kKitHelperProcess = "helper-process";
+// The title reads [steam] install_dir and shows a Steam game to Wine in C:\Program Files (x86)\Steam\steamapps\common,
+// where some games look for themselves before they use Steam (The Talos Principle). Runtimes without it refuse a
+// profile with the section.
+inline constexpr const char* kKitSteamLibraryPath = "steam-library-path";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the

@@ -2,6 +2,7 @@
 
 #include "steam/backend/json.h"
 #include "steam/backend/app_info.h"
+#include "runtime/prospero_profile.h"
 
 #include <algorithm>
 #include <cctype>
@@ -206,6 +207,7 @@ bool ValidRecord(const RuntimeInstall& record) {
   if (!record.moved_from.empty() &&
       (!IsAbsoluteNormalizedPath(record.moved_from) || record.moved_from == record.install_path)) return false;
   if (!record.setup_program.empty() && !IsRelativeLaunchPath(record.setup_program)) return false;
+  if (!record.steam_install_dir.empty() && !IsProsperoSteamInstallDir(record.steam_install_dir)) return false;
   return true;
 }
 
@@ -300,6 +302,10 @@ std::optional<RuntimeInstall> ParseRecord(const JsonValue& value, RepositoryErro
     if (!setup->is_string() || setup->text().empty()) return std::nullopt;
     record.setup_program = setup->text();
   }
+  if (const auto* folder = value.Find("steam_install_dir")) {
+    if (!folder->is_string() || folder->text().empty()) return std::nullopt;
+    record.steam_install_dir = folder->text();
+  }
   if (!ValidRecord(record)) return std::nullopt;
   return record;
 }
@@ -341,6 +347,10 @@ void WriteRecord(TextOutput& output, const RuntimeInstall& record) {
   else output << "null";
   if (!record.moved_from.empty()) { output << ','; StringField(output, "moved_from", record.moved_from, false); }
   if (!record.setup_program.empty()) { output << ','; StringField(output, "setup_program", record.setup_program, false); }
+  if (!record.steam_install_dir.empty()) {
+    output << ',';
+    StringField(output, "steam_install_dir", record.steam_install_dir, false);
+  }
   output << '}';
 }
 
@@ -556,6 +566,7 @@ RepositoryResult<RuntimeInstall> RuntimeInstallRepository::Reserve(const Reserve
   candidate.launch_in_install_root = request.launch_in_install_root;
   candidate.install_path = request.install_path;
   candidate.volume_id = request.volume_id;
+  candidate.steam_install_dir = request.steam_install_dir;
   if (!NormalizeLaunchPaths(candidate))
     return RepositoryResult<RuntimeInstall>::Failure(RepositoryError::kInvalidRecord,
         "launch paths must remain within the game install");
