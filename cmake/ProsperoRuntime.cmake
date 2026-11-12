@@ -148,7 +148,7 @@ target_link_libraries(playden_runtime_artifact_hash PRIVATE playden_curl_8_22 pl
 # Also SteamStub unpacking of a game's program (runtime/steam_stub), with mbedtls through curl.
 add_library(playden_runtime_steamworks STATIC "${CMAKE_SOURCE_DIR}/src/runtime/steamworks.cpp"
     "${CMAKE_SOURCE_DIR}/src/runtime/dotnet_heap.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/steam_stub.cpp"
-    "${CMAKE_SOURCE_DIR}/src/runtime/online_session.cpp")
+    "${CMAKE_SOURCE_DIR}/src/runtime/online_session.cpp" "${CMAKE_SOURCE_DIR}/src/runtime/steam_library.cpp")
 target_compile_features(playden_runtime_steamworks PUBLIC cxx_std_17)
 target_include_directories(playden_runtime_steamworks PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_runtime_steamworks PUBLIC playden_runtime_artifact_hash playden_steam_content_language

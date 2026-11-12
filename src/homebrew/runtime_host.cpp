@@ -29,6 +29,7 @@
 #include "runtime/steam_input.h"
 #include "runtime/steam_stub.h"
 #include "runtime/steam_client_install.h"
+#include "runtime/steam_library.h"
 #include "runtime/steamworks.h"
 #include "runtime/self_heal.h"
 #include "steam/secret.h"
@@ -1528,6 +1529,35 @@ std::filesystem::path RuntimeHost::SteamClientFolder() const {
   return HostPath(config_.package_paths.console_data_root + "/playden/steam-client/client");
 }
 
+void RuntimeHost::SteamLibraryStep(Composition& c, const GameFiles& files) {
+  const auto& features = files.settings.values.at("steam_features").value;
+  if (features != "online" || !files.settings.helper_process || !SteamClientRecord()) return;
+  const auto folder = SteamLibraryFolder(TitleKit(c, files.record), files.record);
+  if (folder.empty()) return;
+  const auto app = std::to_string(files.record.runtime_number);
+  std::string client = std::string("Z:") + rt::kSteamClientFolder;
+  std::replace(client.begin(), client.end(), '/', '\\');
+  const bool listed = rt::WriteSteamLibraryFolders(SteamClientFolder(), client);
+  const auto record = installs::ReadInstallRecord((std::filesystem::path(files.root) / installs::kInstallRecordName).string());
+  if (!record) {
+    Log("steam library app=" + app + " listed=" + (listed ? "1" : "0") + " manifest skipped: no install record");
+    return;
+  }
+  rt::SteamAppManifest manifest;
+  manifest.app_id = files.record.runtime_number;
+  manifest.name = files.recipe ? files.recipe->name : std::string();
+  // A recipe Playden made from the PS5 title's name may carry its store suffix (TitleStoreSuffix); Steam's name doesn't.
+  if (constexpr std::string_view suffix = " (Steam)";
+      manifest.name.size() > suffix.size() && manifest.name.compare(manifest.name.size() - suffix.size(), suffix.size(), suffix) == 0)
+    manifest.name.resize(manifest.name.size() - suffix.size());
+  manifest.install_dir = folder;
+  manifest.last_updated = config_.unix_time ? config_.unix_time() : 0;
+  manifest.record = *record;
+  const bool written = rt::WriteSteamAppManifest(files.prefix, manifest.app_id, rt::SteamAppManifestText(manifest));
+  Log("steam library app=" + app + " folder=" + folder + " listed=" + (listed ? "1" : "0") +
+      " manifest=" + (written ? "1" : "0") + " depots=" + std::to_string(record->depots.size()));
+}
+
 // Playden's own record of the client it installed, in its private state: "<version> <steamclient64.dll SHA-256>". The
 // client folder is open to everyone; the record isn't. It counts only while that version is installed there.
 std::optional<std::pair<std::string, std::string>> RuntimeHost::SteamClientRecord() const {
@@ -1806,6 +1836,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   MfcStep(files);
   SteamClientStep(files);
   SaveFoldersStep(c, files);
+  SteamLibraryStep(c, files);
   // After the redistributables (install scripts, MFC): one that writes an older runtime key doesn't stay.
   VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;

@@ -270,7 +270,7 @@ target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordi
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
     playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
-    playden_self_update)
+    playden_self_update playden_steam_core)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -651,6 +651,9 @@ if(BUILD_TESTING)
     add_executable(runtime_online_session_test tests/runtime_online_session_test.cpp)
     target_link_libraries(runtime_online_session_test PRIVATE playden_runtime_steamworks)
     add_test(NAME runtime_online_session COMMAND runtime_online_session_test)
+    add_executable(runtime_steam_library_test tests/runtime_steam_library_test.cpp)
+    target_link_libraries(runtime_steam_library_test PRIVATE playden_runtime_steamworks)
+    add_test(NAME runtime_steam_library COMMAND runtime_steam_library_test)
     add_executable(runtime_steam_stub_test tests/runtime_steam_stub_test.cpp)
     target_link_libraries(runtime_steam_stub_test PRIVATE playden_runtime_steamworks playden_curl_8_22)
     add_test(NAME runtime_steam_stub COMMAND runtime_steam_stub_test)
