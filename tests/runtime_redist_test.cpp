@@ -353,6 +353,64 @@ void TestScripts() {
   CHECK(FindValue(russian, "Software\\Studio", "Name")->data == "\"ru\"");
   CHECK(FindValue(russian, "Software\\Studio", "Language")->data == "dword:00000001");  // no Russian value: English
   CHECK(FindValue(parsed_for("french"), "Software\\Studio", "Language")->data == "dword:00000002");
+  // Far Cry 3's script (#607, trimmed to two languages) lists its HKLM key and the key's Wow6432Node twin. The plain
+  // key is also written to the 32-bit view, so each value is set twice there; the registry takes it once.
+  const std::string far_cry_3 = R"("InstallScript"
+{
+	"Registry"
+	{
+		"HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Far Cry 3"
+		{
+			"string"
+			{
+				"ExecutableName"		"bin\\FC3UpdaterSteam.exe"
+				"installdir"		"%INSTALLDIR%"
+				"SKU"		"WW_STEAM"
+				"version"		"1.03"
+				"english"
+				{
+					"language"		"English"
+				}
+				"french"
+				{
+					"language"		"French"
+				}
+			}
+		}
+		"HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Ubisoft\\Far Cry 3"
+		{
+			"string"
+			{
+				"ExecutableName"		"bin\\FC3UpdaterSteam.exe"
+				"installdir"		"%INSTALLDIR%"
+				"SKU"		"WW_STEAM"
+				"version"		"1.03"
+				"english"
+				{
+					"language"		"English"
+				}
+				"french"
+				{
+					"language"		"French"
+				}
+			}
+		}
+	}
+}
+"kvsignatures"
+{
+	"InstallScript"		"0bd5c18c"
+}
+)";
+  InstallScriptValues far_cry;
+  CHECK(ParseInstallScript(far_cry_3, "Z:\\data\\playden-games\\220240", "french", &far_cry, &reason));
+  CHECK(far_cry.user.empty() && far_cry.machine.size() == 10);
+  CHECK(FindValue(far_cry.machine, "SOFTWARE\\Ubisoft\\Far Cry 3", "language")->data == "\"French\"");
+  CHECK(FindValue(far_cry.machine, "SOFTWARE\\Wow6432Node\\Ubisoft\\Far Cry 3", "installdir")->data ==
+        "\"Z:\\\\data\\\\playden-games\\\\220240\"");
+  std::string far_cry_registry = "WINE REGISTRY Version 2\n";
+  CHECK(ApplyRegistryValues(&far_cry_registry, far_cry.machine, 1760000000, &reason));
+  CHECK(far_cry_registry.find("\"SKU\"=\"WW_STEAM\"") != std::string::npos);
   // A language's value replaces a plain one of the same name, any case: a registry key holds one of each.
   const std::string overlapping =
       "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\Software\\\\Studio\" { \"string\" { "

@@ -92,6 +92,16 @@ const steam::VdfNode* ScriptSection(const steam::VdfNode& root) {
   return &root;
 }
 
+// Sets value in list, replacing one of the same key and name (any case, named or unnamed): a registry key holds one
+// of each, so the last value set wins.
+void SetValue(std::vector<RegistryValue>* list, RegistryValue value) {
+  list->erase(std::remove_if(list->begin(), list->end(), [&](const RegistryValue& known) {
+    return known.default_value == value.default_value && Lower(known.key) == Lower(value.key) &&
+           Lower(known.name) == Lower(value.name);
+  }), list->end());
+  list->push_back(std::move(value));
+}
+
 bool ReadScript(const std::filesystem::path& path, std::string* text) {
   const int file = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (file < 0) return false;
@@ -157,13 +167,8 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
           value = RegistryString(value);
         }
         const bool unnamed = Lower(name) == "(default)";
-        for (const auto& name_key : keys) {
-          // A language's value replaces the plain one of the same name: a registry key holds one of each.
-          target.erase(std::remove_if(target.begin(), target.end(), [&](const RegistryValue& known) {
-            return Lower(known.key) == Lower(name_key) && Lower(known.name) == Lower(unnamed ? std::string() : name);
-          }), target.end());
-          target.push_back({name_key, unnamed ? std::string() : name, value, unnamed});
-        }
+        // A language's value replaces the plain one of the same name.
+        for (const auto& name_key : keys) SetValue(&target, {name_key, unnamed ? std::string() : name, value, unnamed});
       };
       // A subkey holds the values for one language ("dword" { "english" { "Language" "1" } }).
       const steam::VdfNode* localized = nullptr;
@@ -242,8 +247,9 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
       result.skipped.push_back(name);
       continue;
     }
-    values.machine.insert(values.machine.end(), parsed.machine.begin(), parsed.machine.end());
-    values.user.insert(values.user.end(), parsed.user.begin(), parsed.user.end());
+    // A later script's value replaces an earlier one's, in Playden's own order (file names, sorted byte by byte).
+    for (auto& value : parsed.machine) SetValue(&values.machine, std::move(value));
+    for (auto& value : parsed.user) SetValue(&values.user, std::move(value));
   }
   result.values = values.machine.size() + values.user.size();
   for (const auto& [hive, list] : {std::pair<const char*, const std::vector<RegistryValue>*>{"system.reg", &values.machine},

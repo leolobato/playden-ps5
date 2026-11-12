@@ -31,8 +31,9 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
 
 // Applies the Registry sections of the install scripts at the top of game_root (file names
 // starting with "installscript" and ending ".vdf", any case) to the stopped bottle at
-// prefix_dir, backing each hive up first. An unchanged hive is not written. found lists the
-// scripts read; a script that cannot be read or parsed is skipped and named in skipped.
+// prefix_dir, backing each hive up first. A later script's value replaces an earlier one's of
+// the same key and name. An unchanged hive is not written. found lists the scripts read; a
+// script that cannot be read or parsed is skipped and named in skipped.
 struct InstallScriptResult {
   std::vector<std::string> found;
   std::vector<std::string> skipped;

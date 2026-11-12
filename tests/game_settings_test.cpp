@@ -1619,6 +1619,25 @@ int main(int argc, char** argv) {
     // Again: already there, so the hive is left as it is.
     applied = ApplyInstallScripts(game.string(), "Z:\\data\\games\\22380", "", bottle.string(), 1791600000);
     CHECK(applied.ok && ReadText(bottle / "system.reg") == written);
+    // A later script setting the same value, in another case: its value wins instead of the registry refusing a
+    // duplicate. The same holds for HKCU and a key's unnamed value, under either name of the hive.
+    std::ofstream(game / "installscript_2.vdf")
+        << "\"InstallScript\" { \"Registry\" { \"HKEY_LOCAL_MACHINE\\\\Software\\\\bethesda softworks\\\\FalloutNV\" "
+           "{ \"string\" { \"installed path\" \"%INSTALLDIR%\\\\Data\" } } \"HKCU\\\\Software\\\\Studio\" "
+           "{ \"string\" { \"(Default)\" \"two\" } } } }";
+    std::ofstream(game / "installscript_3.vdf")
+        << "\"InstallScript\" { \"Registry\" { \"HKEY_CURRENT_USER\\\\software\\\\studio\" "
+           "{ \"string\" { \"(default)\" \"three\" } } } }";
+    std::ofstream(bottle / "user.reg") << "WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000\n\n#arch=win64\n";
+    ::chmod((bottle / "user.reg").c_str(), 0600);
+    applied = ApplyInstallScripts(game.string(), "Z:\\data\\games\\22380", "", bottle.string(), 1791700000);
+    CHECK(applied.ok && applied.found.size() == 3 && applied.values == 3);
+    const auto user_reg = ReadText(bottle / "user.reg");
+    CHECK(user_reg.find("@=\"three\"") != std::string::npos && user_reg.find("\"two\"") == std::string::npos);
+    const auto replaced = ReadText(bottle / "system.reg");
+    CHECK(replaced.find("\"Installed Path\"=\"Z:\\\\data\\\\games\\\\22380\\\\\"") == std::string::npos);
+    CHECK(replaced.find("\"installed path\"=\"Z:\\\\data\\\\games\\\\22380\\\\Data\"") != std::string::npos ||
+          replaced.find("\"Installed Path\"=\"Z:\\\\data\\\\games\\\\22380\\\\Data\"") != std::string::npos);
     std::filesystem::remove_all(script_root);
   }
 
