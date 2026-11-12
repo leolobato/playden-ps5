@@ -9,8 +9,10 @@
 namespace playden::app {
 
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
+  // Community recipes are on in every build; Online stays off until features.txt names it.
+  (void)all_on;
   ExperimentalFeatures features;
-  features.community_recipes = all_on;
+  features.community_recipes = true;
   return features;
 }
 

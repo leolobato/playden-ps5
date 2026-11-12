@@ -16,15 +16,14 @@ sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) a
 
 ## Turn them on
 
-Community recipes are an experimental feature. Nightly builds and local dev builds ([docs/building.md](building.md)) have them on. Other builds
-need a line
+Community recipes are on in every build from Playden 0.11.0-beta.4. Earlier release builds need a line
 `community-recipes` in `features.txt` in Playden's data folder (`/data/playden/features.txt` on the console, which FTP
 and the file manager can write; one feature name per line, `#` starts a comment). Playden reads the file when it
 starts. My presets don't need it.
 
-Without it, Playden doesn't download recipes, ask how a game ran, send votes or test reports, or link an account, and
-the screens for them are hidden. A game that already uses a community recipe keeps it: Playden reads it from the copy
-it saved, and the game can still go back to a preset. A nightly or dev build can't turn community recipes off.
+Without it, those builds don't download recipes, ask how a game ran, send votes or test reports, or link an account,
+and the screens for them are hidden. A game that already uses a community recipe keeps it: Playden reads it from the
+copy it saved, and the game can still go back to a preset.
 
 ## Share one from Playden
 
@@ -253,9 +252,9 @@ Export as recipe always writes format 1.
 
 `community.format_version` says which Playden can read a file. Each Playden reads a set of versions and refuses a
 file of any other version alone, with a log line in `community.log`; the rest of the release still loads. This
-Playden reads 1 and 2. Earlier builds read only 1, so they skip settings-only files. Release builds read community
-recipes only when they are turned on (see [Turn them on](#turn-them-on)), so the builds that skip them are mostly
-older nightlies.
+Playden reads 1 and 2. Earlier builds read only 1, so they skip settings-only files. Release builds before 0.11.0-beta.4
+read community recipes only when they are turned on (see [Turn them on](#turn-them-on)), so the builds that skip them
+are mostly older nightlies.
 
 - The version goes up when an older Playden would read a file wrongly or can't apply it. A new optional field that
   older builds may ignore safely doesn't need a new version.

@@ -26,9 +26,10 @@ void Write(const std::filesystem::path& path, const std::string& text) {
 }  // namespace
 
 int main() {
-  // Releases have nothing on; nightlies have community recipes on.
-  CHECK(!DefaultExperimentalFeatures(false).community_recipes);
+  // Community recipes are on in every build, releases included.
+  CHECK(DefaultExperimentalFeatures(false).community_recipes);
   CHECK(DefaultExperimentalFeatures(true).community_recipes);
+  CHECK(!DefaultExperimentalFeatures(false).online_steam);
 
   // One name per line, surrounding whitespace and CRLF trimmed, comments and blank lines skipped.
   std::vector<std::string> unknown;

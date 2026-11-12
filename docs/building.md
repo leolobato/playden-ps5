@@ -74,8 +74,8 @@ loader (the title remover and the self-update's relaunch payload). Neither scrip
 The build checks the pinned revisions and hashes. If it stops with a mismatch, do not edit the hash: find out why
 the input changed. The PS5 build is reproducible, so the same sources give the same `eboot.bin` in any checkout.
 
-`scripts/build-homebrew-ps5.sh` makes a dev build by default (`PLAYDEN_DEV_BUILD=ON`): every experimental feature is
-on without a `features.txt` line, and the package has a `dev-build` marker that `tools/write_update_manifest.py`
+`scripts/build-homebrew-ps5.sh` makes a dev build by default (`PLAYDEN_DEV_BUILD=ON`): every experimental feature but
+Online is on without a `features.txt` line, and the package has a `dev-build` marker that `tools/write_update_manifest.py`
 refuses. A release is built with `PLAYDEN_DEV_BUILD=OFF scripts/build-homebrew-ps5.sh`.
 
 `FAKE77031` is allocated to Playden. Do not use it for another application.
