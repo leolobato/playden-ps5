@@ -42,6 +42,14 @@ struct FileCatalog {
   bool known = false;       // false until the controller has reported the library
 };
 
+// What became of a recipe a paired browser sent for a game: an HTTP status and a sentence for the player.
+struct RecipeImportAnswer {
+  int status = 500;
+  std::string message;
+};
+// The largest recipe file the page may send (the recipe service's limit).
+inline constexpr std::size_t kMaxRecipeUploadBytes = 16 << 10;
+
 struct FilesConfig {
   std::function<std::shared_ptr<void>()> try_hold;  // ps5::TryHoldEffectiveUid; empty on the host
   std::function<std::optional<std::uint64_t>(const std::string& path)> free_space;
@@ -49,12 +57,15 @@ struct FilesConfig {
   Pairing::Options pairing;
   FileStore::Options store;  // tests; try_hold and free_space above take its fields' place
   std::function<std::int64_t()> now;  // seconds since 1970, stamped on zip entries
+  // Uses a recipe file for a game (its FileGame id), on the calling server worker; the controller answers. Empty: the
+  // route answers 503.
+  std::function<RecipeImportAnswer(const std::string& game, std::string file)> import_recipe;
 };
 
 // How many downloads, zips and uploads may run at once. The rest answer 503, so lists stay served.
 inline constexpr int kMaxTransfers = 2;
 
-// The Files tab's routes. Every route but pairing's needs a paired browser's cookie; everything that changes
+// The Files tab's routes, and POST /api/files/recipe, which makes a game use a recipe file. Every route but pairing's needs a paired browser's cookie; everything that changes
 // something also needs X-Playden-Action: files (Service refuses another Origin, and a name in Host, before this).
 class FilesApi {
  public:

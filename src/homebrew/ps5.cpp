@@ -1164,11 +1164,29 @@ int main() {
         };
         for (const auto& private_path : playden::runtime::PrivateProfilePaths())
             web_config.files.private_profile_paths.push_back(private_path.generic_string());
+        // Recipe files from a paired browser: kept through the community service when it runs, else in the cache folder.
+        auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
+        if (community)
+            recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {
+                return service->KeepObject(bytes, error);
+            }, community_keep);
+        else
+            recipe_imports->SetKeeper([store = std::make_shared<playden::community::RecipeStore>(community_root)](
+                                          const std::string& bytes, std::string* error) {
+                return (store->prepared() || store->Prepare(error)) && store->WriteObjects({bytes}, error);
+            });
+        recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
+            return feature == "online-steam" && online_steam;
+        });
+        web_config.files.import_recipe = [recipe_imports](const std::string& game, std::string file) {
+            return recipe_imports->Import(game, std::move(file));
+        };
         playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
         services.SetDownloadServers(&servers);
         services.SetFriends(friends.get());
         if (!web_probe_on) services.SetWebAccess(&web);
+        services.SetRecipeImports(recipe_imports);
         services.SetLocalLibrary(local_library);
         playden::steam::StoreDetailsService store_details(playden::homebrew::StoreFetch(paths.trust_store));
         services.SetStoreDetails(&store_details);

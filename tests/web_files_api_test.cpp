@@ -90,6 +90,13 @@ int main() {
   config.server.poll_interval_ms = 20;
   config.server.body_timeout_ms = 500;
   config.files.private_profile_paths = {"AppData/Local/Launcher"};
+  // Recipe files: what reached the controller's side, and its answer.
+  std::vector<std::pair<std::string, std::string>> recipes;
+  config.files.import_recipe = [&recipes](const std::string& game, std::string file) -> RecipeImportAnswer {
+    recipes.emplace_back(game, file);
+    if (file == "bad") return {422, "This file isn't a Playden recipe."};
+    return {200, "Darkwood now uses this recipe."};
+  };
   fs::create_directories(base / "logs");
   Service service(std::move(config));
   FileCatalog catalog;
@@ -150,11 +157,12 @@ int main() {
   for (const std::string& target : std::vector<std::string>{"/api/files/games", "/api/files/game?game=steam-12210", "/api/files/list?" + game + "user", "/api/files/download?" + game + "game&path=game.exe",
                                    "/api/files/zip?" + game + "game", "/api/files/text?" + game + "game&path=game.exe"})
     CHECK(Status(get(target)) == 401);
-  for (const std::string& target : std::vector<std::string>{"/api/files/upload?" + game + "game&path=x", "/api/files/mkdir?" + game + "game&path=x", "/api/files/delete?" + game + "game&path=game.exe", "/api/files/restore?" + game + "game&path=x"}) {
+  for (const std::string& target : std::vector<std::string>{"/api/files/upload?" + game + "game&path=x", "/api/files/mkdir?" + game + "game&path=x", "/api/files/delete?" + game + "game&path=game.exe", "/api/files/restore?" + game + "game&path=x", "/api/files/recipe?game=steam-12210"}) {
     CHECK(Status(post(target, "", "data")) == 401);
     CHECK(Status(post(target, "playden_files=0123456789", "data")) == 401);
   }
   CHECK(fs::exists(game_folder / "game.exe") && !fs::exists(game_folder / "x"));
+  CHECK(recipes.empty());
 
   // Pairing needs the header, a code the TV shows, and answers with a cookie the page's scripts can't read.
   CHECK(Status(post("/api/pair/start", "", "", "")) == 403);
@@ -309,6 +317,27 @@ int main() {
     ::close(second);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     CHECK(Status(get("/api/files/download?" + game + "game&path=game.exe", cookie)) == 200);
+  }
+
+  // A recipe file for a game: the header, a known game, at most 16 KB; the controller's answer comes back.
+  {
+    CHECK(Status(post("/api/files/recipe?game=steam-274520", cookie, "{}", "")) == 403);
+    CHECK(Status(post("/api/files/recipe?game=nope", cookie, "{}")) == 404);
+    CHECK(Status(post("/api/files/recipe?game=steam-274520", cookie, std::string(kMaxRecipeUploadBytes + 1, ' '))) == 413);
+    CHECK(Status(Exchange(port, "POST /api/files/recipe?game=steam-274520 HTTP/1.1\r\n" + host + "X-Playden-Action: files\r\nCookie: " + cookie + "\r\n\r\n")) == 411);
+    CHECK(recipes.empty());
+    answer = post("/api/files/recipe?game=steam-274520", cookie, "{\"recipe_id\":\"x\"}");
+    CHECK(Status(answer) == 200 && Body(answer) == "{\"message\":\"Darkwood now uses this recipe.\"}");
+    CHECK(recipes.size() == 1 && recipes[0].first == "steam-274520" && recipes[0].second == "{\"recipe_id\":\"x\"}");
+    answer = post("/api/files/recipe?game=steam-274520", cookie, "bad");
+    CHECK(Status(answer) == 422 && Body(answer).find("isn't a Playden recipe") != std::string::npos);
+    // While Playden sets this game up, its recipe waits.
+    auto during = catalog;
+    for (auto& entry : during.games) entry.setting_up = entry.id == "steam-274520";
+    service.SetFileCatalog(during);
+    CHECK(Status(post("/api/files/recipe?game=steam-274520", cookie, "{}")) == 409);
+    service.SetFileCatalog(catalog);
+    CHECK(recipes.size() == 2);
   }
 
   // A game's setup: file actions say so at once, and the game's page still opens without touching the disk.

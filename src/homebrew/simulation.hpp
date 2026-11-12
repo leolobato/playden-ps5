@@ -1475,6 +1475,10 @@ public:
     // The community recipe a game's settings run with now (the wanted one, when it applies); nothing
     // for Playden's own recipe. Share uses it as the recipe the game is based on.
     [[nodiscard]] std::optional<playden::runtime::CommunityRecipeChoice> RecipeBaseFor(GameId id) const;
+    // A recipe file a paired browser sent over web access, kept in the community recipe store as `revision`
+    // (community::PrepareImportedRecipe): the game uses it now, keeping the player's changes that still apply, and a
+    // notification on the TV says so. Returns the HTTP status and a sentence for the browser.
+    std::pair<int, std::string> ImportRecipe(GameId id, const std::string& revision);
     // The base the game's last "Export as recipe" was made from (RecipeBaseFor at that time).
     [[nodiscard]] std::optional<playden::runtime::CommunityRecipeChoice> ExportedRecipeBase(GameId id) const;
     // Why the wanted community recipe is not what the game runs with: the runtime's reason from the last
@@ -1690,6 +1694,10 @@ private:
     // Makes base the game's (or the Install sheet's) choice; a switch on an installed game that involves a
     // community recipe asks first, unless confirmed.
     void choose_base(GameId id, const BaseChoice& base, bool confirmed);
+    // The game's record moves onto base (no dialog, no save): a community switch drops what no longer applies and keeps
+    // the rest of the player's changes; between presets, the changes are cleared.
+    void set_base(GameId id, const BaseChoice& base, const std::vector<playden::runtime::DroppedOverride>& dropped,
+                  bool community);
     void build_recipe_comparison(GameId id, const CommunityRecipeOffer& offer);
     void seed_community_scenario(bool offline);
     // My presets in Choose settings and Game settings: the Triangle menu on a preset's row, the keyboard that names one

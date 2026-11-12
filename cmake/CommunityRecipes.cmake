@@ -10,6 +10,7 @@ add_library(playden_community STATIC
     "${CMAKE_SOURCE_DIR}/src/community/recipe_release.cpp"
     "${CMAKE_SOURCE_DIR}/src/community/recipe_store.cpp"
     "${CMAKE_SOURCE_DIR}/src/community/recipe_service.cpp"
+    "${CMAKE_SOURCE_DIR}/src/community/recipe_import.cpp"
     "${CMAKE_SOURCE_DIR}/src/community/install_secret.cpp"
     "${CMAKE_SOURCE_DIR}/src/community/api_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/community/share_decision.cpp"
@@ -84,6 +85,11 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(community_share_decision_test "${CMAKE_SOURCE_DIR}/tests/community_share_decision_test.cpp")
     target_link_libraries(community_share_decision_test PRIVATE playden_community)
     add_test(NAME community_share_decision COMMAND community_share_decision_test)
+
+    # Recipe files imported over web access: made local, checked like community recipes, kept by the store.
+    add_executable(community_recipe_import_test "${CMAKE_SOURCE_DIR}/tests/community_recipe_import_test.cpp")
+    target_link_libraries(community_recipe_import_test PRIVATE playden_community)
+    add_test(NAME community_recipe_import COMMAND community_recipe_import_test "${CMAKE_SOURCE_DIR}/tests/fixtures/community-recipes")
 
     # The sharing ID and the vote memory on disk, and the log redaction of the secret; also with the
     # console's file rules.

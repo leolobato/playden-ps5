@@ -109,6 +109,9 @@ class CommunityRecipeService {
   // Deletes stored objects nothing references any more (keep: full revisions or 32-hex prefixes;
   // the current release's objects always stay). Waits for a running refresh.
   std::size_t CollectGarbage(const std::set<std::string>& keep);
+  // Keeps one more object (a recipe the player imported), under the same lock as a refresh and its garbage collection.
+  // Any thread. The caller adds its revision to what `referenced` keeps first.
+  bool KeepObject(const std::string& bytes, std::string* error);
 
  private:
   struct Shared;

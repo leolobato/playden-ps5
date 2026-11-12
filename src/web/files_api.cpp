@@ -401,6 +401,29 @@ void FilesApi::Register(Router& router) {
     if (!error.ok()) return Fail(response, error);
     SendJson(response, 200, "{" + Field("replaced", replaced) + "}");
   });
+  // A recipe file for the game: the game uses it at once, and the TV says so.
+  router.Post("/api/files/recipe", [this](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response) || !RequireAction(request, response)) return;
+    if (!request.content_length) return SendError(response, 411, "Send the file's length.");
+    if (*request.content_length > kMaxRecipeUploadBytes) return SendError(response, 413, "The recipe is larger than 16 KB.");
+    if (!request.read_body) return SendError(response, 400, "No body.");
+    const auto id = QueryValue(request.query, "game");
+    const auto game = id ? Game(*id) : std::nullopt;
+    if (!game) return SendError(response, 404, "No such game.");
+    if (game->setting_up) return SendError(response, 409, "Playden is setting up this game. Try again when it finishes.");
+    std::string file;
+    file.resize(static_cast<std::size_t>(*request.content_length));
+    std::size_t done = 0;
+    while (done < file.size()) {
+      const auto count = request.read_body(file.data() + done, file.size() - done);
+      if (count <= 0) return SendError(response, 400, "The file didn't arrive whole.");
+      done += static_cast<std::size_t>(count);
+    }
+    if (!config_.import_recipe) return Fail(response, {503, "Playden can't take recipes now."});
+    const auto answer = config_.import_recipe(game->id, std::move(file));
+    if (answer.status != 200) return SendError(response, answer.status, answer.message);
+    SendJson(response, 200, "{" + Field("message", answer.message) + "}");
+  });
   const auto action = [this](FileError (FileStore::*work)(const FileRoot&, const std::string&)) {
     return [this, work](const Request& request, const std::string&, Response& response) {
       if (!RequirePaired(request, response) || !RequireAction(request, response)) return;

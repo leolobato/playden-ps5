@@ -252,7 +252,7 @@ target_link_libraries(playden_persistence_controller PUBLIC playden_homebrew_mod
 
 add_library(playden_homebrew_controller STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/controller.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/uninstall_flow.cpp"
-    "${CMAKE_SOURCE_DIR}/src/homebrew/sharing_service.cpp")
+    "${CMAKE_SOURCE_DIR}/src/homebrew/sharing_service.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/web_recipe_imports.cpp")
 target_compile_features(playden_homebrew_controller PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_controller PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_homebrew_controller PUBLIC

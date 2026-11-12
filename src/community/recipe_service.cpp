@@ -484,8 +484,10 @@ bool CommunityRecipeService::Refresh(std::string* error) {
   });
 
   if (config_.referenced) {
-    const auto keep = config_.referenced();
+    // What to keep is asked under the write lock: an object kept since (KeepObject, after its revision joined what is
+    // referenced) is then either in the answer or not written yet.
     std::lock_guard<std::mutex> lock(shared_->write_mutex);
+    const auto keep = config_.referenced();
     const auto removed = keep && !shared_->cancel ? store_->CollectGarbage(*keep, &shared_->cancel) : 0;
     if (!keep) Log("community recipes: kept every recipe file (what is in use is not known yet)");
     if (removed) Log("community recipes: removed " + std::to_string(removed) + " unused recipe files");
@@ -525,6 +527,12 @@ std::size_t CommunityRecipeService::CollectGarbage(const std::set<std::string>& 
   std::lock_guard<std::mutex> lock(shared_->write_mutex);
   if (!store_->prepared()) return 0;
   return store_->CollectGarbage(keep, &shared_->cancel);
+}
+
+bool CommunityRecipeService::KeepObject(const std::string& bytes, std::string* error) {
+  std::lock_guard<std::mutex> lock(shared_->write_mutex);
+  if (!store_->prepared() && !store_->Prepare(error)) return false;
+  return store_->WriteObjects({bytes}, error);
 }
 
 }  // namespace playden::community

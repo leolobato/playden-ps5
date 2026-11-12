@@ -6,11 +6,14 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "community/install_secret.h"
+#include "community/recipe_import.h"
 #include "community/recipe_release.h"
 #include "community/recipe_store.h"
 #include "homebrew/controller.hpp"
 #include "homebrew/sharing_service.hpp"
 #include "homebrew/simulation.hpp"
+#include "homebrew/web_recipe_imports.hpp"
+#include "library/store.h"
 #include "runtime/game_settings.h"
 
 #include <strings.h>
@@ -27,6 +30,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -1728,6 +1732,109 @@ void community_off_recipe_missing(const std::filesystem::path& base) {
     check(model.TakeSharingRequests().empty() && !model.TakeCommunityRefreshRequest(), "nothing is asked of the services");
 }
 
+// A recipe file sent over web access, with community recipes off: the worker keeps it in the cache folder, the main
+// thread (as Controller::TickRecipeImports) makes Darkwood use it without closing what the TV shows, and it stays
+// local: a share makes a new recipe, and nobody votes on it.
+void web_import(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const auto root = base / "community-recipes";
+    const std::string file =
+        read_text(std::filesystem::path(PLAYDEN_COMMUNITY_FIXTURES) / "hostile/export-no-slug-no-title.json");
+    check(!file.empty(), "the export fixture reads");
+
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    model.SetCommunityRecipesEnabled(false);
+    set_up(model, base, false);
+    model.SetCommunityRecipeLoader(playden::homebrew::CommunityRecipeCacheLoader(std::make_shared<cm::RecipeStore>(root)));
+
+    auto keep = std::make_shared<playden::homebrew::CommunityKeepSet>();
+    keep->revisions = std::set<std::string>{};
+    playden::homebrew::WebRecipeImports imports;
+    imports.SetKeeper([store = std::make_shared<cm::RecipeStore>(root)](const std::string& bytes, std::string* error) {
+        return (store->prepared() || store->Prepare(error)) && store->WriteObjects({bytes}, error);
+    }, keep);
+    const auto send = [&](const std::string& game, const std::string& bytes) {
+        playden::web::RecipeImportAnswer answer;
+        std::thread worker([&] { answer = imports.Import(game, bytes); });
+        for (int i = 0; i < 500; ++i) {
+            bool served = false;
+            for (const auto& pending : imports.Take()) {
+                const auto id = playden::ParseInstallId(pending.game);
+                auto [status, message] = id ? model.ImportRecipe(*id, pending.revision) : std::pair<int, std::string>{404, ""};
+                imports.Answer(pending.ticket, {status, message});
+                served = true;
+            }
+            if (served) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        worker.join();
+        return answer;
+    };
+
+    // A lost object read once is tried again after the import keeps it anew.
+    {
+        const auto imported = cm::PrepareImportedRecipe(file, nullptr);
+        check(imported.has_value(), "the export prepares");
+        rt::CommunityRecipeChoice missing{imported->recipe.recipe.id, cm::Sha256Hex(imported->bytes), {}};
+        (void)model.ImportRecipe(kGame, missing.revision);  // not kept yet: a failed read is cached
+    }
+    (void)model.TakeMaintenanceRequests();
+
+    // Game settings open on the TV: the import doesn't close it.
+    open_game_settings(model);
+    const auto modals = model.state().navigation.modals.size();
+    const auto answer = send("steam-274520", file);
+    check(answer.status == 200, "the import is used");
+    check(contains(answer.message, "Darkwood now uses this recipe"), "and the page hears so");
+    check(model.state().navigation.modals.size() == modals, "what the TV shows stays open");
+    const auto maintenance = model.TakeMaintenanceRequests();
+    check(std::any_of(maintenance.begin(), maintenance.end(), [](const auto& request) {
+              return request.first == kGame && request.second == playden::homebrew::MaintenanceKind::ApplySettings;
+          }),
+          "the prepared title gets the recipe now");
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const auto& notice) { return notice.id == "recipe-imported" && contains(notice.detail, "Darkwood"); }),
+          "a notification on the TV says so");
+    const auto base_choice = model.RecipeBaseFor(kGame);
+    check(base_choice && cm::IsImportedRecipeId(base_choice->id), "Darkwood's base is the imported recipe");
+    check(base_choice && imports.Revisions().count(base_choice->revision) && keep->revisions->count(base_choice->revision),
+          "the cache keeps it");
+    check(std::filesystem::exists(root / "objects" / (base_choice->revision + ".json")), "in the community recipes folder");
+    // Local: a share is a new recipe, not an update of it, and there is nothing to vote on.
+    const auto decision = model.ShareDecisionFor(kGame);
+    check(decision.kind == cm::ShareKind::kNewRecipe && !decision.send_based_on, "a share makes a new recipe");
+    check(!model.VoteTargetFor(kGame), "nobody votes on an imported recipe");
+
+    // The same file again changes nothing.
+    check(send("steam-274520", file).status == 200, "the same file again is fine");
+    // Another game's recipe, an unknown game, a file that isn't a recipe: refused, the choice stays.
+    std::string other = file;
+    for (std::size_t at; (at = other.find("274520")) != std::string::npos;) other.replace(at, 6, "220");
+    check(send("steam-274520", other).status == 422, "another game's recipe is refused");
+    check(send("steam-999", file).status == 404, "an unknown game is refused");
+    check(send("steam-274520", "{}").status == 422, "a file that isn't a recipe is refused");
+    // A recipe that needs an experimental feature that is off, as the catalog would leave it out.
+    std::string online = file;
+    online.replace(online.find("\"steam_features\": \"emulate\""), 27, "\"steam_features\": \"online\"");
+    const auto refused = send("steam-274520", online);
+    check(refused.status == 422 && contains(refused.message, "online-steam"), "a recipe that needs online-steam is refused");
+    check(model.RecipeBaseFor(kGame) == base_choice, "and Darkwood keeps its recipe");
+
+    // The Share sheet open for Darkwood (community recipes on): the import waits until it is closed.
+    {
+        Simulation on("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+        set_up(on, base / "on");
+        open_share(on);
+        const auto refused_share = on.ImportRecipe(kGame, base_choice->revision);
+        check(refused_share.first == 409 && contains(refused_share.second, "Share sheet"), "an open Share sheet refuses the import");
+    }
+
+    // Playden closing answers a waiting page.
+    imports.Close();
+    check(imports.Import("steam-274520", file).status == 503, "closed: imports answer 503");
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -1743,6 +1850,7 @@ int main() {
     community_off(base / "off");
     community_off_recipe_missing(base / "off-missing");
     settings_only_base(base / "settings-only");
+    web_import(base / "web-import");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;

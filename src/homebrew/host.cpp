@@ -800,6 +800,11 @@ int main(int argc, char** argv) {
         services->SetLocalLibrary(local);
         services->SetDownloadServers(servers.get());
         services->SetFriends(friends.get());
+        // Recipe files from a paired browser; where they are kept is set with the community recipes below.
+        auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
+        recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
+            return feature == "online-steam" && online_steam;
+        });
         {
             // Web access on the Mac: the same page over the host's logs folder, on 127.0.0.1's network too.
             playden::web::ServiceConfig web_config;
@@ -814,8 +819,12 @@ int main(int argc, char** argv) {
             };
             for (const auto& private_path : playden::runtime::PrivateProfilePaths())
                 web_config.files.private_profile_paths.push_back(private_path.generic_string());
+            web_config.files.import_recipe = [recipe_imports](const std::string& game, std::string file) {
+                return recipe_imports->Import(game, std::move(file));
+            };
             web = std::make_unique<playden::web::Service>(std::move(web_config));
             services->SetWebAccess(web.get());
+            services->SetRecipeImports(recipe_imports);
         }
         // Friends tab › Appear invisible: Playden's own Steam session shows the choice at once (online-steam only).
         services->SetSteamPersona([steam_cm, friends = steam_cm_options.friends](bool invisible) {
@@ -836,6 +845,11 @@ int main(int argc, char** argv) {
         if (!features.community_recipes) {
             services->SetCommunityRecipeCache(
                 std::make_shared<playden::community::RecipeStore>(options->data_directory / "community-recipes"));
+            // Recipe files from a paired browser go straight into the cache folder.
+            recipe_imports->SetKeeper([store = std::make_shared<playden::community::RecipeStore>(
+                                           options->data_directory / "community-recipes")](const std::string& bytes, std::string* error) {
+                return (store->prepared() || store->Prepare(error)) && store->WriteObjects({bytes}, error);
+            });
         } else {
             const auto root = options->data_directory / "community-recipes";
             playden::community::RecipeServiceConfig config;
@@ -861,6 +875,9 @@ int main(int argc, char** argv) {
             community = std::make_unique<playden::community::CommunityRecipeService>(std::move(config));
             community->Start();
             services->SetCommunityRecipes(community.get(), keep, /*no_runtime_installs=*/true);
+            recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {
+                return service->KeepObject(bytes, error);
+            }, keep);
             // Sharing and votes: the sharing ID and the vote memory live beside the recipe store.
             playden::homebrew::SharingServiceConfig sharing_config;
             sharing_config.store_root = root.string();

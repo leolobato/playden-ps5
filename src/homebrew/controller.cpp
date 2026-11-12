@@ -140,6 +140,7 @@ bool Controller::HandOverForHome(const GameId& game) {
 void Controller::Shutdown() {
   if (shut_down_) return;
   shut_down_ = true;
+  if (recipe_imports_) recipe_imports_->Close();
   // The model reads recipe objects through the service, which its owner shuts down after this.
   if (community_) {
     model_.SetCommunityRecipeLoader({});
@@ -554,6 +555,10 @@ void Controller::TickCommunity() {
   const auto shared = runtime_ ? runtime_->Shared() : nullptr;
   auto keep = CommunityKeepRevisions(model_, shared.get(), runtime_ != nullptr, community_no_runtime_installs_);
   std::lock_guard<std::mutex> lock(community_keep_->mutex);
+  // Recipes imported over web access stay until Playden closes, even before a game chooses them. Read under the keep
+  // set's lock: an import adds its revision there before it takes that lock, so this never drops one.
+  if (keep && recipe_imports_)
+    for (const auto& revision : recipe_imports_->Revisions()) keep->insert(revision);
   community_keep_->revisions = std::move(keep);
 }
 
@@ -2206,10 +2211,23 @@ void Controller::TickWebAccess() {
   live.pairing_code = snapshot.pairing_code;
   model_.ApplyLiveWebAccess(live);
   TickWebFiles();
+  TickRecipeImports();
   // The page's Quit Playden; it waits for a game being prepared.
   if (web_->TakeQuitRequest()) {
     if (shutdown_log_) shutdown_log_("quit requested from web access");
     model_.RequestQuit();
+  }
+}
+void Controller::TickRecipeImports() {
+  if (!recipe_imports_) return;
+  for (const auto& pending : recipe_imports_->Take()) {
+    const auto id = ParseInstallId(pending.game);
+    if (!id) {
+      recipe_imports_->Answer(pending.ticket, {404, "No such game."});
+      continue;
+    }
+    auto [status, message] = model_.ImportRecipe(*id, pending.revision);
+    recipe_imports_->Answer(pending.ticket, {status, std::move(message)});
   }
 }
 void Controller::TickWebFiles() {

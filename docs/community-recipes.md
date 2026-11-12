@@ -63,6 +63,26 @@ and a star by the name of an author the maintainers trust.
 A game can have several recipes, for example "120 Hz, pointer on left stick" and "Mouse preset": each is
 its own file with its own slug.
 
+## Import one from web access
+
+A recipe file can go straight to a game from Playden's web page, without a pull request. This works with community
+recipes on or off.
+
+1. Open the web page (Settings › Web access), pair the browser in the **Files** tab, and open the game.
+2. Under **Recipe**, choose **Import recipe** and pick the file: an Export as recipe file, a file from
+   playden-ps5-recipes, or one somebody sent you.
+
+The game uses the recipe at once and keeps the changes you made that still apply. The TV shows a notification.
+
+- **What Playden checks:** the file must be a recipe for this game. It must pass the [rules](#rules-for-community-recipes)
+  and be one the recipe service would take: at most 16 KB, no [INI values](#ini-values), and no field the service refuses.
+  A recipe for another game is refused.
+- **The imported recipe is local:** Playden replaces its id with `community-<store>-<key>-imported-<16 hex>`, the
+  start of the file's SHA-256. It gives the recipe the title "Imported recipe" if the file has none, and drops any
+  `locked` rows. Playden keeps the recipe with the community recipes, like one from the catalog.
+- **Sharing and votes:** sharing the game's settings makes a new recipe, never an update of the one you imported. You
+  can't vote on an imported recipe.
+
 ## Format (format_version 1)
 
 ```json

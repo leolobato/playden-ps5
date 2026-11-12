@@ -23,6 +23,7 @@
 #include "community/recipe_service.h"
 #include "community/recipe_store.h"
 #include "homebrew/sharing_service.hpp"
+#include "homebrew/web_recipe_imports.hpp"
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -98,6 +99,9 @@ class Controller {
   // Settings › Web access turns it on and off (once the saved preferences are read); the signed-in account's
   // name and SteamID go to it for redaction. Shutdown stops it.
   void SetWebAccess(web::Service* web) { web_ = web; }
+  // Recipe files a paired browser sends: each tick the controller makes their games use them and answers the page.
+  // Shutdown closes it, so no server worker waits on a controller that is gone.
+  void SetRecipeImports(std::shared_ptr<WebRecipeImports> imports) { recipe_imports_ = std::move(imports); }
   // Community recipes: the catalog reaches the chooser, the Install sheet and a periodic tick ask for
   // a refresh (the service limits itself to one a day), and keep receives what the cache must keep.
   // The service must outlive the controller. no_runtime_installs: this build never has a runtime (the
@@ -179,6 +183,8 @@ class Controller {
   steam::DownloadServerService* download_servers_ = nullptr;
   web::Service* web_ = nullptr;
   void TickWebAccess();
+  void TickRecipeImports();
+  std::shared_ptr<WebRecipeImports> recipe_imports_;
   // Reports what the page's Files tab offers, about once a second, and keeps the running games current while it is in use.
   void TickWebFiles();
   std::chrono::steady_clock::time_point web_files_next_{};

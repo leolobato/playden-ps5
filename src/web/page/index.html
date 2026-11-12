@@ -639,6 +639,34 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       if (game.physx_needed !== undefined) pane.append(element("p", { class: "note", text: "Playden looks for PhysX in folders named _Redist, _CommonRedist, CommonRedist, Redist, Redists, Redistributable, Redistributables, Support, __Installer, _Installer, Installer, Installers, Prerequisites, Prereqs, PhysX, DirectX, VCRedist or DotNet, at the top of the game folder or one level down." }));
     }
     if (!bottleRoots.length && !gameRoot) pane.append(element("p", { class: "lede", text: "This game has no folders to show yet." }));
+    pane.append(recipeSection(game));
+  };
+  // A recipe file for the game: Playden uses it at once and says so on the TV.
+  const recipeSection = (game) => {
+    const status = element("p", { class: "note", role: "status", text: "" });
+    const picker = element("input", { type: "file", accept: ".json,application/json", hidden: "", "aria-label": "Recipe file" });
+    const send = button("Import recipe", () => picker.click());
+    picker.addEventListener("change", async () => {
+      const file = picker.files[0];
+      picker.value = "";
+      if (!file) return;
+      if (file.size > 16 * 1024) { status.textContent = "The recipe is larger than 16 KB."; return; }
+      send.disabled = true;
+      status.textContent = `Sending ${file.name}…`;
+      try {
+        const answer = await api(`/api/files/recipe?${q({ game: game.id })}`, { method: "POST", headers: { "X-Playden-Action": "files", "Content-Type": "application/json" }, body: file });
+        status.textContent = answer.message || "The game uses this recipe now.";
+      } catch (error) {
+        if (error.status !== 401) status.textContent = error.message;
+      } finally {
+        send.disabled = false;
+      }
+    });
+    return element("div", {},
+      element("div", { class: "sub", text: "Recipe" }),
+      element("p", { class: "note", text: "Import a recipe file, such as one from Export as recipe or the recipes repository. The game uses it on the PS5 right away, and keeps your changes that still apply." }),
+      element("div", { class: "bar" }, send, picker),
+      status);
   };
   const runningNote = () => element("div", { class: "problem", role: "status" },
     element("p", { text: "This game is running on the PS5, in the background." }),

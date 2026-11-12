@@ -9,6 +9,7 @@
 #include "runtime/game_probe.h"
 
 #include "app/diagnostic_log.h"
+#include "community/recipe_import.h"
 #include "homebrew/browse.hpp"
 #include "homebrew/json.hpp"
 #include "homebrew/queue_layout.hpp"
@@ -14894,6 +14895,16 @@ void Simulation::choose_base(GameId id, const BaseChoice& base, bool confirmed) 
         open_modal(std::move(confirmation));
         return;
     }
+    set_base(id, base, dropped, community);
+    pending_switch_.reset();
+    while (!state_.navigation.modals.empty() &&
+           (state_.navigation.modals.back().id == "confirmation" || state_.navigation.modals.back().id == "preset-picker"))
+        close_modal();
+    refresh_game_settings();
+    save_profile();
+}
+
+void Simulation::set_base(GameId id, const BaseChoice& base, const std::vector<rt::DroppedOverride>& dropped, bool community) {
     auto& record = state_.game_settings[id];
     if (community) {
         for (const auto& item : dropped) {
@@ -14907,12 +14918,66 @@ void Simulation::choose_base(GameId id, const BaseChoice& base, bool confirmed) 
         rt::ChoosePreset(&record, base.preset_id);
         clear_keeping_start_choices(&record.overrides);
     }
-    pending_switch_.reset();
-    while (!state_.navigation.modals.empty() &&
-           (state_.navigation.modals.back().id == "confirmation" || state_.navigation.modals.back().id == "preset-picker"))
-        close_modal();
-    refresh_game_settings();
+}
+
+std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::string& revision) {
+    const auto* game = find_game(state_, id);
+    if (!id.valid() || !game) return {404, "Playden doesn't know this game."};
+    const auto own = community_ref(id);
+    if (!own) return {422, "Playden can't take a recipe for this game."};
+    // The Share sheet for this game would send these settings against the recipe it opened with.
+    if (share_ && share_->game == id) return {409, "The Share sheet for " + game->title + " is open on the PS5. Close it first."};
+    if (live() && (settings_load_failed_ || game_settings_file_.empty()))
+        return {409, "Playden couldn't read its game settings, so it can't change them now."};
+    // The file was just kept: a read that failed before (the same file, lost since) is tried again.
+    if (const auto cached = community_objects_.find(revision); cached != community_objects_.end() && !cached->second)
+        community_objects_.erase(cached);
+    rt::CommunityObjectState object_state;
+    const auto* object = community_object(revision, &object_state);
+    if (!object) return {500, "Playden couldn't read the recipe it kept."};
+    const auto name = game->title;
+    // Only the game's own recipe: another game's would start a program this copy may not have.
+    if (object->game != *own)
+        return {422, "This recipe is for " + (object->game_name.empty() ? std::string("another game") : object->game_name) +
+                         ", not " + name + "."};
+    if (const auto saved = state_.game_settings.find(id);
+        saved != state_.game_settings.end() && saved->second.revision == std::numeric_limits<std::uint64_t>::max())
+        return {409, "The settings revision has reached its limit."};
+    BaseChoice base;
+    base.community = {object->recipe.id, revision, {}};
+    // As the game would run it: a recipe its runtime kit can't run is refused now, not at the next Play.
+    const auto selection = select_recipe(id, &base.community);
+    if (!selection.community)
+        return {422, selection.fallback_reason.empty() ? std::string("This game can't use the recipe.") : selection.fallback_reason};
+    const BaseChoice current = base_of(id);
+    if (current == base) return {200, name + " already uses this recipe."};
+    const auto saved = state_.game_settings.find(id);
+    const std::map<std::string, std::string> overrides =
+        saved == state_.game_settings.end() ? std::map<std::string, std::string>{} : saved->second.overrides;
+    const auto dropped = rt::DroppedOverrides(recipe_for_base(id, current), preset_for_base(current), recipe_for_base(id, base),
+                                              preset_for_base(base), overrides, kit_for(id));
+    const auto had_record = state_.game_settings.count(id) > 0;
+    const auto previous = had_record ? state_.game_settings.at(id) : rt::GameSettingsRecord{};
+    set_base(id, base, dropped, true);
     save_profile();
+    if (live() && state_.game_settings != saved_game_settings_) {
+        // Not saved: the game keeps its recipe, rather than one that is gone after a restart.
+        if (had_record) state_.game_settings[id] = previous;
+        else state_.game_settings.erase(id);
+        refresh_game_settings();
+        return {500, "Playden couldn't save the game's settings."};
+    }
+    // A switch the TV was asking about is now a different one.
+    if (pending_switch_game_ == id) pending_switch_.reset();
+    refresh_game_settings();
+    // A prepared title gets the recipe now when it is stopped, as a change in Game settings does; otherwise Play applies it.
+    if (live() && game_prepared(id)) pending_maintenance_requests_.push_back({id, MaintenanceKind::ApplySettings});
+    const auto title = object->title.empty() ? std::string(cm::kImportedRecipeTitle) : object->title;
+    push_notice({"recipe-imported", "Recipe imported", "", false, kLiveNoticeSeconds, false,
+                 name + " now uses \u201c" + title + "\u201d, sent from web access."});
+    std::string message = name + " now uses this recipe.";
+    if (!dropped.empty()) message += " Some of your changes no longer apply.";
+    return {200, message};
 }
 
 void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& offer) {
@@ -15730,7 +15795,8 @@ GameRef shared_game_of(GameId id, const rt::SharedRecipeRef& shared) {
 cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
     cm::ShareInputs inputs;
     const auto ref = sharing_ref(id);
-    if (const auto base = RecipeBaseFor(id)) {
+    // An imported recipe was never published: sharing makes a new recipe.
+    if (const auto base = RecipeBaseFor(id); base && !cm::IsImportedRecipeId(base->id)) {
         inputs.based_on = cm::RecipeRef{base->id, base->revision};
         // Another game's recipe (chosen from a search): the game its choice records, when it isn't the one shared for.
         inputs.based_on_other_game = base->game.valid() && (!ref || base->game != *ref);
@@ -15753,11 +15819,15 @@ cm::ShareDecision Simulation::ShareDecisionFor(GameId id) const {
 }
 
 std::optional<cm::RecipeRef> Simulation::VoteTargetFor(GameId id) const {
-    // A prepared game plays with what its title records, whatever was chosen since.
-    if (const auto runtime = state_.runtime_games.find(id); runtime != state_.runtime_games.end() && runtime->second.prepared)
-        return AppliedCommunityRecipe(id);
+    // A prepared game plays with what its title records, whatever was chosen since. Nobody votes on an imported recipe:
+    // it was never published.
+    if (const auto runtime = state_.runtime_games.find(id); runtime != state_.runtime_games.end() && runtime->second.prepared) {
+        auto applied = AppliedCommunityRecipe(id);
+        if (applied && cm::IsImportedRecipeId(applied->recipe_id)) return std::nullopt;
+        return applied;
+    }
     const auto base = RecipeBaseFor(id);
-    if (!base) return std::nullopt;
+    if (!base || cm::IsImportedRecipeId(base->id)) return std::nullopt;
     return cm::RecipeRef{base->id, base->revision};
 }
 
@@ -15837,7 +15907,7 @@ void Simulation::open_share_sheet(GameId id) {
     if (!sharing_ref(id)) return;
     ShareDraft draft;
     draft.game = id;
-    if (const auto base = RecipeBaseFor(id)) {
+    if (const auto base = RecipeBaseFor(id); base && !cm::IsImportedRecipeId(base->id)) {
         draft.based_on = cm::RecipeRef{base->id, base->revision};
         draft.base_title = community_title(id, base->id, base->revision);
         if (const auto offer = chooser_offer(id, base->revision)) draft.base_author = offer->author;
@@ -16223,7 +16293,8 @@ void Simulation::open_feedback(GameId id, bool short_session, bool after_play) {
     draft.after_play = after_play;
     draft.kit = feedback_kit();
     draft.settings = feedback_settings(id);
-    if (const auto applied = AppliedCommunityRecipe(id)) {
+    // A report names the recipe it was played with, unless the player imported it: the service doesn't know that one.
+    if (const auto applied = AppliedCommunityRecipe(id); applied && !cm::IsImportedRecipeId(applied->recipe_id)) {
         draft.recipe = applied;
         draft.recipe_title = community_title(id, applied->recipe_id, applied->revision);
     }
