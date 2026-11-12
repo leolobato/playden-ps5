@@ -2298,8 +2298,6 @@ void Controller::TickWebFiles() {
         if (kept.runtime_number == number) return &entry(kept.game);
       return nullptr;
     };
-    for (const auto& [number, bytes] : runtime->save_bytes)
-      if (auto* game = game_of(number)) game->windows_user_bytes = bytes;
     for (const auto& [number, version] : runtime->physx_needed)
       if (auto* game = game_of(number)) game->physx_needed = version;
     for (const auto& [number, activity] : runtime->activity)

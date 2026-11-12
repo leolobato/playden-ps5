@@ -32,7 +32,6 @@ struct FileGame {
   bool setting_up = false;    // this game's setup is what's running
   bool cloud = false;         // Cloud sync is on for it
   std::optional<std::int64_t> last_played;
-  std::optional<std::uint64_t> windows_user_bytes;  // all of drive_c/users, measured earlier
   std::optional<std::string> physx_needed;          // needs PhysX: the version, empty when it isn't known
 };
 

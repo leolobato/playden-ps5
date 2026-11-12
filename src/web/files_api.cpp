@@ -107,7 +107,6 @@ std::string GameJson(const FileGame& game) {
                     Field("drive", game.drive) + "," + Field("drive_absent", game.drive_absent) + "," + Field("installed", game.installed) + "," +
                     Field("running", game.running) + "," + Field("setting_up", game.setting_up) + "," + Field("cloud", game.cloud);
   if (game.last_played) out += "," + Signed("last_played", *game.last_played);
-  if (game.windows_user_bytes) out += "," + Number("windows_user_bytes", *game.windows_user_bytes);
   if (game.physx_needed) out += "," + Field("physx_needed", *game.physx_needed);
   return out + "}";
 }

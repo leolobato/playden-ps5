@@ -58,7 +58,6 @@ int main(int argc, char** argv) {
     game.game_folder = gta_folder.string();
     game.game_folder_shown = "/mnt/usb0/playden-games/steam-12210";
     game.drive = "usb";
-    game.windows_user_bytes = 18'000'000;
     game.last_played = 1793700000;
     catalog.games.push_back(game);
     game = {};

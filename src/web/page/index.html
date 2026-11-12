@@ -539,11 +539,11 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const paintHead = () => {
       const column = (label, key, down, kind) => sortHead(label, key, files.sortGames, down, (sort) => { files.sortGames = sort; paintHead(); paint(); }, kind);
       head.replaceChildren(element("tr", {}, column("Game", "name", false), column("Store", "store", false), column("Installed on", "where", false), column("Cloud", "cloud", false),
-        column("Last played", "played", true), column("Windows user folders", "bytes", true, "num")));
+        column("Last played", "played", true)));
     };
     const paint = () => {
       const shown = (files.games.games || []).filter((game) => game.name.toLowerCase().includes(filter));
-      if (files.sortGames) shown.sort(sortBy(files.sortGames, (game, key) => ({ name: game.name, store: storeLabel(game), where: whereLabel(game), cloud: game.cloud ? "Cloud sync" : "No Cloud sync", played: game.last_played, bytes: game.windows_user_bytes })[key], (game) => game.name));
+      if (files.sortGames) shown.sort(sortBy(files.sortGames, (game, key) => ({ name: game.name, store: storeLabel(game), where: whereLabel(game), cloud: game.cloud ? "Cloud sync" : "No Cloud sync", played: game.last_played })[key], (game) => game.name));
       else shown.sort((left, right) => Number(right.running) - Number(left.running) || (right.last_played || 0) - (left.last_played || 0) || left.name.localeCompare(right.name));
       body.replaceChildren(...shown.map((game) => element("tr", {},
         element("td", { class: "entry-name" }, element("a", { href: gameHash(game.id), text: game.name }), ...gameBadges(game),
@@ -551,10 +551,9 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
         element("td", { class: "soft when", text: storeLabel(game) }),
         element("td", { class: "soft when" , text: whereLabel(game) }),
         element("td", { class: "soft when", text: game.cloud ? "Cloud sync" : "No Cloud sync" }),
-        element("td", { class: "soft when", text: game.last_played ? when(game.last_played) : "—" }),
-        element("td", { class: "num soft size", text: game.windows_user_bytes !== undefined ? longSize(game.windows_user_bytes) : "" }))));
+        element("td", { class: "soft when", text: game.last_played ? when(game.last_played) : "—" }))));
       if (!shown.length)
-        body.append(element("tr", {}, element("td", { class: "empty", colspan: "6", text: filter ? "No game has that name." : "No games with files yet." })));
+        body.append(element("tr", {}, element("td", { class: "empty", colspan: "5", text: filter ? "No game has that name." : "No games with files yet." })));
     };
     search.addEventListener("input", () => { filter = search.value.toLowerCase(); paint(); });
     const load = async () => {

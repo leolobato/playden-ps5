@@ -112,7 +112,6 @@ int main() {
     gta.game_folder_shown = "/mnt/usb0/playden/import/Game";
     gta.drive = "usb";
     gta.running = true;
-    gta.windows_user_bytes = 123;
     gta.physx_needed = "2.8.1";
     catalog.games.push_back(gta);
     FileGame kept;
