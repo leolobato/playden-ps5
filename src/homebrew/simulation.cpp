@@ -748,6 +748,13 @@ constexpr const char* kAccountLinkTitle = "Link a Playden account";
 static bool is_account_link_dialog(const ModalEntry& modal) { return modal.id == "confirmation" && modal.title == kAccountLinkTitle; }
 
 // The Game settings summary's lines (summary-*) are text too.
+// Where the Game settings sheet lists a setting: the Online rows go under Compatibility › Steam while online-steam is
+// off, where only Steam features shows, without its Online choice.
+rt::SettingGroup SheetGroup(const rt::SettingDefinition& definition) {
+    return definition.group == rt::SettingGroup::kOnline && !rt::OnlineSteamEnabled() ? rt::SettingGroup::kSteam
+                                                                                      : definition.group;
+}
+
 bool SheetDecoration(const std::string& key) {
     return key.rfind("heading-", 0) == 0 || key == "divider" || key.rfind("summary-", 0) == 0;
 }
@@ -782,7 +789,7 @@ std::string action_label(const std::string& key) {
         {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
-        {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
+        {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
         {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
@@ -7827,7 +7834,7 @@ void Simulation::rebuild_view() {
                 };
                 int count = 0;
                 for (const auto& definition : rt::SettingsCatalogue())
-                    if (inside(definition.group) && game_settings_row_shown(definition, settings_game)) ++count;
+                    if (inside(SheetGroup(definition)) && game_settings_row_shown(definition, settings_game)) ++count;
                 const bool expanded = expanded_settings_sections_.count(action_key) != 0;
                 item.value = expanded ? "Hide" : "Show " + std::to_string(count);
                 // Collapsed, it names the changes inside: the summary's lines can't be selected to go there.
@@ -15244,7 +15251,7 @@ std::vector<std::string> Simulation::game_settings_list_actions() const {
     std::vector<std::string> actions;
     const auto rows = [&](G group) {
         for (const auto& definition : rt::SettingsCatalogue())
-            if (definition.group == group && game_settings_row_shown(definition, game)) actions.push_back("setting-" + definition.id);
+            if (SheetGroup(definition) == group && game_settings_row_shown(definition, game)) actions.push_back("setting-" + definition.id);
     };
     // Rows by topic under headings that only label them; Compatibility and Advanced start collapsed.
     actions.push_back("heading-game");
@@ -15253,6 +15260,11 @@ std::vector<std::string> Simulation::game_settings_list_actions() const {
     if (game.store == Store::kLocal) {
         const auto program = std::find(actions.begin(), actions.end(), "setting-launch_option");
         actions.insert(program == actions.end() ? actions.end() : program + 1, "steam-app-id");
+    }
+    // Online play right after Game, open, so a player finds it.
+    if (rt::OnlineSteamEnabled()) {
+        actions.push_back("heading-online");
+        rows(G::kOnline);
     }
     actions.push_back("heading-display");
     rows(G::kDisplay);
@@ -15305,7 +15317,7 @@ std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId
         // Button mapping and Controller tuning are one row each in the list: one line each here.
         if (definition.id.rfind("button.", 0) == 0) { ++buttons; continue; }
         if (definition.group == rt::SettingGroup::kControllerTuning) { ++tuning; continue; }
-        SettingsSummaryLine line{"summary-" + definition.id, definition.id, definition.label, {}, definition.group};
+        SettingsSummaryLine line{"summary-" + definition.id, definition.id, definition.label, {}, SheetGroup(definition)};
         // A launch option and a program from the game folder are both the Program row.
         if (definition.id == "launch_option" || definition.id == "program") {
             if (program) continue;
@@ -15328,15 +15340,13 @@ std::vector<Simulation::SettingsSummaryLine> Simulation::settings_summary(GameId
         else line.value = choice_label(definition, chosen);
         lines.push_back(std::move(line));
     }
-    // Where the list has them: after the Controls rows, before Sound.
-    auto after_controls = std::find_if(lines.begin(), lines.end(), [](const SettingsSummaryLine& line) {
-        return line.group != rt::SettingGroup::kGame && line.group != rt::SettingGroup::kDisplay &&
-               line.group != rt::SettingGroup::kControls;
+    if (buttons > 0) lines.push_back({"summary-buttons", "", "Button mapping", std::to_string(buttons) + (buttons == 1 ? " button" : " buttons"), rt::SettingGroup::kButtonMapping});
+    if (tuning > 0) lines.push_back({"summary-tuning", "", "Controller tuning", std::to_string(tuning) + " changed", rt::SettingGroup::kControllerTuning});
+    // In the list's order: SettingGroup is the sheet's order (Button mapping and Controller tuning after Controls), and
+    // the catalogue's order within a group.
+    std::stable_sort(lines.begin(), lines.end(), [](const SettingsSummaryLine& left, const SettingsSummaryLine& right) {
+        return left.group < right.group;
     });
-    std::vector<SettingsSummaryLine> controller;
-    if (buttons > 0) controller.push_back({"summary-buttons", "", "Button mapping", std::to_string(buttons) + (buttons == 1 ? " button" : " buttons"), rt::SettingGroup::kButtonMapping});
-    if (tuning > 0) controller.push_back({"summary-tuning", "", "Controller tuning", std::to_string(tuning) + " changed", rt::SettingGroup::kControllerTuning});
-    lines.insert(after_controls, controller.begin(), controller.end());
     return lines;
 }
 

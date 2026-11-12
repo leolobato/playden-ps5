@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
       if (definition.group != SettingGroup::kButtonMapping) ids.push_back(definition.id);
     const std::vector<std::string> expected = {
         "launch_option", "program", "start_through_launcher", "launcher_controller_preset", "extra_arguments",
+        "steam_features", "steam_sign_in", "game_invites",
         "resolution", "refresh", "frame_limit", "framegen", "vsync", "performance_overlay", "overlay_detail", "scaling",
         "window_view",
         "controller", "controller_preset", "touchpad_hold",
@@ -88,7 +89,7 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_features", "steam_sign_in", "game_invites", "steam_network", "steam_input", "windows_version", "text_scale",
+        "steam_network", "steam_input", "windows_version", "text_scale",
         "locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
@@ -98,9 +99,11 @@ int main(int argc, char** argv) {
     CHECK(FindSetting("refresh")->group == SettingGroup::kDisplay &&
           FindSetting("button.cross")->group == SettingGroup::kButtonMapping &&
           FindSetting("rumble")->group == SettingGroup::kControllerTuning);
-    // Compatibility › Steam holds the Steam rows, above Windows; Logging is in Advanced.
-    for (const char* id : {"steam_features", "steam_sign_in", "game_invites", "steam_network", "steam_input"})
-      CHECK(FindSetting(id)->group == SettingGroup::kSteam);
+    // Online play has its own section after Game; Compatibility › Steam keeps the other Steam rows, above Windows;
+    // Logging is in Advanced.
+    for (const char* id : {"steam_features", "steam_sign_in", "game_invites"})
+      CHECK(FindSetting(id)->group == SettingGroup::kOnline);
+    for (const char* id : {"steam_network", "steam_input"}) CHECK(FindSetting(id)->group == SettingGroup::kSteam);
     CHECK(FindSetting("windows_version")->group == SettingGroup::kWindows &&
           FindSetting("logging")->group == SettingGroup::kAdvanced);
   }

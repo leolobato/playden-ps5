@@ -30,8 +30,10 @@ namespace playden::runtime {
 
 // Where the Game settings sheet lists a setting, in sheet order. Button mapping and Controller tuning are submenus of
 // Controls; Compatibility (with its Graphics, Steam and Windows parts) and Advanced start collapsed.
+// In the order the Game settings sheet lists them.
 enum class SettingGroup {
   kGame,
+  kOnline,  // Online play (needs online-steam); without it these rows go under Compatibility › Steam
   kDisplay,
   kControls,
   kButtonMapping,

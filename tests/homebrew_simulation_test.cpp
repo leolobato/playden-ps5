@@ -3103,6 +3103,74 @@ void friends_hidden_without_online_steam(const std::filesystem::path& fixtures, 
           "FR a game page has no Invite friends or Friends playing");
 }
 
+// Online play has its own section, open, right after Game. Without online-steam, Steam features stays under
+// Compatibility › Steam.
+void online_section_in_game_settings(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    rt::GameSettingsRecord record;
+    record.overrides = {{"steam_features", "emulate"}, {"resolution", "2560x1440"}, {"windows_version", "win7"}};
+    const auto settings_file = profile.string() + ".online.settings";
+    std::string reason;
+    check(rt::SaveGameSettingsFile(settings_file, {{SteamId(900001), record}}, &reason), "OS seed the settings");
+    const auto open = [&](playden::homebrew::Simulation& simulation) {
+        load_settings_data(simulation, fixtures);
+        simulation.SetGameSettingsFile(settings_file);
+        simulation.action("details:900001");
+        activate(simulation, "details-more");
+        activate(simulation, "game-settings");
+    };
+    const auto summary = [](playden::homebrew::Simulation& simulation) {
+        std::vector<std::string> lines;
+        for (const auto& key : simulation.state().navigation.modals.back().action_keys)
+            if (key.rfind("summary-", 0) == 0) lines.push_back(key);
+        return lines;
+    };
+    {
+        rt::SetOnlineSteamEnabled(true);
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        open(simulation);
+        check(summary(simulation) == std::vector<std::string>{"summary-steam_features", "summary-resolution",
+                                                              "summary-windows_version"},
+              "OS the summary lists Steam features after Game, as the list does");
+        activate(simulation, "change-settings");
+        const auto& keys = simulation.state().navigation.modals.back().action_keys;
+        const auto at = [&](const char* key) { return std::find(keys.begin(), keys.end(), key) - keys.begin(); };
+        check(at("setting-extra_arguments") + 1 == at("heading-online") &&
+                  at("heading-online") + 1 == at("setting-steam_features") &&
+                  at("setting-steam_features") + 1 == at("setting-steam_sign_in") &&
+                  at("setting-steam_sign_in") + 1 == at("heading-display"),
+              "OS Online sits between Game and Display, open");
+        check(find_row(simulation, "heading-online") && find_row(simulation, "heading-online")->title == "Online",
+              "OS the Online heading is named");
+        check(find_row(simulation, "section-compatibility")->subtitle == "1 changed: Windows version",
+              "OS collapsed Compatibility no longer counts Steam features");
+        activate(simulation, "section-compatibility");
+        const auto& expanded = simulation.state().navigation.modals.back().action_keys;
+        const auto steam = std::find(expanded.begin(), expanded.end(), "heading-steam");
+        check(steam != expanded.end() && *(steam + 1) == "setting-steam_network" &&
+                  std::count(expanded.begin(), expanded.end(), "setting-steam_features") == 1,
+              "OS Compatibility › Steam keeps Steam network and Steam Input only");
+    }
+    {
+        rt::SetOnlineSteamEnabled(false);
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        open(simulation);
+        check(summary(simulation) == std::vector<std::string>{"summary-resolution", "summary-steam_features",
+                                                              "summary-windows_version"},
+              "OS without online-steam the summary lists Steam features under Compatibility");
+        activate(simulation, "change-settings");
+        check(!find_row(simulation, "heading-online"), "OS without online-steam there is no Online section");
+        check(find_row(simulation, "section-compatibility")->subtitle == "2 changed: Steam features, Windows version",
+              "OS without online-steam collapsed Compatibility counts Steam features");
+        activate(simulation, "section-compatibility");
+        const auto& keys = simulation.state().navigation.modals.back().action_keys;
+        const auto steam = std::find(keys.begin(), keys.end(), "heading-steam");
+        check(steam != keys.end() && *(steam + 1) == "setting-steam_features",
+              "OS without online-steam Steam features leads Compatibility › Steam");
+    }
+    std::filesystem::remove(settings_file);
+}
+
 void friends_tab_join_and_invite(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     using playden::homebrew::Route;
     playden::runtime::SetOnlineSteamEnabled(true);
@@ -3343,6 +3411,8 @@ int main(int argc, char** argv) {
     friends_hidden_without_online_steam(fixtures, profile);
     clean();
     friends_tab_join_and_invite(fixtures, profile);
+    clean();
+    online_section_in_game_settings(fixtures, profile);
     clean();
     t15_password_sign_in(fixtures, profile);
     clean();

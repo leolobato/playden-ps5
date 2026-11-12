@@ -89,6 +89,37 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "mouse"));
   list.push_back(Text("extra_arguments", "Extra arguments", "Added after the arguments the game needs.",
                       "", G::kGame));
+  // Online play: its own section after Game, so a player finds it.
+  list.push_back(Choice("steam_features", "Steam features", "What answers the game when it calls Steam.",
+                        "steam_api.dll · steam_api64.dll", G::kOnline,
+                        {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
+                         {"online", "Online (experimental)",
+                          "Runs Steam's own client beside the game, signed in as you. Only for games you trust."},
+                         {"game", "Game's own files", "The game's Steam library, unchanged."}},
+                        "game", 1, ApplyMode::kGameClosed));
+  // Online's handoff (runtime/online_session.h): read once and deleted by default, or kept so that a start from the
+  // PS5 Home screen, without Playden, signs in too.
+  list.push_back(Choice("steam_sign_in", "Steam sign-in",
+                        "When the game gets your Steam sign-in. Kept, it stays on the console while this is on: any "
+                        "program that can read the console's storage can use your Steam account.",
+                        "", G::kOnline,
+                        {{"play", "At each Play", "From Playden only. Started from the Home screen, it is offline."},
+                         {"kept", "Kept for the Home screen", "Online from the Home screen too. Signing out removes it."}},
+                        "play", 1, ApplyMode::kGameClosed));
+  // What the Steam host does with a friend's invite while the game runs, as online-session.txt's invites= says. Ask and
+  // Only show need a title that shows notifications (title-notify); without it both are Off.
+  list.push_back(Choice("game_invites", "Game invites", "What happens when a friend invites you while you play.",
+                        "", G::kOnline,
+                        {{"ask", "Ask with L3 + R3",
+                          "The PS5 shows the invite. Press both sticks in within 15 seconds to join. The game does not "
+                          "see that press."},
+                         {"join", "Join at once", "Every invite is accepted. It can pull you out of a match."},
+                         {"show", "Only show",
+                          "The PS5 shows the invite and the game is not told. Join later from the game page."},
+                         {"off", "Off",
+                          "Invites are ignored: no notification, and the game is not told. Friends can still join a "
+                          "lobby you open."}},
+                        "ask", 1, ApplyMode::kGameClosed));
   // Display.
   list.push_back(Choice("resolution", "Resolution", "Size of the game's screen. Higher is sharper and slower.",
                         "", G::kDisplay,
@@ -262,36 +293,6 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"2048", "2 GB", ""}, {"4096", "4 GB", ""}}, "game", 2));
   // Compatibility › Steam.
-  list.push_back(Choice("steam_features", "Steam features", "What answers the game when it calls Steam.",
-                        "steam_api.dll · steam_api64.dll", G::kSteam,
-                        {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
-                         {"online", "Online (experimental)",
-                          "Runs Steam's own client beside the game, signed in as you. Only for games you trust."},
-                         {"game", "Game's own files", "The game's Steam library, unchanged."}},
-                        "game", 1, ApplyMode::kGameClosed));
-  // Online's handoff (runtime/online_session.h): read once and deleted by default, or kept so that a start from the
-  // PS5 Home screen, without Playden, signs in too.
-  list.push_back(Choice("steam_sign_in", "Steam sign-in",
-                        "When the game gets your Steam sign-in. Kept, it stays on the console while this is on: any "
-                        "program that can read the console's storage can use your Steam account.",
-                        "", G::kSteam,
-                        {{"play", "At each Play", "From Playden only. Started from the Home screen, it is offline."},
-                         {"kept", "Kept for the Home screen", "Online from the Home screen too. Signing out removes it."}},
-                        "play", 1, ApplyMode::kGameClosed));
-  // What the Steam host does with a friend's invite while the game runs, as online-session.txt's invites= says. Ask and
-  // Only show need a title that shows notifications (title-notify); without it both are Off.
-  list.push_back(Choice("game_invites", "Game invites", "What happens when a friend invites you while you play.",
-                        "", G::kSteam,
-                        {{"ask", "Ask with L3 + R3",
-                          "The PS5 shows the invite. Press both sticks in within 15 seconds to join. The game does not "
-                          "see that press."},
-                         {"join", "Join at once", "Every invite is accepted. It can pull you out of a match."},
-                         {"show", "Only show",
-                          "The PS5 shows the invite and the game is not told. Join later from the game page."},
-                         {"off", "Off",
-                          "Invites are ignored: no notification, and the game is not told. Friends can still join a "
-                          "lobby you open."}},
-                        "ask", 1, ApplyMode::kGameClosed));
   // Online by default, as GameNative ships gbe_fork: games that check BLoggedOn() ("Steam is offline") get to their
   // online menus. Offline is for a game that waits on the network when it is told Steam is online.
   list.push_back(Choice("steam_network", "Steam network", "Whether the game is told Steam is online.",
