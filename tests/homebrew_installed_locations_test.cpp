@@ -177,8 +177,9 @@ void ExternalGameRegistersAfterRestartWithoutCloud() {
   }
   fixture.registered = true;  // Playden quit, and ShadowMountPlus registered the title
 
+  // steam_cloud: also wait for the startup Cloud check of the Steam game, which runs on the Cloud worker in its own time.
   const auto run = [&](bool signed_in, bool with_location, const std::function<bool(const RuntimeSnapshot&, hb::Simulation&)>& done,
-                       std::chrono::milliseconds at_least) {
+                       std::chrono::milliseconds at_least, bool steam_cloud = false) {
     hb::Simulation model({}, {}, hb::ModelMode::Live);
     MemorySessions sessions;
     if (signed_in) sessions.value = playden::StoredSession{12345, "Synthetic account", "refresh", "access", {}};
@@ -207,7 +208,9 @@ void ExternalGameRegistersAfterRestartWithoutCloud() {
     for (;;) {
       controller.Tick();
       const auto snapshot = host.Snapshot();
-      if (done(snapshot, model) && std::chrono::steady_clock::now() - started >= at_least) break;
+      if (done(snapshot, model) && std::chrono::steady_clock::now() - started >= at_least &&
+          (!steam_cloud || cloud_runner.Saw(GameId::Steam(220))))
+        break;
       CHECK(std::chrono::steady_clock::now() < deadline);
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -243,7 +246,7 @@ void ExternalGameRegistersAfterRestartWithoutCloud() {
   CHECK(run(true, true, [&](const RuntimeSnapshot& s, hb::Simulation& model) {
     const auto game = model.state().runtime_games.find(local);
     return ready(s) && game != model.state().runtime_games.end() && game->second.ready;
-  }, std::chrono::milliseconds(0)));
+  }, std::chrono::milliseconds(0), true));
   // Signed out, a preparation the player asks for ends without Cloud too.
   bool asked = false;
   run(false, true, [&](const RuntimeSnapshot& s, hb::Simulation& model) {
