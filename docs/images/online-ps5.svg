@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 652 742" width="652" height="742" role="img" aria-label="Playden writes a sign-in file into the game's Windows environment and downloads Valve's Steam client files. The game's title runs Wine with its Wine server inside the title's process, plus a helper process that runs Wine without graphics on the same Wine server. The helper runs Playden's Steam host and Valve's Steam client. The game reaches the Steam client through the shared Wine server. Only the helper signs in to Valve; the game talks to game servers and relays directly.">
+<title>Playden writes a sign-in file into the game's Windows environment and downloads Valve's Steam client files. The game's title runs Wine with its Wine server inside the title's process, plus a helper process that runs Wine without graphics on the same Wine server. The helper runs Playden's Steam host and Valve's Steam client. The game reaches the Steam client through the shared Wine server. Only the helper signs in to Valve; the game talks to game servers and relays directly.</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#f3efe9}.t{font-size:14px;font-weight:600}.s{font-size:12px;fill:#a8a29e}.h{font-size:16px;font-weight:600}.plain{fill:#24211e;stroke:rgba(243,239,233,.2);stroke-width:1.2}.chip{fill:#2a2623;stroke:rgba(243,239,233,.2);stroke-width:1}.off{fill:none;stroke:#6b655f;stroke-width:1.2;stroke-dasharray:5 4}.ln{stroke:#a8a29e;stroke-width:1.6;fill:none}.dash{stroke-dasharray:5 4}.ah{fill:#a8a29e}.badge{fill:#f3efe9}.badge-t{fill:#0e0d0c;font-size:11px;font-weight:600}.card{fill:#16140f;stroke:rgba(243,239,233,.12)}.rule{stroke:rgba(243,239,233,.12)}.lg{font-size:12.5px;fill:#a8a29e}.valve{fill:#24292b;stroke:#7aa7d9;stroke-width:1.5}.playden{fill:#312a20;stroke:#d9b38c;stroke-width:1.5}.wine{fill:#2d282d;stroke:#b9a3e3;stroke-width:1.5}.sys{fill:#2a2823;stroke:#a8a29e;stroke-width:1.5}.net{fill:#222c26;stroke:#6fc2b0;stroke-width:1.5}.emu{fill:#2f2c22;stroke:#c9bd94;stroke-width:1.5}</style>
+<rect x="0.5" y="0.5" width="651" height="741" rx="8" class="card"/>
+<g transform="translate(16 16)">
+<defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="ah"/></marker></defs>
+<rect x="20" y="14" width="580" height="62" rx="8" class="playden"/>
+<text x="38" y="40" class="t">Playden</text>
+<text x="38" y="61" class="s">signs in to Steam (Library, Downloads) and keeps your Steam sign-in</text>
+<line x1="110" y1="76" x2="110" y2="110" class="ln" marker-end="url(#a3)"/>
+<text x="120" y="98" class="s">sign-in file, each Play</text>
+<line x1="510" y1="76" x2="510" y2="110" class="ln" marker-end="url(#a3)"/>
+<text x="500" y="98" text-anchor="end" class="s">from Valve, when it changes</text>
+<rect x="20" y="112" width="285" height="64" rx="8" class="sys"/>
+<text x="36" y="137" class="t">The game's Windows environment</text>
+<text x="36" y="158" class="s">sign-in file, read once and deleted</text>
+<rect x="315" y="112" width="285" height="64" rx="8" class="sys"/>
+<text x="331" y="137" class="t">Valve's Steam client files</text>
+<text x="331" y="158" class="s">Valve's current build, checked</text>
+<rect x="20" y="198" width="580" height="330" rx="8" class="sys"/>
+<text x="36" y="224" class="h">The game's PS5 title (one per game)</text>
+<rect x="34" y="238" width="272" height="276" rx="8" class="plain"/>
+<text x="50" y="260" class="t">Title process</text>
+<rect x="48" y="272" width="244" height="52" rx="6" class="sys"/>
+<text x="62" y="294" class="t">Title shell (native)</text>
+<text x="62" y="313" class="s">starts Wine, the helper, video</text>
+<rect x="48" y="332" width="244" height="52" rx="6" class="wine"/>
+<text x="62" y="354" class="t">Wine + Wine server</text>
+<text x="62" y="373" class="s">the server runs in this process</text>
+<rect x="48" y="392" width="244" height="112" rx="6" class="valve"/>
+<text x="62" y="414" class="t">The game + its Steam API</text>
+<text x="62" y="433" class="s">game files unchanged</text>
+<rect x="314" y="238" width="272" height="276" rx="8" class="plain"/>
+<text x="330" y="260" class="t">Helper process</text>
+<rect x="328" y="272" width="244" height="52" rx="6" class="sys"/>
+<text x="342" y="294" class="t">Started by the title</text>
+<text x="342" y="313" class="s">loads its own network module</text>
+<rect x="328" y="332" width="244" height="52" rx="6" class="wine"/>
+<text x="342" y="354" class="t">Wine, without graphics</text>
+<text x="342" y="373" class="s">uses the title's Wine server</text>
+<rect x="328" y="392" width="244" height="52" rx="6" class="playden"/>
+<text x="342" y="414" class="t">Playden's Steam host</text>
+<text x="342" y="433" class="s">starts the Steam client, signs it in</text>
+<rect x="328" y="452" width="244" height="52" rx="6" class="valve"/>
+<text x="342" y="474" class="t">Valve's Steam client</text>
+<text x="342" y="493" class="s">the one the game talks to</text>
+<line x1="292" y1="358" x2="328" y2="358" class="ln" marker-end="url(#a3)" marker-start="url(#a3)"/>
+<circle cx="310" cy="342" r="9" class="badge"/><text x="310" y="346" text-anchor="middle" class="badge-t">1</text>
+<line x1="292" y1="478" x2="328" y2="478" class="ln" marker-end="url(#a3)" marker-start="url(#a3)"/>
+<circle cx="310" cy="462" r="9" class="badge"/><text x="310" y="466" text-anchor="middle" class="badge-t">2</text>
+<line x1="170" y1="504" x2="170" y2="592" class="ln" marker-end="url(#a3)" marker-start="url(#a3)"/>
+<text x="180" y="560" class="s">game traffic</text>
+<line x1="450" y1="504" x2="450" y2="592" class="ln" marker-end="url(#a3)" marker-start="url(#a3)"/>
+<text x="460" y="560" class="s">Steam sign-in</text>
+<rect x="20" y="594" width="285" height="62" rx="8" class="net"/>
+<text x="36" y="619" class="t">Game servers, relays, players</text>
+<text x="36" y="640" class="s">straight from the game's process</text>
+<rect x="315" y="594" width="285" height="62" rx="8" class="net"/>
+<text x="331" y="619" class="t">Valve's Steam servers</text>
+<text x="331" y="640" class="s">tickets, friends, lobbies, coordinators</text>
+</g>
+<line x1="16" y1="698" x2="636" y2="698" class="rule"/>
+<rect x="20" y="711" width="14" height="14" rx="3" class="playden"/><text x="40" y="722" class="lg">Playden's code</text>
+<rect x="159" y="711" width="14" height="14" rx="3" class="valve"/><text x="179" y="722" class="lg">Valve's code</text>
+<rect x="284" y="711" width="14" height="14" rx="3" class="wine"/><text x="304" y="722" class="lg">Wine</text>
+<rect x="354" y="711" width="14" height="14" rx="3" class="sys"/><text x="374" y="722" class="lg">PS5 and storage</text>
+<rect x="500" y="711" width="14" height="14" rx="3" class="net"/><text x="520" y="722" class="lg">Internet</text>
+</svg>

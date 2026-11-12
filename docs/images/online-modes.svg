@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 592 424" width="592" height="424" role="img" aria-label="Two modes side by side. Offline emulation: an emulator replaces the game's Steam API and never reaches Valve. Online: the game keeps its own Steam API and talks to Valve's Steam client, which reaches all of Steam.">
+<title>Two modes side by side. Offline emulation: an emulator replaces the game's Steam API and never reaches Valve. Online: the game keeps its own Steam API and talks to Valve's Steam client, which reaches all of Steam.</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#f3efe9}.t{font-size:14px;font-weight:600}.s{font-size:12px;fill:#a8a29e}.h{font-size:16px;font-weight:600}.plain{fill:#24211e;stroke:rgba(243,239,233,.2);stroke-width:1.2}.chip{fill:#2a2623;stroke:rgba(243,239,233,.2);stroke-width:1}.off{fill:none;stroke:#6b655f;stroke-width:1.2;stroke-dasharray:5 4}.ln{stroke:#a8a29e;stroke-width:1.6;fill:none}.dash{stroke-dasharray:5 4}.ah{fill:#a8a29e}.badge{fill:#f3efe9}.badge-t{fill:#0e0d0c;font-size:11px;font-weight:600}.card{fill:#16140f;stroke:rgba(243,239,233,.12)}.rule{stroke:rgba(243,239,233,.12)}.lg{font-size:12.5px;fill:#a8a29e}.valve{fill:#24292b;stroke:#7aa7d9;stroke-width:1.5}.playden{fill:#312a20;stroke:#d9b38c;stroke-width:1.5}.wine{fill:#2d282d;stroke:#b9a3e3;stroke-width:1.5}.sys{fill:#2a2823;stroke:#a8a29e;stroke-width:1.5}.net{fill:#222c26;stroke:#6fc2b0;stroke-width:1.5}.emu{fill:#2f2c22;stroke:#c9bd94;stroke-width:1.5}</style>
+<rect x="0.5" y="0.5" width="591" height="423" rx="8" class="card"/>
+<g transform="translate(16 16)">
+<defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="ah"/></marker></defs>
+<text x="140" y="22" text-anchor="middle" class="h">Offline emulation</text>
+<text x="140" y="40" text-anchor="middle" class="s">the default</text>
+<rect x="20" y="52" width="240" height="98" rx="8" class="plain"/>
+<text x="36" y="74" class="t">The game</text>
+<rect x="32" y="86" width="216" height="52" rx="6" class="emu"/>
+<text x="140" y="107" text-anchor="middle" class="t">Emulator</text>
+<text x="140" y="125" text-anchor="middle" class="s">in place of its Steam API</text>
+<line x1="140" y1="150" x2="140" y2="192" class="ln dash" marker-end="url(#a2)"/>
+<rect x="20" y="194" width="240" height="52" rx="8" class="off"/>
+<text x="140" y="215" text-anchor="middle" class="s">other emulators on</text>
+<text x="140" y="232" text-anchor="middle" class="s">the same network only</text>
+<rect x="20" y="282" width="240" height="56" rx="8" class="off"/>
+<text x="140" y="305" text-anchor="middle" class="t">Valve's servers</text>
+<text x="140" y="324" text-anchor="middle" class="s">never reached</text>
+
+<text x="420" y="22" text-anchor="middle" class="h">Online</text>
+<text x="420" y="40" text-anchor="middle" class="s">experimental, per game</text>
+<rect x="300" y="52" width="240" height="98" rx="8" class="plain"/>
+<text x="316" y="74" class="t">The game</text>
+<rect x="312" y="86" width="216" height="52" rx="6" class="valve"/>
+<text x="420" y="107" text-anchor="middle" class="t">Its own Steam API</text>
+<text x="420" y="125" text-anchor="middle" class="s">unchanged</text>
+<line x1="420" y1="150" x2="420" y2="194" class="ln" marker-end="url(#a2)" marker-start="url(#a2)"/>
+<text x="430" y="177" class="s">on the console</text>
+<rect x="300" y="196" width="240" height="56" rx="8" class="valve"/>
+<text x="420" y="219" text-anchor="middle" class="t">Valve's Steam client</text>
+<text x="420" y="238" text-anchor="middle" class="s">next to the game</text>
+<line x1="420" y1="252" x2="420" y2="280" class="ln" marker-end="url(#a2)" marker-start="url(#a2)"/>
+<rect x="300" y="282" width="240" height="56" rx="8" class="net"/>
+<text x="420" y="305" text-anchor="middle" class="t">Valve's servers</text>
+<text x="420" y="324" text-anchor="middle" class="s">everything Steam offers</text>
+</g>
+<line x1="16" y1="380" x2="576" y2="380" class="rule"/>
+<rect x="20" y="393" width="14" height="14" rx="3" class="emu"/><text x="40" y="404" class="lg">Emulator</text>
+<rect x="117" y="393" width="14" height="14" rx="3" class="valve"/><text x="137" y="404" class="lg">Valve's code</text>
+<rect x="242" y="393" width="14" height="14" rx="3" class="net"/><text x="262" y="404" class="lg">Valve's servers</text>
+</svg>

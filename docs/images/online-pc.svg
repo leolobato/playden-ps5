@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 592 456" width="592" height="456" role="img" aria-label="On a PC, the game's Steam API talks to the Steam client on the same machine, and the Steam client talks to Valve's servers over the internet">
+<title>On a PC, the game's Steam API talks to the Steam client on the same machine, and the Steam client talks to Valve's servers over the internet</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#f3efe9}.t{font-size:14px;font-weight:600}.s{font-size:12px;fill:#a8a29e}.h{font-size:16px;font-weight:600}.plain{fill:#24211e;stroke:rgba(243,239,233,.2);stroke-width:1.2}.chip{fill:#2a2623;stroke:rgba(243,239,233,.2);stroke-width:1}.off{fill:none;stroke:#6b655f;stroke-width:1.2;stroke-dasharray:5 4}.ln{stroke:#a8a29e;stroke-width:1.6;fill:none}.dash{stroke-dasharray:5 4}.ah{fill:#a8a29e}.badge{fill:#f3efe9}.badge-t{fill:#0e0d0c;font-size:11px;font-weight:600}.card{fill:#16140f;stroke:rgba(243,239,233,.12)}.rule{stroke:rgba(243,239,233,.12)}.lg{font-size:12.5px;fill:#a8a29e}.valve{fill:#24292b;stroke:#7aa7d9;stroke-width:1.5}.playden{fill:#312a20;stroke:#d9b38c;stroke-width:1.5}.wine{fill:#2d282d;stroke:#b9a3e3;stroke-width:1.5}.sys{fill:#2a2823;stroke:#a8a29e;stroke-width:1.5}.net{fill:#222c26;stroke:#6fc2b0;stroke-width:1.5}.emu{fill:#2f2c22;stroke:#c9bd94;stroke-width:1.5}</style>
+<rect x="0.5" y="0.5" width="591" height="455" rx="8" class="card"/>
+<g transform="translate(16 16)">
+<defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="ah"/></marker></defs>
+<rect x="40" y="14" width="480" height="98" rx="8" class="plain"/>
+<text x="58" y="40" class="t">The game</text>
+<rect x="58" y="52" width="444" height="46" rx="6" class="valve"/>
+<text x="280" y="74" text-anchor="middle" class="t">Steam API</text>
+<text x="280" y="91" text-anchor="middle" class="s">a small file each game ships with</text>
+<line x1="280" y1="112" x2="280" y2="156" class="ln" marker-end="url(#a1)" marker-start="url(#a1)"/>
+<text x="292" y="139" class="s">on the same machine</text>
+<rect x="40" y="158" width="480" height="66" rx="8" class="valve"/>
+<text x="58" y="184" class="t">Steam client</text>
+<text x="58" y="206" class="s">signed in as you; does all the real work</text>
+<line x1="280" y1="224" x2="280" y2="266" class="ln" marker-end="url(#a1)" marker-start="url(#a1)"/>
+<text x="292" y="250" class="s">internet, encrypted</text>
+<rect x="40" y="268" width="480" height="104" rx="8" class="net"/>
+<text x="58" y="292" class="t">Valve's servers</text>
+<rect x="58" y="304" width="70" height="26" rx="4" class="chip"/><text x="93" y="321" text-anchor="middle" class="s">sign-in</text>
+<rect x="136" y="304" width="70" height="26" rx="4" class="chip"/><text x="171" y="321" text-anchor="middle" class="s">tickets</text>
+<rect x="214" y="304" width="128" height="26" rx="4" class="chip"/><text x="278" y="321" text-anchor="middle" class="s">friends, lobbies</text>
+<rect x="350" y="304" width="152" height="26" rx="4" class="chip"/><text x="426" y="321" text-anchor="middle" class="s">relays</text>
+<rect x="58" y="336" width="168" height="26" rx="4" class="chip"/><text x="142" y="353" text-anchor="middle" class="s">game coordinators</text>
+<rect x="234" y="336" width="108" height="26" rx="4" class="chip"/><text x="288" y="353" text-anchor="middle" class="s">cloud saves</text>
+<rect x="350" y="336" width="152" height="26" rx="4" class="chip"/><text x="426" y="353" text-anchor="middle" class="s">anti-cheat (VAC)</text>
+</g>
+<line x1="16" y1="412" x2="576" y2="412" class="rule"/>
+<rect x="20" y="425" width="14" height="14" rx="3" class="valve"/><text x="40" y="436" class="lg">Valve's code</text>
+<rect x="145" y="425" width="14" height="14" rx="3" class="net"/><text x="165" y="436" class="lg">Internet services</text>
+<rect x="304" y="425" width="14" height="14" rx="3" class="plain"/><text x="324" y="436" class="lg">The game</text>
+</svg>
