@@ -517,7 +517,8 @@ bool IsGeneratedRecipeId(std::string_view id);
 // changed is kept apart from the recipe, so it still wins. False when nothing changed, also when the program can't be
 // read now (a drive not plugged in): the next Play tries again. A 32-bit recipe set up before Watcom programs got
 // Translator takes only that default when its program is one (WatcomProgram). A recipe whose first program is a
-// Unity bootstrap beside the player (UnityGameProgram) starts the player instead.
+// Unity bootstrap beside the player (UnityGameProgram) starts the player instead. One whose first program is Steam's and
+// now only starts the game is made again, as a new setup makes it, when that finds the game's own program.
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
 // A community recipe (docs/community-recipes.md): community-<store>-<key>-<slug>, or community-<store>-<key> as Export
 // as recipe writes it before the author picks a slug (CommunityRecipeRefusals refuses that form). Only the shape is

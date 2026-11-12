@@ -254,10 +254,14 @@ void AddImports(const PeFacts& facts, std::set<std::string>* apis) {
 }
 
 // Engines known only by a name inside the program: SIL (FTL) reads SIL_WINDOWS_* settings.
-// An XNA game names the framework among its .NET assembly references; Wine Mono runs it on FNA, which draws
-// through SDL and OpenGL (Celeste).
+// An XNA game names XNA's game or graphics parts: the Microsoft.Xna.Framework.Game assembly, the
+// Microsoft.Xna.Framework.Graphics namespace or GraphicsDeviceManager (FEZ, built on FNA, names the last two). Wine
+// Mono runs it on FNA, which draws through SDL and OpenGL (Celeste). The framework's name alone is not a game:
+// Borderlands 2's 2K launcher reads the pad through Microsoft.Xna.Framework.Input and draws nothing with XNA.
 constexpr std::pair<const char*, const char*> kEngineMarks[] = {{"sil_windows_use_", "sil"},
-                                                                {"microsoft.xna.framework", "xna"}};
+                                                                {"microsoft.xna.framework.game", "xna"},
+                                                                {"microsoft.xna.framework.graphics", "xna"},
+                                                                {"graphicsdevicemanager", "xna"}};
 
 // An installer the game ships beside Unreal's Engine folder (VC_redist.x64.exe) is not the game.
 constexpr const char* kInstallerWords[] = {"redist", "dxsetup", "uninst", "prereq"};
@@ -702,6 +706,7 @@ bool WatcomProgram(const std::string& path) {
 int DefaultsRevision(std::string_view engine) {
   engine = engine.substr(0, engine.find_first_of(", "));
   if (engine == "nwjs") return 2;  // 1: low-end device mode and a larger V8 heap. 2: low-end device mode gone
+  if (engine == "xna") return 1;   // 1: XNA's name alone no longer makes a .NET launcher the game (Borderlands 2)
   return 0;
 }
 

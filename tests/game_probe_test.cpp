@@ -404,6 +404,16 @@ int main() {
     mono.wine_mono = true;
     const auto xna = DefaultsFor(ProbeGame(root.string(), "Celeste.exe"), mono);
     CHECK(xna.refusal.empty() && xna.graphics == "opengl" && DetectedLabel(xna.summary) == "XNA \xC2\xB7 OpenGL");
+    // FNA builds have no Microsoft.Xna.Framework.Game assembly; FEZ.exe names the graphics namespace and
+    // GraphicsDeviceManager.
+    WritePe(root / "FEZ.exe", {false, {"mscoree.dll"}, true, false,
+                               "Microsoft.Xna.Framework Microsoft.Xna.Framework.Graphics GraphicsDeviceManager"});
+    CHECK(ProbeGame(root.string(), "FEZ.exe").engine == "xna");
+    // The framework's name alone is not an XNA game: Borderlands 2's 2K launcher reads the pad through XNA's input.
+    WritePe(root / "Launcher.exe",
+            {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework Microsoft.Xna.Framework.Input"});
+    const auto launcher = ProbeGame(root.string(), "Launcher.exe");
+    CHECK(launcher.dotnet && launcher.engine.empty());
   }
   {  // LÖVE (Balatro): OpenGL, found through love.dll beside the program.
     const auto root = fresh();
@@ -1015,6 +1025,78 @@ int main() {
       CHECK(GenerateGameRecipe(241720, "Guncraft", {{"", "", "Guncraft.exe", "", ""}}, guncraft.string(), &recipe,
                                &reason, mono, {}, nullptr, &none));
       CHECK(none.steam_default.empty() && !ProgramInsteadOfSteamDefault(recipe, nullptr));
+    }
+    {  // Borderlands 2: Steam's only program is the 2K launcher, a .NET program that uses XNA for the pad and nothing
+       // else. It is a launcher: the game's own program starts, on DXVK, not the launcher on OpenGL.
+      const auto bl2 = fresh();
+      WritePe(bl2 / "Binaries/Win32/Launcher.exe",
+              {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework Microsoft.Xna.Framework.Input"});
+      WritePe(bl2 / "Binaries/Win32/Microsoft.Xna.Framework.dll", {false, {"mscoree.dll"}, true});
+      WritePe(bl2 / "Binaries/Win32/Borderlands2.exe", {false, {"KERNEL32.dll", "d3d9.dll"}, false, false, "", 0x40000});
+      KitCapabilities mono;
+      mono.wine_mono = true;
+      GameRecipeDiagnostics swap;
+      CHECK(GenerateGameRecipe(49520, "Borderlands 2", {{"", "", "Binaries/Win32/Launcher.exe", "", ""}}, bl2.string(),
+                               &recipe, &reason, mono, {}, nullptr, &swap));
+      CHECK(recipe.launch_entries.size() == 2 && recipe.launch_entries[0].executable == "Binaries/Win32/Borderlands2.exe" &&
+            recipe.launch_entries[0].id == "game" && recipe.launch_entries[1].executable == "Binaries/Win32/Launcher.exe");
+      CHECK(recipe.graphics == "dxvk" && recipe.architecture == "pe32");
+      CHECK(swap.steam_default_skipped_because == "dotnet-launcher" &&
+            swap.game_instead == "Binaries/Win32/Borderlands2.exe");
+
+      // A copy set up while the launcher counted as an XNA game starts the launcher on OpenGL. Its recipe is made
+      // again at the next Play, as this setup made it.
+      auto old = recipe;
+      old.launch_entries = {recipe.launch_entries[1]};
+      old.launch_entries[0].id = "launch-1";
+      old.graphics = "opengl";
+      old.arguments.clear();
+      old.detected = "xna graphics=opengl";
+      old.defaults_revision = 0;
+      CHECK(DefaultsRevision("xna") == 1);
+      CHECK(RefreshRecipeDefaults(bl2.string(), mono, &old));
+      CHECK(old.id == recipe.id && old.launch_entries.size() == 2 &&
+            old.launch_entries[0].executable == "Binaries/Win32/Borderlands2.exe" && old.launch_entries[0].id == "game" &&
+            old.launch_entries[1].executable == "Binaries/Win32/Launcher.exe" && old.graphics == "dxvk" &&
+            old.detected == recipe.detected);
+      CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &old));
+      // Steam's entries keep their ids (a saved choice names them) and folders; the game's program goes before them.
+      auto numbered = old;
+      numbered.launch_entries = {recipe.launch_entries[1], recipe.launch_entries[1]};
+      numbered.launch_entries[0].id = "launch-1";
+      numbered.launch_entries[0].in_install_root = false;
+      numbered.launch_entries[1].id = "launch-3";
+      numbered.launch_entries[1].arguments = "-safe";
+      numbered.launch_entries[1].working_directory = "Binaries";
+      numbered.graphics = "opengl";
+      numbered.detected = "xna graphics=opengl";
+      numbered.defaults_revision = 0;
+      CHECK(RefreshRecipeDefaults(bl2.string(), mono, &numbered));
+      CHECK(numbered.launch_entries.size() == 3 && numbered.launch_entries[0].id == "game" &&
+            numbered.launch_entries[1].id == "launch-1" && !numbered.launch_entries[1].in_install_root &&
+            numbered.launch_entries[2].id == "launch-3" && numbered.launch_entries[2].arguments == "-safe" &&
+            numbered.launch_entries[2].working_directory == "Binaries" && numbered.graphics == "dxvk");
+      // A program the player chose is kept with what it was set up with, and isn't read again at each Play.
+      auto chosen = recipe;
+      chosen.launch_entries = {recipe.launch_entries[1]};
+      chosen.launch_entries[0].id = kProgramEntryId;
+      chosen.graphics = "opengl";
+      chosen.detected = "xna graphics=opengl";
+      chosen.defaults_revision = 0;
+      CHECK(RefreshRecipeDefaults(bl2.string(), mono, &chosen));
+      CHECK(chosen.launch_entries.size() == 1 && chosen.launch_entries[0].executable == "Binaries/Win32/Launcher.exe" &&
+            chosen.graphics == "opengl" && chosen.detected == "xna graphics=opengl" && chosen.defaults_revision == 1);
+      CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &chosen));
+      // An XNA game set up before keeps its program and takes the new revision once.
+      WritePe(bl2 / "Celeste.exe", {false, {"mscoree.dll"}, true, false, "Microsoft.Xna.Framework.Game"});
+      CHECK(GenerateGameRecipe(504230, "Celeste", {{"", "", "Celeste.exe", "", ""}}, bl2.string(), &recipe, &reason, mono));
+      CHECK(recipe.defaults_revision == 1);
+      auto celeste = recipe;
+      celeste.defaults_revision = 0;
+      CHECK(RefreshRecipeDefaults(bl2.string(), mono, &celeste));
+      CHECK(celeste.launch_entries.size() == 1 && celeste.launch_entries[0].executable == "Celeste.exe" &&
+            celeste.graphics == "opengl" && celeste.defaults_revision == 1);
+      CHECK(!RefreshRecipeDefaults(bl2.string(), mono, &celeste));
     }
     // A program that draws, or the player's choice, is started as listed.
     CHECK(GenerateGameRecipe(1, "Game", {{"", "", "Tools/Viewer.exe", "", ""}}, root.string(), &recipe, &reason));

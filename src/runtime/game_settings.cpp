@@ -2765,12 +2765,41 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   const bool current = recipe->defaults_revision >= DefaultsRevision(recipe->detected);
   if (current && !MayNeedWatcomTranslator(*recipe)) return moved;
   if (current) return AddWatcomTranslator(install_root, *on_disk, recipe) || moved;
+  const auto probe = ProbeGame(install_root, *on_disk);
+  // Steam's program now only starts the game (a .NET launcher once taken for an XNA game: Borderlands 2's 2K launcher):
+  // the game's own program goes first, found and set up as a new setup finds it. Steam's entries stay as they were,
+  // after it: their ids may be the player's saved choice, and their folders are as the setup made them.
+  if (recipe->launch_entries.front().id.rfind("launch-", 0) == 0 && !WhyStartsTheGameOnly(*on_disk, probe).empty()) {
+    std::vector<LaunchEntry> steam;
+    for (const auto& entry : recipe->launch_entries)
+      if (entry.id.rfind("launch-", 0) == 0) steam.push_back(entry);
+    GameRecipe remade;
+    std::string why;
+    const auto kept = [&] {
+      return static_cast<std::size_t>(std::count_if(remade.launch_entries.begin(), remade.launch_entries.end(),
+                                                    [](const LaunchEntry& entry) {
+                                                      return entry.id.rfind("launch-", 0) == 0;
+                                                    }));
+    };
+    if (steam.size() == recipe->launch_entries.size() &&
+        GenerateGameRecipe(RecipeGame(*recipe), recipe->app_id, recipe->name, steam, install_root, &remade, &why, kit) &&
+        remade.id == recipe->id && remade.launch_entries.front().id == "game" && kept() == steam.size()) {
+      auto healed = remade;
+      healed.launch_entries.resize(1);
+      healed.launch_entries.insert(healed.launch_entries.end(), steam.begin(), steam.end());
+      GameRecipe checked;
+      if (ParseGameRecipe(SerializeGameRecipe(healed), &checked, &why)) {
+        *recipe = std::move(checked);
+        return true;
+      }
+    }
+  }
   RuntimeAbilities abilities;
   abilities.shared_sections = kit.shared_sections;
   abilities.wine_mono = kit.wine_mono;
   abilities.vkd3d_proton = kit.vkd3d_proton;
   abilities.driver_threads = kit.driver_threads;
-  const auto defaults = DefaultsFor(ProbeGame(install_root, *on_disk), abilities);
+  const auto defaults = DefaultsFor(probe, abilities);
   auto refreshed = *recipe;
   refreshed.graphics = defaults.graphics;
   refreshed.arguments = defaults.arguments;
@@ -2784,7 +2813,14 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   if (defaults.cpu.empty()) refreshed.defaults.erase("cpu");
   else refreshed.defaults["cpu"] = defaults.cpu;
   // The files no longer show this engine (an update changed it): that's for the files-changed path, not this one.
-  if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) return moved;
+  if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) {
+    // XNA's marks narrowed (DefaultsRevision 1): a program that no longer counts as XNA and has no game to start in
+    // its place (one the player chose) keeps what it was set up with, and isn't read again at each Play.
+    const auto engine = std::string_view(recipe->detected).substr(0, recipe->detected.find_first_of(", "));
+    if (engine != "xna") return moved;
+    recipe->defaults_revision = DefaultsRevision(recipe->detected);
+    return true;
+  }
   *recipe = std::move(refreshed);
   return true;
 }
