@@ -1853,6 +1853,72 @@ void web_import(const std::filesystem::path& base) {
     check(imports.Import("steam-274520", file).status == 503, "closed: imports answer 503");
 }
 
+// An imported game without a Steam app ID has no community recipes of its own, yet a recipe file sent from its page is
+// used: the choice names the game the recipe is for, as when the player picks another game's recipe in the chooser.
+// A recipe it exported itself (imported/<name key>) finds it from the games list.
+void web_import_without_app_id(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const auto root = base / "community-recipes";
+    const std::string file =
+        read_text(std::filesystem::path(PLAYDEN_COMMUNITY_FIXTURES) / "hostile/export-no-slug-no-title.json");
+    check(!file.empty(), "the export fixture reads");
+
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    model.SetCommunityRecipesEnabled(false);
+    set_up(model, base, false);
+    const auto imported_game = GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    playden::GameSummary gloomwood;
+    gloomwood.id = imported_game;
+    gloomwood.title = "Gloomwood";
+    check(model.UpdateLibrary({{gloomwood}, false, {}, false, true, 101, playden::Store::kLocal}), "an imported game joins");
+    model.UpdateInstalls({}, {{kGame, 1024, "internal", true}, {imported_game, 1024, "internal", true}});
+    std::vector<playden::homebrew::LiveRuntimeGame> runtimes;
+    for (const auto& id : {kGame, imported_game}) {
+        playden::homebrew::LiveRuntimeGame runtime;
+        runtime.game_id = id;
+        runtime.status = "Ready";
+        runtime.prepared = runtime.has_title = runtime.ready = true;
+        runtime.launch_entry_id = "game";
+        runtime.activity = playden::homebrew::TitleActivity::Stopped;
+        runtimes.push_back(runtime);
+    }
+    model.UpdateRuntime(RuntimeState::Ready, runtimes);
+    model.SetCommunityRecipeLoader(playden::homebrew::CommunityRecipeCacheLoader(std::make_shared<cm::RecipeStore>(root)));
+    const auto kept = [&](const std::string& bytes) {
+        const auto prepared = cm::PrepareImportedRecipe(bytes, nullptr);
+        check(prepared.has_value(), "the recipe prepares");
+        cm::RecipeStore writer(root);
+        std::string error;
+        check(writer.Prepare(&error) && writer.WriteObjects({prepared->bytes}, &error), "and is kept");
+        return cm::Sha256Hex(prepared->bytes);
+    };
+
+    // Darkwood's recipe, sent from the imported game's page: used, and the choice names Darkwood.
+    const auto darkwood_revision = kept(file);
+    const auto answer = model.ImportRecipe(imported_game, darkwood_revision);
+    check(answer.first == 200 && contains(answer.second, "Gloomwood now uses this recipe"), "the imported game takes it");
+    const auto choice = model.RecipeBaseFor(imported_game);
+    check(choice && choice->revision == darkwood_revision && choice->game == kGameRef, "its choice names the recipe's game");
+    check(model.RecipeFallbackFor(imported_game).empty(), "and the game runs with it");
+    check(model.ImportRecipe(imported_game, darkwood_revision).first == 200, "the same file again is fine");
+
+    // A recipe the imported game exported (imported/gloomwood): the games list finds it.
+    std::string own = file;
+    const auto swap = [&own](const std::string& from, const std::string& to) { own.replace(own.find(from), from.size(), to); };
+    swap("\"recipe_id\": \"community-steam-274520\"", "\"recipe_id\": \"community-imported-gloomwood\"");
+    swap("{\"store\": \"steam\", \"key\": \"274520\", \"name\": \"Darkwood\"}",
+         "{\"store\": \"imported\", \"key\": \"gloomwood\", \"name\": \"Gloomwood\"}");
+    const auto own_revision = kept(own);
+    int status = 0;
+    std::string message;
+    check(model.GameForRecipe(own_revision, &status, &message) == std::optional<GameId>(imported_game),
+          "a recipe for imported/gloomwood finds the imported game");
+    check(model.ImportRecipe(imported_game, own_revision).first == 200, "and it takes it");
+    // A Steam game still takes only its own recipe.
+    check(model.ImportRecipe(kGame, own_revision).first == 422, "Darkwood refuses the imported game's recipe");
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -1869,6 +1935,7 @@ int main() {
     community_off_recipe_missing(base / "off-missing");
     settings_only_base(base / "settings-only");
     web_import(base / "web-import");
+    web_import_without_app_id(base / "web-import-no-app");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;

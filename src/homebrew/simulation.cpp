@@ -14953,7 +14953,8 @@ std::optional<GameId> Simulation::GameForRecipe(const std::string& revision, int
     std::vector<GameId> found;
     for (const auto& game : state_.games) {
         if (!is_installed(state_, game.id) && !state_.runtime_games.count(game.id)) continue;
-        if (const auto ref = community_ref(game.id); ref && *ref == object->game) found.push_back(game.id);
+        // sharing_ref: an imported game without a Steam app ID also takes the recipes it exports (imported/<name key>).
+        if (const auto ref = sharing_ref(game.id); ref && *ref == object->game) found.push_back(game.id);
     }
     if (found.size() == 1) return found.front();
     const auto name = object->game_name.empty() ? std::string("its game") : object->game_name;
@@ -14970,8 +14971,9 @@ std::optional<GameId> Simulation::GameForRecipe(const std::string& revision, int
 std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::string& revision) {
     const auto* game = find_game(state_, id);
     if (!id.valid() || !game) return {404, "Playden doesn't know this game."};
+    // An imported game without a Steam app ID has no GameRef of its own: it takes any game's recipe, and the choice
+    // names that game, as when the player picks another game's recipe in the chooser.
     const auto own = community_ref(id);
-    if (!own) return {422, "Playden can't take a recipe for this game."};
     // The Share sheet for this game would send these settings against the recipe it opened with.
     if (share_ && share_->game == id) return {409, "The Share sheet for " + game->title + " is open on the PS5. Close it first."};
     if (live() && (settings_load_failed_ || game_settings_file_.empty()))
@@ -14984,14 +14986,14 @@ std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::strin
     if (!object) return {500, "Playden couldn't read the recipe it kept."};
     const auto name = game->title;
     // Only the game's own recipe: another game's would start a program this copy may not have.
-    if (object->game != *own)
+    if (own && object->game != *own)
         return {422, "This recipe is for " + (object->game_name.empty() ? std::string("another game") : object->game_name) +
                          ", not " + name + "."};
     if (const auto saved = state_.game_settings.find(id);
         saved != state_.game_settings.end() && saved->second.revision == std::numeric_limits<std::uint64_t>::max())
         return {409, "The settings revision has reached its limit."};
     BaseChoice base;
-    base.community = {object->recipe.id, revision, {}};
+    base.community = {object->recipe.id, revision, own ? GameRef{} : object->game};
     // As the game would run it: a recipe its runtime kit can't run is refused now, not at the next Play.
     const auto selection = select_recipe(id, &base.community);
     if (!selection.community)
