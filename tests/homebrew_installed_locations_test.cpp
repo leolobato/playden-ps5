@@ -598,13 +598,17 @@ void ImportedGamePlaysInPlace() {
     registry.Add(std::move(source));
     hb::Controller controller(model, registry, nullptr, nullptr, nullptr, &host);
     controller.SetLocalLibrary(local_library);
+    int step = 0;  // which wait of this run timed out, for the message below
     const auto tick_until = [&](const std::function<bool()>& done) {
+      ++step;
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
       for (;;) {
         controller.Tick();
         if (done()) return;
         if (std::chrono::steady_clock::now() >= deadline) {
           const auto local_snapshot = local_library->Snapshot();
+          std::fprintf(stderr, "wait %d of this run timed out; modals=%zu notices=%zu\n", step,
+                       model.state().navigation.modals.size(), model.state().notices.size());
           std::fprintf(stderr, "runtime=%d scanning=%d candidates=%zu games=%zu imports=%zu external=%zu outcomes=%zu\n",
                        (int)model.state().runtime, (int)model.state().import_scanning, model.state().import_candidates.size(),
                        model.state().games.size(), local_snapshot->games.size(), model.state().external_games.size(),
@@ -822,6 +826,8 @@ void ImportedGamePlaysInPlace() {
     CHECK(chmod((sky / "Data/sky.ini").c_str(), 0644) == 0);
     const auto launches = launched.size();
     open_details(model, game);
+    // Just prepared, Play can stay disabled for a few ticks; Cross on it then does nothing.
+    tick_until([&] { const auto* row = row_of(model, "details-play"); return row && row->enabled && row->action == "runtime-play"; });
     CHECK(model.action("focus:details-play") && model.action("cross"));
     tick_until([&] { return launched.size() > launches; });
     CHECK(Mode(sky / "Data/sky.ini") == 0666);
