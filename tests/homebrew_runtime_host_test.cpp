@@ -1815,6 +1815,11 @@ void PreparesGameWithoutShippedRecipe() {
   CHECK(Read(game / "Bin/steam_settings/configs.user.ini").find("account_name=player\n") != std::string::npos);
   CHECK(Read(game / "Bin/steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n4250=dlc4250\n4260=dlc4260\n");
   CHECK(!dlc_asked.empty() && dlc_asked.back() == std::make_pair(std::uint64_t{76561198000000001ull}, std::uint32_t{4242}));
+  // runtime.log names the added DLC, so a report shows whether the one a player misses reached the emulator.
+  {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    CHECK(std::count(lines.begin(), lines.end(), "steamworks app=4242 owned dlc added=1 total=2 ids=4260") > 0);
+  }
   // The added DLC and SDK apps stay with the download's facts, for a start before the next license read.
   CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n"
                                          "save=AppData/LocalLow/Studio/Example Game/Saves\n");

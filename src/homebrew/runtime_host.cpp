@@ -1173,9 +1173,17 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
                                                  apps_changed ? identity.owned_apps_account : saved_account,
                                                  identity.save_folders);
       const std::string failed = kept ? "" : " facts=write-failed";
-      if (!added_dlc.empty())
+      if (!added_dlc.empty()) {
+        // Which DLC, so a report shows whether the one the player misses reached the emulator. A game with hundreds of
+        // DLC keeps the line short.
+        constexpr std::size_t kLoggedDlc = 32;
+        std::string ids;
+        for (std::size_t i = 0; i < added_dlc.size() && i < kLoggedDlc; ++i)
+          ids += (i ? "," : "") + std::to_string(added_dlc[i]);
+        if (added_dlc.size() > kLoggedDlc) ids += ",...";
         Log("steamworks app=" + std::to_string(record.runtime_number) + " owned dlc added=" + std::to_string(added_dlc.size()) +
-            " total=" + std::to_string(identity.owned_dlc.size()) + failed);
+            " total=" + std::to_string(identity.owned_dlc.size()) + " ids=" + ids + failed);
+      }
       if (apps_changed) {
         std::string ids;
         for (const auto app : identity.owned_apps) ids += (ids.empty() ? "" : ",") + std::to_string(app);
