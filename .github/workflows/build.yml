@@ -1,0 +1,136 @@
+# CI para playden-ps5 · borrador de PR (28-oct-2026)
+# Objetivo: que ningun cambio rompa el build del host ni el del titulo PS5, sin necesitar consola.
+# Cada decision viene de un fallo observado en un run real, no de una suposicion:
+#  - host en macos-15 (arm64): unico host soportado (docs/building.md); GitHub marca macOS 14 como deprecado.
+#  - fetch-depth 0: ui_comparison_fixture hace `git ls-tree` de un commit historico.
+#  - SDL_VIDEO* en dummy: los tests graficos abren ventana y el runner no tiene sesion grafica.
+#  - http_client y homebrew_runtime_host en un paso aparte no bloqueante: dependen de tiempos.
+#  - PS5 en macOS con LLVM 18.1.8: dependencies.lock.json exige "SDK v0.43 and LLVM 18.1.8" y en
+#    Linux el configure aborta con "Pinned ps5 archive hash mismatch: libcurl.a".
+#  - concurrency: solo se cancela en PRs; en main los runs hacen cola.
+#  - sin job de formato: el repo aun no tiene .clang-format. Va en un PR aparte.
+name: build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: host (macOS arm64) · build + ctest
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Toolchain
+        run: |
+          brew install --quiet cmake ninja pkgconf sdl2-compat llvm@18 python
+          echo "LLVM_CONFIG=$(brew --prefix llvm@18)/bin/llvm-config" >> "$GITHUB_ENV"
+      # La revision del submodulo UI fija los atlases de fuentes: si avanza sin tocar el lock, la cache
+      # anterior serviria atlases rancios. Por eso la clave la incluye.
+      - name: Pinned UI revision
+        id: ui
+        run: echo "rev=$(git submodule status third_party/ps5-homebrew-ui | cut -c2-41)" >> "$GITHUB_OUTPUT"
+      - name: Cache host network deps
+        uses: actions/cache@v4
+        with:
+          path: scripts/network-deps/.deps/host
+          key: host-netdeps-${{ runner.os }}-${{ hashFiles('dependencies.lock.json') }}
+      - name: Cache font atlases
+        uses: actions/cache@v4
+        with:
+          path: build/homebrew-fonts
+          key: host-fonts-${{ runner.os }}-${{ steps.ui.outputs.rev }}
+      - name: Build host app and test binaries
+        run: |
+          scripts/build-homebrew.sh
+          cmake --build --preset homebrew-host
+      # La suite completa son 154 tests. Seis no pueden pasar en un runner de GitHub y se separan aqui,
+      # con el motivo medido en el run 40690505568 (no es una suposicion):
+      #  - homebrew_{library,artwork,glyph_fallback}_graphical y homebrew_qr_graphical piden contexto
+      #    OpenGL 4.1 (`SDL_WINDOW_OPENGL`). El runner no tiene WindowServer ni GPU: SDL_CreateWindow
+      #    devuelve NULL y el test aborta en su propio `assert(window)`.
+      #  - http_client y homebrew_runtime_host dependen de tiempos y fallan de forma intermitente incluso
+      #    en serie (`deadline` del fixture a 37 s, y el TIMEOUT 15 fijo de SteamBackend.cmake:241). Se
+      #    ejecutan aparte, en cuarentena, para no convertir el CI en un semaforo aleatorio.
+      - name: Tests (suite bloqueante, 148 de 154)
+        env:
+          SDL_VIDEO_DRIVER: dummy
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+          SDL_AUDIODRIVER: dummy
+        run: |
+          ctest --preset homebrew-host --output-on-failure --parallel 4 \
+            -E "graphical|http_client|homebrew_runtime_host"
+
+      - name: Tests en cuarentena (no bloqueante)
+        continue-on-error: true
+        env:
+          SDL_VIDEO_DRIVER: dummy
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+          SDL_AUDIODRIVER: dummy
+        run: |
+          # Se ejecutan en serie: si pasan, se ve; si fallan, el run sigue y queda el aviso.
+          ctest --preset homebrew-host --output-on-failure \
+            -R "http_client|homebrew_runtime_host" || echo "::warning::tests en cuarentena con fallo (ver arriba)"
+
+  ps5:
+    name: PS5 · compilar y empaquetar
+    # El lock fija los hashes de los archivos PS5 y solo cuadran con el anfitrion que los produjo.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Toolchain (LLVM 18.1.8)
+        run: |
+          brew install --quiet cmake ninja pkgconf llvm@18 python
+          LLVM_CONFIG="$(brew --prefix llvm@18)/bin/llvm-config"
+          echo "LLVM_CONFIG=$LLVM_CONFIG" >> "$GITHUB_ENV"
+          v=$("$LLVM_CONFIG" --version)
+          echo "llvm-config = $v"
+          test "$v" = "18.1.8" || { echo "::error::los hashes pinneados exigen LLVM 18.1.8, hay $v"; exit 1; }
+      - name: Cache deps PS5 pinneadas
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            scripts/network-deps/.deps/ps5
+          key: ps5-deps-${{ runner.os }}-${{ hashFiles('dependencies.lock.json') }}
+      # scripts/with-env.sh ya usa deps/ps5-payload-sdk por defecto (linea 6); no hace falta exportar nada.
+      - name: Fetch deps pinneadas (SDK, opengl, builtins)
+        run: scripts/fetch-deps.sh
+      - name: Helper payload (root helper del titulo)
+        run: scripts/build-lapy-helper.sh
+      - name: Paquete PS5
+        run: scripts/build-homebrew-ps5.sh
+      - name: Empaquetar artefacto
+        run: |
+          cd build/homebrew-ps5/dist
+          zip -qr "$GITHUB_WORKSPACE/FAKE77031.zip" FAKE77031
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 FAKE77031.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: Subir artefacto
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps5-package
+          path: |
+            FAKE77031.zip
+            SHA256SUMS
+          retention-days: 7
