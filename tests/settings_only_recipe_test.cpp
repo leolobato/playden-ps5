@@ -374,6 +374,39 @@ void Share() {
   old_base.recipe.defaults["overlay_detail"] = "full";
   const auto from_old = BuildSettingsOnlyRecipe(old_base, before, before, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(!from_old.recipe.defaults.count("performance_overlay") && !from_old.recipe.defaults.count("overlay_detail"));
+  // Steam library folder: a game this Playden installed shows in Steam's folder by its own default
+  // ("default.steam_library_path"), which is no change: it stays out of the share, also against a base built without
+  // it. The player's choice goes in.
+  kit.steam_library_path = true;
+  const std::map<std::string, std::string> installed_here = {{"default.steam_library_path", "steam"}};
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, installed_here, kit, &before, &error));
+  auto changed = installed_here;
+  changed["resolution"] = "1280x720";
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, changed, kit, &after, &error));
+  CHECK(ChosenValue(after.values.at("steam_library_path")) == "steam");
+  auto library = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(!library.recipe.defaults.count("steam_library_path") && library.recipe.defaults.at("resolution") == "1280x720");
+  EffectiveSettings plain;
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, kit, &plain, &error));
+  library = BuildSettingsOnlyRecipe(base, plain, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(!library.recipe.defaults.count("steam_library_path"));
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"steam_library_path", "steam"}}, kit, &after, &error));
+  library = BuildSettingsOnlyRecipe(base, plain, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(library.recipe.defaults.at("steam_library_path") == "steam");
+  {
+    // A recipe that sets the row reads back and passes the community rules.
+    auto shared_row = library;
+    shared_row.recipe.id = "community-steam-274520-shared";
+    shared_row.title = "Shared";
+    CommunityRecipe reread_row;
+    std::string why;
+    CHECK(ParseCommunityRecipe(SerializeCommunityRecipe(shared_row), &reread_row, &why) &&
+          reread_row.recipe.defaults.at("steam_library_path") == "steam" && CommunityRecipeRefusals(reread_row).empty());
+  }
+  changed["steam_library_path"] = "playden";
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, changed, kit, &after, &error));
+  library = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(library.recipe.defaults.at("steam_library_path") == "playden");
 }
 
 }  // namespace

@@ -293,6 +293,16 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         "dxgi.maxDeviceMemory · d3d9.maxAvailableMemory", G::kGraphics,
                         {{"game", "DXVK default", ""}, {"2048", "2 GB", ""}, {"4096", "4 GB", ""}}, "game", 2));
   // Compatibility › Steam.
+  // Where Wine shows a Steam game ([steam] install_dir, kit capability steam-library-path). Moving a game that already
+  // ran can break it, so a game keeps its own folder unless this Playden installed it: that install's record holds
+  // "default.steam_library_path" = steam (kGameDefaultPrefix), which is the game's default, not a change.
+  list.push_back(Choice("steam_library_path", "Steam library folder", "Where the game sees itself installed.",
+                        "steamapps\\common", G::kSteam,
+                        {{"steam", "Steam's folder",
+                          "The game runs from C:\\Program Files (x86)\\Steam\\steamapps\\common\\<folder>, where Steam "
+                          "installs it. Some games need this to find Steam."},
+                         {"playden", "Playden's folder", "The game runs from its own folder on Z:, as before."}},
+                        "playden", 1, ApplyMode::kGameClosed));
   // Online by default, as GameNative ships gbe_fork: games that check BLoggedOn() ("Steam is offline") get to their
   // online menus. Offline is for a game that waits on the network when it is told Steam is online.
   list.push_back(Choice("steam_network", "Steam network", "Whether the game is told Steam is online.",
@@ -709,6 +719,11 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
     const auto steam = values.find("steam_features");
     if (steam == values.end() || steam->second.value != "online") return "Only with Steam features = Online.";
   }
+  // Another store's game has no Steam folder: the sheet says so for it (Simulation), and the runtime shows only Steam
+  // games there whatever the row says.
+  if (id == "steam_library_path" && !kit.steam_library_path)
+    return kit.steam_library_path_needs_update ? kAppliesAfterKitUpdate
+                                               : "Needs a newer runtime kit that shows the game in Steam's folder.";
   if (id == "steam_network") {
     if (!OnlineSteamEnabled()) return "Needs online-steam in features.txt.";
     const auto steam = values.find("steam_features");
@@ -794,6 +809,23 @@ bool IsUnlockKey(std::string_view key) {
   if (key.size() <= prefix.size() || key.substr(0, prefix.size()) != prefix) return false;
   const auto* definition = FindSetting(key.substr(prefix.size()));
   return definition != nullptr;
+}
+
+bool IsGameDefaultKey(std::string_view key) {
+  const std::string_view prefix = kGameDefaultPrefix;
+  return key.size() > prefix.size() && key.substr(0, prefix.size()) == prefix &&
+         key.substr(prefix.size()) == "steam_library_path";
+}
+
+std::map<std::string, std::string> GameDefaultOverrides(const std::map<std::string, std::string>& overrides) {
+  std::map<std::string, std::string> defaults;
+  for (const auto& [key, value] : overrides)
+    if (IsGameDefaultKey(key)) defaults.emplace(key, value);
+  return defaults;
+}
+
+bool HasPlayerOverrides(const std::map<std::string, std::string>& overrides) {
+  return std::any_of(overrides.begin(), overrides.end(), [](const auto& entry) { return !IsGameDefaultKey(entry.first); });
 }
 
 std::map<std::string, std::string> PresetSettingsFromGame(const GameRecipe& recipe, const EffectiveSettings& settings,
@@ -980,6 +1012,10 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   for (const auto& definition : SettingsCatalogue()) {
     EffectiveValue value;
     value.value = definition.id == "launch_option" ? DefaultLaunchEntry(recipe) : definition.playden_default;
+    // The game's own default (kGameDefaultPrefix) is still Playden's: a recipe, a preset and the player win over it.
+    if (const auto own = overrides.find(kGameDefaultPrefix + definition.id);
+        own != overrides.end() && IsGameDefaultKey(own->first) && ValidateSettingValue(recipe, definition.id, own->second, nullptr))
+      value.value = own->second;
     const auto layer = [&](const std::map<std::string, std::string>& source, ValueSource kind) {
       const auto found = source.find(definition.id);
       if (found == source.end()) return true;
@@ -1599,10 +1635,13 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
             "\nwait = " + std::to_string(kSteamHostWaitSeconds) + "\n";
 
   // A Steam game is shown to Wine in steamapps\common, where some games look for themselves before they use Steam
-  // (The Talos Principle). The profile keeps the real paths; the title links the folder. Left out when a path there
-  // would be too long for the runtime, which then starts the game from its real folder anyway.
+  // (The Talos Principle), when its Steam library folder row says Steam's folder. The profile keeps the real paths;
+  // the title links the folder. Left out when a path there would be too long for the runtime, which then starts the
+  // game from its real folder anyway.
   bool steam_section = false;
-  if (!target.steam_install_dir.empty() && IsProsperoSteamInstallDir(target.steam_install_dir)) {
+  const auto& library_folder = OptionalValue(settings, "steam_library_path");
+  if (library_folder.available && library_folder.value == "steam" && !target.steam_install_dir.empty() &&
+      IsProsperoSteamInstallDir(target.steam_install_dir)) {
     const auto view = std::string(kProsperoSteamCommon) + "\\" + target.steam_install_dir;
     steam_section = (view + "\\" + Backslashes(*executable)).size() <= kProsperoMaxPathBytes &&
                     (working.empty() ? view : view + "\\" + Backslashes(working)).size() <= kProsperoMaxPathBytes;
@@ -2083,11 +2122,11 @@ bool RetiredSetting(std::string_view id) { return id == "opengl_thread"; }
 
 bool ValidatePresetSetting(std::string_view id, std::string_view value, std::string* reason) {
   // Presets bundle choices and button bindings; launch entries, graphics and free text belong to the recipe or the
-  // player.
+  // player. So does where a game is installed (Steam library folder): moving a game that already ran can break it.
   const auto* definition = FindSetting(id);
   const bool button = id.compare(0, 7, "button.") == 0;
   if (!definition || id == "launch_option" || id == "graphics" || id == "architecture" || id == "start_check" ||
-      (definition->kind == SettingKind::kText && !button)) {
+      id == "steam_library_path" || (definition->kind == SettingKind::kText && !button)) {
     if (reason) *reason = "unsupported setting";
     return false;
   }
@@ -2181,8 +2220,14 @@ bool RecordFromValue(const storage_json::Value& root, GameSettingsRecord* out) {
         if (const auto ref = ParseGameRefText(game->text())) out->shared_recipe.game = *ref;
   }
   // Settings this build does not know are dropped so an older record still loads.
-  for (auto it = out->overrides.begin(); it != out->overrides.end();)
-    it = FindSetting(it->first) || IsUnlockKey(it->first) ? std::next(it) : out->overrides.erase(it);
+  // So is a game default this build does not take, or one whose value isn't one of the row's.
+  for (auto it = out->overrides.begin(); it != out->overrides.end();) {
+    const bool game_default =
+        IsGameDefaultKey(it->first) &&
+        ValidateSettingValue(GameRecipe{}, std::string_view(it->first).substr(std::string_view(kGameDefaultPrefix).size()),
+                             it->second, nullptr);
+    it = FindSetting(it->first) || IsUnlockKey(it->first) || game_default ? std::next(it) : out->overrides.erase(it);
+  }
   return true;
 }
 
@@ -4033,7 +4078,10 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   // An older title refuses the search form outright, and nothing the player chose waits on it.
   if (!title_runtime_current) kit.game_root_usb_search = false;
   // Nor does an older title read [steam]: the game keeps its Z: paths until its runtime is updated.
-  if (!title_runtime_current) kit.steam_library_path = false;
+  if (!title_runtime_current && kit.steam_library_path) {
+    kit.steam_library_path = false;
+    kit.steam_library_path_needs_update = true;
+  }
   if (!title_runtime_current && kit.display_120hz) {
     kit.display_120hz = false;
     kit.display_120hz_needs_update = true;
@@ -4227,8 +4275,11 @@ CommunityRecipe BuildCommunityRecipe(const GameRecipe& recipe, const EffectiveSe
                                                "graphics"};
   for (const auto& definition : SettingsCatalogue()) {
     const auto& row = settings.values.at(definition.id);
+    // Steam library folder's own default differs by install (a new install starts on Steam's folder), so a chosen
+    // Playden's folder is carried like any other choice.
     if (fields.count(definition.id) || IsPersonalSettingRow(definition.id) || !row.available ||
-        row.source == ValueSource::kPlayden || row.value == definition.playden_default)
+        row.source == ValueSource::kPlayden ||
+        (row.value == definition.playden_default && definition.id != "steam_library_path"))
       continue;
     shared.defaults[definition.id] = row.value;
   }
@@ -4281,6 +4332,8 @@ CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const Effec
     const auto found_after = after.values.find(definition.id);
     const auto found_before = before.values.find(definition.id);
     if (found_after == after.values.end() || !found_after->second.available) continue;
+    // A row that only has Playden's default, the game's own included (kGameDefaultPrefix), is nobody's change.
+    if (found_after->second.source == ValueSource::kPlayden) continue;
     if (found_before != before.values.end() && ChosenValue(found_before->second) == ChosenValue(found_after->second))
       continue;
     shared.defaults[definition.id] = ChosenValue(found_after->second);

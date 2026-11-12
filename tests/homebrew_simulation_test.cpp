@@ -2058,6 +2058,153 @@ void community_old_share_is_the_steam_games(const std::filesystem::path& fixture
     std::filesystem::remove(settings_file);
 }
 
+// Steam library folder: a Steam game installed by this Playden shows in Steam's folder by its own default, which is no
+// change of the player's: the sheet doesn't mark it, Reset and a switch of base keep it, and a share doesn't count it.
+// A game already installed keeps its own folder, and another store's game has none.
+void steam_library_folder_defaults(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    namespace rt = playden::runtime;
+    namespace cm = playden::community;
+    const std::string key = "default.steam_library_path";
+    {
+        std::error_code ignored;
+        std::filesystem::remove(profile, ignored);
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        load_settings_data(simulation, fixtures);
+        rt::KitCapabilities kit;
+        kit.steam_library_path = true;
+        simulation.SetKitCapabilities(kit);
+        check(simulation.scenario("recipes-one"), "recipes-one scenario loads");
+        const auto game = SteamId(900012);
+        const auto& records = simulation.state().game_settings;
+        const auto overrides = [&]() -> const std::map<std::string, std::string>& { return records.at(game).overrides; };
+        activate(simulation, "install-settings");
+        activate(simulation, "recipe-" + rev('4'));
+        activate(simulation, "install-confirm");
+        check(records.count(game) && records.at(game).community_recipe.revision == rev('4') &&
+                  overrides() == std::map<std::string, std::string>{{key, "steam"}},
+              "a new install keeps the chosen recipe and shows the game in Steam's folder");
+        bool others = false;
+        for (const auto& [id, record] : records) others = others || (id != game && record.overrides.count(key));
+        check(!others, "no other game gets the default");
+        // A game already installed keeps its own folder, even when an install is asked for it again.
+        const auto installed = std::find_if(simulation.state().installations.begin(), simulation.state().installations.end(),
+                                            [](const auto& item) { return item.game_id.store == playden::Store::kSteam && item.installed_bytes > 0; });
+        check(installed != simulation.state().installations.end(), "the scenario has an installed Steam game");
+        const auto installed_id = installed->game_id;
+        check(simulation.action("install:" + playden::ToKey(installed_id) + ":" + installed->volume_id),
+              "an install is asked for the installed game");
+        check(!records.count(installed_id) || !records.at(installed_id).overrides.count(key),
+              "an installed game doesn't get the default");
+        rt::EffectiveSettings values;
+        check(simulation.EffectiveSettingsFor(game, &values) && values.values.at("steam_library_path").value == "steam" &&
+                  values.values.at("steam_library_path").source == rt::ValueSource::kPlayden,
+              "the game's default is Playden's value");
+        check(simulation.ShareDecisionFor(game).kind == cm::ShareKind::kNoChangesOfferVote,
+              "a share finds no change of the player's against the recipe");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        check(simulation.action("details:900012"), "the game's page opens");
+        activate(simulation, "details-more");
+        activate(simulation, "game-settings");
+        check(find_row(simulation, "summary-none") && find_row(simulation, "reset-settings") &&
+                  !find_row(simulation, "reset-settings")->enabled,
+              "the summary lists no change and Reset has nothing to do");
+        check(find_row(simulation, "preset-picker") &&
+                  find_row(simulation, "preset-picker")->subtitle == "A community recipe. The settings start from it.",
+              "the recipe is not shown as changed");
+        activate(simulation, "change-settings");
+        activate(simulation, "section-compatibility");
+        const auto* row = find_row(simulation, "setting-steam_library_path");
+        check(row && row->title == "Steam library folder" && row->value == "Steam's folder" && row->enabled && !row->modified,
+              "the row shows Steam's folder, unchanged");
+        activate(simulation, "setting-steam_library_path");
+        activate(simulation, "choice-1");
+        check(overrides() == std::map<std::string, std::string>{{key, "steam"}, {"steam_library_path", "playden"}} &&
+                  find_row(simulation, "setting-steam_library_path")->value == "Playden's folder" &&
+                  find_row(simulation, "setting-steam_library_path")->modified,
+              "Playden's folder is the player's choice");
+        activate(simulation, "setting-steam_library_path");
+        activate(simulation, "choice-0");
+        check(overrides() == std::map<std::string, std::string>{{key, "steam"}}, "choosing the game's default again clears the choice");
+        activate(simulation, "setting-steam_library_path");
+        activate(simulation, "choice-1");
+        simulation.action("circle");
+        check(find_row(simulation, "summary-steam_library_path") && find_row(simulation, "reset-settings")->enabled,
+              "the player's choice is in the summary");
+        activate(simulation, "reset-settings");
+        check(overrides() == std::map<std::string, std::string>{{key, "steam"}} &&
+                  simulation.EffectiveSettingsFor(game, &values) && values.values.at("steam_library_path").value == "steam",
+              "Reset returns the game to its own default, Steam's folder");
+        // A switch of base keeps it: from the recipe to a preset, and from one preset to another.
+        activate(simulation, "preset-picker");
+        activate(simulation, "preset-mouse-driven");
+        if (simulation.state().navigation.modals.back().id == "confirmation") activate(simulation, "recipe-switch-confirm");
+        check(records.at(game).preset_id == "mouse-driven" && overrides().count(key), "a preset keeps the game's default");
+        activate(simulation, "preset-picker");
+        activate(simulation, "preset-playden-default");
+        check(records.at(game).preset_id.empty() && overrides() == std::map<std::string, std::string>{{key, "steam"}},
+              "Playden default keeps the game's default");
+    }
+    {
+        // Another store's game has no Steam folder: the row says so and can't be chosen.
+        const auto night_sky = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+        std::error_code ignored;
+        std::filesystem::remove(profile, ignored);
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        load_settings_data(simulation, fixtures);
+        rt::KitCapabilities kit;
+        kit.steam_library_path = true;
+        simulation.SetKitCapabilities(kit);
+        check(simulation.scenario("share-imported"), "share-imported scenario loads");
+        while (!simulation.state().navigation.modals.empty()) simulation.action("circle");
+        check(simulation.action("details:" + playden::ToKey(night_sky)), "the imported game's page opens");
+        activate(simulation, "details-more");
+        activate(simulation, "game-settings");
+        activate(simulation, "change-settings");
+        activate(simulation, "section-compatibility");
+        const auto* row = find_row(simulation, "setting-steam_library_path");
+        check(row && !row->enabled && row->subtitle == "Only for Steam games.", "an imported game's row is only for Steam games");
+        simulation.SetKitCapabilities({});
+        row = find_row(simulation, "setting-steam_library_path");
+        check(row && !row->enabled, "without the runtime kit the row is disabled too");
+    }
+    {
+        // Live: the default is saved with the game's settings before the install request goes out.
+        using namespace playden::homebrew;
+        const auto settings_file = profile.string() + ".steam-library.settings";
+        std::error_code ignored;
+        std::filesystem::remove(settings_file, ignored);
+        // Settings kept from before an uninstall stay, at their revision.
+        rt::GameSettingsRecord kept;
+        kept.overrides["resolution"] = "1280x720";
+        kept.revision = 3;
+        std::string saved_reason;
+        check(rt::SaveGameSettingsFile(settings_file, {{SteamId(42), kept}}, &saved_reason), "seed the kept settings");
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGameSettingsFile(settings_file);
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+        playden::GameSummary game{SteamId(42), "Recipe game", {}, {}, {}};
+        check(live.UpdateLibrary({{game}, false, {}, false, false, {}}), "library loads");
+        live.UpdateAppDetails(SteamId(42), 300'000'000, 600'000'000, true);
+        live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+        check(live.action("details:42"), "details open");
+        activate(live, "details-install");
+        activate(live, "install-confirm");
+        const auto requests = live.TakeInstallRequests();
+        check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install &&
+                  live.state().game_settings.count(SteamId(42)) &&
+                  live.state().game_settings.at(SteamId(42)).overrides ==
+                      std::map<std::string, std::string>{{key, "steam"}, {"resolution", "1280x720"}},
+              "a live install shows the game in Steam's folder by default, and keeps the settings kept for it");
+        std::map<playden::GameId, rt::GameSettingsRecord> on_disk;
+        std::string reason;
+        check(rt::LoadGameSettingsFile(settings_file, &on_disk, &reason) && on_disk.count(SteamId(42)) &&
+                  on_disk.at(SteamId(42)).overrides.count(key) && on_disk.at(SteamId(42)).revision == 3,
+              "the default is saved before the download, at the same revision");
+        std::filesystem::remove(settings_file, ignored);
+    }
+}
+
 // Reset takes an imported game back to the program it was added with, not to none: it has no other way to start.
 void reset_keeps_the_imported_program(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
@@ -2316,7 +2463,8 @@ void community_recipes_switch(const std::filesystem::path& fixtures, const std::
 void community_recipes_install(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     using namespace playden::homebrew;
     {
-        // Fixtures: untouched, Install creates the job and saves no settings.
+        // Fixtures: untouched, Install creates the job and saves no settings of the player's; the game's own default
+        // (Steam library folder = Steam's folder, for a Steam game installed by this Playden) is not one.
         Simulation simulation(fixtures, profile);
         load_settings_data(simulation, fixtures);
         check(simulation.scenario("recipes-one"), "recipes-one scenario loads");
@@ -2325,7 +2473,12 @@ void community_recipes_install(const std::filesystem::path& fixtures, const std:
               "the Install sheet offers the community recipes");
         check(simulation.state().navigation.focus_key == "install-confirm", "Install stays focused");
         activate(simulation, "install-confirm");
-        check(simulation.state().navigation.route == Route::Downloads && !simulation.state().game_settings.count(SteamId(900012)),
+        const auto& saved = simulation.state().game_settings;
+        check(simulation.state().navigation.route == Route::Downloads && saved.count(SteamId(900012)) &&
+                  saved.at(SteamId(900012)).overrides ==
+                      std::map<std::string, std::string>{{"default.steam_library_path", "steam"}} &&
+                  saved.at(SteamId(900012)).preset_id.empty() && saved.at(SteamId(900012)).community_recipe.id.empty() &&
+                  saved.at(SteamId(900012)).revision == 0,
               "Install without touching Settings installs as before");
     }
     {
@@ -3162,9 +3315,10 @@ void online_section_in_game_settings(const std::filesystem::path& fixtures, cons
         activate(simulation, "section-compatibility");
         const auto& expanded = simulation.state().navigation.modals.back().action_keys;
         const auto steam = std::find(expanded.begin(), expanded.end(), "heading-steam");
-        check(steam != expanded.end() && *(steam + 1) == "setting-steam_network" &&
+        check(steam != expanded.end() && *(steam + 1) == "setting-steam_library_path" &&
+                  *(steam + 2) == "setting-steam_network" &&
                   std::count(expanded.begin(), expanded.end(), "setting-steam_features") == 1,
-              "OS Compatibility › Steam keeps Steam network and Steam Input only");
+              "OS Compatibility › Steam keeps Steam library folder, Steam network and Steam Input");
     }
     {
         rt::SetOnlineSteamEnabled(false);
@@ -3396,6 +3550,7 @@ int main(int argc, char** argv) {
     community_recipes_switch(fixtures, profile);
     clean();
     community_recipes_install(fixtures, profile);
+    steam_library_folder_defaults(fixtures, profile);
     clean();
     community_recipes_updates_and_fallback(fixtures, profile);
     clean();

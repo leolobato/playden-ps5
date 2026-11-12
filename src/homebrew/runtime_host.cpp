@@ -109,7 +109,8 @@ GameId GameOf(const rt::RuntimeInstall& record) { return GameOf(record.game, rec
 GameId GameOf(const RuntimePrepareRequest& request) { return GameOf(request.game, request.runtime_number); }
 // Where a title that reads [steam] shows a Steam game in steamapps\common: Steam's folder name for it, or its app ID
 // for a game prepared before Playden recorded the name (a game that looks for steamapps\common in its path finds it
-// either way). Empty for another store's game, or a title whose runtime does not read [steam].
+// either way). Empty for another store's game, or a title whose runtime does not read [steam]. The profile names it
+// only while the game's Steam library folder row is Steam's folder (RenderProsperoProfile).
 std::string SteamLibraryFolder(const rt::KitCapabilities& kit, const rt::RuntimeInstall& record) {
   if (!kit.steam_library_path || GameOf(record).store != Store::kSteam || !record.runtime_number) return {};
   return record.steam_install_dir.empty() ? std::to_string(record.runtime_number) : record.steam_install_dir;
@@ -1532,6 +1533,10 @@ std::filesystem::path RuntimeHost::SteamClientFolder() const {
 void RuntimeHost::SteamLibraryStep(Composition& c, const GameFiles& files) {
   const auto& features = files.settings.values.at("steam_features").value;
   if (features != "online" || !files.settings.helper_process || !SteamClientRecord()) return;
+  // Only a game shown in steamapps\common (Steam library folder = Steam's folder) is in the bottle's Steam library.
+  if (const auto library = files.settings.values.find("steam_library_path");
+      library == files.settings.values.end() || !library->second.available || library->second.value != "steam")
+    return;
   const auto folder = SteamLibraryFolder(TitleKit(c, files.record), files.record);
   if (folder.empty()) return;
   const auto app = std::to_string(files.record.runtime_number);

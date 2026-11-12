@@ -2231,13 +2231,21 @@ void PreparesGameWithoutShippedRecipe() {
   long_log.Shutdown();
 }
 
-// A Steam game on a runtime kit that shows it in steamapps\\common (steam-library-path): its profile names its folder
-// there, Steam's installdir when the preparation had it (kept on the record for later publications), the app ID
-// otherwise. The profile keeps the game's real paths. A kit without the capability writes no [steam].
+// A Steam game set to Steam library folder = Steam's folder, on a runtime kit that shows it in steamapps\\common
+// (steam-library-path): its profile names its folder there, Steam's installdir when the preparation had it (kept on the
+// record for later publications), the app ID otherwise, and with Steam features = Online the bottle's Steam library
+// lists it (SteamLibraryStep). The profile keeps the game's real paths. A kit without the capability writes no [steam];
+// nor does a game on Playden's folder: one installed before this Playden (no saved value) or the player's choice.
 void SteamGameShownInSteamLibrary() {
-  struct Case { bool capability; const char* folder; const char* expected; };
-  for (const Case& test : {Case{true, "The Named Game", "\n[steam]\ninstall_dir = The Named Game\n"},
-                           Case{true, "", "\n[steam]\ninstall_dir = 4250\n"}, Case{false, "The Named Game", nullptr}}) {
+  using Overrides = std::map<std::string, std::string>;
+  const Overrides installed_here = {{"default.steam_library_path", "steam"}};
+  struct Case { bool capability; const char* folder; Overrides overrides; const char* expected; };
+  for (const Case& test : {Case{true, "The Named Game", installed_here, "\n[steam]\ninstall_dir = The Named Game\n"},
+                           Case{true, "", installed_here, "\n[steam]\ninstall_dir = 4250\n"},
+                           Case{false, "The Named Game", installed_here, nullptr},
+                           Case{true, "The Named Game", {}, nullptr},
+                           Case{true, "The Named Game", {{"default.steam_library_path", "steam"}, {"steam_library_path", "playden"}}, nullptr},
+                           Case{true, "The Named Game", {{"steam_library_path", "steam"}}, "\n[steam]\ninstall_dir = The Named Game\n"}}) {
     Fixture fixture;
     auto config = fixture.Config();
     config.host_namespace_prefix = fixture.root;
@@ -2249,11 +2257,31 @@ void SteamGameShownInSteamLibrary() {
     config.package_operations.validate_bottle = [](const fs::path& bottle) {
       return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
     };
+    // Steam features = Online runs Valve's client beside the game (helper-process), which the preparation downloads.
     auto kit = SyntheticKit(fixture.root / "kit");
-    if (test.capability) {
-      kit.capabilities.push_back(kKitSteamLibraryPath);
-      std::sort(kit.capabilities.begin(), kit.capabilities.end());
-    }
+    kit.capabilities.push_back(kKitHelperProcess);
+    if (test.capability) kit.capabilities.push_back(kKitSteamLibraryPath);
+    std::sort(kit.capabilities.begin(), kit.capabilities.end());
+    const auto client_zip = playden::test::StoredZip({{"steamclient64.dll", "MZ valve steamclient64"}});
+    const std::string client_manifest = "\"win64\"\n{\n\t\"version\"\t\"1792618285\"\n\t\"bins_win64\"\n\t{\n\t\t\"file\"\t\"bins_win64.zip.t\"\n"
+                                        "\t\t\"size\"\t\"" + std::to_string(client_zip.size()) + "\"\n\t\t\"sha2\"\t\"" +
+                                        *HashArtifactBytes(client_zip) + "\"\n\t}\n}\n";
+    config.fetch_text = [&](const std::string&, std::size_t, const std::atomic<bool>&, std::string*) -> std::optional<std::string> {
+      return client_manifest;
+    };
+    config.fetch_range = [&](const std::string&, std::uint64_t offset, std::uint64_t length, const std::atomic<bool>&,
+                             std::string*) -> std::optional<std::string> { return client_zip.substr(offset, length); };
+    config.online_session = []() -> std::optional<OnlineSession> {
+      OnlineSession session;
+      session.steam_id = 76561198000000001ull;
+      session.account_name = "player";
+      session.refresh_token = "eyJ.token";
+      session.login_id = 5;
+      return session;
+    };
+    std::mutex log_mutex;
+    std::vector<std::string> lines;
+    config.log = [&](const std::string& line) { std::lock_guard<std::mutex> lock(log_mutex); lines.push_back(line); };
     config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
     unsigned uuids = 0;
     config.uuid = [&uuids]() -> std::optional<std::string> {
@@ -2268,11 +2296,15 @@ void SteamGameShownInSteamLibrary() {
     const auto game = fixture.root / "data/homebrew/FAKE77031/games/4250";
     Write(game / "Bin/Game.exe", pe, 0644);
     CHECK(chmod(game.c_str(), 0755) == 0);
-    config.settings_record = [](const playden::GameId&) -> std::optional<GameSettingsRecord> { return GameSettingsRecord{}; };
+    GameSettingsRecord saved;
+    saved.overrides = test.overrides;
+    saved.overrides["steam_features"] = "online";
+    config.settings_record = [saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
     RuntimePrepareRequest request{4250, "/data/homebrew/FAKE77031/games/4250", "internal", "Named Game"};
     request.launches = {{"", "", "Bin/Game.exe", "", ""}};
     request.steam_install_dir = test.folder;
     RuntimeHost host(config);
+    host.SetSteamAccount("player", 76561198000000001ull);
     CHECK(host.Start());
     CHECK(WaitFor(host, Started).kit_available);
     host.Prepare(request);
@@ -2286,6 +2318,15 @@ void SteamGameShownInSteamLibrary() {
     CHECK(profile.find("executable = Z:\\data\\homebrew\\FAKE77031\\games\\4250\\Bin\\Game.exe\n") != std::string::npos);
     CHECK(test.expected ? profile.find(test.expected) != std::string::npos : profile.find("[steam]") == std::string::npos);
     host.Shutdown();
+    {
+      std::lock_guard<std::mutex> lock(log_mutex);
+      CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& line) {
+        return line.rfind("steam client app=4250 installed", 0) == 0;
+      }));
+      CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& line) {
+        return line.rfind("steam library app=4250", 0) == 0;
+      }) == (test.expected != nullptr));
+    }
     // The name stays on the record for later publications, also from a kit without the capability.
     const auto installs = Read(config.state_root / "installs.json");
     CHECK((installs.find("\"steam_install_dir\":\"The Named Game\"") != std::string::npos) == (test.folder[0] != 0));

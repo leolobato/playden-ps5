@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
         "volume",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
-        "steam_network", "steam_input", "windows_version", "text_scale",
+        "steam_library_path", "steam_network", "steam_input", "windows_version", "text_scale",
         "locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
@@ -103,7 +103,8 @@ int main(int argc, char** argv) {
     // Logging is in Advanced.
     for (const char* id : {"steam_features", "steam_sign_in", "game_invites"})
       CHECK(FindSetting(id)->group == SettingGroup::kOnline);
-    for (const char* id : {"steam_network", "steam_input"}) CHECK(FindSetting(id)->group == SettingGroup::kSteam);
+    for (const char* id : {"steam_library_path", "steam_network", "steam_input"})
+      CHECK(FindSetting(id)->group == SettingGroup::kSteam);
     CHECK(FindSetting("windows_version")->group == SettingGroup::kWindows &&
           FindSetting("logging")->group == SettingGroup::kAdvanced);
   }
@@ -404,9 +405,24 @@ int main(int argc, char** argv) {
     const auto steam_kit = KitCapabilitiesFromManifest({kKitSteamLibraryPath}, false);
     CHECK(steam_kit.steam_library_path && !KitCapabilitiesFromManifest({kKitHelperProcess}, false).steam_library_path);
     CHECK(!KitForTitleRuntime(steam_kit, false).steam_library_path && KitForTitleRuntime(steam_kit, true).steam_library_path);
-    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, steam_kit, &settings, &error));
     auto steam_target = target;
     steam_target.steam_install_dir = "Half-Life 2";
+    // Only with Steam library folder = Steam's folder: a game installed before this Playden keeps Playden's folder, so
+    // does one whose player chose it, and a runtime kit without the capability shows none.
+    for (const auto& overrides : std::vector<std::map<std::string, std::string>>{
+             {}, {{"steam_library_path", "playden"}}, {{"default.steam_library_path", "steam"}, {"steam_library_path", "playden"}}}) {
+      CHECK(BuildEffectiveSettings(hl2, nullptr, overrides, steam_kit, &settings, &error));
+      CHECK(settings.values.at("steam_library_path").value == "playden");
+      CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
+      CHECK(profile.text.find("[steam]") == std::string::npos);
+    }
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"default.steam_library_path", "steam"}}, KitCapabilities{}, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
+    CHECK(profile.text.find("[steam]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"steam_library_path", "steam"}}, steam_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
+    CHECK(profile.text.find("\n[steam]\ninstall_dir = Half-Life 2\n") != std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"default.steam_library_path", "steam"}}, steam_kit, &settings, &error));
     CHECK(RenderProsperoProfile(hl2, settings, steam_target, &profile, &reason));
     CHECK(profile.text.find("\n[steam]\ninstall_dir = Half-Life 2\n") != std::string::npos);
     CHECK(profile.text.find("executable = Z:\\data\\homebrew\\FAKE77031\\games\\220\\") != std::string::npos);
@@ -446,6 +462,95 @@ int main(int argc, char** argv) {
       CHECK(!CheckProsperoProfile(base + "\n[steam]\n" + bad, &why, steam_features));
     CHECK(IsProsperoSteamInstallDir("The Talos Principle") && IsProsperoSteamInstallDir(std::string(128, 'a')) &&
           !IsProsperoSteamInstallDir(std::string(129, 'a')) && !IsProsperoSteamInstallDir("a\tb"));
+  }
+  // Steam library folder: Playden's folder by default, so a game installed before this Playden keeps its path. A Steam
+  // game this Playden installs holds "default.steam_library_path" = steam, its own default: Playden's value
+  // (kPlayden), not a change of the player's, never shared or put in a preset; a recipe and the player win over it.
+  {
+    const auto* row = FindSetting("steam_library_path");
+    CHECK(row && row->label == "Steam library folder" && row->group == SettingGroup::kSteam &&
+          row->apply == ApplyMode::kGameClosed && row->playden_default == "playden" && row->choices.size() == 2 &&
+          row->choices[0].value == "steam" && row->choices[0].label == "Steam's folder" &&
+          row->choices[1].value == "playden" && row->choices[1].label == "Playden's folder");
+    CHECK(SettingShown(*row, KitCapabilities{}));
+    const auto steam_kit = KitCapabilitiesFromManifest({kKitSteamLibraryPath}, true);
+    EffectiveSettings values;
+    const auto effective = [&](const std::map<std::string, std::string>& overrides, const KitCapabilities& kit,
+                               const GameRecipe& recipe) -> const EffectiveValue& {
+      CHECK(BuildEffectiveSettings(recipe, nullptr, overrides, kit, &values, &error));
+      return values.values.at("steam_library_path");
+    };
+    auto value = effective({}, steam_kit, hl2);
+    CHECK(value.value == "playden" && value.source == ValueSource::kPlayden && value.available);
+    value = effective({{"default.steam_library_path", "steam"}}, steam_kit, hl2);
+    CHECK(value.value == "steam" && value.source == ValueSource::kPlayden && value.available);
+    value = effective({{"default.steam_library_path", "steam"}, {"steam_library_path", "playden"}}, steam_kit, hl2);
+    CHECK(value.value == "playden" && value.source == ValueSource::kUser);
+    value = effective({{"steam_library_path", "steam"}}, steam_kit, hl2);
+    CHECK(value.value == "steam" && value.source == ValueSource::kUser);
+    // A default whose value isn't one of the row's is ignored.
+    value = effective({{"default.steam_library_path", "elsewhere"}}, steam_kit, hl2);
+    CHECK(value.value == "playden" && value.source == ValueSource::kPlayden);
+    // A recipe may set the row (The Talos Principle would); the player still wins.
+    auto talos = hl2;
+    talos.defaults["steam_library_path"] = "steam";
+    {
+      GameRecipe reread;
+      CHECK(ParseGameRecipe(SerializeGameRecipe(talos), &reread, &reason) &&
+            reread.defaults.at("steam_library_path") == "steam");
+    }
+    value = effective({}, steam_kit, talos);
+    CHECK(value.value == "steam" && value.source == ValueSource::kRecipe);
+    value = effective({{"steam_library_path", "playden"}}, steam_kit, talos);
+    CHECK(value.value == "playden" && value.source == ValueSource::kUser);
+    // A runtime kit that can't show the game there, or a title still on an older runtime, disables the row, which then
+    // is Playden's folder whatever was chosen. The second applies once the game's runtime is updated, and says so.
+    for (const auto& kit : {KitCapabilities{}, KitForTitleRuntime(steam_kit, false)}) {
+      value = effective({{"default.steam_library_path", "steam"}, {"steam_library_path", "steam"}}, kit, hl2);
+      CHECK(!value.available && value.value == "playden");
+    }
+    CHECK(effective({}, KitCapabilities{}, hl2).reason == "Needs a newer runtime kit that shows the game in Steam's folder.");
+    CHECK(KitForTitleRuntime(steam_kit, false).steam_library_path_needs_update &&
+          !KitForTitleRuntime(steam_kit, true).steam_library_path_needs_update &&
+          !KitForTitleRuntime(KitCapabilities{}, false).steam_library_path_needs_update);
+    CHECK(effective({}, KitForTitleRuntime(steam_kit, false), hl2).reason == kAppliesAfterKitUpdate);
+
+    // The reserved key.
+    CHECK(IsGameDefaultKey("default.steam_library_path") && !IsGameDefaultKey("default.") &&
+          !IsGameDefaultKey("default.resolution") && !IsGameDefaultKey("steam_library_path") &&
+          !IsUnlockKey("default.steam_library_path"));
+    const std::map<std::string, std::string> mixed = {{"default.steam_library_path", "steam"}, {"resolution", "1280x720"}};
+    CHECK(GameDefaultOverrides(mixed) == (std::map<std::string, std::string>{{"default.steam_library_path", "steam"}}));
+    CHECK(HasPlayerOverrides(mixed) && !HasPlayerOverrides(GameDefaultOverrides(mixed)) && !HasPlayerOverrides({}));
+    // Saved and read back with the record; one this build doesn't take, or with a value the row doesn't have, is dropped.
+    GameSettingsRecord record;
+    record.overrides = {{"default.steam_library_path", "steam"}, {"default.resolution", "1280x720"}};
+    GameSettingsRecord reread;
+    CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(record), &reread, &reason));
+    CHECK(reread.overrides == (std::map<std::string, std::string>{{"default.steam_library_path", "steam"}}));
+    record.overrides = {{"default.steam_library_path", "elsewhere"}};
+    CHECK(ParseGameSettingsRecord(SerializeGameSettingsRecord(record), &reread, &reason) && reread.overrides.empty());
+
+    // Where a game is installed is its own: never in a preset, whoever chose it.
+    CHECK(!ValidatePresetSetting("steam_library_path", "steam", &reason));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"steam_library_path", "steam"}}, steam_kit, &values, &error));
+    CHECK(!PresetSettingsFromGame(hl2, values, PresetCapture::kSave).count("steam_library_path"));
+
+    // Shares: the game's own default stays out (an older Playden refuses a recipe naming a row it doesn't know); a
+    // value the player or a recipe set goes in.
+    const auto ref = playden::GameRef::Steam(220);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"default.steam_library_path", "steam"}}, steam_kit, &values, &error));
+    CHECK(!BuildCommunityRecipe(hl2, values, ref, "Half-Life 2").recipe.defaults.count("steam_library_path"));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, steam_kit, &values, &error));
+    CHECK(!BuildCommunityRecipe(hl2, values, ref, "Half-Life 2").recipe.defaults.count("steam_library_path"));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"steam_library_path", "steam"}}, steam_kit, &values, &error));
+    CHECK(BuildCommunityRecipe(hl2, values, ref, "Half-Life 2").recipe.defaults.at("steam_library_path") == "steam");
+    // A chosen Playden's folder goes in too: on another new install the game's own default would be Steam's folder.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"default.steam_library_path", "steam"}, {"steam_library_path", "playden"}},
+                                 steam_kit, &values, &error));
+    CHECK(BuildCommunityRecipe(hl2, values, ref, "Half-Life 2").recipe.defaults.at("steam_library_path") == "playden");
+    CHECK(BuildEffectiveSettings(talos, nullptr, {}, steam_kit, &values, &error));
+    CHECK(BuildCommunityRecipe(talos, values, ref, "Half-Life 2").recipe.defaults.at("steam_library_path") == "steam");
   }
   // Playden's tables of preset rows and buttons match the shipped input files.
   for (const auto& [name, buttons] : ControllerPresetButtons()) {

@@ -716,8 +716,10 @@ std::string BottlePath(std::string path) {
     return path == "." ? std::string() : path;
 }
 
+// Keeps the game's own defaults too (rt::kGameDefaultPrefix): they are Playden's, not the player's.
 void clear_keeping_start_choices(std::map<std::string, std::string>* overrides) {
-    for (auto it = overrides->begin(); it != overrides->end();) it = start_choice(it->first) ? std::next(it) : overrides->erase(it);
+    for (auto it = overrides->begin(); it != overrides->end();)
+        it = start_choice(it->first) || rt::IsGameDefaultKey(it->first) ? std::next(it) : overrides->erase(it);
 }
 
 // "a=n;b=n,b" as its entries, in order.
@@ -1739,7 +1741,10 @@ void Simulation::UpdateImportedPrograms(std::map<GameId, std::string> programs) 
 std::map<std::string, std::string> Simulation::reset_overrides(GameId id) const {
     // Reset removes every change of the player's, the program they picked too. An imported game goes back to the
     // program it was added with: that one is saved as a change, but the game has no other way to start.
+    // The game's own defaults (a Steam game this Playden installed shows in Steam's folder) stay: they aren't changes.
     std::map<std::string, std::string> overrides;
+    if (const auto record = state_.game_settings.find(id); record != state_.game_settings.end())
+        overrides = rt::GameDefaultOverrides(record->second.overrides);
     if (const auto imported = imported_programs_.find(id); imported != imported_programs_.end())
         overrides["program"] = imported->second;
     return overrides;
@@ -5495,7 +5500,7 @@ void Simulation::load_profile() {
             }
             if (const auto* overrides = value->Find("overrides"); overrides && overrides->is_object())
                 for (const auto& [id, text] : overrides->object())
-                    if (text.is_string() && rt::FindSetting(id)) record.overrides[id] = text.text();
+                    if (text.is_string() && (rt::FindSetting(id) || rt::IsGameDefaultKey(id))) record.overrides[id] = text.text();
             state_.game_settings[GameId::Steam(static_cast<std::uint32_t>(*app))] = std::move(record);
         }
     }
@@ -6486,7 +6491,7 @@ bool Simulation::scenario(const std::string& name) {
             // The recipe as published: nothing new to share, and the vote prompt's recipe.
             rt::ChooseCommunityRecipe(&record, recipe_id, revision);
         }
-        if (state_.game_settings[id].overrides.empty() && state_.game_settings[id].community_recipe.id.empty())
+        if (!rt::HasPlayerOverrides(state_.game_settings[id].overrides) && state_.game_settings[id].community_recipe.id.empty())
             state_.game_settings.erase(id);
         if (name.rfind("feedback-", 0) == 0) {
             // The player quit the game: after ten minutes, or after 40 seconds for "Did it start?".
@@ -6827,7 +6832,7 @@ void Simulation::rebuild_view() {
         rt::EffectiveSettings settings_values;
         const bool settings_ready = settings_modal && EffectiveSettingsFor(settings_game, &settings_values);
         const auto settings_record = state_.game_settings.find(settings_game);
-        const bool settings_custom = settings_record != state_.game_settings.end() && !settings_record->second.overrides.empty();
+        const bool settings_custom = settings_record != state_.game_settings.end() && rt::HasPlayerOverrides(settings_record->second.overrides);
         // A picker marks the value the game would have without the player's choice.
         rt::EffectiveValue inherited;
         if (settings_ready && !modal.setting_id.empty()) {
@@ -7768,6 +7773,11 @@ void Simulation::rebuild_view() {
                 if (value.unlocked) item.subtitle = value.reason;
                 if (id == "architecture") item.subtitle = "Follows the program you choose.";
                 if (id == "steam_features" && value.value == "online" && uses_vac(settings_game)) item.subtitle = kVacOnlineWarning;
+                // Another store's game has no Steam folder to be shown in (the runtime host checks the store too).
+                if (id == "steam_library_path" && settings_game.store != Store::kSteam) {
+                    item.enabled = false;
+                    item.subtitle = "Only for Steam games.";
+                }
                 if (id == "start_check") {
                     const auto setup = game_setups_.find(settings_game);
                     std::string problem = setup != game_setups_.end() && setup->second.draft ? setup->second.refusal : std::string();
@@ -8274,7 +8284,7 @@ void Simulation::rebuild_view() {
                 const auto id = state_.navigation.selected_game_id;
                 const auto record = state_.game_settings.find(id);
                 const std::string name = base_name(id, base_of(id));
-                item.value = record != state_.game_settings.end() && !record->second.overrides.empty() ? "Custom · from " + name : name;
+                item.value = record != state_.game_settings.end() && rt::HasPlayerOverrides(record->second.overrides) ? "Custom · from " + name : name;
                 if (live()) {
                     const auto runtime_game = state_.runtime_games.find(id);
                     if (record != state_.game_settings.end() && runtime_game != state_.runtime_games.end() &&
@@ -11226,6 +11236,7 @@ void Simulation::activate() {
         if (live()) {
             if (live_install_allowed(assessment.readiness, free_space_supported_)) {
                 save_install_choice();
+                set_new_install_defaults(id);
                 if (id.valid())
                     pending_install_requests_.push_back({InstallRequestKind::Install, id, install_volume_id_, false, install_language_,
                                                          install_version(id) ? install_version_ : std::string(),
@@ -11248,6 +11259,7 @@ void Simulation::activate() {
             });
             if (existing == state_.jobs.end()) {
                 save_install_choice();
+                set_new_install_defaults(state_.navigation.selected_game_id);
                 const auto required = assessment.required_bytes.value_or(0);
                 state_.jobs.push_back({next_job_id(), state_.navigation.selected_game_id, "install", next_queue_order(state_), JobStage::Download, JobState::Queued, 0, *assessment.download_bytes, std::nullopt, std::nullopt, {}, JobStage::Download, selected_volume_id_, 0, required, true, false});
                 reconcile_storage(state_);
@@ -13230,6 +13242,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
                 && value.state != JobState::Downloaded && value.state != JobState::Failed;
         });
         if (existing == state_.jobs.end()) {
+            set_new_install_defaults(id);
             state_.jobs.push_back({next_job_id(), id, "install", next_queue_order(state_), JobStage::Download, JobState::Queued, 0, *assessment.download_bytes, std::nullopt, std::nullopt, {}, JobStage::Download, volume_id, 0, assessment.required_bytes.value_or(0), true, false});
             reconcile_storage(state_);
         }
@@ -15498,6 +15511,24 @@ void Simulation::request_maintenance(GameId id, MaintenanceKind kind) {
     game.maintenance_message.clear();
 }
 
+void Simulation::set_new_install_defaults(GameId id) {
+    // Only a Steam game has a Steam folder; an installed one keeps where it is, as moving it can break it.
+    if (!id.valid() || id.store != Store::kSteam || is_installed(state_, id)) return;
+    if (live() && (settings_load_failed_ || game_settings_file_.empty())) return;
+    const std::string key = std::string(rt::kGameDefaultPrefix) + "steam_library_path";
+    auto& record = state_.game_settings[id];
+    if (const auto found = record.overrides.find(key); found != record.overrides.end() && found->second == "steam") return;
+    // Not a change of the player's: the revision stays, and the preparation after the download reads it.
+    record.overrides[key] = "steam";
+    if (live() || state_.persistence_available) save_profile();
+}
+
+std::map<std::string, std::string> Simulation::game_default_overrides(GameId id) const {
+    const auto record = state_.game_settings.find(id);
+    return record == state_.game_settings.end() ? std::map<std::string, std::string>{}
+                                                : rt::GameDefaultOverrides(record->second.overrides);
+}
+
 std::map<std::string, std::string> Simulation::kept_start_choices(GameId id) const {
     const auto record = state_.game_settings.find(id);
     if (record == state_.game_settings.end()) return {};
@@ -15541,7 +15572,7 @@ void Simulation::build_preset_comparison(GameId id, const std::string& preset_id
             comparison.rows.push_back({"Button mapping", "", std::to_string(buttons) + (buttons == 1 ? " button" : " buttons") + " change"});
     }
     const auto record = state_.game_settings.find(id);
-    const bool custom = record != state_.game_settings.end() && !record->second.overrides.empty();
+    const bool custom = record != state_.game_settings.end() && rt::HasPlayerOverrides(record->second.overrides);
     comparison.note = changes == 0 ? (custom ? "Clears your changes; the values stay the same." : "Nothing changes.")
                     : std::to_string(changes) + (changes == 1 ? " setting changes" : " settings change") +
                       ". All apply on next launch. What the game requires stays.";
@@ -15740,13 +15771,14 @@ std::optional<rt::CommunityRecipe> Simulation::build_shared_recipe(GameId id, bo
     rt::CommunityObjectState state;
     const auto* object = base ? community_object(base->revision, &state) : nullptr;
     if (!object || !rt::IsSettingsOnlyRecipe(*object)) return community;
-    // The base as it applies to this copy, without the player's changes, against the game's settings.
+    // The base as it applies to this copy, without the player's changes (its own defaults stay), against the game's
+    // settings.
     BaseChoice from;
     from.community = *base;
-    static const std::map<std::string, std::string> none;
+    const auto defaults = game_default_overrides(id);
     rt::EffectiveSettings before, after;
     rt::SettingsError error;
-    if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), none, kit_for(id), &before, &error) ||
+    if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), defaults, kit_for(id), &before, &error) ||
         !EffectiveSettingsFor(id, &after))
         return std::nullopt;
     auto shared = rt::BuildSettingsOnlyRecipe(*object, before, after, community->game, community->game_name,
@@ -15765,12 +15797,13 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
     *differs = false;
     *program_or_graphics = false;
     if (program_changed) *program_changed = false;
-    static const std::map<std::string, std::string> none;
+    // The base without the player's changes; the game's own defaults stay, as they aren't changes.
+    const auto defaults = game_default_overrides(id);
     BaseChoice from;
     if (base) from.community = {base->recipe_id, base->revision};
     rt::EffectiveSettings before, after;
     rt::SettingsError error;
-    if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), none, kit_for(id), &before, &error) ||
+    if (!rt::BuildEffectiveSettings(recipe_for_base(id, from), preset_for_base(from), defaults, kit_for(id), &before, &error) ||
         !EffectiveSettingsFor(id, &after))
         return {};
     // Whether the player changed what starts: the program as it resolves (the same file however its path is written),
@@ -16290,7 +16323,7 @@ bool Simulation::changes_worth_sharing(GameId id) const {
                                                       "performance_overlay", "overlay_detail", "vsync", "scaling",
                                                       "text_scale", "volume", "rumble", "logging", "locale"};
     return std::any_of(record->second.overrides.begin(), record->second.overrides.end(),
-                       [](const auto& item) { return !preferences.count(item.first); });
+                       [](const auto& item) { return !preferences.count(item.first) && !rt::IsGameDefaultKey(item.first); });
 }
 
 std::string Simulation::feedback_kit() const {
@@ -17013,7 +17046,7 @@ void Simulation::announce_settings_saved() {
                                        runtime_game->second.play_status == "Playing")
                                 : !game_closed(game);
     when += running ? " the next time Playden starts the game" : " on next launch";
-    push_notice({"settings-saved", "Settings saved · " + (after.overrides.empty() ? name : "Custom · from " + name), "", false,
+    push_notice({"settings-saved", "Settings saved · " + (!rt::HasPlayerOverrides(after.overrides) ? name : "Custom · from " + name), "", false,
                  kLiveNoticeSeconds, false, when});
     // A prepared title gets the new settings now when it is stopped, a new program or folder
     // included (RuntimeHost::RepublishSettings); otherwise Play applies them.

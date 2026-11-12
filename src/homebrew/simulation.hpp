@@ -1445,8 +1445,14 @@ public:
     [[nodiscard]] bool known_problem(GameId id) const;
     void follow_refresh_rate(GameId game);
     [[nodiscard]] bool game_settings_row_shown(const playden::runtime::SettingDefinition& definition, GameId game) const;
-    // The overrides a preset change or a reset keeps: the program choices (simulation.cpp).
+    // The overrides a preset change or a reset keeps: the program choices and the game's own defaults (simulation.cpp).
     [[nodiscard]] std::map<std::string, std::string> kept_start_choices(GameId id) const;
+    // The game's own defaults among its overrides (rt::GameDefaultOverrides): a baseline without the player's changes
+    // keeps them.
+    [[nodiscard]] std::map<std::string, std::string> game_default_overrides(GameId id) const;
+    // A Steam game this Playden installs shows in Steam's folder (Steam library folder) by default; one installed
+    // before keeps its own folder. Called when an install starts; an installed game is left as it is.
+    void set_new_install_defaults(GameId id);
     // Opens the picker, editor or "Change anyway" for one Game settings row.
     void open_setting(const std::string& id);
     // The actions of a row whose value the recipe starts (edit, reset, library override entries).

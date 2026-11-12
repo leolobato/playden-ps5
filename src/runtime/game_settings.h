@@ -62,9 +62,10 @@ struct KitCapabilities {
   bool title_any_id = false;     // one title shell for every game; no fixed set of titles
   // The title finds a USB game's drive when it starts, so it can be published naming no mount.
   bool game_root_usb_search = false;
-  // [steam] install_dir: the title shows a Steam game in steamapps\common (kKitSteamLibraryPath). Counts only for a
-  // title that runs this kit's runtime; nothing the player chose waits on it, so it has no needs_update.
+  // [steam] install_dir: the title shows a Steam game in steamapps\common (kKitSteamLibraryPath), when the game's Steam
+  // library folder row is Steam's folder. Counts only for a title that runs this kit's runtime, like display_120hz.
   bool steam_library_path = false;
+  bool steam_library_path_needs_update = false;
   bool game_root_unowned = false;  // games start from drives that record no file owners (exFAT)
   bool bottle_profile_shared = false;  // the bottle's 4 folders to its user profile may be 0711
   bool opengl_zink = false;        // OpenGL games draw through Mesa's Zink, not the PS5 OpenGL SDK
@@ -412,6 +413,17 @@ inline constexpr const char* kProgramEntryId = "program";
 // Override key prefix for "Change anyway" on a row the recipe locks: "unlock.<setting id>" = "on".
 inline constexpr const char* kUnlockPrefix = "unlock.";
 bool IsUnlockKey(std::string_view key);
+// Override key prefix for the game's own Playden default of a row: "default.<setting id>" = value. Playden sets it, not
+// the player (a Steam game installed by this Playden: Steam library folder = Steam's folder), so the row shows the value
+// as Playden's default (ValueSource::kPlayden): not a change, never shared or put in a preset, and kept by Reset and by
+// a switch of preset or recipe. Only the rows in IsGameDefaultKey take one.
+inline constexpr const char* kGameDefaultPrefix = "default.";
+bool IsGameDefaultKey(std::string_view key);
+// The game's own defaults among its overrides (the IsGameDefaultKey entries), which a baseline of the game's settings
+// without the player's changes keeps.
+std::map<std::string, std::string> GameDefaultOverrides(const std::map<std::string, std::string>& overrides);
+// Whether the overrides hold a choice of the player's: anything but the game's own defaults.
+bool HasPlayerOverrides(const std::map<std::string, std::string>& overrides);
 
 struct SettingsError {
   std::string setting_id;
@@ -469,7 +481,8 @@ struct ProfileTarget {
   // What the profile names instead, when not that: a USB game's search form (/mnt/usb/<folder>).
   std::string published_root;
   // A Steam game's folder in steamapps\common, for a title whose runtime shows it there ([steam], kit capability
-  // steam-library-path); empty: the game is seen at its real path only.
+  // steam-library-path); empty: the game is seen at its real path only. The profile names it only while the game's
+  // Steam library folder row is Steam's folder.
   std::string steam_install_dir;
 };
 

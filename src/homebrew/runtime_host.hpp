@@ -810,9 +810,9 @@ class RuntimeHost {
   // Steam features = Online with the Steam host: Valve's client files in place (downloaded at Play), and no saved
   // sign-in of the client's unless the game keeps its sign-in for the Home screen. Never stops the start.
   void SteamClientStep(const GameFiles& files);
-  // Steam features = Online on a title that shows the game in steamapps\common ([steam]): the client lists the bottle's
-  // Steam library and finds the game's appmanifest there, so it says the game is installed (runtime/steam_library.h).
-  // Never stops the start.
+  // Steam features = Online on a title that shows the game in steamapps\common ([steam], Steam library folder = Steam's
+  // folder): the client lists the bottle's Steam library and finds the game's appmanifest there, so it says the game is
+  // installed (runtime/steam_library.h). Never stops the start.
   void SteamLibraryStep(Composition& composition, const GameFiles& files);
   std::filesystem::path SteamClientFolder() const;  // shared by every Online game, on internal storage
   // Playden's own record of the client it installed (version, steamclient64.dll's SHA-256), while that version is the
