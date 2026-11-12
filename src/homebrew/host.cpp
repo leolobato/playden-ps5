@@ -789,7 +789,7 @@ int main(int argc, char** argv) {
         };
         import_config.remove_copy_folder = [runner = copy_runner.get()](const std::string& root) { return runner->Remove(root).empty(); };
         import_config.game_program = [](const std::string& folder, const std::string& program) {
-            return playden::runtime::UnrealGameProgram(folder, program);
+            return playden::runtime::GameProgramInstead(folder, program);
         };
         auto local_library = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
         auto* local = local_library.get();

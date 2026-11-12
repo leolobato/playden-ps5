@@ -100,8 +100,9 @@ struct LocalLibraryConfig {
   // calls it. Empty: such folders stay.
   std::function<bool(const std::string& root)> remove_copy_folder;
   // The program that starts the game in place of `program` (relative to `folder`, as this process opens it), or
-  // empty to keep it: an Unreal root launcher only starts the real program as a child process, which the console
-  // cannot do (runtime::UnrealGameProgram). Called on the worker at Add. Empty: the chosen program is kept.
+  // empty to keep it: an Unreal root launcher or a Unity bootstrap only starts the real program as a child process,
+  // which the console cannot do (runtime::GameProgramInstead). Called on the worker at Add. Empty: the chosen program
+  // is kept.
   std::function<std::string(const std::string& folder, const std::string& program)> game_program;
 };
 

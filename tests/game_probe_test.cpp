@@ -684,6 +684,60 @@ int main() {
     WritePe(root / "WindowsNoEditor/UE4PrereqSetup_x64.exe", {true, {"KERNEL32.dll"}});
     CHECK(UnrealGameProgram(root.string(), "WindowsNoEditor/UE4PrereqSetup_x64.exe").empty());
   }
+  {  // SUPERHOT (#755): Steam starts SUPERHOT.exe, a bootstrap beside UnityPlayer.dll that starts the launcher as a child
+     // process; the console refuses that and the bootstrap stops. The player is SH.exe, the one with a <stem>_Data folder.
+    const auto root = fresh();
+    // A 32-bit .NET bootstrap with SteamStub (both refused when it is the program) in front of a 64-bit native player:
+    // the player's own files decide.
+    WritePe(root / "SUPERHOT.exe", {false, {"mscoree.dll"}, true, true});
+    WritePe(root / "SH.exe", {true, {"UnityPlayer.dll", "KERNEL32.dll"}});
+    WritePe(root / "UnityPlayer.dll", {true, {"KERNEL32.dll"}, false, false, Wide("d3d11.dll")});
+    WritePe(root / "UnityCrashHandler64.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(root / "SH_Data");
+    const auto probe = ProbeGame(root.string(), "SUPERHOT.exe");
+    CHECK(probe.engine == "unity" && probe.unity_program == "SH.exe" && probe.unreal_program.empty());
+    CHECK(UnityGameProgram(root.string(), "SUPERHOT.exe") == "SH.exe");
+    CHECK(GameProgramInstead(root.string(), "SUPERHOT.exe") == "SH.exe");
+    GameRecipe recipe;
+    std::string reason;
+    CHECK(GenerateGameRecipe(322500, "SUPERHOT", {{"", "", "SUPERHOT.exe", "", ""}}, root.string(), &recipe, &reason));
+    CHECK(recipe.launch_entries[0].executable == "SH.exe" && recipe.graphics == "dxvk" && recipe.architecture == "pe64");
+    CHECK(recipe.arguments.find("-force-d3d11") != std::string::npos);
+    // The player itself, and a program with no UnityPlayer.dll beside it, are started as they are.
+    CHECK(ProbeGame(root.string(), "SH.exe").unity_program.empty());
+    CHECK(UnityGameProgram(root.string(), "SH.exe").empty());
+    // A recipe generated before this (SUPERHOT.exe, current defaults) starts the player from the next Play on.
+    GameRecipe old = recipe;
+    old.launch_entries[0].executable = "SUPERHOT.exe";
+    old.architecture = "pe32";
+    KitCapabilities kit;
+    CHECK(RefreshRecipeDefaults(root.string(), kit, &old));
+    CHECK(old.launch_entries[0].executable == "SH.exe" && old.launch_entries[0].working_directory.empty() &&
+          old.arguments == recipe.arguments && old.architecture == "pe64");
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &old));  // nothing more to do
+    // A program the player chose is kept as chosen.
+    GameRecipe picked = recipe;
+    picked.launch_entries[0].id = kProgramEntryId;
+    picked.launch_entries[0].executable = "SUPERHOT.exe";
+    CHECK(!RefreshRecipeDefaults(root.string(), kit, &picked) && picked.launch_entries[0].executable == "SUPERHOT.exe");
+    // A program with a <name>_Data folder that doesn't load UnityPlayer.dll is not a player.
+    WritePe(root / "Editor.exe", {true, {"KERNEL32.dll"}});
+    fs::create_directories(root / "Editor_Data");
+    CHECK(UnityGameProgram(root.string(), "SUPERHOT.exe") == "SH.exe");
+    // Two players: none is guessed.
+    WritePe(root / "Other.exe", {true, {"UnityPlayer.dll"}});
+    fs::create_directories(root / "Other_Data");
+    CHECK(UnityGameProgram(root.string(), "SUPERHOT.exe").empty());
+    // In a subfolder, the path keeps it.
+    const auto nested = fresh();
+    WritePe(nested / "Game/Start.exe", {true, {"KERNEL32.dll"}});
+    WritePe(nested / "Game/Player.exe", {true, {"UnityPlayer.dll"}});
+    WritePe(nested / "Game/UnityPlayer.dll", {true, {"KERNEL32.dll"}});
+    fs::create_directories(nested / "Game/Player_Data");
+    CHECK(UnityGameProgram(nested.string(), "Game/Start.exe") == "Game/Player.exe");
+    WritePe(nested / "Lonely.exe", {true, {"KERNEL32.dll"}});
+    CHECK(UnityGameProgram(nested.string(), "Lonely.exe").empty());
+  }
   {  // Satisfactory (Epic): the root FactoryGameEGS.exe starts FactoryGame/Binaries/Win64/*-Shipping.exe.
     const auto root = fresh();
     WritePe(root / "FactoryGameEGS.exe", {true, {"KERNEL32.dll"}});

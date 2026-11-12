@@ -420,6 +420,30 @@ std::string LowerStem(const std::string& lower_file) {
   return EndsWith(lower_file, ".exe") ? lower_file.substr(0, lower_file.size() - 4) : lower_file;
 }
 
+// The Unity player beside a program that isn't one: a player needs its <stem>_Data folder, so a program beside
+// UnityPlayer.dll without one is a bootstrap or launcher (SUPERHOT.exe in front of SH.exe). It starts the player as a
+// child process, which the console cannot do. The one program here with a <stem>_Data folder, relative to root as
+// spelled on disk; empty when the program is a player, when no UnityPlayer.dll is here, or when there isn't exactly one.
+// A candidate counts only when it loads UnityPlayer.dll itself, so an unrelated tool with a <name>_Data folder doesn't.
+std::string UnityPlayerBeside(const fs::path& directory_path, const std::vector<std::pair<std::string, bool>>& here,
+                              const std::string& folder, const std::string& lower_file) {
+  if (!EndsWith(lower_file, ".exe") || Find(here, LowerStem(lower_file) + "_data", true) ||
+      !Find(here, "unityplayer.dll", false))
+    return {};
+  std::vector<std::string> players;
+  for (const auto& [name, directory] : here) {
+    const auto lower = Lower(name);
+    if (directory || !EndsWith(lower, ".exe") || !Find(here, LowerStem(lower) + "_data", true)) continue;
+    const auto facts = ReadPe((directory_path / name).string(), true);
+    const auto loads = [](const std::vector<std::string>& list) {
+      return std::find(list.begin(), list.end(), "unityplayer.dll") != list.end();
+    };
+    if (facts.valid && (loads(facts.imports) || loads(facts.delay_imports))) players.push_back(name);
+  }
+  if (players.size() != 1) return {};
+  return folder.empty() ? players.front() : folder + "/" + players.front();
+}
+
 // Microsoft's MFC library, which Wine doesn't provide: mfc140.dll, mfc140u.dll, mfcm140.dll, mfcm140u.dll (and
 // whatever later 140 builds add).
 bool MfcLibrary(const std::string& lower) {
@@ -468,6 +492,19 @@ MfcImports FindMfcImports(const std::string& install_root) {
   ScanMfc(fs::path(install_root), std::string(), 0, &out, &seen);
   out.programs = seen;
   return out;
+}
+
+std::string UnityGameProgram(const std::string& install_root, const std::string& executable) {
+  const auto slash = executable.rfind('/');
+  const std::string folder = slash == std::string::npos ? std::string() : executable.substr(0, slash);
+  const auto file = slash == std::string::npos ? executable : executable.substr(slash + 1);
+  const auto directory = fs::path(install_root) / folder;
+  return UnityPlayerBeside(directory, Entries(directory), folder, Lower(file));
+}
+
+std::string GameProgramInstead(const std::string& install_root, const std::string& executable) {
+  auto program = UnrealGameProgram(install_root, executable);
+  return program.empty() ? UnityGameProgram(install_root, executable) : program;
 }
 
 std::string UnrealGameProgram(const std::string& install_root, const std::string& executable) {
@@ -601,6 +638,7 @@ GameProbe ProbeGame(const std::string& install_root, const std::string& executab
     if (probe.legacy_unity)
       if (const auto data = Find(here, Lower(stem) + "_data", true)) probe.unity_major = UnityMajorVersion(root / folder / *data);
     if (unity) ScanNames((root / folder / *unity).string(), &probe.apis);
+    probe.unity_program = UnityPlayerBeside(root / folder, here, folder, lower_file);
   } else if (EndsWith(lower_file, "-shipping.exe") || UnrealLauncher(here, lower_file)) {
     probe.engine = "unreal";
     if (!EndsWith(lower_file, "-shipping.exe")) {

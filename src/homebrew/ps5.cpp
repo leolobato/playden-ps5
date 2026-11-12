@@ -1121,7 +1121,7 @@ int main() {
             };
             import_config.remove_copy_folder = [runner = copy_runner.get()](const std::string& root) { return runner->Remove(root).empty(); };
             import_config.game_program = [](const std::string& folder, const std::string& program) {
-                return playden::runtime::UnrealGameProgram(folder, program);
+                return playden::runtime::GameProgramInstead(folder, program);
             };
             auto source = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
             local_library = source.get();

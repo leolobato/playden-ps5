@@ -2617,7 +2617,17 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
       if (first_missing.empty()) first_missing = *relative;
       continue;
     }
-    const auto probe = ProbeGame(install_root, *on_disk);
+    auto probe = ProbeGame(install_root, *on_disk);
+    // A Unity bootstrap beside the player only starts the player as a child process, which the console cannot do: the
+    // player starts instead, and its own files decide the defaults and any refusal. A program the player chose starts
+    // as chosen.
+    if (!probe.unity_program.empty() && !chosen) {
+      on_disk = probe.unity_program;
+      const auto folder = on_disk->rfind('/');
+      working = folder == std::string::npos ? std::string() : on_disk->substr(0, folder);
+      in_install_root = false;
+      probe = ProbeGame(install_root, *on_disk);
+    }
     RuntimeAbilities abilities;
     abilities.shared_sections = kit.shared_sections;
     abilities.wine_mono = kit.wine_mono;
@@ -2731,12 +2741,30 @@ bool AddWatcomTranslator(const std::string& install_root, const std::string& on_
 
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe) {
   if (!IsGeneratedRecipeId(recipe->id) || recipe->launch_entries.empty()) return false;
-  const bool current = recipe->defaults_revision >= DefaultsRevision(recipe->detected);
-  if (current && !MayNeedWatcomTranslator(*recipe)) return false;
   const auto relative = steam::RelativeGamePath(recipe->launch_entries.front().executable);
-  const auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
+  auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
   if (!on_disk) return false;
-  if (current) return AddWatcomTranslator(install_root, *on_disk, recipe);
+  // A recipe generated before Unity bootstraps were skipped starts one, which stops at once (SUPERHOT, #755): it
+  // starts the Unity player now. A generated recipe's programs are Steam's; the player's own pick is kept apart.
+  // Its architecture follows the player; one that can't be read now stays as it is until the next Play.
+  bool moved = false;
+  if (const auto player = recipe->launch_entries.front().id == kProgramEntryId ? std::string()
+                                                                                : UnityGameProgram(install_root, *on_disk);
+      !player.empty()) {
+    if (const auto architecture = ExecutableArchitecture(install_root + "/" + player); !architecture.empty()) {
+      auto& entry = recipe->launch_entries.front();
+      const auto folder = player.rfind('/');
+      entry.executable = player;
+      entry.working_directory = folder == std::string::npos ? std::string() : player.substr(0, folder);
+      entry.in_install_root = false;
+      recipe->architecture = architecture;
+      on_disk = player;
+      moved = true;
+    }
+  }
+  const bool current = recipe->defaults_revision >= DefaultsRevision(recipe->detected);
+  if (current && !MayNeedWatcomTranslator(*recipe)) return moved;
+  if (current) return AddWatcomTranslator(install_root, *on_disk, recipe) || moved;
   RuntimeAbilities abilities;
   abilities.shared_sections = kit.shared_sections;
   abilities.wine_mono = kit.wine_mono;
@@ -2756,7 +2784,7 @@ bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilitie
   if (defaults.cpu.empty()) refreshed.defaults.erase("cpu");
   else refreshed.defaults["cpu"] = defaults.cpu;
   // The files no longer show this engine (an update changed it): that's for the files-changed path, not this one.
-  if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) return false;
+  if (refreshed.defaults_revision < DefaultsRevision(recipe->detected)) return moved;
   *recipe = std::move(refreshed);
   return true;
 }
