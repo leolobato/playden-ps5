@@ -566,7 +566,8 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
 
 std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
                                      const std::string& language, const std::vector<std::uint32_t>& excluded_dlc,
-                                     const std::vector<std::uint32_t>& owned_apps, std::uint64_t owned_apps_account) {
+                                     const std::vector<std::uint32_t>& owned_apps, std::uint64_t owned_apps_account,
+                                     const std::vector<std::string>& save_folders) {
   std::string text = "depots=" + Join(Sorted(depots), ",") + "\ndlc=" + Join(Sorted(owned_dlc), ",") + "\n";
   // The language the depots were installed for. Older files have no line and read as English,
   // which is what they were installed in.
@@ -575,21 +576,30 @@ std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, c
   if (!excluded_dlc.empty()) text += "nodlc=" + Join(Sorted(excluded_dlc), ",") + "\n";
   if (!owned_apps.empty())
     text += "apps=" + Join(Sorted(owned_apps), ",") + "\napps_account=" + std::to_string(owned_apps_account) + "\n";
+  std::size_t saves = 0;
+  for (const auto& folder : save_folders)
+    if (saves < kMaxProfileSaveFolders && IsProfileSaveFolder(folder)) {
+      text += "save=" + folder + "\n";
+      ++saves;
+    }
   return text;
 }
 
 bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std::uint32_t>& depots,
                           const std::vector<std::uint32_t>& owned_dlc, const std::string& language,
                           const std::vector<std::uint32_t>& excluded_dlc,
-                          const std::vector<std::uint32_t>& owned_apps, std::uint64_t owned_apps_account) {
+                          const std::vector<std::uint32_t>& owned_apps, std::uint64_t owned_apps_account,
+                          const std::vector<std::string>& save_folders) {
   return WriteAtomic(fs::path(install_root) / kSteamworksFactsFile,
-                     SerializeSteamworksFacts(depots, owned_dlc, language, excluded_dlc, owned_apps, owned_apps_account));
+                     SerializeSteamworksFacts(depots, owned_dlc, language, excluded_dlc, owned_apps, owned_apps_account,
+                                              save_folders));
 }
 
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity) {
   const auto text = ReadFile(fs::path(install_root) / kSteamworksFactsFile, 64 * 1024);
   if (!text) return false;
   std::vector<std::uint32_t> depots, dlc, excluded, apps;
+  std::vector<std::string> saves;
   std::string language;
   std::uint64_t apps_account = 0;
   std::size_t start = 0;
@@ -605,6 +615,12 @@ bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* id
       // Only a language Steam names; anything else leaves the game on English rather than
       // handing the emulator a value it cannot use.
       if (steam::IsContentLanguage(value)) language = value;
+      continue;
+    }
+    if (line.compare(0, equals, "save") == 0) {
+      // A folder that is not a plain path below the user folder is left out; the facts still read.
+      const auto folder = line.substr(equals + 1);
+      if (saves.size() < kMaxProfileSaveFolders && IsProfileSaveFolder(folder)) saves.push_back(folder);
       continue;
     }
     if (line.compare(0, equals, "apps_account") == 0) {
@@ -642,6 +658,7 @@ bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* id
   identity->excluded_dlc = std::move(excluded);
   identity->owned_apps = std::move(apps);
   identity->owned_apps_account = apps_account;
+  identity->save_folders = std::move(saves);
   if (!language.empty()) identity->language = language;
   return true;
 }

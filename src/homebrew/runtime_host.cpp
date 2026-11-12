@@ -1161,7 +1161,8 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
       const bool kept = !facts || other_store ||
                         rt::WriteSteamworksFacts(root.string(), identity.depots, identity.owned_dlc, identity.language,
                                                  identity.excluded_dlc, apps_changed ? identity.owned_apps : saved_apps,
-                                                 apps_changed ? identity.owned_apps_account : saved_account);
+                                                 apps_changed ? identity.owned_apps_account : saved_account,
+                                                 identity.save_folders);
       const std::string failed = kept ? "" : " facts=write-failed";
       if (!added_dlc.empty())
         Log("steamworks app=" + std::to_string(record.runtime_number) + " owned dlc added=" + std::to_string(added_dlc.size()) +
@@ -1300,6 +1301,22 @@ void RuntimeHost::VcRuntimeStep(const GameFiles& files) {
   if (changed || !ok)
     Log("vc runtime app=" + std::to_string(files.record.runtime_number) +
         (ok ? std::string(" version=") + rt::kVcRuntimeVersion : " failed=" + reason));
+}
+
+// Steam-file step: the folders of the game's Steam Cloud saves in the Windows user folder, which its download recorded
+// (SteamworksIdentity::save_folders), are made in the bottle when missing, as Steam makes them on Windows before a game
+// starts: Leaf It Alone watches its Saves folder at start-up and stops when it isn't there. Logged, never a refusal.
+void RuntimeHost::SaveFoldersStep(Composition& c, const GameFiles& files) {
+  if (!c.installer) return;
+  rt::SteamworksIdentity identity;
+  if (!rt::ReadSteamworksFacts(files.root.string(), &identity) || identity.save_folders.empty()) return;
+  std::vector<std::string> added, failed;
+  c.installer->AddProfileFolders(files.record, identity.save_folders, &added, &failed);
+  if (added.empty() && failed.empty()) return;
+  std::string line = "save folders app=" + std::to_string(files.record.runtime_number);
+  for (const auto& folder : added) line += " added=" + folder;
+  for (const auto& folder : failed) line += " failed=" + folder;
+  Log(line);
 }
 
 // Generic step: vkd3d-proton's variables reach the game through the bottle's Environment key. Some change how
@@ -1723,7 +1740,7 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
 // The steps run in this order for every game, whatever its store: generic ones (media, EULA, Direct3D 12, Wine
 // Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values and files, the
 // .NET heap) and Steam-file ones, which act only on the Steam files a game has (SteamStub, Steamworks and steam.dll,
-// install scripts and redistributables).
+// install scripts and redistributables, Cloud save folders).
 std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known) {
   MediaStep(c, record);
   GameFiles files{record};
@@ -1781,6 +1798,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   if (auto refused = InstallScriptsStep(files); !refused.empty()) return refused;
   MfcStep(files);
   SteamClientStep(files);
+  SaveFoldersStep(c, files);
   // After the redistributables (install scripts, MFC): one that writes an older runtime key doesn't stay.
   VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;

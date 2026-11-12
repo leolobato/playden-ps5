@@ -2,6 +2,7 @@
 #include "runtime/prospero_profile.h"
 #include "runtime/kit_trust.h"
 #include "runtime/private_directories.h"
+#include "runtime/profile_save_folder.h"
 #include "platform/managed_directory.h"
 #include "platform/usb_mount.h"
 #include "pw_title_publication_native.h"
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <cstdio>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <limits>
@@ -958,6 +960,82 @@ void FilesystemPackageInstaller::AddMissingBottleFolders(const RuntimeInstall& r
     for (const auto& folder : added) line += " added=" + folder;
     for (const auto& folder : failed) line += " failed=" + folder;
     operations_.log(line);
+  }
+}
+
+namespace {
+// The entry of `folder` that equals `name` but for ASCII case: Wine finds a folder whatever its case, so a second one
+// differing only in case would split what the game reads and writes. Ambiguous (two such entries) or unlisted: refused.
+enum class CaseMatch { kNone, kOne, kRefused };
+CaseMatch SameNameOtherCase(const fs::path& folder, const std::string& name, std::string* found) {
+  const auto lower = [](std::string text) {
+    for (auto& value : text) value = static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
+    return text;
+  };
+  const auto wanted = lower(name);
+  std::size_t matches = 0;
+  DIR* listing = ::opendir(folder.c_str());
+  if (!listing) return CaseMatch::kRefused;
+  errno = 0;
+  while (const dirent* entry = ::readdir(listing)) {
+    const std::string candidate = entry->d_name;
+    if (candidate != "." && candidate != ".." && lower(candidate) == wanted && ++matches == 1) *found = candidate;
+    errno = 0;
+  }
+  const bool failed = errno != 0;
+  ::closedir(listing);
+  if (failed || matches > 1) return CaseMatch::kRefused;
+  return matches == 1 ? CaseMatch::kOne : CaseMatch::kNone;
+}
+}  // namespace
+
+void FilesystemPackageInstaller::AddProfileFolders(const RuntimeInstall& record, const std::vector<std::string>& folders,
+                                                   std::vector<std::string>* added, std::vector<std::string>* failed) {
+  if (folders.empty()) return;
+  const auto paths = Resolve(record);
+  if (!paths) {
+    if (failed) failed->insert(failed->end(), folders.begin(), folders.end());
+    return;
+  }
+  const auto user = paths->bottle / "drive_c/users/prospero";
+  struct stat info{};
+  if (::lstat(user.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return;  // the bottle is not made yet
+  const mode_t mode = ProfileShared(record, *paths) ? 0777 : 0700;
+  for (const auto& folder : folders) {
+    bool made = false, ok = IsProfileSaveFolder(folder);
+    auto current = ok ? platform::ManagedDirectory::Open(user, platform::DirectoryPolicy::kApprovedTree) : std::nullopt;
+    ok = ok && current.has_value();
+    fs::path at = user;
+    std::size_t start = 0;
+    while (ok && start <= folder.size()) {
+      const auto end = std::min(folder.find('/', start), folder.size());
+      std::string name = folder.substr(start, end - start);
+      start = end + 1;
+      struct stat child{};
+      bool exists = current->InspectChild(name, &child);
+      if (!exists && errno != ENOENT) { ok = false; break; }
+      if (!exists) {
+        std::string other;
+        const auto match = SameNameOtherCase(at, name, &other);
+        if (match == CaseMatch::kRefused) { ok = false; break; }
+        if (match == CaseMatch::kOne) {
+          name = std::move(other);
+          exists = current->InspectChild(name, &child);
+          if (!exists) { ok = false; break; }
+        }
+      }
+      if (exists && !S_ISDIR(child.st_mode)) { ok = false; break; }
+      auto next = current->OpenChild(name, platform::DirectoryPolicy::kApprovedTree, !exists, mode);
+      if (!next || (!exists && (!next->Sync() || !current->Sync()))) { ok = false; break; }
+      made = made || !exists;
+      at /= name;
+      current = std::move(next);
+    }
+    if (!ok) {
+      if (failed) failed->push_back(folder);
+    } else if (made && added) {
+      added->push_back(folder);
+    }
   }
 }
 

@@ -796,6 +796,7 @@ class RuntimeHost {
   std::string Direct3D12Step(Composition& composition, const GameFiles& files);
   void KitMonoStep(Composition& composition, const runtime::RuntimeInstall& record, const char* when);  // never stops the start
   void VcRuntimeStep(const GameFiles& files);  // never stops the start
+  void SaveFoldersStep(Composition& c, const GameFiles& files);  // never stops the start
   std::string BottleEnvironmentStep(const GameFiles& files);
   // The recipe's registry values, tracked per install (runtime::RecipeRegistryState) so a switch
   // removes what the earlier recipe wrote and left; idempotent.

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/profile_save_folder.h"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -74,6 +76,9 @@ struct SteamworksIdentity {
   // (lobbies, P2P, server announcements between emulators on the same network) is on. Off: Steam is offline, no
   // networking.
   bool network = true;
+  // The game's Steam Cloud save folders inside the Windows user folder (ProfileSaveFolders), relative to it with '/'
+  // separators: Playden makes the missing ones in the bottle before the game starts, as Steam does on Windows.
+  std::vector<std::string> save_folders;
 };
 
 struct SteamworksResult {
@@ -129,16 +134,20 @@ std::vector<std::string> SteamInterfaces(std::string_view dll_bytes);
 // is the content language the depots were installed for; English, and files written before
 // Playden could choose one, leave the line out. `excluded_dlc`: DLC the player turned off at install, which each
 // prepare leaves out when it adds the account's owned DLC. `owned_apps` and `owned_apps_account`: SteamworksIdentity's,
-// kept so a start before the next license read (or offline) still has them, for that account only.
+// kept so a start before the next license read (or offline) still has them, for that account only. `save_folders`: one
+// "save=" line each; a folder IsProfileSaveFolder refuses is left out, on writing and on reading (the rest of the file
+// still reads), and so is any past kMaxProfileSaveFolders. Older Playden versions skip the lines.
 std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
                                      const std::string& language = {}, const std::vector<std::uint32_t>& excluded_dlc = {},
                                      const std::vector<std::uint32_t>& owned_apps = {},
-                                     std::uint64_t owned_apps_account = 0);
+                                     std::uint64_t owned_apps_account = 0,
+                                     const std::vector<std::string>& save_folders = {});
 bool WriteSteamworksFacts(const std::string& install_root, const std::vector<std::uint32_t>& depots,
                           const std::vector<std::uint32_t>& owned_dlc, const std::string& language = {},
                           const std::vector<std::uint32_t>& excluded_dlc = {},
                           const std::vector<std::uint32_t>& owned_apps = {},
-                          std::uint64_t owned_apps_account = 0);
+                          std::uint64_t owned_apps_account = 0,
+                          const std::vector<std::string>& save_folders = {});
 bool ReadSteamworksFacts(const std::string& install_root, SteamworksIdentity* identity);
 
 }  // namespace playden::runtime

@@ -92,6 +92,13 @@ public:
   virtual PackageActionResult RepairBottle(const RuntimeInstall &) {
     return {PackageActionState::kFailed, "repair-unsupported", "this package layer cannot repair bottles"};
   }
+  // Makes the missing ones of `folders` in the bottle's Windows user folder (drive_c/users/prospero): each a path
+  // relative to it that IsProfileSaveFolder admits (others fail). A folder already there under another case is the
+  // one used, as Wine finds it. Existing folders keep their mode; new ones get the profile's (0777 with
+  // bottle-profile-shared, else 0700). A bottle with no user folder yet is left alone. Folders made go in `added`,
+  // ones that could not be made in `failed`; nothing else changes. The title must be stopped.
+  virtual void AddProfileFolders(const RuntimeInstall &, const std::vector<std::string> &,
+                                 std::vector<std::string> *, std::vector<std::string> *) {}
   // Sets the bottle's way to its user profile (data root, library, library/prefixes, the bottle,
   // drive_c, drive_c/users) to the kit's mode: 0711 when the kit has bottle-profile-shared, which
   // then also opens the profile (drive_c/users/prospero) to FTP, else 0700. The title must be

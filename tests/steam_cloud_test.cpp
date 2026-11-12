@@ -854,6 +854,44 @@ void MapsLeadingSeparatorPaths() {
 
 // A save location Steam lists for macOS beside the Windows one (Cat Quest) is the Mac client's: the Windows one maps
 // and syncs, and the Mac client's Cloud files are left alone.
+// #714: the folders Playden makes in a new bottle before the first start are the Cloud save locations inside the
+// Windows user folder, and only those.
+void ProfileSaveFoldersStayInUserFolder() {
+  const auto folders_of = [](const std::string& savefiles) {
+    const auto info = ParseAppInfo(kApp, UfsAppInfo(savefiles));
+    CHECK(info && info->cloud.declared);
+    return ProfileSaveFolders(info->cloud, kApp);
+  };
+  // Leaf It Alone (3981100), as Steam lists it.
+  CHECK(folders_of("\t\t\t\"0\" { \"path\" \"Eternity/Leaf it Alone/Saves\" \"pattern\" \"*\" \"root\" \"WinAppDataLocalLow\" }\n") ==
+        std::vector<std::string>{"AppData/LocalLow/Eternity/Leaf it Alone/Saves"});
+  // Every Windows user root, a leading and a trailing separator, backslashes; one folder named twice (in another case
+  // too) is made once.
+  CHECK(folders_of("\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"/My Games/Game\\\\Saves/\" \"pattern\" \"*.sav\" }\n"
+                   "\t\t\t\"1\" { \"root\" \"WinMyDocuments\" \"path\" \"My Games/game/saves\" \"pattern\" \"*.cfg\" }\n"
+                   "\t\t\t\"2\" { \"root\" \"WinAppDataRoaming\" \"path\" \"Studio\" \"pattern\" \"*\" }\n"
+                   "\t\t\t\"3\" { \"root\" \"WinAppDataLocal\" \"path\" \"Studio/Game\" \"pattern\" \"*\" }\n"
+                   "\t\t\t\"4\" { \"root\" \"WinSavedGames\" \"path\" \"Game\" \"pattern\" \"*\" }\n"
+                   "\t\t\t\"5\" { \"root\" \"Root\" \"path\" \"Game Data\" \"pattern\" \"*\" }\n") ==
+        (std::vector<std::string>{"Documents/My Games/Game/Saves", "AppData/Roaming/Studio", "AppData/Local/Studio/Game",
+                                  "Saved Games/Game", "Game Data"}));
+  // A root's own folder is one of the profile's (Playden makes them all).
+  CHECK(folders_of("\t\t\t\"0\" { \"root\" \"WinMyDocuments\" \"path\" \"\" \"pattern\" \"*.sav\" }\n") ==
+        std::vector<std::string>{"Documents"});
+  // Outside the user folder (the game, ProgramData, the emulator's storage), the user folder itself, a location that
+  // names the account, one that climbs out or is a network path, and one for macOS only: none.
+  for (const char* location : {
+           R"("root" "gameinstall" "path" "saves")", R"("root" "WinProgramData" "path" "Studio")",
+           R"("root" "SteamUserData" "path" "saves")",
+           R"("root" "Root" "path" "")", R"("root" "WinAppDataLocal" "path" "Game/{64BitSteamID}")",
+           R"("root" "WinAppDataLocal" "path" "../../../../Windows")", R"("root" "WinAppDataLocal" "path" "Game/../../Roaming")",
+           R"("root" "WinMyDocuments" "path" "//server/share")", R"("root" "WinMyDocuments" "path" "C:/Saves")",
+           R"("root" "MacAppSupport" "path" "Game")"}) {
+    const auto folders = folders_of(std::string("\t\t\t\"0\" { ") + location + " \"pattern\" \"*\" }\n");
+    CHECK(folders.empty());
+  }
+}
+
 void SkipsOtherPlatformLocations() {
   const auto info = ParseAppInfo(kApp, kCatQuestAppInfo);
   CHECK(info && info->cloud.patterns.size() == 2);
@@ -1012,6 +1050,7 @@ int main() {
   ParsesUfsAndMaps();
   SkipsOtherPlatformLocations();
   MapsLeadingSeparatorPaths();
+  ProfileSaveFoldersStayInUserFolder();
   SyncEndToEnd();
   QuickCheckAndIndex();
   MissingGameFolder();

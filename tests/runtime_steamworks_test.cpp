@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
   SteamworksIdentity facts;
   CHECK(ReadSteamworksFacts(root.string(), &facts));
   CHECK((facts.depots == std::vector<std::uint32_t>{10, 20}) && (facts.owned_dlc == std::vector<std::uint32_t>{3000, 3001}));
-  CHECK(facts.excluded_dlc.empty() && facts.owned_apps.empty());
+  CHECK(facts.excluded_dlc.empty() && facts.owned_apps.empty() && facts.save_folders.empty());
   // Owned Source SDK Base apps are kept too, for a start before the next license read.
   Write(root / kSteamworksFactsFile, SerializeSteamworksFacts({10}, {}, {}, {}, {243730, 215}, 76561198000000001ull));
   CHECK(Read(root / kSteamworksFactsFile) == "depots=10\ndlc=\napps=215,243730\napps_account=76561198000000001\n");
@@ -225,6 +225,39 @@ int main(int argc, char** argv) {
   SteamworksIdentity turned_off;
   CHECK(ReadSteamworksFacts(root.string(), &turned_off));
   CHECK((turned_off.excluded_dlc == std::vector<std::uint32_t>{4000, 4001}) && (turned_off.owned_dlc == std::vector<std::uint32_t>{3000}));
+  // The game's Cloud save folders in the Windows user folder (#714), one line each. A folder that is not a plain path
+  // below that folder is left out, on writing and on reading, and the rest of the file still reads.
+  Write(root / kSteamworksFactsFile,
+        SerializeSteamworksFacts({10}, {}, {}, {}, {}, 0,
+                                 {"AppData/LocalLow/Eternity/Leaf it Alone/Saves", "../Public", "Documents/My Games/X"}));
+  CHECK(Read(root / kSteamworksFactsFile) ==
+        "depots=10\ndlc=\nsave=AppData/LocalLow/Eternity/Leaf it Alone/Saves\nsave=Documents/My Games/X\n");
+  SteamworksIdentity saves;
+  CHECK(ReadSteamworksFacts(root.string(), &saves));
+  CHECK((saves.save_folders == std::vector<std::string>{"AppData/LocalLow/Eternity/Leaf it Alone/Saves", "Documents/My Games/X"}));
+  Write(root / kSteamworksFactsFile,
+        "depots=10\ndlc=3000\nsave=../../../../etc\nsave=/data/x\nsave=AppData//X\nsave=AppData/./X\nsave=C:/X\n"
+        "save=AppData\\X\nsave=A/%TEMP%\nsave=\nsave=AppData/Roaming/Game\n");
+  SteamworksIdentity unsafe;
+  CHECK(ReadSteamworksFacts(root.string(), &unsafe));
+  CHECK((unsafe.save_folders == std::vector<std::string>{"AppData/Roaming/Game"}) &&
+        (unsafe.owned_dlc == std::vector<std::uint32_t>{3000}));
+  CHECK(IsProfileSaveFolder("Saved Games/Game") && IsProfileSaveFolder("a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p") &&
+        !IsProfileSaveFolder("a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q") &&
+        IsProfileSaveFolder(std::string(kMaxProfileSaveFolderBytes, 'a')) &&
+        !IsProfileSaveFolder(std::string(kMaxProfileSaveFolderBytes + 1, 'a')));
+  // At most kMaxProfileSaveFolders, written or read.
+  std::vector<std::string> many;
+  std::string many_lines = "depots=10\n";
+  for (std::size_t index = 0; index <= kMaxProfileSaveFolders; ++index) {
+    many.push_back("Game/" + std::to_string(index));
+    many_lines += "save=Game/" + std::to_string(index) + "\n";
+  }
+  CHECK(SerializeSteamworksFacts({10}, {}, {}, {}, {}, 0, many).find("save=Game/" + std::to_string(kMaxProfileSaveFolders)) ==
+        std::string::npos);
+  Write(root / kSteamworksFactsFile, many_lines);
+  SteamworksIdentity capped;
+  CHECK(ReadSteamworksFacts(root.string(), &capped) && capped.save_folders.size() == kMaxProfileSaveFolders);
   // A file from before Playden could choose a language reads as English, which is what it got.
   CHECK(facts.language == "english");
 

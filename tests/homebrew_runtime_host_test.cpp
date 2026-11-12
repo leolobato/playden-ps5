@@ -1719,8 +1719,8 @@ void PreparesGameWithoutShippedRecipe() {
   // The game's own Steam library (a 64-bit PE that asks for one interface).
   const std::string own_api = pe + std::string("\0SteamUser021\0", 14);
   Write(game / "Bin/steam_api64.dll", own_api, 0644);
-  // 4270 was turned off at install: the game isn't told about it.
-  Write(game / ".playden-steam", "depots=4243\ndlc=4250\nnodlc=4270\n", 0644);
+  // 4270 was turned off at install: the game isn't told about it. Its Cloud saves go in a LocalLow folder (#714).
+  Write(game / ".playden-steam", "depots=4243\ndlc=4250\nnodlc=4270\nsave=AppData/LocalLow/Studio/Example Game/Saves\n", 0644);
   // A Steam Input map whose right stick moves the mouse: the emulator can't drive it.
   Write(game / "Input/steam_input_manifest.vdf",
         "\"Action Manifest\" { \"configurations\" { \"controller_xboxone\" { \"0\" { \"path\" \"xbox.vdf\" } } } }\n", 0644);
@@ -1816,7 +1816,12 @@ void PreparesGameWithoutShippedRecipe() {
   CHECK(Read(game / "Bin/steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n4250=dlc4250\n4260=dlc4260\n");
   CHECK(!dlc_asked.empty() && dlc_asked.back() == std::make_pair(std::uint64_t{76561198000000001ull}, std::uint32_t{4242}));
   // The added DLC and SDK apps stay with the download's facts, for a start before the next license read.
-  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n");
+  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n"
+                                         "save=AppData/LocalLow/Studio/Example Game/Saves\n");
+  // The game's Cloud save folder is in the bottle before its first start, which may come from the PS5 Home screen.
+  CHECK(fs::is_directory(fixture.root / "data/playden/games/steam-4242/library/prefixes/game/drive_c/users/prospero/"
+                                        "AppData/LocalLow/Studio/Example Game/Saves"));
+  CHECK(logged("save folders app=4242 added=AppData/LocalLow/Studio/Example Game/Saves"));
   // Owned SDK apps reach the emulator as owned_app_ids.txt; the depots stay the game's own.
   CHECK(Read(game / "Bin/steam_settings/owned_app_ids.txt") == "215\n");
   CHECK(Read(game / "Bin/steam_settings/depots.txt") == "4243\n");
@@ -2171,7 +2176,8 @@ void PreparesGameWithoutShippedRecipe() {
 
   // Back on emulation: each start below is a fresh Playden (Play, then its title stays unstarted).
   saved_settings.clear();
-  const std::string facts_215 = "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n";
+  const std::string facts_215 = "depots=4243\ndlc=4250,4260\nnodlc=4270\napps=215\napps_account=76561198000000001\n"
+                                "save=AppData/LocalLow/Studio/Example Game/Saves\n";
   const auto play_as = [&](std::uint64_t steam_id) {
     RuntimeHost started(config);
     started.SetSteamAccount("player", steam_id);
@@ -2181,9 +2187,13 @@ void PreparesGameWithoutShippedRecipe() {
     WaitFor(started, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
     started.Shutdown();
   };
-  // No license read yet (or offline): the account keeps the SDK app the facts recorded for it.
+  // No license read yet (or offline): the account keeps the SDK app the facts recorded for it. A save folder gone since
+  // (deleted over FTP) is made again at Play.
+  const auto save_folder = data / "library/prefixes/game/drive_c/users/prospero/AppData/LocalLow/Studio/Example Game/Saves";
+  CHECK(fs::remove(save_folder));
   sdk_owned = std::nullopt;
   play_as(76561198000000001ull);
+  CHECK(fs::is_directory(save_folder));
   CHECK(Read(game / "Bin/steam_api64.dll") == emulator);
   CHECK(Read(game / "Bin/steam_settings/owned_app_ids.txt") == "215\n");
   CHECK(Read(game / ".playden-steam") == facts_215);
@@ -2195,7 +2205,7 @@ void PreparesGameWithoutShippedRecipe() {
   sdk_owned = std::vector<std::uint32_t>{};
   play_as(76561198000000001ull);
   CHECK(!fs::exists(game / "Bin/steam_settings/owned_app_ids.txt"));
-  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\n");
+  CHECK(Read(game / ".playden-steam") == "depots=4243\ndlc=4250,4260\nnodlc=4270\nsave=AppData/LocalLow/Studio/Example Game/Saves\n");
   // A game that ran the Steam host (Steam features = Online): its log and the Wine log of its process follow.
   Write(data / "library/prefixes/game/drive_c/playden/steam-host.log", "client: pinned\nlogon: ok\n", 0600);
   Write(data / "library/helper-wine.log", "0024:err:module:import_dll Library x not found\n", 0600);

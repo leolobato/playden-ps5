@@ -36,6 +36,13 @@ struct SaveMapping {
 // paths are expanded with steam_id; with steam_id 0 such locations are unresolved.
 SaveMapping BuildSaveMapping(const CloudSaveInfo& info, std::uint32_t app_id, std::uint64_t steam_id);
 
+// The folders of the app's Windows Cloud save locations that lie inside the Windows user folder (kPrefixUserFolder),
+// relative to it ("AppData/LocalLow/Eternity/Leaf it Alone/Saves"): on Windows Steam makes them before a game starts,
+// and some games watch theirs before they write any save. Locations in the game folder, ProgramData, the emulator's
+// storage or the user folder itself are left out, and so are those that name the account (they need a signed-in
+// account) or that BuildSaveMapping can't map. Each folder once, whatever its case, in mapping order.
+std::vector<std::string> ProfileSaveFolders(const CloudSaveInfo& info, std::uint32_t app_id);
+
 struct LocalSavePath {
   SaveRoot root = SaveRoot::kPrefix;
   std::string path;  // relative to the root

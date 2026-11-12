@@ -706,6 +706,13 @@ void SharedProfileBottleModes() {
   std::filesystem::remove_all(bottle / "drive_c/ProgramData");
   CHECK(installer.RepairBottle(record).state == PackageActionState::kComplete);
   CHECK(ModeOf(profile / "AppData/Local/Temp") == 0777 && ModeOf(bottle / "drive_c/ProgramData") == 0700);
+  // A game's Cloud save folders (#714) are open to FTP like the rest of a shared profile.
+  std::vector<std::string> added, failed;
+  installer.AddProfileFolders(record, {"AppData/LocalLow/Eternity/Leaf it Alone/Saves"}, &added, &failed);
+  CHECK(added.size() == 1 && failed.empty());
+  for (const char* folder : {"AppData/LocalLow/Eternity", "AppData/LocalLow/Eternity/Leaf it Alone",
+                             "AppData/LocalLow/Eternity/Leaf it Alone/Saves"})
+    CHECK(ModeOf(profile / folder) == 0777);
 
   // Wine (umask 077) saves 0600 in 0700 folders; settling opens them again. Links are never
   // followed, a file with another link (a private one linked in) is left alone, and the
@@ -901,6 +908,63 @@ void UnsharedBottleStaysPrivate() {
   CHECK(installer.RepairBottle(record).state == PackageActionState::kComplete);
   for (const char* folder : {"", "AppData/LocalLow", "AppData/Local/Temp", "Documents", "Saved Games"})
     CHECK(ModeOf(bottle / "drive_c/users/prospero" / folder) == 0700);
+}
+
+// #714: Leaf It Alone watches its Saves folder at start-up and stops when it isn't there. The folders of a game's Cloud
+// saves are made in the bottle's Windows user folder, and nowhere else.
+void CloudSaveFoldersAreMadeInTheProfile() {
+  Fixture fixture;
+  auto installer = fixture.Installer();
+  const auto record = Record();
+  const auto bottle = fixture.host_data / "playden/games/install-hl2/library/prefixes/game";
+  const auto profile = bottle / "drive_c/users/prospero";
+  const std::string saves = "AppData/LocalLow/Eternity/Leaf it Alone/Saves";
+  std::vector<std::string> added, failed;
+  // No bottle yet: nothing is made, nothing fails (the next preparation step makes them).
+  installer.AddProfileFolders(record, {saves}, &added, &failed);
+  CHECK(added.empty() && failed.empty() && !std::filesystem::exists(bottle));
+  CHECK(installer.CopyTemplate(record).state == PackageActionState::kComplete);
+  CHECK(!std::filesystem::exists(profile / saves));
+  installer.AddProfileFolders(record, {saves}, &added, &failed);
+  CHECK((added == std::vector<std::string>{saves}) && failed.empty());
+  for (const char* folder : {"AppData/LocalLow/Eternity", "AppData/LocalLow/Eternity/Leaf it Alone",
+                             "AppData/LocalLow/Eternity/Leaf it Alone/Saves"})
+    CHECK(std::filesystem::is_directory(profile / folder) && ModeOf(profile / folder) == 0700);
+  // Made once: a second pass adds nothing and leaves what the game wrote there.
+  Write(profile / saves / "slot1.sav", "save", 0600);
+  added.clear();
+  installer.AddProfileFolders(record, {saves}, &added, &failed);
+  CHECK(added.empty() && failed.empty() && Read(profile / saves / "slot1.sav") == "save");
+  // A folder the game made in another case is the one used: Wine would see two otherwise.
+  CHECK(std::filesystem::create_directories(profile / "Documents/MY GAMES"));
+  installer.AddProfileFolders(record, {"Documents/My Games/Game/Saves"}, &added, &failed);
+  CHECK((added == std::vector<std::string>{"Documents/My Games/Game/Saves"}) && failed.empty());
+  CHECK(std::filesystem::is_directory(profile / "Documents/MY GAMES/Game/Saves"));
+  std::vector<std::string> documents;
+  for (const auto& entry : std::filesystem::directory_iterator(profile / "Documents"))
+    documents.push_back(entry.path().filename().string());
+  CHECK((documents == std::vector<std::string>{"MY GAMES"}));
+  // Never outside the profile: a path that climbs out or is absolute, a link (to a folder outside, or to the profile's
+  // own Documents), and a file in the way all fail, and nothing is made.
+  const auto outside = fixture.temporary.path / "outside";
+  CHECK(std::filesystem::create_directories(outside));
+  std::filesystem::create_directory_symlink(outside, profile / "AppData/Roaming/Link");
+  std::filesystem::create_directory_symlink(profile / "Documents", profile / "AppData/Roaming/Docs");
+  Write(profile / "Desktop/file", "file", 0600);
+  added.clear();
+  failed.clear();
+  const std::vector<std::string> refused = {"../../../../../escape",  "AppData/../../escape", "/escape",
+                                            "AppData/Roaming/Link/Saves", "AppData/Roaming/Docs/Saves",
+                                            "Desktop/file/Saves",     "AppData\\Escape",     ""};
+  installer.AddProfileFolders(record, refused, &added, &failed);
+  CHECK(added.empty() && failed == refused);
+  CHECK(std::filesystem::is_empty(outside) && !std::filesystem::exists(profile / "Documents/Saves"));
+  CHECK(!std::filesystem::exists(fixture.temporary.path / "escape") && !std::filesystem::exists(bottle / "escape") &&
+        !std::filesystem::exists(fixture.host_data / "escape") && !std::filesystem::exists("/escape"));
+  CHECK(!std::filesystem::exists(profile / "AppData/Escape"));
+  // The other folders of the same call are still made.
+  installer.AddProfileFolders(record, {"../escape", "Saved Games/Game"}, &added, &failed);
+  CHECK((added == std::vector<std::string>{"Saved Games/Game"}) && std::filesystem::is_directory(profile / "Saved Games/Game"));
 }
 
 void CancelAndSpaceFailuresAreBounded() {
@@ -1493,6 +1557,7 @@ void RecipeRequirementsNameWhatTheKitLacks() {
 }  // namespace
 
 int main() {
+  CloudSaveFoldersAreMadeInTheProfile();
   TemplateCopyReportsProgress();
   ShippedRecipeResolvesWithAnyKit();
   RecipeRequirementsNameWhatTheKitLacks();

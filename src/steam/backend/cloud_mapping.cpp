@@ -214,6 +214,20 @@ SaveMapping BuildSaveMapping(const CloudSaveInfo& info, std::uint32_t app_id, st
   return mapping;
 }
 
+std::vector<std::string> ProfileSaveFolders(const CloudSaveInfo& info, std::uint32_t app_id) {
+  std::vector<std::string> folders;
+  std::set<std::string> seen;
+  const std::string user = std::string(kPrefixUserFolder) + "/";
+  for (const auto& rule : BuildSaveMapping(info, app_id, 0).rules) {
+    if (rule.root != SaveRoot::kPrefix || rule.directory.size() <= user.size() ||
+        rule.directory.compare(0, user.size(), user) != 0 || !SafeComponents(rule.directory))
+      continue;
+    auto folder = rule.directory.substr(user.size());
+    if (seen.insert(Lower(folder)).second) folders.push_back(std::move(folder));
+  }
+  return folders;
+}
+
 SavePaths::SavePaths(SaveMapping mapping) {
   for (auto& rule : mapping.rules)
     if (SafeComponents(rule.directory) && ValidPattern(rule.pattern) && Normalized(rule.cloud_prefix))

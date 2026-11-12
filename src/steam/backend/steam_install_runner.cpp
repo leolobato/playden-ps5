@@ -2,6 +2,7 @@
 
 #include "runtime/steamworks.h"
 #include "steam/backend/app_info.h"
+#include "steam/backend/cloud_mapping.h"
 
 #include <algorithm>
 #include <set>
@@ -569,13 +570,15 @@ InstallRunner::Result SteamInstallRunner::Run(const StoredSession& session, std:
     std::vector<std::uint32_t> sdk_apps;
     for (const auto app_id : runtime::kSourceSdkBaseApps)
       if (app_id != id && entitlements.owned_apps.count(app_id)) sdk_apps.push_back(app_id);
+    // The game's Cloud save folders in the Windows user folder, which the bottle gets before the game starts.
+    const auto saves = cloud::ProfileSaveFolders(app->cloud, id);
     const bool written = runtime::WriteSteamworksFacts(folder, depots, dlc, effective_language, target.excluded_dlc,
-                                                       sdk_apps, sdk_apps.empty() ? 0 : account);
+                                                       sdk_apps, sdk_apps.empty() ? 0 : account, saves);
     if (!written) log("steamworks_facts", "write-failed", folder.c_str());
     else
       log("steamworks_facts", "written",
           ("depots=" + std::to_string(depots.size()) + " dlc=" + std::to_string(dlc.size()) + " listed=" +
-           std::to_string(app->dlc_app_ids.size()))
+           std::to_string(app->dlc_app_ids.size()) + " saves=" + std::to_string(saves.size()))
               .c_str());
     return written;
   };

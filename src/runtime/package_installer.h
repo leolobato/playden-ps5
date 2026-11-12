@@ -211,6 +211,8 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // Also settles the bottle's modes (SettleBottleModes).
   PackageActionResult RepairBottle(const RuntimeInstall& record) override;
   PackageActionResult SettleBottleModes(const RuntimeInstall& record) override;
+  void AddProfileFolders(const RuntimeInstall& record, const std::vector<std::string>& folders,
+                         std::vector<std::string>* added, std::vector<std::string>* failed) override;
   // Replaces changed title files (temp, fsync, rename) and rewrites the title
   // and bottle owner markers. Refuses unless each existing marker equals the
   // new one except for the kit's files_sha256, and the record's artifacts are
