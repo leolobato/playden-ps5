@@ -149,6 +149,13 @@ The build is prospero-win's tools, run in this order:
 6. `tools/build_native.sh` (on the Mac): the per-game title shell, with the Lapy root helper.
 7. `tools/package_playden_kit.py`: package and validate the kit.
 
+A development kit often changes only one or two modules. `tools/build_wine_ps5.sh` produces the same bytes for the
+same inputs in any work folder, and it writes each finished build's input key to `<work>/input-key`. Before a
+development build, `--print-input-key` gives the key for the planned build, so a finished work folder with the same
+key can be reused instead of being built again. Compare the new build's `.prx` and PE files with the previous kit's to
+find the modules that changed. A release kit is always a fresh build in a new work folder. See prospero-win's
+`docs/WINE_PS5_BUILD.md` › Build time and reproducible output.
+
 [`tools/kit-h/`](../tools/kit-h/README.md) has the scripts that built kit H and its revisions. They are a record, not
 a turnkey build: they reuse inputs from earlier kits that are not in this repository (a template bottle prepared
 from Half-Life 2, an earlier kit's runtime file list) and carry the maintainer's local paths. A build from a clean machine is not
