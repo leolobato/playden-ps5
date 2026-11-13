@@ -81,6 +81,7 @@ td.name span { display: block; color: var(--soft); font-size: 13px; font-weight:
 td.soft { color: var(--soft); white-space: nowrap; }
 td.radio { width: 1%; }
 input[type=radio] { accent-color: var(--accent); margin: 0; }
+input[type=checkbox] { accent-color: var(--accent); }
 td.empty { color: var(--soft); }
 
 /* Files */
@@ -126,10 +127,12 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
 .dialog .foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .choice { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; padding: 6px 0; }
 .choice small { display: block; color: var(--soft); font-size: 13px; }
+.choice input[type=checkbox] { flex: none; width: 18px; height: 18px; margin-top: 2px; cursor: pointer; }
+.pair .choice { max-width: 440px; margin-bottom: 12px; cursor: pointer; }
 .pair { max-width: 520px; margin: 40px auto 0; }
 .pair h2 { margin: 0 0 8px; font-size: 26px; line-height: 1.2; font-weight: 600; }
 .pair p { color: var(--soft); margin: 0 0 12px; }
-.pair input { font: 600 30px/1.2 "Barlow", sans-serif; letter-spacing: .25em; color: var(--ink); background: var(--row); border: 1px solid #4a4338; border-radius: 6px; padding: 10px 14px; width: 100%; max-width: 280px; margin-bottom: 12px; }
+.pair input[inputmode] { font: 600 30px/1.2 "Barlow", sans-serif; letter-spacing: .25em; color: var(--ink); background: var(--row); border: 1px solid #4a4338; border-radius: 6px; padding: 10px 14px; width: 100%; max-width: 280px; margin-bottom: 12px; }
 .chip { display: inline-flex; align-items: center; gap: 8px; font: 600 13px/1.4 "Barlow", sans-serif; color: var(--ink); background: var(--row-open); border: 1px solid #4a4338;
   border-radius: 99px; padding: 4px 12px; cursor: pointer; white-space: nowrap; }
 .chip:hover, .chip[aria-expanded="true"] { border-color: var(--accent); }
@@ -476,10 +479,13 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     clear();
     const code = element("input", { inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", "aria-label": "The code on the TV", placeholder: "000000" });
     const note = element("p", { text: "" });
+    // Ticked by default. Untick it on a phone that isn't yours: the pairing then ends when Playden closes.
+    const remember = element("input", { type: "checkbox" });
+    remember.checked = true;
     const pair = async () => {
       $("problem").hidden = true;
       try {
-        await act(`/api/pair/confirm?${q({ code: code.value.trim() })}`);
+        await act(`/api/pair/confirm?${q({ code: code.value.trim(), remember: remember.checked ? "1" : "0" })}`);
         route();
       } catch (error) { report(error); }
     };
@@ -494,8 +500,10 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     };
     pane.append(element("div", { class: "pair" },
       element("h2", { text: "Pair this browser" }),
-      element("p", { text: "Game files can hold your saves and account details, so Playden asks once before showing them. The pairing ends when Playden closes." }),
+      element("p", { text: "Game files can hold your saves and account details, so Playden asks once before showing them." }),
       note, code,
+      element("label", { class: "choice" }, remember, element("span", {}, "Remember this browser",
+        element("small", { text: "It stays paired when Playden restarts, until it isn't used for 90 days or you choose Forget all in Settings › Web access on the PS5. Untick it on a browser that isn't yours: the pairing then ends when Playden closes." }))),
       element("div", { class: "bar" }, button("Pair", pair, "primary"), button("Show a new code", () => ask(true)))));
     ask(false);
   };

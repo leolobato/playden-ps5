@@ -786,7 +786,7 @@ std::string action_label(const std::string& key) {
         {"share-as", "Shared as"}, {"share-as-none", "No name"}, {"share-as-name", "Your name"},
         {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
         {"heading-reason", "What went wrong"}, {"heading-report", "Report"}, {"heading-recipe", "Recipe"},
-        {"shared-recipe", "Shared recipe"}, {"sharing-reset-confirm", "Reset"}, {"program-scan", "Looking for programs…"},
+        {"shared-recipe", "Shared recipe"}, {"sharing-reset-confirm", "Reset"}, {"web-forget-browsers-confirm", "Forget all"}, {"program-scan", "Looking for programs…"},
         {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"change-settings", "Change settings…"}, {"heading-your-changes", "Your changes"}, {"save-my-preset", "Save as my preset…"},
         {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
@@ -9653,6 +9653,18 @@ void Simulation::rebuild_view() {
             } else {
                 toggle.subtitle = "Starting…";
             }
+            // Shown with web access off too: turning it off doesn't forget them.
+            const auto browsers = live() ? web_access_.paired_browsers : std::size_t{2};
+            auto& paired = add("settings-web-browsers", RowKind::Action, "Paired browsers", "web-forget-browsers");
+            paired.value = std::to_string(browsers);
+            if (browsers == 0) {
+                paired.kind = RowKind::Status;
+                paired.action.clear();
+                paired.enabled = false;
+                paired.subtitle = "A browser pairs with a code from the TV before it can open game files.";
+            } else {
+                paired.subtitle = "Can open game files. Forget all to make each one pair again.";
+            }
         }
         section = "About";
         add("settings-about", RowKind::Action, "About", "about").subtitle = "Playden for PlayStation 5";
@@ -12701,6 +12713,17 @@ void Simulation::activate() {
         state_.ask_after_games = !state_.ask_after_games;
         if (!state_.ask_after_games) feedback_prompts_.clear();
         save_profile();
+    }
+    else if (action_name == "web-forget-browsers") {
+        ModalEntry confirmation{"confirmation", "Forget all paired browsers?", action_name, {"cancel", "web-forget-browsers-confirm"}, 0, false};
+        confirmation.body = "Every browser paired with web access, remembered or not, has to pair again with a code from the TV.";
+        open_modal(std::move(confirmation));
+    }
+    else if (action_name == "web-forget-browsers-confirm") {
+        close_modal();
+        if (live()) forget_web_browsers_ = true;
+        push_notice({"web-forget-browsers", "Paired browsers forgotten", "", false, kLiveNoticeSeconds, false,
+                     live() ? "Each browser has to pair again." : "Simulated"});
     }
     else if (action_name == "sharing-reset") {
         ModalEntry confirmation{"confirmation", "Reset the sharing ID?", action_name, {"cancel", "sharing-reset-confirm"}, 0, false};

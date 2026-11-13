@@ -98,6 +98,9 @@ int main() {
     return {200, "Darkwood now uses this recipe.", "steam-274520"};
   };
   fs::create_directories(base / "logs");
+  // Browsers paired with "Remember this browser" are kept here, as user data's web-access folder on the console.
+  config.files.pairing.store_root = (base / "web-access").string();
+  const auto restart_config = config;
   Service service(std::move(config));
   FileCatalog catalog;
   catalog.known = true;
@@ -178,8 +181,14 @@ int main() {
   CHECK(cookie_start != std::string::npos);
   const auto cookie_line = paired.substr(cookie_start, paired.find("\r\n", cookie_start) - cookie_start);
   CHECK(cookie_line.find("HttpOnly") != std::string::npos && cookie_line.find("SameSite=Strict") != std::string::npos);
+  // Not remembered (no remember=1): a session cookie, and a status that doesn't set it again.
+  CHECK(cookie_line.find("Max-Age") == std::string::npos);
+  CHECK(Body(paired).find("\"remembered\":false") != std::string::npos);
   const auto cookie = cookie_line.substr(12, cookie_line.find(';') - 12);
-  CHECK(Body(get("/api/pair/status", cookie)).find("\"paired\":true") != std::string::npos);
+  const auto status = get("/api/pair/status", cookie);
+  CHECK(Body(status).find("\"paired\":true") != std::string::npos && Body(status).find("\"remembered\":false") != std::string::npos);
+  CHECK(status.find("Set-Cookie") == std::string::npos);
+  CHECK(service.Snapshot().paired_browsers == 1);
   // Among other cookies, too.
   CHECK(Status(get("/api/files/games", "a=b; " + cookie + "; c=d")) == 200);
 
@@ -358,7 +367,59 @@ int main() {
     CHECK(Status(get("/api/files/list?" + game + "user", cookie)) == 200);
   }
 
+  // Remember this browser: a cookie that outlasts the browser session, kept by Playden across a restart.
+  std::string remembered;
+  {
+    CHECK(Status(post("/api/pair/start?new=1", "")) == 200);
+    answer = post("/api/pair/confirm?code=" + service.Snapshot().pairing_code + "&remember=1", "");
+    CHECK(Status(answer) == 200 && Body(answer).find("\"remembered\":true") != std::string::npos);
+    const auto start = answer.find("Set-Cookie: ");
+    const auto line = answer.substr(start, answer.find("\r\n", start) - start);
+    CHECK(line.find("HttpOnly") != std::string::npos && line.find("SameSite=Strict") != std::string::npos);
+    CHECK(line.find("; Max-Age=7776000") != std::string::npos);
+    remembered = line.substr(12, line.find(';') - 12);
+    CHECK(service.Snapshot().paired_browsers == 2);
+    // Each visit sets the cookie again, so the browser's 90 days start over with Playden's.
+    answer = get("/api/pair/status", remembered);
+    CHECK(Body(answer).find("\"remembered\":true") != std::string::npos);
+    CHECK(answer.find("Set-Cookie: " + remembered + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=7776000") != std::string::npos);
+    CHECK(Status(get("/api/files/games", remembered)) == 200);
+  }
   service.Shutdown();
+  {
+    // A restart: the remembered browser is still paired once the file is read; the session one isn't.
+    Service restarted(restart_config);
+    bool back = false;
+    for (int i = 0; i < 200 && !back; ++i) {
+      back = restarted.Snapshot().paired_browsers == 1;
+      if (!back) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(back);
+    restarted.SetEnabled(true);
+    ServiceSnapshot again;
+    for (int i = 0; i < 200 && again.state != ServiceSnapshot::State::kOn; ++i) {
+      again = restarted.Snapshot();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const std::string restarted_host = "Host: 127.0.0.1:" + std::to_string(again.port) + "\r\n";
+    const auto status_of = [&](const std::string& value) {
+      return Body(Exchange(again.port, "GET /api/pair/status HTTP/1.1\r\n" + restarted_host + "Cookie: " + value + "\r\n\r\n"));
+    };
+    CHECK(status_of(remembered).find("\"paired\":true") != std::string::npos);
+    CHECK(status_of(cookie).find("\"paired\":false") != std::string::npos);
+    // Turning web access off doesn't forget it; Forget all does, in the file too.
+    restarted.SetEnabled(false);
+    for (int i = 0; i < 200 && restarted.Snapshot().state != ServiceSnapshot::State::kOff; ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(restarted.Snapshot().paired_browsers == 1);
+    restarted.ForgetBrowsers();
+    CHECK(restarted.Snapshot().paired_browsers == 0);
+    restarted.Shutdown();
+    Service forgotten(restart_config);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(forgotten.Snapshot().paired_browsers == 0);
+    forgotten.Shutdown();
+  }
   fs::remove_all(base);
   std::puts("web_files_api: ok");
 }

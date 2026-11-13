@@ -149,12 +149,31 @@ bool FilesApi::InUse() const {
   return used != 0 && SteadySeconds() - used < 30;
 }
 
-bool FilesApi::Paired(const Request& request) {
-  const auto token = CookieValue(request, kCookie);
-  if (token.empty() || !pairing_.Paired(token)) return false;
-  last_used_.store(SteadySeconds());
-  return true;
+Pairing::Browser FilesApi::Check(const std::string& token) {
+  if (token.empty()) return Pairing::Browser::kNone;
+  const auto browser = pairing_.Check(token);
+  if (browser != Pairing::Browser::kNone) last_used_.store(SteadySeconds());
+  return browser;
 }
+
+bool FilesApi::Paired(const Request& request) { return Check(CookieValue(request, kCookie)) != Pairing::Browser::kNone; }
+
+bool FilesApi::Remembers() const { return !config_.pairing.store_root.empty(); }
+
+// A remembered browser's cookie outlives the browser session for as long as Playden keeps the browser.
+std::string FilesApi::SessionCookie(const std::string& token, bool remembered) const {
+  auto cookie = std::string(kCookie) + "=" + token + "; HttpOnly; SameSite=Strict; Path=/";
+  if (remembered) cookie += "; Max-Age=" + std::to_string(config_.pairing.remember_seconds);
+  return cookie;
+}
+
+std::size_t FilesApi::PairedBrowsers() const { return pairing_.Count(); }
+
+void FilesApi::ForgetBrowsers() { pairing_.ForgetAll(); }
+
+void FilesApi::SetStoreChanged(std::function<void()> changed) { pairing_.SetStoreChanged(std::move(changed)); }
+
+Pairing::StoreWork FilesApi::DoStoreWork(std::string* log) { return pairing_.DoStoreWork(config_.try_hold, log); }
 
 bool FilesApi::RequirePaired(const Request& request, Response& response) {
   if (Paired(request)) return true;
@@ -247,11 +266,12 @@ void FilesApi::Register(Router& router) {
   router.Post("/api/pair/confirm", [this](const Request& request, const std::string&, Response& response) {
     if (!RequireAction(request, response)) return;
     std::string token;
-    switch (pairing_.Confirm(QueryValue(request.query, "code").value_or(std::string()), &token)) {
+    // Ticked on the page by default; a request without it pairs for this session only, as before.
+    const bool remember = QueryValue(request.query, "remember") == std::string("1");
+    switch (pairing_.Confirm(QueryValue(request.query, "code").value_or(std::string()), remember, &token)) {
       case Pairing::ConfirmResult::kPaired:
-        SendJson(response, 200, "{\"paired\":true}",
-                 {{"Set-Cookie", std::string(kCookie) + "=" + token + "; HttpOnly; SameSite=Strict; Path=/"},
-                  {"Cache-Control", "no-store"}});
+        SendJson(response, 200, "{" + Field("paired", true) + "," + Field("remembered", remember && Remembers()) + "}",
+                 {{"Set-Cookie", SessionCookie(token, remember && Remembers())}, {"Cache-Control", "no-store"}});
         return;
       case Pairing::ConfirmResult::kWrong: return SendError(response, 403, "That isn't the code on the TV.");
       case Pairing::ConfirmResult::kLocked: return SendError(response, 429, "Too many wrong codes. Try again in a moment.");
@@ -260,7 +280,14 @@ void FilesApi::Register(Router& router) {
     }
   });
   router.Exact("/api/pair/status", [this](const Request& request, const std::string&, Response& response) {
-    SendJson(response, 200, "{" + Field("paired", Paired(request)) + "}");
+    const auto token = CookieValue(request, kCookie);
+    const auto browser = Check(token);
+    const bool remembered = browser == Pairing::Browser::kRemembered;
+    // Each visit gives a remembered browser's cookie its 90 days again, as Playden does for the token.
+    auto headers = kNoStore;
+    if (remembered) headers.emplace_back("Set-Cookie", SessionCookie(token, true));
+    SendJson(response, 200,
+             "{" + Field("paired", browser != Pairing::Browser::kNone) + "," + Field("remembered", remembered) + "}", headers);
   });
 
   router.Exact("/api/files/games", [this](const Request& request, const std::string&, Response& response) {

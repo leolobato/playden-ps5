@@ -37,6 +37,7 @@ struct ServiceSnapshot {
   std::string url;          // http://<address>:<port>/ or empty
   std::string error;        // kFailed: why
   std::string pairing_code;  // a browser asked to pair: the code the TV shows now; empty when none
+  std::size_t paired_browsers = 0;  // browsers paired now, remembered or not; counted while web access is off too
 };
 
 // Web access: the page, the log index, single logs and the report, always redacted; the action POST /api/quit asks
@@ -58,6 +59,8 @@ class Service {
   void SetFileCatalog(FileCatalog catalog);
   // The player dismissed the pairing code on the TV.
   void CancelPairing();
+  // Settings › Web access › Forget all: every browser has to pair again. The file is written on the worker.
+  void ForgetBrowsers();
   // A paired browser used the Files tab in the last half a minute.
   bool FilesInUse() const;
   // True once after the page asked Playden to quit; the caller quits.
@@ -83,6 +86,7 @@ class Service {
   bool enabled_ = false;
   bool stopping_ = false;
   std::uint64_t requests_ = 0;  // enable/disable changes, so a quick off-on restarts
+  std::uint64_t store_changes_ = 1;  // the remembered browsers' file has work (1: read it at start)
   Redaction account_;
   bool quit_requested_ = false;
   ServiceSnapshot snapshot_;

@@ -4,6 +4,8 @@
 #include "web/address.h"
 #include "web/assets.h"
 
+#include <algorithm>
+
 namespace playden::web {
 namespace {
 const std::vector<std::pair<std::string, std::string>> kNoStore = {{"Cache-Control", "no-store"}};
@@ -100,6 +102,14 @@ Service::Service(ServiceConfig config) : config_(std::move(config)), logs_(confi
     }
     response.Send(202, "application/json", "{\"quitting\":true}", kNoStore);
   });
+  // Remembered browsers are read and written on the worker: never on the UI thread, and never on a request's.
+  files_.SetStoreChanged([this] {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++store_changes_;
+    }
+    wake_.notify_all();
+  });
   worker_ = std::thread([this] { Run(); });
 }
 
@@ -144,15 +154,22 @@ void Service::SetAccount(Redaction account) {
 
 ServiceSnapshot Service::Snapshot() const {
   auto code = files_.PairingCode();
+  const auto browsers = files_.PairedBrowsers();
   std::lock_guard<std::mutex> lock(mutex_);
   auto snapshot = snapshot_;
   snapshot.pairing_code = std::move(code);
+  snapshot.paired_browsers = browsers;
   return snapshot;
 }
 
 void Service::SetFileCatalog(FileCatalog catalog) { files_.SetCatalog(std::move(catalog)); }
 
 void Service::CancelPairing() { files_.CancelPairing(); }
+
+void Service::ForgetBrowsers() {
+  files_.ForgetBrowsers();
+  Log("forgot paired browsers");
+}
 
 bool Service::FilesInUse() const { return files_.InUse(); }
 
@@ -178,7 +195,21 @@ void Service::Run() {
   std::unique_lock<std::mutex> lock(mutex_);
   std::uint64_t tried = 0;  // the change a failed start answered; another change tries again
   auto next_lookup = Clock::time_point::max();
+  std::uint64_t store_seen = 0;
+  auto store_retry = Clock::time_point::max();  // a game's setup held the file lock: try again then
   while (!stopping_) {
+    if (store_changes_ != store_seen || Clock::now() >= store_retry) {
+      store_seen = store_changes_;
+      lock.unlock();
+      std::string line;
+      const auto work = files_.DoStoreWork(&line);
+      if (!line.empty()) Log(line);
+      lock.lock();
+      store_retry = work == Pairing::StoreWork::kBusy     ? Clock::now() + std::chrono::seconds(1)
+                    : work == Pairing::StoreWork::kFailed ? Clock::now() + std::chrono::seconds(30)
+                                                          : Clock::time_point::max();
+      continue;
+    }
     if (enabled_ && !server_.running() && (snapshot_.state != ServiceSnapshot::State::kFailed || tried != requests_)) {
       tried = requests_;
       snapshot_ = {};
@@ -226,13 +257,18 @@ void Service::Run() {
       next_lookup = Clock::now() + config_.address_refresh;
       continue;
     }
-    if (next_lookup == Clock::time_point::max()) wake_.wait(lock);
-    else wake_.wait_until(lock, next_lookup);
+    const auto next = std::min(next_lookup, store_retry);
+    if (next == Clock::time_point::max()) wake_.wait(lock);
+    else wake_.wait_until(lock, next);
   }
   const bool was_running = server_.running();
   lock.unlock();
   server_.Stop();
   if (was_running) Log("stopped");
+  // A change still unwritten (the file lock was busy) gets one last try.
+  std::string line;
+  files_.DoStoreWork(&line);
+  if (!line.empty()) Log(line);
 }
 
 }  // namespace playden::web

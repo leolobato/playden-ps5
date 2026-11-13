@@ -2209,7 +2209,9 @@ void Controller::TickWebAccess() {
   live.port = snapshot.port;
   live.error = snapshot.error;
   live.pairing_code = snapshot.pairing_code;
+  live.paired_browsers = snapshot.paired_browsers;
   model_.ApplyLiveWebAccess(live);
+  if (model_.TakeForgetWebBrowsers()) web_->ForgetBrowsers();
   TickWebFiles();
   TickRecipeImports();
   // The page's Quit Playden; it waits for a game being prepared.

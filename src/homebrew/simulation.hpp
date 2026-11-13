@@ -84,6 +84,7 @@ struct LiveWebAccess {
     std::uint16_t port = 0;
     std::string error;          // failed: why
     std::string pairing_code;   // a browser asked to pair: the code to show now; empty when none
+    std::size_t paired_browsers = 0;  // browsers paired now, remembered or not (also while web access is off)
     bool operator==(const LiveWebAccess&) const = default;
 };
 enum class JobState { Queued, Downloading, Pausing, Paused, Verifying, Downloaded, Failed, Cancelled, Interrupted };
@@ -1512,6 +1513,8 @@ public:
     // Sharing and votes. Requests for the sharing worker (live; fixture mode answers them itself),
     // its answers, and what it remembers about votes.
     [[nodiscard]] std::vector<SharingRequest> TakeSharingRequests();
+    // Settings › Web access › Forget all, once; the controller tells web::Service.
+    [[nodiscard]] bool TakeForgetWebBrowsers() { return std::exchange(forget_web_browsers_, false); }
     void ApplySharingResult(const SharingResult& result);
     void UpdateVoteMemory(playden::community::VoteState memory);
     // The console's firmware and Playden's version, sent with every share and vote.
@@ -2005,6 +2008,7 @@ private:
     bool preferences_load_pending_ = false;
     bool preferences_loaded_ = false;
     LiveWebAccess web_access_;
+    bool forget_web_browsers_ = false;
     bool preferences_load_may_apply_ = false;
     bool preferences_load_failed_ = false;
     bool preferences_save_failed_ = false;

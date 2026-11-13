@@ -76,10 +76,19 @@ class FilesApi {
   void CancelPairing();
   // A paired browser asked for something in the last half a minute.
   bool InUse() const;
+  // Browsers paired now, remembered or not (no file access), and Forget all.
+  std::size_t PairedBrowsers() const;
+  void ForgetBrowsers();
+  // The remembered browsers' file: changed tells the caller's worker to call DoStoreWork, which reads and writes it.
+  void SetStoreChanged(std::function<void()> changed);
+  Pairing::StoreWork DoStoreWork(std::string* log);
 
  private:
   class Transfer;
   bool Paired(const Request& request);
+  Pairing::Browser Check(const std::string& token);
+  bool Remembers() const;
+  std::string SessionCookie(const std::string& token, bool remembered) const;
   bool RequirePaired(const Request& request, Response& response);
   bool RequireAction(const Request& request, Response& response);
   // The game and root a request names. False: answered.

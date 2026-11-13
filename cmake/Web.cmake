@@ -54,7 +54,7 @@ add_library(playden_web STATIC
 target_include_directories(playden_web PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_web PUBLIC cxx_std_17)
 target_link_libraries(playden_web PUBLIC playden_web_logs playden_web_http playden_managed_directory
-    playden_runtime_artifact_hash playden_storage)
+    playden_runtime_artifact_hash playden_runtime_private_directories playden_storage)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_definitions(playden_web PRIVATE PLAYDEN_PLATFORM_PS5=1)
     target_compile_options(playden_web PRIVATE -fno-exceptions -fno-rtti)
@@ -82,6 +82,21 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(web_pairing_test "${CMAKE_SOURCE_DIR}/tests/web_pairing_test.cpp")
     target_link_libraries(web_pairing_test PRIVATE playden_web)
     add_test(NAME web_pairing COMMAND web_pairing_test)
+    # The console's path handling for remembered browsers (no descriptor-relative opens), run on the host.
+    add_executable(web_pairing_native_policy_test
+        "${CMAKE_SOURCE_DIR}/tests/web_pairing_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/pairing.cpp"
+        "${CMAKE_SOURCE_DIR}/src/runtime/private_directories.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/storage.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/durable_storage.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/effective_uid.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/random_id.cpp")
+    target_include_directories(web_pairing_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_compile_features(web_pairing_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(web_pairing_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1 PLAYDEN_TEST_AT_UNAVAILABLE=1)
+    target_link_libraries(web_pairing_native_policy_test PRIVATE playden_runtime_artifact_hash Threads::Threads)
+    add_test(NAME web_pairing_native_policy COMMAND web_pairing_native_policy_test)
     add_executable(web_file_policy_test "${CMAKE_SOURCE_DIR}/tests/web_file_policy_test.cpp")
     target_link_libraries(web_file_policy_test PRIVATE playden_web)
     add_test(NAME web_file_policy COMMAND web_file_policy_test)

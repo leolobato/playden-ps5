@@ -819,6 +819,8 @@ int main(int argc, char** argv) {
             };
             for (const auto& private_path : playden::runtime::PrivateProfilePaths())
                 web_config.files.private_profile_paths.push_back(private_path.generic_string());
+            // Browsers paired with "Remember this browser": hashes of their tokens, kept across restarts.
+            web_config.files.pairing.store_root = (options->data_directory / "web-access").lexically_normal().string();
             web_config.files.import_recipe = [recipe_imports](const std::string& game, std::string file) {
                 return recipe_imports->Import(game, std::move(file));
             };

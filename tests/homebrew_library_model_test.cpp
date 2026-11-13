@@ -2038,10 +2038,29 @@ void live_storage_section_and_installed_games() {
               find_row(model, "settings-web-problem")->subtitle.rfind(
                   "Web access could not start: port 7039: Address already in use (errno 48).", 0) == 0,
           "a port that could not be opened says why");
+    // Paired browsers (#873): the count, and Forget all once there is one.
+    {
+        const auto* none = find_row(model, "settings-web-browsers");
+        check(none && none->title == "Paired browsers" && none->value == "0" && !none->enabled && none->kind == RowKind::Status,
+              "no paired browser: the count, with nothing to forget");
+        playden::homebrew::LiveWebAccess paired{"on", "http://192.168.1.50:7031/", 7031, {}};
+        paired.paired_browsers = 2;
+        model.ApplyLiveWebAccess(paired);
+        const auto* two = find_row(model, "settings-web-browsers");
+        check(two && two->value == "2" && two->enabled && two->kind == RowKind::Action && two->section == "Web access",
+              "paired browsers are counted and can be forgotten");
+    }
     activate(model, "settings-web-access");
     check(!find_row(model, "settings-web-access")->selected && !model.ExportPreferences().web_access &&
               !find_row(model, "settings-web-problem") && !find_row(model, "settings-web-address"),
           "the toggle turns web access off");
+    check(find_row(model, "settings-web-browsers") && find_row(model, "settings-web-browsers")->value == "2",
+          "turning web access off doesn't forget paired browsers");
+    check(!model.TakeForgetWebBrowsers(), "nothing forgotten yet");
+    activate(model, "settings-web-browsers");
+    check(!model.TakeForgetWebBrowsers(), "Forget all asks first");
+    activate(model, "web-forget-browsers-confirm");
+    check(model.TakeForgetWebBrowsers() && !model.TakeForgetWebBrowsers(), "Forget all reaches the web service once");
     activate(model, "settings-web-access");
     check(model.ExportPreferences().web_access, "and on again");
     check(!model.state().quit_requested, "not quitting yet");

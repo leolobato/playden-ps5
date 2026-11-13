@@ -1164,6 +1164,8 @@ int main() {
         };
         for (const auto& private_path : playden::runtime::PrivateProfilePaths())
             web_config.files.private_profile_paths.push_back(private_path.generic_string());
+        // Browsers paired with "Remember this browser": hashes of their tokens in user data, kept across restarts.
+        web_config.files.pairing.store_root = user_root + "/web-access";
         // Recipe files from a paired browser: kept through the community service when it runs, else in the cache folder.
         auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
         if (community)

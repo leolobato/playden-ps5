@@ -48,7 +48,7 @@ def run(port, server):
 
     # Unpaired.
     assert call("GET", "/api/files/games")[0] == 401
-    assert json.loads(call("GET", "/api/pair/status")[1]) == {"paired": False}
+    assert json.loads(call("GET", "/api/pair/status")[1]) == {"paired": False, "remembered": False}
 
     # Pair with the code the TV shows.
     ok(call("POST", "/api/pair/start"))
@@ -56,7 +56,7 @@ def run(port, server):
     result = call("POST", "/api/pair/confirm", code=code)
     ok(result)
     cookie["value"] = result[2]["Set-Cookie"].split(";")[0]
-    assert json.loads(call("GET", "/api/pair/status")[1]) == {"paired": True}
+    assert json.loads(call("GET", "/api/pair/status")[1]) == {"paired": True, "remembered": False}
 
     # The games.
     games = ok(call("GET", "/api/files/games"))["games"]
