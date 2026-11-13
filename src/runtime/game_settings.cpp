@@ -1706,6 +1706,27 @@ std::string RenderDxvkConfig(const EffectiveSettings& settings) {
   return std::string(kDxvkHeader) + " Changes here are replaced on the next launch.\n" + text;
 }
 
+std::string SettingsLogSummary(const EffectiveSettings& settings) {
+  const auto find = [&](const char* id) -> const EffectiveValue* {
+    const auto found = settings.values.find(id);
+    return found == settings.values.end() ? nullptr : &found->second;
+  };
+  const auto* overlay = find("performance_overlay");
+  const bool overlay_on = overlay && overlay->available && overlay->value == "on";
+  std::string text = std::string("overlay=") + (overlay_on ? "on" : "off");
+  if (const auto* detail = find("overlay_detail"); overlay_on && detail && detail->available)
+    text += " detail=" + detail->value;
+  std::string chosen;
+  for (const auto& [id, value] : settings.values) {
+    if (value.source != ValueSource::kUser && value.source != ValueSource::kPreset) continue;
+    const auto* definition = FindSetting(id);
+    const bool typed = !definition || definition->kind == SettingKind::kText || definition->choices.empty();
+    chosen += (chosen.empty() ? "" : ",") + id + "=" + (typed ? "set" : value.value.empty() ? "-" : value.value);
+    if (!value.available) chosen += "(unavailable)";
+  }
+  return text + " chosen=" + (chosen.empty() ? "-" : chosen);
+}
+
 namespace {
 
 bool StringField(const json::Value& object, const char* key, std::string* out, bool required = true) {

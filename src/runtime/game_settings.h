@@ -493,6 +493,12 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
 // dxvk.conf for the game folder; empty when no DXVK option differs from DXVK's default.
 std::string RenderDxvkConfig(const EffectiveSettings& settings);
 
+// One runtime log line's worth of the settings a launch runs with: whether the performance overlay is on (and its
+// detail), then every row the player or the chosen preset set, as id=value ("chosen=-" when none). Text rows (Extra
+// arguments, a program, environment variables) may hold anything the player typed, so only their id is named
+// (id=set). A row that can't apply here says so: id=value(unavailable).
+std::string SettingsLogSummary(const EffectiveSettings& settings);
+
 // Writes what the next launch reads: <prospero_root>/profiles/<id>.profile (listed in
 // profiles.lst) and <install_root>/dxvk.conf. An empty config removes Playden's dxvk.conf.
 // A dxvk.conf Playden did not write (no Playden header) is never replaced or removed; the

@@ -908,6 +908,21 @@ std::string RuntimeHost::SteamStubStep(const GameFiles& files) {
   return unpacked.ok ? std::string() : unpacked.message;
 }
 
+void RuntimeHost::LogPlaySettings(Composition& c, const rt::RuntimeInstall& record) {
+  const auto* recipe = RecipeOf(c, record);
+  if (!recipe) return;
+  auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+  const auto resolved = saved ? RecordPreset(c, &*saved) : std::nullopt;
+  static const std::map<std::string, std::string> none;
+  rt::EffectiveSettings settings;
+  rt::SettingsError error;
+  const bool built = rt::BuildEffectiveSettings(*recipe, resolved ? &*resolved : nullptr, saved ? saved->overrides : none,
+                                                TitleKit(c, record), &settings, &error);
+  Log("play settings app=" + std::to_string(record.runtime_number) + " revision=" +
+      std::to_string(saved ? saved->revision : 0) + " preset=" + (resolved ? resolved->id : std::string("-")) + " " +
+      (built ? rt::SettingsLogSummary(settings) : std::string("unreadable")));
+}
+
 RuntimeHost::OnlineHandoff RuntimeHost::OnlineHandoffFor(Composition& c, const rt::RuntimeInstall& record,
                                                          std::string* invites, bool* verbose, bool* adapters_off) {
   const auto* recipe = RecipeOf(c, record);
@@ -3536,6 +3551,9 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
       std::optional<rt::RuntimeInstall> current;
       if (idle && settings.empty())
         if ((current = c.records.Find(record->install_id))) HandOverOnline(c, *current, online, "play");
+      // A launcher or setup run publishes its own program and controls: "play setup program" names it instead.
+      if (settings.empty() && setup_program.empty())
+        if (const auto latest = current ? current : c.records.Find(record->install_id)) LogPlaySettings(c, *latest);
       result = settings.empty() ? c.launch->Request(record->install_id)
                                 : rt::LaunchResult::Failure(rt::LaunchError::kPreflight, settings);
       // What this Play asked of the bridge once is for this start only, kept handoff or not.

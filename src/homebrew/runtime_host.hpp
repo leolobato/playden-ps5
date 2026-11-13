@@ -823,6 +823,9 @@ class RuntimeHost {
   // Steam-file steps.
   std::string SteamStubStep(const GameFiles& files);
   std::string SteamworksStep(const GameFiles& files, bool steam_account_known);  // and the legacy steam.dll
+  // At Play: one runtime log line with the settings the game starts with (the performance overlay and the rows the
+  // player or a preset set), so a report's logs show what a failed start ran with.
+  void LogPlaySettings(Composition& composition, const runtime::RuntimeInstall& record);
   // How a game gets the Steam session: not at all (not set to Online), at Play only, or kept for the Home screen.
   enum class OnlineHandoff { kNone, kAtPlay, kKept };
   // invites (optional): Game invites as the game's title runs it (ask, join, show or off), when there is a handoff.

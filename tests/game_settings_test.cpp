@@ -603,6 +603,16 @@ int main(int argc, char** argv) {
   CHECK(RenderDxvkConfig(settings).find("dxvk.hud = fps,frametimes\n") != std::string::npos);
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("show_fps = false\n") != std::string::npos);
+  // The runtime log names the overlay and the player's own rows; typed text stays out of it.
+  CHECK(SettingsLogSummary(settings) ==
+        "overlay=on detail=frametimes chosen=overlay_detail=frametimes,performance_overlay=on");
+  CHECK(BuildEffectiveSettings(hl2, nullptr, {{"extra_arguments", "+password hunter2"}, {"vsync", "off"}},
+                               KitCapabilities{}, &settings, &error));
+  CHECK(SettingsLogSummary(settings) == "overlay=off chosen=extra_arguments=set,vsync=game(unavailable)");
+  CHECK(BuildEffectiveSettings(hl2, nullptr, {}, dxvk_kit, &settings, &error));
+  CHECK(SettingsLogSummary(settings) == "overlay=off chosen=-");
+  CHECK(BuildEffectiveSettings(hl2, mouse, {}, dxvk_kit, &settings, &error));
+  CHECK(SettingsLogSummary(settings).find("controller=") != std::string::npos);
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"overlay_detail", "full"}}, dxvk_kit, &settings, &error));
   CHECK(!settings.values.at("overlay_detail").available);   // overlay off
   CHECK(RenderDxvkConfig(settings).find("dxvk.hud") == std::string::npos);
