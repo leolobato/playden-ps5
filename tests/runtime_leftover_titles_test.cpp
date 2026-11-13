@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
+#include <unordered_set>
 #include <unistd.h>
 
 using namespace playden::runtime;
@@ -72,6 +73,27 @@ void DoesNotScanAnUnreadRepositoryOrUseFailedListings() {
       [](const fs::path&, uid_t, const std::unordered_set<std::string>&) { return std::nullopt; }).empty());
 }
 
+// A title held only by a record this build can't read (a later build's game) is reserved too, and the lister
+// skips it like a recorded one.
+void TitlesReservedWithoutARecordAreNotLeftovers() {
+  std::unordered_set<std::string> excluded;
+  const auto lister = [&](const fs::path&, uid_t, const std::unordered_set<std::string>& excluded_title_ids) {
+    excluded = excluded_title_ids;
+    return std::vector<LeftoverTitleCandidate>{Candidate("FAKE78001"), Candidate("FAKE78007")};
+  };
+  RuntimeInstall record; record.title_id = "FAKE78002";
+  const auto found = FindLeftoverTitles("/data/homebrew", true, {record}, {"FAKE78007"}, Stopped, kOwner, lister);
+  CHECK(found.size() == 1 && found[0].title_id == "FAKE78001");
+  CHECK((excluded == std::unordered_set<std::string>{"FAKE78002", "FAKE78007"}));
+  // Unread records still mean no scan, whatever else is reserved.
+  bool scanned = false;
+  CHECK(FindLeftoverTitles("/data/homebrew", false, {}, {"FAKE78007"}, Stopped, kOwner,
+      [&](const fs::path&, uid_t, const std::unordered_set<std::string>&) {
+        scanned = true; return std::vector<LeftoverTitleCandidate>{Candidate()};
+      }).empty());
+  CHECK(!scanned);
+}
+
 struct TemporaryDirectory {
   TemporaryDirectory() {
     auto pattern = (fs::temp_directory_path() / "playden-leftovers-XXXXXX").string();
@@ -127,5 +149,6 @@ void ReadsRealDirectoriesWithoutFollowingLinks() {
 int main() {
   FindsOnlyUnrecordedOwnedStoppedTitles();
   DoesNotScanAnUnreadRepositoryOrUseFailedListings();
+  TitlesReservedWithoutARecordAreNotLeftovers();
   ReadsRealDirectoriesWithoutFollowingLinks();
 }

@@ -56,6 +56,7 @@
 #include <set>
 #include <string_view>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 
 namespace playden::homebrew {
@@ -2003,6 +2004,9 @@ std::size_t RuntimeHost::LeftoverRequests(Composition& c, bool remove) {
   std::set<std::string> referenced;
   for (const auto& record : c.repository.Snapshot())
     if (record.journal) referenced.insert(record.journal->operation_id);
+  // A later build's game may have a publication of its own pending: its request stays for that build.
+  for (const auto& foreign : c.repository.ForeignInstalls())
+    if (!foreign.journal_operation_id.empty()) referenced.insert(foreign.journal_operation_id);
   const auto& directory = c.request_directory;
   std::vector<std::string> leftovers;
   std::error_code error;
@@ -4830,7 +4834,7 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       // Every ID refused at once usually means one source cannot answer, not that every ID is taken:
       // ask the IDs no other game holds what each source says, until one is not clearly in use.
       std::set<std::string> held;
-      for (const auto& install : c.repository.Snapshot()) held.insert(install.title_id);
+      for (const auto& title : c.repository.ReservedTitles()) held.insert(title);  // a later build's games' too
       const auto log_prefix = "title reservation refused app=" + std::to_string(request.runtime_number) +
                               " candidates=" + std::to_string(reserve.kit_title_variants.size()) +
                               " held=" + std::to_string(held.size());
@@ -5294,6 +5298,9 @@ std::string RuntimeHost::SyncTitleAllowList(Composition& c) {
   std::set<std::string> titles;
   for (const auto& record : c.repository.Snapshot())
     if (rt::KitVariantFor(c.kit->view, record.title_id)) titles.insert(record.title_id);
+  // A later build's game keeps starting from Home: its title stays reserved, so it stays allowed.
+  for (const auto& foreign : c.repository.ForeignInstalls())
+    if (rt::KitVariantFor(c.kit->view, foreign.title_id)) titles.insert(foreign.title_id);
   std::string contents;
   for (const auto& title : titles) contents += title + "\n";
   std::string error;
@@ -5314,6 +5321,7 @@ bool RuntimeHost::TitleListed(Composition& c, const std::string& title_id) {
 void RuntimeHost::PublishKeptBottles(Composition& c) {
   std::set<std::string> recorded;
   for (const auto& record : c.repository.Snapshot()) recorded.insert(record.install_id);
+  for (const auto& foreign : c.repository.ForeignInstalls()) recorded.insert(foreign.install_id);
   std::vector<KeptBottleView> kept;
   const auto games = HostPath(config_.package_paths.console_data_root + "/playden/games");
   std::error_code error;
@@ -5454,15 +5462,17 @@ std::string RuntimeHost::SaveLeftoverDelete(Composition& c, const LeftoverDelete
 }
 
 void RuntimeHost::PublishLeftoverTitles(Composition& c) {
-  auto titles = rt::FindLeftoverTitles(config_.homebrew_root, c.repository.Loaded() && c.leftover_journals_known, c.repository.Snapshot(),
+  // Every title a record holds, a later build's games' included, is never a leftover.
+  const auto reserved_titles = c.repository.ReservedTitles();
+  const std::unordered_set<std::string> reserved(reserved_titles.begin(), reserved_titles.end());
+  auto titles = rt::FindLeftoverTitles(config_.homebrew_root, c.repository.Loaded() && c.leftover_journals_known,
+                                      c.repository.Snapshot(), reserved,
                                       [&c](const std::string& title) { return c.coordinator->Activity(title); }, geteuid());
   // A retired title still waiting for the remover remains available to retry, even though its
   // source has left the scan root. Its private journal reserves the ID until completion.
   if (c.repository.Loaded())
     for (const auto& [id, request] : c.leftover_deletes) {
-      const auto records = c.repository.Snapshot();
-      if (std::any_of(records.begin(), records.end(), [&](const auto& record) { return record.title_id == id; }) ||
-          c.coordinator->Activity(id) != rt::NativeActivity::kStopped) continue;
+      if (reserved.count(id) || c.coordinator->Activity(id) != rt::NativeActivity::kStopped) continue;
       if (std::none_of(titles.begin(), titles.end(), [&](const auto& title) { return title.title_id == id; }))
         titles.push_back(request.title);
     }
@@ -5485,8 +5495,9 @@ std::string RuntimeHost::RunDeleteLeftover(Composition& c, LeftoverDelete reques
     PublishInstalls(c);
     if (!loaded.ok()) return fail("Playden's records of PS5 titles cannot be read: " + loaded.message() + ".");
   }
-  for (const auto& record : c.repository.Snapshot())
-    if (record.title_id == id) return fail("This PS5 title now belongs to an installed game; it was left as it is.");
+  // A later build's game holds its title too (ReservedTitles names every record's).
+  for (const auto& title : c.repository.ReservedTitles())
+    if (title == id) return fail("This PS5 title now belongs to an installed game; it was left as it is.");
   if (const auto pending = c.leftover_deletes.find(id); pending != c.leftover_deletes.end()) request = pending->second;
   else if (c.blocked_leftover_titles.count(id))
     return fail("The removal record cannot be read; restart Playden before retrying.");
@@ -5690,6 +5701,7 @@ void RuntimeHost::KeepUnrecordedBottles(Composition& c) {
   const auto records = c.repository.Snapshot();
   std::set<std::string> recorded_installs;
   for (const auto& record : records) recorded_installs.insert(record.install_id);
+  for (const auto& foreign : c.repository.ForeignInstalls()) recorded_installs.insert(foreign.install_id);
   // A PS5 title starts the bottle its game-launch.json names, running or not, whatever owns its folder and
   // whatever the records say about it: that bottle stays until the title is deleted (Storage lists it as a leftover).
   std::set<std::string> named_installs, named_roots;
@@ -6116,7 +6128,8 @@ bool RuntimeHost::RunServices() {
       ShareNumbers(&c.repository);
       // Install records with a journal wait for an explicit recovery action. Leftover-title
       // deletion journals are resumed separately before their retired folders can be swept.
-      Log("startup records loaded installs=" + std::to_string(c.repository.Snapshot().size()));
+      Log("startup records loaded installs=" + std::to_string(c.repository.Snapshot().size()) +
+          " foreign=" + std::to_string(c.repository.ForeignInstalls().size()));
       FollowUsbDrives(c);
       LoadGeneratedRecipes(c);
       Log("startup generated recipes loaded");

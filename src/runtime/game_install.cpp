@@ -354,6 +354,72 @@ void WriteRecord(TextOutput& output, const RuntimeInstall& record) {
   output << '}';
 }
 
+// A JSON value written back compactly: object keys in their order, numbers as they were read.
+// A record WriteRecord wrote comes back byte for byte. Depth is bounded by the parse limits.
+void WriteJson(TextOutput& output, const JsonValue& value) {
+  switch (value.type()) {
+    case JsonValue::Type::kNull: output << "null"; return;
+    case JsonValue::Type::kBool: output << (value.boolean() ? "true" : "false"); return;
+    case JsonValue::Type::kNumber: output << value.text(); return;
+    case JsonValue::Type::kString: output << '\"' << Escape(value.text()) << '\"'; return;
+    case JsonValue::Type::kArray:
+      output << '[';
+      for (std::size_t i = 0; i < value.array().size(); ++i) {
+        if (i) output << ',';
+        WriteJson(output, value.array()[i]);
+      }
+      output << ']';
+      return;
+    case JsonValue::Type::kObject:
+      output << '{';
+      for (std::size_t i = 0; i < value.object().size(); ++i) {
+        if (i) output << ',';
+        output << '\"' << Escape(value.object()[i].first) << "\":";
+        WriteJson(output, value.object()[i].second);
+      }
+      output << '}';
+      return;
+  }
+}
+
+// "store" names a store this build can't read: a later build's. "steam" is never written, and a store this build
+// knows is read in full (ParseRecord), so neither is foreign.
+bool IsForeignStore(const JsonValue* store) {
+  if (!store || !store->is_string()) return false;
+  const auto& key = store->text();
+  if (key.empty() || key.size() > 16 || key.front() < 'a' || key.front() > 'z') return false;
+  for (const char c : key)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) return false;
+  return key != playden::Traits(playden::Store::kSteam).key && !ParseStore(key);
+}
+
+enum class RecordKind { kKnown, kForeign };
+
+RecordKind KindOf(const JsonValue& value) {
+  return value.is_object() && IsForeignStore(value.Find("store")) ? RecordKind::kForeign : RecordKind::kKnown;
+}
+
+// What a foreign record must still carry: its identity. Its other fields are a later build's and are not checked.
+std::optional<ForeignInstall> ParseForeign(const JsonValue& value, RepositoryError& error) {
+  const auto* schema = Required(value, "schema_version", JsonValue::Type::kNumber);
+  if (!schema || !schema->AsUint64()) return std::nullopt;
+  if (*schema->AsUint64() != 1) { error = RepositoryError::kUnsupportedSchema; return std::nullopt; }
+  const auto* install_id = Required(value, "install_id", JsonValue::Type::kString);
+  const auto* title_id = Required(value, "title_id", JsonValue::Type::kString);
+  const auto* app_id = Required(value, "app_id", JsonValue::Type::kNumber);
+  const auto* game = Required(value, "game", JsonValue::Type::kString);
+  const auto number = app_id ? app_id->AsUint64() : std::nullopt;
+  if (!install_id || !IsDescriptorId(install_id->text()) || !title_id || !IsManagedTitle(title_id->text()) ||
+      !number || *number < kFirstRuntimeNumber || *number > kLastRuntimeNumber || !game || game->text().empty() ||
+      game->text().size() > 64)
+    return std::nullopt;
+  ForeignInstall install{install_id->text(), title_id->text(), static_cast<std::uint32_t>(*number), {}};
+  if (const auto* journal = value.Find("journal"); journal && journal->is_object())
+    if (const auto* operation = journal->Find("operation_id"); operation && operation->is_string())
+      install.journal_operation_id = operation->text();
+  return install;
+}
+
 }  // namespace
 
 bool IsManagedTitle(const std::string& title) {
@@ -396,7 +462,7 @@ RepositoryResult<void> RuntimeInstallRepository::Load() {
   const auto read = storage_.ReadDurable(relative_path_, kMaxFileBytes);
   if (!read.ok()) {
     if (read.error() == StorageError::kNotFound) {
-      installs_.clear(); reservations_.clear(); allocated_.clear();
+      installs_.clear(); reservations_.clear(); foreign_.clear(); allocated_.clear();
       next_runtime_number_ = kFirstRuntimeNumber; write_next_runtime_number_ = false; loaded_ = true;
       return RepositoryResult<void>::Success();
     }
@@ -441,17 +507,33 @@ RepositoryResult<void> RuntimeInstallRepository::Load() {
     }
   }
   std::unordered_map<std::string, RuntimeInstall> next_installs;
+  std::unordered_map<std::string, Foreign> next_foreign;
   RepositoryError parse_error = RepositoryError::kMalformed;
+  // Each record holds its own install ID and the title its reservation names.
+  const auto holds = [&](const std::string& install_id, const std::string& title_id) {
+    const auto reserved = next_reservations.find(title_id);
+    return !next_installs.count(install_id) && !next_foreign.count(install_id) &&
+           reserved != next_reservations.end() && reserved->second == install_id;
+  };
   for (const auto& value : installs->array()) {
+    if (KindOf(value) == RecordKind::kForeign) {
+      auto install = ParseForeign(value, parse_error);
+      if (!install) { loaded_ = false; return Failure(parse_error, "runtime install record is invalid"); }
+      if (!holds(install->install_id, install->title_id)) {
+        loaded_ = false; return Failure(RepositoryError::kMalformed, "runtime install identities conflict");
+      }
+      const auto id = install->install_id;
+      next_foreign.emplace(id, Foreign{std::move(*install), value});
+      continue;
+    }
     auto record = ParseRecord(value, parse_error);
     if (!record) { loaded_ = false; return Failure(parse_error, "runtime install record is invalid"); }
-    if (!next_installs.emplace(record->install_id, *record).second ||
-        next_reservations.find(record->title_id) == next_reservations.end() ||
-        next_reservations[record->title_id] != record->install_id) {
+    if (!holds(record->install_id, record->title_id)) {
       loaded_ = false; return Failure(RepositoryError::kMalformed, "runtime install identities conflict");
     }
+    next_installs.emplace(record->install_id, *record);
   }
-  if (next_installs.size() != next_reservations.size()) {
+  if (next_installs.size() + next_foreign.size() != next_reservations.size()) {
     loaded_ = false; return Failure(RepositoryError::kMalformed, "runtime title reservation has no install record");
   }
   // One number, one game: logs, journals and launch records name games by number.
@@ -467,7 +549,17 @@ RepositoryResult<void> RuntimeInstallRepository::Load() {
     if (record.game.store != playden::Store::kSteam && record.runtime_number >= next_number)
       next_number = record.runtime_number + 1;
   }
+  // A foreign record's number is its own: no other record, foreign or not, shares it.
+  std::unordered_set<std::uint32_t> foreign_numbers;
+  for (const auto& entry : next_foreign) {
+    const auto number = entry.second.install.runtime_number;
+    if (numbers.count(number) || !foreign_numbers.insert(number).second) {
+      loaded_ = false; return Failure(RepositoryError::kConflict, "two games share runtime number " + std::to_string(number));
+    }
+    if (number >= next_number) next_number = number + 1;
+  }
   installs_ = std::move(next_installs); reservations_ = std::move(next_reservations);
+  foreign_ = std::move(next_foreign);
   allocated_.clear();
   next_runtime_number_ = next_number; write_next_runtime_number_ = next_value != nullptr;
   loaded_ = true;
@@ -475,11 +567,13 @@ RepositoryResult<void> RuntimeInstallRepository::Load() {
 }
 
 RepositoryResult<void> RuntimeInstallRepository::Persist() {
-  if (installs_.size() > kMaxRecords || reservations_.size() > kMaxRecords)
+  if (installs_.size() + foreign_.size() > kMaxRecords || reservations_.size() > kMaxRecords)
     return Failure(RepositoryError::kBounds, "runtime install registry exceeds its record limit");
+  // Foreign records go back among the others, in install ID order, as they were read.
   std::vector<std::string> install_ids;
-  install_ids.reserve(installs_.size());
+  install_ids.reserve(installs_.size() + foreign_.size());
   for (const auto& entry : installs_) install_ids.push_back(entry.first);
+  for (const auto& entry : foreign_) install_ids.push_back(entry.first);
   std::sort(install_ids.begin(), install_ids.end());
   std::vector<std::string> titles;
   titles.reserve(reservations_.size());
@@ -494,7 +588,9 @@ RepositoryResult<void> RuntimeInstallRepository::Persist() {
   }
   output << "],\"installs\":[";
   for (std::size_t i = 0; i < install_ids.size(); ++i) {
-    if (i) output << ','; WriteRecord(output, installs_.at(install_ids[i]));
+    if (i) output << ',';
+    if (const auto foreign = foreign_.find(install_ids[i]); foreign != foreign_.end()) WriteJson(output, foreign->second.record);
+    else WriteRecord(output, installs_.at(install_ids[i]));
   }
   output << ']';
   if (write_next_runtime_number_) output << ",\"next_runtime_number\":" << next_runtime_number_;
@@ -532,10 +628,39 @@ std::optional<RuntimeInstall> RuntimeInstallRepository::Find(const std::string& 
   return found == installs_.end() ? std::nullopt : std::optional<RuntimeInstall>(found->second);
 }
 
+std::vector<ForeignInstall> RuntimeInstallRepository::ForeignInstalls() const {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  std::vector<ForeignInstall> result;
+  if (!loaded_) return result;
+  result.reserve(foreign_.size());
+  for (const auto& entry : foreign_) result.push_back(entry.second.install);
+  std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
+    return left.install_id < right.install_id;
+  });
+  return result;
+}
+
+std::vector<std::string> RuntimeInstallRepository::ReservedTitles() const {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  std::vector<std::string> result;
+  if (!loaded_) return result;
+  result.reserve(reservations_.size());
+  for (const auto& entry : reservations_) result.push_back(entry.first);
+  std::sort(result.begin(), result.end());
+  return result;
+}
+
 RepositoryResult<RuntimeInstall> RuntimeInstallRepository::Reserve(const ReserveRequest& request) {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (!loaded_) return RepositoryResult<RuntimeInstall>::Failure(RepositoryError::kNotLoaded, "runtime install registry is not loaded");
   const auto game = RequestGame(request.game, request.runtime_number);
+  // A later build's game keeps its install ID and number.
+  if (foreign_.count(request.install_id))
+    return RepositoryResult<RuntimeInstall>::Failure(RepositoryError::kConflict, "install identity belongs to another game");
+  for (const auto& entry : foreign_)
+    if (entry.second.install.runtime_number == request.runtime_number)
+      return RepositoryResult<RuntimeInstall>::Failure(RepositoryError::kConflict,
+          "runtime number belongs to another game");
   const auto existing = installs_.find(request.install_id);
   if (existing != installs_.end()) {
     if (existing->second.runtime_number != request.runtime_number || existing->second.game != game)
@@ -550,7 +675,7 @@ RepositoryResult<RuntimeInstall> RuntimeInstallRepository::Reserve(const Reserve
     if (entry.second == request.runtime_number && entry.first != game)
       return RepositoryResult<RuntimeInstall>::Failure(RepositoryError::kConflict,
           "runtime number belongs to another game");
-  if (installs_.size() >= kMaxRecords)
+  if (installs_.size() + foreign_.size() >= kMaxRecords)
     return RepositoryResult<RuntimeInstall>::Failure(RepositoryError::kBounds,
         "runtime install registry has reached its record limit");
   RuntimeInstall candidate;
@@ -693,6 +818,7 @@ RepositoryResult<std::uint32_t> RuntimeInstallRepository::RuntimeNumberFor(const
   if (const auto found = allocated_.find(game); found != allocated_.end()) return Result::Success(found->second);
   std::unordered_set<std::uint32_t> used;
   for (const auto& entry : installs_) used.insert(entry.second.runtime_number);
+  for (const auto& entry : foreign_) used.insert(entry.second.install.runtime_number);
   for (const auto& entry : allocated_) used.insert(entry.second);
   auto number = next_runtime_number_;
   while (number <= kLastRuntimeNumber && used.count(number)) ++number;
@@ -717,6 +843,9 @@ RepositoryResult<void> RuntimeInstallRepository::RememberNumber(const playden::G
   if (!loaded_) return Failure(RepositoryError::kNotLoaded, "runtime install registry is not loaded");
   if (!game.valid() || runtime_number < kFirstRuntimeNumber || runtime_number > kLastRuntimeNumber)
     return Failure(RepositoryError::kInvalidRecord, "the game or its runtime number is invalid");
+  for (const auto& entry : foreign_)
+    if (entry.second.install.runtime_number == runtime_number)
+      return Failure(RepositoryError::kConflict, "runtime number belongs to another game");
   for (const auto& entry : installs_) {
     const bool same_game = entry.second.game == game, same_number = entry.second.runtime_number == runtime_number;
     if (same_game != same_number) return Failure(RepositoryError::kConflict, "runtime number belongs to another game");

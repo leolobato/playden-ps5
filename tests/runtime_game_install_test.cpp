@@ -837,9 +837,182 @@ void GogRecordsLoadAndKeepTheirBytes() {
   }
 }
 
+// A record of a store this build can't read ("epic" stands for one), as a later build writes it: an unknown field
+// ("build_id") and values of any JSON type. Beside it a Steam game and a Local game.
+constexpr const char* kForeignId = "epic-0f8fad5bd9cb469fa16570867728950e";
+constexpr std::uint32_t kForeignNumber = 0xF0000005u;
+constexpr const char* kForeignRecord =
+    R"({"schema_version":1,"install_id":"epic-0f8fad5bd9cb469fa16570867728950e","title_id":"FAKE78007","app_id":4026531845,"store":"epic","game":"0f8fad5bd9cb469fa16570867728950e","build_id":"123","data_root":"/data/playden/games/epic-0f8fad5bd9cb469fa16570867728950e","default_profile_id":"game","runtime_bundle_id":"prospero-win-e16ec8f","recipe_id":"epic-0f8fad5bd9cb469fa16570867728950e-auto","recipe_version":"1","settings_revision":3,"exit_policy":"exit-title","launch_entry_id":"0","launch_path":"Game.exe","launch_arguments":"","launch_working_directory":"","install_path":"/data/playden-games/epic-0f8fad5bd9cb469fa16570867728950e","volume_id":"internal","state":"ready","artifacts":[{"artifact_id":"wine","identity":"wine-1","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"last_failure":null,"journal":{"operation_id":"op-epic","operation":"settings-request","step":"capture"},"later":{"values":[1,2.5,-3e2,0,true,false,null],"empty":{},"none":[]}})";
+constexpr const char* kForeignSteamRecord =
+    R"({"schema_version":1,"install_id":"steam-220","title_id":"FAKE78000","app_id":220,"data_root":"/data/playden/games/steam-220","default_profile_id":"game","runtime_bundle_id":"prospero-win-e16ec8f","recipe_id":"steam-220-hl2-v1","recipe_version":"1","settings_revision":7,"exit_policy":"exit-title","launch_entry_id":"0","launch_path":"hl2.exe","launch_arguments":"-game hl2","launch_working_directory":"","install_path":"/mnt/ext1/playden/games/220","volume_id":"m2","state":"ready","artifacts":[],"last_failure":null,"journal":null})";
+constexpr const char* kForeignLocalRecord =
+    R"({"schema_version":1,"install_id":"local-0f8fad5b-d9cb-469f-a165-70867728950e","title_id":"FAKE78001","app_id":4026531840,"store":"local","game":"0f8fad5b-d9cb-469f-a165-70867728950e","data_root":"/data/playden/games/local-0f8fad5b-d9cb-469f-a165-70867728950e","default_profile_id":"game","runtime_bundle_id":"prospero-win-e16ec8f","recipe_id":"local-0f8fad5b-d9cb-469f-a165-70867728950e-auto","recipe_version":"1","settings_revision":7,"exit_policy":"exit-title","launch_entry_id":"0","launch_path":"Game.exe","launch_arguments":"","launch_working_directory":"","install_path":"/data/playden-import/Game","volume_id":"internal","state":"ready","artifacts":[],"last_failure":null,"journal":null})";
+
+std::string ForeignRegistry(const std::string& foreign = kForeignRecord, const std::string& next = "") {
+  return std::string(R"({"schema_version":1,"reservations":[{"install_id":"steam-220","title_id":"FAKE78000"},)") +
+         R"({"install_id":"local-0f8fad5b-d9cb-469f-a165-70867728950e","title_id":"FAKE78001"},)" +
+         R"({"install_id":"epic-0f8fad5bd9cb469fa16570867728950e","title_id":"FAKE78007"}],"installs":[)" + foreign +
+         "," + kForeignLocalRecord + "," + kForeignSteamRecord + "]" + next + "}";
+}
+
+void ForeignRecordsLoadAndStayReserved() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path);
+  CHECK(storage.EnsureRootDirectory().ok());
+  WriteText(directory.path + "/installs.json", ForeignRegistry());
+  RuntimeInstallRepository repository(storage, "installs.json", Free);
+  CHECK(repository.Load().ok());
+  const auto records = repository.Snapshot();
+  CHECK(records.size() == 2 && records[0].install_id == "local-0f8fad5b-d9cb-469f-a165-70867728950e" &&
+        records[1].install_id == "steam-220");
+  CHECK(!repository.Find(kForeignId));
+  const auto foreign = repository.ForeignInstalls();
+  CHECK(foreign.size() == 1 && foreign[0].install_id == kForeignId && foreign[0].title_id == "FAKE78007" &&
+        foreign[0].runtime_number == kForeignNumber && foreign[0].journal_operation_id == "op-epic");
+  CHECK((repository.ReservedTitles() == std::vector<std::string>{"FAKE78000", "FAKE78001", "FAKE78007"}));
+
+  // Its install ID, number and title are nobody else's.
+  auto same_id = LocalRequest(kLocalB, 0xF0000010u);
+  same_id.install_id = kForeignId;
+  CHECK(repository.Reserve(same_id).error() == RepositoryError::kConflict);
+  CHECK(repository.Reserve(LocalRequest(kLocalB, kForeignNumber)).error() == RepositoryError::kConflict);
+  auto steam_number = SteamRequest(220, "/mnt/ext1/playden/games/220");
+  steam_number.install_id = "steam-other";
+  steam_number.runtime_number = kForeignNumber;
+  CHECK(repository.Reserve(steam_number).error() == RepositoryError::kConflict);
+  auto only_its_title = LocalRequest(kLocalB, 0xF0000010u);
+  only_its_title.kit_title_variants = {"FAKE78007"};
+  CHECK(repository.Reserve(only_its_title).error() == RepositoryError::kTitleVariantsExhausted);
+  CHECK(repository.RememberNumber(kLocalB, kForeignNumber).error() == RepositoryError::kConflict);
+  // The allocator is past it (the file has no next_runtime_number: the records move it on).
+  const auto number = repository.RuntimeNumberFor(kLocalB);
+  CHECK(number.ok() && number.value() == kForeignNumber + 1);
+
+  // Nothing updates or removes it.
+  auto update = records[0];
+  update.install_id = kForeignId;
+  update.title_id = "FAKE78007";
+  update.runtime_number = kForeignNumber;
+  update.data_root = std::string("/data/playden/games/") + kForeignId;
+  update.game = playden::GameId{};
+  CHECK(repository.Update(update).error() == RepositoryError::kNotFound);
+  CHECK(repository.UpdateAll({update}).error() == RepositoryError::kNotFound);
+  CHECK(repository.EraseAfterUnregister(kForeignId).error() == RepositoryError::kNotFound);
+  CHECK(repository.EraseAfterUnregister(kForeignId, {TitleAvailability::kFree, TitleAvailability::kFree}).error() ==
+        RepositoryError::kNotFound);
+  CHECK(repository.ForeignInstalls().size() == 1);
+  CHECK(ReadText(directory.path + "/installs.json").find(kForeignRecord) != std::string::npos);
+}
+
+void ForeignRecordsAreWrittenBackUnchanged() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path);
+  CHECK(storage.EnsureRootDirectory().ok());
+  const auto path = directory.path + "/installs.json";
+  const auto original = ForeignRegistry(kForeignRecord, R"(,"next_runtime_number":4026531846)");
+  WriteText(path, original);
+  {
+    RuntimeInstallRepository repository(storage, "installs.json", Free);
+    CHECK(repository.Load().ok() && repository.Save().ok());
+    CHECK(ReadText(path) == original);
+    // Another game reserved beside it: the record keeps its place in install ID order and its bytes.
+    auto request = SteamRequest(440, "/data/playden-games/440");
+    CHECK(repository.Reserve(request).ok());
+    const auto text = ReadText(path);
+    CHECK(text.find(std::string("[") + kForeignRecord + ",") != std::string::npos);
+    CHECK(text.find(R"({"install_id":"epic-0f8fad5bd9cb469fa16570867728950e","title_id":"FAKE78007"})") !=
+          std::string::npos);
+  }
+  {
+    RuntimeInstallRepository restarted(storage, "installs.json", Free);
+    CHECK(restarted.Load().ok() && restarted.Snapshot().size() == 3 && restarted.ForeignInstalls().size() == 1);
+  }
+  // Escaped text comes back escaped the same way.
+  std::string escaped = kForeignRecord;
+  const std::string build = R"("build_id":"123")";
+  escaped.replace(escaped.find(build), build.size(), R"("build_id":"say \"hi\"\u0001\\ \t")");
+  const auto with_escapes = ForeignRegistry(escaped, R"(,"next_runtime_number":4026531846)");
+  WriteText(path, with_escapes);
+  RuntimeInstallRepository repository(storage, "installs.json", Free);
+  CHECK(repository.Load().ok() && repository.Save().ok());
+  CHECK(ReadText(path) == with_escapes);
+}
+
+void ForeignRecordsStillNeedAnIdentity() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path);
+  CHECK(storage.EnsureRootDirectory().ok());
+  const auto path = directory.path + "/installs.json";
+  const auto valid = ForeignRegistry();
+  const std::string reservation = R"(,{"install_id":"epic-0f8fad5bd9cb469fa16570867728950e","title_id":"FAKE78007"})";
+  const std::string foreign_id = R"("install_id":"epic-0f8fad5bd9cb469fa16570867728950e")";
+  const auto replace_all = [](std::string text, const std::string& from, const std::string& to) {
+    for (auto at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size()))
+      text.replace(at, from.size(), to);
+    return text;
+  };
+  const auto edit = [&](const std::string& from, const std::string& to) {
+    CHECK(valid.find(from) != std::string::npos);
+    auto edited = valid;
+    edited.replace(edited.find(from), from.size(), to);
+    return edited;
+  };
+  const std::vector<std::string> refused = {
+      edit(reservation, ""),                                                    // no reservation
+      edit(R"("app_id":4026531845)", R"("app_id":4026531840)"),                 // the Local game's number
+      replace_all(valid, foreign_id, R"("install_id":"local-0f8fad5b-d9cb-469f-a165-70867728950e")"),  // one ID twice
+      edit(R"("store":"epic")", R"("store":"Epic!")"),
+      edit(R"("store":"epic")", R"("store":"steam")"),
+      edit(R"("store":"epic")", R"("store":"epicgamesstore123")"),            // 17 characters: not a store key
+      edit(R"("store":"epic","game":"0f8fad5bd9cb469fa16570867728950e")",
+           R"("store":"gog","game":"0f8fad5b-d9cb-469f-a165-70867728950e")"),   // an invalid GOG game
+      edit(R"("app_id":4026531845)", R"("app_id":4000)"),
+      edit(R"("app_id":4026531845)", R"("app_id":4294967295)"),
+      edit(R"("app_id":4026531845)", R"("app_id":"4026531845")"),
+      edit(R"("title_id":"FAKE78007","app_id")", R"("title_id":"FAKE77031","app_id")"),
+      edit(R"("game":"0f8fad5bd9cb469fa16570867728950e")", R"("game":"")"),
+      edit(R"("game":"0f8fad5bd9cb469fa16570867728950e")", R"("game":7)"),
+      edit(R"("game":"0f8fad5bd9cb469fa16570867728950e",)", ""),
+      edit(R"("game":"0f8fad5bd9cb469fa16570867728950e")", "\"game\":\"" + std::string(65, 'a') + "\""),
+      edit(R"({"schema_version":1,"install_id":"epic-)", R"({"install_id":"epic-)"),
+  };
+  for (const auto& text : refused) {
+    WriteText(path, text);
+    RuntimeInstallRepository repository(storage, "installs.json", Free);
+    const auto loaded = repository.Load();
+    CHECK(!loaded.ok() && (loaded.error() == RepositoryError::kMalformed || loaded.error() == RepositoryError::kConflict));
+    CHECK(!repository.Loaded());
+  }
+  // A foreign record at another schema is a later format: refused as unsupported, like any record's.
+  WriteText(path, edit(R"({"schema_version":1,"install_id":"epic-)", R"({"schema_version":2,"install_id":"epic-)"));
+  {
+    RuntimeInstallRepository repository(storage, "installs.json", Free);
+    CHECK(repository.Load().error() == RepositoryError::kUnsupportedSchema);
+  }
+  // Two foreign records with one number.
+  std::string second = replace_all(kForeignRecord, "0f8fad5bd9cb469fa16570867728950e", "7c9e6679742540de944be07fc1f90ae7");
+  second = replace_all(second, "FAKE78007", "FAKE78008");
+  auto twice = ForeignRegistry(std::string(kForeignRecord) + "," + second);
+  twice.replace(twice.find(reservation) + reservation.size(), 0,
+                R"(,{"install_id":"epic-7c9e6679742540de944be07fc1f90ae7","title_id":"FAKE78008"})");
+  WriteText(path, twice);
+  {
+    RuntimeInstallRepository repository(storage, "installs.json", Free);
+    CHECK(repository.Load().error() == RepositoryError::kConflict);
+  }
+  // With its own number it loads.
+  twice.replace(twice.rfind(R"("app_id":4026531845)"), 19, R"("app_id":4026531846)");
+  WriteText(path, twice);
+  RuntimeInstallRepository repository(storage, "installs.json", Free);
+  CHECK(repository.Load().ok() && repository.ForeignInstalls().size() == 2);
+}
+
 int main() {
   SteamRegistryBytesAreUnchanged();
   GogRecordsLoadAndKeepTheirBytes();
+  ForeignRecordsLoadAndStayReserved();
+  ForeignRecordsAreWrittenBackUnchanged();
+  ForeignRecordsStillNeedAnIdentity();
   LocalGamesGetNumbersFromTheReservedRange();
   RuntimeNumbersRefuseOverflowAndDuplicates();
   JournalSyncFailureRequiresReloadBeforeFurtherEffects();

@@ -158,8 +158,15 @@ std::optional<std::vector<LeftoverTitleCandidate>> ListLeftoverTitleCandidates(
 std::vector<LeftoverTitle> FindLeftoverTitles(
     const fs::path& homebrew_root, bool repository_loaded, const std::vector<RuntimeInstall>& records,
     const LeftoverTitleActivity& activity, uid_t effective_uid, const LeftoverTitleLister& lister) {
+  return FindLeftoverTitles(homebrew_root, repository_loaded, records, {}, activity, effective_uid, lister);
+}
+
+std::vector<LeftoverTitle> FindLeftoverTitles(
+    const fs::path& homebrew_root, bool repository_loaded, const std::vector<RuntimeInstall>& records,
+    const std::unordered_set<std::string>& reserved_titles, const LeftoverTitleActivity& activity,
+    uid_t effective_uid, const LeftoverTitleLister& lister) {
   if (!repository_loaded || !lister || !activity) return {};
-  std::unordered_set<std::string> reserved;
+  std::unordered_set<std::string> reserved = reserved_titles;
   for (const auto& record : records) reserved.insert(record.title_id);
   const auto candidates = lister(homebrew_root, effective_uid, reserved);
   if (!candidates) return {};

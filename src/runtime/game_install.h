@@ -2,6 +2,7 @@
 
 #include "library/store.h"
 #include "platform/storage.h"
+#include "steam/backend/json.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -208,6 +209,16 @@ class RepositoryResult<void> {
   std::string message_;
 };
 
+// A record of a store this build can't read (written by a later build): only what keeps its identity
+// reserved. The repository writes the record back as it was and never hands it to a caller as a game.
+struct ForeignInstall {
+  std::string install_id;
+  std::string title_id;
+  std::uint32_t runtime_number = 0;
+  // Its pending journal's operation, when the record names one as text: that request file stays.
+  std::string journal_operation_id;
+};
+
 // Runtime numbers of games from stores other than Steam: far above any Steam app ID.
 inline constexpr std::uint32_t kFirstRuntimeNumber = 0xF0000000u;
 inline constexpr std::uint32_t kLastRuntimeNumber = 0xFFFFFFFEu;
@@ -226,8 +237,14 @@ class RuntimeInstallRepository {
   RepositoryResult<void> Save();
   // False before Load, and after a write whose outcome is unknown until the registry is read again.
   bool Loaded() const { return loaded_; }
+  // The records of the stores this build reads. Records of other stores (ForeignInstalls) are never listed or
+  // found: nothing prepares, publishes, updates or removes them.
   std::vector<RuntimeInstall> Snapshot() const;
   std::optional<RuntimeInstall> Find(const std::string& install_id) const;
+  // Records of stores this build can't read, by install ID. Their install ID, title and number stay taken.
+  std::vector<ForeignInstall> ForeignInstalls() const;
+  // Every title a record holds, foreign ones included, sorted.
+  std::vector<std::string> ReservedTitles() const;
   RepositoryResult<RuntimeInstall> Reserve(const ReserveRequest& request);
   RepositoryResult<RuntimeInstall> Adopt(const LegacyInstall& legacy);
   RepositoryResult<void> Update(const RuntimeInstall& record);
@@ -259,6 +276,12 @@ class RuntimeInstallRepository {
   bool loaded_ = false;
   std::unordered_map<std::string, RuntimeInstall> installs_;
   std::unordered_map<std::string, std::string> reservations_;
+  // Records of stores this build can't read, by install ID: written back as they were read.
+  struct Foreign {
+    ForeignInstall install;
+    steam::json::Value record;
+  };
+  std::unordered_map<std::string, Foreign> foreign_;
   // The allocator: the next number to try, and whether installs.json carries it (it did when
   // loaded, or a number was allocated), so a Steam-only registry is written as before.
   std::uint32_t next_runtime_number_ = kFirstRuntimeNumber;

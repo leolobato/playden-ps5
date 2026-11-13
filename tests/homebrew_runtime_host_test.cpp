@@ -7975,6 +7975,76 @@ void LeftoverRemovalRecoversRetireWriteGap(int scenario) {
   restarted.Shutdown();
 }
 
+// A game a later build prepared, from a store this build can't read ("epic" stands for one): the runtime stays
+// available, the game is not listed, and its title is neither a leftover nor dropped from the allow-list. Its
+// pending request and its bottle stay for that build.
+void ForeignRecordKeepsItsTitleAtStartup() {
+  Fixture fixture;
+  auto config = LeftoverConfig(fixture);
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  const auto kit = AnyTitleKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  std::vector<std::string> lists;
+  config.write_title_allow_list = [&lists](const std::string& contents, std::string*) {
+    lists.push_back(contents);
+    return true;
+  };
+  const std::string id = "epic-0f8fad5bd9cb469fa16570867728950e";
+  fs::create_directories(config.state_root);
+  CHECK(chmod(config.state_root.c_str(), 0700) == 0);
+  Write(config.state_root / "installs.json",
+        R"({"schema_version":1,"reservations":[{"install_id":")" + id + R"(","title_id":"FAKE78007"}],"installs":[)"
+        R"({"schema_version":1,"install_id":")" + id + R"(","title_id":"FAKE78007","app_id":4026531845,"store":"epic",)"
+        R"("game":"0f8fad5bd9cb469fa16570867728950e","build_id":"123","data_root":"/data/playden/games/)" + id +
+        R"(","state":"ready","journal":{"operation_id":"op-epic","operation":"settings-request","step":"capture"}}]})",
+        0600);
+  const auto requests = config.state_root / "requests";
+  Write(requests / "settings-request-op-epic.v1", "later-build", 0600);
+  Write(requests / "settings-request-op-gone.v1", "nobody's", 0600);
+  CHECK(chmod(requests.c_str(), 0700) == 0);
+  // Its title folder, as a leftover would look, and its bottle.
+  const auto title = fixture.root / "data/homebrew/FAKE78007";
+  Write(title / "sce_sys/param.json", R"({"localizedParameters":{"en-US":{"titleName":"Later Game"}}})", 0644);
+  Write(title / "eboot.bin", "title-files", 0755);
+  Write(title / "game-launch.json",
+        R"({"schema_version":1,"app_id":4026531845,"title_id":"FAKE78007","install_id":")" + id +
+        R"(","data_root":"/data/playden/games/)" + id + "\"}", 0644);
+  CHECK(chmod(title.c_str(), 0755) == 0);
+  const auto bottle = fixture.root / "data/playden/games" / id;
+  Write(bottle / "save.dat", "saved-game", 0600);
+  const auto installs_before = Read(config.state_root / "installs.json");
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.status == RuntimeHostStatus::kReady && started.kit_available);
+  CHECK(started.reason.find("Runtime install records are unavailable") == std::string::npos);
+  CHECK(started.installs.empty() && started.leftover_titles.empty());
+  CHECK(!started.runtime_games.count(0xF0000005u));
+  CHECK(!lists.empty() && lists.back() == "FAKE78007\n");
+  CHECK(fs::exists(title / "eboot.bin") && Read(bottle / "save.dat") == "saved-game");
+  CHECK(fs::exists(requests / "settings-request-op-epic.v1") && !fs::exists(requests / "settings-request-op-gone.v1"));
+  CHECK(!host.DeleteLeftoverTitle("FAKE78007"));
+  host.Shutdown();
+  CHECK(Read(config.state_root / "installs.json") == installs_before);
+
+  // A removal journal for its title (an older scan's) is not resumed over it.
+  Write(config.state_root / "leftover-FAKE78007.json",
+        R"({"schema":1,"title":"FAKE78007","operation_id":")" + std::string(kLeftoverOperation) +
+        R"(","step":"retire","device":1,"inode":1,"name":"Later Game","bytes":11})", 0600);
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  const auto resumed = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && s.leftover_deletes_handled == 1; });
+  CHECK(resumed.status == RuntimeHostStatus::kReady && resumed.leftover_titles.empty());
+  CHECK(resumed.leftover_delete_failures.count("FAKE78007") &&
+        resumed.leftover_delete_failures.at("FAKE78007") ==
+            "This PS5 title now belongs to an installed game; it was left as it is.");
+  CHECK(fs::exists(title / "eboot.bin") && fixture.registry_mutations == 0);
+  restarted.Shutdown();
+  CHECK(Read(config.state_root / "installs.json") == installs_before);
+}
+
 void LeftoverScanRequiresLoadedRecordsAndRepeatsAfterUninstall() {
   for (bool readable : {false, true}) {
     Fixture fixture;
@@ -9111,6 +9181,7 @@ int main(int argc, char** argv) {
   LeftoverRemovalRevalidatesBeforeEffects();
   for (int scenario = 0; scenario < 3; ++scenario) LeftoverRemovalRecoversRetireWriteGap(scenario);
   LeftoverScanRequiresLoadedRecordsAndRepeatsAfterUninstall();
+  ForeignRecordKeepsItsTitleAtStartup();
   KeepsUnrecordedBottlesAsKeptSaves();
   WorkerMovesGamesUnderPublicationLease();
   NoKitRefusesPreparationWithoutDurableEffects();
