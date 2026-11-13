@@ -25,7 +25,8 @@ done
 key="key-$(cat key.txt)-ccache$ccache"
 if [ $print -eq 1 ]; then echo "$key"; exit 0; fi
 mkdir -p "$work"
-echo "jobs=$jobs ccache=$ccache tls=${PROSPERO_TLS_ROOT:-}" > "$work/args"
+echo "jobs=$jobs ccache=$ccache tls=${PROSPERO_TLS_ROOT:-} env-ccache=${PROSPERO_CCACHE:-} media=${PROSPERO_MEDIA_ROOT:-} cflags=${CFLAGS:-}" > "$work/args"
+[ -z "${PW_FAKE_SLEEP:-}" ] || sleep "$PW_FAKE_SLEEP"
 echo "$key" > "$work/input-key"
 '''
 
@@ -108,6 +109,25 @@ class BuildKitCrossTests(unittest.TestCase):
         result = self.run_script(self.commit, '--name', 'test-1', '--no-reuse', check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('exists', result.stderr)
+
+    def test_ignores_build_settings_left_in_the_environment(self):
+        self.env.update(PROSPERO_CCACHE='1', PROSPERO_MEDIA_ROOT='/other/media', PROSPERO_TLS_ROOT='/other/tls',
+                        CFLAGS='-O0')
+        work = self.work_from(self.run_script(self.commit, '--no-reuse'))
+        self.assertEqual((work / 'args').read_text().split()[1:],
+                         ['ccache=0', 'tls=/tls/root', 'env-ccache=', 'media=', 'cflags='])
+
+    def test_runs_at_the_same_time_take_different_folders(self):
+        self.env['PW_FAKE_SLEEP'] = '1'
+        runs = [subprocess.Popen(['bash', str(SCRIPT), self.commit, '--no-reuse'], env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(3)]
+        works = []
+        for run in runs:
+            out, err = run.communicate()
+            self.assertEqual(run.returncode, 0, err)
+            works.append(out.strip().splitlines()[-1])
+        self.assertEqual(len(set(works)), 3, works)
+        self.assertFalse(list(self.work_root.glob('.lock-*')))
 
     def test_needs_a_configuration(self):
         self.env['PLAYDEN_KIT_CONFIG'] = str(Path(self.directory.name) / 'absent.conf')

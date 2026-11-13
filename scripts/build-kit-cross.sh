@@ -69,18 +69,29 @@ for variable in PROSPERO_WIN_REPO KIT_WORK_ROOT WINE_SOURCE WINE_HOST_TOOLS NATI
     [[ -n ${!variable} ]] || fail "$config does not set $variable"
 done
 [[ -z $PATH_PREFIX ]] || export PATH="$PATH_PREFIX:$PATH"
+# The build reads these from the environment; only the configuration and the options above set them, so a value left in
+# the calling shell (a ccache switch, another TLS root) cannot change a build, a release build included.
+unset PROSPERO_CCACHE PROSPERO_TLS_ROOT PROSPERO_CA_BUNDLE PROSPERO_MEDIA_ROOT PROSPERO_FREETYPE_TARBALL PROSPERO_RADV \
+    PROSPERO_WINE_SOURCE PROSPERO_WINE_BUILD PROSPERO_WINE_PS5_WORK PS5_PAYLOAD_SDK PS5VK_SDK PS5_PRX_FOUNDATION \
+    PS5_NATIVE_FOUNDATION SOURCE_DATE_EPOCH CFLAGS
 [[ -z $LLVM_CONFIG ]] || export LLVM_CONFIG
 export TZ=UTC LC_ALL=${LC_ALL:-C.UTF-8}
 
-# A clean clone at the commit.
+# A clean clone at the commit. Another run for the same commit may be setting it up: one at a time.
 commit=$(git -C "$PROSPERO_WIN_REPO" rev-parse --verify "$commit^{commit}") || fail "$PROSPERO_WIN_REPO has no commit $commit"
 source=$KIT_WORK_ROOT/source-$commit
 mkdir -p "$KIT_WORK_ROOT"
+lock=$KIT_WORK_ROOT/.lock-source-$commit
+for _ in $(seq 600); do mkdir "$lock" 2>/dev/null && break; sleep 1; done
+[[ -d $lock ]] || fail "another run holds $lock; remove it if no run is setting up $source"
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 [[ -d $source/.git ]] || git clone -q --no-checkout "$PROSPERO_WIN_REPO" "$source"
 git -C "$source" fetch -q "$PROSPERO_WIN_REPO" "$commit"
 git -C "$source" checkout -q --force --detach "$commit"
 git -C "$source" clean -q -fdx
 [[ -z $(git -C "$source" status --porcelain) ]] || fail "$source is not clean"
+rmdir "$lock"
+trap - EXIT
 
 arguments=(--source "$WINE_SOURCE" --host-tools "$WINE_HOST_TOOLS" --foundation "$NATIVE_FOUNDATION"
     --prx-foundation "$PRX_FOUNDATION" --jobs "$jobs")
@@ -101,14 +112,16 @@ if (( reuse )); then
     done
 fi
 
+# The work folder is taken with mkdir, which only one run can win, so two runs never share one.
 if [[ -z $name ]]; then
     stem=${commit:0:7}-$(date -u +%Y%m%d)
     number=1
-    while [[ -e $KIT_WORK_ROOT/wine-ps5-$stem.$number ]]; do number=$((number + 1)); done
-    name=$stem.$number
+    until mkdir "$KIT_WORK_ROOT/wine-ps5-$stem.$number" 2>/dev/null; do number=$((number + 1)); done
+    work=$KIT_WORK_ROOT/wine-ps5-$stem.$number
+else
+    work=$KIT_WORK_ROOT/wine-ps5-$name
+    mkdir "$work" 2>/dev/null || fail "$work exists; pick another --name"
 fi
-work=$KIT_WORK_ROOT/wine-ps5-$name
-[[ ! -e $work ]] || fail "$work exists; pick another --name"
 echo "build-kit-cross: building $commit in $work with $jobs of $cores cores$( (( ccache )) && echo ', through ccache')"
 (cd "$source" && sh tools/build_wine_ps5.sh "${arguments[@]}" --work "$work")
 echo "work: $work"
