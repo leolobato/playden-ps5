@@ -17,3 +17,16 @@ token, so the real shape is not verified. Playden reads only `username`.
 - `user-data-extra-fields.json`: the same with many other fields (objects, arrays, nulls) a fuller answer may hold,
   all made up.
 - `user-data-no-username.json`: no `username`; Playden refuses it.
+
+Answers of gamesdb (`gamesdb.gog.com/platforms/gog/external_releases/<id>`) and the owned list for the `gog_api`
+test. gamesdb is public: these were recorded without signing in and name no account.
+
+- `gamesdb-game-1351891846.json` (Jazz Jackrabbit 2: The Secret Files, a Windows game) and
+  `gamesdb-spam-1440166342.json` (an entry typed `spam`): GOG's real answers, unchanged.
+- `gamesdb-game-with-dlcs-1441974651.json` (Prison Architect, 12 DLC, a developer): GOG's real answer with
+  `game.releases` cut to its `gog` and `generic` entries. The full list names releases on other stores, some with
+  account-like `@` suffixes.
+- `gamesdb-dlc.json` (type `dlc`), `gamesdb-no-windows.json` (Linux and macOS only) and `gamesdb-invisible.json`
+  (`visible_in_library` false): synthetic, made from the 1351891846 answer with made-up product IDs 1900000101-103.
+- `owned.json`: a synthetic `embed.gog.com/user/data/games` answer naming the products above. The real shape is from
+  GOG_PROTOCOL.md §2; the spike had no token to record one. Large lists are made by the test.

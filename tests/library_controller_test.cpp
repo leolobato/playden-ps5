@@ -282,6 +282,32 @@ void OfflineActivateLoadsCached() {
   assert(!Shows(s.model,GameId::Gog(1)) && Shows(s.model,GameId::Gog(1207658924)));
   assert(!s.model.state().library_loading && !s.controller.Busy(Store::kGog));
 }
+// GOG's library arrives in batches: each kCached of an online load shows the games so far and keeps the store
+// loading; the kComplete ends it, with the whole library.
+void BatchesKeepTheStoreLoading() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  s.gog.hold=true;
+  s.controller.Activate(Store::kGog,0xabc,false);
+  assert(s.gog.held.size()==1);
+  const auto answer=s.gog.held.front();
+  auto batch=answer;batch.kind=LibraryEventKind::kCached;batch.licenses_read=false;
+  batch.games={GogGame(1,"Synthetic first GOG batch")};
+  s.gog.Push(batch);s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(1)) && s.model.state().library_loading && s.controller.Busy(Store::kGog));
+  batch.games={GogGame(1,"Synthetic first GOG batch"),GogGame(2,"Synthetic second GOG batch")};
+  s.gog.Push(batch);s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(1)) && Shows(s.model,GameId::Gog(2)));
+  assert(s.model.state().library_loading && s.controller.Busy(Store::kGog));
+  assert(Shows(s.model,SteamId(42)) && s.model.state().account(Store::kGog).error.empty());
+  auto complete=answer;
+  complete.games={GogGame(1,"Synthetic first GOG batch"),GogGame(2,"Synthetic second GOG batch"),
+                  GogGame(3,"Synthetic third GOG batch")};
+  s.gog.held.clear();
+  s.gog.Push(complete);s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(3)) && s.model.state().games.size()==4);
+  assert(!s.model.state().library_loading && !s.controller.Busy(Store::kGog));
+}
 void StaleAndForeignEventsAreDropped() {
   Stores s;
   s.controller.AddSource(s.gog);
@@ -527,5 +553,5 @@ void ManyLateGamesKeepTheCompletion() {
   }
   Wait(controller,[&]{return !model.state().library_loading && model.state().games.size()==101;});
 }
-int main(){AccountStoreWaitsForActivate();ActivateLoadsTheAccount();OfflineActivateLoadsCached();StaleAndForeignEventsAreDropped();ResetDuringLoadStopsLoading();ClearPerStore();FailureMessagesNameTheStore();RefreshCoversActiveStores();
+int main(){AccountStoreWaitsForActivate();ActivateLoadsTheAccount();OfflineActivateLoadsCached();BatchesKeepTheStoreLoading();StaleAndForeignEventsAreDropped();ResetDuringLoadStopsLoading();ClearPerStore();FailureMessagesNameTheStore();RefreshCoversActiveStores();
   OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();}

@@ -98,6 +98,37 @@ int main(){
  Check(!stale_temporary.ok()&&stale_temporary.error()==StorageError::kNotFound,"clear removes interrupted replacement file");
  Check(cache.Clear("76561198000000004").ok(),"clearing an absent cache is idempotent");
  Check(!cache.Clear(std::uint64_t{0}).ok(),"zero account is rejected");
+ // Schema 8: a game's hero picture, after its artwork. Written only when a game has one, so a library without stays
+ // readable by older versions; GOG's caches have their own prefix and are named by an account key.
+ LibraryCache gog(storage,"library-gog-");
+ const std::string cover="https://images.gog.com/"+std::string(64,'a')+".jpg?namespace=gamesdb";
+ const std::string hero="https://images.gog.com/"+std::string(64,'b')+".jpg?namespace=gamesdb";
+ LibrarySnapshot heroes{8,123463,{{GameId::Gog(1207658924),"Synthetic GOG",cover,"Summary","Studio"},{GameId::Gog(1207658925),"No Hero",cover,"",""}}};
+ heroes.games[0].hero_source=hero;heroes.games[0].added_at_unix_seconds=1700000000;
+ Check(gog.Save(std::uint64_t{0x8000000000000001ULL},heroes).ok(),"save schema eight hero pictures");
+ Check(storage.Read("library-gog-9223372036854775809.cache",16*1024*1024).ok(),"the GOG prefix names the file by the decimal account");
+ Check(!storage.Read("library-9223372036854775809.cache").ok(),"the GOG cache is not a Steam cache");
+ Check(!cache.Load(std::uint64_t{0x8000000000000001ULL}).ok(),"Steam's cache never reads GOG's file");
+ auto heroes_restored=gog.Load(std::uint64_t{0x8000000000000001ULL});
+ Check(heroes_restored.ok()&&heroes_restored.value().schema_version==8,"load schema eight");
+ Check(heroes_restored.value().games[0].hero_source==hero&&heroes_restored.value().games[0].artwork_source==cover&&
+     heroes_restored.value().games[0].description=="Summary"&&heroes_restored.value().games[0].developer=="Studio"&&
+     heroes_restored.value().games[0].added_at_unix_seconds==1700000000u,"hero roundtrip beside the other fields");
+ Check(heroes_restored.value().games[1].hero_source.empty(),"a game without a hero stays without");
+ auto lossy_heroes=heroes;lossy_heroes.schema_version=7;
+ Check(!gog.Save(std::uint64_t{0x8000000000000001ULL},lossy_heroes).ok(),"schema seven cannot silently discard hero pictures");
+ auto long_hero=heroes;long_hero.games[0].hero_source=std::string(8193,'h');
+ Check(!gog.Save(std::uint64_t{0x8000000000000001ULL},long_hero).ok(),"an oversized hero is refused");
+ auto no_heroes=heroes;no_heroes.games[0].hero_source.clear();
+ Check(gog.Save(std::uint64_t{0x8000000000000002ULL},no_heroes).ok(),"save a schema eight library without heroes");
+ auto no_heroes_bytes=storage.Read("library-gog-9223372036854775810.cache");
+ Check(no_heroes_bytes.ok()&&no_heroes_bytes.value()[6]==7,"a library without heroes is written as schema seven");
+ auto no_heroes_restored=gog.Load(std::uint64_t{0x8000000000000002ULL});
+ Check(no_heroes_restored.ok()&&no_heroes_restored.value().schema_version==7&&no_heroes_restored.value().games.size()==2,"and reads back as schema seven");
+ auto steam_bytes=storage.Read("library-76561198000000007.cache");
+ Check(steam_bytes.ok()&&steam_bytes.value()[6]==7,"a Steam library stays at schema seven");
+ Check(gog.Clear(std::uint64_t{0x8000000000000001ULL}).ok()&&gog.Clear(std::uint64_t{0x8000000000000002ULL}).ok(),"clear GOG caches");
+ Check(!storage.Read("library-gog-9223372036854775809.cache").ok(),"cleared GOG cache stays absent");
  std::remove((std::string(root)+"/library-76561198000000001.cache").c_str());std::remove((std::string(root)+"/library-76561198000000002.cache").c_str());std::remove((std::string(root)+"/library-76561198000000003.cache").c_str());rmdir(root);
  puts("library_cache_test passed");
 }

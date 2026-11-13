@@ -31,5 +31,8 @@ struct GameSummary {
     bool demo = false;
     // Shared by another member of the account's Steam family, not owned; the Library marks it.
     bool family_shared = false;
+    // A wide picture for the game's page, from a store that names one per game (GOG's gamesdb); Steam's comes from
+    // the game ID instead. Kept last: tests brace-initialise the fields above in order.
+    std::string hero_source;
 };
 } // namespace playden

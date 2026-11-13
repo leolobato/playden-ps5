@@ -2758,7 +2758,8 @@ class Render::Impl
     void save_art(const State &state, GameId id, const gfx::Rect &rect)
     {
         // The cover when it is loaded; a small tile would wrap the poster's title letter by letter.
-        if (const Game *game = game_by_id(state, id); game != nullptr && state.simulation_mode && id.steam_app())
+        const Game *game = game_by_id(state, id);
+        if (game != nullptr && state.simulation_mode && id.steam_app())
         {
             const std::uint32_t number = id.steam_app().value_or(0);
             const std::size_t index = number >= 900001 ? (number - 900001) % art_.size() : number % art_.size();
@@ -2768,14 +2769,16 @@ class Render::Impl
                 return;
             }
         }
+        // A GOG game's cover address is kept with the game, so the Game is asked when there is one.
+        const std::string cover_url = game != nullptr ? CoverUrl(*game) : CoverUrl(id);
         if (live_artwork_ && !state.account().id.empty())
-            if (const std::uint32_t cover = store_texture(id, CoverUrl(id)))
+            if (const std::uint32_t cover = store_texture(id, cover_url))
             {
                 scene_.image(cover, rect, gfx::kFullUv, kText, 6.0F);
                 return;
             }
         // No cover: the poster made from its program's icon, else the game's colour.
-        if (const std::uint32_t icon = program_icon_texture(id, CoverUrl(id)))
+        if (const std::uint32_t icon = program_icon_texture(id, cover_url))
             scene_.image(icon, rect, gfx::kFullUv, kText, 6.0F);
         else
             scene_.gradient_rect(rect, 6.0F, id_color(id), gfx::Color::rgb(0x24201D));
@@ -3461,7 +3464,7 @@ class Render::Impl
         const gfx::Rect hero{0.0F, 0.0F, kWidth, 620.0F};
         const bool live_art = !state.simulation_mode && live_artwork_ && !state.account().id.empty() && id.valid();
         const std::uint32_t hero_texture = state.simulation_mode ? hero_ :
-            live_art ? store_texture(id, HeroUrl(id)) : 0;
+            live_art ? store_texture(id, game != nullptr ? HeroUrl(*game) : HeroUrl(id)) : 0;
         if (hero_texture != 0)
             scene_.image(hero_texture, hero, gfx::kFullUv, kText);
         else
@@ -3480,7 +3483,7 @@ class Render::Impl
         std::uint32_t logo_width = 0;
         std::uint32_t logo_height = 0;
         const std::uint32_t logo = live_art ?
-            store_texture(id, LogoUrl(id), &logo_width, &logo_height) : 0;
+            store_texture(id, game != nullptr ? LogoUrl(*game) : LogoUrl(id), &logo_width, &logo_height) : 0;
         if (logo != 0 && logo_width > 0 && logo_height > 0)
         {
             const float fit_scale = std::min(460.0F / static_cast<float>(logo_width),

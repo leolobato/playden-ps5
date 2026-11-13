@@ -4492,6 +4492,7 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
             game.description = std::move(summary.description);
             game.source = std::string(Traits(update.source).name);
             game.artwork_source = std::move(summary.artwork_source);
+            game.hero_source = std::move(summary.hero_source);
             game.playtime_minutes = summary.playtime_minutes;
             if (summary.last_played_unix_seconds)
                 game.last_played = static_cast<std::int64_t>(*summary.last_played_unix_seconds);

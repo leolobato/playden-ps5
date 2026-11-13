@@ -1,5 +1,6 @@
 #include "homebrew/artwork_backend.hpp"
 
+#include "gog/art_url.h"
 #include "platform/managed_directory.h"
 #include "platform/ps5/title_allow_list.h"
 #include "steam/backend/http_client.h"
@@ -17,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include <sys/stat.h>
@@ -137,12 +139,14 @@ bool CheckedImageBytes(int width, int height, std::size_t& bytes) {
   return true;
 }
 
-// The game's own CDN art: its cover, its library hero and its logo, and nothing else; or a friend's medium
-// avatar, keyed by its hash alone.
+// The game's own CDN art: its cover, its library hero and its logo, and nothing else; a GOG game's gamesdb picture
+// (gog/art_url.h); or a friend's medium avatar, keyed by its hash alone.
 bool CanonicalKey(const ArtworkKey& key) {
   if (key.account_generation != 0 && key.game_id == GameId{} && IsAvatarArtworkSource(key.source)) return true;
   if (key.account_generation == 0 || !key.game_id.valid() ||
       key.source.size() > kMaxArtworkSourceBytes) return false;
+  if (key.game_id.store == Store::kGog) return gog::IsArtUrl(key.source);
+  if (key.game_id.store != Store::kSteam) return false;
   const std::string base = "https://cdn.cloudflare.steamstatic.com/steam/apps/" +
                            ToKey(key.game_id) + "/";
   for (const char* name : {"library_600x900.jpg", "library_hero.jpg", "logo.png"})
@@ -154,6 +158,14 @@ std::string CacheFileName(const ArtworkKey& key) {
   if (std::string hash; key.account_generation != 0 && key.game_id == GameId{} && IsAvatarArtworkSource(key.source, &hash))
     return "avatar_" + hash + ".jpg";
   if (key.account_generation == 0 || !key.game_id.valid() || key.source.empty()) return {};
+  // Named by the picture's hash (GOG games share pictures, and the hash names the content) and its size.
+  if (key.game_id.store == Store::kGog) {
+    std::string_view hash;
+    gog::ArtKind kind = gog::ArtKind::kCover;
+    if (!gog::IsArtUrl(key.source, &hash, &kind)) return {};
+    return "gog_" + std::string(hash) + (kind == gog::ArtKind::kHero ? "_hero.jpg" : ".jpg");
+  }
+  if (key.game_id.store != Store::kSteam) return {};
   const std::string id = ToKey(key.game_id);
   if (id.empty()) return {};
   if (key.source.find("library_600x900.jpg") != std::string::npos) return id + "_600x900.jpg";

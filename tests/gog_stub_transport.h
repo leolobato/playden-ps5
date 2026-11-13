@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-// A stub GOG transport for tests: answers scripted per endpoint (auth.gog.com/token, embed.gog.com/userData.json),
-// each optionally held at a gate until the test opens it. Synthetic tokens and accounts only.
+// A stub GOG transport for tests: answers scripted per endpoint (auth.gog.com/token, embed.gog.com/userData.json,
+// embed.gog.com/user/data/games), each optionally held at a gate until the test opens it, and gamesdb products
+// answered by a handler per product ID. Synthetic tokens and accounts only.
 
 #include "gog/http.h"
 #include "steam/backend/http_client.h"
@@ -11,7 +12,9 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -108,7 +111,9 @@ class Gate {
   bool open_ = false;
 };
 
-enum class Endpoint { kToken, kUser, kOther };
+enum class Endpoint { kToken, kUser, kOwned, kProduct, kOther };
+
+inline const std::string kProductPrefix = "https://gamesdb.gog.com/platforms/gog/external_releases/";
 
 class Stub {
  public:
@@ -121,7 +126,11 @@ class Stub {
     Endpoint endpoint = Endpoint::kOther;
     std::string url;
     std::string authorization;
+    std::string if_none_match;
+    std::uint64_t product = 0;  // kProduct: the ID asked for
   };
+  // Answers a gamesdb product request: its ID and the If-None-Match sent (empty when none).
+  using ProductHandler = std::function<Step(std::uint64_t product, const std::string& if_none_match)>;
 
   void Script(Endpoint endpoint, HttpResponse response, std::shared_ptr<Gate> gate = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -139,7 +148,11 @@ class Stub {
   }
   std::size_t Unused() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return tokens_.size() + users_.size();
+    return tokens_.size() + users_.size() + owned_.size();
+  }
+  void SetProducts(ProductHandler handler) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    products_ = std::move(handler);
   }
 
   playden::gog::Transport Transport() {
@@ -147,25 +160,45 @@ class Stub {
   }
 
  private:
-  std::deque<Step>& Queue(Endpoint endpoint) { return endpoint == Endpoint::kToken ? tokens_ : users_; }
+  std::deque<Step>& Queue(Endpoint endpoint) {
+    return endpoint == Endpoint::kToken ? tokens_ : endpoint == Endpoint::kOwned ? owned_ : users_;
+  }
 
   HttpResponse Perform(const HttpRequest& request, const std::atomic<bool>& cancel) {
     Seen seen;
     seen.url = request.url;
-    for (const auto& header : request.headers)
+    for (const auto& header : request.headers) {
       if (header.first == "Authorization") seen.authorization = header.second;
+      if (header.first == "If-None-Match") seen.if_none_match = header.second;
+    }
     if (request.url.rfind("https://auth.gog.com/token?", 0) == 0) seen.endpoint = Endpoint::kToken;
     else if (request.url == "https://embed.gog.com/userData.json") seen.endpoint = Endpoint::kUser;
+    else if (request.url == "https://embed.gog.com/user/data/games") seen.endpoint = Endpoint::kOwned;
+    else if (request.url.rfind(kProductPrefix, 0) == 0) {
+      seen.endpoint = Endpoint::kProduct;
+      seen.product = std::strtoull(request.url.c_str() + kProductPrefix.size(), nullptr, 10);
+    }
     Step step;
+    ProductHandler products;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       seen_.push_back(seen);
-      if (seen.endpoint == Endpoint::kOther || Queue(seen.endpoint).empty()) {
+      if (seen.endpoint == Endpoint::kProduct) {
+        products = products_;
+      } else if (seen.endpoint == Endpoint::kOther || Queue(seen.endpoint).empty()) {
+        std::fprintf(stderr, "unscripted request\n");
+        std::exit(1);
+      } else {
+        step = Queue(seen.endpoint).front();
+        Queue(seen.endpoint).pop_front();
+      }
+    }
+    if (seen.endpoint == Endpoint::kProduct) {
+      if (!products) {
         std::fprintf(stderr, "unscripted request\n");
         std::exit(1);
       }
-      step = Queue(seen.endpoint).front();
-      Queue(seen.endpoint).pop_front();
+      step = products(seen.product, seen.if_none_match);
     }
     if (step.gate) {
       step.gate->Enter();
@@ -177,6 +210,8 @@ class Stub {
   mutable std::mutex mutex_;
   std::deque<Step> tokens_;
   std::deque<Step> users_;
+  std::deque<Step> owned_;
+  ProductHandler products_;
   std::vector<Seen> seen_;
 };
 

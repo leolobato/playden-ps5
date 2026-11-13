@@ -9,7 +9,8 @@
 namespace playden {
 
 struct LibrarySnapshot {
-  // 5 names games by store and value (other stores than Steam); 6 marks demos.
+  // 5 names games by store and value (other stores than Steam); 6 marks demos, 7 family-shared games, 8 hero
+  // pictures (written only when a game has one).
   std::uint32_t schema_version = 4;
   std::uint64_t retrieved_at_unix_seconds = 0;
   std::vector<GameSummary> games;

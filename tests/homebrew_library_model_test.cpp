@@ -4038,7 +4038,8 @@ void live_details_prepare_next() {
 }
 
 // A Steam game's art is at the addresses Playden always used (the artwork backend accepts exactly
-// these); a game from another store has none yet, so its tile shows its title.
+// these); a GOG game's is what its gamesdb entry named, kept on the game, in the one shape the
+// artwork backend fetches; an imported game has none, so its tile shows its title.
 void store_art_follows_the_store() {
     using namespace playden::homebrew;
     Game steam;
@@ -4050,6 +4051,41 @@ void store_art_follows_the_store() {
     local.id = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
     check(CoverUrl(local).empty() && HeroUrl(local).empty() && LogoUrl(local).empty(), "imported games have no store art");
     check(CoverUrl(playden::GameId{}).empty(), "an invalid game has no art");
+
+    const std::string cover = "https://images.gog.com/" + std::string(64, 'a') + ".jpg?namespace=gamesdb";
+    const std::string hero = "https://images.gog.com/" + std::string(64, 'b') + "_bg_crop_1920x655.jpg?namespace=gamesdb";
+    Game gog;
+    gog.id = playden::GameId::Gog(1207658924);
+    gog.artwork_source = cover;
+    gog.hero_source = hero;
+    check(CoverUrl(gog) == cover && HeroUrl(gog) == hero, "GOG art from the game's gamesdb addresses");
+    check(LogoUrl(gog).empty(), "GOG has no logo");
+    check(CoverUrl(gog.id).empty() && HeroUrl(gog.id).empty() && LogoUrl(gog.id).empty(),
+          "a GOG game's ID alone names no art");
+    gog.artwork_source = "https://images.gog.com/" + std::string(64, 'a') + ".jpg?namespace=gamesdb&x=1";
+    gog.hero_source = "https://example.invalid/hero.jpg";
+    check(CoverUrl(gog).empty() && HeroUrl(gog).empty(), "another address shape is never used");
+    gog.artwork_source = hero;
+    gog.hero_source = cover;
+    check(CoverUrl(gog).empty() && HeroUrl(gog).empty(), "nor the other slot's shape");
+    // A Steam game keeps its ID's addresses whatever it carries.
+    steam.artwork_source = cover;
+    steam.hero_source = hero;
+    check(CoverUrl(steam) == "https://cdn.cloudflare.steamstatic.com/steam/apps/440/library_600x900.jpg" &&
+              HeroUrl(steam) == "https://cdn.cloudflare.steamstatic.com/steam/apps/440/library_hero.jpg",
+          "Steam art ignores the stored addresses");
+
+    // The library fills a game's hero from its summary.
+    auto model = make_live();
+    auto summary = game(playden::GameId::Gog(1207658924), "Synthetic GOG title", cover, "Summary");
+    summary.hero_source = hero;
+    LibraryUpdate update{{summary}, false, {}, false, true, 100};
+    update.source = playden::Store::kGog;
+    check(model.UpdateLibrary(update), "a GOG library is accepted");
+    const auto* listed = find_game(model, playden::GameId::Gog(1207658924));
+    check(listed != nullptr && listed->artwork_source == cover && listed->hero_source == hero,
+          "the hero comes with the game");
+    check(CoverUrl(*listed) == cover && HeroUrl(*listed) == hero, "and its art follows");
 }
 
 // A game of a store without Cloud saves (an imported game Playden copied in), with Steam signed in or

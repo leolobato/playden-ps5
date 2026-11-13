@@ -740,6 +740,8 @@ struct Game {
     std::string description;
     std::string source;
     std::string artwork_source;
+    // The store's wide picture for the game's page, for a store that names one per game (GOG); empty for Steam.
+    std::string hero_source;
     std::string folded_title; // Derived once for production query/sort; never persisted.
     std::string cover_key;
     std::string hero_key;

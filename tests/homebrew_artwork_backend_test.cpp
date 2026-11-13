@@ -392,6 +392,64 @@ void AvatarsAreKeyedByHash() {
   assert(missing.urls.size() == 1 && !missing.asked("/header.jpg"));
 }
 
+// A GOG game's gamesdb picture: exactly https://images.gog.com/<64 hex>.jpg?namespace=gamesdb (a cover) or with
+// _bg_crop_1920x655 before .jpg (a hero), for a GOG game only, cached as gog_<hex>.jpg and gog_<hex>_hero.jpg, with no
+// header.jpg fallback. Steam keys are unchanged.
+void GogArtIsKeyedByHash() {
+  const std::string hash = "815f695a093eb35325ac84c66af106b993a940a40097d1ed63149c0bb87562fe";
+  const std::string source = "https://images.gog.com/" + hash + ".jpg?namespace=gamesdb";
+  const auto gog = playden::GameId::Gog(1351891846);
+  CacheFolder folder;
+  FakeCdn cdn;
+  cdn.answer = [](const std::string& url) {
+    return url.rfind("https://images.gog.com/", 0) == 0 ? Status(200, SmallJpeg()) : Status(500);
+  };
+  HttpArtworkBackend backend(cdn.perform(), folder.art.string());
+  std::atomic<bool> cancel{false};
+  // Not for a Steam game, an imported one, no game or generation 0; not a near miss; not Steam's CDN for a GOG game.
+  assert(!backend.Load({1, SteamId(42), source}, cancel));
+  assert(!backend.Load({1, playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e"), source}, cancel));
+  assert(!backend.Load({1, playden::GameId{}, source}, cancel));
+  assert(!backend.Load({0, gog, source}, cancel));
+  for (const std::string& near : {
+           "http://images.gog.com/" + hash + ".jpg?namespace=gamesdb",
+           "https://images.gog.com.example/" + hash + ".jpg?namespace=gamesdb",
+           "https://images.gog.com/" + hash + ".jpg",
+           "https://images.gog.com/" + hash + ".jpg?namespace=gamesdb&x=1",
+           "https://images.gog.com/" + hash + ".png?namespace=gamesdb",
+           "https://images.gog.com/" + hash.substr(1) + ".jpg?namespace=gamesdb",
+           "https://images.gog.com/" + std::string(64, 'A') + ".jpg?namespace=gamesdb",
+           "https://images.gog.com/" + hash + "{formatter}.{ext}?namespace=gamesdb",
+           "https://images.gog.com/../" + hash.substr(3) + ".jpg?namespace=gamesdb",
+           "https://images.gog.com/" + hash + "_bg_crop_1920x656.jpg?namespace=gamesdb",
+           "https://images.gog.com/" + hash + "_product_card.jpg?namespace=gamesdb",
+       })
+    assert(!backend.Load({1, gog, near}, cancel));
+  assert(!backend.Load({1, gog, "https://cdn.cloudflare.steamstatic.com/steam/apps/1351891846/library_600x900.jpg"},
+                       cancel));
+  assert(cdn.urls.empty());
+  assert(backend.Load({1, gog, source}, cancel));
+  assert(cdn.urls == std::vector<std::string>{source});
+  assert(folder.Read("gog_" + hash + ".jpg") == SmallJpeg());
+  // Cached: no second download, also for another GOG game with the same picture.
+  assert(backend.Load({1, playden::GameId::Gog(1597842603), source}, cancel) && cdn.urls.size() == 1);
+  // The hero size of the same picture is another file.
+  const std::string hero = "https://images.gog.com/" + hash + "_bg_crop_1920x655.jpg?namespace=gamesdb";
+  assert(backend.Load({1, gog, hero}, cancel));
+  assert(cdn.urls.size() == 2 && cdn.urls.back() == hero);
+  assert(folder.Read("gog_" + hash + "_hero.jpg") == SmallJpeg());
+  assert(!backend.Load({1, SteamId(42), hero}, cancel) && cdn.urls.size() == 2);
+  // A missing picture has no fallback.
+  const std::string other = "https://images.gog.com/" + std::string(64, 'e') + ".jpg?namespace=gamesdb";
+  cdn.answer = [](const std::string&) { return Status(404); };
+  assert(!backend.Load({1, gog, other}, cancel));
+  assert(cdn.urls.size() == 3 && cdn.urls.back() == other);
+  // Steam's keys are as before.
+  cdn.answer = [](const std::string&) { return Status(200, SmallJpeg()); };
+  assert(backend.Load({1, SteamId(42), kCover}, cancel));
+  assert(folder.Read("42_600x900.jpg") == SmallJpeg());
+}
+
 void OtherFailuresKeepTheCachedCover() {
   for (const bool timeout : {false, true}) {
     CacheFolder folder;
@@ -468,6 +526,7 @@ int main(int argc, char** argv) {
   SaveIsSkippedWhileTheEffectiveUidIsHeld();
   HeroHasNoHeaderFallback();
   AvatarsAreKeyedByHash();
+  GogArtIsKeyedByHash();
   OtherFailuresKeepTheCachedCover();
   BadDownloadKeepsTheCachedCover();
   ExpiredCacheIsReplacedByANewCover();

@@ -7,15 +7,15 @@ namespace playden {
 namespace {
 constexpr std::size_t kMaximumCacheBytes = 16 * 1024 * 1024;
 constexpr std::size_t kMaximumGames = 100000;
-// Schema 5 names each game by store and value; 4 and older hold Steam app IDs only. 6 marks demos.
-constexpr unsigned kLatestSchema = 7;
+// Schema 5 names each game by store and value; 4 and older hold Steam app IDs only. 6 marks demos, 7 family-shared
+// games, 8 adds each game's hero picture after its artwork.
+constexpr unsigned kLatestSchema = 8;
 constexpr std::size_t kMaximumGameValue = 48;
 const Bytes kMagic = {'P','D','L','I','B',0,1,0};
 bool ValidAccount(const std::string& account) {
     return !account.empty() && account.size() <= 20 && account[0] != '0' &&
         std::all_of(account.begin(),account.end(),[](char c){return c>='0'&&c<='9';});
 }
-std::string Path(const std::string& account) { return "library-"+account+".cache"; }
 std::uint32_t Checksum(const Bytes& bytes,std::size_t size) {
     std::uint32_t crc=0xffffffffu;
     for(std::size_t i=0;i<size;++i){crc^=bytes[i];for(int bit=0;bit<8;++bit)crc=(crc>>1)^(0xedb88320u & (0u-(crc&1u)));}
@@ -50,7 +50,8 @@ bool ValidGame(const GameSummary& game,unsigned schema) {
             *game.last_played_unix_seconds<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))) &&
         (!game.added_at_unix_seconds || (*game.added_at_unix_seconds>0 &&
             *game.added_at_unix_seconds<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))) &&
-        game.artwork_source.size()<=8192 && game.description.size()<=65536 && game.developer.size()<=4096;
+        game.artwork_source.size()<=8192 && game.hero_source.size()<=8192 &&
+        game.description.size()<=65536 && game.developer.size()<=4096;
 }
 Result<void> Invalid(const char* message) {return Result<void>::Failure(StorageError::kInvalidData,message);}
 }
@@ -59,22 +60,29 @@ Result<void> LibraryCache::Save(const std::string& account,const LibrarySnapshot
     if((snapshot.schema_version<1||snapshot.schema_version>kLatestSchema)||snapshot.games.size()>kMaximumGames||
         snapshot.retrieved_at_unix_seconds>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))return Invalid("Unsupported library cache schema or size.");
     if(snapshot.schema_version<3&&snapshot.metadata_partial)return Invalid("Cache schema cannot preserve metadata state.");
+    // Schema 8 only when a game has a hero picture, so a library without one stays readable by older versions.
+    unsigned schema=snapshot.schema_version;
+    if(schema>=8&&std::none_of(snapshot.games.begin(),snapshot.games.end(),[](const GameSummary& game){return !game.hero_source.empty();}))
+        schema=7;
     Bytes encoded=kMagic;
-    encoded[6]=static_cast<std::uint8_t>(snapshot.schema_version);
+    encoded[6]=static_cast<std::uint8_t>(schema);
     String(encoded,account);Number(encoded,snapshot.retrieved_at_unix_seconds,8);
-    if(snapshot.schema_version>=3)Number(encoded,snapshot.metadata_partial?1u:0u,1);
+    if(schema>=3)Number(encoded,snapshot.metadata_partial?1u:0u,1);
     Number(encoded,snapshot.games.size(),4);
     std::unordered_set<GameId> seen;
     for(const auto& game:snapshot.games){
-        if(!ValidGame(game,snapshot.schema_version)||!seen.insert(game.id).second)return Invalid("Invalid or duplicate cached game.");
-        if(snapshot.schema_version==1 && (game.playtime_minutes || game.last_played_unix_seconds))return Invalid("Cache schema cannot preserve game history.");
-        if(snapshot.schema_version<4 && game.added_at_unix_seconds)return Invalid("Cache schema cannot preserve acquisition dates.");
-        if(snapshot.schema_version<6 && game.demo)return Invalid("Cache schema cannot preserve demos.");
-        if(snapshot.schema_version<7 && game.family_shared)return Invalid("Cache schema cannot preserve family sharing.");
-        if(snapshot.schema_version>=5){Number(encoded,static_cast<std::uint8_t>(game.id.store),1);String(encoded,game.id.value);}
+        if(!ValidGame(game,schema)||!seen.insert(game.id).second)return Invalid("Invalid or duplicate cached game.");
+        if(schema==1 && (game.playtime_minutes || game.last_played_unix_seconds))return Invalid("Cache schema cannot preserve game history.");
+        if(schema<4 && game.added_at_unix_seconds)return Invalid("Cache schema cannot preserve acquisition dates.");
+        if(schema<6 && game.demo)return Invalid("Cache schema cannot preserve demos.");
+        if(schema<7 && game.family_shared)return Invalid("Cache schema cannot preserve family sharing.");
+        if(schema<8 && !game.hero_source.empty())return Invalid("Cache schema cannot preserve hero pictures.");
+        if(schema>=5){Number(encoded,static_cast<std::uint8_t>(game.id.store),1);String(encoded,game.id.value);}
         else Number(encoded,*game.id.steam_app(),4);
-        String(encoded,game.title);String(encoded,game.artwork_source);String(encoded,game.description);String(encoded,game.developer);
-        if(snapshot.schema_version>=2){
+        String(encoded,game.title);String(encoded,game.artwork_source);
+        if(schema>=8)String(encoded,game.hero_source);
+        String(encoded,game.description);String(encoded,game.developer);
+        if(schema>=2){
             Number(encoded,(game.playtime_minutes?1u:0u)|(game.last_played_unix_seconds?2u:0u)|(game.added_at_unix_seconds?4u:0u)|(game.demo?8u:0u)|(game.family_shared?16u:0u),1);
             if(game.playtime_minutes)Number(encoded,*game.playtime_minutes,8);
             if(game.last_played_unix_seconds)Number(encoded,*game.last_played_unix_seconds,8);
@@ -114,7 +122,9 @@ Result<LibrarySnapshot> LibraryCache::Load(const std::string& account) const {
             game.id=GameId::Steam(static_cast<std::uint32_t>(reader.Number(4)));
         }
         game.title=reader.String(4096);
-        game.artwork_source=reader.String(8192);game.description=reader.String(65536);game.developer=reader.String(4096);
+        game.artwork_source=reader.String(8192);
+        if(snapshot.schema_version>=8)game.hero_source=reader.String(8192);
+        game.description=reader.String(65536);game.developer=reader.String(4096);
         if(snapshot.schema_version>=2){
             const auto flags=reader.Number(1);
             if(flags>(snapshot.schema_version>=7?31u:snapshot.schema_version>=6?15u:snapshot.schema_version>=4?7u:3u))return invalid();
