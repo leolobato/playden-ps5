@@ -149,13 +149,21 @@ The build is prospero-win's tools, run in this order:
 6. `tools/build_native.sh` (on the Mac): the per-game title shell, with the Lapy root helper.
 7. `tools/package_playden_kit.py`: package and validate the kit.
 
+`scripts/build-kit-cross.sh <prospero-win commit>` runs step 2 on the builder (from a Mac:
+`ssh <builder> '<checkout>/scripts/build-kit-cross.sh <commit>'`). It reads the builder's input folders from
+`~/.config/playden/kit-build.conf` (the variables are listed at the top of the script) and builds into a new folder
+under the work root. It uses half of the builder's cores by default, so the computer stays usable while it builds:
+`--jobs N` sets the number of parallel jobs, `--jobs max` uses every core. For a VM, the host's limit on the VM's CPUs
+(OrbStack: `orb config set cpu N`) caps every build in it as well.
+
 A development kit often changes only one or two modules. `tools/build_wine_ps5.sh` produces the same bytes for the
-same inputs in any work folder, and it writes each finished build's input key to `<work>/input-key`. Before a
-development build, `--print-input-key` gives the key for the planned build, so a finished work folder with the same
-key can be reused instead of being built again. `--ccache` compiles through ccache, shared across work folders, so a
-build after a small change recompiles only what changed. Compare the new build's `.prx` and PE files with the previous kit's to
-find the modules that changed. A release kit is always a fresh build in a new work folder, without ccache. See prospero-win's
-`docs/WINE_PS5_BUILD.md` › Build time and reproducible output.
+same inputs in any work folder and writes each finished build's input key to `<work>/input-key`. Before building,
+`build-kit-cross.sh` asks for the key of the planned build (`--print-input-key`) and reuses a finished work folder
+with the same key instead of building again. With `--ccache` it compiles through ccache, shared across work folders,
+so a build after a small change recompiles only what changed. `tools/kit_module_diff.py <work> <kit's wine/lib/wine>`
+lists the `.prx` and PE modules that differ from a kit, the ones a development kit swaps in. A release kit is always a
+fresh build in a new work folder (`--no-reuse`, without `--ccache`). See prospero-win's `docs/WINE_PS5_BUILD.md` ›
+Build time and reproducible output.
 
 [`tools/kit-h/`](../tools/kit-h/README.md) has the scripts that built kit H and its revisions. They are a record, not
 a turnkey build: they reuse inputs from earlier kits that are not in this repository (a template bottle prepared
