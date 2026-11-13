@@ -1467,6 +1467,34 @@ void UnterminatedJournalGetsSeparator(const std::filesystem::path& root) {
   CHECK(world.chunk_calls == 1);
 }
 
+// Only a line exactly as JournalKey writes it counts a chunk as written: the depot that wrote it, decimal numbers
+// without signs or leading zeros, the file's own spelling and an offset the file has (#667 keeps them as pairs).
+void JournalLinesMatchExactly(const std::filesystem::path& root) {
+  auto world = MakeWorld();
+  std::filesystem::create_directories(root / DepotInstaller::kJournalDir);
+  std::ofstream(root / "game.exe") << "MZ-executable-second-chunk";
+  std::ofstream(root / DepotInstaller::kJournalDir / "journal")
+      << "#v2 441:11,442:12\n"
+      << "441\t0\tgame.exe\n"                        // counts
+      << "441\t0\tgame.exe\n"                        // the same line again
+      << "0441\t14\tgame.exe\n+441\t14\tgame.exe\n"   // a leading zero, a sign
+      << "441\t014\tgame.exe\n441\t-14\tgame.exe\n"   // the offset spelled otherwise
+      << "441\t18446744073709551630\tgame.exe\n"      // past 64 bits
+      << "442\t14\tgame.exe\n"                       // another depot
+      << "441\t14\tGAME.EXE\n"                       // another spelling
+      << "441\t7\tgame.exe\n"                        // no chunk there
+      << "441\t14\n441 14 game.exe\n";                // not a key
+  auto hooks = world.Hooks();
+  InstallStats last;
+  hooks.stats = [&](const char* phase, const InstallStats& stats) { if (std::string(phase) == "end") last = stats; };
+  DepotInstaller installer(hooks);
+  std::atomic<bool> cancel{false};
+  CHECK(installer.Run({}, Target(root), cancel).error == InstallError::kNone);
+  CHECK(last.chunks_skipped == 1);
+  CHECK(world.chunk_calls == 2);  // game.exe's second chunk and level.dat
+  CHECK(Read(root / "game.exe") == "MZ-executable-second-chunk");
+}
+
 void LongMatchingJournalHeader(const std::filesystem::path& root) {
   auto world = MakeWorld();
   world.manifests[441].files = {world.AddFile("one", {"written"})};
@@ -2942,6 +2970,7 @@ int main(int argc, char** argv) {
   ChangedManifestRefetchesSameOffset(base / "manifest-update");
   JournalHeaderModes(base / "header-modes");
   HeaderWriteFailureCannotAppend(base / "header-write-failure");
+  JournalLinesMatchExactly(base / "journal-lines");
   LongMatchingJournalHeader(base / "long-header");
   UnterminatedJournalGetsSeparator(base / "unterminated-header");
   JournalTraceLogging();

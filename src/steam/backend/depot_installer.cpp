@@ -257,6 +257,19 @@ bool WriteText(const std::string& path, const std::string& text) {
   return ok;
 }
 
+// As WriteText, with the text handed over line by line: a large game's file tree or file list is tens of MiB, too
+// much to hold as one string next to everything else an install keeps in the console's heap.
+bool WriteLines(const std::string& path, const std::function<bool(const std::function<bool(const std::string&)>&)>& each) {
+  const auto temporary = path + ".tmp";
+  FILE* file = std::fopen(temporary.c_str(), "w");
+  if (!file) return false;
+  bool ok = each([file](const std::string& line) { return line.empty() || std::fwrite(line.data(), 1, line.size(), file) == line.size(); });
+  ok = std::fclose(file) == 0 && ok;
+  ok = ok && std::rename(temporary.c_str(), path.c_str()) == 0;
+  if (!ok) std::remove(temporary.c_str());
+  return ok;
+}
+
 // A whole file, read through a heap buffer; false when it can't be read (missing included).
 bool ReadText(const std::string& path, std::string* text) {
   FILE* file = std::fopen(path.c_str(), "rb");
@@ -1045,21 +1058,22 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   // line, so updates treat such a file as new) and its record. Version 2 of the record adds the branch, the
   // content language and each depot's owner (the game or a DLC) and source (the app whose appinfo lists it).
   // Another store's game adds "store" and "game".
-  const auto tree_text = [&] {
-    std::string text = "v1\n";
+  // Both are written line by line (WriteLines).
+  const auto tree_lines = [&](const std::function<bool(const std::string&)>& out) {
+    if (!out("v1\n")) return false;
     for (const auto& [key, placement] : placements) {
       const auto& file = *placement.file;
       if (file.is_directory() || file.is_symlink() || file.path.find_first_of("\r\n") != std::string::npos) continue;
-      text += Hex(file.sha_content) + "\t" + std::to_string(file.size) + "\t" + file.path + "\n";
+      if (!out(Hex(file.sha_content) + "\t" + std::to_string(file.size) + "\t" + file.path + "\n")) return false;
     }
-    return text;
+    return true;
   };
-  const auto list_text = [&] {
-    std::string text;
+  const auto list_lines = [&](const std::function<bool(const std::string&)>& out) {
     for (const auto& [key, placement] : placements)
-      if (!placement.file->is_symlink())
-        text += std::string(placement.file->is_directory() ? "d" : "f") + "\t" + placement.file->path + "\n";
-    return text;
+      if (!placement.file->is_symlink() &&
+          !out(std::string(placement.file->is_directory() ? "d" : "f") + "\t" + placement.file->path + "\n"))
+        return false;
+    return true;
   };
   const auto record_text = [&] {
     std::string identity;
@@ -1104,7 +1118,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   if (!target.update) {
     // Every path this install may create, so removal never has to list directories (the console's
     // readdir is unreliable).
-    if (!WriteText(target.install_root + "/" + kFileList, list_text())) return fail(InstallError::kStorage, "cannot write file list");
+    if (!WriteLines(target.install_root + "/" + kFileList, list_lines)) return fail(InstallError::kStorage, "cannot write file list");
   } else {
     // The update's plan, before anything is staged: every path either version has (for an uninstall in
     // between; never fewer than an earlier run listed), the game's file list, the changed files and what
@@ -1112,7 +1126,8 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     std::string old_list;
     if (!ReadText(target.install_root + "/" + kFileList, &old_list) && Exists(target.install_root + "/" + kFileList))
       return fail(InstallError::kStorage, "cannot read file list");
-    const auto new_list = list_text();
+    std::string new_list;
+    list_lines([&new_list](const std::string& line) { new_list += line; return true; });
     std::string earlier;
     ReadText(update_dir + "/" + kUpdatePaths, &earlier);
     std::set<std::string> union_lines;
@@ -1130,7 +1145,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
       staged_text += found->second.file->path + "\n";
     }
     if (!WriteText(update_dir + "/" + kUpdatePaths, paths_text) || !WriteText(update_dir + "/" + kUpdateOld, old_list) ||
-        !WriteText(update_dir + "/" + kUpdateFiles, new_list) || !WriteText(update_dir + "/" + kUpdateTree, tree_text()) ||
+        !WriteText(update_dir + "/" + kUpdateFiles, new_list) || !WriteLines(update_dir + "/" + kUpdateTree, tree_lines) ||
         !WriteText(update_dir + "/" + kUpdateRecord, record_text()) ||
         !WriteText(update_dir + "/" + kUpdateStaged, staged_text) ||
         !WriteText(update_dir + "/" + installs::kUpdateStateName, installs::FormatUpdateState(update_state)))
@@ -1143,7 +1158,34 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     journal_header += std::to_string(access.grants[index].depot_id) + ':' +
                       std::to_string(access.grants[index].manifest_gid);
   }
-  std::set<std::string> done;
+  // The chunks a previous run wrote, by file and offset. A journal line names one as JournalKey does; a line that names
+  // no chunk of these depots counts for nothing. Kept as pairs, not as the lines: a large game's journal holds hundreds
+  // of thousands of them, too many full paths for the console's heap (#667).
+  using DoneChunk = std::pair<const ManifestFile*, std::uint64_t>;
+  std::vector<DoneChunk> done;
+  const auto parse_number = [](const std::string& text, std::size_t from, std::size_t to, auto* value) {
+    // Only the digits JournalKey writes: no sign, no leading zero.
+    if (from >= to || (text[from] == '0' && to - from > 1)) return false;
+    const auto parsed = std::from_chars(text.data() + from, text.data() + to, *value);
+    return parsed.ec == std::errc() && parsed.ptr == text.data() + to;
+  };
+  const auto note_done = [&](const std::string& entry) {
+    const auto first = entry.find('\t');
+    const auto second = first == std::string::npos ? first : entry.find('\t', first + 1);
+    if (second == std::string::npos) return;
+    std::uint32_t depot = 0;
+    std::uint64_t offset = 0;
+    if (!parse_number(entry, 0, first, &depot) || !parse_number(entry, first + 1, second, &offset)) return;
+    const auto path = entry.substr(second + 1);
+    const auto found = placements.find(Lower(path));
+    if (found == placements.end() || found->second.file->path != path ||
+        access.grants[found->second.depot].depot_id != depot)
+      return;
+    done.emplace_back(found->second.file, offset);
+  };
+  const auto chunk_done = [&done](const ManifestFile& file, const ManifestChunk& chunk) {
+    return std::binary_search(done.begin(), done.end(), DoneChunk{&file, chunk.offset});
+  };
   bool has_header = false, nonempty_journal = false, reset_journal = false, first_line = true;
   bool unterminated_journal = false;
   if (FILE* input = std::fopen(journal_path.c_str(), "r")) {
@@ -1164,7 +1206,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
         }
         return;
       }
-      done.insert(std::move(entry));
+      note_done(entry);
     };
     char buffer[8192];
     std::string line;
@@ -1200,6 +1242,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     unterminated_journal = false;
     if (reset_journal) trace("journal-reset");
   } else if (!has_header) trace("journal-legacy");
+  std::sort(done.begin(), done.end());
 
   // Space still needed: per file, the smaller of its unwritten chunks and its unallocated bytes.
   // A resumed install on a preallocating filesystem already holds its files at full size.
@@ -1207,7 +1250,6 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   std::map<std::string, std::uint64_t> allocated;
   for (const auto& [key, placement] : placements) {
     if (placement.file->is_directory() || placement.file->is_symlink() || !downloads(key, placement)) continue;
-    const auto depot_id = manifests[placement.depot].depot_id;
     const auto path = write_root + "/" + placement.file->path;
     const auto held = AllocatedBytes(path, placement.file->size);
     allocated[key] = held;
@@ -1215,7 +1257,7 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     bool pending = placement.file->chunks.empty() && !Exists(path);
     std::uint64_t unwritten = pending ? placement.file->size : 0;
     for (const auto& chunk : placement.file->chunks) {
-      if (done.count(JournalKey(depot_id, placement.file->path, chunk.offset))) {
+      if (chunk_done(*placement.file, chunk)) {
         progress.download_done += chunk.compressed_size;
         ++stats.chunks_skipped;
       } else {
@@ -1260,21 +1302,27 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
     std::size_t pending = 0;
     std::uint64_t allocated = 0;  // counted in progress.held_bytes
   };
-  struct ChunkWork { std::size_t file; const ManifestChunk* chunk; std::string journal_key; };
+  // A chunk's journal line is made when it is written, not held for every chunk: the lists stay small for a game
+  // with hundreds of thousands of chunks (#667).
+  struct ChunkWork { std::size_t file; const ManifestChunk* chunk; };
   std::vector<FileWork> files;
   std::vector<ChunkWork> chunks;
+  files.reserve(placements.size());
+  chunks.reserve(static_cast<std::size_t>(stats.chunks_pending));
   for (const auto& [key, placement] : placements) {
     if (placement.file->is_symlink() || !downloads(key, placement)) continue;
     const auto index = files.size();
     const auto held = allocated.find(key);
     files.push_back({placement, false, 0, held == allocated.end() ? 0 : held->second});
     for (const auto& chunk : placement.file->chunks) {
-      auto entry = JournalKey(access.grants[placement.depot].depot_id, placement.file->path, chunk.offset);
-      if (done.count(entry)) continue;
-      chunks.push_back({index, &chunk, std::move(entry)});
+      if (chunk_done(*placement.file, chunk)) continue;
+      chunks.push_back({index, &chunk});
       ++files.back().pending;
     }
   }
+  // What was written before and what each file held are in the lists now.
+  std::vector<DoneChunk>().swap(done);
+  std::map<std::string, std::uint64_t>().swap(allocated);
   // Fastest: before the workers start, a short race on this download's largest chunks picks `primary`,
   // or the winner remembered from an earlier download does. Every worker starts each chunk at `primary`
   // and fails over from there. During the download the median rate of large requests to `primary` is
@@ -1768,7 +1816,9 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
         publish_failure(InstallError::kStorage, "cannot write file"); break;
       }
       const bool recorded = Timed(journal_time, [&] {
-        return std::fprintf(journal, "%s\n", work.journal_key.c_str()) >= 0 && std::fflush(journal) == 0;
+        const auto& placement = files[work.file].placement;
+        const auto entry = JournalKey(access.grants[placement.depot].depot_id, file.path, work.chunk->offset);
+        return std::fprintf(journal, "%s\n", entry.c_str()) >= 0 && std::fflush(journal) == 0;
       });
       if (!recorded) { publish_failure(InstallError::kStorage, "cannot write journal"); break; }
       ++stats.chunks_done; ++written_chunks; --files[work.file].pending;
@@ -1843,9 +1893,10 @@ InstallOutcome DepotInstaller::Run(const StoredSession& session, const InstallTa
   }
   // What goes with the record, the merged tree, then the install record; then drop the journal: the record marks a
   // complete, verified install, so everything else must be there first.
+  trace("finish");
   if (target.before_apply && !target.before_apply(target.install_root, outcome.skipped_depots))
     return fail(InstallError::kStorage, "cannot finish install");
-  if (!WriteText(target.install_root + "/" + kFileTree, tree_text())) return fail(InstallError::kStorage, "cannot write file tree");
+  if (!WriteLines(target.install_root + "/" + kFileTree, tree_lines)) return fail(InstallError::kStorage, "cannot write file tree");
   if (!WriteText(target.install_root + "/" + kInstallRecord, record_text()))
     return fail(InstallError::kStorage, "cannot write install record");
   std::remove(journal_path.c_str());
