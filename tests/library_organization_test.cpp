@@ -5,7 +5,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -550,6 +553,253 @@ void MergePastTheLimitsKeepsTheNewestFile() {
         "a union past ten thousand games keeps the newest file whole");
 }
 
+// ---- Files a newer Playden writes: keys and scopes this build may not know. ----
+
+// A version 2 file written by hand, for keys and scopes the writer refuses. Lists keep their order and duplicates.
+struct RawCollection {
+  std::string id;
+  std::string name;
+  bool pinned = false;
+  std::vector<std::string> members;
+};
+
+struct RawV2 {
+  std::string selected;
+  std::vector<std::string> favorites;
+  std::vector<std::string> hidden;
+  std::vector<RawCollection> collections;
+  std::vector<std::pair<std::string, std::uint8_t>> ratings;
+  std::vector<std::pair<std::string, std::string>> notes;
+  std::string query;
+  std::string scope = "all";
+  std::string sort = "name";
+  std::vector<std::string> filters;
+};
+
+class RawWriter {
+ public:
+  void U8(std::uint8_t value) { bytes_.push_back(value); }
+  void U16(std::uint16_t value) { Integer(value, 2); }
+  void U32(std::uint32_t value) { Integer(value, 4); }
+  void String(const std::string& value) {
+    U32(static_cast<std::uint32_t>(value.size()));
+    bytes_.insert(bytes_.end(), value.begin(), value.end());
+  }
+  void Keys(const std::vector<std::string>& keys) {
+    U32(static_cast<std::uint32_t>(keys.size()));
+    for (const auto& key : keys) String(key);
+  }
+  playden::Bytes Take() {
+    U32(0);  // checksum placeholder
+    RewriteChecksum(bytes_);
+    return std::move(bytes_);
+  }
+
+ private:
+  void Integer(std::uint64_t value, unsigned size) {
+    for (unsigned index = 0; index < size; ++index, value >>= 8) bytes_.push_back(static_cast<std::uint8_t>(value));
+  }
+  playden::Bytes bytes_;
+};
+
+playden::Bytes EncodeV2(const RawV2& file) {
+  RawWriter writer;
+  for (const char byte : std::string("PLDORG")) writer.U8(static_cast<std::uint8_t>(byte));
+  writer.U8(0);
+  writer.U8(0);
+  writer.U16(2);
+  writer.String(file.selected);
+  writer.Keys(file.favorites);
+  writer.Keys(file.hidden);
+  writer.U32(static_cast<std::uint32_t>(file.collections.size()));
+  for (const auto& collection : file.collections) {
+    writer.String(collection.id);
+    writer.String(collection.name);
+    writer.U8(collection.pinned ? 1 : 0);
+    writer.Keys(collection.members);
+  }
+  writer.U32(static_cast<std::uint32_t>(file.ratings.size()));
+  for (const auto& [key, rating] : file.ratings) {
+    writer.String(key);
+    writer.U8(rating);
+  }
+  writer.U32(static_cast<std::uint32_t>(file.notes.size()));
+  for (const auto& [key, note] : file.notes) {
+    writer.String(key);
+    writer.String(note);
+  }
+  writer.String(file.query);
+  writer.String(file.scope);
+  writer.String(file.sort);
+  writer.Keys(file.filters);
+  return writer.Take();
+}
+
+const std::string kLocalKey = "local-0b8f6c1e-4d2a-4f3b-9a1c-2e5d7f8a9b0c";
+const std::string kEpicKey = "epic-0f8fad5bd9cb469fa16570867728950e";
+const std::string kItchKey = "itch-abc";
+const playden::GameId kGogFavorite = playden::GameId::Gog(1207658924);
+const playden::GameId kGogHidden = playden::GameId::Gog(1453375253);
+const playden::GameId kGogOther = playden::GameId::Gog(1207664663);
+
+// Example() in the hand encoder, keys in the writer's order. Used to check the encoder against the writer.
+RawV2 ExampleRaw() {
+  RawV2 file;
+  file.selected = "20";
+  file.favorites = {"10", "20"};
+  file.hidden = {"30"};
+  file.collections = {{"collection-1", "旅のゲーム", true, {"10", "30"}}, {"collection-2", "Co-op café", false, {"20"}}};
+  file.ratings = {{"10", 1}, {"20", 2}, {"30", 3}};
+  file.notes = {{"10", "再訪したい"}, {"20", "Français — bientôt"}};
+  file.query = "星 café";
+  file.scope = "collection-1";
+  file.sort = "recent-played";
+  file.filters = {"compat-playable"};
+  return file;
+}
+
+playden::Result<std::optional<playden::OrganizationSnapshot>> LoadFile(playden::Storage& storage,
+                                                                       const playden::Bytes& bytes) {
+  playden::OrganizationStore store(storage);
+  if (!storage.WriteAtomicPrivate(kV2Path, bytes).ok())
+    return playden::Result<std::optional<playden::OrganizationSnapshot>>::Failure(playden::StorageError::kWriteFailed,
+                                                                                  "fixture write failed");
+  return store.Load(kDevice);
+}
+
+bool FailsAsDamage(const playden::Result<std::optional<playden::OrganizationSnapshot>>& loaded) {
+  return !loaded.ok() && loaded.error() == playden::StorageError::kInvalidData;
+}
+
+void RawEncoderMatchesTheWriter() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  Check(store.Save(kDevice, Example()).ok(), "encoder reference saves");
+  const auto written = storage.Read(kV2Path);
+  Check(written.ok() && written.value() == EncodeV2(ExampleRaw()), "the test encoder writes what Save writes");
+}
+
+// A file shaped like Phase 2's: GOG games everywhere, and the GOG rail as the scope.
+void V2KeepsGogKeysAndFallsBackFromUnknownScope() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  auto expected = Example();
+  expected.favorites.insert(kGogFavorite);
+  expected.favorites.insert(kLocalGame);
+  expected.hidden.insert(kGogHidden);
+  expected.collections[1].members.insert(kGogOther);
+  expected.ratings[kGogFavorite] = playden::CompatibilityRating::kWorks;
+  expected.ratings[kGogHidden] = playden::CompatibilityRating::kBroken;
+  expected.notes[kGogOther] = "GOG note";
+  expected.selected_game_id = kGogFavorite;
+  expected.filters.insert("hide-demos");
+  expected.scope = "all";
+  Check(store.Save(kDevice, expected).ok(), "GOG keys save");
+
+  auto gog_scope = expected;
+  gog_scope.scope = "gog";
+  Check(!store.Save(kDevice, gog_scope).ok(), "the writer still refuses the scope gog");
+
+  const auto stored = storage.Read(kV2Path);
+  Check(stored.ok(), "GOG fixture reads");
+  if (!stored.ok()) return;
+  auto bytes = stored.value();
+  // The scope is the only length-prefixed "all" in the file.
+  Check(ReplaceBytes(bytes, std::string("\x03\0\0\0all", 7), std::string("\x03\0\0\0gog", 7)),
+        "scope gog patched in");
+  const auto loaded = LoadFile(storage, bytes);
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
+        "GOG keys are kept in favorites, hidden, collections, ratings, notes and selection; scope gog reads as all");
+  const auto after = storage.Read(kV2Path);
+  Check(after.ok() && after.value() == bytes, "loading does not rewrite the file");
+}
+
+void V2SkipsUnknownStoreKeys() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  auto file = ExampleRaw();
+  file.selected = kEpicKey;
+  file.favorites = {"10", kItchKey, "20", kEpicKey, kItchKey, kLocalKey};
+  file.hidden = {kEpicKey, "30"};
+  file.collections[0].members = {"10", kEpicKey, "30", kItchKey};
+  file.collections.push_back({"collection-3", "Only newer stores", true, {kEpicKey, kEpicKey}});
+  file.ratings = {{"10", 1}, {kEpicKey, 3}, {"20", 2}, {kItchKey, 0}, {kItchKey, 2}, {"30", 3}};
+  file.notes = {{kItchKey, "itch note"}, {"10", "再訪したい"}, {kItchKey, "again"}, {"20", "Français — bientôt"}};
+  const auto bytes = EncodeV2(file);
+
+  auto expected = Example();
+  expected.favorites.insert(kLocalGame);
+  expected.collections.push_back({"collection-3", "Only newer stores", true, {}});
+  expected.selected_game_id = {};
+  const auto loaded = LoadFile(storage, bytes);
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
+        "only unknown-store entries are gone; collections keep name, pin and other members; no selection");
+  const auto after = storage.Read(kV2Path);
+  Check(after.ok() && after.value() == bytes, "loading a file with unknown keys does not rewrite it");
+
+  auto duplicate = ExampleRaw();
+  duplicate.favorites = {"10", "10"};
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(duplicate))), "a duplicate known key is still refused");
+  duplicate = ExampleRaw();
+  duplicate.ratings = {{"10", 1}, {"10", 2}};
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(duplicate))), "a duplicate known rating is still refused");
+}
+
+void V2StillRefusesDamage() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  for (const std::string key : {"gog-0", "gog-01", "0440", "local-0F8FAD5B-D9CB-469F-A165-70867728950E", "",
+                                "steam-440", "Epic-abc", "epic-", "-abc", "epic-ABC"}) {
+    auto file = ExampleRaw();
+    file.favorites.push_back(key);
+    Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), ("a malformed key is damage: " + key).c_str());
+  }
+  auto file = ExampleRaw();
+  file.selected = "gog-0";
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "a malformed selected key is damage");
+  file = ExampleRaw();
+  file.ratings.push_back({kEpicKey, 4});
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "an unknown rating on an unknown-store key is damage");
+  file = ExampleRaw();
+  file.notes.push_back({kEpicKey, std::string("bad-") + static_cast<char>(0xc0)});
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "an invalid UTF-8 note on an unknown-store key is damage");
+  file = ExampleRaw();
+  file.collections[1].members.push_back("0440");
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "a malformed collection member is damage");
+
+  file = ExampleRaw();
+  file.favorites.push_back(kEpicKey);
+  auto corrupt = EncodeV2(file);
+  corrupt[corrupt.size() - 1] ^= 0x5a;
+  Check(FailsAsDamage(LoadFile(storage, corrupt)), "a bad checksum is damage");
+  file = ExampleRaw();
+  file.scope = "";
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "an empty scope is damage");
+  file.scope = std::string("bad-") + static_cast<char>(0xc0);
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "an invalid UTF-8 scope is damage");
+}
+
+void V2UnknownScopeReadsAsAll() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  auto file = ExampleRaw();
+  file.scope = "collection-2";
+  auto loaded = LoadFile(storage, EncodeV2(file));
+  Check(loaded.ok() && loaded.value() && loaded.value()->scope == "collection-2",
+        "a scope naming a collection is kept");
+  for (const std::string scope : {"collection-9", "gog", "epic", "favorites", "hidden", "installed", "imported"}) {
+    file.scope = scope;
+    loaded = LoadFile(storage, EncodeV2(file));
+    const bool known = scope == "favorites" || scope == "hidden" || scope == "installed" || scope == "imported";
+    auto expected = Example();
+    expected.scope = known ? scope : "all";
+    Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
+          ("scope " + scope + (known ? " is kept" : " reads as all, nothing else changes")).c_str());
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -561,6 +811,11 @@ int main() {
   MergesEveryAccount();
   MergeWithoutLegacyFilesIsMissing();
   MergePastTheLimitsKeepsTheNewestFile();
+  RawEncoderMatchesTheWriter();
+  V2KeepsGogKeysAndFallsBackFromUnknownScope();
+  V2SkipsUnknownStoreKeys();
+  V2StillRefusesDamage();
+  V2UnknownScopeReadsAsAll();
   RejectsInvalidValuesWithoutReplacingGoodData();
   V1RejectsDamagedAndOversizedFiles();
   V1RejectsSemanticCollectionNamesOnLoad();

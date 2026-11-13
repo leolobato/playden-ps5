@@ -390,6 +390,7 @@ Loaded DecodeV1(const Bytes& bytes, std::uint64_t account_id) {
 }
 
 // ---- Version 2: games as `ToKey` strings, no account. ----
+// Unknown stores are skipped; an unknown scope reads as "all".
 
 bool WriteKeys(Writer& writer, const std::set<GameId>& ids) {
   if (!writer.U32(static_cast<std::uint32_t>(ids.size()))) return false;
@@ -397,21 +398,34 @@ bool WriteKeys(Writer& writer, const std::set<GameId>& ids) {
   return true;
 }
 
-bool ReadKey(Reader& reader, GameId& id) {
-  std::string key;
-  if (!reader.String(key, kMaximumKeyBytes)) return false;
+// A key names a game, names a game of a store this build doesn't know (a newer Playden wrote it: the entry is
+// skipped), or is damage (a malformed key of a known store, "gog-0", "0440", "local-UPPER", or an empty one).
+enum class KeyRead { kGame, kUnknownStore, kDamaged };
+
+KeyRead ClassifyKey(const std::string& key, GameId& id) {
   const auto parsed = ParseKey(key);
-  if (!parsed || !parsed->valid()) return false;
-  id = *parsed;
-  return true;
+  if (parsed && parsed->valid()) {
+    id = *parsed;
+    return KeyRead::kGame;
+  }
+  return IsUnknownStoreKey(key) ? KeyRead::kUnknownStore : KeyRead::kDamaged;
 }
 
+KeyRead ReadKey(Reader& reader, GameId& id) {
+  std::string key;
+  if (!reader.String(key, kMaximumKeyBytes)) return KeyRead::kDamaged;
+  return ClassifyKey(key, id);
+}
+
+// Unknown-store keys are skipped and never count as duplicates; the count limit applies to the count as read.
 bool ReadKeys(Reader& reader, std::set<GameId>& ids) {
   std::uint32_t count = 0;
   if (!reader.U32(count) || count > kMaximumGameIds) return false;
   for (std::uint32_t index = 0; index < count; ++index) {
     GameId id;
-    if (!ReadKey(reader, id) || !ids.insert(std::move(id)).second) return false;
+    const KeyRead read = ReadKey(reader, id);
+    if (read == KeyRead::kDamaged) return false;
+    if (read == KeyRead::kGame && !ids.insert(std::move(id)).second) return false;
   }
   return true;
 }
@@ -453,11 +467,9 @@ Loaded DecodeV2(const Bytes& bytes) {
   if (!reader.U16(version) || version != kVersion2 || !reader.String(selected, kMaximumKeyBytes))
     return InvalidLoad("version or selection");
   snapshot.schema_version = version;
-  if (!selected.empty()) {
-    const auto parsed = ParseKey(selected);
-    if (!parsed || !parsed->valid()) return InvalidLoad("selection");
-    snapshot.selected_game_id = *parsed;
-  }
+  // A selected game of an unknown store leaves nothing selected.
+  if (!selected.empty() && ClassifyKey(selected, snapshot.selected_game_id) == KeyRead::kDamaged)
+    return InvalidLoad("selection");
   if (!ReadKeys(reader, snapshot.favorites) || !ReadKeys(reader, snapshot.hidden))
     return InvalidLoad("favorites or hidden");
 
@@ -482,11 +494,14 @@ Loaded DecodeV2(const Bytes& bytes) {
   for (std::uint32_t index = 0; index < rating_count; ++index) {
     GameId id;
     std::uint8_t rating = 0;
-    if (!ReadKey(reader, id) || !reader.U8(rating) ||
-        rating > static_cast<std::uint8_t>(CompatibilityRating::kBroken) ||
-        !snapshot.ratings.emplace(std::move(id), static_cast<CompatibilityRating>(rating)).second) {
+    const KeyRead read = ReadKey(reader, id);
+    if (read == KeyRead::kDamaged || !reader.U8(rating) ||
+        rating > static_cast<std::uint8_t>(CompatibilityRating::kBroken)) {
       return InvalidLoad("rating");
     }
+    if (read == KeyRead::kUnknownStore) continue;
+    if (!snapshot.ratings.emplace(std::move(id), static_cast<CompatibilityRating>(rating)).second)
+      return InvalidLoad("rating");
   }
 
   std::uint32_t note_count = 0;
@@ -494,10 +509,14 @@ Loaded DecodeV2(const Bytes& bytes) {
   for (std::uint32_t index = 0; index < note_count; ++index) {
     GameId id;
     std::string note;
-    if (!ReadKey(reader, id) || !reader.String(note, kMaximumNoteBytes) ||
-        !snapshot.notes.emplace(std::move(id), std::move(note)).second) {
-      return InvalidLoad("note");
+    const KeyRead read = ReadKey(reader, id);
+    if (read == KeyRead::kDamaged || !reader.String(note, kMaximumNoteBytes)) return InvalidLoad("note");
+    // Validate checks the notes it keeps; a skipped one is checked here.
+    if (read == KeyRead::kUnknownStore) {
+      if (!ValidText(note, kMaximumNoteBytes, true)) return InvalidLoad("note");
+      continue;
     }
+    if (!snapshot.notes.emplace(std::move(id), std::move(note)).second) return InvalidLoad("note");
   }
 
   std::uint32_t filter_count = 0;
@@ -511,6 +530,14 @@ Loaded DecodeV2(const Bytes& bytes) {
     std::string filter;
     if (!reader.String(filter, kMaximumFilterBytes) || !snapshot.filters.insert(std::move(filter)).second)
       return InvalidLoad("filter");
+  }
+  // A scope this build doesn't know (a newer rail such as "gog", or a removed collection) reads as "all". Only the
+  // reader is lenient: Validate, and so the writer, still refuse it. An empty or invalid scope stays damage.
+  if (ValidText(snapshot.scope, kMaximumScopeBytes, false) && !BuiltInScope(snapshot.scope) &&
+      !RailScope(snapshot.scope) &&
+      std::none_of(snapshot.collections.begin(), snapshot.collections.end(),
+                   [&](const OrganizationCollection& collection) { return collection.id == snapshot.scope; })) {
+    snapshot.scope = "all";
   }
   if (reader.offset() != reader.limit() || !Validate(snapshot, kVersion2))
     return InvalidLoad("trailing or semantic data");

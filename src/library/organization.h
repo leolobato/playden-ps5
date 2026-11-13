@@ -69,6 +69,10 @@ class OrganizationRepository {
 // recently modified file that has one; selection and view from the newest file), writes the
 // result to `organization.v2` and returns it. `.v1` files are never modified or removed.
 // A damaged `organization.v2` fails the load (kInvalidData); it never falls back to the merge.
+// What a newer Playden wrote is not damage: entries naming a game of a store this build doesn't know
+// (IsUnknownStoreKey) are skipped, including the selected game, and a scope it doesn't know (a newer
+// rail, a collection not in the file) reads as "all". Load never rewrites the file; the next Save
+// does. Save still refuses such keys and scopes.
 class OrganizationStore final : public OrganizationRepository {
  public:
   explicit OrganizationStore(Storage& storage) : storage_(storage) {}
