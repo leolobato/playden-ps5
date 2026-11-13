@@ -70,9 +70,9 @@ class BuildKitCrossTests(unittest.TestCase):
     def work_from(self, result):
         return Path(result.stdout.strip().splitlines()[-1].removeprefix('work: '))
 
-    def test_uses_half_the_cores_by_default_and_all_with_max(self):
+    def test_uses_every_core_by_default_and_the_count_given(self):
         work = self.work_from(self.run_script(self.commit))
-        self.assertEqual((work / 'args').read_text().split()[0], f'jobs={max(self.cores // 2, 1)}')
+        self.assertEqual((work / 'args').read_text().split()[0], f'jobs={self.cores}')
         self.assertEqual((work / 'args').read_text().split()[2], 'tls=/tls/root')
         work = self.work_from(self.run_script(self.commit, '--jobs', 'max', '--no-reuse'))
         self.assertEqual((work / 'args').read_text().split()[0], f'jobs={self.cores}')

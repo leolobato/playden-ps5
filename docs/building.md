@@ -152,9 +152,9 @@ The build is prospero-win's tools, run in this order:
 `scripts/build-kit-cross.sh <prospero-win commit>` runs step 2 on the builder (from a Mac:
 `ssh <builder> '<checkout>/scripts/build-kit-cross.sh <commit>'`). It reads the builder's input folders from
 `~/.config/playden/kit-build.conf` (the variables are listed at the top of the script) and builds into a new folder
-under the work root. It uses half of the builder's cores by default, so the computer stays usable while it builds:
-`--jobs N` sets the number of parallel jobs, `--jobs max` uses every core. For a VM, the host's limit on the VM's CPUs
-(OrbStack: `orb config set cpu N`) caps every build in it as well.
+under the work root. It uses every core of the builder by default. `--jobs N` sets the number of parallel jobs, for
+example half the cores when you want to keep working on the computer while it builds. For a VM, the host's limit on the
+VM's CPUs (OrbStack: `orb config set cpu N`) caps every build in it as well.
 
 A development kit often changes only one or two modules. `tools/build_wine_ps5.sh` produces the same bytes for the
 same inputs in any work folder and writes each finished build's input key to `<work>/input-key`. Before building,

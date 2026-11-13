@@ -6,9 +6,9 @@
 # Usage, on the builder (a Linux x86-64 machine or VM; from a Mac: ssh <builder> '<checkout>/scripts/build-kit-cross.sh …'):
 #   scripts/build-kit-cross.sh <prospero-win commit> [--jobs N|max] [--ccache] [--name NAME] [--no-reuse]
 #
-# The build uses about half of the builder's cores by default, so the machine (and, for a VM, the computer that hosts
-# it) stays usable; --jobs N sets the number of parallel jobs, --jobs max uses every core. A release kit is built with
-# --no-reuse and without --ccache, in a new work folder.
+# The build uses every core of the builder by default (--jobs max). --jobs N sets the number of parallel jobs, for
+# example half the cores to keep the machine (and, for a VM, the computer that hosts it) usable. A release kit is built
+# with --no-reuse and without --ccache, in a new work folder.
 #
 # The commit is checked out into a clean clone (<work root>/source-<commit>). If a finished work folder under the work
 # root has the same input key (tools/build_wine_ps5.sh --print-input-key: the same commit, toolchain and inputs), the
@@ -54,8 +54,7 @@ done
 
 cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 case $jobs in
-'') jobs=$(( cores / 2 > 0 ? cores / 2 : 1 )) ;;
-max) jobs=$cores ;;
+'' | max) jobs=$cores ;;
 *[!0-9]* | 0) fail "--jobs takes a positive number or max, not $jobs" ;;
 esac
 
