@@ -319,7 +319,9 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
   }
 
   gog::OwnedResult owned;
-  {
+  // A 401 can be an access token GOG ended early: the session drops it and refreshes once. A second 401, with a token
+  // just refreshed, is the account's.
+  for (int attempt = 0; attempt < 2; ++attempt) {
     auto token = session_.Token(*job.cancel);
     if (!Current(job)) return;
     switch (token.status) {
@@ -340,8 +342,11 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
       return;
     }
     owned = gog::FetchOwned(transport_, token.token, *job.cancel);
-  }  // the token wipes itself here
-  if (!Current(job)) return;
+    if (!Current(job)) return;
+    if (owned.kind != gog::OwnedResult::Kind::kRejected || attempt > 0) break;
+    Log("library owned status=" + std::to_string(owned.status) + " retry=refresh");
+    session_.InvalidateAccessToken(token.generation, token.token);
+  }  // each token wipes itself at the end of its pass
   switch (owned.kind) {
     case gog::OwnedResult::Kind::kOk: break;
     case gog::OwnedResult::Kind::kRejected:
@@ -372,13 +377,32 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
     return list;
   };
 
+  const auto counts = [&](std::size_t fetched, std::size_t not_modified, std::size_t missing, std::size_t failed) {
+    std::size_t hidden = 0;
+    for (const auto& product : known)
+      if (product && product->kind == gog::ProductInfo::Kind::kHidden) ++hidden;
+    Log("library owned=" + std::to_string(ids.size()) + " fetched=" + std::to_string(fetched) +
+        " not_modified=" + std::to_string(not_modified) + " missing=" + std::to_string(missing) +
+        " hidden=" + std::to_string(hidden) + " failed=" + std::to_string(failed));
+  };
+
   std::size_t fetched = 0, not_modified = 0, missing = 0, failed = 0;
+  std::size_t unanswered = 0;  // products in a row with no answer at all
   for (std::size_t i = 0; i < ids.size(); ++i) {
     if (!Current(job)) return;
     const std::uint64_t id = ids[i];
     const std::string etag = known[i] ? known[i]->etag : std::string();
     auto answer = gog::FetchProduct(transport_, id, etag, *job.cancel);
     if (!Current(job)) return;
+    unanswered = answer.status == 0 ? unanswered + 1 : 0;
+    if (unanswered >= kMaxProductsWithoutAnswer) {
+      // The network went away: the rest would each wait for their timeout. What came so far was shown in batches; the
+      // saved library stays as it was.
+      counts(fetched, not_modified, missing, failed + 1);
+      Log("library products result=no_answer asked=" + std::to_string(i + 1));
+      EmitFailure(job, LibraryError::kNetwork, StorageError::kNone, cache_available);
+      return;
+    }
     switch (answer.kind) {
       case gog::ProductResult::Kind::kModified: {
         const auto info = gog::ParseProduct(answer.body, id);
@@ -413,12 +437,7 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
     }
   }
 
-  std::size_t hidden = 0;
-  for (const auto& product : known)
-    if (product && product->kind == gog::ProductInfo::Kind::kHidden) ++hidden;
-  Log("library owned=" + std::to_string(ids.size()) + " fetched=" + std::to_string(fetched) +
-      " not_modified=" + std::to_string(not_modified) + " missing=" + std::to_string(missing) +
-      " hidden=" + std::to_string(hidden) + " failed=" + std::to_string(failed));
+  counts(fetched, not_modified, missing, failed);
 
   LibrarySnapshot snapshot;
   snapshot.schema_version = kSchema;

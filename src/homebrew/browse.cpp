@@ -125,6 +125,8 @@ std::vector<const Game*> filtered_games(const State& state)
             continue;
         if (state.library.scope == "imported" && game.id.store != Store::kLocal)
             continue;
+        if (state.library.scope == "gog" && game.id.store != Store::kGog)
+            continue;
         if (collection != nullptr && !collection->members.contains(game.id))
             continue;
         if (state.library.scope != "hidden" && state.library.hidden.contains(game.id))
@@ -296,11 +298,19 @@ bool has_imported_games(const State& state)
                        [](const Game& game) { return game.id.store == Store::kLocal; });
 }
 
+bool has_gog_games(const State& state)
+{
+    return std::any_of(state.games.begin(), state.games.end(),
+                       [](const Game& game) { return game.id.store == Store::kGog; });
+}
+
 std::vector<std::string> library_rail_scopes(const State& state)
 {
     std::vector<std::string> result{"installed", "all", "favorites", "hidden"};
     if (has_imported_games(state))
         result.push_back("imported");
+    if (has_gog_games(state))
+        result.push_back("gog");
     for (const Collection& collection : state.library.collections)
         result.push_back(collection.id);
     result.push_back("new-collection");

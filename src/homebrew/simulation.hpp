@@ -620,9 +620,12 @@ struct AccountUpdate {
     // full, the session revoked), not a sign-in the player started. With another store's games, Playden
     // stays on (or goes to) Home and a notification gives the error.
     bool restoring = false;
-    // The store whose account this is. Another store's update changes only its own account: never the
-    // screen, the sign-in form or Steam's account and games.
+    // The store whose account this is. Another store's update changes only its own account and, as it signs in, the
+    // screen it lands on: never the sign-in form or Steam's account and games.
     Store store = Store::kSteam;
+    // Another store's SignedIn: it answered a sign-in the player started (not a restore), so a player without Steam
+    // lands on the Library.
+    bool from_sign_in = false;
 };
 
 struct LibraryUpdate {
@@ -1478,6 +1481,15 @@ public:
     // how to read one recipe's object by its revision (64 hex): the service's LoadRecipe, called at
     // most once per revision and kept (objects are named by their content, so they never change).
     void UpdateCommunityCatalog(CommunityCatalog catalog);
+    // GOG (features.txt gog-store); off unless set. Off: every view is as without GOG (no Stores section, no GOG
+    // sign-in, no GOG scope rows beyond what its games bring). On: Settings › Stores lists Steam and GOG, Startup
+    // offers Sign in to GOG, and the gog-sign-in dialog shows the phone relay's QR code.
+    void SetGogStoreEnabled(bool enabled);
+    [[nodiscard]] bool GogStoreEnabled() const noexcept { return gog_store_enabled_; }
+    // Whether a store's games can be installed in this build (on for every store but GOG unless set). Off: a game's
+    // page shows Install disabled with the reason, and no install starts.
+    void SetStoreInstalls(Store store, bool enabled);
+    [[nodiscard]] bool StoreInstalls(Store store) const;
     void SetCommunityRecipeLoader(std::function<std::optional<playden::runtime::CommunityRecipe>(const std::string& revision)> loader);
     // The admitted kit (the view CommunityRecipeFits checks requirements against); nothing: no kit.
     void SetKitView(std::optional<playden::runtime::VerifiedKitView> view);
@@ -1843,6 +1855,10 @@ private:
     std::filesystem::path my_presets_file_;
     std::vector<playden::runtime::MyPreset> my_presets_;
     bool my_presets_unavailable_ = false;
+    bool gog_store_enabled_ = false;
+    std::map<Store, bool> store_installs_;  // stores set with SetStoreInstalls; the rest use the default
+    // The gog-sign-in dialog was opened and its sign-in not yet ended: closing the dialog (or losing it) ends it.
+    bool gog_sign_in_open_ = false;
     std::function<std::optional<std::string>()> my_preset_uuid_;
     std::function<std::int64_t()> my_preset_now_;
     std::string my_preset_menu_id_;  // the preset whose Triangle menu (or its Delete dialog) is open
@@ -2288,8 +2304,22 @@ private:
     void queue_service_action(ServiceAction action, Store store = Store::kSteam);
     // Another store has a signed-in account or games: then Playden opens on Home without Steam.
     [[nodiscard]] bool beyond_steam() const;
+    // Another store's account (GOG) is signed in or offline.
+    [[nodiscard]] bool other_account_signed_in() const;
+    // After a Steam update cleared its games on a Home or Library the player stays on: the cursor follows the game
+    // still selected, as a library update does.
+    void resync_browse_focus();
     // Steam's sign-in ended without an account: Home when another store has games, else Startup.
     void leave_steam_sign_in();
+    // GOG: the Settings row's text, the account sheet and the sign-in dialog (kept current while it is open).
+    [[nodiscard]] std::string gog_row_subtitle() const;
+    void open_gog_account();
+    void open_gog_sign_in();
+    void refresh_gog_sign_in();
+    // The gog-sign-in dialog left the screen: the open sign-in ends (CancelQr), unless it signed in.
+    void end_gog_sign_in();
+    // GOG signed out by the player: its games that are neither installed nor in a job leave the library.
+    void forget_gog_games();
     // A notification for Steam's saved sign-in that failed while another store's games show.
     void steam_restore_notice();
     void clear_account_specific_state();

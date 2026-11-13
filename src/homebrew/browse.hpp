@@ -40,6 +40,8 @@ struct ShelfWindow {
 [[nodiscard]] std::vector<std::string> library_rail_scopes(const State& state);
 // The library has games imported from a drive or the drop folder: the rail shows "Imported".
 [[nodiscard]] bool has_imported_games(const State& state);
+// The library has GOG games: the rail shows "GOG", after "Imported".
+[[nodiscard]] bool has_gog_games(const State& state);
 
 // Moves only Home and Library browse focus. Returning true means the route
 // consumed the direction even when focus was already against an edge.

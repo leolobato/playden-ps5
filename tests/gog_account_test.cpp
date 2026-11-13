@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The GOG account worker: restore events, the relay's sign-in answers (signed in, failed, stale, busy, closing), Back
-// while a code is exchanged, sign-out, and a token revoked while in use. A stub transport scripts GOG's answers.
+// while a code is exchanged, sign-out, a token revoked while in use, Reconnect after an offline restore, and "Stay signed
+// in" on the worker. A stub transport scripts GOG's answers.
 // Synthetic tokens and accounts only.
 #include "gog/account_key.h"
 #include "gog/session.h"
@@ -10,9 +11,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -144,6 +148,43 @@ void TestRestore() {
     const auto request = f.account.RestoreSession();
     const auto events = f.Events(1);
     CheckSignedInEvent(events[0], AccountEventKind::kOffline, request, f.session);
+    // Reconnect: still no answer keeps it offline; an answer signs in.
+    f.stub.Script(Endpoint::kToken, Failure(HttpError::kTimeout));
+    auto again = f.account.Reconnect();
+    CHECK(again != 0 && again != request);
+    CheckSignedInEvent(f.Events(1)[0], AccountEventKind::kOffline, again, f.session);
+    f.stub.Script(Endpoint::kToken, Tokens(2));
+    again = f.account.Reconnect();
+    CheckSignedInEvent(f.Events(1)[0], AccountEventKind::kSignedIn, again, f.session);
+    CHECK(f.stub.Calls(Endpoint::kToken) == 3);
+  }
+  {  // Offline, then GOG refuses the refresh token on Reconnect: the revocation's own event, then the answer.
+    Fixture f;
+    SaveSession(f.root, RefreshText(1));
+    f.stub.Script(Endpoint::kToken, Failure(HttpError::kTimeout));
+    f.account.RestoreSession();
+    f.Events(1);
+    f.stub.Script(Endpoint::kToken, InvalidGrant());
+    const auto request = f.account.Reconnect();
+    const auto events = f.Events(2);
+    CHECK(events[0].kind == AccountEventKind::kExpired && events[0].request_id == 0);
+    CHECK(events[1].kind == AccountEventKind::kExpired && events[1].request_id == request);
+    CHECK(events[1].error == "GOG sign-in expired. Sign in again." && events[1].user_id.empty());
+    CHECK(!f.session.signed_in() && !Exists(SessionFile(f.root)));
+  }
+  {  // A reconnect canceled (Back, a sign-out or a new restore) answers nothing.
+    Fixture f;
+    SaveSession(f.root, RefreshText(1));
+    f.stub.Script(Endpoint::kToken, Failure(HttpError::kTimeout));
+    f.account.RestoreSession();
+    f.Events(1);
+    auto gate = std::make_shared<Gate>();
+    f.stub.Script(Endpoint::kToken, Tokens(2), gate);
+    const auto request = f.account.Reconnect();
+    gate->WaitEntered(1);
+    f.account.Cancel(request);
+    gate->Open();
+    f.Events(0);
   }
   {  // The refresh token is refused: expired.
     Fixture f;
@@ -153,7 +194,9 @@ void TestRestore() {
     const auto events = f.Events(1);
     CHECK(events[0].kind == AccountEventKind::kExpired && events[0].request_id == request);
     CHECK(events[0].error == "GOG sign-in expired. Sign in again.");
-    CHECK(events[0].account_key == 0 && events[0].user_id.empty());
+    // The account's key, for its saved library; never its user ID or name.
+    CHECK(events[0].account_key == gog::AccountKey(kUserId) && events[0].user_id.empty());
+    CHECK(events[0].display_name.empty());
     CHECK(!Exists(SessionFile(f.root)));
   }
   {  // An unreadable file: a restoring failure.
@@ -359,12 +402,40 @@ void TestShutdown() {
   }
 }
 
+// "Stay signed in" runs on the account worker, never the caller's thread: the store's writes wait for the root lock,
+// which a runtime batch can hold for long. The answer comes back on the worker.
+gog::SaveResult Persist(GogAccount& account, bool persist) {
+  std::mutex mutex;
+  std::condition_variable answered;
+  std::optional<gog::SaveResult> result;
+  const auto caller = std::this_thread::get_id();
+  account.SetPersist(persist, [&](const gog::SaveResult& saved) {
+    CHECK(std::this_thread::get_id() != caller);
+    std::lock_guard<std::mutex> lock(mutex);
+    result = saved;
+    answered.notify_all();
+  });
+  std::unique_lock<std::mutex> lock(mutex);
+  CHECK(answered.wait_for(lock, std::chrono::seconds(10), [&] { return result.has_value(); }));
+  return *result;
+}
+
 void TestPersist() {
-  Fixture f;
-  CHECK(f.SignIn(1).kind == SignInAnswer::Kind::kSignedIn);
-  f.Events(1);
-  CHECK(f.account.SetPersist(false).ok && !Exists(SessionFile(f.root)));
-  CHECK(f.account.SetPersist(true).ok && Exists(SessionFile(f.root)));
+  {
+    Fixture f;
+    CHECK(f.SignIn(1).kind == SignInAnswer::Kind::kSignedIn);
+    f.Events(1);
+    CHECK(Persist(f.account, false).ok && !Exists(SessionFile(f.root)));
+    CHECK(Persist(f.account, true).ok && Exists(SessionFile(f.root)));
+  }
+  {  // Asked for in the last frame: it still runs at shutdown, as a sign-out does.
+    auto f = std::make_unique<Fixture>();
+    CHECK(f->SignIn(1).kind == SignInAnswer::Kind::kSignedIn);
+    f->Events(1);
+    f->account.SetPersist(false);
+    f->account.Shutdown();
+    CHECK(!Exists(SessionFile(f->root)));
+  }
 }
 
 void CheckLogsClean() {

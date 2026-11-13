@@ -253,12 +253,13 @@ target_link_libraries(playden_persistence_controller PUBLIC playden_homebrew_mod
 
 add_library(playden_homebrew_controller STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/controller.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/uninstall_flow.cpp"
-    "${CMAKE_SOURCE_DIR}/src/homebrew/sharing_service.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/web_recipe_imports.cpp")
+    "${CMAKE_SOURCE_DIR}/src/homebrew/sharing_service.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/web_recipe_imports.cpp"
+    "${CMAKE_SOURCE_DIR}/src/homebrew/gog_wiring.cpp")
 target_compile_features(playden_homebrew_controller PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_controller PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_homebrew_controller PUBLIC
     playden_homebrew_model playden_steam_core playden_auth_diagnostics playden_library_controller playden_persistence_controller playden_runtime_settings_storage
-    playden_homebrew_runtime_host playden_self_update playden_local_store playden_web playden_community)
+    playden_homebrew_runtime_host playden_self_update playden_local_store playden_web playden_community playden_gog_store)
 
 # Worker-owned per-game runtime composition (OWNER records, native inventory, kit layer).
 add_library(playden_homebrew_runtime_host STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/runtime_host.cpp"
@@ -730,6 +731,12 @@ if(BUILD_TESTING)
     target_compile_features(homebrew_account_test PRIVATE cxx_std_20)
     target_link_libraries(homebrew_account_test PRIVATE playden_homebrew_controller playden_local_session_repository)
     add_test(NAME homebrew_account COMMAND homebrew_account_test)
+    # GOG in the apps (gog-store line on and off): registry, relay, web routes, "Stay signed in" and shutdown order.
+    add_executable(homebrew_gog_wiring_test "${CMAKE_SOURCE_DIR}/tests/homebrew_gog_wiring_test.cpp")
+    target_compile_features(homebrew_gog_wiring_test PRIVATE cxx_std_20)
+    target_link_libraries(homebrew_gog_wiring_test PRIVATE playden_homebrew_controller)
+    add_test(NAME homebrew_gog_wiring COMMAND homebrew_gog_wiring_test "${CMAKE_SOURCE_DIR}/fixtures/gog"
+        "${CMAKE_CURRENT_BINARY_DIR}/homebrew_gog_wiring.tmp")
     add_executable(homebrew_download_servers_test "${CMAKE_SOURCE_DIR}/tests/homebrew_download_servers_test.cpp")
     target_link_libraries(homebrew_download_servers_test PRIVATE playden_homebrew_controller)
     add_test(NAME homebrew_download_servers COMMAND homebrew_download_servers_test)

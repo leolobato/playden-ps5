@@ -21,6 +21,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 namespace playden::gog {
 
@@ -53,6 +54,7 @@ struct RestoreOutcome {
   Kind kind = Kind::kNone;
   bool storage_full = false;     // kStorage, or kSignedIn whose save failed with full storage
   std::uint64_t generation = 0;  // the session's generation when it returned
+  std::uint64_t account_key = 0;  // kExpired: the account whose saved session GOG refused (its saved library stays)
 };
 
 struct ExchangeOutcome {
@@ -111,6 +113,10 @@ class Session {
   // A usable access token, refreshing it when fewer than kRefreshMarginSeconds remain. One refresh runs at a time;
   // other callers wait for its result.
   AccessToken Token(const std::atomic<bool>& cancel);
+
+  // An API refused this access token (401): the next Token() refreshes. Nothing changes when the session has moved on
+  // (another generation) or already holds another token.
+  void InvalidateAccessToken(std::uint64_t generation, std::string_view token);
 
   // Forgets the session in memory and on disk. The generation goes up even when the file can't be removed.
   SaveResult SignOut();

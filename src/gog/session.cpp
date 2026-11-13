@@ -177,6 +177,7 @@ RestoreOutcome Session::Restore(const std::atomic<bool>& cancel) {
       if (!cleared.ok) lines.Add("session clear failed reason=" + cleared.reason);
       lines.Add(Line("restore", "expired"));
       outcome.kind = RestoreOutcome::Kind::kExpired;
+      outcome.account_key = key;
       return outcome;
     }
     case TokenResult::Kind::kNetwork:
@@ -424,6 +425,15 @@ AccessToken Session::Token(const std::atomic<bool>& cancel) {
     if (revoked_) revoked_(revoked_generation);
   }
   return result;
+}
+
+void Session::InvalidateAccessToken(std::uint64_t generation, std::string_view token) {
+  Lines lines(log_);
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!signed_in_ || generation != generation_ || access_token_.empty() || access_token_ != token) return;
+  ZeroizeSecret(access_token_);
+  expires_at_ = 0;
+  lines.Add(Line("access token", "refused"));
 }
 
 SaveResult Session::SignOut() {

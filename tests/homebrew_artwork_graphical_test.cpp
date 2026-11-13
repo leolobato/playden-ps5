@@ -104,6 +104,57 @@ int main(int argc,char** argv) {
         assert(renderer.diagnostics().live_artwork_texture_count==0);
         service.Shutdown();
     }
+    {
+        // GOG only: Steam signed out, GOG signed in. The GOG covers load all the same, and the game page shows its
+        // hero, though Steam has no account.
+        Backend backend;
+        backend.release=true;
+        ArtworkService service(backend);
+        Render renderer(PLAYDEN_HOMEBREW_ASSETS_DIR,&service);
+        Simulation model({}, {},ModelMode::Live);
+        model.SetGogStoreEnabled(true);
+        model.SetWallClock(1700000000);
+        model.UpdateAccount({AuthState::SignedOut,{},{},{},{},true});
+        AccountUpdate gog{AuthState::SignedIn,"00000000000000aa","Synthetic GOG account",{},{},false};
+        gog.store=playden::Store::kGog;
+        model.UpdateAccount(gog);
+        LibraryUpdate update;
+        for (std::uint64_t id : {1207658924ULL, 1207658925ULL}) {
+            playden::GameSummary game;
+            game.id=playden::GameId::Gog(id);
+            game.title="Synthetic GOG game "+std::to_string(id);
+            const char digit=id==1207658924ULL ? 'a' : 'c';
+            game.artwork_source="https://images.gog.com/"+std::string(64,digit)+".jpg?namespace=gamesdb";
+            game.hero_source="https://images.gog.com/"+std::string(64,digit)+"_bg_crop_1920x655.jpg?namespace=gamesdb";
+            update.games.push_back(game);
+        }
+        update.cache_available=true;
+        update.retrieved_at=1700000000;
+        update.source=playden::Store::kGog;
+        assert(model.UpdateLibrary(update));
+        assert(model.state().account().id.empty());
+        assert(model.action("r1") && model.state().navigation.route==Route::Library);
+        const auto deadline=std::chrono::steady_clock::now()+3s;
+        while(renderer.diagnostics().live_artwork_texture_count<2 && std::chrono::steady_clock::now()<deadline) {
+            renderer.draw(model,1920,1080);
+            std::this_thread::sleep_for(1ms);
+        }
+        assert(renderer.diagnostics().live_artwork_texture_count==2);
+        for(int i=0;i<16;++i) renderer.draw(model,1920,1080);
+        assert(renderer.capture_png(output/"gog-only.png",1920,1080));
+        // The game page: its hero joins the covers.
+        assert(model.action("details:" + playden::ToKey(playden::GameId::Gog(1207658924))));
+        assert(model.state().navigation.detail_id == playden::GameId::Gog(1207658924));
+        const auto hero_deadline=std::chrono::steady_clock::now()+3s;
+        while(renderer.diagnostics().live_artwork_texture_count<3 && std::chrono::steady_clock::now()<hero_deadline) {
+            renderer.draw(model,1920,1080);
+            std::this_thread::sleep_for(1ms);
+        }
+        assert(renderer.diagnostics().live_artwork_texture_count==3);
+        for(int i=0;i<16;++i) renderer.draw(model,1920,1080);
+        assert(renderer.capture_png(output/"gog-only-details.png",1920,1080));
+        service.Shutdown();
+    }
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     SDL_Quit();

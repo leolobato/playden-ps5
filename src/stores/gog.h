@@ -49,6 +49,9 @@ class GogAccount final : public StoreAccount {
   // kSignedIn or kOffline (with the account), kSignedOut (nothing saved), kExpired, or kFailure (restoring) for the
   // saved session can't be read. A canceled restore answers nothing.
   std::uint64_t RestoreSession() override;
+  // Offline since the restore: asks the session for an access token (a refresh when it has none). kSignedIn when GOG
+  // answers, kOffline when it still doesn't, kExpired when the session was revoked or ended. Canceled as a restore is.
+  std::uint64_t Reconnect() override;
   // A new sign-in request for the TV screen, replacing any open one.
   std::uint64_t BeginSignIn() override;
   // The open sign-in: a code for it, even one being exchanged, no longer signs in. A restore: canceled.
@@ -61,16 +64,19 @@ class GogAccount final : public StoreAccount {
   // Success also raises kSignedIn with request_id = request; a failure raises nothing and the request stays open. The
   // code is wiped on every path.
   SignInAnswer SignInWithCode(std::string code, std::uint64_t request);
-  // "Stay signed in", passed to the session store.
-  gog::SaveResult SetPersist(bool persist);
+  // "Stay signed in", passed to the session store on the account worker, never on the caller's thread: the store's
+  // writes wait for the root lock, which a runtime batch can hold for long. done, if any, gets the result on the
+  // worker. Asked for before Shutdown, it still runs, as a sign-out does.
+  void SetPersist(bool persist, std::function<void(const gog::SaveResult&)> done = {});
   gog::Session& session() { return session_; }
-  // Answers every waiting SignInWithCode with kClosing and stops the worker. A sign-out already asked for still runs.
-  void Shutdown();
+  // Answers every waiting SignInWithCode with kClosing and stops the worker. A sign-out or a "Stay signed in" change
+  // already asked for still runs.
+  void Shutdown() override;
 
   static constexpr std::chrono::seconds kSignInWait{20};
 
  private:
-  enum class Operation { kRestore, kExchange, kSignOut };
+  enum class Operation { kRestore, kReconnect, kExchange, kSignOut, kPersist };
   // One SignInWithCode: its code until the worker takes it, then its answer. Shared, because the waiter can leave
   // (timeout) while the worker still answers.
   struct Ticket {
@@ -85,10 +91,13 @@ class GogAccount final : public StoreAccount {
     std::uint64_t epoch = 0;
     std::shared_ptr<std::atomic<bool>> cancel;
     std::shared_ptr<Ticket> ticket;
+    bool persist = false;                                  // kPersist
+    std::function<void(const gog::SaveResult&)> persisted;  // kPersist
   };
 
   void Run();
   void Restore(const Job& job);
+  void ReconnectNow(const Job& job);
   void Exchange(const Job& job);
   void SignOutNow();
   void Revoked(std::uint64_t generation);
@@ -106,7 +115,7 @@ class GogAccount final : public StoreAccount {
   std::deque<Job> pending_;
   std::deque<AccountEvent> events_;
   std::uint64_t next_request_ = 0;
-  std::uint64_t restore_request_ = 0;
+  std::uint64_t restore_request_ = 0;  // a restore or a reconnect
   std::shared_ptr<std::atomic<bool>> restore_cancel_;
   std::shared_ptr<std::atomic<bool>> running_cancel_;  // the job on the worker now
   std::uint64_t sign_in_request_ = 0;

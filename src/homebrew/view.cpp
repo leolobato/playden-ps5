@@ -1721,6 +1721,11 @@ class Render::Impl
                                std::to_string(std::count_if(state.games.begin(), state.games.end(),
                                                             [](const Game &game) { return game.id.store == Store::kLocal; })),
                                state.library.scope == "imported"});
+        if (has_gog_games(state))
+            entries.push_back({"rail-gog", "GOG",
+                               std::to_string(std::count_if(state.games.begin(), state.games.end(),
+                                                            [](const Game &game) { return game.id.store == Store::kGog; })),
+                               state.library.scope == "gog"});
         for (const Collection &collection : state.library.collections)
             entries.push_back({"rail-" + collection.id, collection.name,
                                std::to_string(collection.members.size()),
@@ -1904,6 +1909,20 @@ class Render::Impl
         scene_.line(cx - 6.0F, cy + 7.0F, cx + 6.0F, cy + 7.0F, 1.8F, ink);
     }
 
+    // A fixture game's poster: Steam's fixture games are numbered from 900001; another store's fixture game names its
+    // poster ("poster3"). An imported game has none (its title shows).
+    std::optional<std::size_t> fixture_art(const Game &game) const
+    {
+        if (const auto app = game.id.steam_app())
+            return *app >= 900001 ? (*app - 900001) % art_.size() : *app % art_.size();
+        if (game.cover_key.rfind("poster", 0) == 0 && game.cover_key.size() > 6)
+        {
+            const auto number = std::strtoul(game.cover_key.c_str() + 6, nullptr, 10);
+            if (number > 0) return (number - 1) % art_.size();
+        }
+        return std::nullopt;
+    }
+
     void draw_poster(const Game &game, const gfx::Rect &rect, bool focused, float progress,
                      bool title_overlay = true, std::string_view motion_key = {})
     {
@@ -1911,15 +1930,11 @@ class Render::Impl
         const float amount = motion_key.empty() ? (focused ? 1.0F : 0.0F) : focus_motion_.amount(motion_key, focused);
         const float scale = motion_key.empty() ? 1.0F : 1.0F + (FocusMotion::focused_scale - 1.0F) * amount;
         scene_.push_transform(scale, rect.cx(), rect.cy(), 0.0F, 0.0F);
-        // Fixture games are numbered from 900001.
-        const std::uint32_t number = game.id.steam_app().value_or(0);
-        const std::size_t texture_index = number >= 900001 ? (number - 900001) % art_.size() :
-                                                             number % art_.size();
+        const auto texture_index = fixture_art(game);
         const bool simulated = current_state_ != nullptr && current_state_->simulation_mode;
-        // Fixture posters belong to the fixture's Steam games; an imported game has none (its title shows).
         const std::uint32_t texture = simulated
-            ? (game.art_failed || game.art_pending || !game.id.steam_app() ? 0 : art_[texture_index])
-            : (live_artwork_ && current_state_ && !current_state_->account().id.empty()
+            ? (game.art_failed || game.art_pending || !texture_index ? 0 : art_[*texture_index])
+            : (live_artwork_ && current_state_ && LiveStoreArt(*current_state_, game.id)
                 ? store_texture(game.id, CoverUrl(game)) : 0);
         // No cover from the store: a poster made from the icon inside the game's program (#213).
         const std::uint32_t icon = simulated || texture != 0 ? 0 : program_icon_texture(game.id, CoverUrl(game));
@@ -2759,19 +2774,16 @@ class Render::Impl
     {
         // The cover when it is loaded; a small tile would wrap the poster's title letter by letter.
         const Game *game = game_by_id(state, id);
-        if (game != nullptr && state.simulation_mode && id.steam_app())
-        {
-            const std::uint32_t number = id.steam_app().value_or(0);
-            const std::size_t index = number >= 900001 ? (number - 900001) % art_.size() : number % art_.size();
-            if (!game->art_failed && !game->art_pending && art_[index] != 0)
+        if (game != nullptr && state.simulation_mode)
+            if (const auto index = fixture_art(*game);
+                index && !game->art_failed && !game->art_pending && art_[*index] != 0)
             {
-                scene_.image(art_[index], rect, gfx::kFullUv, kText, 6.0F);
+                scene_.image(art_[*index], rect, gfx::kFullUv, kText, 6.0F);
                 return;
             }
-        }
         // A GOG game's cover address is kept with the game, so the Game is asked when there is one.
         const std::string cover_url = game != nullptr ? CoverUrl(*game) : CoverUrl(id);
-        if (live_artwork_ && !state.account().id.empty())
+        if (live_artwork_ && LiveStoreArt(state, id))
             if (const std::uint32_t cover = store_texture(id, cover_url))
             {
                 scene_.image(cover, rect, gfx::kFullUv, kText, 6.0F);
@@ -3462,7 +3474,7 @@ class Render::Impl
         const GameId id = state.navigation.detail_id.value_or(state.navigation.selected_game_id);
         const Game *game = game_by_id(state, id);
         const gfx::Rect hero{0.0F, 0.0F, kWidth, 620.0F};
-        const bool live_art = !state.simulation_mode && live_artwork_ && !state.account().id.empty() && id.valid();
+        const bool live_art = !state.simulation_mode && live_artwork_ && LiveStoreArt(state, id);
         const std::uint32_t hero_texture = state.simulation_mode ? hero_ :
             live_art ? store_texture(id, game != nullptr ? HeroUrl(*game) : HeroUrl(id)) : 0;
         if (hero_texture != 0)
@@ -3590,9 +3602,10 @@ class Render::Impl
             break;
         }
         // Non-installed games retain their download, destination and kept-save notes; an imported
-        // game says where it plays from (the fixture's too).
+        // game says where it plays from, and a game this build can't install says why (the fixture's too).
         const bool folder_note = std::any_of(view.rows.begin(), view.rows.end(), [](const ViewRow &row) {
-            return row.key == "details-folder" || row.key == "details-update-note" || row.key == "details-updating";
+            return row.key == "details-folder" || row.key == "details-update-note" || row.key == "details-updating" ||
+                   row.key == "details-unavailable";
         });
         if (!state.simulation_mode || folder_note)
         {
@@ -3821,6 +3834,7 @@ class Render::Impl
         detail_cell("Size", size, right, facts_top, 240.0F);
         // A game a Steam family member shares comes from Steam Families, not the account's own library.
         const std::string store = game->id.store == Store::kLocal ? std::string("Imported") :
+                                  game->id.store == Store::kGog ? std::string("GOG") :
                                   game->family_shared ? std::string("Steam Family") :
                                   game->source.empty() ? std::string("Steam") : game->source;
         detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
@@ -4022,7 +4036,8 @@ class Render::Impl
         if (!state.navigation.modals.empty())
         {
             const ModalEntry &modal = state.navigation.modals.back();
-            if (modal.destructive || modal.id == "confirmation")
+            // GOG's sign-in is a dialog too: its QR code needs the link strip.
+            if (modal.destructive || modal.id == "confirmation" || modal.id == "gog-sign-in")
                 draw_modal_overlay(modal, view);
             else
                 draw_sheet_overlay(view);
@@ -4191,12 +4206,15 @@ class Render::Impl
         constexpr float body_size = 25.0F, body_line = 35.0F, address_size = 21.0F, address_line = 28.0F;
         const float inner = width - 2.0F * pad;
         const float address_w = inner - qr_side - strip_gap;
-        std::string address = modal.link;
+        // A fragment is for the code only (GOG's sign-in token): others in the room can read the screen.
+        std::string address = modal.link.substr(0, modal.link.find('#'));
+        // The caption already is the address: it isn't written twice.
+        if (address == modal.link_caption) address.clear();
         if (address.rfind("https://", 0) == 0) address.erase(0, 8);
 
         const int body_lines = modal.body.empty() ? 0 :
             std::min(10, static_cast<int>(fonts_.regular.font->wrap(modal.body, body_size, inner).size()));
-        const int address_lines =
+        const int address_lines = address.empty() ? 0 :
             std::min(3, std::max(1, static_cast<int>(fonts_.regular.font->wrap(address, address_size, address_w).size())));
         constexpr float title_h = 60.0F;
         const float body_h = body_lines * body_line;
@@ -4220,13 +4238,14 @@ class Render::Impl
         if (!draw_qr_matrix(overlay_, link_qr_, panel.x + pad, y, static_cast<int>(qr_side)))
             overlay_.rounded_rect({panel.x + pad, y, qr_side, qr_side}, 12.0F, kMuted.with_alpha(0.25F));
         const float text_x = panel.x + pad + qr_side + strip_gap;
-        const float block_h = 30.0F + 14.0F + address_lines * address_line;
+        const float block_h = 30.0F + (address_lines ? 14.0F : 0.0F) + address_lines * address_line;
         const float block_y = y + (qr_side - block_h) * 0.5F;
         // What the code leads to: the release notes, or a shared recipe's pull request.
         ui::text(overlay_, fonts_.semibold, modal.link_caption.empty() ? std::string("Scan for the full release notes") : modal.link_caption,
                  text_x, block_y + 24.0F, 26.0F, kText);
-        ui::paragraph(overlay_, fonts_.regular, address, text_x, block_y + 30.0F + 14.0F + 21.0F, address_size,
-                      address_w, address_line, kSecondary, 3);
+        if (!address.empty())
+            ui::paragraph(overlay_, fonts_.regular, address, text_x, block_y + 30.0F + 14.0F + 21.0F, address_size,
+                          address_w, address_line, kSecondary, 3);
         y += qr_side + 40.0F;
 
         const std::size_t count = std::max<std::size_t>(1, view.rows.size());
@@ -4234,9 +4253,11 @@ class Render::Impl
         for (std::size_t index = 0; index < view.rows.size(); ++index)
         {
             const gfx::Rect button{panel.x + pad + index * (button_width + 16.0F), y, button_width, 68.0F};
+            // A choice in the dialog (Stay signed in) says whether it is on.
+            const bool toggle = view.rows[index].kind == RowKind::Toggle;
             mac_button(overlay_, button, overlay_label(view.rows[index]), view.rows[index].dangerous,
                        control_focus("modal-" + view.rows[index].key, static_cast<int>(index) == view.focused_row),
-                       !view.rows[index].enabled, "", false, kPanel);
+                       !view.rows[index].enabled, toggle ? (view.rows[index].selected ? "On" : "Off") : "", false, kPanel);
         }
     }
 

@@ -189,6 +189,17 @@ void Controller::Shutdown() {
   // The server source may inspect the install snapshot for its fallback payload.
   if(download_servers_) step("download-servers", [&] { download_servers_->Shutdown(); });
   if(friends_) step("friends", [&] { friends_->Shutdown(); });
+  // Before web access's workers are joined: GOG's phone relay closes, and every other store's account stops, which
+  // answers a phone post still waiting for its sign-in (GogAccount::SignInWithCode). A sign-out asked for above
+  // still runs.
+  for (auto& other : other_accounts_) {
+    if (other.request) other.account->Cancel(other.request);
+    other.request = 0;
+    other.signing_in = false;
+  }
+  if (gog_relay_) gog_relay_->Close();
+  for (auto& other : other_accounts_)
+    step(("account-" + std::string(Traits(other.account->store()).key)).c_str(), [&] { other.account->Shutdown(); });
   if(web_) step("web", [&] { web_->Shutdown(); });
   if(library_) step("library", [&] { library_->Shutdown(); library_->Tick(); AdvanceClear(); });
   if(persistence_) step("persistence", [&] { persistence_->FlushAndShutdown(); AdvanceOrganizationClear(); });
@@ -207,10 +218,6 @@ void Controller::Shutdown() {
   if(runtime_) step("runtime", [&] { runtime_->Shutdown(); });
   persistence_.reset();
   library_.reset();
-  for (auto& other : other_accounts_) {
-    if (other.request) other.account->Cancel(other.request);
-    other.request = 0;
-  }
   if (!service_) return;
   service_->Shutdown();
   service_ = nullptr;
@@ -412,6 +419,9 @@ void Controller::Tick() {
             else library_->Refresh();
           } else model_.UpdateLibrary({{},false,"Library sync is unavailable. Try again later.",
                                         model_.state().library_offline,model_.state().account().cache_available,{}});
+        } else if (library_ && model_.state().account().id.empty()) {
+          // Without Steam, the other stores' libraries still refresh.
+          library_->Refresh();
         }
         break;
     }
@@ -448,6 +458,7 @@ void Controller::Tick() {
   TickDownloadServers();
   TickFriends();
   TickWebAccess();
+  TickGogRelay();
   TickSteamPersona();
   TickSelfUpdate();
   lap(5);
@@ -2958,12 +2969,123 @@ void Controller::OtherAccountAction(OtherAccount& other, ServiceAction action) {
       break;
     }
     case ServiceAction::RefreshLibrary:
+      // Offline since the restore: the store is asked again first, and its answer loads the library (Apply).
+      if (other.established == AuthState::Offline && other.state == AuthState::Offline && !other.request &&
+          !other.signing_in && !other.signing_out) {
+        if (const auto request = other.account->Reconnect()) {
+          other.request = request;
+          if (auth_log_)
+            auth_log_(std::string("{\"store\":\"") + std::string(Traits(store).key) +
+                      "\",\"reconnect\":\"begin\",\"request\":" + std::to_string(request) + "}");
+          break;
+        }
+      }
       if (library_) library_->Refresh(store);
       break;
+    case ServiceAction::BeginQr:
+      if (store == Store::kGog) BeginGogSignIn(other);
+      break;
+    case ServiceAction::CancelQr:
+      if (store == Store::kGog) CancelGogSignIn(other);
+      break;
     default:
-      // The sign-in actions are Steam's; another store's own sign-in calls live on its account.
+      // The other sign-in actions are Steam's; another store's own sign-in calls live on its account.
       break;
   }
+}
+std::string Controller::GogChallengeUrl(const std::string& token) const {
+  if (!web_) return {};
+  const auto snapshot = web_->Snapshot();
+  if (snapshot.state != web::ServiceSnapshot::State::kOn || snapshot.url.empty()) return {};
+  return snapshot.url + "gog#" + token;
+}
+void Controller::BeginGogSignIn(OtherAccount& other) {
+  if (other.signing_out) return;
+  // A restore or an earlier sign-in still waiting: the new sign-in replaces it.
+  if (other.request) other.account->Cancel(other.request);
+  other.request = 0;
+  other.signing_in = false;
+  if (gog_relay_) gog_relay_->Close();
+  const auto& shown = model_.state().account(Store::kGog);
+  AccountUpdate update;
+  update.id = shown.id;
+  update.display_name = shown.display_name;
+  const auto request = gog_relay_ ? other.account->BeginSignIn() : 0;
+  auto token = request ? gog_relay_->Open(request) : std::nullopt;
+  if (!token) {
+    // No relay, no sign-in from the account, or no randomness for the token.
+    if (request) other.account->Cancel(request);
+    if (auth_log_) auth_log_("{\"store\":\"gog\",\"sign_in\":\"unavailable\"}");
+    update.authentication = AuthState::Failed;
+    update.error = "GOG sign-in is unavailable.";
+    UpdateOther(other, std::move(update));
+    return;
+  }
+  other.request = request;
+  other.signing_in = true;
+  if (auth_log_) auth_log_("{\"store\":\"gog\",\"sign_in\":\"begin\",\"request\":" + std::to_string(request) + "}");
+  update.authentication = AuthState::Waiting;
+  update.challenge_url = GogChallengeUrl(*token);
+  platform::ZeroizeSecret(*token);
+  UpdateOther(other, std::move(update));
+}
+void Controller::CancelGogSignIn(OtherAccount& other) {
+  // Only a sign-in from the TV, or its failure, ends here: a restore, a sign-out or a sign-in that already
+  // answered is left alone.
+  if (other.signing_out || (!other.signing_in && other.state != AuthState::Waiting && other.state != AuthState::Failed))
+    return;
+  if (gog_relay_) gog_relay_->Close();
+  if (other.signing_in && other.request) {
+    if (auth_log_) auth_log_("{\"store\":\"gog\",\"sign_in\":\"cancel\",\"request\":" + std::to_string(other.request) + "}");
+    other.account->Cancel(other.request);
+    other.request = 0;
+  }
+  other.signing_in = false;
+  const auto& shown = model_.state().account(Store::kGog);
+  AccountUpdate update;
+  update.authentication = other.established;
+  update.id = shown.id;
+  update.display_name = shown.display_name;
+  UpdateOther(other, std::move(update));
+}
+void Controller::TickGogRelay() {
+  auto* other = FindOtherAccount(Store::kGog);
+  if (!other || !other->signing_in || !gog_relay_) return;
+  auto token = gog_relay_->Token();
+  if (!token) {
+    // A code is being exchanged, or a sign-in closed the relay and its event is on the way: the code stays.
+    const bool expired = gog_relay_->Expired();
+    if (!expired && !gog_relay_->Ended()) return;
+    // Its time ran out, or a post ended it with no account event to follow (GOG's session changed meanwhile, or no
+    // randomness for a new token).
+    gog_relay_->Close();
+    if (auth_log_)
+      auth_log_(std::string("{\"store\":\"gog\",\"sign_in\":\"") + (expired ? "expired" : "ended") +
+                "\",\"request\":" + std::to_string(other->request) + "}");
+    other->account->Cancel(other->request);
+    other->request = 0;
+    other->signing_in = false;
+    const auto& shown = model_.state().account(Store::kGog);
+    AccountUpdate update;
+    update.authentication = AuthState::Failed;
+    update.id = shown.id;
+    update.display_name = shown.display_name;
+    update.error = expired ? "The sign-in code expired. Choose Try again for a new one."
+                           : "This sign-in has ended. Choose Try again for a new one.";
+    UpdateOther(*other, std::move(update));
+    return;
+  }
+  // A failed paste gave a new token, or web access's address changed: the QR code follows.
+  auto url = GogChallengeUrl(*token);
+  platform::ZeroizeSecret(*token);
+  const auto& shown = model_.state().account(Store::kGog);
+  if (url == shown.challenge_url && shown.authentication == AuthState::Waiting) return;
+  AccountUpdate update;
+  update.authentication = AuthState::Waiting;
+  update.id = shown.id;
+  update.display_name = shown.display_name;
+  update.challenge_url = std::move(url);
+  UpdateOther(*other, std::move(update));
 }
 void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
   using Kind = stores::AccountEventKind;
@@ -2981,6 +3103,10 @@ void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
     return;
   }
   if (auth_log_) auth_log_(record);
+  // The sign-in the player started is over, whatever the answer: its QR code is no longer good.
+  const bool answered_sign_in = other.signing_in && event.request_id == other.request;
+  if (other.signing_in && gog_relay_ && store == Store::kGog) gog_relay_->Close();
+  other.signing_in = false;
   other.request = 0;
   const bool was_signing_out = other.signing_out;
   other.signing_out = false;
@@ -2997,6 +3123,7 @@ void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
       update.authentication = offline ? AuthState::Offline : AuthState::SignedIn;
       update.id = key;
       update.display_name = event.display_name;
+      update.from_sign_in = answered_sign_in && !offline;
       UpdateOther(other, std::move(update));
       SetRedactedAccount({std::string(Traits(store).key), event.display_name, event.user_id});
       if (library_) library_->Activate(store, event.account_key, offline);
@@ -3010,13 +3137,18 @@ void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
       ++other.generation;
       other.account_key = 0;
       other.established = AuthState::SignedOut;
+      // The player's sign-out deletes the saved library while its account is still known (the source runs the
+      // clear even though the reset drops its answer); an expiry or a restore with nothing saved keeps it. Done before
+      // the account update, whose sign-out text replaces the clear's status.
+      if (library_ && was_signing_out && !expired) library_->Clear(store);
+      if (library_) library_->Reset(store);
+      // Expired at startup, before its library was shown: the saved one is shown while the player signs in again.
+      if (library_ && expired && event.account_key) library_->Activate(store, event.account_key, true);
       AccountUpdate update;
       update.authentication = expired ? AuthState::Expired : AuthState::SignedOut;
       if (expired) update.error = event.error;
       UpdateOther(other, std::move(update));
       SetRedactedAccount({std::string(Traits(store).key), {}, {}});
-      // The store's games stay shown; what its sign-out or expiry removes is the store's own rule.
-      if (library_) library_->Reset(store);
       break;
     }
     case Kind::kFailure: {

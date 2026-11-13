@@ -62,6 +62,11 @@ int main() {
   File(data / "user/library-1.cache", 0666);  // an ordinary cache, written 0666
   Folder(data / "user/game-settings-private", 0777);
   File(data / "user/game-settings-private/game-settings.json", 0777);
+  // GOG's sign-in and its saved products.
+  Folder(data / "user/gog", 0777);
+  File(data / "user/gog/session", 0777);
+  Folder(data / "user/gog/products", 0777);
+  File(data / "user/gog/products/1207658924", 0777);
   Folder(data / "art", 0777);
   File(data / "art/cover.png", 0777);
   Folder(data / "logs", 0777);
@@ -85,12 +90,14 @@ int main() {
   CHECK(Mode(data / "user/session.v1") == 0600 && Mode(data / "user/library-1.cache") == 0666);
   CHECK(Mode(data / "user/game-settings-private") == 0700);
   CHECK(Mode(data / "user/game-settings-private/game-settings.json") == 0600);
+  CHECK(Mode(data / "user/gog") == 0700 && Mode(data / "user/gog/session") == 0600);
+  CHECK(Mode(data / "user/gog/products") == 0700 && Mode(data / "user/gog/products/1207658924") == 0600);
   CHECK(Mode(data / "art") == 0700 && Mode(data / "art/cover.png") == 0777);
   CHECK(Mode(data / "logs") == 0777 && Mode(data / "logs/playden.log") == 0777);
   CHECK(Mode(root / "outside") == 0777 && Mode(root / "shared") == 0777);
-  CHECK(result.tightened == 11);
+  CHECK(result.tightened == 15);
   CHECK(result.foreign == 1 && result.failed == 0);
-  CHECK(lines.size() == 12);
+  CHECK(lines.size() == 16);
 
   // A second start finds nothing to change and says nothing.
   lines.clear();

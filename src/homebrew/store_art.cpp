@@ -34,4 +34,9 @@ std::string HeroUrl(const Game& game) {
 }
 std::string LogoUrl(const Game& game) { return LogoUrl(game.id); }
 
+bool LiveStoreArt(const State& state, const GameId& game) {
+  if (!game.valid()) return false;
+  return game.store != Store::kSteam || !state.account().id.empty();
+}
+
 }  // namespace playden::homebrew

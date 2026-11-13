@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "web/service.h"
 
+#include "platform/secret.h"
+#include "steam/backend/json.h"
 #include "web/address.h"
 #include "web/assets.h"
 
@@ -31,6 +33,35 @@ bool LocalAuthority(std::string_view authority) {
     }
   }
   return parts == 3 && digits > 0;
+}
+
+namespace json = steam::json;
+
+// The phone page's post: {"token":…,"address":…}, a few hundred bytes in practice.
+constexpr std::size_t kMaxGogSignInBody = 4096;
+constexpr const char* kGogAuthPlaceholder = "%%GOG_AUTH_URL%%";
+
+// For a double-quoted HTML attribute.
+std::string AttributeEscaped(std::string_view text) {
+  std::string out;
+  for (const char c : text) {
+    switch (c) {
+      case '&': out += "&amp;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&#39;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+// Overwrites every string a parsed body held (the pasted address and the token) before it is freed.
+void WipeStrings(const json::Value& value) {
+  if (value.is_string()) platform::ZeroizeSecret(const_cast<std::string&>(value.text()));
+  for (const auto& item : value.array()) WipeStrings(item);
+  for (const auto& [name, item] : value.object()) WipeStrings(item);
 }
 
 // An Origin, when sent, must be this server's own: the page's address, as Host names it.
@@ -89,6 +120,61 @@ Service::Service(ServiceConfig config) : config_(std::move(config)), logs_(confi
         request.method == Method::kHead)
       return;
     logs_.WriteReport(index, title, account, now, [&response](const char* data, std::size_t size) { return response.Body(data, size); });
+  });
+  // GOG sign-in from the phone. The token is in the page's fragment and the post's body, never in a path web.log shows.
+  router_.Exact("/gog", [this](const Request&, const std::string&, Response& response) {
+    const auto* page = config_.gog ? FindEmbeddedAsset("/gog") : nullptr;
+    if (!page) return SendError(response, 404, "Not found.");
+    std::string text(reinterpret_cast<const char*>(page->data), page->size);
+    if (const auto at = text.find(kGogAuthPlaceholder); at != std::string::npos)
+      text.replace(at, std::string_view(kGogAuthPlaceholder).size(), AttributeEscaped(config_.gog_auth_url));
+    response.Send(200, page->content_type, text, {{"Cache-Control", "no-store"}, {"Referrer-Policy", "no-referrer"}});
+  });
+  router_.Post("/api/gog/sign-in", [this](const Request& request, const std::string&, Response& response) {
+    if (!config_.gog) return SendError(response, 404, "Not found.");
+    if (HeaderValue(request, "x-playden-action") != std::optional<std::string>("gog-sign-in"))
+      return SendError(response, 403, "Send X-Playden-Action: gog-sign-in to sign in to GOG.");
+    if (!request.content_length) return SendError(response, 411, "Send the body's length.");
+    if (*request.content_length > kMaxGogSignInBody) return SendError(response, 413, "The request is larger than 4 KB.");
+    if (!request.read_body) return SendError(response, 400, "No body.");
+    std::string body(static_cast<std::size_t>(*request.content_length), '\0');
+    std::size_t done = 0;
+    while (done < body.size()) {
+      const auto count = request.read_body(body.data() + done, body.size() - done);
+      if (count <= 0) {
+        platform::ZeroizeSecret(body);
+        return SendError(response, 400, "The request didn't arrive whole.");
+      }
+      done += static_cast<std::size_t>(count);
+    }
+    json::Limits limits;
+    limits.max_bytes = kMaxGogSignInBody;
+    limits.max_depth = 4;
+    limits.max_values = 16;
+    limits.max_string_bytes = kMaxGogSignInBody;
+    const auto parsed = json::Parse(body, limits);
+    platform::ZeroizeSecret(body);
+    std::string token, address;
+    if (parsed && parsed->is_object()) {
+      const auto* token_value = parsed->Find("token");
+      const auto* address_value = parsed->Find("address");
+      if (token_value && token_value->is_string() && address_value && address_value->is_string()) {
+        token = token_value->text();
+        address = address_value->text();
+      }
+    }
+    if (parsed) WipeStrings(*parsed);
+    if (token.empty() || address.empty()) {
+      platform::ZeroizeSecret(token);
+      platform::ZeroizeSecret(address);
+      return SendError(response, 400, "Send the sign-in token and the address.");
+    }
+    auto answer = config_.gog->Submit(token, address, request.client);
+    platform::ZeroizeSecret(token);
+    platform::ZeroizeSecret(address);
+    response.Send(answer.status, "application/json", answer.body, kNoStore);
+    platform::ZeroizeSecret(answer.body);
+    if (answer.token) platform::ZeroizeSecret(*answer.token);
   });
   // The only action. It must carry X-Playden-Action: a custom header makes a browser ask first (a CORS
   // preflight, never answered), so another web page can't quit Playden from the player's browser.

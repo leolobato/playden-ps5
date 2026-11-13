@@ -1,0 +1,159 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>Sign in to GOG · Playden</title>
+<style>
+/* The look of Playden's web access page. Nothing loads from the internet. */
+@font-face { font-family: "Barlow"; font-weight: 400; font-style: normal; src: url("/assets/barlow-regular.ttf") format("truetype"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-style: normal; src: url("/assets/barlow-semibold.ttf") format("truetype"); }
+:root {
+  --ground: #0e0d0c;
+  --row: #17150f;
+  --line: #2a2620;
+  --ink: #f3efe9;
+  --soft: #a8a29e;
+  --accent: #f0863a;
+  --on-accent: #0e0d0c;
+  --ok: #8fbf7a;
+  --warn: #e0b25c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); color: var(--ink); }
+body { font: 400 16px/1.5 "Barlow", -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+main { max-width: 560px; margin: 0 auto; padding: 32px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); }
+h1 { margin: 0 0 20px; font-size: 20px; font-weight: 600; }
+h1 small { color: var(--soft); font-weight: 400; font-size: 14px; margin-left: 8px; }
+ol { margin: 0 0 20px; padding: 0; list-style: none; counter-reset: step; }
+ol li { counter-increment: step; position: relative; padding: 14px 16px 14px 52px; background: var(--row);
+  border: 1px solid var(--line); border-radius: 6px; margin-bottom: 10px; }
+ol li::before { content: counter(step); position: absolute; left: 16px; top: 14px; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--line); color: var(--ink); font-weight: 600; font-size: 14px; line-height: 24px; text-align: center; }
+ol li p { margin: 0; }
+.hint { color: var(--soft); font-size: 14px; margin: 6px 0 0; }
+.button { display: inline-block; margin-top: 10px; background: var(--accent); color: var(--on-accent); font: 600 16px/1.5 "Barlow", sans-serif;
+  text-decoration: none; padding: 8px 14px; border: 0; border-radius: 4px; cursor: pointer; }
+.button:hover { background: #f59a57; }
+.button:disabled { cursor: progress; opacity: .6; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+.paste { display: flex; gap: 8px; flex-wrap: wrap; }
+.paste input { flex: 1 1 220px; min-width: 0; font: 400 16px/1.5 "Barlow", sans-serif; color: var(--ink); background: var(--ground);
+  border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; }
+.paste .button { margin-top: 0; }
+.message { margin: 16px 0 0; padding: 12px 16px; border-radius: 6px; background: var(--row); border: 1px solid var(--line);
+  border-left: 3px solid var(--warn); overflow-wrap: anywhere; }
+.message.ok { border-left-color: var(--ok); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sign in to GOG<small>Playden on PS5</small></h1>
+  <p class="message" id="no-token" hidden>Open this page by scanning the code on the PS5.</p>
+  <div id="steps" hidden>
+    <ol>
+      <li>
+        <p>Sign in to your GOG account.</p>
+        <a class="button" id="open-gog" href="%%GOG_AUTH_URL%%" target="_blank" rel="noopener noreferrer">Open GOG sign-in</a>
+      </li>
+      <li>
+        <p>Copy the address of the page that opens after you sign in.</p>
+        <p class="hint">It is the page that opens after you sign in, starting with embed.gog.com. The page itself can look empty.</p>
+      </li>
+      <li>
+        <p>Come back here, paste the address and choose Send.</p>
+      </li>
+    </ol>
+    <form id="form" autocomplete="off">
+      <label for="address">Address from GOG</label>
+      <div class="paste">
+        <input id="address" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+               placeholder="https://embed.gog.com/on_login_success?…">
+        <button class="button" id="send" type="submit">Send</button>
+      </div>
+    </form>
+  </div>
+  <p class="message" id="answer" role="status" aria-live="polite" hidden></p>
+</main>
+<script>
+"use strict";
+(() => {
+  // The token is in the fragment, which the browser never sends. It leaves the address bar at once and goes to
+  // Playden only in a post's body.
+  let token = "";
+  const fragment = location.hash.slice(1);
+  if (/^[0-9a-f]{32}$/.test(fragment)) token = fragment;
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+
+  const steps = document.getElementById("steps");
+  const form = document.getElementById("form");
+  const field = document.getElementById("address");
+  const send = document.getElementById("send");
+  const answer = document.getElementById("answer");
+
+  if (!token) {
+    document.getElementById("no-token").hidden = false;
+    return;
+  }
+  steps.hidden = false;
+
+  const show = (text, ok) => {
+    answer.textContent = text;
+    answer.classList.toggle("ok", !!ok);
+    answer.hidden = false;
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const address = field.value.trim();
+    if (!address) return show("Paste the address GOG opened after sign-in first.");
+    send.disabled = true;
+    show("Signing in…", true);
+    let response;
+    try {
+      response = await fetch("/api/gog/sign-in", {
+        method: "POST",
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+        headers: { "X-Playden-Action": "gog-sign-in", "Content-Type": "application/json" },
+        body: JSON.stringify({ token, address }),
+      });
+    } catch (error) {
+      send.disabled = false;
+      return show("Playden didn't answer. Check that this phone is on the same network as the PS5.");
+    }
+    let data = null;
+    let text = "";
+    if ((response.headers.get("Content-Type") || "").startsWith("application/json")) {
+      data = await response.json().catch(() => null);
+    } else {
+      text = (await response.text().catch(() => "")).trim();
+    }
+    send.disabled = false;
+    if (data && typeof data.token === "string" && /^[0-9a-f]{32}$/.test(data.token)) {
+      // The address was spent: the next one goes with the token the PS5 shows now.
+      token = data.token;
+      field.value = "";
+    }
+    if (response.ok && data && data.signed_in) {
+      field.value = "";
+      steps.hidden = true;
+      return show("Signed in to GOG as " + String(data.name || "") + ". You can close this page.", true);
+    }
+    if (response.status === 410) {
+      field.value = "";
+      steps.hidden = true;
+    }
+    show((data && typeof data.error === "string" && data.error) || text || "Something went wrong (" + response.status + ").");
+  });
+})();
+</script>
+</body>
+</html>

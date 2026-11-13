@@ -140,6 +140,9 @@ SelfHealResult TightenPrivateModes(const fs::path& data_root, const Log& log) {
   // user/ is shared (01777); its private files hold the sign-in, beside ordinary 0666 caches.
   TightenFolder(data_root / "user", false, true, log, &result, false, true);
   TightenFolder(data_root / "user/game-settings-private", true, true, log, &result);
+  // GOG's sign-in (gog/session) and its saved products, each a private folder of 0600 files.
+  TightenFolder(data_root / "user/gog/products", true, true, log, &result);
+  TightenFolder(data_root / "user/gog", true, true, log, &result);
   TightenFolder(data_root / "art", true, false, log, &result);
   return result;
 }

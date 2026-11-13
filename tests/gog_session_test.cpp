@@ -251,6 +251,22 @@ void TestToken() {
     CHECK(token.token == AccessText(2) && f.stub.Calls(Endpoint::kToken) == 2);
     f.CheckLogClean();
   }
+  {  // An API refused the token: only that token of that generation is dropped, and the next Token() refreshes.
+    Fixture f;
+    CHECK(f.SignIn(1).kind == ExchangeOutcome::Kind::kSignedIn);
+    const auto generation = f.session->generation();
+    f.session->InvalidateAccessToken(generation + 1, AccessText(1));
+    f.session->InvalidateAccessToken(generation, AccessText(7));
+    auto token = f.session->Token(kNoCancel);
+    CHECK(token.status == AccessToken::Status::kOk && token.token == AccessText(1));
+    CHECK(f.stub.Calls(Endpoint::kToken) == 1);
+    f.session->InvalidateAccessToken(generation, AccessText(1));
+    f.stub.Script(Endpoint::kToken, Tokens(2));
+    token = f.session->Token(kNoCancel);
+    CHECK(token.status == AccessToken::Status::kOk && token.token == AccessText(2));
+    CHECK(f.stub.Calls(Endpoint::kToken) == 2 && SavedRefresh(f.root) == RefreshText(2));
+    f.CheckLogClean();
+  }
   {  // Two callers at once: one refresh, and both get the new token.
     Fixture f;
     CHECK(f.SignIn(1).kind == ExchangeOutcome::Kind::kSignedIn);

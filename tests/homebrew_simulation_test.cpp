@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 
+#include "homebrew/browse.hpp"
 #include "homebrew/simulation.hpp"
 #include "runtime/game_settings.h"
 
@@ -2289,7 +2290,7 @@ void account_update_by_store() {
               "a GOG update with clear_library keeps Steam's games and account generation");
     }
     {
-        // Steam still restoring on Startup: GOG's restore and sign-in leave Startup to Steam.
+        // Steam still restoring on Startup: GOG's restore leaves Startup alone, and its sign-in doesn't wait for Steam's.
         Simulation live({}, {}, ModelMode::Live);
         live.UpdateAccount({AuthState::Restoring});
         check(live.state().navigation.route == Route::Startup, "Steam restoring shows Startup");
@@ -2299,9 +2300,8 @@ void account_update_by_store() {
                   live.state().account(Store::kGog).authentication == AuthState::Restoring,
               "GOG restoring leaves Startup alone");
         live.UpdateAccount(gog(AuthState::SignedIn, "00000000000000ab", "Synthetic GOG"));
-        check(live.state().navigation.route == Route::Startup && live.state().navigation.focus_key == focus &&
-                  live.state().account().authentication == AuthState::Restoring,
-              "GOG signed in leaves Startup to Steam's restore");
+        check(live.state().navigation.route == Route::Home && live.state().account().authentication == AuthState::Restoring,
+              "GOG's restore signs in on Home while Steam still restores");
     }
 }
 
@@ -3697,6 +3697,608 @@ void friends_tab_join_and_invite(const std::filesystem::path& fixtures, const st
     playden::runtime::SetOnlineSteamEnabled(false);
 }
 
+// GOG (gog-store) in the model: Settings › Stores, the sign-in dialog, a GOG-only start, sign-out and expiry, the
+// GOG scope, the game page, and the Steam-only places a GOG-only player sees.
+namespace gog_view {
+using namespace playden::homebrew;
+using playden::GameId;
+using playden::Store;
+
+constexpr const char* kToken = "0123456789abcdef0123456789abcdef";
+constexpr const char* kChallenge = "http://192.168.0.2:7031/gog#0123456789abcdef0123456789abcdef";
+
+AccountUpdate gog(AuthState state, std::string name = {}, std::string error = {}, bool from_sign_in = false) {
+    AccountUpdate update;
+    update.authentication = state;
+    if (state == AuthState::SignedIn || state == AuthState::Offline) update.id = "00000000000000ab";
+    update.display_name = std::move(name);
+    update.error = std::move(error);
+    update.store = Store::kGog;
+    update.from_sign_in = from_sign_in;
+    return update;
+}
+
+LibraryUpdate gog_library(std::vector<std::pair<std::uint64_t, const char*>> games, std::int64_t retrieved_at = 1700000000) {
+    LibraryUpdate update;
+    for (const auto& [id, title] : games) update.games.push_back(playden::GameSummary{GameId::Gog(id), title, {}, {}, {}});
+    update.source = Store::kGog;
+    update.retrieved_at = retrieved_at;
+    return update;
+}
+
+std::string line(const ViewRow& row) {
+    return row.key + "|" + row.title + "|" + row.section + "|" + row.subtitle + "|" + row.value + "|" + row.action + "|" +
+           (row.enabled ? "1" : "0") + "\n";
+}
+
+std::string rows(const Simulation& simulation, const std::string& section = "*") {
+    std::string out;
+    for (const auto& row : simulation.view().rows)
+        if (section == "*" || row.section == section) out += line(row);
+    return out;
+}
+
+std::string keys(const Simulation& simulation) {
+    std::string out;
+    for (const auto& row : simulation.view().rows) out += row.key + " ";
+    return out;
+}
+
+const ViewRow* row(const Simulation& simulation, const std::string& key) {
+    for (const auto& item : simulation.view().rows)
+        if (item.key == key) return &item;
+    return nullptr;
+}
+
+void to_route(Simulation& simulation, Route route) {
+    for (int step = 0; step < 8 && simulation.state().navigation.route != route; ++step) simulation.action("r1");
+    check(simulation.state().navigation.route == route, "the tab opens");
+}
+
+void choose(Simulation& simulation, const std::string& key) {
+    if (!simulation.action("focus:" + key) || simulation.state().navigation.focus_key != key)
+        std::cerr << "missing row " << key << " on " << simulation.view().surface << '\n';
+    check(simulation.state().navigation.focus_key == key, "the row to choose is there");
+    check(simulation.action("cross"), "the row's action runs");
+}
+
+bool queued(std::vector<ServiceRequest> actions, ServiceAction action, Store store) {
+    return std::any_of(actions.begin(), actions.end(),
+                       [&](const ServiceRequest& request) { return request.action == action && request.store == store; });
+}
+
+const ModalEntry* dialog(const Simulation& simulation) {
+    const auto& modals = simulation.state().navigation.modals;
+    return !modals.empty() && modals.back().id == "gog-sign-in" ? &modals.back() : nullptr;
+}
+
+bool shows_game(const Simulation& simulation, GameId id) {
+    const auto visible = simulation.visible_games();
+    return std::any_of(visible.begin(), visible.end(), [id](const Game* game) { return game->id == id; });
+}
+
+bool listed(const Simulation& simulation, GameId id) {
+    const auto& games = simulation.state().games;
+    return std::any_of(games.begin(), games.end(), [id](const Game& game) { return game.id == id; });
+}
+
+// The rows as they were before GOG: with the line off nothing changes, even with a GOG account and games.
+constexpr const char* kStartupSignedOut =
+    "startup-connect|Connect Steam||||connect|1\n"
+    "startup-import|Import games||||import-manage|1\n"
+    "startup-skip|Skip for now||||skip|1\n";
+constexpr const char* kStartupRestoring = "startup-loading|Restoring your accounts…|||||0\n";
+constexpr const char* kAccountSignedIn =
+    "settings-account|Account|Account|Steam connected|Synthetic account|account|1\n"
+    "settings-signout|Sign out…|Account|||signout-confirm|1\n";
+constexpr const char* kAccountOffline =
+    "settings-account|Account|Account|Cached library · Offline|Synthetic account|account|1\n"
+    "settings-signout|Sign out…|Account|||signout-confirm|1\n";
+constexpr const char* kAccountSignedOut = "settings-account|Account|Account|Connect Steam||account|1\n";
+constexpr const char* kSettingsKeys =
+    "settings-import settings-title-store settings-cloud-saves settings-ask-after-games settings-recipe-votes "
+    "settings-share-as settings-account-link settings-sharing-reset settings-storage settings-installed settings-kept "
+    "settings-runtime settings-content-language settings-downloads-slow settings-download-server settings-motion "
+    "settings-beta-updates settings-update settings-game-updates settings-web-access settings-web-browsers settings-about "
+    "settings-logs settings-reset settings-quit ";
+
+void line_off_views_unchanged() {
+    for (const bool with_gog : {false, true}) {
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(false);
+        if (with_gog) {
+            // A GOG account and games without the line (they can't be there, but nothing may show them as a store).
+            live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        }
+        live.UpdateAccount({AuthState::SignedOut});
+        if (!with_gog) check(rows(live) == kStartupSignedOut, "line off: Startup's rows are as before");
+        live.UpdateAccount({AuthState::Restoring});
+        if (!with_gog) check(rows(live) == kStartupRestoring, "line off: Startup restoring is as before");
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+        to_route(live, Route::Settings);
+        check(rows(live, "Account") == kAccountSignedIn && rows(live, "Stores").empty(), "line off: the Account section, signed in");
+        check(keys(live) == std::string("settings-account settings-signout ") + kSettingsKeys, "line off: Settings keys, signed in");
+        live.UpdateAccount({AuthState::Offline, "123", "Synthetic account"});
+        check(rows(live, "Account") == kAccountOffline, "line off: the Account section, offline");
+        live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        to_route(live, Route::Settings);
+        check(rows(live, "Account") == kAccountSignedOut, "line off: the Account section, signed out");
+        check(keys(live) == std::string("settings-account ") + kSettingsKeys, "line off: Settings keys, signed out");
+    }
+}
+
+// Settings › Stores: Steam's row as before under its own name, GOG's row with each state, and its sheet.
+void stores_section() {
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.UpdateAccount({AuthState::SignedOut});
+    check(rows(live) == "startup-connect|Connect Steam||||connect|1\n"
+                        "startup-gog|Sign in to GOG||||gog-sign-in|1\n"
+                        "startup-import|Import games||||import-manage|1\n"
+                        "startup-skip|Skip for now||||skip|1\n",
+          "line on: Startup offers Sign in to GOG after Connect Steam");
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+    to_route(live, Route::Settings);
+    check(rows(live, "Account").empty(), "line on: no Account section");
+    check(rows(live, "Stores") == "settings-account|Steam|Stores|Steam connected|Synthetic account|account|1\n"
+                                  "settings-signout|Sign out…|Stores|||signout-confirm|1\n"
+                                  "settings-store-gog|GOG|Stores|Sign in||gog-account|1\n",
+          "line on: Stores lists Steam (as before) and GOG");
+    check(keys(live) == std::string("settings-account settings-signout settings-store-gog ") + kSettingsKeys,
+          "line on: the rest of Settings is as before");
+    const auto subtitle = [&] { return row(live, "settings-store-gog")->subtitle; };
+    const auto sheet = [&] {
+        choose(live, "settings-store-gog");
+        check(!live.state().navigation.modals.empty() && live.state().navigation.modals.back().id == "gog-account",
+              "the GOG row opens its sheet");
+        const auto actions = live.state().navigation.modals.back().action_keys;
+        live.action("circle");
+        return actions;
+    };
+    check(sheet() == std::vector<std::string>{"gog-sign-in", "cancel"}, "signed out, the sheet offers Sign in");
+    live.UpdateAccount(gog(AuthState::Restoring));
+    check(subtitle() == "Restoring your sign-in…", "restoring");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(subtitle() == "Signed in" && row(live, "settings-store-gog")->value == "Synthetic GOG", "signed in, its name");
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's library loads");
+    check(subtitle() == "Signed in · Synced", "signed in after a library loaded: synced");
+    check(sheet() == std::vector<std::string>{"gog-refresh", "gog-signout-confirm", "cancel"},
+          "signed in, the sheet offers Refresh library and Sign out");
+    live.UpdateAccount(gog(AuthState::Offline, "Synthetic GOG"));
+    check(subtitle() == "Offline · Cached library", "offline");
+    check(sheet() == std::vector<std::string>{"gog-refresh", "gog-signout-confirm", "cancel"}, "offline, the same actions");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    (void)live.TakeServiceActions();
+    choose(live, "settings-store-gog");
+    choose(live, "gog-refresh");
+    check(queued(live.TakeServiceActions(), ServiceAction::RefreshLibrary, Store::kGog), "Refresh library refreshes GOG's");
+    choose(live, "settings-store-gog");
+    choose(live, "gog-signout-confirm");
+    check(live.state().navigation.modals.back().id == "confirmation" && live.state().navigation.modals.back().destructive &&
+              live.state().navigation.modals.back().title == "Sign out of GOG?",
+          "Sign out asks first");
+    live.action("circle");
+    check(live.state().navigation.modals.back().id == "gog-account", "cancelled: back to the GOG sheet");
+    live.action("circle");
+    check(live.TakeServiceActions().empty() && live.state().account(Store::kGog).authentication == AuthState::SignedIn,
+          "cancelled: nothing happens");
+    choose(live, "settings-store-gog");
+    choose(live, "gog-signout-confirm");
+    choose(live, "confirm-destructive");
+    check(queued(live.TakeServiceActions(), ServiceAction::SignOut, Store::kGog) && subtitle() == "Signing out…",
+          "confirmed: GOG signs out");
+    check(row(live, "settings-signout") != nullptr && live.state().account().authentication == AuthState::SignedIn,
+          "Steam keeps its own Sign out and stays signed in");
+    live.UpdateAccount(gog(AuthState::Expired, {}, "Your GOG sign-in expired. Sign in again."));
+    check(subtitle() == "Your GOG sign-in expired. Sign in again.", "expired: the error");
+    live.UpdateAccount(gog(AuthState::Failed, {}, "GOG could not be reached."));
+    check(subtitle() == "GOG could not be reached.", "failed: the error");
+    check(sheet() == std::vector<std::string>{"gog-sign-in", "cancel"}, "failed, the sheet offers Sign in");
+}
+
+// The sign-in dialog: web access off, no address yet, the QR code (the token only in the code), an error, Stay signed
+// in, Back, and the sign-in closing it.
+void sign_in_dialog() {
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+    to_route(live, Route::Settings);
+    choose(live, "settings-web-access");
+    check(!live.state().web_access, "web access is off");
+    (void)live.TakeServiceActions();
+    choose(live, "settings-store-gog");
+    choose(live, "gog-sign-in");
+    check(dialog(live) && live.state().navigation.modals.size() == 1, "Sign in opens the dialog in place of the sheet");
+    check(queued(live.TakeServiceActions(), ServiceAction::BeginQr, Store::kGog), "opening it starts GOG's sign-in");
+    const auto body_starts = [&](const std::string& text) { return dialog(live)->body.rfind(text, 0) == 0; };
+    check(body_starts("GOG sign-in uses your phone through web access, which is off.") && dialog(live)->link.empty() &&
+              dialog(live)->action_keys == std::vector<std::string>{"gog-web-on", "gog-stay", "gog-back"},
+          "(a) web access off: the dialog offers to turn it on");
+    choose(live, "gog-web-on");
+    check(live.state().web_access && live.ExportPreferences().web_access, "Turn on web access turns the setting on");
+    check(body_starts("Playden can't find its network address. Trying again…") && dialog(live)->link.empty() &&
+              dialog(live)->action_keys == std::vector<std::string>{"gog-stay", "gog-back"},
+          "(b) starting: no address yet");
+    live.ApplyLiveWebAccess({"on", "", 7031, {}});
+    check(body_starts("Playden can't find its network address. Trying again…"), "(b) on without an address");
+    auto waiting = gog(AuthState::Waiting);
+    waiting.challenge_url = kChallenge;
+    live.UpdateAccount(waiting);
+    const auto* shown = dialog(live);
+    check(shown->link == kChallenge && shown->link_caption == "http://192.168.0.2:7031/gog",
+          "(c) the QR code is the address with its token; the caption is the address without it");
+    check(shown->body.find("Scan with your phone") != std::string::npos && shown->body.find("Sign in to GOG") != std::string::npos &&
+              shown->body.find("Paste the address you land on") != std::string::npos,
+          "(c) the three steps");
+    std::string visible = shown->title + shown->body + shown->link_caption + live.view().title + live.view().subtitle;
+    for (const auto& item : live.view().rows) visible += item.title + item.subtitle + item.value;
+    check(visible.find(kToken) == std::string::npos, "(c) the token is in no text on screen");
+    // Stay signed in: one setting for both stores.
+    const bool stay = live.state().stay_signed_in;
+    const auto* toggle = row(live, "gog-stay");
+    check(toggle && toggle->kind == RowKind::Toggle && toggle->selected == stay && toggle->subtitle == "Keep your sign-ins on this PS5.",
+          "Stay signed in shows the shared setting, naming neither store");
+    check(shown->body.find("Stay signed in keeps your sign-ins on this PS5.") != std::string::npos &&
+              shown->body.find("Steam") == std::string::npos,
+          "the dialog's text says what Stay signed in does, naming neither store");
+    choose(live, "gog-stay");
+    check(live.state().stay_signed_in == !stay && live.ExportPreferences().steam_stay_signed_in == !stay &&
+              queued(live.TakeServiceActions(), ServiceAction::StaySignedIn, Store::kSteam),
+          "Stay signed in changes the shared preference and applies it");
+    check(dialog(live) && row(live, "gog-stay")->selected == !stay, "the dialog stays, with the new value");
+    // An error from the account shows in the dialog.
+    live.UpdateAccount(gog(AuthState::Failed, {}, "GOG sign-in is unavailable."));
+    check(body_starts("GOG sign-in is unavailable.") && dialog(live)->link.empty() &&
+              dialog(live)->action_keys.front() == "gog-retry",
+          "a failure shows in the body, with Try again");
+    choose(live, "gog-retry");
+    check(queued(live.TakeServiceActions(), ServiceAction::BeginQr, Store::kGog), "Try again starts a new sign-in");
+    // Back, by Circle or the button, ends the sign-in.
+    live.action("circle");
+    check(!dialog(live) && queued(live.TakeServiceActions(), ServiceAction::CancelQr, Store::kGog), "Circle ends the sign-in");
+    live.UpdateAccount(gog(AuthState::SignedOut));
+    choose(live, "settings-store-gog");
+    choose(live, "gog-sign-in");
+    (void)live.TakeServiceActions();
+    choose(live, "gog-back");
+    check(!dialog(live) && queued(live.TakeServiceActions(), ServiceAction::CancelQr, Store::kGog), "Back ends the sign-in");
+    // Signed in from the dialog: it closes, says so, and nothing is cancelled.
+    choose(live, "settings-store-gog");
+    choose(live, "gog-sign-in");
+    live.UpdateAccount(waiting);
+    (void)live.TakeServiceActions();
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG", {}, true));
+    check(!dialog(live) && live.state().navigation.modals.empty() && live.state().navigation.route == Route::Settings,
+          "signed in: the dialog closes and Settings stays");
+    check(std::any_of(live.state().notices.begin(), live.state().notices.end(),
+                      [](const Notice& notice) { return notice.message == "Signed in to GOG as Synthetic GOG"; }),
+          "a notice names the account");
+    live.action("down");
+    check(live.TakeServiceActions().empty(), "a sign-in that answered is not cancelled");
+    // A dialog that leaves some other way (every dialog cleared) still ends its sign-in.
+    live.UpdateAccount(gog(AuthState::SignedOut));
+    choose(live, "settings-store-gog");
+    choose(live, "gog-sign-in");
+    (void)live.TakeServiceActions();
+    live.UpdateAccount({AuthState::SignedIn, "456", "Another account", {}, {}, true});
+    check(!dialog(live) && queued(live.TakeServiceActions(), ServiceAction::CancelQr, Store::kGog),
+          "a cleared dialog ends its sign-in");
+}
+
+// A new player with GOG only: Startup's sign-in lands on the Library; restores in either order end on Home or the
+// Library; Steam's late answer doesn't move a player; a restart with only GOG; then Steam too.
+void gog_only_start() {
+    const auto steam_game = playden::GameSummary{GameId::Steam(42), "Steam game", {}, {}, {}};
+    {
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::Restoring});
+        live.UpdateAccount(gog(AuthState::Restoring));
+        live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        live.UpdateAccount(gog(AuthState::SignedOut));
+        check(live.state().navigation.route == Route::Startup && row(live, "startup-gog"), "nothing saved: Startup");
+        choose(live, "startup-gog");
+        check(dialog(live) && queued(live.TakeServiceActions(), ServiceAction::BeginQr, Store::kGog), "Sign in to GOG opens the dialog");
+        auto waiting = gog(AuthState::Waiting);
+        waiting.challenge_url = kChallenge;
+        live.UpdateAccount(waiting);
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG", {}, true));
+        check(live.state().navigation.route == Route::Library && !dialog(live), "signed in from Startup: the Library");
+        LibraryUpdate loading;
+        loading.loading = true;
+        loading.source = Store::kGog;
+        check(live.UpdateLibrary(loading), "GOG's library starts loading");
+        check(!row(live, "library-empty") && row(live, "library-loading") && !row(live, "library-loading")->enabled &&
+                  live.view().focused_row == 0,
+              "while GOG's games load, the Library offers nothing to press (not Connect a store)");
+        check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}, {1000000002, "GOG two"}})), "GOG's games load");
+        check(live.state().navigation.route == Route::Library && shows_game(live, GameId::Gog(1000000001)) &&
+                  shows_game(live, GameId::Gog(1000000002)),
+              "the Library shows the GOG games");
+        check(live.state().account().authentication == AuthState::SignedOut, "Steam stays signed out");
+        to_route(live, Route::Settings);
+        check(row(live, "settings-account")->subtitle == "Connect Steam", "Steam's row offers Connect Steam");
+    }
+    for (const bool steam_first : {true, false}) {
+        // Order A: Steam's restore answers first; order B: GOG's.
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::Restoring});
+        live.UpdateAccount(gog(AuthState::Restoring));
+        if (steam_first) {
+            live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+            check(live.state().navigation.route == Route::Startup, "A: Steam signed out first, GOG still restoring");
+            check(rows(live) == kStartupRestoring && live.view().focused_row == 0,
+                  "A: Startup waits for GOG's restore before offering any sign-in");
+        }
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        check(live.state().navigation.route == Route::Home, "GOG's restore lands on Home");
+        check(rows(live, "*").find("home-library|Open Library") != std::string::npos && live.view().subtitle == "Your library",
+              "Home while GOG's games load: Open Library, about the player's library");
+        std::vector<std::pair<std::uint64_t, const char*>> twelve;
+        static const char* const kTitles[] = {"GOG 01", "GOG 02", "GOG 03", "GOG 04", "GOG 05", "GOG 06",
+                                              "GOG 07", "GOG 08", "GOG 09", "GOG 10", "GOG 11", "GOG 12"};
+        for (std::uint64_t index = 0; index < 12; ++index) twelve.push_back({1000000001 + index, kTitles[index]});
+        check(live.UpdateLibrary(gog_library(twelve)), "GOG's games load");
+        to_route(live, Route::Library);
+        // The d-pad onto the ninth game, on the second row.
+        live.action("down");
+        live.action("right");
+        live.action("right");
+        const auto index = live.state().navigation.selected_index;
+        check(index == 8 && live.state().navigation.focus_key == "game-" + playden::ToKey(GameId::Gog(1000000009)),
+              "the ninth game is selected");
+        if (!steam_first) {
+            live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+            check(live.state().navigation.route == Route::Library, "B: Steam's late sign-out leaves the Library open");
+            check(live.state().navigation.selected_index == index &&
+                      live.state().navigation.focus_key == "game-" + playden::ToKey(GameId::Gog(1000000009)),
+                  "B: the cursor stays on its game");
+            live.action("right");
+            check(live.state().navigation.focus_key == "game-" + playden::ToKey(GameId::Gog(1000000010)),
+                  "B: the next press moves on from that game");
+            live.action("left");
+            auto failed = AccountUpdate{AuthState::Failed, {}, {}, {}, "Steam could not be reached.", false};
+            failed.restoring = true;
+            live.UpdateAccount(failed);
+            check(live.state().navigation.route == Route::Library, "B: Steam's failed restore leaves it open too");
+        }
+        live.UpdateAccount({AuthState::Cancelled});
+        check(live.state().navigation.route == Route::Library && shows_game(live, GameId::Gog(1000000001)),
+              "Steam's late answer doesn't move a player who opened the Library");
+    }
+    {
+        // Restart with only GOG saved.
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::Restoring});
+        live.UpdateAccount(gog(AuthState::Restoring));
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's games load");
+        live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        check(live.state().navigation.route == Route::Home && live.state().account().authentication == AuthState::SignedOut &&
+                  listed(live, GameId::Gog(1000000001)),
+              "restart with only GOG: Home with its games, Steam signed out");
+        // Then Steam too: GOG's games stay.
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+        check(live.UpdateLibrary({{steam_game}, false, {}, false, false, {}}), "Steam's games load");
+        check(listed(live, GameId::Steam(42)) && listed(live, GameId::Gog(1000000001)) &&
+                  live.state().account(Store::kGog).authentication == AuthState::SignedIn,
+              "signing in to Steam keeps the GOG games");
+    }
+    {
+        // Steam's saved sign-in was revoked and its QR sign-in waits on screen; then GOG's restore signs in: the
+        // player leaves the Steam screen and its sign-in ends, so its next code doesn't bring the screen back.
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::Restoring});
+        live.UpdateAccount(gog(AuthState::Restoring));
+        live.UpdateAccount({AuthState::Waiting, {}, {}, "https://s.team/q/1/2"});
+        check(live.state().navigation.route == Route::SignIn, "Steam's QR sign-in is on screen");
+        (void)live.TakeServiceActions();
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        check(live.state().navigation.route == Route::Home && queued(live.TakeServiceActions(), ServiceAction::CancelQr, Store::kSteam) &&
+                  live.state().account().authentication == AuthState::Cancelled,
+              "GOG's sign-in ends Steam's waiting sign-in and opens Home");
+        live.UpdateAccount({AuthState::Cancelled, {}, {}, {}, {}, true});
+        check(live.state().navigation.route == Route::Home, "Steam's cancel answer leaves Home");
+    }
+}
+
+// A GOG sign-out takes its games that are neither installed nor downloading; Steam's games, installed GOG games, GOG
+// jobs and organization stay. An expiry keeps everything.
+void sign_out_and_expiry() {
+    const auto installed = GameId::Gog(1000000001), queued_game = GameId::Gog(1000000002), owned = GameId::Gog(1000000003);
+    const auto setup = [&](Simulation& live) {
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+        check(live.UpdateLibrary({{playden::GameSummary{GameId::Steam(42), "Steam game", {}, {}, {}}}, false, {}, false, false, {}}),
+              "Steam's games load");
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        check(live.UpdateLibrary(gog_library({{1000000001, "GOG installed"}, {1000000002, "GOG queued"}, {1000000003, "GOG owned"}})),
+              "GOG's games load");
+        live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+        LiveInstallJob job;
+        job.game_id = queued_game;
+        job.state = JobState::Paused;
+        job.volume_id = "internal";
+        live.UpdateInstalls({job}, {{installed, 1024, "internal", true}});
+        playden::OrganizationSnapshot organization;
+        organization.favorites = {owned, installed};
+        organization.hidden = {queued_game};
+        organization.collections = {{"collection-1", "Weekend", false, {owned}}};
+        organization.ratings[owned] = playden::CompatibilityRating::kWorks;
+        organization.notes[owned] = "GOG note";
+        check(live.ApplyOrganization(1, live.BeginOrganizationLoad(1), organization), "organization naming GOG games applies");
+    };
+    {
+        Simulation live({}, {}, ModelMode::Live);
+        setup(live);
+        live.UpdateAccount(gog(AuthState::SigningOut, "Synthetic GOG"));
+        live.UpdateAccount(gog(AuthState::SignedOut));
+        check(listed(live, GameId::Steam(42)) && listed(live, installed) && listed(live, queued_game) && !listed(live, owned),
+              "sign-out: Steam's games, the installed GOG game and the queued one stay; the owned one leaves");
+        check(std::any_of(live.state().jobs.begin(), live.state().jobs.end(), [&](const Job& job) { return job.game_id == queued_game; }),
+              "the GOG job stays");
+        const auto& library = live.state().library;
+        check(library.favorites.count(owned) && library.favorites.count(installed) && library.hidden.count(queued_game) &&
+                  library.collections.size() == 1 && library.collections[0].members.count(owned) &&
+                  library.ratings.count(owned) && library.notes.count(owned),
+              "organization naming GOG games is kept");
+        check(live.state().account().authentication == AuthState::SignedIn, "Steam stays signed in");
+        to_route(live, Route::Settings);
+        check(row(live, "settings-store-gog")->subtitle == "Sign in", "GOG's row offers Sign in");
+    }
+    {
+        Simulation live({}, {}, ModelMode::Live);
+        setup(live);
+        // A restore that finds nothing saved (not a sign-out) leaves the games too.
+        live.UpdateAccount(gog(AuthState::Expired, {}, "Your GOG sign-in expired. Sign in again."));
+        check(listed(live, installed) && listed(live, queued_game) && listed(live, owned) && listed(live, GameId::Steam(42)),
+              "expiry: every game stays");
+        to_route(live, Route::Settings);
+        check(row(live, "settings-store-gog")->subtitle == "Your GOG sign-in expired. Sign in again.", "expiry: the error on the row");
+    }
+}
+
+// The GOG scope: only with GOG games, after Imported; it shows only GOG games, and it is saved and restored.
+void gog_scope() {
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+    check(live.UpdateLibrary({{playden::GameSummary{GameId::Steam(42), "Steam game", {}, {}, {}}}, false, {}, false, false, {}}),
+          "Steam's games load");
+    const auto scopes = [&] { return library_rail_scopes(live.state()); };
+    const auto without = scopes();
+    check(std::find(without.begin(), without.end(), "gog") == without.end(), "no GOG games: no GOG scope");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's games load");
+    LibraryUpdate local{{playden::GameSummary{GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11"), "Imported", {}, {}, {}}},
+                        false, {}, false, false, {}};
+    local.source = Store::kLocal;
+    check(live.UpdateLibrary(local), "an imported game loads");
+    const auto with_gog = scopes();
+    const auto imported = std::find(with_gog.begin(), with_gog.end(), "imported");
+    check(imported != with_gog.end() && imported + 1 != with_gog.end() && *(imported + 1) == "gog", "GOG comes after Imported");
+    to_route(live, Route::Library);
+    live.action("left");
+    for (int step = 0; step < 10 && live.state().navigation.focus_key != "rail-gog"; ++step) live.action("down");
+    check(live.state().navigation.focus_key == "rail-gog" && live.action("cross"), "the rail reaches GOG");
+    check(live.state().library.scope == "gog", "the GOG scope is chosen");
+    const auto visible = live.visible_games();
+    check(visible.size() == 1 && visible.front()->id == GameId::Gog(1000000001), "it shows only GOG's games");
+    const auto saved = live.ExportOrganization();
+    check(saved.scope == "gog", "the scope is saved");
+    Simulation restored({}, {}, ModelMode::Live);
+    check(restored.ApplyOrganization(1, restored.BeginOrganizationLoad(1), saved) && restored.state().library.scope == "gog",
+          "and restored");
+}
+
+// A GOG game's page: no Steam to check, Install disabled with the reason, never "Checking Steam…".
+void gog_game_page(const std::filesystem::path& fixtures) {
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's games load");
+    check(live.action("details:" + playden::ToKey(GameId::Gog(1000000001))), "the GOG game's page opens");
+    const auto* install = row(live, "details-install");
+    const auto* reason = row(live, "details-unavailable");
+    check(install && !install->enabled && install->title == "Install" && install->action.empty(), "Install is there, disabled");
+    check(reason && reason->title == "Installing GOG games comes in a later build of Playden.", "the reason says why");
+    check(!row(live, "details-checking") && !row(live, "details-cloud"), "no Checking Steam…, no Cloud saves");
+    for (const auto& item : live.view().rows) check(item.title.find("Checking Steam") == std::string::npos, "never Checking Steam…");
+    check(live.TakeInstallRequests().empty(), "nothing is installed");
+    // The fixture shows the same.
+    Simulation simulation(fixtures, {});
+    check(simulation.scenario("gog-library"), "the gog-library scenario loads");
+    check(simulation.action("details:" + playden::ToKey(GameId::Gog(1000000001))), "a fixture GOG game's page opens");
+    check(row(simulation, "details-unavailable") && !row(simulation, "details-install")->enabled,
+          "the fixture's GOG game can't be installed either");
+}
+
+// The Steam-only places, for a player with only GOG: Friends asks for Steam, Online rows stay hidden, GOG games have
+// no Cloud saves row, and the download servers ask for Steam to test.
+void steam_only_places() {
+    namespace rt = playden::runtime;
+    rt::SetOnlineSteamEnabled(true);
+    {
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's games load");
+        live.UpdateFriends({}, false, true);
+        to_route(live, Route::Friends);
+        const auto* empty = row(live, "friends-empty");
+        check(empty && empty->title == "Sign in to Steam to see your friends.", "Friends asks for Steam");
+        live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+        live.UpdateInstalls({}, {{GameId::Gog(1000000001), 1024, "internal", true}});
+        LiveRuntimeGame runtime;
+        runtime.game_id = GameId::Gog(1000000001);
+        runtime.status = "Ready";
+        runtime.ready = runtime.prepared = runtime.has_title = runtime.can_play = true;
+        live.UpdateRuntime(RuntimeState::Ready, {runtime});
+        check(live.action("details:" + playden::ToKey(GameId::Gog(1000000001))), "the installed GOG game's page opens");
+        check(row(live, "details-play") && !row(live, "details-cloud"), "an installed GOG game has no Cloud saves row");
+        for (const auto& item : live.view().rows)
+            check(item.key.rfind("friends-", 0) != 0 && item.key != "details-invite", "no Steam friends rows on a GOG game");
+        to_route(live, Route::Settings);
+        choose(live, "settings-download-server");
+        const auto* test = row(live, "download-server-test");
+        check(test && test->subtitle == "Sign in to Steam to test servers.", "the download servers ask for Steam");
+    }
+    rt::SetOnlineSteamEnabled(false);
+    {
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+        to_route(live, Route::Settings);
+        check(!row(live, "settings-steam-online-notice"), "without online-steam, no Online rows");
+    }
+}
+
+// Each GOG scenario loads with the GOG view, and the scenario picker lists them.
+void gog_scenarios(const std::filesystem::path& fixtures) {
+    Simulation simulation(fixtures, {});
+    check(simulation.scenario("gog-signed-out") && simulation.GogStoreEnabled() &&
+              simulation.state().navigation.route == Route::Startup && row(simulation, "startup-gog"),
+          "gog-signed-out: Startup with Sign in to GOG");
+    check(simulation.scenario("gog-sign-in") && dialog(simulation), "gog-sign-in: the dialog");
+    check(dialog(simulation)->link == "http://192.168.0.2:7031/gog#00000000000000000000000000000000" &&
+              dialog(simulation)->link_caption == "http://192.168.0.2:7031/gog" && row(simulation, "gog-stay"),
+          "gog-sign-in: the QR code, its caption without the token");
+    check(simulation.scenario("gog-library") && simulation.state().navigation.route == Route::Library &&
+              simulation.state().library.scope == "gog" && simulation.state().account().authentication == AuthState::SignedIn &&
+              simulation.state().account(Store::kGog).authentication == AuthState::SignedIn,
+          "gog-library: both stores signed in, the GOG scope");
+    const auto visible = simulation.visible_games();
+    check(!visible.empty() && std::all_of(visible.begin(), visible.end(), [](const Game* game) {
+              return game->id.store == Store::kGog && !game->cover_key.empty();
+          }), "gog-library: GOG games with fixture art");
+    check(simulation.state().games.size() > visible.size(), "gog-library: Steam's games too");
+    const auto scopes = library_rail_scopes(simulation.state());
+    check(std::find(scopes.begin(), scopes.end(), "gog") != scopes.end(), "gog-library: the GOG scope is in the rail");
+    simulation.action("route:settings");
+    check(simulation.action("focus:settings-scenarios") && simulation.action("cross"), "the scenario picker opens");
+    const auto& picker = simulation.state().navigation.modals.back().action_keys;
+    for (const char* name : {"scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library"})
+        check(std::find(picker.begin(), picker.end(), name) != picker.end(), "the picker lists the GOG scenarios");
+}
+
+}  // namespace gog_view
+
 int main(int argc, char** argv) {
     check(argc == 2, "fixture directory argument is required");
     const std::filesystem::path fixtures(argv[1]);
@@ -3709,6 +4311,16 @@ int main(int argc, char** argv) {
     t01_authentication_ignores_late_approval(fixtures, profile);
     account_update_by_store();
     rows_follow_store_traits(profile);
+    gog_view::line_off_views_unchanged();
+    gog_view::stores_section();
+    gog_view::sign_in_dialog();
+    gog_view::gog_only_start();
+    gog_view::sign_out_and_expiry();
+    gog_view::gog_scope();
+    gog_view::gog_game_page(fixtures);
+    gog_view::steam_only_places();
+    clean();
+    gog_view::gog_scenarios(fixtures);
     clean();
     t02_focus_and_nested_modal_restoration(fixtures, profile);
     clean();

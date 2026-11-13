@@ -17,8 +17,8 @@ if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_gog PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
-# GOG as a store (src/stores/gog*): the account and the library, each on its own worker, over the GOG session. Not
-# wired in yet.
+# GOG as a store (src/stores/gog*): the account and the library, each on its own worker, over the GOG session. The
+# apps make them with features.txt's gog-store line (src/homebrew/gog_wiring.*).
 add_library(playden_gog_store STATIC "${CMAKE_SOURCE_DIR}/src/stores/gog.cpp"
     "${CMAKE_SOURCE_DIR}/src/stores/gog_library.cpp")
 target_include_directories(playden_gog_store PUBLIC "${CMAKE_SOURCE_DIR}/src")

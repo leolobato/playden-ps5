@@ -432,6 +432,44 @@ void continue_playing_ends_in_more(const std::filesystem::path& fixtures)
           "a shelf of exactly 20 games has no More cell");
 }
 
+// The rail's "GOG" scope shows only once the library has a GOG game, after Imported (or Hidden without imported
+// games), and lists only the GOG games; the rail reaches it.
+void gog_scope_lists_gog_games(const std::filesystem::path& fixtures)
+{
+    State state = fixture_state(fixtures);
+    state.navigation.route = Route::Library;
+    auto scopes = library_rail_scopes(state);
+    check(std::find(scopes.begin(), scopes.end(), "gog") == scopes.end() && !has_gog_games(state),
+          "no GOG scope without GOG games");
+    Game gog;
+    gog.id = playden::GameId::Gog(1000000001);
+    gog.title = "Synthetic GOG game";
+    state.games.push_back(gog);
+    scopes = library_rail_scopes(state);
+    const auto hidden = std::find(scopes.begin(), scopes.end(), "hidden");
+    check(has_gog_games(state) && hidden != scopes.end() && hidden + 1 != scopes.end() && *(hidden + 1) == "gog",
+          "without imported games, GOG follows Hidden");
+    Game imported;
+    imported.id = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
+    imported.title = "Night Sky";
+    state.games.push_back(imported);
+    scopes = library_rail_scopes(state);
+    const auto local = std::find(scopes.begin(), scopes.end(), "imported");
+    check(local != scopes.end() && local + 1 != scopes.end() && *(local + 1) == "gog", "GOG follows Imported");
+    state.library.scope = "gog";
+    const auto games = filtered_games(state);
+    check(games.size() == 1 && games.front()->id == gog.id, "the GOG scope lists only GOG games");
+    state.library.scope = "imported";
+    check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == imported.id,
+          "the Imported scope doesn't list GOG games");
+    // The rail steps onto it like any other scope.
+    state.library.scope = "all";
+    state.navigation.library_rail_focused = false;
+    move_browser(state, -1, 0);
+    for (int step = 0; step < 10 && state.navigation.focus_key != "rail-gog"; ++step) move_browser(state, 0, 1);
+    check(state.navigation.library_rail_focused && state.navigation.focus_key == "rail-gog", "the rail reaches GOG");
+}
+
 int main(int argc, char** argv)
 {
     check(argc == 2, "fixture directory argument is required");
@@ -447,6 +485,7 @@ int main(int argc, char** argv)
     disconnected_installations_remain_installed(fixtures);
     recently_installed_follows_install_times(fixtures);
     imported_scope_lists_local_games(fixtures);
+    gog_scope_lists_gog_games(fixtures);
     imported_games_fill_home_signed_out();
     std::cout << "homebrew browse tests passed\n";
     return 0;

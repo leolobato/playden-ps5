@@ -6,6 +6,7 @@
 #include "homebrew/simulation.hpp"
 #include "homebrew/store_art.hpp"
 #include "homebrew/controller.hpp"
+#include "homebrew/gog_wiring.hpp"
 #include "runtime/private_directories.h"
 #include "steam/install_volumes.h"
 #include "installs/game_move.h"
@@ -1098,10 +1099,22 @@ int main() {
                 [](const std::string& line) { playden::app::AppendLogLine(log_root, "install.log", line); });
         });
         const auto auth_log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "auth.log", "sign-in " + line); };
+        // GOG, with the gog-store line (after the /data grant, as Steam's session): declared before the registry,
+        // which owns its account and library source. Off, nothing is made; a GOG session left from an earlier run
+        // still goes when "Stay signed in" is off.
+        playden::homebrew::GogWiringConfig gog_config;
+        gog_config.enabled = features.gog_store;
+        gog_config.stay_signed_in = stay_signed_in;
+        gog_config.user_root = user_root;
+        gog_config.ca_bundle = paths.trust_store;
+        gog_config.log_directory = log_root;
+        gog_config.library_storage = &library_storage;
+        const auto gog = playden::homebrew::MakeGogServices(std::move(gog_config));
         playden::stores::Registry stores;
         stores.Add(std::make_unique<playden::stores::SteamAccount>(auth, sessions, auth_log));
         stores.Add(std::make_unique<playden::stores::SteamLibrarySource>(library_service));
         stores.Add(std::make_unique<playden::stores::SteamDetailsSource>(app_details));
+        if (gog) gog->Register(stores, simulation);
         // Imported games: imports.json next to installs.json in the runtime state folder; their
         // folders in /data/playden-import and playden/import on each drive (a drive counts while mounted).
         playden::stores::local::LocalLibrarySource* local_library = nullptr;
@@ -1183,10 +1196,12 @@ int main() {
         web_config.files.import_recipe = [recipe_imports](const std::string& game, std::string file) {
             return recipe_imports->Import(game, std::move(file));
         };
+        if (gog) gog->ConfigureWeb(web_config);
         playden::web::Service web(std::move(web_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
         services.SetDownloadServers(&servers);
         services.SetFriends(friends.get());
+        if (gog) gog->Attach(services);
         if (!web_probe_on) services.SetWebAccess(&web);
         services.SetRecipeImports(recipe_imports);
         services.SetLocalLibrary(local_library);
@@ -1207,10 +1222,12 @@ int main() {
                 playden::steam::SetCmPersonaState(*steam_cm, invisible ? playden::steam::cm::kPersonaStateInvisible
                                                                        : playden::steam::cm::kPersonaStateOnline);
         });
-        services.SetStaySignedIn([&sessions](bool stay) {
+        // One setting for both stores.
+        services.SetStaySignedIn([&sessions, gog_services = gog.get()](bool stay) {
             const auto moved = sessions.SetPersist(stay);
             playden::app::AppendLogLine(log_root, "auth.log", std::string("stay signed in ") + (stay ? "on" : "off") +
                                                                   " moved=" + (moved.ok() ? "1" : "0"));
+            if (gog_services) gog_services->SetStaySignedIn(stay);
         });
 #endif
 #if PLAYDEN_UI_SIMULATION

@@ -307,6 +307,8 @@ Volume* find_volume(State& state, const std::string& id) {
 }
 
 std::string game_key(GameId id);
+// Settings › Stores › GOG's sheet: its actions for the account as it is now.
+std::vector<std::string> gog_account_actions(const Account& account);
 
 void clear_profile_customizations(State& state) { state.game_settings.clear(); }
 
@@ -810,7 +812,9 @@ std::string action_label(const std::string& key) {
         {"inject-logs-ready", "Inject ready logs"}, {"account-auth", "Authentication"},
         {"account-last-sync", "Last library sync"}, {"account-sync", "Sync now"},
         {"account-recover", "Reconnect account"}, {"account-switch", "Switch account…"},
-        {"account-reauth", "Sign in again"}, {"job-resume-all", "Resume all"}, {"job-clear-completed", "Clear completed"},
+        {"account-reauth", "Sign in again"}, {"gog-sign-in", "Sign in…"}, {"gog-refresh", "Refresh library"},
+        {"gog-signout-confirm", "Sign out…"}, {"gog-web-on", "Turn on web access"}, {"gog-stay", "Stay signed in"},
+        {"gog-back", "Back"}, {"gog-retry", "Try again"}, {"job-resume-all", "Resume all"}, {"job-clear-completed", "Clear completed"},
         {"prep-clear-completed", "Clear completed"}, {"prep-cancel-all", "Cancel all"}, {"prep-pause-all", "Pause all"}, {"prep-resume-all", "Resume all"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
         {"about-version", "Version"}, {"self-update-install", "Download and install"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
@@ -3852,12 +3856,36 @@ void Simulation::queue_service_action(ServiceAction action, Store store) {
     pending_service_actions_.push_back({action, store});
 }
 
-bool Simulation::beyond_steam() const {
+bool Simulation::other_account_signed_in() const {
     for (const auto& [store, account] : state_.accounts)
         if (store != Store::kSteam &&
             (account.authentication == AuthState::SignedIn || account.authentication == AuthState::Offline)) return true;
-    return std::any_of(state_.games.begin(), state_.games.end(),
-                       [](const Game& game) { return game.id.store != Store::kSteam; });
+    return false;
+}
+
+bool Simulation::beyond_steam() const {
+    return other_account_signed_in() || std::any_of(state_.games.begin(), state_.games.end(),
+                                                    [](const Game& game) { return game.id.store != Store::kSteam; });
+}
+
+void Simulation::resync_browse_focus() {
+    if (!state_.navigation.modals.empty() || state_.editor.active) return;
+    if (state_.navigation.route == Route::Library) {
+        reconcile_library_selection(state_);
+        return;
+    }
+    if (state_.navigation.route != Route::Home) return;
+    const auto projected = shelves(state_);
+    for (std::size_t index = 0; index < projected.size(); ++index) {
+        const auto& games = projected[index].game_ids;
+        const auto found = std::find(games.begin(), games.end(), state_.navigation.selected_game_id);
+        if (found == games.end()) continue;
+        state_.navigation.home_shelf = static_cast<int>(index);
+        state_.navigation.home_shelf_focus[projected[index].key] = static_cast<int>(found - games.begin());
+        state_.navigation.focus_key = game_key(state_.navigation.selected_game_id);
+        return;
+    }
+    state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
 }
 
 void Simulation::steam_restore_notice() {
@@ -3951,8 +3979,10 @@ void Simulation::clear_account_specific_state() {
 void Simulation::UpdateAccount(AccountUpdate update) {
     if (!live()) return;
     if (update.store != Store::kSteam) {
-        // Another store's account: its row changes, nothing else does (what its sign-out removes is its own rule).
+        // Another store's account: its row changes, and its own rules for sign-in and sign-out apply. Steam's account,
+        // games and sign-in form stay as they are.
         auto& account = state_.accounts[update.store];
+        const auto before = account.authentication;
         account.storage_full = update.authentication == AuthState::Failed && update.storage_full;
         account.authentication = update.authentication;
         account.id = std::move(update.id);
@@ -3960,9 +3990,70 @@ void Simulation::UpdateAccount(AccountUpdate update) {
         account.challenge_url = std::move(update.challenge_url);
         account.error = std::move(update.error);
         account.challenge_expiry = 0;
+        // An open account sheet offers what the account can do now.
+        for (auto& modal : state_.navigation.modals) {
+            if (modal.id != "gog-account" || update.store != Store::kGog) continue;
+            auto actions = gog_account_actions(account);
+            if (actions == modal.action_keys) continue;
+            modal.action_keys = std::move(actions);
+            modal.focused_action = 0;
+            modal.title = account.display_name.empty() ? "GOG" : account.display_name;
+            if (&modal == &state_.navigation.modals.back()) state_.navigation.focus_key = modal.action_keys.front();
+        }
+        if (update.authentication == AuthState::SignedOut && before == AuthState::SigningOut) {
+            // The player signed out: its saved library went with it. An expiry keeps everything.
+            account.last_sync = 0;
+            account.cache_available = false;
+            if (update.store == Store::kGog) forget_gog_games();
+        }
+        if (update.authentication == AuthState::SignedIn || update.authentication == AuthState::Offline) {
+            if (update.store == Store::kGog) {
+                // The sign-in dialog has done its job: it closes without ending the sign-in.
+                const auto dialog = std::find_if(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                                                 [](const ModalEntry& modal) { return modal.id == "gog-sign-in"; });
+                if (dialog != state_.navigation.modals.end()) {
+                    const auto opener = dialog->opener_focus_key;
+                    state_.navigation.modals.erase(dialog, state_.navigation.modals.end());
+                    state_.navigation.focus_key = state_.navigation.modals.empty() ? opener
+                        : state_.navigation.modals.back().action_keys[static_cast<std::size_t>(state_.navigation.modals.back().focused_action)];
+                }
+                gog_sign_in_open_ = false;
+                if (update.authentication == AuthState::SignedIn && update.from_sign_in)
+                    push_notice({"gog-sign-in", "Signed in to GOG as " + account.display_name, "", false, kLiveNoticeSeconds, false,
+                                 "Your GOG games are in the Library."});
+            }
+            const auto route = state_.navigation.route;
+            if (route == Route::Startup || route == Route::SignIn) {
+                // A Steam sign-in waiting on its screen ends: its next code would bring the screen back.
+                if (route == Route::SignIn && state_.account().authentication == AuthState::Waiting) {
+                    if (live()) queue_service_action(ServiceAction::CancelQr);
+                    clear_sign_in_secrets();
+                    if (pending_credentials_) steam::ZeroizeSecret(pending_credentials_->password);
+                    pending_credentials_.reset();
+                    if (pending_guard_code_) steam::ZeroizeSecret(*pending_guard_code_);
+                    pending_guard_code_.reset();
+                    cancelled_challenge_generation_ = challenge_generation_;
+                    state_.account().authentication = AuthState::Cancelled;
+                }
+                restore_failed_sign_in_ = false;
+                const bool steam = state_.account().authentication == AuthState::SignedIn ||
+                                   state_.account().authentication == AuthState::Offline;
+                if (update.from_sign_in && !steam) {
+                    // Signed in from Startup without Steam: the new games are what the player came for.
+                    state_.navigation.route = Route::Library;
+                    state_.navigation.library_rail_focused = false;
+                    reconcile_library_selection(state_);
+                } else {
+                    state_.navigation.route = Route::Home;
+                    state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
+                }
+            }
+        }
         rebuild_view();
         return;
     }
+    const auto steam_before = state_.account().authentication;
+    const auto route_before = state_.navigation.route;
     if (update.clear_library) clear_account_specific_state();
     // The saved sign-in is retried every few seconds; a repeat of the same failure leaves the
     // screen, its focus and any open list alone.
@@ -4036,7 +4127,13 @@ void Simulation::UpdateAccount(AccountUpdate update) {
         if (state_.navigation.route == Route::Startup || state_.navigation.route == Route::SignIn) state_.navigation.route = Route::Home;
         state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
     } else if (update.authentication == AuthState::SignedOut || update.authentication == AuthState::Cancelled) {
-        leave_steam_sign_in();
+        // With another store to play, a Steam restore's answer or a canceled sign-in leaves the player where they are;
+        // signing out of Steam, or a game's page whose game may have gone, still returns to Home.
+        const auto route = state_.navigation.route;
+        const bool game_page = route == Route::Details || route == Route::Session || route == Route::SaveDetails;
+        if (!beyond_steam() || route == Route::Startup || route == Route::SignIn || game_page ||
+            steam_before == AuthState::SigningOut)
+            leave_steam_sign_in();
     } else if (update.authentication == AuthState::Restoring) {
         // Another store's games stay on screen while Steam restores; with none, Startup waits for it.
         if (!beyond_steam() || state_.navigation.route == Route::Startup || state_.navigation.route == Route::SignIn) {
@@ -4044,6 +4141,8 @@ void Simulation::UpdateAccount(AccountUpdate update) {
             state_.navigation.focus_key = "startup-loading";
         }
     }
+    // Steam's games left a Home or Library the player stays on: the cursor stays on the game it was on.
+    if (update.clear_library && state_.navigation.route == route_before) resync_browse_focus();
     if (!repeat) restore_failed_sign_in_ = update.authentication == AuthState::Failed && update.restoring &&
                                            state_.navigation.route == Route::SignIn;
     // Steam's saved sign-in failed while another store's games are on screen: a notification says why;
@@ -4611,7 +4710,10 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
     if (update.source == Store::kSteam) state_.library_offline = update.stale;
     auto& account = state_.account(update.source);
     account.cache_available = update.cache_available;
-    account.error = std::move(update.error);
+    // Another store's expired sign-in keeps its message while its saved library loads, shows or turns out missing:
+    // signing in again is what the player has to do.
+    if (update.source == Store::kSteam || account.authentication != AuthState::Expired)
+        account.error = std::move(update.error);
     if (update.retrieved_at) account.last_sync = *update.retrieved_at;
     // Launches that stopped before this store's library arrived are told now, by name. A library that
     // could not load still tells them, without the name.
@@ -5992,6 +6094,59 @@ bool Simulation::scenario(const std::string& name) {
                 break;
             }
         }
+    } else if (name == "gog-signed-out" || name == "gog-sign-in" || name == "gog-library") {
+        // GOG (gog-store): Startup offering its sign-in, the sign-in dialog with its QR code, or both stores signed in
+        // with the GOG scope in the Library.
+        gog_store_enabled_ = true;
+        state_.navigation.modals.clear();
+        gog_sign_in_open_ = false;
+        auto& gog = state_.account(Store::kGog);
+        gog = {};
+        std::erase_if(state_.games, [](const Game& game) { return game.id.store == Store::kGog; });
+        if (name == "gog-library") {
+            state_.account().authentication = AuthState::SignedIn;
+            gog.authentication = AuthState::SignedIn;
+            gog.id = "00000000000000ab";
+            gog.display_name = "Synthetic GOG player";
+            gog.last_sync = state_.clock_ticks;
+            // Made-up GOG games wearing fixture art.
+            const std::vector<std::pair<std::uint64_t, const char*>> titles = {
+                {1000000001, "Starlit Harbor"}, {1000000002, "Copper Valley"}, {1000000003, "Northbound"},
+                {1000000004, "Paper Lanterns"}};
+            std::vector<Game> added;
+            for (std::size_t index = 0; index < titles.size(); ++index) {
+                Game game;
+                game.id = GameId::Gog(titles[index].first);
+                game.title = titles[index].second;
+                game.source = "GOG";
+                game.description = "A synthetic GOG game for the fixture.";
+                if (index + 2 < state_.games.size()) {
+                    const auto& art = state_.games[index + 2];
+                    game.cover_key = art.cover_key;
+                    game.hero_key = art.hero_key;
+                    game.logo_key = art.logo_key;
+                }
+                game.install_bytes = 600'000'000ull * (index + 1);
+                added.push_back(std::move(game));
+            }
+            for (auto& game : added) state_.games.push_back(std::move(game));
+            state_.library.scope = "gog";
+            state_.navigation.route = Route::Library;
+            state_.navigation.library_rail_focused = false;
+            reconcile_library_selection(state_);
+        } else {
+            state_.account().authentication = AuthState::SignedOut;
+            state_.account().id.clear();
+            state_.account().display_name.clear();
+            state_.account().cache_available = false;
+            state_.navigation.route = Route::Startup;
+            state_.navigation.focus_key = "startup-gog";
+            if (name == "gog-sign-in") {
+                state_.web_access = true;
+                rebuild_view();
+                open_gog_sign_in();
+            }
+        }
     } else if (name == "first-run" || name == "signed-out") {
         state_.account().authentication = AuthState::SignedOut;
         state_.account().id.clear();
@@ -6834,6 +6989,14 @@ std::vector<const Game*> Simulation::visible_games() const {
 }
 
 void Simulation::rebuild_view() {
+    if (!rebuilding_overlay_) {
+        // GOG's sign-in dialog shows what web access and the account say now; one that left the screen some other way
+        // (a sign-in that cleared every dialog) ends its sign-in as Back does.
+        if (std::any_of(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                        [](const ModalEntry& modal) { return modal.id == "gog-sign-in"; }))
+            refresh_gog_sign_in();
+        else end_gog_sign_in();
+    }
     // The Library left for another tab: the order "More" showed ends with that visit.
     if (state_.navigation.route != Route::Library && state_.navigation.route != Route::Details)
         state_.library.view_sort.clear();
@@ -6896,6 +7059,7 @@ void Simulation::rebuild_view() {
     } else if (!state_.navigation.modals.empty()) {
         const auto& modal = state_.navigation.modals.back();
         view_.title = modal.title;
+        if (modal.id == "gog-account") view_.subtitle = gog_row_subtitle();
         if (modal.id == "logs") {
             view_.subtitle = state_.log_context;
             if (state_.log_state == LogState::Loading) row("logs-loading", RowKind::Status, "Loading fixture logs…", "").enabled = false;
@@ -7211,6 +7375,14 @@ void Simulation::rebuild_view() {
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
+            if (action_key == "gog-stay") {
+                // The one "Stay signed in" for both stores: its words name neither.
+                item.kind = RowKind::Toggle;
+                item.selected = state_.stay_signed_in;
+                item.subtitle = "Keep your sign-ins on this PS5.";
+            } else if (action_key == "gog-signout-confirm") {
+                item.dangerous = true;
+            }
             if (modal.id == "join-lobby") {
                 if (action_key == "join-start") item.title = "Start game and join";
                 if (action_key == "join-use-online") {
@@ -8587,6 +8759,7 @@ void Simulation::rebuild_view() {
             view_.legends = {"Cross Select", feedback_ && (feedback_->from_failure || feedback_->step != "ask") ? "Circle Back" : "Circle Not now"};
         else if (modal.id == "share-as") view_.legends = {"Cross Choose", "Circle Close"};
         else if (modal.id == "import-storage") view_.legends = {"Cross Import here", "Circle Back"};
+        else if (modal.id == "gog-sign-in") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
         else if (!modal.setting_id.empty()) view_.legends = {"Cross Select", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
     } else if (state_.navigation.route == Route::Startup && state_.root_access_missing) {
@@ -8600,7 +8773,9 @@ void Simulation::rebuild_view() {
     } else if (state_.navigation.route == Route::Startup) {
         view_.title = "Welcome to Playden";
         view_.subtitle = live() ? "Connect a store or import games to fill your library." : "Browse the local UI fixture or connect a simulated Steam account.";
-        if (state_.startup_loading || state_.account().authentication == AuthState::Restoring) {
+        // With GOG, its saved sign-in restores before Startup offers to sign in.
+        if (state_.startup_loading || state_.account().authentication == AuthState::Restoring ||
+            (gog_store_enabled_ && state_.account(Store::kGog).authentication == AuthState::Restoring)) {
             row("startup-loading", RowKind::Status, live() ? "Restoring your accounts…" : "Loading saved fixture state…", "").enabled = false;
             if (!live()) row("startup-advance", RowKind::Action, "Advance fixture clock", "advance-clock");
         }
@@ -8609,6 +8784,7 @@ void Simulation::rebuild_view() {
             row("startup-continue", RowKind::Action, "Continue without saving", "continue-without-saving");
         } else {
             row("startup-connect", RowKind::Action, "Connect Steam", "connect");
+            if (gog_store_enabled_) row("startup-gog", RowKind::Action, "Sign in to GOG", "gog-sign-in");
             // Games from a drive or the drop folder need no store account.
             row("startup-import", RowKind::Action, "Import games", "import-manage");
             row("startup-skip", RowKind::Action, "Skip for now", "skip");
@@ -8701,7 +8877,8 @@ void Simulation::rebuild_view() {
         // Signed out with only other stores' games (imported ones) listed, Steam is still offered, and
         // Home is about those games rather than the account.
         const bool connect = state_.account().authentication != AuthState::SignedIn && !steam_shown;
-        if (connect && !view_.rows.empty() && state_.account().authentication != AuthState::Offline) view_.subtitle = "Your library";
+        if (connect && (!view_.rows.empty() || other_account_signed_in()) && state_.account().authentication != AuthState::Offline)
+            view_.subtitle = "Your library";
         if (view_.rows.empty()) {
             row("home-library", RowKind::Action, "Open Library", "library");
             row("home-import", RowKind::Action, "Import games", "import-manage");
@@ -8755,6 +8932,9 @@ void Simulation::rebuild_view() {
             if (!state_.library.query.empty()) row("clear-search", RowKind::Action, "Clear search", "clear-search");
             else if (!state_.library.filters.empty()) row("library-empty", RowKind::Action, "Reset filters", "filters-reset");
             else if (!state_.games.empty() && state_.library.scope != "all") row("library-empty", RowKind::Action, "Show all games", "library-show-all");
+            // Another store just signed in and its games are on the way: nothing to press yet.
+            else if (state_.library_loading && other_account_signed_in())
+                row("library-loading", RowKind::Status, "Loading your games…", "").enabled = false;
             else row("library-empty", RowKind::Action, "Connect a store", "connect");
         }
         // The footer shows five legends; with a search applied, Circle clears it in place of Square Favorite.
@@ -8815,10 +8995,14 @@ void Simulation::rebuild_view() {
             note.enabled = false;
         };
         if (!live()) {
+            const bool installs = installed || !game || StoreInstalls(game->id.store);
             auto& primary = row(installed ? "details-play" : "details-install", RowKind::Action,
                                 installed ? (installation->runtime_ready ? "Play" : "Open Settings") : "Install",
-                                installed ? (installation->runtime_ready ? "launch" : "details-kit-settings") : "install");
-            primary.enabled = true;
+                                installed ? (installation->runtime_ready ? "launch" : "details-kit-settings") : installs ? "install" : "");
+            primary.enabled = installs;
+            if (!installs)
+                row("details-unavailable", RowKind::Status,
+                    "Installing " + std::string(Traits(game->id.store).name) + " games comes in a later build of Playden.", "").enabled = false;
             if (installed && game && update_locked(game->id)) {
                 primary.enabled = false;
                 primary.action.clear();
@@ -8955,6 +9139,13 @@ void Simulation::rebuild_view() {
                 auto& status = row("details-download", RowKind::Action, "Download", "open-downloads");
                 status.value = job_state_value(*job);
                 status.progress = job->total_bytes == 0 ? 0.0F : static_cast<float>(job->completed_bytes) / static_cast<float>(job->total_bytes);
+            } else if (!StoreInstalls(game->id.store)) {
+                // This build can't install the store's games yet: nothing to ask the store.
+                auto& install = row("details-install", RowKind::Action, "Install", "");
+                install.enabled = false;
+                auto& reason = row("details-unavailable", RowKind::Status,
+                                   "Installing " + std::string(Traits(game->id.store).name) + " games comes in a later build of Playden.", "");
+                reason.enabled = false;
             } else if (game->windows_installable.value_or(false)) {
                 auto& install = row("details-install", RowKind::Action, "Install…", "live-install");
                 // What Install will say: its choices while the install sheet is open, else the ones it opens with, checked
@@ -9434,13 +9625,14 @@ void Simulation::rebuild_view() {
         view_.title = "Settings";
         if (live()) view_.subtitle = state_.account().error;
         // Rows come grouped by the macOS sections; the rail shows the focused row's section.
-        std::string section = "Account";
+        // With GOG (gog-store), the section lists each store's account.
+        std::string section = gog_store_enabled_ ? "Stores" : "Account";
         const auto add = [&](std::string key, RowKind kind, std::string title, std::string action) -> ViewRow& {
             auto& added = row(std::move(key), kind, std::move(title), std::move(action));
             added.section = section;
             return added;
         };
-        auto& account = add("settings-account", RowKind::Action, "Account", "account");
+        auto& account = add("settings-account", RowKind::Action, gog_store_enabled_ ? "Steam" : "Account", "account");
         account.value = state_.account().display_name;
         account.subtitle = state_.account().authentication == AuthState::Offline ? "Cached library · Offline"
             : state_.account().authentication == AuthState::SignedIn
@@ -9448,6 +9640,11 @@ void Simulation::rebuild_view() {
                 : "Connect Steam";
         if (state_.account().authentication != AuthState::SignedOut)
             add("settings-signout", RowKind::Action, "Sign out…", "signout-confirm").dangerous = true;
+        if (gog_store_enabled_) {
+            auto& gog = add("settings-store-gog", RowKind::Action, "GOG", "gog-account");
+            gog.value = state_.account(Store::kGog).display_name;
+            gog.subtitle = gog_row_subtitle();
+        }
         // Online play (online-steam): a notification as an Online game starts, naming the Steam account it signed in as.
         if (live() && rt::OnlineSteamEnabled()) {
             section = "Online play";
@@ -9958,8 +10155,11 @@ void Simulation::close_modal() {
         pending_share_as_.reset();
         if (state_.account_link.state == "linking") state_.account_link.state.clear();
     }
+    // Back from GOG's sign-in dialog ends its sign-in.
+    const bool gog_sign_in = state_.navigation.modals.back().id == "gog-sign-in";
     state_.navigation.modals.pop_back();
     state_.navigation.focus_key = opener;
+    if (gog_sign_in) end_gog_sign_in();
 }
 
 // A game's page from a Queue row (after its dialog closed): it starts on its first action, as from the
@@ -10558,7 +10758,8 @@ void Simulation::move(int delta_x, int delta_y, bool repeat) {
         // Up from a side menu's top row goes round to its last row, and Down from its last row to its top row. A held
         // direction stops at the end first, and a new press goes round; a jump stops at the end. A dialog's buttons
         // stay where they are.
-        if ((delta_y == -1 || delta_y == 1) && !modal.destructive && modal.id != "confirmation" && !modal.action_keys.empty()) {
+        if ((delta_y == -1 || delta_y == 1) && !modal.destructive && modal.id != "confirmation" && modal.id != "gog-sign-in" &&
+            !modal.action_keys.empty()) {
             const auto passed_over = [&modal](int index) {
                 const auto& key = modal.action_keys[static_cast<std::size_t>(index)];
                 return SheetDecoration(key) || (modal.id == "import-games" && key.rfind("import-group-", 0) == 0);
@@ -11338,7 +11539,7 @@ void Simulation::activate() {
             if (live_install_allowed(assessment.readiness, free_space_supported_)) {
                 save_install_choice();
                 set_new_install_defaults(id);
-                if (id.valid())
+                if (id.valid() && StoreInstalls(id.store))
                     pending_install_requests_.push_back({InstallRequestKind::Install, id, install_volume_id_, false, install_language_,
                                                          install_version(id) ? install_version_ : std::string(),
                                                          assessment.installed_bytes,
@@ -12337,6 +12538,15 @@ void Simulation::activate() {
             if (live()) { queue_service_action(ServiceAction::SignOut); state_.account().authentication = AuthState::SigningOut; }
             else { state_.account().authentication = AuthState::SignedOut; state_.account().id.clear(); state_.account().display_name.clear(); state_.account().cache_available = false; state_.library = {}; clear_profile_customizations(state_); state_.navigation.route = Route::Startup; }
         }
+        else if (pending_destructive_action_ == "gog-signout") {
+            if (live()) {
+                queue_service_action(ServiceAction::SignOut, Store::kGog);
+                state_.account(Store::kGog).authentication = AuthState::SigningOut;
+            } else {
+                state_.account(Store::kGog) = {};
+                forget_gog_games();
+            }
+        }
         else if (pending_destructive_action_ == "account-switch") {
             if (live()) { queue_service_action(ServiceAction::SwitchAccount); state_.account().authentication = AuthState::SigningOut; }
             else {
@@ -13160,7 +13370,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});
@@ -13187,6 +13397,40 @@ void Simulation::activate() {
     else if (action_name == "retry-save") {
         if (live()) persistence_retry_requested_ = true;
         else { state_.persistence_available = true; save_profile(); }
+    }
+    else if (action_name == "gog-sign-in") open_gog_sign_in();
+    else if (action_name == "gog-account") open_gog_account();
+    else if (action_name == "gog-refresh") {
+        close_modal();
+        if (live()) queue_service_action(ServiceAction::RefreshLibrary, Store::kGog);
+        else state_.account(Store::kGog).last_sync = state_.clock_ticks;
+    }
+    else if (action_name == "gog-signout-confirm") {
+        pending_destructive_action_ = "gog-signout";
+        ModalEntry confirmation{"confirmation", "Sign out of GOG?", state_.navigation.focus_key, {"cancel", "confirm-destructive"}, 0, true};
+        confirmation.body = "GOG games you haven't installed leave the Library. Installed GOG games stay and still play, "
+                            "and favorites and collections are kept.";
+        open_modal(std::move(confirmation));
+    }
+    else if (action_name == "gog-web-on") {
+        // As Settings › Web access turns it on.
+        if (!state_.web_access) { state_.web_access = true; save_profile(); }
+    }
+    else if (action_name == "gog-stay") {
+        // One "Stay signed in" for every store: Steam's sign-in screen shows the same setting.
+        state_.stay_signed_in = !state_.stay_signed_in;
+        save_profile();
+        if (live()) queue_service_action(ServiceAction::StaySignedIn);
+    }
+    else if (action_name == "gog-back") close_modal();
+    else if (action_name == "gog-retry") {
+        auto& account = state_.account(Store::kGog);
+        account.authentication = AuthState::Waiting;
+        account.error.clear();
+        account.challenge_url.clear();
+        gog_sign_in_open_ = true;
+        if (live()) queue_service_action(ServiceAction::BeginQr, Store::kGog);
+        else if (state_.web_access) account.challenge_url = "http://192.168.0.2:7031/gog#00000000000000000000000000000000";
     }
     else if (action_name == "account") {
         std::vector<std::string> actions = {"account-auth", "account-last-sync"};
@@ -14932,6 +15176,8 @@ std::vector<std::string> Simulation::install_sheet_actions(GameId id) const {
 }
 
 void Simulation::open_install_sheet(GameId id, std::vector<std::string> actions) {
+    // A store this build can't install from has no Install sheet (its page says so).
+    if (!StoreInstalls(id.store)) return;
     // Each opening starts from Playden's choice, or from the settings the game kept (uninstalling keeps them), which the
     // install uses.
     install_choice_.reset();
@@ -15205,6 +15451,154 @@ void Simulation::build_recipe_comparison(GameId id, const CommunityRecipeOffer& 
                     : changes == 0 ? std::string("Nothing changes.")
                     : std::to_string(changes) + (changes == 1 ? " setting changes" : " settings change") + ".";
     view_.comparison = std::move(comparison);
+}
+
+void Simulation::SetGogStoreEnabled(bool enabled) {
+    if (gog_store_enabled_ == enabled) return;
+    gog_store_enabled_ = enabled;
+    rebuild_view();
+}
+
+void Simulation::SetStoreInstalls(Store store, bool enabled) {
+    store_installs_[store] = enabled;
+    rebuild_view();
+}
+
+bool Simulation::StoreInstalls(Store store) const {
+    if (const auto found = store_installs_.find(store); found != store_installs_.end()) return found->second;
+    // GOG's installs come in a later build.
+    return store != Store::kGog;
+}
+
+std::string Simulation::gog_row_subtitle() const {
+    const auto& account = state_.account(Store::kGog);
+    switch (account.authentication) {
+        case AuthState::SignedIn: return !live() || account.last_sync > 0 ? "Signed in · Synced" : "Signed in";
+        case AuthState::Offline: return "Offline · Cached library";
+        case AuthState::Restoring: return "Restoring your sign-in…";
+        case AuthState::SigningOut: return "Signing out…";
+        case AuthState::Expired:
+        case AuthState::Failed: return account.error.empty() ? std::string("Sign in") : account.error;
+        default: return "Sign in";
+    }
+}
+
+namespace {
+// Settings › Stores › GOG: what the account can do now.
+std::vector<std::string> gog_account_actions(const Account& account) {
+    std::vector<std::string> actions;
+    if (account.authentication == AuthState::SignedIn || account.authentication == AuthState::Offline)
+        actions = {"gog-refresh", "gog-signout-confirm"};
+    else if (account.authentication != AuthState::SigningOut && account.authentication != AuthState::Restoring)
+        actions = {"gog-sign-in"};
+    actions.push_back("cancel");
+    return actions;
+}
+}  // namespace
+
+void Simulation::open_gog_account() {
+    const auto& account = state_.account(Store::kGog);
+    ModalEntry sheet{"gog-account", account.display_name.empty() ? "GOG" : account.display_name, state_.navigation.focus_key,
+                     gog_account_actions(account), 0, false};
+    open_modal(std::move(sheet));
+}
+
+// The GOG sign-in dialog: a QR code for the phone page web access serves. Opening it starts a sign-in; it replaces the
+// account sheet it was opened from, so that sheet doesn't come back after the sign-in.
+void Simulation::open_gog_sign_in() {
+    std::string opener = state_.navigation.focus_key;
+    if (!state_.navigation.modals.empty() && state_.navigation.modals.back().id == "gog-account") {
+        opener = state_.navigation.modals.back().opener_focus_key;
+        state_.navigation.modals.pop_back();
+    }
+    auto& account = state_.account(Store::kGog);
+    account.authentication = AuthState::Waiting;
+    account.error.clear();
+    account.challenge_url.clear();
+    if (live()) queue_service_action(ServiceAction::BeginQr, Store::kGog);
+    // The fixture's address, as the controller would build it (the token here is all zeros).
+    else if (state_.web_access) account.challenge_url = "http://192.168.0.2:7031/gog#00000000000000000000000000000000";
+    gog_sign_in_open_ = true;
+    open_modal({"gog-sign-in", "Sign in to GOG", std::move(opener), {"gog-back"}, 0, false});
+    refresh_gog_sign_in();
+}
+
+// The sign-in dialog follows web access and the GOG account: off, no address yet, or the QR code. The token is only in
+// the code: the text on screen, which others in the room can read, is the address without it.
+void Simulation::refresh_gog_sign_in() {
+    const auto dialog = std::find_if(state_.navigation.modals.begin(), state_.navigation.modals.end(),
+                                     [](const ModalEntry& modal) { return modal.id == "gog-sign-in"; });
+    if (dialog == state_.navigation.modals.end()) return;
+    const auto& account = state_.account(Store::kGog);
+    LiveWebAccess shown = web_access_;
+    if (!live()) shown = state_.web_access ? LiveWebAccess{"on", "http://192.168.1.50:7031/", 7031, {}} : LiveWebAccess{};
+    std::vector<std::string> actions;
+    dialog->link.clear();
+    dialog->link_caption.clear();
+    if (!state_.web_access) {
+        dialog->body = "GOG sign-in uses your phone through web access, which is off.";
+        actions = {"gog-web-on", "gog-stay", "gog-back"};
+    } else if (account.authentication == AuthState::Failed || account.authentication == AuthState::Expired) {
+        dialog->body = account.error.empty() ? std::string("GOG sign-in didn't work.") : account.error;
+        actions = {"gog-retry", "gog-stay", "gog-back"};
+    } else if (account.authentication == AuthState::Waiting && !account.challenge_url.empty()) {
+        dialog->body = "1. Scan with your phone\n2. Sign in to GOG\n3. Paste the address you land on";
+        dialog->link = account.challenge_url;
+        dialog->link_caption = account.challenge_url.substr(0, account.challenge_url.find('#'));
+        actions = {"gog-stay", "gog-back"};
+    } else if (shown.state == "failed") {
+        dialog->body = "Web access could not start: " + shown.error + ". Turn it off and on in Settings to try again.";
+        actions = {"gog-stay", "gog-back"};
+    } else {
+        dialog->body = "Playden can't find its network address. Trying again…";
+        actions = {"gog-stay", "gog-back"};
+    }
+    // The buttons can't say what Stay signed in does: the text does.
+    dialog->body += "\n\nStay signed in keeps your sign-ins on this PS5.";
+    if (actions != dialog->action_keys) {
+        // Another step: the focus goes to what it asks for (turn web access on, try again), else to Back, never to
+        // Stay signed in, which Cross would flip.
+        const bool on_top = &*dialog == &state_.navigation.modals.back();
+        const auto preferred = actions.front() == "gog-stay" ? std::find(actions.begin(), actions.end(), "gog-back") : actions.begin();
+        dialog->focused_action = static_cast<int>(preferred - actions.begin());
+        dialog->action_keys = std::move(actions);
+        if (on_top) state_.navigation.focus_key = dialog->action_keys[static_cast<std::size_t>(dialog->focused_action)];
+    }
+}
+
+void Simulation::end_gog_sign_in() {
+    if (!gog_sign_in_open_) return;
+    gog_sign_in_open_ = false;
+    auto& account = state_.account(Store::kGog);
+    if (live()) queue_service_action(ServiceAction::CancelQr, Store::kGog);
+    else if (account.authentication == AuthState::Waiting || account.authentication == AuthState::Failed) account = {};
+    if (live() && account.authentication == AuthState::Waiting) account.challenge_url.clear();
+}
+
+void Simulation::forget_gog_games() {
+    const auto kept = [this](GameId id) {
+        return std::any_of(state_.installations.begin(), state_.installations.end(),
+                           [id](const Installation& item) { return item.game_id == id; }) ||
+               std::any_of(state_.jobs.begin(), state_.jobs.end(), [id](const Job& job) { return job.game_id == id; });
+    };
+    const auto before = state_.games.size();
+    std::erase_if(state_.games, [&](const Game& game) { return game.id.store == Store::kGog && !kept(game.id); });
+    if (state_.games.size() == before) return;
+    // As a Steam sign-out does: a game that left is no longer selected, and its page closes.
+    if (std::none_of(state_.games.begin(), state_.games.end(),
+                     [this](const Game& game) { return game.id == state_.navigation.selected_game_id; }))
+        state_.navigation.selected_game_id = {};
+    state_.navigation.selected_index = 0;
+    state_.navigation.home_shelf = 0;
+    state_.navigation.home_shelf_focus.clear();
+    if (state_.navigation.detail_id && !find_game(state_, *state_.navigation.detail_id)) {
+        state_.navigation.detail_id.reset();
+        if (state_.navigation.route == Route::Details || state_.navigation.route == Route::Session) state_.navigation.route = Route::Home;
+        close_game_modals();
+    }
+    if (state_.navigation.route == Route::Home && state_.navigation.modals.empty())
+        state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
+    else if (state_.navigation.route == Route::Library && state_.navigation.modals.empty()) reconcile_library_selection(state_);
 }
 
 void Simulation::UpdateCommunityCatalog(CommunityCatalog catalog) {

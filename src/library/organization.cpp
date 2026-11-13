@@ -103,8 +103,8 @@ bool BuiltInScope(const std::string& value) {
   return value == "all" || value == "favorites" || value == "hidden";
 }
 
-// The Library rails of installed and imported games: scopes, never collection IDs.
-bool RailScope(const std::string& value) { return value == "installed" || value == "imported"; }
+// The Library rails of installed, imported and GOG games: scopes, never collection IDs.
+bool RailScope(const std::string& value) { return value == "installed" || value == "imported" || value == "gog"; }
 
 bool ReservedCollectionId(const std::string& value) {
   return BuiltInScope(value) || RailScope(value) || value == "new-collection";
@@ -534,7 +534,7 @@ Loaded DecodeV2(const Bytes& bytes) {
     if (!reader.String(filter, kMaximumFilterBytes) || !snapshot.filters.insert(std::move(filter)).second)
       return InvalidLoad("filter");
   }
-  // A scope this build doesn't know (a newer rail such as "gog", or a removed collection) reads as "all". Only the
+  // A scope this build doesn't know (a newer rail, or a removed collection) reads as "all". Only the
   // reader is lenient: Validate, and so the writer, still refuse it. An empty or invalid scope stays damage.
   if (ValidText(snapshot.scope, kMaximumScopeBytes, false) && !BuiltInScope(snapshot.scope) &&
       !RailScope(snapshot.scope) &&

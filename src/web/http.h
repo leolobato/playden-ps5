@@ -28,6 +28,8 @@ struct Request {
   // Reads up to size body bytes: the count, 0 at the end of the declared length, -1 when the client went away or
   // went quiet. Empty when there is no connection (tests that route a request directly).
   std::function<std::ptrdiff_t(char* data, std::size_t size)> read_body;
+  // The sender's numeric address, as web.log shows it; empty when there is no connection (tests set it).
+  std::string client;
 };
 
 // A header's value (names are lower-case), or nothing.

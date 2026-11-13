@@ -94,6 +94,9 @@ class Controller {
   // Settings › Web access turns it on and off (once the saved preferences are read); the signed-in account's
   // name and SteamID go to it for redaction. Shutdown stops it.
   void SetWebAccess(web::Service* web) { web_ = web; }
+  // GOG's phone sign-in (web access serves its page): a sign-in from the TV opens it with a one-time token, and the
+  // QR code the model shows is web access's address with that token after "gog#".
+  void SetGogRelay(std::shared_ptr<web::GogRelay> relay) { gog_relay_ = std::move(relay); }
   // Recipe files a paired browser sends: each tick the controller makes their games use them and answers the page.
   // Shutdown closes it, so no server worker waits on a controller that is gone.
   void SetRecipeImports(std::shared_ptr<WebRecipeImports> imports) { recipe_imports_ = std::move(imports); }
@@ -178,12 +181,20 @@ class Controller {
     AuthState state = AuthState::SignedOut;        // as the model last got it
     AuthState established = AuthState::SignedOut;  // SignedIn or Offline while an account is signed in
     bool signing_out = false;      // SignOut asked: only its answer (or a failure) counts until it comes
+    bool signing_in = false;       // request is a sign-in the player started (BeginSignIn), not a restore
   };
   std::vector<OtherAccount> other_accounts_;
   OtherAccount* FindOtherAccount(Store store);
   void OtherAccountAction(OtherAccount& other, ServiceAction action);
   void Apply(OtherAccount& other, stores::AccountEvent& event);
   void UpdateOther(OtherAccount& other, AccountUpdate update);
+  // GOG's sign-in from the TV: the relay's QR address follows its token and web access's address.
+  std::shared_ptr<web::GogRelay> gog_relay_;
+  void BeginGogSignIn(OtherAccount& other);
+  void CancelGogSignIn(OtherAccount& other);
+  void TickGogRelay();
+  // web access's page address + "gog#" + token; empty while web access is off or has no address.
+  std::string GogChallengeUrl(const std::string& token) const;
   void Update(AuthState state, const std::string& error = {}, bool clear = false,
               const std::string& challenge = {}, SignInStep step = SignInStep::Qr,
               const steam::SteamEvent* prompt = nullptr, bool storage_full = false, bool restoring = false);

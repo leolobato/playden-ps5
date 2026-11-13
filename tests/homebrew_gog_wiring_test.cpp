@@ -1,0 +1,517 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// GOG in the apps (homebrew/gog_wiring), as host.cpp and ps5.cpp make it: with the gog-store line, the account and
+// the library join the registry, the relay reaches web access and the controller, a phone post signs in, and "Stay
+// signed in" moves the session file; without it nothing is made and no route exists. "Stay signed in" off deletes a
+// GOG session left from an earlier run either way. Shutdown answers a phone post still waiting before web access's
+// workers are joined, and keeps a sign-out asked for in the last frame. A sign-in the relay ends leaves the QR code; a
+// restart whose saved session expired shows the saved GOG library; Refresh library signs an offline session in once
+// GOG answers. Synthetic tokens and accounts only.
+#include "gog/account_key.h"
+#include "gog/auth.h"
+#include "gog/session_store.h"
+#include "gog_stub_transport.h"
+#include "homebrew/controller.hpp"
+#include "homebrew/gog_wiring.hpp"
+#include "library/cache.h"
+#include "stores/gog.h"
+#include "stores/gog_library.h"
+#include "stores/registry.h"
+#include "stores/steam.h"
+#include "web/gog_relay.h"
+#include "web/service.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+using namespace playden;
+using namespace playden::homebrew;
+using namespace gog_test;
+namespace fs = std::filesystem;
+
+namespace {
+
+std::string g_fixtures;
+fs::path g_base;
+int g_roots = 0;
+
+constexpr const char* kHost = "192.168.1.20:7031";
+const std::string kToken = "0123456789abcdef0123456789abcdef";
+const std::string kPaste = "https://embed.gog.com/on_login_success?origin=client&code=SyntheticCode-wiring-0123456789";
+
+fs::path FreshRoot() {
+  const fs::path root = g_base / ("root-" + std::to_string(++g_roots));
+  fs::create_directories(root / "logs");
+  CHECK(::chmod(root.c_str(), 0755) == 0);
+  return root;
+}
+
+bool Exists(const fs::path& path) {
+  struct stat info{};
+  return ::lstat(path.c_str(), &info) == 0;
+}
+
+fs::path SessionFile(const fs::path& root) { return root / "gog" / "session"; }
+
+std::string ReadText(const fs::path& path) {
+  if (!Exists(path)) return {};
+  return ReadFile(path.string());
+}
+
+std::size_t LogFiles(const fs::path& root) {
+  std::size_t count = 0;
+  for (const auto& entry : fs::directory_iterator(root / "logs")) count += entry.is_regular_file();
+  return count;
+}
+
+void SaveSession(const fs::path& root) {
+  gog::SessionStore::Options options;
+  options.user_root = root.string();
+  gog::SessionStore store(options);
+  gog::StoredSession session;
+  session.refresh_token = RefreshText(9);
+  session.user_id = kUserId;
+  session.username = kUsername;
+  CHECK(store.Save(session).ok);
+}
+
+// Steam with nothing saved: the controller needs a Steam account to run.
+class NoSteamSession final : public SessionRepository {
+ public:
+  Result<std::optional<StoredSession>> Load() const override {
+    return Result<std::optional<StoredSession>>::Success(std::nullopt);
+  }
+  Result<void> Save(const StoredSession&) const override { return Result<void>::Success(); }
+  Result<void> Clear() const override { return Result<void>::Success(); }
+};
+class NoSteamSignIn final : public steam::AuthBackend {
+ public:
+  steam::AuthResult AuthenticateQr(const std::atomic<bool>&, const steam::ChallengeCallback&) override {
+    return {steam::AuthError::kCanceled, std::nullopt};
+  }
+  steam::AuthResult Restore(const StoredSession&, const std::atomic<bool>&) override {
+    return {steam::AuthError::kCanceled, std::nullopt};
+  }
+};
+
+// Steam's library with no account: the apps always have one, and the controller runs the other stores' libraries
+// beside it.
+class NoSteamLibrary final : public stores::LibrarySource {
+ public:
+  Store store() const override { return Store::kSteam; }
+  std::uint64_t Refresh(std::uint64_t, std::uint64_t) override { return 0; }
+  std::uint64_t LoadCached(std::uint64_t, std::uint64_t) override { return 0; }
+  std::uint64_t Clear(std::uint64_t, std::uint64_t) override { return 0; }
+  void Invalidate(std::uint64_t) override {}
+  void Shutdown() override {}
+  std::vector<LibraryEvent> Pump(std::size_t) override { return {}; }
+};
+
+web::ServiceConfig WebConfig(const fs::path& root) {
+  web::ServiceConfig config;
+  config.paths = {(root / "logs").string(), (root / "homebrew").string(), (root / "kits").string(),
+                  (root / "homebrew/FAKE77031").string()};
+  config.server.first_port = config.server.last_port = 0;
+  config.server.loopback_only = true;
+  return config;
+}
+
+struct Reply {
+  int status = 0;
+  std::string bytes;
+};
+
+Reply Ask(web::Service& service, web::Method method, const std::string& path, const std::string& body = {}) {
+  web::Request request;
+  request.method = method;
+  request.method_text = method == web::Method::kPost ? "POST" : "GET";
+  request.path = path;
+  request.headers.push_back({"host", kHost});
+  request.headers.push_back({"origin", std::string("http://") + kHost});
+  request.headers.push_back({"x-playden-action", "gog-sign-in"});
+  request.client = "192.168.1.50";
+  request.content_length = body.size();
+  auto offset = std::make_shared<std::size_t>(0);
+  request.read_body = [body, offset](char* data, std::size_t size) -> std::ptrdiff_t {
+    const auto count = std::min(size, body.size() - *offset);
+    std::memcpy(data, body.data() + *offset, count);
+    *offset += count;
+    return static_cast<std::ptrdiff_t>(count);
+  };
+  Reply reply;
+  web::Response response([&reply](const char* data, std::size_t size) { reply.bytes.append(data, size); return true; },
+                         false);
+  service.Handle(request, response);
+  reply.status = response.status();
+  return reply;
+}
+
+Reply PostCode(web::Service& service, const std::string& token) {
+  return Ask(service, web::Method::kPost, "/api/gog/sign-in", "{\"token\":\"" + token + "\",\"address\":\"" + kPaste + "\"}");
+}
+
+void Wait(Controller& controller, const std::function<bool()>& done) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!done()) {
+    CHECK(std::chrono::steady_clock::now() < deadline);
+    controller.Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
+// The apps' GOG, on stub transports (the session's, then the library's), with Steam signed out beside it.
+struct App {
+  fs::path root = FreshRoot();
+  Stub session_stub;
+  Stub library_stub;
+  int transports = 0;
+  std::unique_ptr<Storage> library_storage = std::make_unique<Storage>(root.string());
+  std::unique_ptr<GogServices> gog;
+  NoSteamSession steam_sessions;
+  NoSteamSignIn steam_sign_in;
+  Simulation model{{}, {}, ModelMode::Live};
+  stores::Registry registry;
+  std::unique_ptr<web::Service> web;
+  std::unique_ptr<Controller> controller;
+
+  std::atomic<bool> random_works{true};
+
+  // seed runs first, before anything restores: saved files, scripted answers.
+  explicit App(bool stay_signed_in = true, const std::function<void(App&)>& seed = {}) {
+    if (seed) seed(*this);
+    GogWiringConfig config;
+    config.enabled = true;
+    config.stay_signed_in = stay_signed_in;
+    config.user_root = root.string();
+    config.ca_bundle = "unused";
+    config.log_directory = (root / "logs").string();
+    config.library_storage = library_storage.get();
+    config.transport = [this] { return ++transports == 1 ? session_stub.Transport() : library_stub.Transport(); };
+    config.random_token = [this] {
+      return random_works ? std::optional<std::string>(kToken) : std::optional<std::string>();
+    };
+    gog = MakeGogServices(std::move(config));
+    CHECK(gog != nullptr && transports == 2);
+    registry.Add(std::make_unique<stores::SteamAccount>(steam_sign_in, steam_sessions));
+    registry.Add(std::make_unique<NoSteamLibrary>());
+    gog->Register(registry, model);
+    auto web_config = WebConfig(root);
+    gog->ConfigureWeb(web_config);
+    CHECK(web_config.gog == gog->relay() && web_config.gog_auth_url == gog::AuthorizeUrl());
+    web = std::make_unique<web::Service>(std::move(web_config));
+    controller = std::make_unique<Controller>(model, registry);
+    controller->SetWebAccess(web.get());
+    gog->Attach(*controller);
+  }
+  ~App() {
+    controller->Shutdown();
+    web->Shutdown();
+  }
+  const Account& Gog() const { return model.state().account(Store::kGog); }
+  // GOG's restore found nothing; the TV's sign-in opens the relay.
+  void OpenSignIn() {
+    Wait(*controller, [&] { return Gog().authentication == AuthState::SignedOut; });
+    model.RequestServiceAction({ServiceAction::BeginQr, Store::kGog});
+    controller->Tick();
+    CHECK(gog->relay()->request() != 0 && gog->relay()->Token() == kToken);
+  }
+  void ScriptSignIn() {
+    session_stub.Script(Endpoint::kToken, Tokens(1));
+    session_stub.Script(Endpoint::kUser, Answer(200, ReadFile(g_fixtures + "/user-data.json")));
+    library_stub.Script(Endpoint::kOwned, Answer(200, "{\"owned\":[]}"));
+  }
+  void SignIn() {
+    OpenSignIn();
+    ScriptSignIn();
+    const auto reply = PostCode(*web, kToken);
+    CHECK(reply.status == 200);
+    Wait(*controller, [&] { return Gog().authentication == AuthState::SignedIn && !model.state().library_loading; });
+  }
+};
+
+// Nothing in the logs names the account, a token or the code.
+void CheckLogs(const fs::path& root) {
+  for (const auto& entry : fs::directory_iterator(root / "logs")) {
+    const auto text = ReadText(entry.path());
+    CHECK(text.find(kUsername) == std::string::npos && text.find(kUserId) == std::string::npos);
+    CHECK(text.find(AccessText(1)) == std::string::npos && text.find(RefreshText(1)) == std::string::npos);
+    CHECK(text.find("SyntheticCode") == std::string::npos && text.find(kToken) == std::string::npos);
+  }
+}
+
+// The line off: nothing made, no folder, no log line, and no route.
+void LineOffMakesNothing() {
+  const auto root = FreshRoot();
+  Storage storage(root.string());
+  GogWiringConfig config;
+  config.user_root = root.string();
+  config.log_directory = (root / "logs").string();
+  config.library_storage = &storage;
+  int transports = 0;
+  config.transport = [&transports] {
+    ++transports;
+    return gog::Transport{};
+  };
+  CHECK(MakeGogServices(config) == nullptr);
+  CHECK(transports == 0 && !Exists(root / "gog") && LogFiles(root) == 0);
+  // "Stay signed in" off with no GOG folder: still nothing is made.
+  config.stay_signed_in = false;
+  CHECK(MakeGogServices(config) == nullptr);
+  CHECK(transports == 0 && !Exists(root / "gog") && LogFiles(root) == 0);
+  // Web access without the relay: neither GOG route exists.
+  web::Service web(WebConfig(root));
+  CHECK(Ask(web, web::Method::kGet, "/gog").status == 404);
+  CHECK(PostCode(web, kToken).status == 404);
+  CHECK(Ask(web, web::Method::kGet, "/").status == 200);
+  web.Shutdown();
+}
+
+// "Stay signed in" off deletes a GOG session and its temporary files left from an earlier run, line on or off. On, a
+// saved session is kept while the line is off.
+void StaySignedInOffForgetsTheSession() {
+  for (const bool line : {false, true}) {
+    const auto root = FreshRoot();
+    SaveSession(root);
+    const auto leftover = root / "gog" / (std::string(gog::kSessionLeftoverPrefix) + "x");
+    {
+      FILE* file = std::fopen(leftover.c_str(), "wb");
+      CHECK(file != nullptr);
+      std::fputs("synthetic-leftover", file);
+      std::fclose(file);
+      CHECK(::chmod(leftover.c_str(), 0600) == 0);
+    }
+    Storage storage(root.string());
+    GogWiringConfig config;
+    config.enabled = line;
+    config.user_root = root.string();
+    config.log_directory = (root / "logs").string();
+    config.library_storage = &storage;
+    if (!line) {
+      // On: nothing is touched.
+      CHECK(MakeGogServices(config) == nullptr);
+      CHECK(Exists(SessionFile(root)) && Exists(leftover));
+    }
+    config.stay_signed_in = false;
+    config.transport = [] {
+      return gog::Transport([](const steam::HttpRequest&, const std::atomic<bool>&) {
+        std::fprintf(stderr, "unexpected request\n");
+        std::exit(1);
+        return steam::HttpResponse{};
+      });
+    };
+    auto made = MakeGogServices(config);
+    CHECK((made != nullptr) == line);
+    CHECK(!Exists(SessionFile(root)) && !Exists(leftover));
+    if (!line) CHECK(LogFiles(root) == 0);
+  }
+}
+
+// The line on: the account and the library join the registry, the model shows GOG, the relay reaches web access and
+// the controller, and a phone post signs in and saves the session. "Stay signed in" moves the file both ways.
+void LineOnSignsInThroughThePhone() {
+  App app;
+  CHECK(app.model.GogStoreEnabled());
+  CHECK(app.registry.account(Store::kGog) == app.gog->account());
+  const auto libraries = app.registry.libraries();
+  CHECK(std::find(libraries.begin(), libraries.end(), app.gog->library()) != libraries.end());
+  CHECK(Ask(*app.web, web::Method::kGet, "/gog").status == 200);
+  app.SignIn();
+  CHECK(app.Gog().display_name == kUsername);
+  CHECK(Exists(SessionFile(app.root)));
+  CHECK(app.gog->relay()->request() == 0);
+  // "Stay signed in" off: the file goes, the session stays in memory. On: it is written again.
+  // Both on the account worker: the main thread never waits for the store.
+  app.gog->SetStaySignedIn(false);
+  Wait(*app.controller, [&] { return !Exists(SessionFile(app.root)); });
+  CHECK(app.gog->session().signed_in());
+  app.gog->SetStaySignedIn(true);
+  Wait(*app.controller, [&] {
+    const auto text = ReadText(app.root / "logs" / "auth.log");
+    return Exists(SessionFile(app.root)) && std::count(text.begin(), text.end(), '\n') == 2;
+  });
+  const auto auth = ReadText(app.root / "logs" / "auth.log");
+  // Two lines, each "<time> stay signed in gog moved=1".
+  const std::string line = " stay signed in gog moved=1\n";
+  const auto first = auth.find(line);
+  CHECK(first != std::string::npos && auth.find(line, first + 1) != std::string::npos);
+  CHECK(std::count(auth.begin(), auth.end(), '\n') == 2);
+  CHECK(!ReadText(app.root / "logs" / "gog.log").empty());
+  app.controller->Shutdown();
+  CheckLogs(app.root);
+}
+
+// Started with "Stay signed in" off: a sign-in lives in memory only, and turning it on writes the file.
+void StaySignedInOffKeepsTheSessionInMemory() {
+  App app(false);
+  app.SignIn();
+  CHECK(!Exists(SessionFile(app.root)) && app.gog->session().signed_in());
+  app.gog->SetStaySignedIn(true);
+  Wait(*app.controller, [&] { return Exists(SessionFile(app.root)); });
+}
+
+// Shutdown with a phone post waiting for GOG's answer: the post is answered and web access's workers can be joined.
+void ShutdownAnswersAWaitingPost() {
+  App app;
+  app.OpenSignIn();
+  auto gate = std::make_shared<Gate>();
+  app.session_stub.Script(Endpoint::kToken, Tokens(1), gate);
+  std::atomic<int> status{0};
+  std::thread phone([&] { status = PostCode(*app.web, kToken).status; });
+  gate->WaitEntered(1);
+  const auto started = std::chrono::steady_clock::now();
+  app.controller->Shutdown();
+  phone.join();
+  CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
+  CHECK(status != 0 && status != 200);
+  CHECK(app.gog->relay()->request() == 0 && !app.gog->relay()->Token());
+  CHECK(!Exists(SessionFile(app.root)));
+  CheckLogs(app.root);
+}
+
+// A GOG sign-out asked for in the last frame still deletes the session at shutdown.
+void ShutdownKeepsALastSignOut() {
+  App app;
+  app.SignIn();
+  CHECK(Exists(SessionFile(app.root)));
+  app.model.RequestServiceAction({ServiceAction::SignOut, Store::kGog});
+  app.controller->Shutdown();
+  CHECK(!Exists(SessionFile(app.root)));
+  CheckLogs(app.root);
+}
+
+// A failed code with no randomness left for a new token ends the sign-in on the relay: the TV leaves the QR code and
+// offers Try again, though no account event follows.
+void EndedSignInLeavesTheCode() {
+  App app;
+  app.OpenSignIn();
+  app.session_stub.Script(Endpoint::kToken, InvalidGrant());
+  app.random_works = false;
+  CHECK(PostCode(*app.web, kToken).status == 503);
+  Wait(*app.controller, [&] { return app.Gog().authentication == AuthState::Failed; });
+  CHECK(app.Gog().error.find("has ended") != std::string::npos && app.Gog().challenge_url.empty());
+  CHECK(app.gog->relay()->request() == 0 && !app.gog->relay()->Ended());
+  CheckLogs(app.root);
+}
+
+void SaveLibrary(App& app) {
+  LibraryCache cache(*app.library_storage, "library-gog-");
+  LibrarySnapshot snapshot;
+  snapshot.schema_version = 8;
+  snapshot.retrieved_at_unix_seconds = 5;
+  GameSummary game;
+  game.id = GameId::Gog(1207658924);
+  game.title = "Saved Synthetic Game";
+  snapshot.games.push_back(game);
+  CHECK(cache.Save(gog::AccountKey(kUserId), snapshot).ok());
+}
+
+bool GogGameShown(const Simulation& model) {
+  const auto& games = model.state().games;
+  return std::any_of(games.begin(), games.end(), [](const Game& game) { return game.id == GameId::Gog(1207658924); });
+}
+
+// A restart whose saved refresh token GOG refuses: signed out with "GOG sign-in expired", and the saved GOG library is
+// still shown while the player signs in again.
+void ExpiredAtStartupKeepsTheLibrary() {
+  App app(true, [](App& app) {
+    SaveSession(app.root);
+    SaveLibrary(app);
+    app.session_stub.Script(Endpoint::kToken, InvalidGrant());
+  });
+  Wait(*app.controller, [&] {
+    return app.Gog().authentication == AuthState::Expired && GogGameShown(app.model) && !app.model.state().library_loading;
+  });
+  CHECK(app.Gog().error.find("expired") != std::string::npos);
+  CHECK(!Exists(SessionFile(app.root)));
+  CheckLogs(app.root);
+}
+
+// The same with no saved library: Settings still says the sign-in expired, not that no library is saved, also after
+// Steam's Refresh library (which refreshes the other stores' libraries too).
+void ExpiredAtStartupWithoutALibrary() {
+  App app(true, [](App& app) {
+    SaveSession(app.root);
+    app.session_stub.Script(Endpoint::kToken, InvalidGrant());
+  });
+  Wait(*app.controller, [&] {
+    return app.Gog().authentication == AuthState::Expired && !app.model.state().library_loading;
+  });
+  for (int i = 0; i < 20; ++i) {
+    app.controller->Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  CHECK(app.Gog().error == "GOG sign-in expired. Sign in again.");
+  app.model.RequestServiceAction({ServiceAction::RefreshLibrary, Store::kSteam});
+  for (int i = 0; i < 20; ++i) {
+    app.controller->Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  Wait(*app.controller, [&] { return !app.model.state().library_loading; });
+  CHECK(app.Gog().error == "GOG sign-in expired. Sign in again.");
+  CheckLogs(app.root);
+}
+
+// A restart with no answer from GOG: offline. Refresh library asks GOG again: no answer keeps it offline; an answer
+// signs in and loads the library.
+void OfflineRefreshSignsIn() {
+  App app(true, [](App& app) {
+    SaveSession(app.root);
+    SaveLibrary(app);
+    app.session_stub.Script(Endpoint::kToken, Failure(HttpError::kTimeout));
+  });
+  Wait(*app.controller, [&] { return app.Gog().authentication == AuthState::Offline && GogGameShown(app.model); });
+  app.session_stub.Script(Endpoint::kToken, Failure(HttpError::kTimeout));
+  app.model.RequestServiceAction({ServiceAction::RefreshLibrary, Store::kGog});
+  Wait(*app.controller, [&] { return app.session_stub.Calls(Endpoint::kToken) == 2; });
+  for (int i = 0; i < 20; ++i) {
+    app.controller->Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  CHECK(app.Gog().authentication == AuthState::Offline && GogGameShown(app.model));
+  app.session_stub.Script(Endpoint::kToken, Tokens(2));
+  app.library_stub.Script(Endpoint::kOwned, Answer(200, "{\"owned\":[]}"));
+  app.model.RequestServiceAction({ServiceAction::RefreshLibrary, Store::kGog});
+  Wait(*app.controller, [&] {
+    return app.Gog().authentication == AuthState::SignedIn && app.library_stub.Calls(Endpoint::kOwned) == 1 &&
+           !app.model.state().library_loading;
+  });
+  CHECK(app.session_stub.Calls(Endpoint::kToken) == 3 && app.session_stub.Unused() == 0);
+  CheckLogs(app.root);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  CHECK(argc == 3);
+  g_fixtures = argv[1];
+  std::error_code ignored;
+  fs::remove_all(argv[2], ignored);
+  fs::create_directories(argv[2]);
+  g_base = fs::canonical(argv[2]);
+  CHECK(::chmod(g_base.c_str(), 0755) == 0);
+  LineOffMakesNothing();
+  StaySignedInOffForgetsTheSession();
+  LineOnSignsInThroughThePhone();
+  StaySignedInOffKeepsTheSessionInMemory();
+  ShutdownAnswersAWaitingPost();
+  ShutdownKeepsALastSignOut();
+  EndedSignInLeavesTheCode();
+  ExpiredAtStartupKeepsTheLibrary();
+  ExpiredAtStartupWithoutALibrary();
+  OfflineRefreshSignsIn();
+  fs::remove_all(g_base, ignored);
+  std::puts("homebrew_gog_wiring: ok");
+  return 0;
+}

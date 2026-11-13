@@ -29,7 +29,10 @@ namespace playden::stores {
 // Refresh answers kLoading, kCached with the saved library when there is one, kCached after every batch of
 // kBatchSize products (the products fetched so far, plus the saved entries of those not fetched yet), then kComplete
 // with every game, saved as library-gog-<account>.cache. A product that fails keeps its saved entry, or waits for the
-// next refresh. Clear is an ordered barrier, as LibraryService's: it runs, and is answered, even after Invalidate.
+// next refresh; kMaxProductsWithoutAnswer products in a row with no answer at all end the refresh with a network
+// failure (the network went away). A 401 on the owned list makes the session drop its access token and refresh once;
+// only a second 401 answers kCredentialsRevoked. Clear is an ordered barrier, as LibraryService's: it runs, and is
+// answered, even after Invalidate.
 //
 // gog.log gets counts only ("library owned=N fetched=N not_modified=N missing=N hidden=N failed=N") and failure
 // kinds: never a URL, an ID, a title, a token or the account.
@@ -55,6 +58,7 @@ class GogLibrarySource final : public LibrarySource {
   std::vector<LibraryEvent> Pump(std::size_t max_events) override;
 
   static constexpr std::size_t kBatchSize = 50;
+  static constexpr std::size_t kMaxProductsWithoutAnswer = 3;
 
  private:
   enum class Command { kRefresh, kLoadCached, kClear };

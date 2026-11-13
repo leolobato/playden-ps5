@@ -41,7 +41,7 @@ class SteamAccount final : public StoreAccount {
     return service_ ? service_->Pump(max_events) : std::vector<steam::SteamEvent>{};
   }
   // Stops the worker; a sign-out already asked for still clears the saved session first.
-  void Shutdown() { service_.reset(); }
+  void Shutdown() override { service_.reset(); }
 
  private:
   std::unique_ptr<steam::SteamService> service_;

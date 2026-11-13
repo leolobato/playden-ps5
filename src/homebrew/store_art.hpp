@@ -9,6 +9,7 @@
 namespace playden::homebrew {
 
 struct Game;
+struct State;
 
 // The store's art for a game: its cover (600x900), library hero and logo. Steam games get the
 // Steam CDN addresses from their ID (the artwork backend's CanonicalKey accepts exactly these).
@@ -21,5 +22,10 @@ std::string LogoUrl(const GameId& game);
 std::string CoverUrl(const Game& game);
 std::string HeroUrl(const Game& game);
 std::string LogoUrl(const Game& game);
+
+// Whether the view asks for a game's store art: a Steam game's while Steam has an account, as before; any other
+// store's whatever Steam's state (a GOG-only player has no Steam account, and installed GOG games keep their art
+// after a GOG sign-out).
+bool LiveStoreArt(const State& state, const GameId& game);
 
 }  // namespace playden::homebrew

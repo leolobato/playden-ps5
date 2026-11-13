@@ -79,10 +79,11 @@ void GogAccount::Shutdown() {
     stopping_ = true;
     if (restore_cancel_) restore_cancel_->store(true);
     if (running_cancel_) running_cancel_->store(true);
-    // A sign-out asked for still clears the saved session; everything else is dropped.
+    // A sign-out asked for still clears the saved session, and a "Stay signed in" change still moves it; everything
+    // else is dropped.
     std::deque<Job> kept;
     for (auto& job : pending_)
-      if (job.operation == Operation::kSignOut) kept.push_back(std::move(job));
+      if (job.operation == Operation::kSignOut || job.operation == Operation::kPersist) kept.push_back(std::move(job));
     pending_.swap(kept);
     busy_request_ = 0;
     wake_.notify_all();
@@ -100,6 +101,20 @@ std::uint64_t GogAccount::RestoreSession() {
   restore_cancel_ = std::make_shared<std::atomic<bool>>(false);
   Job job;
   job.operation = Operation::kRestore;
+  job.request = restore_request_ = ++next_request_;
+  job.cancel = restore_cancel_;
+  pending_.push_back(std::move(job));
+  wake_.notify_all();
+  return restore_request_;
+}
+
+std::uint64_t GogAccount::Reconnect() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (stopping_) return 0;
+  if (restore_cancel_) restore_cancel_->store(true);
+  restore_cancel_ = std::make_shared<std::atomic<bool>>(false);
+  Job job;
+  job.operation = Operation::kReconnect;
   job.request = restore_request_ = ++next_request_;
   job.cancel = restore_cancel_;
   pending_.push_back(std::move(job));
@@ -186,7 +201,16 @@ SignInAnswer GogAccount::SignInWithCode(std::string code, std::uint64_t request)
   return answer;
 }
 
-gog::SaveResult GogAccount::SetPersist(bool persist) { return store_.SetPersist(persist); }
+void GogAccount::SetPersist(bool persist, std::function<void(const gog::SaveResult&)> done) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (stopping_) return;
+  Job job;
+  job.operation = Operation::kPersist;
+  job.persist = persist;
+  job.persisted = std::move(done);
+  pending_.push_back(std::move(job));
+  wake_.notify_all();
+}
 
 void GogAccount::Run() {
   for (;;) {
@@ -197,13 +221,19 @@ void GogAccount::Run() {
       if (pending_.empty()) return;
       job = std::move(pending_.front());
       pending_.pop_front();
-      if (stopping_ && job.operation != Operation::kSignOut) continue;
+      if (stopping_ && job.operation != Operation::kSignOut && job.operation != Operation::kPersist) continue;
       running_cancel_ = job.cancel;
     }
     switch (job.operation) {
       case Operation::kRestore: Restore(job); break;
+      case Operation::kReconnect: ReconnectNow(job); break;
       case Operation::kExchange: Exchange(job); break;
       case Operation::kSignOut: SignOutNow(); break;
+      case Operation::kPersist: {
+        const auto saved = store_.SetPersist(job.persist);
+        if (job.persisted) job.persisted(saved);
+        break;
+      }
     }
     std::lock_guard<std::mutex> lock(mutex_);
     running_cancel_.reset();
@@ -269,6 +299,8 @@ void GogAccount::Restore(const Job& job) {
         break;
       case gog::RestoreOutcome::Kind::kExpired:
         event.kind = AccountEventKind::kExpired;
+        // The account's saved library is still shown while the player signs in again.
+        event.account_key = outcome.account_key;
         event.error = kExpiredMessage;
         line = RequestLine("restore", job.request, RestoreName(outcome.kind));
         break;
@@ -280,6 +312,43 @@ void GogAccount::Restore(const Job& job) {
         line = RequestLine("restore", job.request, RestoreName(outcome.kind));
         break;
       case gog::RestoreOutcome::Kind::kCanceled: return;
+    }
+    Emit(std::move(event));
+  }
+  Log(line);
+}
+
+void GogAccount::ReconnectNow(const Job& job) {
+  auto token = session_.Token(*job.cancel);
+  const auto status = token.status;
+  const auto generation = token.generation;
+  token.Wipe();
+  std::string line;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (status == gog::AccessToken::Status::kCanceled || job.cancel->load() || job.request != restore_request_) {
+      Log(RequestLine("reconnect", job.request, "canceled"));
+      return;
+    }
+    restore_request_ = 0;
+    const auto identity = session_.identity();
+    const bool usable = (status == gog::AccessToken::Status::kOk || status == gog::AccessToken::Status::kNetwork) &&
+                        identity.account_key != 0 && identity.generation == generation;
+    AccountEvent event;
+    if (usable) {
+      const bool online = status == gog::AccessToken::Status::kOk;
+      event = Signed(online ? AccountEventKind::kSignedIn : AccountEventKind::kOffline, job.request, identity);
+      signed_in_generation_ = identity.generation;
+      line = RequestLine("reconnect", job.request, online ? "signed-in" : "offline");
+    } else {
+      // Revoked (the revocation's own event carries no request, so the controller waits for this one), or the session
+      // ended meanwhile.
+      event.store = Store::kGog;
+      event.kind = AccountEventKind::kExpired;
+      event.request_id = job.request;
+      event.generation = identity.generation;
+      event.error = kExpiredMessage;
+      line = RequestLine("reconnect", job.request, "expired");
     }
     Emit(std::move(event));
   }

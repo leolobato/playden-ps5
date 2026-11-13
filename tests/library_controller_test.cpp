@@ -422,6 +422,27 @@ void ClearPerStore() {
   assert(result && *result==LibraryError::kNone && s.steam.clears==1 && s.gog.clears==2);
   assert(!s.controller.TakeClearResult(Store::kGog));
 }
+// A GOG sign-out: the controller asks the source to delete the saved library while the account is still known, then
+// resets the store at once. The source still deletes it (it runs an accepted Clear as a barrier); its late answer
+// changes nothing, and a Clear after the reset has no account to delete.
+void ClearThenResetStillDeletes() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  s.controller.Activate(Store::kGog,0xabc,false);s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(1207658924)));
+  s.gog.hold=true;
+  s.controller.Clear(Store::kGog);
+  s.controller.Reset(Store::kGog);
+  assert(s.gog.clears==1 && s.gog.last_account==0xabc);
+  assert(!s.controller.Busy(Store::kGog) && !s.controller.Active(Store::kGog) && !s.model.state().library_loading);
+  s.gog.Release();s.controller.Tick();
+  assert(!s.controller.TakeClearResult(Store::kGog) && !s.model.state().library_loading);
+  assert(Shows(s.model,GameId::Gog(1207658924)) && Shows(s.model,SteamId(42)));
+  s.controller.Clear(Store::kGog);
+  assert(s.gog.clears==1);
+  const auto result=s.controller.TakeClearResult(Store::kGog);
+  assert(result && *result==LibraryError::kNone);
+}
 void FailureMessagesNameTheStore() {
   Stores s;
   test::FakeLibrarySource local;local.games={test::ImportedGame(kImported,"Imported title")};
@@ -553,5 +574,5 @@ void ManyLateGamesKeepTheCompletion() {
   }
   Wait(controller,[&]{return !model.state().library_loading && model.state().games.size()==101;});
 }
-int main(){AccountStoreWaitsForActivate();ActivateLoadsTheAccount();OfflineActivateLoadsCached();BatchesKeepTheStoreLoading();StaleAndForeignEventsAreDropped();ResetDuringLoadStopsLoading();ClearPerStore();FailureMessagesNameTheStore();RefreshCoversActiveStores();
+int main(){AccountStoreWaitsForActivate();ActivateLoadsTheAccount();OfflineActivateLoadsCached();BatchesKeepTheStoreLoading();StaleAndForeignEventsAreDropped();ResetDuringLoadStopsLoading();ClearPerStore();ClearThenResetStillDeletes();FailureMessagesNameTheStore();RefreshCoversActiveStores();
   OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();}

@@ -75,8 +75,9 @@ The build checks the pinned revisions and hashes. If it stops with a mismatch, d
 the input changed. The PS5 build is reproducible, so the same sources give the same `eboot.bin` in any checkout.
 
 `scripts/build-homebrew-ps5.sh` makes a dev build by default (`PLAYDEN_DEV_BUILD=ON`): an experimental feature that a
-build turns on for dev builds needs no `features.txt` line (Online always does), and the package has a `dev-build`
+build turns on for dev builds needs no `features.txt` line (Online and GOG always do), and the package has a `dev-build`
 marker that `tools/write_update_manifest.py` refuses. A release is built with `PLAYDEN_DEV_BUILD=OFF scripts/build-homebrew-ps5.sh`.
+The `gog-store` line, what it turns on and how to go back to an older build with it are in [GOG store](gog-store.md).
 
 `FAKE77031` is allocated to Playden. Do not use it for another application.
 

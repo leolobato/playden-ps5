@@ -378,18 +378,83 @@ void Failures() {
     events = f.Until(LibraryEventKind::kComplete);
     CHECK(events.back().kind == LibraryEventKind::kFailure && events.back().error == LibraryError::kNoSession);
   }
-  {  // The owned list: refused, unreachable, malformed.
+  {  // The owned list refuses the access token: the session drops it, refreshes once and asks again.
     Fixture f;
+    f.stub.Script(Endpoint::kOwned, Answer(401, ""));
+    f.stub.Script(Endpoint::kToken, Tokens(3));
+    f.stub.Script(Endpoint::kOwned, Answer(200, OwnedJson({})));
+    f.source.Refresh(kAccount, 1);
+    const auto events = f.Until(LibraryEventKind::kComplete);
+    CHECK(events.back().kind == LibraryEventKind::kComplete);
+    std::vector<std::string> sent;
+    for (const auto& seen : f.stub.seen())
+      if (seen.endpoint == Endpoint::kOwned) sent.push_back(seen.authorization);
+    CHECK((sent == std::vector<std::string>{"Bearer " + AccessText(2), "Bearer " + AccessText(3)}));
+    CHECK(f.session.signed_in() && f.stub.Unused() == 0);
+  }
+  {  // 401, and GOG refuses the refresh token too: revoked, and the session is cleared.
+    Fixture f;
+    f.stub.Script(Endpoint::kOwned, Answer(401, ""));
+    f.stub.Script(Endpoint::kToken, InvalidGrant());
+    f.source.Refresh(kAccount, 1);
+    CHECK(f.Until(LibraryEventKind::kComplete).back().error == LibraryError::kCredentialsRevoked);
+    CHECK(!f.session.signed_in() && f.stub.Unused() == 0);
+  }
+  {  // 401 again with the new token: revoked, with no third try.
+    Fixture f;
+    f.stub.Script(Endpoint::kOwned, Answer(401, ""));
+    f.stub.Script(Endpoint::kToken, Tokens(3));
     f.stub.Script(Endpoint::kOwned, Answer(401, ""));
     f.source.Refresh(kAccount, 1);
     CHECK(f.Until(LibraryEventKind::kComplete).back().error == LibraryError::kCredentialsRevoked);
+    CHECK(f.stub.Calls(Endpoint::kOwned) == 2 && f.stub.Calls(Endpoint::kToken) == 2);
+  }
+  {  // The owned list: unreachable, malformed.
+    Fixture f;
     f.stub.Script(Endpoint::kOwned, Answer(502, ""));
-    f.source.Refresh(kAccount, 2);
+    f.source.Refresh(kAccount, 1);
     CHECK(f.Until(LibraryEventKind::kComplete).back().error == LibraryError::kNetwork);
     f.stub.Script(Endpoint::kOwned, Answer(200, "{\"owned\":5}"));
-    f.source.Refresh(kAccount, 3);
+    f.source.Refresh(kAccount, 2);
     CHECK(f.Until(LibraryEventKind::kComplete).back().error == LibraryError::kProtocol);
     CHECK(!Exists(f.CacheFile()));
+  }
+}
+
+// The network drops in the middle of a refresh: after a few products in a row get no answer, the refresh stops with a
+// network failure instead of waiting out every remaining product. An answered product, even a refused one, starts the
+// count again.
+void NetworkDropsDuringProducts() {
+  constexpr auto kLimit = GogLibrarySource::kMaxProductsWithoutAnswer;
+  {
+    Fixture f;
+    std::vector<std::uint64_t> ids;
+    for (std::uint64_t id = 1207658900; id < 1207658900 + 40; ++id) ids.push_back(id);
+    f.stub.Script(Endpoint::kOwned, Answer(200, OwnedJson(ids)));
+    f.stub.SetProducts([](std::uint64_t id, const std::string&) -> Stub::Step {
+      if (id < 1207658902) return Product(id);
+      return {Failure(HttpError::kTimeout), nullptr};
+    });
+    f.source.Refresh(kAccount, 1);
+    const auto events = f.Until(LibraryEventKind::kComplete);
+    CHECK(events.back().kind == LibraryEventKind::kFailure && events.back().error == LibraryError::kNetwork);
+    CHECK(f.stub.Calls(Endpoint::kProduct) == static_cast<int>(2 + kLimit));
+    CHECK(!Exists(f.CacheFile()) && Exists(f.ProductFile(1207658901)));
+  }
+  {  // Failures between answers: every product is asked, and the refresh completes.
+    Fixture f;
+    std::vector<std::uint64_t> ids;
+    for (std::uint64_t id = 1207658900; id < 1207658900 + 4 * kLimit; ++id) ids.push_back(id);
+    f.stub.Script(Endpoint::kOwned, Answer(200, OwnedJson(ids)));
+    f.stub.SetProducts([](std::uint64_t id, const std::string&) -> Stub::Step {
+      if (id % kLimit == 0) return Status(500);
+      if (id % kLimit == 1) return Product(id);
+      return {Failure(HttpError::kTimeout), nullptr};
+    });
+    f.source.Refresh(kAccount, 1);
+    const auto events = f.Until(LibraryEventKind::kComplete);
+    CHECK(events.back().kind == LibraryEventKind::kComplete);
+    CHECK(f.stub.Calls(Endpoint::kProduct) == static_cast<int>(ids.size()));
   }
 }
 
@@ -474,6 +539,7 @@ int main(int argc, char** argv) {
   FirstAndSecondRefresh();
   Batches();
   Failures();
+  NetworkDropsDuringProducts();
   LoadCachedOffline();
   ClearAndInvalidate();
   InvalidateDuringRefresh();

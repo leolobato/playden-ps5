@@ -266,6 +266,7 @@ void Server::Serve(int client, const std::string& client_ip) {
       }
       return -1;
     };
+    request.client = client_ip;
     handler_(request, response);
     if (!response.started()) SendError(response, 500, "No answer.");
     // An answer sent before the whole body was read (a refused upload): closing now could reset the connection

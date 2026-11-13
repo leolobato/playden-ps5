@@ -732,8 +732,8 @@ void RawEncoderMatchesTheWriter() {
   Check(written.ok() && written.value() == EncodeV2(ExampleRaw()), "the test encoder writes what Save writes");
 }
 
-// A file shaped like Phase 2's: GOG games everywhere, and the GOG rail as the scope.
-void V2KeepsGogKeysAndFallsBackFromUnknownScope() {
+// GOG games everywhere, and the GOG rail as the scope: the writer saves it and the reader keeps all of it.
+void V2KeepsGogKeysAndTheGogScope() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
   playden::OrganizationStore store(storage);
@@ -752,20 +752,16 @@ void V2KeepsGogKeysAndFallsBackFromUnknownScope() {
 
   auto gog_scope = expected;
   gog_scope.scope = "gog";
-  Check(!store.Save(kDevice, gog_scope).ok(), "the writer still refuses the scope gog");
+  Check(store.Save(kDevice, gog_scope).ok(), "the writer saves the scope gog");
 
   const auto stored = storage.Read(kV2Path);
   Check(stored.ok(), "GOG fixture reads");
   if (!stored.ok()) return;
-  auto bytes = stored.value();
-  // The scope is the only length-prefixed "all" in the file.
-  Check(ReplaceBytes(bytes, std::string("\x03\0\0\0all", 7), std::string("\x03\0\0\0gog", 7)),
-        "scope gog patched in");
-  const auto loaded = LoadFile(storage, bytes);
-  Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
-        "GOG keys are kept in favorites, hidden, collections, ratings, notes and selection; scope gog reads as all");
+  const auto loaded = store.Load(kDevice);
+  Check(loaded.ok() && loaded.value() && *loaded.value() == gog_scope,
+        "GOG keys are kept in favorites, hidden, collections, ratings, notes and selection, and so is the scope gog");
   const auto after = storage.Read(kV2Path);
-  Check(after.ok() && after.value() == bytes, "loading does not rewrite the file");
+  Check(after.ok() && after.value() == stored.value(), "loading does not rewrite the file");
 }
 
 void V2SkipsUnknownStoreKeys() {
@@ -845,7 +841,8 @@ void V2UnknownScopeReadsAsAll() {
   for (const std::string scope : {"collection-9", "gog", "epic", "favorites", "hidden", "installed", "imported"}) {
     file.scope = scope;
     loaded = LoadFile(storage, EncodeV2(file));
-    const bool known = scope == "favorites" || scope == "hidden" || scope == "installed" || scope == "imported";
+    const bool known = scope == "favorites" || scope == "hidden" || scope == "installed" || scope == "imported" ||
+                       scope == "gog";
     auto expected = Example();
     expected.scope = known ? scope : "all";
     Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
@@ -866,7 +863,7 @@ int main() {
   MergeWithoutLegacyFilesIsMissing();
   MergePastTheLimitsKeepsTheNewestFile();
   RawEncoderMatchesTheWriter();
-  V2KeepsGogKeysAndFallsBackFromUnknownScope();
+  V2KeepsGogKeysAndTheGogScope();
   V2SkipsUnknownStoreKeys();
   V2StillRefusesDamage();
   V2UnknownScopeReadsAsAll();

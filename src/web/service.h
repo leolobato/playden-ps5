@@ -2,6 +2,7 @@
 #pragma once
 
 #include "web/files_api.h"
+#include "web/gog_relay.h"
 #include "web/logs_source.h"
 #include "web/router.h"
 #include "web/server.h"
@@ -10,6 +11,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -27,6 +29,10 @@ struct ServiceConfig {
   std::chrono::milliseconds address_refresh{30'000};
   // The Files tab: path lock, free space, and pairing's clock and random source.
   FilesConfig files;
+  // GOG sign-in from the phone: GET /gog and POST /api/gog/sign-in. Without a relay both answer 404.
+  std::shared_ptr<GogRelay> gog;
+  // GOG's login page for the "Open GOG sign-in" link, put into the page as it is served.
+  std::string gog_auth_url;
 };
 
 struct ServiceSnapshot {

@@ -27,6 +27,7 @@ endif()
 set(playden_web_fonts "${CMAKE_SOURCE_DIR}/fixtures/ui-comparison/assets/fonts")
 set(playden_web_assets
     "/|html|${CMAKE_SOURCE_DIR}/src/web/page/index.html"
+    "/gog|html|${CMAKE_SOURCE_DIR}/src/web/page/gog.html"
     "/assets/barlow-regular.ttf|ttf|${playden_web_fonts}/Barlow-Regular.ttf"
     "/assets/barlow-semibold.ttf|ttf|${playden_web_fonts}/Barlow-SemiBold.ttf"
     "/assets/barlow-OFL.txt|text|${playden_web_fonts}/barlow-OFL.txt")
@@ -48,13 +49,14 @@ add_library(playden_web STATIC
     "${CMAKE_SOURCE_DIR}/src/web/service.cpp"
     "${CMAKE_SOURCE_DIR}/src/web/files_api.cpp"
     "${CMAKE_SOURCE_DIR}/src/web/file_policy.cpp"
+    "${CMAKE_SOURCE_DIR}/src/web/gog_relay.cpp"
     "${CMAKE_SOURCE_DIR}/src/web/file_store.cpp"
     "${CMAKE_SOURCE_DIR}/src/web/pairing.cpp"
     "${playden_web_assets_cpp}")
 target_include_directories(playden_web PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_web PUBLIC cxx_std_17)
 target_link_libraries(playden_web PUBLIC playden_web_logs playden_web_http playden_managed_directory playden_library
-    playden_runtime_artifact_hash playden_runtime_private_directories playden_storage)
+    playden_runtime_artifact_hash playden_runtime_private_directories playden_storage playden_steam_protocol)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_definitions(playden_web PRIVATE PLAYDEN_PLATFORM_PS5=1)
     target_compile_options(playden_web PRIVATE -fno-exceptions -fno-rtti)
@@ -79,6 +81,13 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(web_service_test "${CMAKE_SOURCE_DIR}/tests/web_service_test.cpp")
     target_link_libraries(web_service_test PRIVATE playden_web)
     add_test(NAME web_service COMMAND web_service_test)
+    add_executable(web_gog_relay_test "${CMAKE_SOURCE_DIR}/tests/web_gog_relay_test.cpp")
+    target_link_libraries(web_gog_relay_test PRIVATE playden_web)
+    add_test(NAME web_gog_relay COMMAND web_gog_relay_test)
+    # A real server with a stub GOG account: the relay's posts over HTTP, then what web.log kept.
+    add_executable(web_gog_fixture_server "${CMAKE_SOURCE_DIR}/tests/web_gog_fixture_server.cpp")
+    target_link_libraries(web_gog_fixture_server PRIVATE playden_web)
+    add_test(NAME web_gog_relay_smoke COMMAND python3 -I "${CMAKE_SOURCE_DIR}/tests/test_web_gog_relay_smoke.py" $<TARGET_FILE:web_gog_fixture_server>)
     add_executable(web_pairing_test "${CMAKE_SOURCE_DIR}/tests/web_pairing_test.cpp")
     target_link_libraries(web_pairing_test PRIVATE playden_web)
     add_test(NAME web_pairing COMMAND web_pairing_test)
