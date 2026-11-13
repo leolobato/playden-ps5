@@ -2268,7 +2268,9 @@ class Render::Impl
                 else
                 {
                     // Preparing or uninstalling: the actual step, with a spinner; no percentage or time is made up.
-                    const char *label = entry->leftover ? "Deleting title" : entry->uninstall ? "Uninstalling" : "Preparing";
+                    // A paused queue's card says it pauses after this game.
+                    const std::string label = entry->leftover ? "Deleting title" : entry->uninstall ? "Uninstalling"
+                                            : entry->status.empty() ? "Preparing" : entry->status;
                     const float status_width = fonts_.semibold.measure(label, 24.0F);
                     spinner(right - status_width - 22.0F, top + 36.0F, 9.0F, kBlue);
                     ui::text(scene_, fonts_.semibold, label, right, top + 44.0F, 24.0F, kBlue, gfx::Align::right);
@@ -2289,7 +2291,17 @@ class Render::Impl
                          gfx::Align::center);
                 art_x = left + 54.0F;
             }
-            save_art(state, entry->game_id, {art_x, top + 9.0F, 48.0F, 72.0F});
+            if (entry->key == "prep-paused")
+            {
+                // No game: a pause sign where the art goes.
+                scene_.rounded_rect({art_x, top + 9.0F, 48.0F, 72.0F}, 6.0F, kMuted.with_alpha(0.25F));
+                scene_.rounded_rect({art_x + 14.0F, top + 31.0F, 7.0F, 28.0F}, 2.0F, kAmber);
+                scene_.rounded_rect({art_x + 27.0F, top + 31.0F, 7.0F, 28.0F}, 2.0F, kAmber);
+            }
+            else
+            {
+                save_art(state, entry->game_id, {art_x, top + 9.0F, 48.0F, 72.0F});
+            }
             std::string value = entry->status, subtitle = entry->note, aside, badge;
             std::string tone = entry->tone;
             float progress = 0.0F;

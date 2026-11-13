@@ -98,7 +98,8 @@ QueueSection preparations(const State& state) {
         item.key = "prep-active-" + ToKey(*queue.active);
         item.game_id = *queue.active;
         item.title = active_title = game_title(state, *queue.active);
-        item.status = "Preparing";
+        // Paused: this one finishes and nothing starts after it.
+        item.status = state.preparation_paused ? "Pausing after this game" : "Preparing";
         item.tone = "busy";
         // The actual step, never a made-up percentage.
         if (const auto* game = runtime(*queue.active)) item.note = game->detail;
@@ -131,6 +132,18 @@ QueueSection preparations(const State& state) {
         else uninstalls_running.push_back(std::move(item));
     }
     section.rows = std::move(uninstalls_running);
+    // Paused with nothing being prepared: a row says so and offers Resume all, even with no game waiting yet (a
+    // download that finishes joins the queue and waits).
+    if (state.preparation_paused && !queue.active) {
+        QueueEntry item;
+        item.key = "prep-paused";
+        item.title = "Preparation paused";
+        item.status = "Paused";
+        item.tone = "attention";
+        item.note = queue.waiting.empty() ? "Games that finish downloading wait here until you resume"
+                                          : "The waiting games start when you resume";
+        section.rows.insert(section.rows.begin(), std::move(item));
+    }
     for (const auto& deletion : state.leftover_deletions) {
         QueueEntry item;
         item.key = "prep-leftover-" + deletion.title_id;
@@ -163,9 +176,10 @@ QueueSection preparations(const State& state) {
         item.game_id = id;
         item.title = game_title(state, id);
         item.position = ++position;
-        item.status = position == 1 ? "Up next" : "Queued";
-        item.tone = position == 1 ? "busy" : "quiet";
-        item.note = position == 1 ? (active_title.empty() ? "Starts next" : "Starts after " + active_title)
+        item.status = state.preparation_paused ? "Paused" : position == 1 ? "Up next" : "Queued";
+        item.tone = state.preparation_paused ? "attention" : position == 1 ? "busy" : "quiet";
+        item.note = state.preparation_paused ? (position == 1 ? "Starts first when you resume" : "Waiting for preparation")
+                  : position == 1 ? (active_title.empty() ? "Starts next" : "Starts after " + active_title)
                                   : "Waiting for preparation";
         section.rows.push_back(std::move(item));
         ++section.waiting;
@@ -338,8 +352,17 @@ QueueLayout BuildQueueLayout(const State& state) {
     if (prepare.uninstalling) join(prepare_words, std::to_string(prepare.uninstalling) + " uninstalling");
     if (prepare.waiting) join(prepare_words, std::to_string(prepare.waiting) + " waiting");
     if (prepare.attention) join(prepare_attention, need_attention(prepare.attention));
+    // Paused: said first, collapsed or not, while it holds anything back.
+    std::string paused_words;
+    if (state.preparation_paused)
+        paused_words = state.preparation_queue.active ? "Pausing after this game" : "Paused";
     join(prepare_words, prepare_attention);
     summarize(prepare, prepare_words, prepare_attention, "No preparation queued");
+    if (!paused_words.empty()) {
+        std::string text = paused_words;
+        join(text, prepare.summary);
+        prepare.summary = text;
+    }
 
     std::string summary;
     if (download.running > download.copying) join(summary, std::to_string(download.running - download.copying) + " downloading");
@@ -351,6 +374,8 @@ QueueLayout BuildQueueLayout(const State& state) {
     if (download.attention + prepare.attention)
         join(summary, need_attention(download.attention + prepare.attention));
     if (download.updates) join(summary, "Playden update ready");
+    if (state.preparation_paused && (prepare.waiting || state.preparation_queue.active))
+        join(summary, state.preparation_queue.active ? "Preparation pausing" : "Preparation paused");
     if (summary.empty() && !layout.nothing())
         summary = "No active work · " + std::to_string(download.completed + prepare.completed) + " completed";
     layout.summary = summary;

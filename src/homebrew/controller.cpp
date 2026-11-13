@@ -1020,6 +1020,9 @@ void Controller::TickRuntime() {
   }
   // A quit to Home waits for the running preparation; the queued ones would be cut off.
   runtime_->HoldPreparations(model_.state().quit_waiting);
+  // Queue's Pause all: no queued preparation starts until Resume all. A Prepare or Play asked meanwhile stays queued
+  // in the runtime, which the 15 s checks below count as queued, never as lost.
+  runtime_->PausePreparations(model_.state().preparation_paused);
   // A drop-folder game's files are opened before each Play and Prepare.
   std::vector<GameId> opened_plays, opened_prepares;
   std::vector<std::pair<GameId, bool>> opened_submits;

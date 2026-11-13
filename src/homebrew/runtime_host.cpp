@@ -698,6 +698,17 @@ void RuntimeHost::HoldPreparations(bool hold) {
   wake_.notify_all();
 }
 
+void RuntimeHost::PausePreparations(bool pause) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (prepares_paused_ == pause) return;
+    prepares_paused_ = pause;
+    ++snapshot_.revision;
+  }
+  published_.notify_all();
+  wake_.notify_all();
+}
+
 void RuntimeHost::Play(std::uint32_t app_id, std::string setup_program, rt::OnlineLaunch online) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -6334,7 +6345,7 @@ bool RuntimeHost::RunServices() {
       // Preparation changes install records that Handoff reads on the
       // application thread, so it waits while a handoff is pending.
       const auto ready = [this] {
-        return stopping_ || (!prepare_requests_.empty() && !snapshot_.handoff_ready && !prepares_held_) ||
+        return stopping_ || (!prepare_requests_.empty() && !snapshot_.handoff_ready && !PreparesHeldLocked()) ||
                !play_requests_.empty() ||
                cleanup_requested_ || measure_requested_ || !activity_requests_.empty() || title_names_changed_ ||
                installs_recheck_requested_ ||
@@ -6346,11 +6357,12 @@ bool RuntimeHost::RunServices() {
                (!home_handoff_requests_.empty() && !snapshot_.handoff_ready) ||
                (!relocation_requests_.empty() && !snapshot_.handoff_ready) ||
                (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) ||
-               (drive_updates_pending_ && !snapshot_.handoff_ready && !launch_poll_ &&
+               (drive_updates_pending_ && !snapshot_.handoff_ready && !launch_poll_ && !PreparesHeldLocked() &&
                 std::chrono::steady_clock::now() >= drive_update_not_before_);
       };
+      // A held or paused queue holds the drive update too: its deadline wakes nothing until the hold ends.
       if (launch_poll_) wake_.wait_for(lock, kLaunchPollInterval, ready);
-      else if (drive_updates_pending_) wake_.wait_until(lock, drive_update_not_before_, [&] { return ready() || launch_poll_; });
+      else if (drive_updates_pending_ && !PreparesHeldLocked()) wake_.wait_until(lock, drive_update_not_before_, [&] { return ready() || launch_poll_; });
       else wake_.wait(lock, [&] { return ready() || launch_poll_; });
       if (stopping_) {
         // A sign-out not acted on yet still takes the kept sessions with it.
@@ -6372,7 +6384,7 @@ bool RuntimeHost::RunServices() {
       plays.swap(play_requests_);
       // Removal changes install records that Handoff reads, like preparation.
       if (!snapshot_.handoff_ready && !remove_requests_.empty() &&
-          (prepare_requests_.empty() || prepares_held_ ||
+          (prepare_requests_.empty() || PreparesHeldLocked() ||
            remove_requests_.front().order < prepare_order_.at(prepare_requests_.front().runtime_number))) {
         removals.push_back(std::move(remove_requests_.front()));
         remove_requests_.erase(remove_requests_.begin());
@@ -6600,7 +6612,7 @@ bool RuntimeHost::RunServices() {
       bool step = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        step = drive_updates_pending_ && !stopping_ && !launch_poll_ && !snapshot_.handoff_ready && !prepares_held_ &&
+        step = drive_updates_pending_ && !stopping_ && !launch_poll_ && !snapshot_.handoff_ready && !PreparesHeldLocked() &&
                prepare_requests_.empty() && play_requests_.empty() && maintenance_requests_.empty() &&
                remove_requests_.empty() && relocation_requests_.empty() &&
                std::chrono::steady_clock::now() >= drive_update_not_before_;
@@ -6614,7 +6626,7 @@ bool RuntimeHost::RunServices() {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       // A preparation that came after this batch read the Steam session waits for the next batch.
-      if (!prepare_requests_.empty() && !snapshot_.handoff_ready && !prepares_held_ && !stopping_ &&
+      if (!prepare_requests_.empty() && !snapshot_.handoff_ready && !PreparesHeldLocked() && !stopping_ &&
           (batch_online_session_loaded_ || !composition || !config_.online_session) &&
           (remove_requests_.empty() ||
            prepare_order_.at(prepare_requests_.front().runtime_number) < remove_requests_.front().order)) {

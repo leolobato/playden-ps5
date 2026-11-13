@@ -538,6 +538,10 @@ class RuntimeHost {
   bool WithdrawPrepare(std::uint32_t runtime_number);
   // While held, no queued preparation starts (a quit to Home waits for the running one only).
   void HoldPreparations(bool hold);
+  // The player's Pause all in Queue: like a hold, no queued preparation starts (nor a drive update's next game), and
+  // the one running finishes. Kept apart from the quit's hold so either can end without ending the other. Not saved:
+  // a restart starts unpaused.
+  void PausePreparations(bool pause);
   // Takes a finished preparation off RuntimeSnapshot::prepared; ClearPrepared takes every one off,
   // including those past the kMaxPrepared the snapshot lists.
   void DismissPrepared(std::uint32_t runtime_number, std::int64_t finished_at);
@@ -1020,7 +1024,10 @@ class RuntimeHost {
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;
   bool kit_reload_requested_ = false;  // guarded by mutex_
-  bool prepares_held_ = false;
+  bool prepares_held_ = false;    // guarded by mutex_
+  bool prepares_paused_ = false;  // guarded by mutex_
+  // Whether queued preparations wait (a quit's hold or the player's pause). Called with mutex_ held.
+  bool PreparesHeldLocked() const { return prepares_held_ || prepares_paused_; }
   std::vector<PreparedGame> prepared_dismissals_;  // guarded by mutex_
   bool prepared_clear_requested_ = false;          // guarded by mutex_
   std::vector<PreparedGame> prepared_history_;     // worker thread only, oldest first

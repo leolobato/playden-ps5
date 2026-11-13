@@ -1078,6 +1078,9 @@ struct State {
     bool screenshot_mode = false;
     bool quit_requested = false;
     bool quit_waiting = false;  // a quit to Home waits for a preparation; no new one starts meanwhile
+    // Queue › Preparation's Pause all: the one being prepared finishes, the waiting ones stay queued and don't start,
+    // nor does a game that joins meanwhile, until Resume all. Not saved: Playden starts unpaused.
+    bool preparation_paused = false;
     bool simulation_mode = true;
     std::int64_t clock_ticks = 0;
 };
@@ -2063,6 +2066,7 @@ private:
     void open_modal(ModalEntry modal);
     void prepare_next(GameId id);
     void cancel_preparations(std::vector<GameId> ids);
+    void set_preparation_paused(bool paused);
     void close_modal();
     void open_details_from_queue(GameId id);
     void start_editor(std::string purpose, std::string value, bool secret = false);

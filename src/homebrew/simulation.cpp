@@ -810,7 +810,7 @@ std::string action_label(const std::string& key) {
         {"account-last-sync", "Last library sync"}, {"account-sync", "Sync now"},
         {"account-recover", "Reconnect account"}, {"account-switch", "Switch account…"},
         {"account-reauth", "Sign in again"}, {"job-resume-all", "Resume all"}, {"job-clear-completed", "Clear completed"},
-        {"prep-clear-completed", "Clear completed"}, {"prep-cancel-all", "Cancel all"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
+        {"prep-clear-completed", "Clear completed"}, {"prep-cancel-all", "Cancel all"}, {"prep-pause-all", "Pause all"}, {"prep-resume-all", "Resume all"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
         {"about-version", "Version"}, {"self-update-install", "Download and install"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
         {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
@@ -2037,6 +2037,17 @@ void Simulation::runtime_batch_step() {
         UpdatePreparationQueue(runtime_queue_);
         return;
     }
+    // A paused queue sends nothing more, and lists the batch's games as waiting; its notice counts what is done.
+    // Resume all steps again.
+    if (state_.preparation_paused) {
+        Notice notice{"runtime-batch", "Runtime kit update paused", "", false, kUntilItEnds, false,
+                      std::to_string(done) + " of " + std::to_string(runtime_batch_total_) +
+                          (runtime_batch_total_ == 1 ? " game" : " games") + " · Resume all in Queue continues"};
+        notice.progress = static_cast<float>(done) / static_cast<float>(runtime_batch_total_);
+        push_notice(std::move(notice));
+        UpdatePreparationQueue(runtime_queue_);
+        return;
+    }
     // Anything else being prepared goes first; the runtime tells again when it ends.
     if (std::any_of(state_.runtime_games.begin(), state_.runtime_games.end(), [](const auto& entry) {
             return entry.second.status == "Preparing" || entry.second.maintenance_running;
@@ -2928,6 +2939,23 @@ void Simulation::cancel_preparations(std::vector<GameId> ids) {
     UpdatePreparationQueue(runtime_queue_);
 }
 
+// Pause all / Resume all in Queue › Preparation. The controller passes the pause to the runtime each tick; a Runtimes
+// batch waiting in the model sends its next game only once resumed. Focus stays in the section: on the paused row
+// once it shows, back on the first waiting game when it goes.
+void Simulation::set_preparation_paused(bool paused) {
+    if (state_.preparation_paused == paused) return;
+    state_.preparation_paused = paused;
+    state_.queue_expanded = kQueuePreparation;
+    if (!paused && state_.navigation.focus_key == "prep-paused") {
+        const auto& waiting = state_.preparation_queue.waiting;
+        const auto& active = state_.preparation_queue.active;
+        state_.navigation.focus_key = !waiting.empty() ? "prep-" + ToKey(waiting.front())
+                                    : active ? "prep-active-" + ToKey(*active) : std::string("queue-preparation");
+    }
+    if (!paused) runtime_batch_step();
+    rebuild_view();
+}
+
 std::vector<LiveCompletedPreparation> Simulation::TakePreparedDismissals() {
     return std::exchange(pending_prepared_dismissals_, {});
 }
@@ -2955,7 +2983,7 @@ void Simulation::prepare_next(GameId id) {
     const auto& active = state_.preparation_queue.active;
     const auto* current = active ? find_game(state_, *active) : nullptr;
     push_notice({"prepare-next", (game ? game->title : std::string("The game")) + " is up next", "", false, kLiveNoticeSeconds,
-                 false, current ? "After " + current->title : "It starts next"});
+                 false, state_.preparation_paused ? "It starts first when you resume" : current ? "After " + current->title : "It starts next"});
 }
 
 std::vector<GameId> Simulation::TakeRuntimePlayRequests() {
@@ -6099,7 +6127,7 @@ bool Simulation::scenario(const std::string& name) {
         static const std::map<std::string, std::array<int, 3>> shapes = {
             {"queue-preparation-empty", {4, 0, 0}}, {"queue-downloads-empty", {0, 4, 0}}, {"queue-one-preparation", {4, 1, 0}},
             {"queue-one-download", {1, 4, 0}}, {"queue-both-full", {4, 4, 0}}, {"queue-all-empty", {0, 0, 0}},
-            {"queue-active-history", {4, 4, 1}}, {"queue-completed-only", {0, 0, 1}}};
+            {"queue-active-history", {4, 4, 1}}, {"queue-completed-only", {0, 0, 1}}, {"queue-preparation-paused", {1, 4, 0}}};
         const auto shape = shapes.find(name);
         if (shape == shapes.end() || state_.games.size() < 13) return false;
         const auto [downloads, preparations, history] = shape->second;
@@ -6153,6 +6181,12 @@ bool Simulation::scenario(const std::string& name) {
         }
         if (history)
             queue.completed = {{state_.games[11].id, now - 20 * 60}, {state_.games[12].id, now - 35 * 60}};
+        // Pause all once the game that was being prepared finished: every game waits.
+        state_.preparation_paused = name == "queue-preparation-paused";
+        if (state_.preparation_paused && queue.active) {
+            state_.runtime_games.erase(*queue.active);
+            queue.active.reset();
+        }
         state_.navigation.focus_key = preparations > 1 || (preparations && !downloads) ? "queue-preparation"
                                     : downloads || history ? "queue-downloads" : "";
         if (state_.navigation.focus_key.empty() && !state_.volumes.empty())
@@ -8991,12 +9025,18 @@ void Simulation::rebuild_view() {
                 setup.tone = "attention";
             }
             setup.enabled = false;
+            const bool queued_paused = runtime && runtime->queued && runtime->uninstall_status.empty() && state_.preparation_paused;
             if (runtime && runtime->queued && runtime->uninstall_status.empty()) {
-                setup.value = ahead.empty() ? "Queued" : "Waiting for " + ahead;
-                setup.tone = "busy";
+                setup.value = queued_paused ? "Paused" : ahead.empty() ? "Queued" : "Waiting for " + ahead;
+                setup.tone = queued_paused ? "attention" : "busy";
             }
             std::string hint;
-            if (runtime && runtime->queued && runtime->uninstall_status.empty()) {
+            if (queued_paused) {
+                // Play waits too: it starts the game once its setup has run.
+                hint = "Preparation is paused. Resume all in Queue sets it up.";
+                if (position > 0 && queue.waiting.size() > 1)
+                    hint = std::to_string(position) + " of " + std::to_string(queue.waiting.size()) + " waiting. " + hint;
+            } else if (runtime && runtime->queued && runtime->uninstall_status.empty()) {
                 hint = ahead.empty() ? "Setup starts when the game being set up is ready."
                                      : "Setup starts when " + ahead + " is ready.";
                 if (position > 0 && queue.waiting.size() > 1)
@@ -10767,9 +10807,10 @@ void Simulation::UpdateSaveSizes(std::map<GameId, std::uint64_t> sizes) {
 void Simulation::quit_to_home() {
     const auto preparing = std::find_if(state_.runtime_games.begin(), state_.runtime_games.end(),
                                         [](const auto& entry) { return entry.second.status == "Preparing"; });
-    // Games waiting in the queue hold too: between two preparations the next one may be about to start.
+    // Games waiting in the queue hold too: between two preparations the next one may be about to start. A paused
+    // queue starts none of them.
     const auto& waiting = state_.preparation_queue.waiting;
-    if (preparing == state_.runtime_games.end() && waiting.empty()) {
+    if (preparing == state_.runtime_games.end() && (waiting.empty() || state_.preparation_paused)) {
         state_.quit_requested = true;
         return;
     }
@@ -11383,8 +11424,14 @@ void Simulation::activate() {
                 }
                 actions.push_back(in_place ? "import-remove" : "uninstall");
             }
+        } else if (key == "prep-paused") {
+            title = "Preparation paused";
+            actions.push_back("prep-resume-all");
+            if (!state_.preparation_queue.waiting.empty()) actions.push_back("prep-cancel-all");
         } else if (key.rfind("prep-active-", 0) == 0) {
             actions.push_back("prep-open-" + id);
+            // Pause all lets the game being prepared finish; the games waiting behind it stay queued.
+            actions.push_back(state_.preparation_paused ? "prep-resume-all" : "prep-pause-all");
             // The game being prepared finishes; the games waiting behind it can go.
             if (!state_.preparation_queue.waiting.empty()) actions.push_back("prep-cancel-all");
         } else {
@@ -11394,6 +11441,7 @@ void Simulation::activate() {
             actions.push_back("prep-open-" + id);
             // Cancel takes a game that hasn't started out of the queue; the game stays as it was.
             actions.push_back("prep-cancel-" + id);
+            actions.push_back(state_.preparation_paused ? "prep-resume-all" : "prep-pause-all");
             if (waiting.size() > 1) actions.push_back("prep-cancel-all");
         }
         actions.push_back("cancel");
@@ -11405,6 +11453,9 @@ void Simulation::activate() {
     } else if (action_name.rfind("prep-next-", 0) == 0) {
         close_modal();
         prepare_next(key_id(std::string_view(action_name).substr(std::strlen("prep-next-"))));
+    } else if (action_name == "prep-pause-all" || action_name == "prep-resume-all") {
+        close_modal();
+        set_preparation_paused(action_name == "prep-pause-all");
     } else if (action_name == "prep-cancel-all") {
         close_modal();
         cancel_preparations(state_.preparation_queue.waiting);

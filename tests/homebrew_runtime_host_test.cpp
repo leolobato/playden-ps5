@@ -409,6 +409,48 @@ void PrepareNextReordersWaitingPreparations() {
   host.Shutdown();
 }
 
+// Pause all in Queue (#880): no waiting preparation starts, the waiting ones keep their order, a game asked for
+// meanwhile joins the end, and resuming runs them in that order. A quit's hold ending doesn't resume a paused queue.
+// (A pause never stops the preparation running: the worker only checks it before taking the next request.)
+void PausedPreparationsWaitInOrder() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  PrepareLog log;
+  log.Attach(config);
+  RuntimeHost host(std::move(config));
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).status == RuntimeHostStatus::kReady);
+  host.Prepare(Game(10));
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled == 1 && !s.preparing_app; });
+  host.PausePreparations(true);
+  host.Prepare(Game(20));
+  host.Prepare(Game(30));
+  usleep(200000);
+  auto paused = host.Snapshot();
+  CHECK(paused.prepares_handled == 1 && !paused.preparing_app);
+  CHECK((paused.queued_prepares == std::vector<std::uint32_t>{20, 30}));
+  // Prepare next and a withdrawal still work on a paused queue.
+  host.Prepare(Game(40));
+  CHECK(host.PrepareNext(30));
+  CHECK(host.WithdrawPrepare(40));
+  // A quit's hold that comes and goes leaves the pause in place.
+  host.HoldPreparations(true);
+  host.HoldPreparations(false);
+  usleep(200000);
+  paused = host.Snapshot();
+  CHECK(paused.prepares_handled == 1 && (paused.queued_prepares == std::vector<std::uint32_t>{30, 20}));
+  // Resuming under a quit's hold still waits for the hold.
+  host.HoldPreparations(true);
+  host.PausePreparations(false);
+  usleep(200000);
+  CHECK(host.Snapshot().prepares_handled == 1);
+  host.HoldPreparations(false);
+  const auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled == 3; });
+  CHECK(done.queued_prepares.empty() && !done.preparing_app);
+  CHECK((log.Order() == std::vector<std::uint32_t>{10, 30, 20}));
+  host.Shutdown();
+}
+
 // A quit to Home holds the queue: queued preparations wait until the hold is released.
 void HeldPreparationsWait() {
   Fixture fixture;
@@ -9076,6 +9118,7 @@ int main(int argc, char** argv) {
   QueuedPreparationIsPublishedUntilTaken();
   PrepareNextReordersWaitingPreparations();
   HeldPreparationsWait();
+  PausedPreparationsWaitInOrder();
   HoldsEffectiveUidWhileWorking();
   StartupReportsJournalsWithoutResuming();
   LocalGameGetsRuntimeNumber();

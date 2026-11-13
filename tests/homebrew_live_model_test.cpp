@@ -3280,6 +3280,174 @@ void live_queue_cancel_preparations(const std::filesystem::path& base) {
           "the end counts only the game that was updated");
 }
 
+// Pause all in Queue › Preparation (#880): the game being prepared finishes ("Pausing after this game"), then the
+// section says Paused; waiting games keep their order and a game that joins waits too; Resume all stays reachable
+// with nothing waiting; a Runtimes batch sends no next game while paused; a quit doesn't wait for a paused queue.
+void live_queue_pause_preparations(const std::filesystem::path& base) {
+    using playden::GameId;
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::MaintenanceKind;
+    using playden::homebrew::Route;
+    using playden::homebrew::TitleActivity;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    auto model = make_live(base);
+    model.SetWallClock(kNow);
+    model.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Owner", {}, {}, false});
+    check(model.UpdateLibrary({{{SteamId(10), "Ten", "", "", ""}, {SteamId(20), "Twenty", "", "", ""}, {SteamId(30), "Thirty", "", "", ""},
+                                {SteamId(40), "Forty", "", "", ""}, {SteamId(50), "Fifty", "", "", ""}},
+                               false, {}, false, true, kNow}),
+          "pause: library delivered");
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
+    model.UpdateInstalls({}, {{SteamId(10), 4 * gb, "internal", true}, {SteamId(20), 3 * gb, "internal", true},
+                              {SteamId(30), 2 * gb, "internal", true}, {SteamId(40), 1 * gb, "internal", true},
+                              {SteamId(50), 1 * gb, "internal", true}});
+    const auto game = [](int id, const char* status) {
+        LiveRuntimeGame runtime;
+        runtime.game_id = SteamId(id);
+        runtime.status = status;
+        runtime.prepared = runtime.has_title = runtime.can_prepare = true;
+        runtime.activity = TitleActivity::Stopped;
+        return runtime;
+    };
+    // The Runtimes batch: 40 and 50 get the new runtime kit, one at a time.
+    auto forty = game(40, "Runtime kit update available");
+    auto fifty = game(50, "Runtime kit update available");
+    auto ten = game(10, "Preparing");
+    auto twenty = game(20, "Not prepared");
+    twenty.prepared = twenty.has_title = false;
+    twenty.queued = true;
+    auto thirty = twenty;
+    thirty.game_id = SteamId(30);
+    const auto all = [&] { return std::vector<LiveRuntimeGame>{ten, twenty, thirty, forty, fifty}; };
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    model.UpdatePreparationQueue({SteamId(10), {SteamId(20)}, {}, {}});
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Downloads; ++i) model.action("r1");
+    check(model.state().navigation.route == Route::Downloads, "pause: R1 reaches the Queue");
+
+    activate(model, "prep-active-10");
+    check(find_row(model, "prep-pause-all") && find_row(model, "prep-pause-all")->title == "Pause all" &&
+              !find_row(model, "prep-resume-all"),
+          "pause: the game being prepared offers Pause all");
+    activate(model, "prep-pause-all");
+    check(model.state().preparation_paused, "pause: Pause all pauses the queue");
+    check(model.state().navigation.modals.empty(), "pause: the sheet closes");
+    const auto heading = [&] { const auto* row = find_row(model, "queue-preparation"); return row ? row->value : std::string(); };
+    check(heading().rfind("Pausing after this game", 0) == 0, "pause: the heading says it pauses after this game");
+    check(find_row(model, "prep-active-10") && find_row(model, "prep-active-10")->value == "Pausing after this game",
+          "pause: so does the card");
+    check(find_row(model, "prep-20") && find_row(model, "prep-20")->value == "Paused", "pause: a waiting game says Paused");
+    check(!find_row(model, "prep-paused"), "pause: no paused row while a game is still being prepared");
+    check(model.view().subtitle.find("Preparation pausing") != std::string::npos, "pause: the Queue's summary says so");
+
+    // 10 finishes; 30 finished downloading and joins the queue, after 20.
+    ten.status = "Ready";
+    ten.ready = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    model.UpdatePreparationQueue({std::nullopt, {SteamId(20), SteamId(30)}, {}, {}});
+    check(heading().rfind("Paused", 0) == 0, "paused: the heading says Paused once the game is done");
+    const auto* paused_row = find_row(model, "prep-paused");
+    check(paused_row && paused_row->value == "Paused" && paused_row->subtitle == "The waiting games start when you resume",
+          "paused: a row says the preparation is paused");
+    check(find_row(model, "prep-30") && find_row(model, "prep-30")->value == "Paused", "paused: a game that joins waits too");
+    check((model.state().preparation_queue.waiting == std::vector<GameId>{SteamId(20), SteamId(30)}),
+          "paused: the waiting games keep their order");
+    activate(model, "prep-30");
+    check(find_row(model, "prep-resume-all") && find_row(model, "prep-resume-all")->title == "Resume all" &&
+              !find_row(model, "prep-pause-all"),
+          "paused: a waiting game offers Resume all");
+    model.action("circle");
+
+    // Prepare next on a paused queue says it starts on resume.
+    activate(model, "prep-30");
+    activate(model, "prep-next-30");
+    check((model.TakePrepareNextRequests() == std::vector<GameId>{SteamId(30)}), "paused: Prepare next still reorders");
+    {
+        const auto next = std::find_if(model.state().notices.begin(), model.state().notices.end(),
+                                       [](const auto& item) { return item.id == "prepare-next"; });
+        check(next != model.state().notices.end() && next->detail == "It starts first when you resume",
+              "paused: Prepare next says it starts on resume");
+    }
+    model.UpdatePreparationQueue({std::nullopt, {SteamId(30), SteamId(20)}, {}, {}});
+
+    // The game page of a waiting game says it is paused, and how to go on.
+    activate(model, "prep-20");
+    activate(model, "prep-open-20");
+    check(model.state().navigation.route == Route::Details, "paused: Game details opens the page");
+    check(find_row(model, "details-setup") && find_row(model, "details-setup")->value == "Paused",
+          "paused: the page's Setup says Paused");
+    check(find_row(model, "details-hint") &&
+              find_row(model, "details-hint")->title.find("Preparation is paused. Resume all in Queue sets it up.") != std::string::npos,
+          "paused: and says how to resume");
+    model.action("circle");
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Downloads; ++i) model.action("r1");
+
+    // Cancel all from the paused row: nothing waits, yet Resume all stays reachable.
+    activate(model, "prep-paused");
+    check(find_row(model, "prep-resume-all") && find_row(model, "prep-cancel-all"), "paused row: Resume all and Cancel all");
+    activate(model, "prep-cancel-all");
+    check((model.TakePrepareCancels() == std::vector<GameId>{SteamId(30), SteamId(20)}), "paused row: Cancel all withdraws both");
+    model.UpdatePreparationQueue({std::nullopt, {}, {}, {}});
+    paused_row = find_row(model, "prep-paused");
+    check(paused_row && paused_row->subtitle == "Games that finish downloading wait here until you resume",
+          "paused: with nothing waiting the row stays, to resume from");
+    check(model.state().preparation_paused, "paused: emptying the queue keeps the pause");
+
+    // A Runtimes batch started while paused sends nothing; its games wait in the queue.
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+    activate(model, "settings-installed");
+    while (model.state().navigation.manage_tab != playden::homebrew::ManageTab::Runtimes) check(model.action("r1"), "batch: tabs go round");
+    (void)model.TakeMaintenanceRequests();
+    check(model.action("triangle"), "batch: the Runtimes batch starts");
+    check(model.TakeMaintenanceRequests().empty(), "batch: a paused queue sends no game");
+    check((model.state().preparation_queue.waiting == std::vector<GameId>{SteamId(50), SteamId(40)}), "batch: both wait in the queue");
+
+    // Resume all from the paused row: the batch starts.
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Downloads; ++i) model.action("r1");
+    activate(model, "prep-paused");
+    activate(model, "prep-resume-all");
+    check(!model.state().preparation_paused, "resume: Resume all ends the pause");
+    check(!find_row(model, "prep-paused"), "resume: the paused row goes");
+    auto sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].first == SteamId(50), "resume: the batch sends its first game");
+    check(find_row(model, "prep-40") && find_row(model, "prep-40")->value != "Paused", "resume: waiting games no longer say Paused");
+    fifty.status = "Preparing";
+    fifty.maintenance = MaintenanceKind::UpdateRuntime;
+    fifty.maintenance_running = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    model.UpdatePreparationQueue({SteamId(50), {}, {}, {}});
+
+    // Paused while 50 runs: 50 finishes, and the batch sends no next game until Resume all.
+    activate(model, "prep-active-50");
+    activate(model, "prep-pause-all");
+    fifty.status = "Ready";
+    fifty.ready = true;
+    fifty.maintenance_running = false;
+    fifty.maintenance_ok = true;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, all());
+    model.UpdatePreparationQueue({std::nullopt, {}, {}, {}});
+    check(model.TakeMaintenanceRequests().empty(), "batch: a paused queue sends no next game");
+    check((model.state().preparation_queue.waiting == std::vector<GameId>{SteamId(40)}), "batch: 40 waits in the queue");
+    {
+        const auto notice = std::find_if(model.state().notices.begin(), model.state().notices.end(),
+                                         [](const auto& item) { return item.id == "runtime-batch"; });
+        check(notice != model.state().notices.end() && notice->message == "Runtime kit update paused" &&
+                  notice->detail == "1 of 2 games · Resume all in Queue continues",
+              "batch: its notice says it is paused and counts the game done");
+    }
+    activate(model, "prep-paused");
+    activate(model, "prep-resume-all");
+    sent = model.TakeMaintenanceRequests();
+    check(sent.size() == 1 && sent[0].first == SteamId(40), "resume: the batch sends its next game");
+
+    // Paused with a game waiting and none being prepared, a quit to Home doesn't wait for the queue.
+    model.UpdatePreparationQueue({std::nullopt, {SteamId(20)}, {}, {}});
+    activate(model, "prep-20");
+    activate(model, "prep-pause-all");
+    model.RequestQuit();
+    check(model.state().quit_requested && !model.state().quit_waiting, "quit: a paused queue lets Playden quit at once");
+}
+
 // The runtime kit prompt: once per kit, only when a kit update is due, and never over What's new or another dialog.
 void live_runtime_prompt(const std::filesystem::path& base) {
     using playden::homebrew::LiveRuntimeGame;
@@ -3820,6 +3988,7 @@ int main() {
     live_manage_update_selected(base / "update-selected");
     live_manage_runtimes(base / "manage-runtimes");
     live_queue_cancel_preparations(base / "queue-cancel-preparations");
+    live_queue_pause_preparations(base / "queue-pause-preparations");
     live_runtime_prompt(base / "runtime-prompt");
     live_runtime_prompt_survives_library(base / "runtime-prompt");
     live_manage_move(base / "manage-move");
