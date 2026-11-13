@@ -12,6 +12,8 @@ std::string AuthRecord(const steam::SteamEvent& event);
 std::string AccountRecord(const stores::AccountEvent& event);
 // A log line or message with credentials taken out: every "Bearer <token>" (any case) becomes
 // "Bearer <redacted>", and every occurrence of known_secret (when set, at least 8 characters)
-// becomes "<redacted>". A bare hex string is left alone: recipe revision tags are 32 hex too.
+// becomes "<redacted>". Then the shapes in diagnostics/credential_patterns.h: OAuth codes, CDN tokens and
+// access and refresh tokens keep their key and lose their value. A bare hex string is left alone: recipe revision
+// tags are 32 hex too.
 std::string RedactSecrets(std::string_view text, std::string_view known_secret = {});
 }

@@ -1,4 +1,6 @@
 #include "diagnostics/redaction.h"
+
+#include "diagnostics/credential_patterns.h"
 namespace playden::diagnostics {
 const char* AuthMessage(steam::AuthError error) {
   switch (error) {
@@ -100,6 +102,6 @@ std::string RedactSecrets(std::string_view text, std::string_view known_secret) 
     result.push_back(out[i]);
     ++i;
   }
-  return result;
+  return RedactCredentialPatterns(result);
 }
 }

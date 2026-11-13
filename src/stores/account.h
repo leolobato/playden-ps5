@@ -37,6 +37,9 @@ class StoreAccount {
   // Starts restoring the saved sign-in; the request it answers, 0 when refused.
   virtual std::uint64_t RestoreSession() = 0;
   virtual void Cancel(std::uint64_t request) = 0;
+  // For a store whose sign-in is answered elsewhere (GOG's phone relay): opens a sign-in and returns the request the
+  // answer will carry. 0 when unsupported (Steam signs in through SteamAccount's own calls).
+  virtual std::uint64_t BeginSignIn() { return 0; }
   // Forgets the saved sign-in.
   virtual void SignOut() = 0;
   // The results so far, at most max_events, oldest first. Steam's account doesn't use this: its events are

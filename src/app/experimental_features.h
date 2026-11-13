@@ -22,10 +22,15 @@ struct ExperimentalFeatures {
   // Line online-steam: Steam features = Online (Steam's client beside the game), Steam sign-in and Steam network
   // (runtime::SetOnlineSteamEnabled). Off in every build unless the file names it.
   bool online_steam = false;
+  // Line gog-store: GOG as a second store (sign-in, library, installs), while it is being built. Off in every build
+  // unless the file names it. Going back to a build older than the first release that reads GOG records (Phase 1 of
+  // the GOG plan) breaks Play for every game until the GOG titles are removed: that build refuses the whole runtime
+  // install records file when one record names GOG.
+  bool gog_store = false;
 };
 
 // What a build has on before features.txt. all_on (nightlies and local dev builds) turns on no feature today: Online
-// stays off in every build.
+// and GOG stay off in every build.
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on);
 // defaults with the features text names turned on. unknown: each line that names no feature, as written.
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults = {},

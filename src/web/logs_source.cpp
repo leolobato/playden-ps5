@@ -2,6 +2,7 @@
 #include "web/logs_source.h"
 
 #include "app/diagnostic_log.h"
+#include "diagnostics/credential_patterns.h"
 #include "library/recipe_exports.h"
 #include "platform/directory_walk.h"
 #include "steam/backend/json.h"
@@ -340,7 +341,11 @@ std::string RedactHomeAddresses(std::string_view text) {
   return out;
 }
 
-std::string Redact(std::string_view text, const std::set<std::string>& found, const Redaction& account) {
+std::string Redact(std::string_view text_in, const std::set<std::string>& found, const Redaction& account) {
+  // Credentials first (GOG codes, CDN tokens, access and refresh tokens): a later rule that replaced an ID or an
+  // address inside one would cut it into pieces too short to be found.
+  const std::string credentials_out = diagnostics::RedactCredentialPatterns(text_in);
+  const std::string_view text = credentials_out;
   std::string out;
   out.reserve(text.size());
   // SteamIDs: \b7656119\d{10}\b.

@@ -119,6 +119,52 @@ int main() {
                            "owner=self flags=0x1", "family webapi shared_apps=3 owners=2 unlicensed=1",
                            "owners=none flags=none", "owners=family-1:1,family-2:2", "co_owner=123", "owner=123x"})
     CHECK(Redact(kept, {}, {}) == kept);
+  {
+    // GOG credentials by their shape (the same table as auth_redaction_test.cpp and test_collect_logs.py): each value
+    // goes, its key stays; short values and Playden's own error codes stay.
+    const std::pair<const char*, const char*> kCredentialCases[] = {
+        {"GET https://embed.gog.com/on_login_success?origin=client&code=SyntheticCode0123456789abc",
+         "GET https://embed.gog.com/on_login_success?origin=client&code=<redacted>"},
+        {"code=SyntheticCode0123456789abc&origin=client",
+         "code=<redacted>&origin=client"},
+        {"Code=ABCDEFGHIJKLMNOPqrst end",
+         "Code=<redacted> end"},
+        {"chunk https://gog-cdn-fastly.gog.com/token=nva=1790000000~dirs=4~token=0a1b2c3d4e5f60718293a4b5c6d7e8f9/content-system/v2/store/1/ab/cd/x status=200",
+         "chunk https://gog-cdn-fastly.gog.com/token=<redacted> status=200"},
+        {"path /~token=0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+         "path /~token=<redacted>"},
+        {"https://gog-cdn.gcdn.co/content-system/v2/store/1/ab/cd/x?wsSecret=0a1b2c3d4e5f60718293a4b5c6d7e8f9&wsTime=1790000000&prefix=/x",
+         "https://gog-cdn.gcdn.co/content-system/v2/store/1/ab/cd/x?wsSecret=<redacted>&wsTime=1790000000&prefix=/x"},
+        {"{\"access_token\":\"synthetic-access-1\",\"expires_in\":3600,\"refresh_token\" : \"r\"}",
+         "{\"access_token\":\"<redacted>\",\"expires_in\":3600,\"refresh_token\" : \"<redacted>\"}"},
+        {"?access_token=a1&refresh_token=r2 next",
+         "?access_token=<redacted>&refresh_token=<redacted> next"},
+        {"ACCESS_TOKEN=x;",
+         "ACCESS_TOKEN=<redacted>;"},
+    };
+    const char* const kCredentialKept[] = {
+        "exit code=1",
+        "code=0",
+        "step=publish code=publication-control-collision",
+        "sharing: account link start ok=0 code=authorization_pending",
+        "code=WDJB-MJHT",
+        "token=y",
+        "missing_token=12345678901234567890",
+        "code=abcdef012345678",
+        "access_token=",
+        "\"access_token\":\"\"",
+        "transcode=AAAAAAAAAAAAAAAAAAAAAA",
+        "step=app_info at=access_token error=protocol decode=0",
+    };
+    for (const auto& [text, expected] : kCredentialCases) {
+      CHECK(Redact(text, {}, {}) == expected);
+      CHECK(Redact(expected, {}, {}) == expected);
+    }
+    for (const char* kept : kCredentialKept) CHECK(Redact(kept, {}, {}) == kept);
+    // Credentials go first: a token holding a SteamID or a home address goes whole, not in pieces.
+    CHECK(Redact("code=X76561198000000001Y192.168.2.83Z", {}, {}) == "code=<redacted>");
+    CHECK(Redact("access_token=76561198000000001", {}, {{{"gog", "", "76561198000000001"}}}) == "access_token=<redacted>");
+  }
   // A game that stopped before Wine named the user is still covered by another log's name.
   names.clear();
   const std::string stopped = "== session-1.log\nPW_REPORT/1 profile=playden-steam-220\nopen C:/users/Alice failed\n";
@@ -278,6 +324,40 @@ assert listed == ['summary.md'] + playden and '| game titles | none |' in summar
     CHECK(bytes.find("48000000000000001") == std::string::npos && bytes.find("76561198000000002") == std::string::npos);
     CHECK(bytes.find("<gog-user> id <gog-id>") != std::string::npos && bytes.find("<steam-user> <steam-id>") != std::string::npos);
     fs::remove(logs / "accounts.log");
+  }
+
+  // GOG's sign-in code, tokens and signed CDN links: gone from the log served and from a report, keys kept.
+  {
+    Put(logs / "gog.log",
+        "relay paste https://embed.gog.com/on_login_success?origin=client&code=SyntheticCode0123456789abc\n"
+        "token answer {\"access_token\":\"synthetic-access-0000000000000001\",\"refresh_token\":\"synthetic-refresh-0000000000000001\"}\n"
+        "chunk https://gog-cdn.gcdn.co/x?wsSecret=0a1b2c3d4e5f60718293a4b5c6d7e8f9&wsTime=1790000000 exit code=1\n");
+    const std::string expected =
+        "relay paste https://embed.gog.com/on_login_success?origin=client&code=<redacted>\n"
+        "token answer {\"access_token\":\"<redacted>\",\"refresh_token\":\"<redacted>\"}\n"
+        "chunk https://gog-cdn.gcdn.co/x?wsSecret=<redacted>&wsTime=1790000000 exit code=1\n";
+    const auto index_gog = source.Index();
+    const auto text = source.ReadLog(index_gog, "gog.log", {});
+    CHECK(text && *text == expected);
+    std::string bytes;
+    CHECK(source.WriteReport(index_gog, "FAKE79999", {}, 1791601941,
+                             [&bytes](const char* data, std::size_t size) { bytes.append(data, size); return true; }));
+    Put(root / "gog.zip", bytes);
+    const std::string check_gog = R"(
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None
+text = z.read('logs/gog.log').decode()
+assert text == open(sys.argv[2]).read(), text
+for name in z.namelist():
+    data = z.read(name).decode()
+    for secret in ('SyntheticCode0123456789abc', 'synthetic-access-', 'synthetic-refresh-', '0a1b2c3d4e5f60718293a4b5c6d7e8f9'):
+        assert secret not in data, (name, secret)
+)";
+    Put(root / "check_gog.py", check_gog);
+    Put(root / "gog-expected.txt", expected);
+    CHECK(std::system(("python3 -I '" + (root / "check_gog.py").string() + "' '" + (root / "gog.zip").string() +
+                       "' '" + (root / "gog-expected.txt").string() + "'").c_str()) == 0);
+    fs::remove(logs / "gog.log");
   }
 
   // A logs folder that isn't there: an empty index, not an error.

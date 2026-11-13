@@ -108,6 +108,50 @@ class CollectLogsTests(unittest.TestCase):
                      'Version=10.0.0.0', '10.0.22621.1 10.0.1.256 1.10.0.1.5 10.0.1.2.3 x10.0.1.2 10.0.1.2x'):
             self.assertEqual(collect_logs.redact(kept, set()), kept)
 
+    def test_redacts_sign_in_codes_and_tokens(self):
+        # The same table as auth_redaction_test.cpp and web_logs_source_test.cpp.
+        redacted = (
+            ('GET https://embed.gog.com/on_login_success?origin=client&code=SyntheticCode0123456789abc',
+             'GET https://embed.gog.com/on_login_success?origin=client&code=<redacted>'),
+            ('code=SyntheticCode0123456789abc&origin=client',
+             'code=<redacted>&origin=client'),
+            ('Code=ABCDEFGHIJKLMNOPqrst end',
+             'Code=<redacted> end'),
+            ('chunk https://gog-cdn-fastly.gog.com/token=nva=1790000000~dirs=4~token=0a1b2c3d4e5f60718293a4b5c6d7e8f9/content-system/v2/store/1/ab/cd/x status=200',
+             'chunk https://gog-cdn-fastly.gog.com/token=<redacted> status=200'),
+            ('path /~token=0a1b2c3d4e5f60718293a4b5c6d7e8f9',
+             'path /~token=<redacted>'),
+            ('https://gog-cdn.gcdn.co/content-system/v2/store/1/ab/cd/x?wsSecret=0a1b2c3d4e5f60718293a4b5c6d7e8f9&wsTime=1790000000&prefix=/x',
+             'https://gog-cdn.gcdn.co/content-system/v2/store/1/ab/cd/x?wsSecret=<redacted>&wsTime=1790000000&prefix=/x'),
+            ('{"access_token":"synthetic-access-1","expires_in":3600,"refresh_token" : "r"}',
+             '{"access_token":"<redacted>","expires_in":3600,"refresh_token" : "<redacted>"}'),
+            ('?access_token=a1&refresh_token=r2 next',
+             '?access_token=<redacted>&refresh_token=<redacted> next'),
+            ('ACCESS_TOKEN=x;',
+             'ACCESS_TOKEN=<redacted>;'),
+        )
+        kept = (
+            'exit code=1',
+            'code=0',
+            'step=publish code=publication-control-collision',
+            'sharing: account link start ok=0 code=authorization_pending',
+            'code=WDJB-MJHT',
+            'token=y',
+            'missing_token=12345678901234567890',
+            'code=abcdef012345678',
+            'access_token=',
+            '"access_token":""',
+            'transcode=AAAAAAAAAAAAAAAAAAAAAA',
+            'step=app_info at=access_token error=protocol decode=0',
+        )
+        for text, expected in redacted:
+            self.assertEqual(collect_logs.redact(text, set()), expected)
+            self.assertEqual(collect_logs.redact(expected, set()), expected)
+        for text in kept:
+            self.assertEqual(collect_logs.redact(text, set()), text)
+        # Credentials go first: a token holding a SteamID or a home address goes whole, not in pieces.
+        self.assertEqual(collect_logs.redact('code=X76561198000000001Y192.168.2.83Z', set()), 'code=<redacted>')
+
     def test_finds_the_account_name_in_any_log(self):
         stopped_early = '== session-1.log\nPW_REPORT/1 profile=playden-steam-220\nopen C:/users/Alice failed\n'
         names = collect_logs.account_names([stopped_early, title_log(40800)])

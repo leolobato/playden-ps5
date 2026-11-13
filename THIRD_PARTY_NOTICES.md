@@ -70,6 +70,15 @@ revisions it was built from and includes their license texts in `LICENSES/`, and
 | CA certificate bundle (for schannel) | — | MPL-2.0 | Mozilla's root store |
 | PS5-Lapy-JB-Daemon (root helper in the app shell) | fork `66ab4f1` | MIT | See above |
 
+## Protocol references
+
+Playden's GOG client (`src/gog/`) speaks GOG's sign-in and content protocol as these projects document it in their
+code. It was written from that reading: no code is copied from them, and they are not built into Playden.
+
+| Project | License | Source |
+| --- | --- | --- |
+| gogdl (`9c593fd`) | GPL-3.0 | [Heroic-Games-Launcher/heroic-gogdl](https://github.com/Heroic-Games-Launcher/heroic-gogdl) |
+
 ## Your rights
 
 For the GPL and LGPL components, you can get the complete source of the version we ship from the links above, or

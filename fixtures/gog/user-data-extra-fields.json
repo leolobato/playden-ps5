@@ -1,0 +1,21 @@
+{
+  "country": "ZZ",
+  "currencies": [{"code": "XXX", "symbol": "?"}],
+  "selectedCurrency": {"code": "XXX", "symbol": "?"},
+  "preferredLanguage": {"code": "en", "name": "English"},
+  "ratingBrand": "NONE",
+  "isLoggedIn": true,
+  "checksum": {"cart": null, "games": "0000", "wishlist": "0000", "reviews_votes": null, "games_rating": null},
+  "updates": {"messages": 0, "pendingFriendRequests": 0, "unreadChatMessages": 0, "products": 0, "total": 0},
+  "userId": "1000000000000000001",
+  "username": "SyntheticPlayer",
+  "galaxyUserId": "1000000000000000001",
+  "email": null,
+  "avatar": "https://images.gog.com/0000000000000000000000000000000000000000000000000000000000000000",
+  "walletBalance": {"currency": "XXX", "amount": 0},
+  "purchasedItems": {"games": 0, "movies": 0},
+  "wishlistedItems": 0,
+  "friends": [],
+  "personalizedProductPrices": [],
+  "personalizedSeriesPrices": []
+}

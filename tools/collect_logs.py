@@ -5,7 +5,8 @@ Reads only /data/playden/logs (or the app's logs folder on 0.4.x and older) and 
 exported from Game settings are the player's to share: they have their own folder (/data/playden/exported-recipes), and
 an older version's export still in the logs folder is left out. It never reads playden-data, which holds the Steam
 sign-in. The Steam account name, SteamIDs, family group ID,
-PS5 user ID and home network addresses are replaced in every file unless --no-redact is given.
+PS5 user ID, home network addresses and sign-in codes and tokens are replaced in every file unless --no-redact is
+given.
 
   python3 tools/collect_logs.py --host 192.168.1.50
 
@@ -52,6 +53,19 @@ PS5_USER = re.compile(r"\buser=[1-9][0-9]*\b")
 PAD_INITIAL = re.compile(r"\bpad users initial=[1-9][0-9]*\b")
 PAD_FOREGROUND = re.compile(r"(\bpad users initial=[^\n]*?\bforeground=)[1-9][0-9]*\b")
 QUAD = re.compile(r"(?<![\w.])([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(?!\w|\.[0-9])")
+# Credentials, the same rules as src/diagnostics/credential_patterns.h, in one pass so the leftmost match wins as it
+# does there. Each value becomes <redacted> and the key stays:
+# - "access_token":"..." and "refresh_token":"..." in JSON, and access_token=... and refresh_token=..., any length;
+# - code=, token= and wsSecret= with a value of at least 16 characters of [A-Za-z0-9._~%+/=-] that is not only
+#   lowercase letters, '_' and '-': GOG sign-in codes, fastly's token=nva=...~token=... and gcore's wsSecret.
+#   "exit code=1", "code=0" and Playden's own error codes (code=publication-control-collision,
+#   code=authorization_pending) stay.
+SIGNED_VALUE_CHARS = r"[A-Za-z0-9._~%+/=-]"
+CREDENTIAL = re.compile(
+    r'("(?i:access_token|refresh_token)"[ \t\r\n]*:[ \t\r\n]*")[^"]+(?=")'
+    r"|(?<![A-Za-z0-9_])((?i:access_token|refresh_token)=)[^ \t\r\n\f\v&\"',;#<>]+"
+    r"|(?<![A-Za-z0-9_])((?i:code|token|wssecret)=)(?![a-z_-]*(?!" + SIGNED_VALUE_CHARS + r"))" + SIGNED_VALUE_CHARS + r"{16,}",
+    re.ASCII)
 REDACTED = "Steam account name, SteamIDs, family group ID, PS5 user ID and home network addresses"
 FIRMWARE = re.compile(r"console_firmware=(\S+)")
 # An export older versions wrote into the logs folder (recipe-<app id>.json, recipe-gog-<id>.json,
@@ -189,7 +203,13 @@ def home_address(match):
     return "<home-ip>" if home and max(a, b, c, d) <= 255 and d != 0 else match.group(0)
 
 
+def redact_credentials(text):
+    return CREDENTIAL.sub(lambda match: next(key for key in match.groups() if key) + "<redacted>", text)
+
+
 def redact(text, names):
+    # Credentials first: a later rule that replaced an ID or an address inside one would cut it into short pieces.
+    text = redact_credentials(text)
     text = STEAM_ID.sub("<steam-id>", text)
     text = OWNER_ID.sub("owner=<steam-id>", text)
     text = OWNER_IDS.sub(lambda match: OWNER_LIST_ID.sub("<steam-id>", match.group(0)), text)

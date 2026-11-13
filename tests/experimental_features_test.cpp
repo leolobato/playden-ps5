@@ -47,11 +47,25 @@ int main() {
   features = ParseExperimentalFeatures("community-recipes\nonline-steam\n", {}, &unknown);
   CHECK(features.online_steam && unknown.empty());
 
+  // GOG as a store: the line turns it on; off by default, nightlies and dev builds included.
+  CHECK(!DefaultExperimentalFeatures(false).gog_store && !DefaultExperimentalFeatures(true).gog_store);
+  {
+    std::vector<std::string> gog_unknown;
+    const auto gog = ParseExperimentalFeatures(" gog-store\r\ngog\nGOG-STORE\n#gog-store\n", {}, &gog_unknown);
+    CHECK(gog.gog_store && !gog.online_steam);
+    CHECK((gog_unknown == std::vector<std::string>{"gog", "GOG-STORE"}));
+    CHECK(!ParseExperimentalFeatures("gog-store-x\n# gog-store").gog_store);
+    CHECK(!ParseExperimentalFeatures("online-steam\ncommunity-recipes\n", DefaultExperimentalFeatures(true)).gog_store);
+    CHECK(ParseExperimentalFeatures("gog-store", DefaultExperimentalFeatures(true)).gog_store);
+  }
+
   // A line only turns a feature on: a default that is on stays on with any file.
   ExperimentalFeatures on;
   on.online_steam = true;
   CHECK(ParseExperimentalFeatures("", on).online_steam);
   CHECK(ParseExperimentalFeatures("# nothing\ncommunity-recipes\n", on).online_steam);
+  on.gog_store = true;
+  CHECK(ParseExperimentalFeatures("", on).gog_store);
 
   std::string pattern = (std::filesystem::temp_directory_path() / "playden-features-XXXXXX").string();
   const char* made = mkdtemp(pattern.data());

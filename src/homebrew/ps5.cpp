@@ -282,6 +282,7 @@ int main() {
         features = playden::app::ReadExperimentalFeatures(
             features_root + "/" + playden::app::kExperimentalFeaturesFileName, features, &unknown);
         if (features.online_steam) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature online-steam on");
+        if (features.gog_store) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature gog-store on");
         for (const auto& name : unknown)
             playden::app::AppendLogLine(log_root, "launch.log", "experimental feature unknown: " + name.substr(0, 64));
     }

@@ -421,6 +421,7 @@ int main(int argc, char** argv) {
             playden::app::DefaultExperimentalFeatures(playden::update::CurrentVersion().nightly() || PLAYDEN_DEV_BUILD), &unknown);
         for (const auto& name : unknown) std::fprintf(stderr, "unknown experimental feature: %s\n", name.substr(0, 64).c_str());
         if (features.online_steam) std::fprintf(stderr, "experimental feature online-steam on\n");
+        if (features.gog_store) std::fprintf(stderr, "experimental feature gog-store on\n");
         playden::runtime::SetOnlineSteamEnabled(features.online_steam);
     } else if (options->scenario == "friends") {
         // The friends scenario shows what online-steam adds (the Friends tab, Join, Invite friends); others keep it off.

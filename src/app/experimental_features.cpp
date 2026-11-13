@@ -9,7 +9,8 @@
 namespace playden::app {
 
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
-  // Online stays off until features.txt names it.
+  // Online stays off until features.txt names it. GOG stays off for all_on too: until a release that reads GOG records
+  // has shipped, a nightly would write gog- organization keys and install records that the builds before it refuse.
   (void)all_on;
   return {};
 }
@@ -27,6 +28,7 @@ ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, Experiment
     // Retired: community recipes are part of every build. Older files still name it.
     if (line == "community-recipes") continue;
     if (line == "online-steam") features.online_steam = true;
+    else if (line == "gog-store") features.gog_store = true;
     else if (unknown) unknown->emplace_back(line);
   }
   return features;
