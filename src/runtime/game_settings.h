@@ -541,6 +541,10 @@ bool IsGeneratedRecipeId(std::string_view id);
 // Unity bootstrap beside the player (UnityGameProgram) starts the player instead. One whose first program is Steam's and
 // now only starts the game is made again, as a new setup makes it, when that finds the game's own program.
 bool RefreshRecipeDefaults(const std::string& install_root, const KitCapabilities& kit, GameRecipe* recipe);
+// Sets each launch entry's working folder to its spelling on disk under install_root. Windows ignores case, so Steam
+// and recipes made on it may name System/ as "system" (Unreal Tournament, #844); the console's disk doesn't. A folder
+// that isn't there is left as named. True when an entry changed.
+bool MatchWorkingFoldersToDisk(const std::string& install_root, GameRecipe* recipe);
 // A community recipe (docs/community-recipes.md): community-<store>-<key>-<slug>, or community-<store>-<key> as Export
 // as recipe writes it before the author picks a slug (CommunityRecipeRefusals refuses that form). Only the shape is
 // checked (^community-(steam|epic|gog|imported)-[a-z0-9]+(-[a-z0-9]+)*$, at most 128 bytes): an id is only compared

@@ -2370,8 +2370,8 @@ std::string SerializeGameRecipe(const GameRecipe& recipe) {
 namespace {
 
 // Finds a game-relative path the way Windows would, ignoring case, and returns the
-// spelling on disk. Symbolic links are not followed.
-std::optional<std::string> ResolveGameFile(const std::string& root, const std::string& relative) {
+// spelling on disk: a file, or with `folder` a folder. Symbolic links are not followed.
+std::optional<std::string> ResolveGamePath(const std::string& root, const std::string& relative, bool folder) {
   namespace fs = std::filesystem;
   fs::path cursor(root);
   std::string resolved;
@@ -2395,13 +2395,33 @@ std::optional<std::string> ResolveGameFile(const std::string& root, const std::s
     resolved += (resolved.empty() ? "" : "/") + match;
     const auto status = fs::symlink_status(cursor, error);
     if (error || fs::is_symlink(status)) return std::nullopt;
-    if (end == relative.size()) return fs::is_regular_file(status) ? std::optional<std::string>(resolved) : std::nullopt;
+    if (end == relative.size())
+      return (folder ? fs::is_directory(status) : fs::is_regular_file(status)) ? std::optional<std::string>(resolved)
+                                                                               : std::nullopt;
     if (!fs::is_directory(status)) return std::nullopt;
   }
   return std::nullopt;
 }
 
+std::optional<std::string> ResolveGameFile(const std::string& root, const std::string& relative) {
+  return ResolveGamePath(root, relative, false);
+}
+
 }  // namespace
+
+bool MatchWorkingFoldersToDisk(const std::string& install_root, GameRecipe* recipe) {
+  bool changed = false;
+  for (auto& entry : recipe->launch_entries) {
+    if (entry.working_directory.empty()) continue;
+    const auto relative = steam::RelativeGamePath(entry.working_directory, true);
+    if (!relative || *relative == ".") continue;
+    const auto on_disk = ResolveGamePath(install_root, *relative, true);
+    if (!on_disk || *on_disk == entry.working_directory) continue;
+    entry.working_directory = *on_disk;
+    changed = true;
+  }
+  return changed;
+}
 
 std::string GeneratedRecipeId(std::uint32_t app_id) { return playden::GeneratedRecipeId(GameId::Steam(app_id)); }
 
@@ -2673,7 +2693,10 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
     if (!launch.working_directory.empty()) {
       const auto directory = steam::RelativeGamePath(launch.working_directory, true);
       if (!directory) continue;
-      working = *directory == "." ? std::string() : *directory;
+      // Steam names the folder as Windows sees it, in any case ("system" for System/, #844): the
+      // title and Playden's own checks open it by its name on disk. A missing one stays as Steam names it.
+      const auto folder = *directory == "." ? std::nullopt : ResolveGamePath(install_root, *directory, true);
+      working = *directory == "." ? std::string() : folder.value_or(*directory);
     }
     auto on_disk = ResolveGameFile(install_root, *relative);
     if (!on_disk) {

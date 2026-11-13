@@ -2883,6 +2883,56 @@ int main(int argc, char** argv) {
     std::filesystem::remove_all(game_root);
   }
 
+  // Steam names a working folder as Windows sees it: Unreal Tournament (13240) and UT2004 (13230) start
+  // "system\UnrealTournament.exe" in "system", which is System/ on disk (#844). The recipe, the profile and the
+  // folder dxvk.conf goes in use the disk's spelling, as the console's disk tells the two apart.
+  {
+    const auto game_root = std::filesystem::temp_directory_path() / ("playden-workdir-case-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(game_root);
+    WritePe(game_root / "System" / "UnrealTournament.exe", false);
+    std::filesystem::create_directories(game_root / "Maps");
+    GameRecipe generated;
+    CHECK(GenerateGameRecipe(13240, "Unreal Tournament", {{"", "", "system\\UnrealTournament.exe", "system", ""}},
+                             game_root.string(), &generated, &reason));
+    CHECK(generated.launch_entries.size() == 1);
+    CHECK(generated.launch_entries[0].executable == "System/UnrealTournament.exe");
+    CHECK(generated.launch_entries[0].working_directory == "System");
+    CHECK(LaunchWorkingFolder(generated.launch_entries[0]) == std::string("System"));
+    EffectiveSettings case_settings;
+    SettingsError case_error;
+    CHECK(BuildEffectiveSettings(generated, nullptr, {}, KitCapabilities{}, &case_settings, &case_error));
+    CHECK(case_settings.launch && case_settings.launch->working_directory == "System");
+    ProsperoProfile case_profile;
+    CHECK(RenderProsperoProfile(generated, case_settings, {"playden-steam-13240", "/data/playden-games/13240"},
+                                &case_profile, &reason));
+    CHECK(case_profile.text.find("\nworking_directory = Z:\\data\\playden-games\\13240\\System\n") != std::string::npos);
+    // A folder Steam names that isn't there stays as Steam names it.
+    CHECK(GenerateGameRecipe(13240, "Unreal Tournament", {{"", "", "system\\UnrealTournament.exe", "missing", ""}},
+                             game_root.string(), &generated, &reason));
+    CHECK(generated.launch_entries[0].working_directory == "missing");
+    // A recipe from elsewhere (a community recipe exported from an older setup) is matched to the disk when bound.
+    GameRecipe shared = generated;
+    shared.launch_entries[0].working_directory = "system";
+    shared.launch_entries.push_back({"maps", "Maps", "System/UnrealTournament.exe", "MAPS", ""});
+    shared.launch_entries.push_back({"root", "Root", "System/UnrealTournament.exe", "", ""});
+    shared.launch_entries.push_back({"gone", "Gone", "System/UnrealTournament.exe", "Gone", ""});
+    CHECK(MatchWorkingFoldersToDisk(game_root.string(), &shared));
+    CHECK(shared.launch_entries[0].working_directory == "System" && shared.launch_entries[1].working_directory == "Maps");
+    CHECK(shared.launch_entries[2].working_directory.empty() && shared.launch_entries[3].working_directory == "Gone");
+    CHECK(!MatchWorkingFoldersToDisk(game_root.string(), &shared));
+    // A file is not a folder.
+    shared.launch_entries[0].working_directory = "system/unrealtournament.exe";
+    CHECK(!MatchWorkingFoldersToDisk(game_root.string(), &shared));
+    // Every folder in a nested path takes the disk's spelling; a link on the way is not followed.
+    std::filesystem::create_directories(game_root / "Maps" / "Custom");
+    shared.launch_entries[0].working_directory = "maps\\CUSTOM";
+    CHECK(MatchWorkingFoldersToDisk(game_root.string(), &shared) && shared.launch_entries[0].working_directory == "Maps/Custom");
+    std::filesystem::create_directory_symlink(game_root / "System", game_root / "Linked");
+    shared.launch_entries[0].working_directory = "linked";
+    CHECK(!MatchWorkingFoldersToDisk(game_root.string(), &shared) && shared.launch_entries[0].working_directory == "linked");
+    std::filesystem::remove_all(game_root);
+  }
+
   {  // Everything the recipe sets has a row the player can change and reset (issue 52).
     const ProfileTarget target{"playden-steam-220", "/data/homebrew/FAKE77031/games/220"};
     EffectiveSettings settings;

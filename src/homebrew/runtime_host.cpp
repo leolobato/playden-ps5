@@ -3963,12 +3963,20 @@ const rt::CommunityRecipe* RuntimeHost::BoundCommunityRecipe(Composition& c, con
       Log("community recipe app=" + std::to_string(runtime_number) + " id=" + loaded.recipe.id + " program " +
           rt::SelectedProgram(fresh->recipe) + " is " + fresh->recipe.architecture + " in this copy, not " + architecture);
   }
+  // A recipe shared from Windows, or exported from a setup made before Playden matched Steam's folder to the disk, may
+  // name System/ as "system" (#844): the title and publication open the folder by its name on disk.
+  const bool respelled = !install_path.empty() && rt::MatchWorkingFoldersToDisk(HostPath(install_path).string(), &fresh->recipe);
   // Kept for the session, so pointers stay valid; updated in place when the copy or Playden's own recipe changed.
   auto& bound = c.bound_community[{loaded.recipe.revision, runtime_number}];
+  bool changed = true;
   if (!bound) bound = std::move(fresh);
   else if (rt::SerializeGameRecipe(bound->recipe) != rt::SerializeGameRecipe(fresh->recipe) ||
            bound->recipe.generated_launch != fresh->recipe.generated_launch)
     *bound = std::move(*fresh);
+  else changed = false;
+  if (respelled && changed)
+    Log("community recipe app=" + std::to_string(runtime_number) + " id=" + loaded.recipe.id +
+        " working folder spelled as on disk");
   return bound.get();
 }
 

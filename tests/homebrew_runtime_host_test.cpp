@@ -8547,6 +8547,91 @@ void CommunityRecipeOverGeneratedAndKitFallback() {
   restarted.Shutdown();
 }
 
+// Steam names a working folder as Windows sees it: Unreal Tournament (13240) starts system\UnrealTournament.exe in
+// "system", which is System/ on disk. The console's disk tells the two apart, so Prepare stopped at "Before DXVK
+// snapshot cannot be verified." (#844). The record, the profile and the folder dxvk.conf goes in use the disk's
+// spelling; so does a community recipe that names the folder in another case. This host's disk may ignore case, so
+// the spelling is what is checked.
+void WorkingFolderTakesTheDiskSpelling() {
+  Fixture fixture;
+  auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+  unsigned uuids = 0;
+  std::int64_t now = 1760000000;
+  auto config = CommunityConfig(fixture, kit, &uuids, &now);
+  config.steamworks_dir = (fs::path(g_runtime_dir) / "steamworks").string();
+  config.removal_confirm_polls = 3;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  config.unregister_title = [&fixture](const std::string&, const std::string&) {
+    fixture.registered = false;
+    fixture.submitted = false;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  RecipeCache cache;
+  cache.Wire(config);
+  const auto game = fixture.root / "data/homebrew/FAKE77031/games/13240";
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(game / "System/UnrealTournament.exe", pe, 0644);
+  Write(game / "Bin/Fast.exe", pe, 0644);
+  CHECK(chmod(game.c_str(), 0755) == 0);
+  GameRecipe recipe;
+  recipe.id = "community-steam-13240-fast";
+  recipe.version = 1;
+  recipe.name = "Unreal Tournament";
+  recipe.launch_entries = {{"game", "Fast", "Bin/Fast.exe", "bin"}};
+  recipe.architecture = "pe64";
+  recipe.graphics = "dxvk";
+  recipe.defaults["steam_features"] = "emulate";
+  CommunityRecipe shared;
+  shared.recipe = recipe;
+  shared.game = playden::GameRef::Steam(13240);
+  shared.game_name = "Unreal Tournament";
+  shared.executable = "Bin/Fast.exe";
+  shared.title = "Fast";
+  shared.status = "works";
+  shared.tested_kit = "0.12";
+  shared.author = "Ana";
+  const auto revision = cache.Add(SerializeCommunityRecipe(shared));
+  GameSettingsRecord saved;
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  RuntimePrepareRequest request{13240, "/data/homebrew/FAKE77031/games/13240", "internal", "Unreal Tournament"};
+  request.launches = {{"", "", "system\\UnrealTournament.exe", "system", ""}};
+  const auto profile = fixture.root / "data/playden/games/steam-13240/library/profiles/playden-steam-13240.profile";
+  const auto has = [](const std::string& text, const std::string& needle) { return text.find(needle) != std::string::npos; };
+  RuntimeHost host(config);
+  host.SetSteamAccount("player", 76561198000000001ull);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto prepare = [&] {
+    host.Prepare(request);
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(13240) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(13240)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(13240).c_str());
+    CHECK(!done.refusals.count(13240) && done.installs.size() == 1);
+    return done;
+  };
+  // Steam's folder: the generated recipe, the record and the profile say System.
+  auto done = prepare();
+  CHECK(done.installs[0].recipe_id == "steam-13240-auto" && done.installs[0].launch_path == "System/UnrealTournament.exe");
+  CHECK(done.installs[0].launch_working_directory == "System");
+  CHECK(done.generated_recipes.size() == 1 && done.generated_recipes[0].launch_entries[0].working_directory == "System");
+  CHECK(has(Read(profile), "\\games\\13240\\System\n"));
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto before = host.Snapshot().removals_handled;
+  host.Remove(13240, true);
+  const auto removed = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.removals_handled > before; }, 60);
+  CHECK(removed.installs.empty());
+  // A community recipe that names Bin/ as "bin": the same.
+  ChooseCommunityRecipe(&saved, "community-steam-13240-fast", revision);
+  done = prepare();
+  CHECK(done.installs[0].recipe_id == "community-steam-13240-fast" && done.installs[0].launch_path == "Bin/Fast.exe");
+  CHECK(done.installs[0].launch_working_directory == "Bin");
+  CHECK(has(Read(profile), "\\games\\13240\\Bin\n") && !has(Read(profile), "\\bin\n"));
+  host.Shutdown();
+}
+
 // A settings-only recipe (community.format_version 2) starts the program Playden finds: the generated recipe is made
 // first and lends its program, the recipe's settings apply on top. A "program" default the copy has starts instead,
 // one it hasn't is dropped.
@@ -9018,6 +9103,7 @@ int main(int argc, char** argv) {
   CommunityRecipeSwitches();
   AppliedCommunityRecipeSurvivesKitSwap();
   CommunityRecipeOverGeneratedAndKitFallback();
+  WorkingFolderTakesTheDiskSpelling();
   SettingsOnlyRecipeStartsPlaydensProgram();
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
