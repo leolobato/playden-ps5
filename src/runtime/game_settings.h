@@ -539,7 +539,7 @@ bool UsesGeneratedLaunch(const GameRecipe& recipe);
 // locks nothing. With graphics "dxvk", BuildEffectiveSettings adds kDxvkOverrides.
 // A Steam game's generated recipe id, "steam-<app id>-auto" (playden::GeneratedRecipeId).
 std::string GeneratedRecipeId(std::uint32_t app_id);
-// "steam-<app id>-auto" or "local-<uuid>-auto".
+// "steam-<app id>-auto", "gog-<product id>-auto" or "local-<uuid>-auto"; the GOG and Local ones name a valid game.
 bool IsGeneratedRecipeId(std::string_view id);
 // A generated recipe set up with older defaults for its engine (DefaultsRevision) takes the current ones from its
 // program's files: arguments, graphics and what those imply. Its id, version and programs stay, and what the player
@@ -975,8 +975,9 @@ bool WritePrivateSettingsFile(const std::string& path, const std::string& text);
 bool SetPrivateSettingsFileAside(const std::string& path, const std::string& aside_name);
 
 // Per-game records in one small JSON file ({"version":1,"games":{"<key>":record}}), keyed by
-// ToKey: a Steam game's app ID, "local-<uuid>" for an imported game. A missing file loads as no
-// records. Saving replaces the file atomically.
+// ToKey: a Steam game's app ID, "gog-<id>" for a GOG game, "local-<uuid>" for an imported game. A
+// record under a key this build can't read is skipped. A missing file loads as no records. Saving
+// replaces the file atomically.
 bool LoadGameSettingsFile(const std::string& path, std::map<GameId, GameSettingsRecord>* records,
                           std::string* reason);
 bool SaveGameSettingsFile(const std::string& path, const std::map<GameId, GameSettingsRecord>& records,

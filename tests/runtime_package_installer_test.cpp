@@ -1540,6 +1540,26 @@ void ShippedRecipeResolvesWithAnyKit() {
   auto generated = Record();
   generated.recipe_id = "steam-220-auto";
   CHECK(!installer.Inspect(generated).title_source_path.empty());
+  // Read back from a journal without its game: another store's generated recipe, for a number from the allocator's range.
+  auto gog = Record();
+  gog.runtime_number = 0xF0000001u;
+  gog.recipe_id = "gog-1207658924-auto";
+  CHECK(gog.game == playden::GameId{});
+  CHECK(!installer.Inspect(gog).title_source_path.empty());
+  auto local = gog;
+  local.recipe_id = "local-0f8fad5b-d9cb-469f-a165-70867728950e-auto";
+  CHECK(!installer.Inspect(local).title_source_path.empty());
+  auto invalid_gog = gog;
+  invalid_gog.recipe_id = "gog-0-auto";
+  CHECK(installer.StageTitle(invalid_gog).code == "kit-invalid");
+  auto out_of_range = gog;
+  out_of_range.runtime_number = 220;
+  CHECK(installer.StageTitle(out_of_range).code == "kit-invalid");
+  auto unknown_store = gog;
+  unknown_store.recipe_id = "epic-1-auto";
+  CHECK(installer.StageTitle(unknown_store).code == "kit-invalid");
+  Fixture fresh;
+  CHECK(fresh.Installer().StageTitle(gog).state == PackageActionState::kComplete);
 }
 
 // A shipped recipe's requirements against what the kit's template provides.

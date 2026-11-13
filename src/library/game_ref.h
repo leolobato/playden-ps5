@@ -75,9 +75,9 @@ std::string GameNameFromTitle(std::string_view title);
 // The recipe store a library game's own store is ("imported" for a Local game).
 std::string_view RecipeStoreOf(Store store);
 
-// The recipes a library game gets automatically, matched only by ID: a Steam game's steam/<app>; another store's game
-// the Steam app ID its Steamworks emulator uses (steam_appid.txt or Game settings) when it has one, else nothing (a
-// player finds other recipes by searching).
+// The recipes a library game gets automatically, matched only by ID: a Steam game's steam/<app>; a GOG game's
+// gog/<id>, whatever Steam app ID it has; another store's game the Steam app ID its Steamworks emulator uses
+// (steam_appid.txt or Game settings) when it has one, else nothing (a player finds other recipes by searching).
 std::optional<GameRef> MatchingGameRef(const GameId& game, std::uint32_t steam_app_id);
 // What a library game's shares are for: its matching ref, else for an imported game imported/<NameKey(title)>.
 std::optional<GameRef> SharingGameRef(const GameId& game, std::uint32_t steam_app_id, std::string_view title);

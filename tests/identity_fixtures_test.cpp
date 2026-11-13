@@ -112,7 +112,7 @@ void LibraryCacheKeepsSteamBytes() {
   auto bad = mixed;
   bad.games.back().id = GameId{playden::Store::kSteam, "0440"};
   CHECK(!cache.Save(account, bad).ok());
-  bad.games.back().id = GameId{playden::Store::kGog, "1207658924"};
+  bad.games.back().id = GameId{playden::Store::kEpic, "0f8fad5bd9cb469fa16570867728950e"};
   CHECK(!cache.Save(account, bad).ok());
 }
 
@@ -227,11 +227,12 @@ void RegistryKeepsSteamLines() {
         playden::ToKey(kLocalA) + "\tusb1\t777\n" + c_key + "\tinternal\t4096\n" + playden::ToKey(kLocalB) +
             "\tinternal\t0\tpaused\n" + playden::ToKey(kLocalD) + "\tinternal\t0\tpaused\n");
   CHECK(Read(local_games / ".playden-downloads-dismissed") == c_key + "\t1760000500\n");
-  // Malformed keys are dropped: leading zeros, upper-case UUIDs, other stores.
+  // Malformed keys are dropped: leading zeros, upper-case UUIDs, unknown stores.
   TemporaryDirectory junk;
   fs::create_directories(junk.path / "usb1");
   Write(junk.path / "games/.playden-games",
-        "0220\tinternal\t1\nlocal-0F8FAD5B-D9CB-469F-A165-70867728950E\tinternal\t1\ngog-1\tinternal\t1\n");
+        "0220\tinternal\t1\nlocal-0F8FAD5B-D9CB-469F-A165-70867728950E\tinternal\t1\nepic-1\tinternal\t1\n"
+        "gog-01\tinternal\t1\n");
   {
     InstallService service(runner, Volumes(junk.path));
     CHECK(service.Snapshot().installed.empty() && service.Snapshot().jobs.empty());
@@ -326,7 +327,7 @@ void RecipesNameTheirGame() {
   auto steam_number = local;
   steam_number.game = {};
   CHECK(RecipeGame(steam_number) == GameId::Steam(0xF0000000u));
-  // Half an identity, an unknown store or an invalid game is refused.
+  // Half an identity, an unknown store or an invalid game is refused ("gog" with a Local UUID is an invalid GOG game).
   auto refuse = [&](const std::string& from, const std::string& to) {
     auto changed = text;
     changed.replace(changed.find(from), from.size(), to);
@@ -338,6 +339,21 @@ void RecipesNameTheirGame() {
   CHECK(refuse("\"game\":\"0f8fad5b", "\"game\":\"0F8FAD5B"));
   CHECK(!IsGeneratedRecipeId("local-0F8FAD5B-D9CB-469F-A165-70867728950E-auto"));
   CHECK(!IsGeneratedRecipeId("local--auto") && !IsGeneratedRecipeId("steam--auto") && IsGeneratedRecipeId("steam-1-auto"));
+  // A GOG game's recipe names its store and product ID.
+  const auto gog_game = GameId::Gog(1207658924);
+  auto gog_text = text;
+  gog_text.replace(gog_text.find("\"store\":\"local\""), 15, "\"store\":\"gog\"");
+  gog_text.replace(gog_text.find("\"game\":\"0f8fad5b-d9cb-469f-a165-70867728950e\""), 45, "\"game\":\"1207658924\"");
+  const std::string local_id = "\"recipe_id\":\"" + local.id + "\"";
+  CHECK(gog_text.find(local_id) != std::string::npos);
+  gog_text.replace(gog_text.find(local_id), local_id.size(), "\"recipe_id\":\"gog-1207658924-auto\"");
+  GameRecipe gog_recipe;
+  CHECK(ParseGameRecipe(gog_text, &gog_recipe, &reason) && RecipeGame(gog_recipe) == gog_game &&
+        gog_recipe.app_id == 0xF0000000u && gog_recipe.id == "gog-1207658924-auto");
+  CHECK(SerializeGameRecipe(gog_recipe) == gog_text);
+  CHECK(IsGeneratedRecipeId("gog-1207658924-auto") && IsGeneratedRecipeId(playden::GeneratedRecipeId(gog_game)));
+  CHECK(!IsGeneratedRecipeId("gog--auto") && !IsGeneratedRecipeId("gog-0-auto") && !IsGeneratedRecipeId("gog-01-auto") &&
+        !IsGeneratedRecipeId("gog-18446744073709551616-auto") && !IsGeneratedRecipeId("epic-1-auto"));
   // Generated for a Local game: its id, game and runtime number.
   const auto root = fs::temp_directory_path() / ("playden-identity-recipe-" + std::to_string(::getpid()));
   fs::create_directories(root);

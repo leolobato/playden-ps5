@@ -2901,6 +2901,13 @@ int main(int argc, char** argv) {
     GameRecipe generated;
     CHECK(GenerateGameRecipe(4242, "Example", launches, game_root.string(), &generated, &reason));
     CHECK(generated.id == GeneratedRecipeId(4242) && IsGeneratedRecipeId(generated.id) && !IsGeneratedRecipeId(hl2.id));
+    // A GOG game's generated recipe is one too: its id names the game.
+    const auto gog = playden::GameId::Gog(1207658924);
+    GameRecipe gog_generated;
+    CHECK(GenerateGameRecipe(gog, 0xF0000001u, "Example", launches, game_root.string(), &gog_generated, &reason));
+    CHECK(gog_generated.id == "gog-1207658924-auto" && gog_generated.id == playden::GeneratedRecipeId(gog) &&
+          IsGeneratedRecipeId(gog_generated.id) && RecipeGame(gog_generated) == gog &&
+          gog_generated.app_id == 0xF0000001u);
     CHECK(generated.app_id == 4242 && generated.version == 2 && generated.architecture == "pe64");
     // No graphics library named: DXVK (game_probe.cpp, DefaultsFor).
     CHECK(generated.graphics == "dxvk" && generated.dll_overrides.empty() && generated.locked.empty());

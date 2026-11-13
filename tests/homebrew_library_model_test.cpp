@@ -187,7 +187,7 @@ void non_canonical_game_keys_select_nothing() {
     check(model.UpdateLibrary({{game(SteamId(19), "Nineteen"), game(SteamId(20), "Twenty")}, false, {}, false, true, 1}),
           "library loaded");
     check(model.action("r1") && model.action("select:20"), "a canonical key selects its game");
-    for (const char* key : {"0020", "+19", "19x", "019", " 19", "local-", "gog-19", "4294967315", ""}) {
+    for (const char* key : {"0020", "+19", "19x", "019", " 19", "local-", "gog-019", "epic-19", "4294967315", ""}) {
         const std::string text(key);
         check(!model.action("select:" + text) && !model.action("details:" + text) &&
                   !model.action("rate:" + text + ":works") && !model.action("note:" + text + ":hi"),

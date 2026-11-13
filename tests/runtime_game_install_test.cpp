@@ -763,7 +763,8 @@ void RuntimeNumbersRefuseOverflowAndDuplicates() {
     RuntimeInstallRepository repository(storage, "installs.json", Free);
     CHECK(repository.Load().error() == RepositoryError::kConflict);
   }
-  // A record past the allocator's next moves it on; Steam numbers and unknown stores are checked.
+  // A record past the allocator's next moves it on; Steam numbers, stores and games are checked ("gog" with a Local
+  // UUID is an invalid GOG game).
   auto behind = valid;
   behind.replace(behind.find("\"next_runtime_number\":4026531842"), 32, "\"next_runtime_number\":4026531840");
   WriteText(path, behind);
@@ -788,8 +789,57 @@ void RuntimeNumbersRefuseOverflowAndDuplicates() {
   }
 }
 
+// A prepared GOG game, as a build that installs them writes it: the same record as a Local game's, store "gog".
+constexpr const char* kGogRegistry =
+    R"({"schema_version":1,"reservations":[{"install_id":"gog-1207658924","title_id":"FAKE78000"}],"installs":[{"schema_version":1,"install_id":"gog-1207658924","title_id":"FAKE78000","app_id":4026531841,"store":"gog","game":"1207658924","data_root":"/data/playden/games/gog-1207658924","default_profile_id":"game","runtime_bundle_id":"prospero-win-e16ec8f","recipe_id":"gog-1207658924-auto","recipe_version":"1","settings_revision":7,"exit_policy":"exit-title","launch_entry_id":"0","launch_path":"Game.exe","launch_arguments":"","launch_working_directory":"","install_path":"/data/playden-games/gog-1207658924","volume_id":"internal","state":"ready","artifacts":[],"last_failure":null,"journal":null}],"next_runtime_number":4026531842})";
+
+void GogRecordsLoadAndKeepTheirBytes() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path);
+  CHECK(storage.EnsureRootDirectory().ok());
+  const auto path = directory.path + "/installs.json";
+  const auto gog = playden::GameId::Gog(1207658924);
+  WriteText(path, kGogRegistry);
+  {
+    RuntimeInstallRepository repository(storage, "installs.json", Free);
+    CHECK(repository.Load().ok());
+    const auto found = repository.Find("gog-1207658924");
+    CHECK(found && found->game == gog && found->runtime_number == 0xF0000001u &&
+          found->state == PreparationState::kReady && found->recipe_id == "gog-1207658924-auto");
+    CHECK(repository.RuntimeNumberFor(gog).value() == 0xF0000001u);  // from its record
+    CHECK(repository.Save().ok());
+    CHECK(ReadText(path) == kGogRegistry);
+  }
+  // A GOG game written by Reserve reads back the same way.
+  {
+    TemporaryDirectory fresh;
+    playden::Storage fresh_storage(fresh.path);
+    CHECK(fresh_storage.EnsureRootDirectory().ok());
+    RuntimeInstallRepository repository(fresh_storage, "installs.json", Free);
+    CHECK(repository.Load().ok());
+    const auto number = repository.RuntimeNumberFor(gog);
+    CHECK(number.ok() && number.value() == 0xF0000000u);
+    CHECK(repository.Reserve(LocalRequest(gog, number.value())).ok());
+    const auto text = ReadText(fresh.path + "/installs.json");
+    CHECK(text.find("\"install_id\":\"gog-1207658924\"") != std::string::npos &&
+          text.find("\"app_id\":4026531840,\"store\":\"gog\",\"game\":\"1207658924\",") != std::string::npos);
+    RuntimeInstallRepository restarted(fresh_storage, "installs.json", Free);
+    CHECK(restarted.Load().ok() && restarted.Find("gog-1207658924")->game == gog);
+  }
+  // A GOG game's number comes from the allocator's range, never a Steam app's.
+  for (const char* number : {"\"app_id\":1207658924,", "\"app_id\":4000,"}) {
+    std::string edited = kGogRegistry;
+    const std::string from = "\"app_id\":4026531841,";
+    edited.replace(edited.find(from), from.size(), number);
+    WriteText(path, edited);
+    RuntimeInstallRepository repository(storage, "installs.json", Free);
+    CHECK(!repository.Load().ok());
+  }
+}
+
 int main() {
   SteamRegistryBytesAreUnchanged();
+  GogRecordsLoadAndKeepTheirBytes();
   LocalGamesGetNumbersFromTheReservedRange();
   RuntimeNumbersRefuseOverflowAndDuplicates();
   JournalSyncFailureRequiresReloadBeforeFurtherEffects();

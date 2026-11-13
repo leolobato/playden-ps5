@@ -169,7 +169,7 @@ bool ValidNumber(const RuntimeInstall& record) {
   return record.runtime_number >= kFirstRuntimeNumber && record.runtime_number <= kLastRuntimeNumber;
 }
 
-// "store" on disk: only stores other than Steam are written, and only Local is read for now.
+// "store" on disk: only stores other than Steam are written; Local and GOG are read (ParseStoreKey).
 std::optional<playden::Store> ParseStore(const std::string& key) { return playden::ParseStoreKey(key); }
 
 // Both copies name the game, or one doesn't carry it (see RuntimeInstall::game).

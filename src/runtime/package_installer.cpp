@@ -550,7 +550,7 @@ void FilesystemPackageInstaller::AcceptShippedRecipes(std::vector<std::string> r
 
 // The kit's own recipe at the kit's version, a recipe Playden ships (AcceptShippedRecipes)
 // or the one Playden generated for this game from Steam's launch options
-// (playden::GeneratedRecipeId: "steam-<app id>-auto", "local-<uuid>-auto"). The kit's runtime and template
+// (playden::GeneratedRecipeId: "steam-<app id>-auto", "gog-<id>-auto", "local-<uuid>-auto"). The kit's runtime and template
 // run any of them; only the launch entries and bottle values differ.
 bool FilesystemPackageInstaller::RecipeAccepted(const RuntimeInstall& record) const {
   if (record.recipe_id == kit_.recipe.id) return record.recipe_version == kit_.recipe.version;
@@ -561,7 +561,7 @@ bool FilesystemPackageInstaller::RecipeAccepted(const RuntimeInstall& record) co
   if (record.runtime_number == 0) return false;
   if (record.game != GameId{}) return record.game.valid() && record.recipe_id == playden::GeneratedRecipeId(record.game);
   // A copy that doesn't carry its game (read back from a journal): the Steam game its number names,
-  // or, for a number from the allocator's range, a Local game's generated recipe.
+  // or, for a number from the allocator's range, another store's (Local, GOG) generated recipe.
   if (record.recipe_id == playden::GeneratedRecipeId(GameId::Steam(record.runtime_number))) return true;
   constexpr std::string_view kSuffix = "-auto";
   const std::string_view id = record.recipe_id;
@@ -569,7 +569,7 @@ bool FilesystemPackageInstaller::RecipeAccepted(const RuntimeInstall& record) co
       id.size() <= kSuffix.size() || id.substr(id.size() - kSuffix.size()) != kSuffix)
     return false;
   const auto game = playden::ParseInstallId(id.substr(0, id.size() - kSuffix.size()));
-  return game && game->store == Store::kLocal;
+  return game && game->store != Store::kSteam;
 }
 
 std::optional<FilesystemPackageInstaller::ResolvedPaths>

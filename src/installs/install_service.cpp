@@ -243,7 +243,8 @@ struct RegistryEntry {
 // "\tbranch=<name>" and "\tnodlc=<app>,<app>" (none: the defaults), "\tdlcset" for an update that changes the game's DLC
 // (InstallOptions::dlc_choice; an older Playden skips it and updates with the record's DLC), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
 // after the install bytes may come in any order, and
-// unknown ones are skipped. The key is ToKey: a Steam game's app ID, "local-<uuid>" for an imported game.
+// unknown ones are skipped. The key is ToKey: a Steam game's app ID, "gog-<id>" for a GOG game, "local-<uuid>" for an
+// imported game.
 std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
   RegistryEntry entry;
   const auto first_tab = line.find('\t');

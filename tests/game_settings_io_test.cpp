@@ -126,6 +126,28 @@ int main(int argc, char** argv) {
   CHECK(!LoadGameSettingsFile(records.string(), &loaded, &reason));
   CHECK(::chmod(records.c_str(), 0600) == 0);
   {
+    // A record of a store this build doesn't read (a newer Playden's) is skipped and the rest loads; a GOG game's
+    // record loads and is written back as it was.
+    const auto stores = root / "stores.json";
+    const std::string steam_record = "\"220\":{\"preset\":\"\",\"revision\":3,\"overrides\":{}}";
+    const std::string gog_record =
+        "\"gog-1207658924\":{\"preset\":\"\",\"revision\":2,\"overrides\":{\"program\":\"Game.exe\"}}";
+    const std::string unknown_record = "\"epic-0f8fad5bd9cb469fa16570867728950e\":{\"preset\":\"\",\"revision\":1,"
+                                       "\"overrides\":{}}";
+    std::ofstream(stores) << "{\"version\":1,\"games\":{" + steam_record + "," + unknown_record + "}}\n";
+    CHECK(::chmod(stores.c_str(), 0600) == 0);
+    std::map<playden::GameId, GameSettingsRecord> stores_loaded;
+    CHECK(LoadGameSettingsFile(stores.string(), &stores_loaded, &reason) && stores_loaded.size() == 1 &&
+          stores_loaded.at(SteamId(220)).revision == 3);
+    const auto gog = playden::GameId::Gog(1207658924);
+    std::ofstream(stores, std::ios::trunc) << "{\"version\":1,\"games\":{" + steam_record + "," + gog_record + "}}\n";
+    CHECK(LoadGameSettingsFile(stores.string(), &stores_loaded, &reason) && stores_loaded.size() == 2 &&
+          stores_loaded.at(gog).overrides.at("program") == "Game.exe" && stores_loaded.at(gog).revision == 2);
+    const auto written = Read(stores);
+    CHECK(SaveGameSettingsFile(stores.string(), stores_loaded, &reason));
+    CHECK(Read(stores) == written);
+  }
+  {
     // A game's Steam app ID (another store's game) is saved only when set, even as the record's only
     // value; a malformed one is dropped and the rest of the record loads.
     const auto imported = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");

@@ -5,6 +5,7 @@
 #include "library/game_ref.h"
 
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,8 @@ void StoreKeys() {
   for (const char* bad : {"", "0", "0274520", "4294967296", "99999999999", "274520\n", "274520 ", " 274520", "27452a", "-1"})
     CHECK(!IsStoreKey("steam", bad));
   CHECK(IsStoreKey("gog", "1207658924") && IsStoreKey("gog", "1" + std::string(19, '0')));
+  // The checker's rule: 20 digits, no 64-bit bound (a GOG GameId's stricter rule keeps every GOG game's ref valid).
+  CHECK(IsStoreKey("gog", "18446744073709551616") && IsStoreKey("gog", "99999999999999999999"));
   for (const std::string bad : {std::string("1") + std::string(20, '0'), std::string("01"), std::string("1207658924\n"), std::string()})
     CHECK(!IsStoreKey("gog", bad));
   const std::string hex = "0123456789abcdef0123456789abcdef";
@@ -129,6 +132,13 @@ void Refs() {
   CHECK(SharingGameRef(local, 0, "TMNT: Mutant Melee") == (GameRef{"imported", "tmnt-mutant-melee"}));
   CHECK(SharingGameRef(local, 0, "") == (GameRef{"imported", "game"}));
   CHECK(SharingGameRef(GameId::Steam(274520), 0, "Darkwood") == GameRef::Steam(274520));
+  // A GOG game keeps its own ref, also with a Steam app ID set for a Steamworks emulator.
+  const auto gog = GameId::Gog(1207658924);
+  const GameRef gog_ref{"gog", "1207658924"};
+  CHECK(MatchingGameRef(gog, 0) == gog_ref && MatchingGameRef(gog, 220) == gog_ref);
+  CHECK(SharingGameRef(gog, 220, "Name") == gog_ref && SharingGameRef(gog, 0, "Name") == gog_ref);
+  CHECK(MatchingGameRef(GameId::Gog(std::numeric_limits<std::uint64_t>::max()), 0)->valid());
+  CHECK(!MatchingGameRef(GameId{playden::Store::kGog, "01"}, 220));
   CHECK(RecipeStoreOf(Store::kLocal) == "imported" && RecipeStoreOf(Store::kSteam) == "steam");
 }
 

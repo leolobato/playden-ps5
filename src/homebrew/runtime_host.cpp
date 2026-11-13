@@ -4930,7 +4930,7 @@ constexpr char kPartlyRestoredMarker[] = ".playden-saves-partly-restored";
 constexpr char kSaveBackupSuffix[] = ".saves";
 constexpr std::size_t kSaveBackupsKept = 3;
 
-// "steam-<app id>" or "local-<uuid>": the install IDs a kept bottle may carry.
+// "steam-<app id>", "gog-<id>" or "local-<uuid>": the install IDs a kept bottle may carry.
 bool KeptInstallId(const std::string& id) { return ParseInstallId(id).has_value(); }
 
 // Deletes a tree with lstat/unlink/rmdir: links are removed as links and never

@@ -285,7 +285,9 @@ std::string_view RecipeStoreOf(Store store) {
 std::optional<GameRef> MatchingGameRef(const GameId& game, std::uint32_t steam_app_id) {
   if (!game.valid()) return std::nullopt;
   if (const auto app = game.steam_app()) return GameRef::Steam(*app);
-  // Epic and GOG get their own refs when those stores exist; until then only a Steam app ID matches.
+  // A GOG game keeps its own ref, even with a Steam app ID set (GameId's GOG rule is stricter than GameRef's).
+  if (game.store == Store::kGog) return GameRef{std::string(kRecipeStoreGog), game.value};
+  // Epic gets its own ref when that store exists; until then only a Steam app ID matches.
   if (steam_app_id != 0) return GameRef::Steam(steam_app_id);
   return std::nullopt;
 }
