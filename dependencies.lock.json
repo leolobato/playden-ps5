@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.25, installed as playden-kit. Kit 0.24 with the any-title shell of prospero-win 2ddfbbf (the title reads [steam] install_dir and shows a Steam game in C:\\Program Files (x86)\\Steam\\steamapps\\common, capability steam-library-path) and ntdll.prx and wineserver.prx of df71ecc (a virtual link is found in any letter case). The template, DXVK and Mono are 0.24's, so bottles need no Recreate.",
-    "manifest_sha256": "aead3c0b94b7164648257109897e71c30dd3c076694bc1cf73c46e0e965ee541",
-    "files_sha256": "fd9f19e54d8e85665cae81bf463a6adaf5eec07de36239df413d99567073de22",
+    "status": "Kit 0.26, installed as playden-kit. Kit 0.25 with ntdll.prx and wowprospero.prx of prospero-win 8e67a99 (Wine patch 1020: a commit the host can't back fails with the commit limit, as on Windows; the translator pushes and pops a word from memory, as Need for Speed III's Watcom code does). The template, DXVK and Mono are 0.25's, so bottles need no Recreate.",
+    "manifest_sha256": "55629ebee7498d40d9cc29fd0df81524737bc63d43b12babb6e1808b8d921b07",
+    "files_sha256": "77e6d14996a2df4d035d4d53f51dfb8a886b0e1cfc28dea1135782ecd3763a82",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -266,8 +266,8 @@
       "wow64_i386"
     ],
     "wrapper_revision": "2ddfbbff2d91a73949c58b58b0af232168861949",
-    "runtime_artifact_revision": "df71ecc-kit-0.25",
-    "runtime_inventory_source": "Kit 0.25: staged by build/kit-0.25/stage.py, the files of dev kit 0.24-dev.20261112.828 under the release name. That kit started from kit 0.24 and checked each step against a clean build: the any-title shell of 2ddfbbf (kit-h/source-826-shell, eboot.bin and its build record only), then ntdll.prx and wineserver.prx from the df71ecc cross build (kit-h/wine-ps5-826-1, identical to kit 0.24 in every other module). Earlier kits: see this file's git history.",
+    "runtime_artifact_revision": "8e67a99-kit-0.26",
+    "runtime_inventory_source": "Kit 0.26: staged by kits/kit-0.26/stage.py in the kit archive, the files of dev kit 0.26-dev.20261113.1 under the release name. That kit is kit 0.25 with ntdll.prx and wowprospero.prx from a clean cross build of 8e67a99 (kit-h/wine-ps5-026-1), identical to kit 0.25 in every other module. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",

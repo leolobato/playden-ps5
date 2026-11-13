@@ -679,6 +679,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 
 | Kit | What changed for games |
 | --- | --- |
+| 0.26 | Need for Speed III: Hot Pursuit (Modern Patch) starts: the 32-bit translator runs its Watcom code. A game that asks for more memory than the console can give gets Windows' out-of-memory error instead of access denied. Bottles need no Recreate. |
 | 0.25 | A Steam game installed from now on runs from `steamapps\common`, where Steam puts it, so The Talos Principle finds Steam and gets past its login screen. Game settings › Steam library folder turns this on for a game installed before. Bottles need no Recreate. |
 | 0.24 | Project Zomboid no longer runs out of open files: the runtime kit watches its folders itself. Game settings › Touchpad hold can swap to a mouse preset while the game runs. Bottles need no Recreate. |
 | 0.23 | Euro Truck Simulator 2 starts with many mods or with all its DLCs, and creates and loads profiles: files a game reads through an I/O completion port no longer use up the open-file limit. Bottles need no Recreate. |
