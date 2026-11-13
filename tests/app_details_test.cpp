@@ -61,9 +61,13 @@ class Source final : public AppDetailsSource {
   }
 };
 
+// How long a test waits for the service's worker. The waits end as soon as the worker answers; the limit only
+// has to hold on a busy machine, such as ctest running tests in parallel next to a build.
+constexpr auto kWorkerWait = 30s;
+
 std::vector<AppDetails> Await(AppDetailsService& service, std::size_t count) {
   std::vector<AppDetails> all;
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   while (all.size() < count && std::chrono::steady_clock::now() < deadline) {
     for (auto& details : service.Pump()) all.push_back(std::move(details));
     std::this_thread::sleep_for(1ms);
@@ -134,7 +138,7 @@ void RefreshAsksAgainForOneGame() {
 }
 
 InstalledCheck AwaitCheck(AppDetailsService& service, std::vector<AppDetails>* answers = nullptr) {
-  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   for (;;) {
     for (auto& details : service.Pump()) if (answers) answers->push_back(std::move(details));
     const auto check = service.CheckProgress();
@@ -181,7 +185,7 @@ void PageGoesFirstWhileCheckRuns() {
   std::vector<GameId> ids;
   for (std::uint32_t app = 100; app < 140; ++app) ids.push_back(SteamId(app));
   assert(service.CheckInstalled(ids, 1));
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(source.mutex);
@@ -206,7 +210,7 @@ void EarlierAnswerDoesNotCountForTheCheck() {
   Source source;
   AppDetailsService service(source, sessions);
   const auto calls = [&](std::size_t count) {
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
     for (;;) {
       {
         std::lock_guard<std::mutex> lock(source.mutex);
@@ -241,7 +245,7 @@ void InvalidateCancelsTheCheck() {
   std::vector<GameId> ids;
   for (std::uint32_t app = 100; app < 140; ++app) ids.push_back(SteamId(app));
   assert(service.CheckInstalled(ids, 1));
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(source.mutex);
@@ -299,7 +303,7 @@ void FailuresAreRetryable() {
 
 std::vector<MeasuredSize> AwaitMeasured(AppDetailsService& service, std::size_t count) {
   std::vector<MeasuredSize> all;
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   while (all.size() < count && std::chrono::steady_clock::now() < deadline) {
     for (auto& size : service.PumpMeasured()) all.push_back(std::move(size));
     std::this_thread::sleep_for(1ms);
@@ -354,7 +358,7 @@ void OpenedGameGoesFirst() {
     source.block_fetch = true;
   }
   for (std::uint32_t app = 100; app < 140; ++app) service.Request(SteamId(app), 1);  // the first batch blocks the worker
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(source.mutex);
@@ -379,7 +383,7 @@ void SlowSizeChecksDontBlockDetails() {
   source.hold = true;
   AppDetailsService service(source, sessions);
   service.Measure({SteamId(400), "public", "english"}, 1);
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(source.mutex);
@@ -403,7 +407,7 @@ void InstallSizesGoAheadOfUpdates() {
   source.hold = true;
   AppDetailsService service(source, sessions);
   assert(service.Measure({SteamId(500), {}, {}, true}, 1));  // holds the worker
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto deadline = std::chrono::steady_clock::now() + kWorkerWait;
   for (;;) {
     {
       std::lock_guard<std::mutex> lock(source.mutex);

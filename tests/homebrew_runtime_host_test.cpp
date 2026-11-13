@@ -387,7 +387,7 @@ void PrepareNextReordersWaitingPreparations() {
   host.Prepare(Game(20));
   {
     std::unique_lock<std::mutex> lock(gate_mutex);
-    CHECK(gate_changed.wait_for(lock, std::chrono::seconds(5), [&] { return blocked; }));
+    CHECK(gate_changed.wait_for(lock, std::chrono::seconds(30), [&] { return blocked; }));
   }
   CHECK((host.Snapshot().queued_prepares == std::vector<std::uint32_t>{10, 20, 30, 40}));
   CHECK(host.PrepareNext(30));

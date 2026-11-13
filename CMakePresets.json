@@ -32,6 +32,9 @@
       "configurePreset": "homebrew-host",
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
       }
     }
   ]
