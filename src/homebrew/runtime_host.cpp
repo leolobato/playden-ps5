@@ -270,8 +270,8 @@ std::vector<std::filesystem::path> Folders(const std::filesystem::path& folder) 
 // The newest session report of a game's bottle, followed by the newest log its engine wrote:
 // Unity's AppData/LocalLow/<company>/<product>/Player.log or Unreal's
 // AppData/Local/<project>/Saved/Logs/*.log in the bottle, or Unity 5's
-// <program>_Data/output_log.txt beside the program. Those name the crash when the report
-// stops short.
+// <program>_Data/output_log.txt beside the program, or an SCS game's Documents/<game>/game.log.txt
+// (and its game.crash.txt). Those name the crash when the report stops short.
 std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_root,
                                             const std::filesystem::path& program) {
   namespace fs = std::filesystem;
@@ -280,7 +280,8 @@ std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_ro
          &newest, &newest_time);
   if (newest.empty()) return std::nullopt;
   std::string text = "== " + newest.filename().string() + "\n" + FileTail(newest, 128 * 1024, 32 * 1024);
-  // Every report in the folder, newest first, and the start of the one before the newest: a run
+  std::optional<fs::file_time_type> crash_after;
+  // Every report in the folder, newest first, and the start and end of the one before the newest: a run
   // that wrote little, or a rotated report, still shows which runs there were and how they began.
   {
     std::vector<std::pair<fs::file_time_type, fs::path>> reports;
@@ -297,7 +298,21 @@ std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_ro
       text += "\n" + path.filename().string() + " bytes=" + std::to_string(fs::file_size(path, size_error)) +
               " time=" + std::to_string(seconds);
     }
-    if (reports.size() > 1) text += "\n== " + reports[1].second.filename().string() + " (start)\n" + FileTail(reports[1].second, 0, 32 * 1024);
+    // One file per run: a long run also leaves session-N.previous.log, its older chunk, beside its report.
+    std::vector<std::pair<fs::file_time_type, fs::path>> runs;
+    for (const auto& report : reports) {
+      const auto name = report.second.filename().string();
+      constexpr std::string_view kChunk = ".previous.log";
+      if (name.size() < kChunk.size() || name.compare(name.size() - kChunk.size(), kChunk.size(), kChunk) != 0)
+        runs.push_back(report);
+    }
+    // The run before the newest, its end too: when the player starts the game again after it closed, and opens
+    // Playden to send a report, the newest run is a short one and the run that closed is this one.
+    if (runs.size() > 1)
+      text += "\n== " + runs[1].second.filename().string() + " (start and end)\n" +
+              FileTail(runs[1].second, 64 * 1024, 32 * 1024);
+    // The end of the run before that: an engine's crash file written before it is from an older run.
+    if (runs.size() > 2) crash_after = runs[2].first;
   }
   const auto user = data_root / "library/prefixes/game" / playden::steam::cloud::kPrefixUserFolder / "AppData";
   fs::path engine; fs::file_time_type engine_time{};
@@ -311,11 +326,22 @@ std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_ro
   if (!program.empty())
     Newest(program.parent_path() / (program.stem().string() + "_Data"),
            [](const std::string& name) { return name == "output_log.txt"; }, &engine, &engine_time);
-  if (!engine.empty()) {
-    const auto shown = engine.lexically_relative(data_root);
-    text += "\n== " + (shown.empty() || *shown.begin() == ".." ? engine.parent_path().filename() / engine.filename() : shown).string() + "\n" +
-            FileTail(engine, 64 * 1024);
+  // SCS games (Euro Truck Simulator 2, American Truck Simulator) write game.log.txt in Documents/<game>, and on a
+  // crash game.crash.txt beside it, which names the fault.
+  const auto documents = data_root / "library/prefixes/game" / playden::steam::cloud::kPrefixUserFolder / "Documents";
+  fs::path scs_crash; fs::file_time_type scs_crash_time{};
+  for (const auto& game : Folders(documents)) {
+    Newest(game, [](const std::string& name) { return name == "game.log.txt"; }, &engine, &engine_time);
+    Newest(game, [](const std::string& name) { return name == "game.crash.txt"; }, &scs_crash, &scs_crash_time);
   }
+  const auto shown_name = [&](const fs::path& path) {
+    const auto shown = path.lexically_relative(data_root);
+    return (shown.empty() || *shown.begin() == ".." ? path.parent_path().filename() / path.filename() : shown).string();
+  };
+  if (!engine.empty()) text += "\n== " + shown_name(engine) + "\n" + FileTail(engine, 64 * 1024);
+  // Only a crash file from the last two runs: one left from an older crash would name the wrong fault.
+  if (!scs_crash.empty() && (!crash_after || scs_crash_time >= *crash_after))
+    text += "\n== " + shown_name(scs_crash) + "\n" + FileTail(scs_crash, 32 * 1024, 16 * 1024);
   // Steam features = Online (runtime/steam_host.h): the Steam host's own log in the bottle, which never holds a token,
   // and Wine's messages from its process, which the title writes beside the reports' folder (its start too: that is
   // where the host's libraries load).

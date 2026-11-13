@@ -2234,6 +2234,54 @@ void PreparesGameWithoutShippedRecipe() {
   CHECK(title_logs.at("FAKE78001").find("bytes left out") != std::string::npos);
   CHECK(title_logs.at("FAKE78001").find("\nlast line\n") != std::string::npos);
   long_log.Shutdown();
+
+  // The game closed, the player started it again and opened Playden a few seconds later: the run that closed is the
+  // one before the newest, and its end is shown as well as its start. An SCS game's own log and its crash file from
+  // that run follow; a crash file from an older run does not.
+  const auto now = std::filesystem::file_time_type::clock::now();
+  Write(data / "library/logs/session-6.log", "PW_REPORT/1 older run\n", 0600);
+  std::filesystem::last_write_time(data / "library/logs/session-6.log", now - std::chrono::seconds(600));
+  Write(data / "library/logs/session-7.log",
+        "PW_REPORT/1 closed run\n" + std::string(200 * 1024, '.') + "\nREC fault at the end\n", 0600);
+  std::filesystem::last_write_time(data / "library/logs/session-7.log", now - std::chrono::seconds(60));
+  Write(data / "library/logs/session-0.log", "PW_REPORT/1 short run\n", 0600);
+  std::filesystem::last_write_time(data / "library/logs/session-0.log", now);
+  const auto scs = data / "library/prefixes/game/drive_c/users/prospero/Documents/Euro Truck Simulator 2";
+  Write(scs / "game.log.txt", "00:00:01.000 : [sys] Loading base.scs\n", 0600);
+  std::filesystem::last_write_time(scs / "game.log.txt", now + std::chrono::seconds(20));
+  Write(scs / "game.crash.txt", "Crash: Access violation at eurotrucks2.exe\n", 0600);
+  std::filesystem::last_write_time(scs / "game.crash.txt", now - std::chrono::seconds(61));
+  title_logs.clear();
+  RuntimeHost reopened(config);
+  CHECK(reopened.Start());
+  WaitFor(reopened, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+  const auto& reopened_log = title_logs.at("FAKE78001");
+  CHECK(reopened_log.find("== session-0.log\nPW_REPORT/1 short run") != std::string::npos);
+  CHECK(reopened_log.find("== session-7.log (start and end)\nPW_REPORT/1 closed run") != std::string::npos);
+  CHECK(reopened_log.find("\nREC fault at the end\n") != std::string::npos);
+  CHECK(reopened_log.find("Documents/Euro Truck Simulator 2/game.log.txt\n00:00:01.000 : [sys] Loading base.scs") !=
+        std::string::npos);
+  CHECK(reopened_log.find("Documents/Euro Truck Simulator 2/game.crash.txt\nCrash: Access violation") != std::string::npos);
+  reopened.Shutdown();
+  // The newest run was long and left its older chunk, session-0.previous.log: that chunk is not a run, so the run
+  // that closed is still session-7, and the crash file from it still shows.
+  Write(data / "library/logs/session-0.previous.log", "PW_REPORT/1 short run, older chunk\n", 0600);
+  std::filesystem::last_write_time(data / "library/logs/session-0.previous.log", now - std::chrono::seconds(30));
+  title_logs.clear();
+  RuntimeHost rotated(config);
+  CHECK(rotated.Start());
+  WaitFor(rotated, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+  CHECK(title_logs.at("FAKE78001").find("== session-7.log (start and end)") != std::string::npos);
+  CHECK(title_logs.at("FAKE78001").find("game.crash.txt\nCrash: Access violation") != std::string::npos);
+  rotated.Shutdown();
+  CHECK(std::filesystem::remove(data / "library/logs/session-0.previous.log"));
+  std::filesystem::last_write_time(scs / "game.crash.txt", now - std::chrono::seconds(900));
+  title_logs.clear();
+  RuntimeHost stale_crash(config);
+  CHECK(stale_crash.Start());
+  WaitFor(stale_crash, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+  CHECK(title_logs.at("FAKE78001").find("game.crash.txt") == std::string::npos);
+  stale_crash.Shutdown();
 }
 
 // A Steam game set to Steam library folder = Steam's folder, on a runtime kit that shows it in steamapps\\common
