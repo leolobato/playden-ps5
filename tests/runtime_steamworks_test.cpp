@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <algorithm>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -54,7 +55,7 @@ int main(int argc, char** argv) {
   const auto emulator64 = Read(fs::path(emulator) / "steam_api64.dll");
   const auto emulator32 = Read(fs::path(emulator) / "steam_api.dll");
   CHECK(!emulator64.empty() && !emulator32.empty());
-  const auto root = fs::temp_directory_path() / ("playden-steamworks-" + std::to_string(::getpid()));
+  const auto root = fs::canonical(fs::temp_directory_path()) / ("playden-steamworks-" + std::to_string(::getpid()));
   fs::remove_all(root);
 
   // Interface names, as gbe_fork's generator finds them.
@@ -446,6 +447,124 @@ int main(int argc, char** argv) {
     Write(other / "steam_api64_gbe.dll", "something else");
     CHECK(EmulateSteamworks(other.string(), emulator, identity).ok && Read(other / "steam_api64.dll.orig") == own);
     CHECK(fs::exists(other / "steam_api64_gbe.dll"));
+  }
+
+  // Offline emulation, game's library: gbe_fork's client builds go in the bottle's C:\playden\steamclient with the
+  // settings beside them; the game's folder is not touched.
+  {
+    const auto prefix = root / "client-bottle";
+    fs::create_directories(prefix / "drive_c");
+    SteamworksIdentity identity;
+    identity.app_id = 976310;
+    identity.account_name = "player";
+    identity.steam_id = 76561198000000001ull;
+    identity.owned_dlc = {976320};
+    identity.network = false;
+    auto provided = ProvideSteamClient(prefix.string(), emulator, identity);
+    CHECK(provided.ok && provided.changed.size() == 2 && provided.found.size() == 2);
+    const auto folder = prefix / "drive_c/playden/steamclient";
+    CHECK(Read(folder / "steamclient64.dll") == Read(fs::path(emulator) / "steamclient64.dll"));
+    CHECK(Read(folder / "steamclient.dll") == Read(fs::path(emulator) / "steamclient.dll"));
+    CHECK(HashArtifactBytes(Read(folder / "steamclient64.dll")) == std::string(kSteamClient64Sha256));
+    CHECK(HashArtifactBytes(Read(folder / "steamclient.dll")) == std::string(kSteamClient32Sha256));
+    CHECK(Read(folder / "steam_settings/steam_appid.txt") == "976310");
+    CHECK(Read(folder / "steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n976320=dlc976320\n");
+    CHECK(Read(folder / "steam_settings/configs.main.ini").find("offline=1\ndisable_networking=1\n") != std::string::npos);
+    // Its own folder: no steam_appid.txt or interface list beside the DLLs.
+    CHECK(!fs::exists(folder / "steam_appid.txt") && !fs::exists(folder / "steam_interfaces.txt"));
+    struct stat info {};
+    CHECK(::stat((prefix / "drive_c/playden").c_str(), &info) == 0 && (info.st_mode & 07777) == 0700);
+    // The next start writes no DLL again, but the settings follow the account.
+    identity.account_name = "other";
+    provided = ProvideSteamClient(prefix.string(), emulator, identity);
+    CHECK(provided.ok && provided.changed.empty());
+    CHECK(Read(folder / "steam_settings/configs.user.ini").find("account_name=other\n") != std::string::npos);
+    // A damaged copy in the bottle is put right.
+    Write(folder / "steamclient64.dll", "damaged");
+    provided = ProvideSteamClient(prefix.string(), emulator, identity);
+    CHECK(provided.ok && provided.changed == std::vector<std::string>{"steamclient64.dll"});
+    // Damaged or missing builds in Playden's own folder are refused before anything is written.
+    const auto damaged = root / "damaged-emulator";
+    Write(damaged / "steamclient.dll", Read(fs::path(emulator) / "steamclient.dll"));
+    Write(damaged / "steamclient64.dll", "not the pinned build");
+    const auto other = root / "client-bottle-2";
+    fs::create_directories(other / "drive_c");
+    provided = ProvideSteamClient(other.string(), damaged.string(), identity);
+    CHECK(!provided.ok && !provided.message.empty() && !fs::exists(other / "drive_c/playden"));
+    // A link anywhere on the way is refused.
+    const auto linked = root / "client-bottle-3";
+    fs::create_directories(linked / "drive_c");
+    fs::create_directories(root / "elsewhere");
+    fs::create_directory_symlink(root / "elsewhere", linked / "drive_c/playden");
+    CHECK(!ProvideSteamClient(linked.string(), emulator, identity).ok);
+    CHECK(!fs::exists(root / "elsewhere/steamclient"));
+    // No bottle at all.
+    CHECK(!ProvideSteamClient((root / "no-bottle").string(), emulator, identity).ok);
+    // A link in the client's place, or a linked settings folder, is refused and never followed.
+    Write(root / "elsewhere/target.dll", "not ours");
+    fs::remove(folder / "steamclient64.dll");
+    fs::create_symlink(root / "elsewhere/target.dll", folder / "steamclient64.dll");
+    CHECK(!ProvideSteamClient(prefix.string(), emulator, identity).ok);
+    CHECK(fs::is_symlink(folder / "steamclient64.dll") && Read(root / "elsewhere/target.dll") == "not ours");
+    fs::remove(folder / "steamclient64.dll");
+    CHECK(ProvideSteamClient(prefix.string(), emulator, identity).ok);
+    fs::remove_all(folder / "steam_settings");
+    fs::create_directory_symlink(root / "elsewhere", folder / "steam_settings");
+    CHECK(!ProvideSteamClient(prefix.string(), emulator, identity).ok);
+    CHECK(!fs::exists(root / "elsewhere/steam_appid.txt"));
+  }
+
+  // The registry values that make Valve's steam_api find it, and what takes them away again.
+  {
+    const auto values = SteamClientRegistryValues(76561198000000001ull);
+    CHECK(values.size() == 6);
+    const auto data = [&](const std::string& key, const std::string& name) {
+      for (const auto& value : values)
+        if (value.key == key && value.name == name) return value.data;
+      return std::string("missing");
+    };
+    const std::string active = "Software\\Valve\\Steam\\ActiveProcess";
+    CHECK(data("Software\\Valve\\Steam", "SteamPath") == "\"C:\\\\playden\\\\steamclient\"");
+    CHECK(data(active, "pid") == "dword:00000020");
+    CHECK(data(active, "SteamClientDll") == "\"C:\\\\playden\\\\steamclient\\\\steamclient.dll\"");
+    CHECK(data(active, "SteamClientDll64") == "\"C:\\\\playden\\\\steamclient\\\\steamclient64.dll\"");
+    CHECK(data(active, "ActiveUser") == "dword:025e4c01");
+    CHECK(data(active, "Universe") == "\"Public\"");
+    CHECK(SteamClientRegistryValues(0)[4].data == "dword:00000000");
+
+    // Playden's values, as Wine saves them (another case for the folder, as Windows compares): all of them go.
+    const std::string ours =
+        "WINE REGISTRY Version 2\n\n"
+        "[Software\\\\Valve\\\\Steam] 1794571560\n#time=1dd736758eb9b0c\n\"SteamPath\"=\"C:\\\\Playden\\\\steamclient\"\n\n"
+        "[Software\\\\Valve\\\\Steam\\\\ActiveProcess] 1794571558\n#time=1dd736757bf7e92\n\"ActiveUser\"=dword:03814ef6\n"
+        "\"pid\"=dword:00000020\n\"SteamClientDll\"=\"C:\\\\playden\\\\steamclient\\\\steamclient.dll\"\n"
+        "\"SteamClientDll64\"=\"C:\\\\playden\\\\steamclient\\\\steamclient64.dll\"\n\"Universe\"=\"Public\"\n\n";
+    const auto removal = SteamClientRegistryRemoval(ours);
+    CHECK(removal.size() == 6);
+    CHECK(std::all_of(removal.begin(), removal.end(), [](const RegistryValue& value) { return value.data.empty(); }));
+    // The Steam host's (or a real Steam's) values name another client: nothing goes.
+    const std::string host =
+        "WINE REGISTRY Version 2\n\n"
+        "[Software\\\\Valve\\\\Steam] 1794571560\n\"SteamPath\"=\"Z:\\\\data\\\\playden\\\\steam-client\\\\client\"\n\n"
+        "[Software\\\\Valve\\\\Steam\\\\ActiveProcess] 1794571558\n\"pid\"=dword:00000028\n"
+        "\"SteamClientDll64\"=\"Z:\\\\data\\\\playden\\\\steam-client\\\\client\\\\steamclient64.dll\"\n\n";
+    CHECK(SteamClientRegistryRemoval(host).empty());
+    // A value with Playden's text in another key, or in a subkey, is not Steam's.
+    const std::string elsewhere =
+        "WINE REGISTRY Version 2\n\n"
+        "[Software\\\\Valve\\\\Steam\\\\ActiveProcess\\\\Other] 1\n"
+        "\"SteamClientDll64\"=\"C:\\\\playden\\\\steamclient\\\\steamclient64.dll\"\n\n"
+        "[Software\\\\Other] 1\n\"SteamPath\"=\"C:\\\\playden\\\\steamclient\"\n\n";
+    CHECK(SteamClientRegistryRemoval(elsewhere).empty());
+    // From a bottle: none yet is nothing to remove; one that can't be read is an error, not "nothing".
+    CHECK(SteamClientRegistryRemovalIn((root / "no-bottle").string()).value().empty());
+    const auto reg_bottle = root / "reg-bottle";
+    Write(reg_bottle / "user.reg", ours);
+    CHECK(SteamClientRegistryRemovalIn(reg_bottle.string()).value().size() == 6);
+    Write(root / "elsewhere/user.reg", ours);
+    fs::remove(reg_bottle / "user.reg");
+    fs::create_symlink(root / "elsewhere/user.reg", reg_bottle / "user.reg");
+    CHECK(!SteamClientRegistryRemovalIn(reg_bottle.string()));
   }
 
   fs::remove_all(root);

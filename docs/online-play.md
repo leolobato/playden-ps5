@@ -1,12 +1,13 @@
 # Online play (experimental)
 
-Game settings › Steam features offers three modes for a Steam game:
+Game settings › Steam features offers four modes for a Steam game:
 
 | Mode | What the game gets |
 | --- | --- |
 | Offline emulation | gbe_fork in place of its `steam_api(64).dll` (`runtime/steamworks/README.md`). gbe_fork tells the game that Steam runs and the game is owned, but it never reaches Steam's servers. Steam network says whether the game is told Steam is online; lobbies and servers then reach only other consoles or PCs running a Steam emulator on the same network. |
 | Online (experimental) | Valve's own Steam client, running beside the game and signed in as the player (the Steam host). The game keeps its own Steam library. |
 | Game's own files | The game's Steam library, unchanged, with no Steam running. |
+| Offline emulation, game's library | The game keeps its own Steam library, and gbe_fork answers it as the Steam client library in the bottle (`runtime/steamworks/README.md`). For games that check their own `steam_api` file. Steam network applies as with Offline emulation. |
 
 ## Turning it on
 

@@ -2077,6 +2077,15 @@ int main(int argc, char** argv) {
     CHECK(settings.values.at("steam_network").available && settings.values.at("steam_network").value == "online");
     CHECK(BuildEffectiveSettings(ffxiii, nullptr, {{"steam_network", "offline"}}, KitCapabilities{}, &settings, &error));
     CHECK(settings.values.at("steam_network").value == "offline");
+    // Offline emulation, game's library is the same emulator answering one level lower: Steam network and Steam Input
+    // act on it too.
+    CHECK(BuildEffectiveSettings(ffxiii, nullptr,
+                                 {{"steam_features", "steamclient"}, {"unlock.steam_features", "on"},
+                                  {"steam_network", "offline"}, {"steam_input", "off"}},
+                                 KitCapabilities{}, &settings, &error));
+    CHECK(settings.values.at("steam_features").value == "steamclient");
+    CHECK(settings.values.at("steam_network").available && settings.values.at("steam_network").value == "offline");
+    CHECK(settings.values.at("steam_input").available && settings.values.at("steam_input").value == "off");
     CHECK(BuildEffectiveSettings(ffxiii, nullptr, {}, KitCapabilities{}, &settings, &error));
     // Its own full-screen, size and quality arguments; the size follows the Resolution row.
     CHECK(settings.arguments == "-FullScreenMode=Force -Width=1920 -Height=1080 -Shadow=4096 -MSAA=4");

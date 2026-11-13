@@ -79,7 +79,9 @@ you sign in:
   [gbe_fork](https://github.com/Detanup01/gbe_fork), a Steamworks emulator, in place of the game's `steam_api.dll` and
   `steam_api64.dll`. The original files are kept next to them as `.orig`. gbe_fork is set to offline mode with its
   networking turned off. The game then runs without the Steam client and without Steam's checks. This is the default
-  for most games; Game settings › Steam features › **Game's own files** puts the original files back. Replacing a
+  for most games; Game settings › Steam features › **Game's own files** puts the original files back. For a game that
+  checks its own Steam files, **Offline emulation, game's library** keeps the original files and gives the game gbe_fork
+  as Steam's client library instead, in the game's bottle. Replacing a
   game's Steam API can be against the Steam Subscriber Agreement. In some countries, it can also count as getting
   around a protection measure. Decide for yourself if you accept this.
 - **No online play.** Online multiplayer does not work, and games with anti-cheat do not work. If you want to try

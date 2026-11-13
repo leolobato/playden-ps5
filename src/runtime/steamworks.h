@@ -1,8 +1,10 @@
 #pragma once
 
+#include "runtime/game_settings.h"
 #include "runtime/profile_save_folder.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,6 +28,23 @@ inline constexpr const char* kSteamOnlineBridge32Sha256 = "770d43c73909bdcb37ae3
 inline constexpr const char* kSteamOnlineBridgeMarker = "playden-online-bridge";  // text in every bridge build
 inline constexpr const char* kSteamOnlineEmulator64Name = "steam_api64_gbe.dll";
 inline constexpr const char* kSteamOnlineEmulator32Name = "steam_api_gbe.dll";
+
+// Steam features = Offline emulation, game's library (kSteamClientFeature): the game keeps its own steam_api(64).dll and
+// gbe_fork answers one level lower, as the Steam client library Valve's DLL loads. These are gbe_fork's
+// steamclient_experimental builds of the emulator's commit (runtime/steamworks/README.md), 32-bit and 64-bit. For games
+// that check their own steam_api file (Mortal Kombat 11 hashes it) or carry Valve's inside their program (Resident
+// Evil 5, behind Enigma Protector), where the emulator can't take the DLL's place.
+inline constexpr const char* kSteamClientFeature = "steamclient";
+inline constexpr const char* kSteamClient32Sha256 = "cf545c5fb3c44b54dce5d34f27e2d6204318b507df671a68eb0308d9489f5c1a";
+inline constexpr const char* kSteamClient64Sha256 = "0ca88dfb558bf72a935880ede54c847d5e396df68eed81bcef37d683287c3551";
+// Where they go in the game's bottle, with the steam_settings/ gbe_fork reads beside them in this mode. Never in the game's
+// folder: a game that checks its files finds them as Steam installed them.
+inline constexpr const char* kSteamClientWindowsFolder = "C:\\playden\\steamclient";
+// Valve's DLL loads the client named in HKCU\Software\Valve\Steam\ActiveProcess only while that key's pid is a running
+// process. Playden writes the values before the game starts, so it names the first process of the title's Wine, which
+// is the game itself. Checked on the console with runtime kit 0.24 (Mortal Kombat 11 started from the PS5 Home screen,
+// one program, no launcher): 0x20 on each of three starts; any other pid gives "steamclient.dll is NOT running".
+inline constexpr std::uint32_t kSteamClientGamePid = 0x20;
 
 // The emulator builds earlier Playden versions shipped (32-bit, 64-bit). A game they set up
 // still has one as its DLL: it is Playden's, replaced like the current one and never kept as
@@ -101,6 +120,26 @@ std::vector<std::string> FindSteamApi(const std::string& install_root);
 SteamworksResult EmulateSteamworks(const std::string& install_root, const std::string& emulator_dir,
                                    const SteamworksIdentity& identity,
                                    const std::vector<std::string>& retired = RetiredSteamApiSha256());
+
+// Offline emulation, game's library: puts gbe_fork's steamclient.dll and steamclient64.dll (<emulator_dir>, pinned above)
+// in the bottle at prefix (drive_c/playden/steamclient, kSteamClientWindowsFolder) with the steam_settings/ that
+// EmulateSteamworks writes for identity. A DLL already in place is not written again. The game's own files are not
+// touched: put its steam_api back with RestoreSteamworks first. found lists the two DLLs, changed those written.
+SteamworksResult ProvideSteamClient(const std::string& prefix, const std::string& emulator_dir,
+                                    const SteamworksIdentity& identity);
+
+// The user.reg values that make Valve's steam_api find the client ProvideSteamClient put in the bottle, as a running
+// Steam writes them: SteamPath, and ActiveProcess's pid (kSteamClientGamePid), SteamClientDll, SteamClientDll64,
+// ActiveUser (steam_id's account number) and Universe.
+std::vector<RegistryValue> SteamClientRegistryValues(std::uint64_t steam_id);
+
+// What takes them away again in any other mode: the values SteamClientRegistryValues writes, for each key whose client or
+// Steam path still names Playden's folder in user_reg (Wine's text). A value the Steam host or a real Steam wrote there
+// since is left alone. Empty when nothing names the folder.
+std::vector<RegistryValue> SteamClientRegistryRemoval(const std::string& user_reg);
+// The same for the bottle at prefix: nothing for a bottle with no user.reg yet, nullopt when its user.reg can't be read
+// (a link, or larger than Playden reads).
+std::optional<std::vector<RegistryValue>> SteamClientRegistryRemovalIn(const std::string& prefix);
 
 // The Steam host's mode (runtime/steam_host.h): the game keeps its own Steam library, which asks the running client
 // about the app in steam_appid.txt; without that file it would ask Steam to start the game again and quit. The library

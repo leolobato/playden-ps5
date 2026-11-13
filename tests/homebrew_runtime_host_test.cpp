@@ -4123,6 +4123,68 @@ void LocalGameSteamworksAppId() {
       return line.find("steam_app_id=" + std::to_string(number)) != std::string::npos;
     }));
   }
+
+  // Offline emulation, game's library: the game's own DLL stays where it is, gbe_fork's client goes in the bottle with
+  // its settings, and the bottle's user.reg names it as a running Steam would. Any other mode takes those values away.
+  fs::path bottle;
+  for (const auto& entry : fs::recursive_directory_iterator(fixture.root / "data/playden/games"))
+    if (entry.path().filename() == "user.reg" && entry.path().parent_path().filename() == "game")
+      bottle = entry.path().parent_path();
+  CHECK(!bottle.empty());
+  const auto client = bottle / "drive_c/playden/steamclient";
+  const auto set_features = [&](const char* value) {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    saved.overrides["steam_features"] = value;
+  };
+  host.SetSteamAccount("player", 76561198000000001ull);
+  set_field(4000);
+  set_features("steamclient");
+  apply();
+  CHECK(Read(game / "Bin/steam_api64.dll") == own_api && !fs::exists(game / "Bin/steam_settings/steamclient64.dll"));
+  CHECK(Read(client / "steamclient64.dll") == Read(fs::path(g_runtime_dir) / "steamworks/steamclient64.dll"));
+  CHECK(Read(client / "steamclient.dll") == Read(fs::path(g_runtime_dir) / "steamworks/steamclient.dll"));
+  CHECK(Read(client / "steam_settings/steam_appid.txt") == "4000");
+  CHECK(Read(client / "steam_settings/configs.user.ini").find("account_name=player\n") != std::string::npos);
+  // Another store's game gets no steam_appid.txt of Playden's in its folder, as with the Steam host: the (empty) one
+  // above stays as it is, and none appears in the game folder.
+  CHECK(Read(game / "Bin/steam_appid.txt").empty() && !fs::exists(game / "steam_appid.txt"));
+  auto reg = Read(bottle / "user.reg");
+  CHECK(reg.find("[Software\\\\Valve\\\\Steam\\\\ActiveProcess]") != std::string::npos);
+  CHECK(reg.find("\"pid\"=dword:00000020\n") != std::string::npos);
+  CHECK(reg.find("\"SteamClientDll64\"=\"C:\\\\playden\\\\steamclient\\\\steamclient64.dll\"\n") != std::string::npos);
+  CHECK(reg.find("\"SteamClientDll\"=\"C:\\\\playden\\\\steamclient\\\\steamclient.dll\"\n") != std::string::npos);
+  CHECK(reg.find("\"ActiveUser\"=dword:025e4c01\n") != std::string::npos);
+  CHECK(reg.find("\"SteamPath\"=\"C:\\\\playden\\\\steamclient\"\n") != std::string::npos);
+  CHECK(logged("steamworks app=" + std::to_string(number) + " mode=steamclient found=1 changed=- client=written"));
+  // The next start finds the client in place.
+  apply();
+  CHECK(logged("steamworks app=" + std::to_string(number) + " mode=steamclient found=1 changed=- client=kept"));
+  // Game's own files: Valve's library must not find the client any more; the files may stay.
+  set_features("game");
+  apply();
+  reg = Read(bottle / "user.reg");
+  CHECK(reg.find("steamclient") == std::string::npos && reg.find("\"pid\"=dword:00000020") == std::string::npos);
+  CHECK(logged("steamworks app=" + std::to_string(number) + " steamclient registry removed=6"));
+  // Offline emulation takes the DLL's place again, with no client values left either.
+  set_features("steamclient");
+  apply();
+  set_features("emulate");
+  apply();
+  CHECK(Read(game / "Bin/steam_api64.dll") == emulator && Read(bottle / "user.reg").find("steamclient") == std::string::npos);
+  // A user.reg Playden can't read (here a link) stops the preparation instead of passing for one without the values.
+  const auto hive_copy = bottle / "user.reg.test-copy";
+  fs::rename(bottle / "user.reg", hive_copy);
+  fs::create_symlink(hive_copy, bottle / "user.reg");
+  {
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(number, RuntimeMaintenance::kApplySettings);
+    const auto done = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; });
+    CHECK(!done.maintenance.at(number).ok);
+    CHECK(done.maintenance.at(number).message.find("registry") != std::string::npos);
+  }
+  fs::remove(bottle / "user.reg");
+  fs::rename(hive_copy, bottle / "user.reg");
+  apply();
   host.Shutdown();
 }
 

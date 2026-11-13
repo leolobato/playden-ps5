@@ -95,7 +95,10 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
                          {"online", "Online (experimental)",
                           "Runs Steam's own client beside the game, signed in as you. Only for games you trust."},
-                         {"game", "Game's own files", "The game's Steam library, unchanged."}},
+                         {"game", "Game's own files", "The game's Steam library, unchanged."},
+                         // runtime/steamworks.h kSteamClientFeature: for a game that checks its own Steam library file.
+                         {"steamclient", "Offline emulation, game's library",
+                          "The game's own Steam library, answered by Playden's Steam emulator."}},
                         "game", 1, ApplyMode::kGameClosed));
   // Online's handoff (runtime/online_session.h): read once and deleted by default, or kept so that a start from the
   // PS5 Home screen, without Playden, signs in too.
@@ -620,7 +623,8 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   }
   if (id == "steam_input") {
     const auto steam = values.find("steam_features");
-    if (steam == values.end() || steam->second.value != "emulate") return "Only with Offline emulation.";
+    if (steam == values.end() || (steam->second.value != "emulate" && steam->second.value != "steamclient"))
+      return "Only with Offline emulation.";
   }
   if ((id == "windows_version" || id == "text_scale") && !kit.registry)
     return "Needs a verified runtime kit with access to the game's bottle.";
@@ -727,7 +731,8 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if (id == "steam_network") {
     if (!OnlineSteamEnabled()) return "Needs online-steam in features.txt.";
     const auto steam = values.find("steam_features");
-    if (steam == values.end() || steam->second.value != "emulate") return "Only with Steam features = Offline emulation.";
+    if (steam == values.end() || (steam->second.value != "emulate" && steam->second.value != "steamclient"))
+      return "Only with Steam features = Offline emulation.";
   }
   return {};
 }

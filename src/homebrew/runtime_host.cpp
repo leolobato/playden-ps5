@@ -1159,12 +1159,32 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
   // (runtime/steam_host.h). Online is only chosen on a title that runs it (BuildEffectiveSettings falls back otherwise).
   const bool steam_host = features == "online" && files.settings.helper_process && steam_app.app_id != 0;
   const bool emulate = features == "emulate" && steam_app.app_id != 0;
+  // Offline emulation, game's library: the game keeps its own Steam library, and gbe_fork answers it as the Steam client
+  // library in the bottle (runtime/steamworks.h kSteamClientFeature).
+  const bool client = features == rt::kSteamClientFeature && steam_app.app_id != 0;
   rt::SteamworksResult result;
+  rt::SteamworksResult provided;
+  std::uint64_t client_steam_id = 0;  // the account the client's registry values name
   // The emulator's files name the signed-in account; before it is known they keep what Play wrote.
-  const bool emulator_waits = emulate && !steam_account_known;
+  const bool emulator_waits = (emulate || client) && !steam_account_known;
+  // Valve's library reads steam_appid.txt from the working folder: each program's own, and the one the chosen program
+  // starts in.
+  const auto start_folders = [&] {
+    std::vector<std::string> folders;
+    for (const auto& program : files.programs) folders.push_back(std::filesystem::path(program).parent_path().generic_string());
+    if (!record.launch_working_directory.empty()) {
+      auto working = record.launch_working_directory;
+      std::replace(working.begin(), working.end(), '\\', '/');
+      folders.push_back(working);
+    } else if (record.launch_in_install_root) {
+      folders.emplace_back();
+    }
+    return folders;
+  };
   if (emulator_waits) {
-    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=emulate waits: the Steam account is not known yet");
-  } else if (emulate) {
+    Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" + (client ? "steamclient" : "emulate") +
+        " waits: the Steam account is not known yet");
+  } else if (emulate || client) {
     rt::SteamworksIdentity identity;
     identity.app_id = steam_app.app_id;
     {
@@ -1256,24 +1276,48 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
           std::to_string(lost_actions.size()) + " " + lost + (lost_actions.size() > 4 ? ",..." : ""));
     }
     identity.network = files.settings.values.at("steam_network").value != "offline";
-    result = rt::EmulateSteamworks(root.string(), emulator, identity);
+    if (emulate) {
+      result = rt::EmulateSteamworks(root.string(), emulator, identity);
+    } else {
+      // The game's own library goes back in its place; the client and its settings go in the bottle.
+      result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);
+      client_steam_id = identity.steam_id;
+      if (result.ok) provided = rt::ProvideSteamClient(files.prefix, emulator, identity);
+      if (result.ok && !provided.ok) {
+        result.ok = false;
+        result.message = provided.message;
+      }
+      // A game from another store has no Steam app of its own to name.
+      if (result.ok && !other_store &&
+          !rt::WriteSteamAppIdBeside(root.string(), result.found, start_folders(), steam_app.app_id))
+        Log("steamworks app=" + std::to_string(record.runtime_number) + " steam_appid.txt could not be written");
+    }
   } else {
     result = rt::RestoreSteamworks(root.string(), rt::RetiredSteamApiSha256(), *files.steam_api_copies);
     // A game from another store has no Steam app of its own to name.
-    // Valve's library reads steam_appid.txt from the working folder: each program's own, and the one the chosen
-    // program starts in.
-    std::vector<std::string> start_folders;
-    for (const auto& program : files.programs) start_folders.push_back(std::filesystem::path(program).parent_path().generic_string());
-    if (!record.launch_working_directory.empty()) {
-      auto working = record.launch_working_directory;
-      std::replace(working.begin(), working.end(), '\\', '/');
-      start_folders.push_back(working);
-    } else if (record.launch_in_install_root) {
-      start_folders.emplace_back();
-    }
     if (steam_host && result.ok && !other_store &&
-        !rt::WriteSteamAppIdBeside(root.string(), result.found, start_folders, steam_app.app_id))
+        !rt::WriteSteamAppIdBeside(root.string(), result.found, start_folders(), steam_app.app_id))
       Log("steamworks app=" + std::to_string(record.runtime_number) + " steam_appid.txt could not be written");
+  }
+  // Valve's library finds the client through the registry values a running Steam writes. In this mode they name the
+  // client in the bottle; in any other they go, or Valve's library would still load it (the Steam host writes its own
+  // only once it has a session). A bottle that has no user.reg yet gets them on the next preparation.
+  struct stat hive {};
+  if (!emulator_waits && result.ok && ::lstat((files.prefix + "/user.reg").c_str(), &hive) == 0) {
+    const auto found = client ? std::optional<std::vector<rt::RegistryValue>>(rt::SteamClientRegistryValues(client_steam_id))
+                              : rt::SteamClientRegistryRemovalIn(files.prefix);
+    const auto values = found.value_or(std::vector<rt::RegistryValue>{});
+    std::string reason;
+    if (!found) {
+      result.ok = false;
+      result.message = "Playden could not read the game's registry to check its Steam values.";
+    } else if (!values.empty() && !rt::ApplyBottleRegistryValues(values, files.prefix, config_.unix_time(), "user.reg", &reason)) {
+      result.ok = false;
+      result.message = "Playden could not write the game's Steam registry values: " + reason + ".";
+    } else if (!client && !values.empty()) {
+      Log("steamworks app=" + std::to_string(record.runtime_number) + " steamclient registry removed=" +
+          std::to_string(values.size()));
+    }
   }
   if (!emulator_waits) {
     std::string changed;
@@ -1281,9 +1325,10 @@ std::string RuntimeHost::SteamworksStep(const GameFiles& files, bool steam_accou
     std::string skipped;
     for (const auto& path : result.skipped) skipped += (skipped.empty() ? "" : ",") + path;
     Log("steamworks app=" + std::to_string(record.runtime_number) + " mode=" +
-        (steam_host ? "steam-host" : emulate ? "emulate" : "game") +
-        (emulate && files.settings.values.at("steam_network").value == "offline" ? " network=offline" : "") +
+        (steam_host ? "steam-host" : emulate ? "emulate" : client ? "steamclient" : "game") +
+        ((emulate || client) && files.settings.values.at("steam_network").value == "offline" ? " network=offline" : "") +
         " found=" + std::to_string(result.found.size()) + " changed=" + (changed.empty() ? "-" : changed) +
+        (client ? " client=" + std::string(provided.changed.empty() ? "kept" : "written") : std::string()) +
         (skipped.empty() ? std::string() : " copies_skipped=" + skipped) + (result.ok ? std::string() : " failed=" + result.message));
     if (!result.ok) return result.message;
   }

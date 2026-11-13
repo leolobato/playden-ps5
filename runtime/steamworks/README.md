@@ -35,6 +35,34 @@ the first `owned_app_ids.txt` build `7100368e` (`4635ee7b…` 32-bit, `a87257fa�
 
 Playden checks both hashes (`src/runtime/steamworks.h`) before every use.
 
+## steamclient.dll and steamclient64.dll (gbe_fork, LGPL-3.0)
+
+For Game settings › Steam features = Offline emulation, game's library. The game keeps its own `steam_api(64).dll`
+(Valve's), and gbe_fork answers one level lower, as the Steam client library Valve's DLL loads. Playden copies both
+files into the game's bottle at `C:\playden\steamclient`, writes the same `steam_settings` folder beside them (gbe_fork
+reads it from beside the client in this mode), and writes the registry values a running Steam leaves for Valve's DLL
+(`HKCU\Software\Valve\Steam` `SteamPath`, and `ActiveProcess` `pid`, `SteamClientDll`, `SteamClientDll64`,
+`ActiveUser`, `Universe`). The `pid` names the game's own Wine process (0x20, the first process of the title's Wine):
+Valve's DLL loads the client only while that process runs. Any other Steam features value removes those registry values
+again. This is for games that check their own `steam_api` file (Mortal Kombat 11) or carry Valve's inside their
+program (Resident Evil 5); the game's folder stays as Steam installed it, apart from a `steam_appid.txt` beside its
+programs, as with Online.
+
+They are gbe_fork's `steamclient_experimental` release builds of the same commit as the emulator above,
+[`ca45922c`](https://github.com/leolobato/gbe_fork/commit/ca45922c84ded9f404a61a6ae2e8a0c9593b8fa1), from the same
+workflow run [42802991197](https://github.com/leolobato/gbe_fork/actions/runs/42802991197). The first attempt's
+artifacts had expired, so these come from re-runs of the job on that commit: attempt 2 (job 131901096555, artifact
+`emu-win-vs22-steamclient_experimental-release-x64-…`) and attempt 3 (job 131902919444, `…-Win32-…`). Like the emulator,
+they answer interfaces up to `SteamClient023`.
+
+| File | SHA-256 |
+| --- | --- |
+| `steamclient.dll` | `cf545c5fb3c44b54dce5d34f27e2d6204318b507df671a68eb0308d9489f5c1a` |
+| `steamclient64.dll` | `0ca88dfb558bf72a935880ede54c847d5e396df68eed81bcef37d683287c3551` |
+
+Playden checks both hashes (`kSteamClient32Sha256` and `kSteamClient64Sha256` in `src/runtime/steamworks.h`) before
+every use.
+
 ## steam.dll (Playden's own)
 
 `steam.dll` is not gbe_fork's: it is a minimal Steam2-era client library built from `tools/steam-legacy/steam.c` (no imports,

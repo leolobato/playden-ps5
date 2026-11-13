@@ -1,10 +1,12 @@
 #include "runtime/steamworks.h"
 
+#include "platform/managed_directory.h"
 #include "runtime/artifact_hash.h"
 #include "steam/backend/content_language.h"
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -19,6 +21,8 @@ namespace playden::runtime {
 namespace {
 
 namespace fs = std::filesystem;
+using platform::DirectoryPolicy;
+using platform::ManagedDirectory;
 
 constexpr int kMaxDepth = 10;
 constexpr std::size_t kMaxDllBytes = 64u * 1024u * 1024u;
@@ -562,6 +566,174 @@ SteamworksResult RestoreSteamworks(const std::string& install_root, const std::v
   }
   result.ok = true;
   return result;
+}
+
+namespace {
+constexpr const char* kSteamKey = "Software\\Valve\\Steam";
+constexpr const char* kActiveProcessKey = "Software\\Valve\\Steam\\ActiveProcess";
+
+// Wine's text for a REG_SZ value.
+std::string RegistryText(const std::string& text) {
+  std::string out = "\"";
+  for (const char c : text) out += c == '\\' || c == '"' ? std::string("\\") + c : std::string(1, c);
+  return out + "\"";
+}
+
+std::string Hex8(std::uint32_t value) {
+  char text[16];
+  std::snprintf(text, sizeof text, "%08x", static_cast<unsigned>(value));
+  return text;
+}
+
+std::string ClientPath(bool pe64) {
+  return std::string(kSteamClientWindowsFolder) + (pe64 ? "\\steamclient64.dll" : "\\steamclient.dll");
+}
+
+// The lines of the section [key] in Wine's user.reg text, lowered; empty when there is none.
+std::vector<std::string> RegistrySection(const std::string& user_reg, const std::string& key) {
+  std::string header = "[";
+  for (const char c : Lower(key)) header += c == '\\' ? std::string("\\\\") : std::string(1, c);
+  header += "]";
+  std::vector<std::string> lines;
+  bool inside = false;
+  std::size_t at = 0;
+  while (at < user_reg.size()) {
+    auto end = user_reg.find('\n', at);
+    if (end == std::string::npos) end = user_reg.size();
+    auto line = Lower(user_reg.substr(at, end - at));
+    at = end + 1;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (!line.empty() && line[0] == '[') {
+      // "[key] 1794571558": the time after the header.
+      inside = line.compare(0, header.size(), header) == 0 && (line.size() == header.size() || line[header.size()] == ' ');
+      continue;
+    }
+    if (inside) lines.push_back(std::move(line));
+  }
+  return lines;
+}
+
+// Whether the section holds name="<value>" with Playden's value (any case, as Windows compares).
+bool SectionNames(const std::vector<std::string>& lines, const std::string& name, const std::string& value) {
+  const auto wanted = Lower("\"" + name + "\"=" + RegistryText(value));
+  return std::find(lines.begin(), lines.end(), wanted) != lines.end();
+}
+
+// Writes bytes as name in folder through a temporary file there, each step checked by ManagedDirectory.
+bool WriteManaged(const ManagedDirectory& folder, const std::string& name, const std::string& bytes) {
+  const auto temporary = ".playden-" + name + ".tmp";
+  folder.RemoveRegularFile(temporary);
+  const int file = folder.CreateExclusiveFile(temporary, 0644);
+  if (file < 0) return false;
+  std::size_t done = 0;
+  bool ok = true;
+  while (ok && done < bytes.size()) {
+    const auto count = ::write(file, bytes.data() + done, bytes.size() - done);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) ok = false;
+    else done += static_cast<std::size_t>(count);
+  }
+  ok = ::fsync(file) == 0 && ok;
+  ok = ::close(file) == 0 && ok;
+  if (!ok || !folder.RenameChild(temporary, folder, name, true)) {
+    folder.RemoveRegularFile(temporary);
+    return false;
+  }
+  return folder.Sync();
+}
+
+// The current file name in folder, read through ManagedDirectory (a link or another kind of file reads as none).
+std::optional<std::string> ReadManaged(const ManagedDirectory& folder, const std::string& name) {
+  struct stat info {};
+  if (!folder.InspectChild(name, &info) || !S_ISREG(info.st_mode)) return std::nullopt;
+  const int file = folder.OpenRegularFile(name);
+  if (file < 0) return std::nullopt;
+  std::optional<std::string> out;
+  if (::fstat(file, &info) == 0 && S_ISREG(info.st_mode) && static_cast<std::size_t>(info.st_size) <= kMaxDllBytes) {
+    std::string bytes(static_cast<std::size_t>(info.st_size), '\0');
+    std::size_t done = 0;
+    while (done < bytes.size()) {
+      const auto count = ::read(file, bytes.data() + done, bytes.size() - done);
+      if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+      if (count <= 0) break;
+      done += static_cast<std::size_t>(count);
+    }
+    if (done == bytes.size()) out = std::move(bytes);
+  }
+  ::close(file);
+  return out;
+}
+}  // namespace
+
+SteamworksResult ProvideSteamClient(const std::string& prefix, const std::string& emulator_dir,
+                                    const SteamworksIdentity& identity) {
+  SteamworksResult result;
+  const auto fail = [&](std::string why) {
+    result.message = std::move(why);
+    return result;
+  };
+  // Both pinned builds first: nothing goes in the bottle from a damaged copy of Playden.
+  struct Client {
+    const char* name;
+    std::string bytes;
+  };
+  std::vector<Client> clients;
+  for (const bool pe64 : {false, true}) {
+    const char* const name = pe64 ? "steamclient64.dll" : "steamclient.dll";
+    auto bytes = ReadFile(fs::path(emulator_dir) / name, kMaxDllBytes);
+    const auto digest = bytes ? HashArtifactBytes(*bytes) : std::nullopt;
+    if (!digest || *digest != (pe64 ? kSteamClient64Sha256 : kSteamClient32Sha256))
+      return fail("Playden's Steam emulator files are missing or damaged; reinstall Playden.");
+    clients.push_back({name, std::move(*bytes)});
+  }
+  // drive_c/playden/steamclient through real folders only, each checked by ManagedDirectory.
+  const auto drive = ManagedDirectory::Open(fs::path(prefix) / "drive_c", DirectoryPolicy::kApprovedTree);
+  const auto playden = drive ? drive->OpenChild("playden", DirectoryPolicy::kApprovedTree, true, 0700) : std::nullopt;
+  const auto folder = playden ? playden->OpenChild("steamclient", DirectoryPolicy::kApprovedTree, true, 0700) : std::nullopt;
+  if (!folder) return fail("Playden could not make the game's Steam folder in its bottle.");
+  for (const auto& client : clients) {
+    result.found.push_back(client.name);
+    if (const auto current = ReadManaged(*folder, client.name); current && *current == client.bytes) continue;
+    if (!WriteManaged(*folder, client.name, client.bytes)) return fail("Playden could not set up Steam features for this game.");
+    result.changed.push_back(client.name);
+  }
+  // The client reads its settings beside itself. Its own folder needs no steam_appid.txt or interface list. The settings
+  // folder is checked as the others are; WriteSettings writes its files without following links, as in a game's folder.
+  if (!folder->OpenChild("steam_settings", DirectoryPolicy::kApprovedTree, true, 0755))
+    return fail("Playden could not write the game's Steam settings.");
+  auto settings = identity;
+  settings.write_game_appid_file = false;
+  if (!WriteSettings(folder->path(), settings, {})) return fail("Playden could not write the game's Steam settings.");
+  result.ok = true;
+  return result;
+}
+
+std::vector<RegistryValue> SteamClientRegistryValues(std::uint64_t steam_id) {
+  return {{kSteamKey, "SteamPath", RegistryText(kSteamClientWindowsFolder)},
+          {kActiveProcessKey, "pid", "dword:" + Hex8(kSteamClientGamePid)},
+          {kActiveProcessKey, "SteamClientDll", RegistryText(ClientPath(false))},
+          {kActiveProcessKey, "SteamClientDll64", RegistryText(ClientPath(true))},
+          {kActiveProcessKey, "ActiveUser", "dword:" + Hex8(static_cast<std::uint32_t>(steam_id & 0xffffffffull))},
+          {kActiveProcessKey, "Universe", RegistryText("Public")}};
+}
+
+std::vector<RegistryValue> SteamClientRegistryRemoval(const std::string& user_reg) {
+  std::vector<RegistryValue> removal;
+  const auto active = RegistrySection(user_reg, kActiveProcessKey);
+  if (SectionNames(active, "SteamClientDll", ClientPath(false)) || SectionNames(active, "SteamClientDll64", ClientPath(true)))
+    for (const char* name : {"pid", "SteamClientDll", "SteamClientDll64", "ActiveUser", "Universe"})
+      removal.push_back({kActiveProcessKey, name, ""});
+  if (SectionNames(RegistrySection(user_reg, kSteamKey), "SteamPath", kSteamClientWindowsFolder))
+    removal.push_back({kSteamKey, "SteamPath", ""});
+  return removal;
+}
+
+std::optional<std::vector<RegistryValue>> SteamClientRegistryRemovalIn(const std::string& prefix) {
+  const auto path = fs::path(prefix) / "user.reg";
+  if (!Exists(path)) return std::vector<RegistryValue>{};
+  const auto text = ReadFile(path, 32u * 1024u * 1024u);
+  if (!text) return std::nullopt;
+  return SteamClientRegistryRemoval(*text);
 }
 
 std::string SerializeSteamworksFacts(const std::vector<std::uint32_t>& depots, const std::vector<std::uint32_t>& owned_dlc,
