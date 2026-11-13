@@ -31,12 +31,13 @@ inline constexpr const char* kSteamOnlineEmulator32Name = "steam_api_gbe.dll";
 
 // Steam features = Offline emulation, game's library (kSteamClientFeature): the game keeps its own steam_api(64).dll and
 // gbe_fork answers one level lower, as the Steam client library Valve's DLL loads. These are gbe_fork's
-// steamclient_experimental builds of the emulator's commit (runtime/steamworks/README.md), 32-bit and 64-bit. For games
-// that check their own steam_api file (Mortal Kombat 11 hashes it) or carry Valve's inside their program (Resident
-// Evil 5, behind Enigma Protector), where the emulator can't take the DLL's place.
+// steamclient_experimental builds of the emulator's commit plus one change, the blocked-WinHTTP redirect
+// (runtime/steamworks/README.md), 32-bit and 64-bit. For games that check their own steam_api file (Mortal Kombat 11
+// hashes it) or carry Valve's inside their program (Resident Evil 5, behind Enigma Protector), where the emulator can't
+// take the DLL's place.
 inline constexpr const char* kSteamClientFeature = "steamclient";
-inline constexpr const char* kSteamClient32Sha256 = "cf545c5fb3c44b54dce5d34f27e2d6204318b507df671a68eb0308d9489f5c1a";
-inline constexpr const char* kSteamClient64Sha256 = "0ca88dfb558bf72a935880ede54c847d5e396df68eed81bcef37d683287c3551";
+inline constexpr const char* kSteamClient32Sha256 = "387130915545bae8aea33c77e5fb78e9f5f22227f71e8974b96a3ac06fecdc2c";
+inline constexpr const char* kSteamClient64Sha256 = "a57def605cc88b035ad7dd6193621bb50cffdc076465c4ad77882e45797ab79a";
 // Where they go in the game's bottle, with the steam_settings/ gbe_fork reads beside them in this mode. Never in the game's
 // folder: a game that checks its files finds them as Steam installed them.
 inline constexpr const char* kSteamClientWindowsFolder = "C:\\playden\\steamclient";

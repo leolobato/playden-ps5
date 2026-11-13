@@ -467,6 +467,20 @@ int main(int argc, char** argv) {
     CHECK(Read(folder / "steamclient.dll") == Read(fs::path(emulator) / "steamclient.dll"));
     CHECK(HashArtifactBytes(Read(folder / "steamclient64.dll")) == std::string(kSteamClient64Sha256));
     CHECK(HashArtifactBytes(Read(folder / "steamclient.dll")) == std::string(kSteamClient32Sha256));
+    // The client builds send a blocked WinHTTP connection to x.invalid, a host that never resolves: games see they are
+    // offline at once. A loopback address hangs on the console, and Borderlands 2 retries a refused connection forever
+    // at its loading logo.
+    const auto wide = [](const std::string& text) {
+      std::string out;
+      for (const char c : text) out += std::string{c, '\0'};
+      return out + std::string(2, '\0');
+    };
+    for (const char* name : {"steamclient.dll", "steamclient64.dll"}) {
+      const auto bytes = Read(folder / name);
+      CHECK(bytes.find(wide("x.invalid")) != std::string::npos);
+      CHECK(bytes.find(wide("127.0.0.1")) == std::string::npos);
+      CHECK(bytes.find(wide("127.1.33.7")) == std::string::npos);
+    }
     CHECK(Read(folder / "steam_settings/steam_appid.txt") == "976310");
     CHECK(Read(folder / "steam_settings/configs.app.ini") == "[app::dlcs]\nunlock_all=0\n976320=dlc976320\n");
     CHECK(Read(folder / "steam_settings/configs.main.ini").find("offline=1\ndisable_networking=1\n") != std::string::npos);

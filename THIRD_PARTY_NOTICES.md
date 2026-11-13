@@ -37,7 +37,7 @@ Barlow faces from inside the app, with the license at `/assets/barlow-OFL.txt`.
 
 | Component | License | Source |
 | --- | --- | --- |
-| gbe_fork (`runtime/steamworks/steam_api.dll`, `steam_api64.dll`, `steamclient.dll`, `steamclient64.dll`) | LGPL-3.0 ([text](runtime/steamworks/LICENSE)) | [Detanup01/gbe_fork](https://github.com/Detanup01/gbe_fork). Built from upstream with two changes, whose source is linked in the README below. Playden does not link against it: it replaces a game's own Steam API when the game is prepared, or, for Steam features = Offline emulation, game's library, goes in the game's bottle as Steam's client library. See [`runtime/steamworks/README.md`](runtime/steamworks/README.md). |
+| gbe_fork (`runtime/steamworks/steam_api.dll`, `steam_api64.dll`, `steamclient.dll`, `steamclient64.dll`) | LGPL-3.0 ([text](runtime/steamworks/LICENSE)) | [Detanup01/gbe_fork](https://github.com/Detanup01/gbe_fork). Built from upstream with two changes, and the client libraries with a third, whose source is linked in the README below. Playden does not link against it: it replaces a game's own Steam API when the game is prepared, or, for Steam features = Offline emulation, game's library, goes in the game's bottle as Steam's client library. See [`runtime/steamworks/README.md`](runtime/steamworks/README.md). |
 
 ## In the runtime kit
 
