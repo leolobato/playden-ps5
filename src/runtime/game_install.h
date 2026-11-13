@@ -217,6 +217,10 @@ struct ForeignInstall {
   std::uint32_t runtime_number = 0;
   // Its pending journal's operation, when the record names one as text: that request file stays.
   std::string journal_operation_id;
+  std::string journal_operation;  // that journal's operation name, when given as text
+  // The recipe it was published with, when given as text (unchecked): a community one stays in the cache.
+  std::string recipe_id;
+  std::string recipe_version;
 };
 
 // Runtime numbers of games from stores other than Steam: far above any Steam app ID.

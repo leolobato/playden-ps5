@@ -73,7 +73,22 @@ int main() {
   // Non-ASCII punctuation is a boundary too, as in Python ("“76561198000000001”").
   CHECK(Redact("\xe2\x80\x9c" "76561198000000001\xe2\x80\x9d", {}, {}) == "\xe2\x80\x9c<steam-id>\xe2\x80\x9d");
   // The signed-in account, exactly, even where no Wine line names it; the longest name first.
-  CHECK(Redact("steam user Bob 123 bobby", {"Bobby"}, {"bob", 123}) == "steam user <steam-user> <steam-id> <steam-user>");
+  CHECK(Redact("steam user Bob 123 bobby", {"Bobby"}, {{{"steam", "bob", "123"}}}) == "steam user <steam-user> <steam-id> <steam-user>");
+  // Two signed-in stores: each account's ID and name get its own placeholders, in any ASCII case.
+  {
+    const Redaction both{{{"steam", "Bob", "76561198000000002"}, {"gog", "SyntheticGogUser", "48000000000000001"}}};
+    CHECK(Redact("steam BOB 76561198000000002 gog SYNTHETICGOGUSER 48000000000000001 again syntheticgoguser", {}, both) ==
+          "steam <steam-user> <steam-id> gog <gog-user> <gog-id> again <gog-user>");
+    // The longest name first, whichever store it belongs to (found names too).
+    CHECK(Redact("bobby bob", {}, {{{"steam", "Bob", ""}, {"gog", "Bobby", ""}}}) == "<gog-user> <steam-user>");
+    CHECK(Redact("bobby bob", {}, {{{"steam", "Bobby", ""}, {"gog", "Bob", ""}}}) == "<steam-user> <gog-user>");
+    CHECK(Redact("bobcat bob", {"Bobcat"}, {{{"gog", "Bob", ""}}}) == "<steam-user> <gog-user>");
+    // IDs before names.
+    CHECK(Redact("48000000000000001 4800", {}, {{{"gog", "4800", "48000000000000001"}}}) == "<gog-id> <gog-user>");
+    // An empty ID or name is no account value: nothing else is replaced.
+    CHECK(Redact("0 gog user 123", {}, {{{"gog", "", ""}, {"steam", "", "123"}}}) == "0 gog user <steam-id>");
+    CHECK(Redact("0 gog user 123", {}, {{{"gog", "gog", ""}}}) == "0 <gog-user> user 123");
+  }
   // Account IDs from older logs, the same cases as test_collect_logs.py.
   CHECK(Redact("family step=license package=600 owner=157084330 flags=0x4000", {}, {}) ==
         "family step=license package=600 owner=<steam-id> flags=0x4000");
@@ -189,7 +204,7 @@ int main() {
   CHECK(status.find("\"other_kit_folders\":\"old-kit\"") != std::string::npos && status.find("\"firmware\":\"4.03\"") != std::string::npos);
 
   // One log: only names the index lists, always redacted (the found name and the signed-in account).
-  const Redaction account{"Bob", 76561198000000002ull};
+  const Redaction account{{{"steam", "Bob", "76561198000000002"}}};
   const auto install = source.ReadLog(index, "install.log", account);
   CHECK(install && *install == "user <steam-user> id=<steam-id>\n");
   const auto steam = source.ReadLog(index, "steam.log", account);
@@ -244,6 +259,25 @@ assert listed == ['summary.md'] + playden and '| game titles | none |' in summar
     CHECK(huge && huge->rfind("[Playden: the first 1000 bytes of this file are left out]\n", 0) == 0);
     CHECK(huge->find("last line <steam-user> <steam-id>") != std::string::npos);
     fs::remove(logs / "huge.log");
+  }
+
+  // Two signed-in stores named in a log: their placeholders in the log served and in a report.
+  {
+    const Redaction both{{{"steam", "Bob", "76561198000000002"}, {"gog", "SyntheticGogUser", "48000000000000001"}}};
+    Put(logs / "accounts.log",
+        "steam BOB 76561198000000002\ngog SyntheticGogUser id 48000000000000001 path=C:/users/syntheticgoguser\n");
+    const auto index_both = source.Index();
+    const auto text = source.ReadLog(index_both, "accounts.log", both);
+    CHECK(text && *text == "steam <steam-user> <steam-id>\ngog <gog-user> id <gog-id> path=C:/users/<gog-user>\n");
+    std::string bytes;
+    CHECK(source.WriteReport(index_both, "FAKE79999", both, 1791601941,
+                             [&bytes](const char* data, std::size_t size) { bytes.append(data, size); return true; }));
+    std::string lowered = bytes;
+    for (auto& c : lowered) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    CHECK(lowered.find("syntheticgoguser") == std::string::npos && lowered.find("bob") == std::string::npos);
+    CHECK(bytes.find("48000000000000001") == std::string::npos && bytes.find("76561198000000002") == std::string::npos);
+    CHECK(bytes.find("<gog-user> id <gog-id>") != std::string::npos && bytes.find("<steam-user> <steam-id>") != std::string::npos);
+    fs::remove(logs / "accounts.log");
   }
 
   // A logs folder that isn't there: an empty index, not an error.

@@ -8032,7 +8032,7 @@ void LeftoverRemovalRecoversRetireWriteGap(int scenario) {
 
 // A game a later build prepared, from a store this build can't read ("epic" stands for one): the runtime stays
 // available, the game is not listed, and its title is neither a leftover nor dropped from the allow-list. Its
-// pending request and its bottle stay for that build.
+// pending request and its bottle stay for that build, and so do the community recipes it was published with.
 void ForeignRecordKeepsItsTitleAtStartup() {
   Fixture fixture;
   auto config = LeftoverConfig(fixture);
@@ -8052,8 +8052,15 @@ void ForeignRecordKeepsItsTitleAtStartup() {
         R"({"schema_version":1,"reservations":[{"install_id":")" + id + R"(","title_id":"FAKE78007"}],"installs":[)"
         R"({"schema_version":1,"install_id":")" + id + R"(","title_id":"FAKE78007","app_id":4026531845,"store":"epic",)"
         R"("game":"0f8fad5bd9cb469fa16570867728950e","build_id":"123","data_root":"/data/playden/games/)" + id +
-        R"(","state":"ready","journal":{"operation_id":"op-epic","operation":"settings-request","step":"capture"}}]})",
+        R"(","state":"ready","recipe_id":"community-epic-0f8fad5bd9cb469fa16570867728950e-fast",)"
+        R"("recipe_version":")" + std::string(32, 'a') +
+        R"(","journal":{"operation_id":"op-epic","operation":"settings-request","step":"capture"}}]})",
         0600);
+  // The registry values its community recipe left in its bottle.
+  const auto registry_revision = std::string(64, 'b');
+  Write(config.state_root / ("recipe-registry-" + id + ".json"),
+        R"({"recipe_id":"community-epic-0f8fad5bd9cb469fa16570867728950e-fast","revision":")" + registry_revision +
+        R"(","values":[]})", 0600);
   const auto requests = config.state_root / "requests";
   Write(requests / "settings-request-op-epic.v1", "later-build", 0600);
   Write(requests / "settings-request-op-gone.v1", "nobody's", 0600);
@@ -8077,6 +8084,7 @@ void ForeignRecordKeepsItsTitleAtStartup() {
   CHECK(started.reason.find("Runtime install records are unavailable") == std::string::npos);
   CHECK(started.installs.empty() && started.leftover_titles.empty());
   CHECK(!started.runtime_games.count(0xF0000005u));
+  CHECK((started.community_references == std::vector<std::string>{std::string(32, 'a'), registry_revision}));
   CHECK(!lists.empty() && lists.back() == "FAKE78007\n");
   CHECK(fs::exists(title / "eboot.bin") && Read(bottle / "save.dat") == "saved-game");
   CHECK(fs::exists(requests / "settings-request-op-epic.v1") && !fs::exists(requests / "settings-request-op-gone.v1"));

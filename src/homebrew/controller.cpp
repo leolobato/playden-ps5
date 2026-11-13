@@ -2,11 +2,13 @@
 #include "homebrew/program_icon.hpp"
 #include "runtime/kit_version.h"
 #include "diagnostics/redaction.h"
+#include "platform/secret.h"
 #include "platform/usb_mount.h"
 #include "steam/install_volumes.h"
 #include "steam/secret.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <utility>
 
 namespace playden::homebrew {
@@ -89,6 +91,17 @@ void Controller::Start(app::PersistenceService* persistence_service) {
     persistence_->SetLog(persistence_log_);
   }
   request_ = service_->RestoreSession();
+  // Every other store's saved sign-in restores next to Steam's.
+  for (auto* account : stores_.accounts())
+    if (account && account->store() != Store::kSteam) other_accounts_.push_back({account});
+  for (auto& other : other_accounts_) {
+    AccountUpdate update;
+    update.authentication = AuthState::Restoring;
+    UpdateOther(other, std::move(update));
+    other.request = other.account->RestoreSession();
+    // Refused (its worker is gone): nothing will answer.
+    if (!other.request) UpdateOther(other, {});
+  }
   // Every other store's library loads now, next to Steam's.
   if (library_)
     for (auto* source : stores_.libraries())
@@ -154,6 +167,13 @@ void Controller::Shutdown() {
       // Turned off just before quitting: the saved token must still go.
       if (action.store == Store::kSteam && action == ServiceAction::StaySignedIn && stay_signed_in_)
         stay_signed_in_(model_.state().stay_signed_in);
+      if (action.store != Store::kSteam && action == ServiceAction::SignOut)
+        if (auto* other = FindOtherAccount(action.store); other && !other->signing_out) {
+          if (other->request) other->account->Cancel(other->request);
+          other->request = 0;
+          other->signing_out = true;
+          other->account->SignOut();
+        }
     }
   begin_after_clear_=false;
   // Each step is logged before it starts and with its time after, so a hang shows where it stopped.
@@ -173,6 +193,9 @@ void Controller::Shutdown() {
   if(library_) step("library", [&] { library_->Shutdown(); library_->Tick(); AdvanceClear(); });
   if(persistence_) step("persistence", [&] { persistence_->FlushAndShutdown(); AdvanceOrganizationClear(); });
   if(app_details_) step("details", [&] { app_details_->Shutdown(); });
+  for (auto* details : stores_.details_sources())
+    if (details->store() != Store::kSteam && other_details_.count(details->store()))
+      step(("details-" + std::string(Traits(details->store()).key)).c_str(), [&] { details->Shutdown(); });
   // A copy or move waiting for the runtime (RuntimeHost::Relocate) stops waiting first, so the
   // install service and the Local store's worker it blocks are joined at once; it resumes at the
   // next start.
@@ -184,6 +207,10 @@ void Controller::Shutdown() {
   if(runtime_) step("runtime", [&] { runtime_->Shutdown(); });
   persistence_.reset();
   library_.reset();
+  for (auto& other : other_accounts_) {
+    if (other.request) other.account->Cancel(other.request);
+    other.request = 0;
+  }
   if (!service_) return;
   service_->Shutdown();
   service_ = nullptr;
@@ -330,8 +357,11 @@ void Controller::Tick() {
   model_.SetWallClock(std::chrono::duration_cast<std::chrono::seconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   for (const auto request : model_.TakeServiceActions()) {
-    // Only Steam has an account to act on.
-    if (request.store != Store::kSteam) continue;
+    // Another store's account acts through its own driver; a store without one has nothing to act on.
+    if (request.store != Store::kSteam) {
+      if (auto* other = FindOtherAccount(request.store)) OtherAccountAction(*other, request.action);
+      continue;
+    }
     switch (request.action) {
       case ServiceAction::BeginQr: Begin(false); break;
       case ServiceAction::Reauthenticate: Reauthenticate(); break;
@@ -395,6 +425,13 @@ void Controller::Tick() {
     mark = now;
   };
   for (const auto& event : service_->Pump(16)) Apply(event);
+  for (auto& other : other_accounts_) {
+    auto events = other.account->PumpEvents(16);
+    for (auto& event : events) {
+      Apply(other, event);
+      platform::ZeroizeSecret(event.user_id);
+    }
+  }
   lap(0);
   if(library_) { library_->Tick();AdvanceClear(); }
   TickLicenseChanges();
@@ -402,6 +439,7 @@ void Controller::Tick() {
   if(persistence_) { persistence_->Tick();AdvanceOrganizationClear(); }
   lap(2);
   TickAppDetails();
+  TickOtherDetails();
   lap(3);
   TickStoreDetails();
   lap(4);
@@ -2617,9 +2655,11 @@ void Controller::TickAppDetails() {
     model_.ResetSizeChecks();
     requested_generation_ = generation;
     details_pages_.Clear();
-    launch_options_.clear();
-    launch_options_reason_.clear();
-    launches_any_branch_.clear();
+    // What Steam said about its games goes with the account; other stores' stay (TickOtherDetails drops theirs).
+    const auto of_steam = [](const auto& entry) { return entry.first.store == Store::kSteam; };
+    std::erase_if(launch_options_, of_steam);
+    std::erase_if(launch_options_reason_, of_steam);
+    std::erase_if(launches_any_branch_, [](const GameId& id) { return id.store == Store::kSteam; });
     steam_install_dirs_.clear();
     // An updated game's setup that waited for these details was never asked of the runtime: it is asked again.
     for (const auto& id : prepare_after_details_) refresh_asked_.erase(id);
@@ -2703,36 +2743,7 @@ void Controller::TickAppDetails() {
   }
   for (const auto& details : app_details_->Pump(8)) {
     if (details.account_generation != generation) continue;
-    if (details.available) {
-      std::vector<GameVersion> versions;
-      for (const auto& version : details.versions) {
-        GameVersion game_version{version.name, version.description, version.time_updated, version.build_id,
-                                 version.download_bytes ? std::optional<std::uint64_t>(version.download_bytes) : std::nullopt,
-                                 version.install_bytes ? std::optional<std::uint64_t>(version.install_bytes) : std::nullopt, {}};
-        for (const auto& size : version.languages)
-          game_version.languages.push_back({size.language, size.download_bytes, size.install_bytes});
-        versions.push_back(std::move(game_version));
-      }
-      std::vector<GameDlc> dlc;
-      for (const auto& choice : details.dlc)
-      {
-        dlc.push_back({choice.app_id, choice.name, choice.download_bytes, choice.install_bytes, choice.free, {}});
-        for (const auto& other : choice.other_sizes)
-          dlc.back().other_sizes.push_back({other.branch, other.language, other.download_bytes, other.install_bytes, other.optional});
-        dlc.back().optional = choice.optional;
-      }
-      model_.UpdateAppDetails(details.id, details.download_bytes, details.install_bytes, details.windows_installable,
-                              details.languages, std::move(dlc), std::move(versions),
-                              {details.update.newer, details.update.new_dlc, 0, 0, details.update.target, false}, !check_waits);
-      if (details.launches_any_branch) launches_any_branch_.insert(details.id);
-      else launches_any_branch_.erase(details.id);
-      if (!details.install_dir.empty()) steam_install_dirs_[details.id] = details.install_dir;
-      launch_options_[details.id] = details.launches;
-      launch_options_reason_.erase(details.id);
-    } else if (!launch_options_.count(details.id)) {
-      launch_options_reason_[details.id] = details.reason.empty() ? "Steam details are unavailable right now." : details.reason;
-    }
-    if (prepare_after_details_.erase(details.id) && runtime_) SubmitPrepare(details.id);
+    ApplyGameDetails(details, check_waits);
   }
   if (update_check_running_) {
     const auto check = app_details_->CheckProgress();
@@ -2770,6 +2781,83 @@ void Controller::TickAppDetails() {
     model_.UpdateMeasuredSize({size.request.id, size.request.branch, size.request.language, size.request.excluded_dlc}, size.measured, size.failed,
                               {size.install_bytes, size.download_bytes});
   }
+}
+void Controller::TickOtherDetails() {
+  const auto& state = model_.state();
+  for (auto* source : stores_.details_sources()) {
+    const auto store = source->store();
+    if (store == Store::kSteam) continue;
+    auto& asked = other_details_[store];
+    // A store without accounts answers for everyone; one with them, for the sign-in that asked.
+    const auto generation = Traits(store).needs_account ? StoreGeneration(store) : 1;
+    if (generation != asked.generation) {
+      source->Invalidate(generation);
+      asked.generation = generation;
+      asked.requested.reset();
+      asked.pages.clear();
+      // What the earlier sign-in said about this store's games goes with it; other stores' stay.
+      const auto of_store = [store](const auto& entry) { return entry.first.store == store; };
+      std::erase_if(launch_options_, of_store);
+      std::erase_if(launch_options_reason_, of_store);
+      std::erase_if(launches_any_branch_, [store](const GameId& id) { return id.store == store; });
+    }
+    const auto authentication = state.account(store).authentication;
+    const bool usable = !Traits(store).needs_account || authentication == AuthState::SignedIn ||
+                        authentication == AuthState::Offline;
+    // As Steam's: the page of one of this store's games asks when it opens, and away from it the next visit asks again.
+    if (state.navigation.route != Route::Details && state.navigation.route != Route::Session) asked.requested.reset();
+    if (usable && state.navigation.detail_id && state.navigation.detail_id->store == store) {
+      const auto id = *state.navigation.detail_id;
+      const DetailsAsked now{0, game_roots_.count(id) > 0};
+      const auto last = asked.pages.find(id);
+      const auto ask = NextDetailsAsk(last == asked.pages.end() ? std::nullopt : std::optional<DetailsAsked>(last->second), now,
+                                      state.navigation.detail_id != asked.requested);
+      if (ask != DetailsAsk::kNothing) {
+        asked.requested = id;
+        asked.pages[id] = now;
+        if (ask == DetailsAsk::kAgain) source->Refresh(id, generation, true);
+        else source->RequestFirst(id, generation);
+      }
+    }
+    // No update check for this store: its answers never touch the saved update list.
+    for (const auto& details : source->Pump(8)) {
+      if (details.account_generation != generation || details.id.store != store) continue;
+      ApplyGameDetails(details, true);
+    }
+  }
+}
+void Controller::ApplyGameDetails(const stores::GameDetails& details, bool check_waits) {
+  if (details.available) {
+    std::vector<GameVersion> versions;
+    for (const auto& version : details.versions) {
+      GameVersion game_version{version.name, version.description, version.time_updated, version.build_id,
+                               version.download_bytes ? std::optional<std::uint64_t>(version.download_bytes) : std::nullopt,
+                               version.install_bytes ? std::optional<std::uint64_t>(version.install_bytes) : std::nullopt, {}};
+      for (const auto& size : version.languages)
+        game_version.languages.push_back({size.language, size.download_bytes, size.install_bytes});
+      versions.push_back(std::move(game_version));
+    }
+    std::vector<GameDlc> dlc;
+    for (const auto& choice : details.dlc)
+    {
+      dlc.push_back({choice.app_id, choice.name, choice.download_bytes, choice.install_bytes, choice.free, {}});
+      for (const auto& other : choice.other_sizes)
+        dlc.back().other_sizes.push_back({other.branch, other.language, other.download_bytes, other.install_bytes, other.optional});
+      dlc.back().optional = choice.optional;
+    }
+    model_.UpdateAppDetails(details.id, details.download_bytes, details.install_bytes, details.windows_installable,
+                            details.languages, std::move(dlc), std::move(versions),
+                            {details.update.newer, details.update.new_dlc, 0, 0, details.update.target, false}, !check_waits);
+    if (details.launches_any_branch) launches_any_branch_.insert(details.id);
+    else launches_any_branch_.erase(details.id);
+    if (!details.install_dir.empty()) steam_install_dirs_[details.id] = details.install_dir;
+    launch_options_[details.id] = details.launches;
+    launch_options_reason_.erase(details.id);
+  } else if (!launch_options_.count(details.id)) {
+    launch_options_reason_[details.id] =
+        details.reason.empty() ? std::string(Traits(details.id.store).name) + " details are unavailable right now." : details.reason;
+  }
+  if (prepare_after_details_.erase(details.id) && runtime_) SubmitPrepare(details.id);
 }
 void Controller::RequestPrepare(GameId id) {
   if (!game_roots_.count(id)) return;
@@ -2836,6 +2924,125 @@ void Controller::SubmitPrepare(GameId id, bool announce) {
     prepare_next_pending_.reset();
   }
 }
+Controller::OtherAccount* Controller::FindOtherAccount(Store store) {
+  for (auto& other : other_accounts_)
+    if (other.account->store() == store) return &other;
+  return nullptr;
+}
+std::uint64_t Controller::StoreGeneration(Store store) const {
+  for (const auto& other : other_accounts_)
+    if (other.account->store() == store) return other.generation;
+  return 0;
+}
+void Controller::UpdateOther(OtherAccount& other, AccountUpdate update) {
+  update.store = other.account->store();
+  other.state = update.authentication;
+  model_.UpdateAccount(std::move(update));
+}
+void Controller::OtherAccountAction(OtherAccount& other, ServiceAction action) {
+  const auto store = other.account->store();
+  switch (action) {
+    case ServiceAction::SignOut: {
+      if (other.signing_out) break;
+      // A restore or sign-in still running is dropped: only the sign-out's answer counts now.
+      if (other.request) other.account->Cancel(other.request);
+      other.request = 0;
+      other.signing_out = true;
+      other.account->SignOut();
+      const auto& shown = model_.state().account(store);
+      AccountUpdate update;
+      update.authentication = AuthState::SigningOut;
+      update.id = shown.id;
+      update.display_name = shown.display_name;
+      UpdateOther(other, std::move(update));
+      break;
+    }
+    case ServiceAction::RefreshLibrary:
+      if (library_) library_->Refresh(store);
+      break;
+    default:
+      // The sign-in actions are Steam's; another store's own sign-in calls live on its account.
+      break;
+  }
+}
+void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
+  using Kind = stores::AccountEventKind;
+  const auto store = other.account->store();
+  event.store = store;
+  const auto record = diagnostics::AccountRecord(event);
+  // While signing out only the sign-out's answer, or its failure, counts (request 0: a canceled restore's late
+  // answer is not it); otherwise only the answer to the request waiting (or, with none waiting, an event the
+  // account raised itself).
+  const bool accepted = other.signing_out
+                            ? event.request_id == 0 && (event.kind == Kind::kSignedOut || event.kind == Kind::kFailure)
+                            : event.request_id == other.request;
+  if (!accepted) {
+    if (auth_log_) auth_log_(record + " ignored=" + (other.signing_out ? "signing-out" : "other-request"));
+    return;
+  }
+  if (auth_log_) auth_log_(record);
+  other.request = 0;
+  const bool was_signing_out = other.signing_out;
+  other.signing_out = false;
+  switch (event.kind) {
+    case Kind::kSignedIn:
+    case Kind::kOffline: {
+      const bool offline = event.kind == Kind::kOffline;
+      ++other.generation;
+      other.account_key = event.account_key;
+      other.established = offline ? AuthState::Offline : AuthState::SignedIn;
+      char key[17];
+      std::snprintf(key, sizeof key, "%016llx", static_cast<unsigned long long>(event.account_key));
+      AccountUpdate update;
+      update.authentication = offline ? AuthState::Offline : AuthState::SignedIn;
+      update.id = key;
+      update.display_name = event.display_name;
+      UpdateOther(other, std::move(update));
+      SetRedactedAccount({std::string(Traits(store).key), event.display_name, event.user_id});
+      if (library_) library_->Activate(store, event.account_key, offline);
+      // That store's downloads that waited for a sign-in start now.
+      if (installs_ && !offline) installs_->RetryWaiting(store);
+      break;
+    }
+    case Kind::kSignedOut:
+    case Kind::kExpired: {
+      const bool expired = event.kind == Kind::kExpired;
+      ++other.generation;
+      other.account_key = 0;
+      other.established = AuthState::SignedOut;
+      AccountUpdate update;
+      update.authentication = expired ? AuthState::Expired : AuthState::SignedOut;
+      if (expired) update.error = event.error;
+      UpdateOther(other, std::move(update));
+      SetRedactedAccount({std::string(Traits(store).key), {}, {}});
+      // The store's games stay shown; what its sign-out or expiry removes is the store's own rule.
+      if (library_) library_->Reset(store);
+      break;
+    }
+    case Kind::kFailure: {
+      const auto& shown = model_.state().account(store);
+      AccountUpdate update;
+      // A failed sign-out leaves the account signed in, with the reason.
+      update.authentication = was_signing_out && other.established != AuthState::SignedOut ? other.established
+                                                                                         : AuthState::Failed;
+      update.id = shown.id;
+      update.display_name = shown.display_name;
+      update.error = event.error;
+      update.restoring = event.restoring;
+      update.storage_full = event.storage_full;
+      UpdateOther(other, std::move(update));
+      break;
+    }
+  }
+}
+void Controller::SetRedactedAccount(web::RedactedAccount account) {
+  if (account.name.empty() && account.id.empty()) redacted_accounts_.erase(account.label);
+  else redacted_accounts_[account.label] = account;
+  web::Redaction redaction;
+  for (const auto& entry : redacted_accounts_) redaction.accounts.push_back(entry.second);
+  if (web_) web_->SetAccount(redaction);
+  if (sharing_) sharing_->SetAccount(std::move(redaction));
+}
 void Controller::Apply(const steam::SteamEvent& event) {
   const auto ignore = [&](const char* reason) {
     if (auth_log_)
@@ -2888,8 +3095,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       model_.UpdateAccount(std::move(update));
       if(persistence_) persistence_->Activate(event.steam_id);
       if(runtime_) runtime_->SetSteamAccount(event.account_name, event.steam_id);
-      if(web_) web_->SetAccount({event.account_name, event.steam_id});
-      if(sharing_) sharing_->SetAccount({event.account_name, event.steam_id});
+      SetRedactedAccount({"steam", event.account_name, event.steam_id ? std::to_string(event.steam_id) : std::string()});
       if(library_) library_->Activate(event.steam_id,offline);
       // Steam downloads that waited for a sign-in start now, not after their wait (up to a minute).
       if(installs_ && !offline) installs_->RetryWaiting(Store::kSteam);
@@ -2901,8 +3107,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       if(library_) library_->Reset();
       if(persistence_) persistence_->Reset();
       if(runtime_) runtime_->SetSteamAccount({}, 0);
-      if(web_) web_->SetAccount({});
-      if(sharing_) sharing_->SetAccount({});
+      SetRedactedAccount({"steam", {}, {}});
       const bool begin = begin_after_clear_; begin_after_clear_ = false;
       Update(AuthState::SignedOut,{},true);
       if (begin) Begin(begin_password_after_clear_);

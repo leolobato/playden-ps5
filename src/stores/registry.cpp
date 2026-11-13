@@ -35,6 +35,13 @@ StoreAccount* Registry::account(Store store) const {
   return found == accounts_.end() ? nullptr : found->second.get();
 }
 
+std::vector<StoreAccount*> Registry::accounts() const {
+  std::vector<StoreAccount*> result;
+  result.reserve(accounts_.size());
+  for (const auto& [store, account] : accounts_) result.push_back(account.get());
+  return result;
+}
+
 LibrarySource* Registry::library(Store store) const {
   const auto found = libraries_.find(store);
   return found == libraries_.end() ? nullptr : found->second.get();
@@ -49,6 +56,13 @@ std::vector<LibrarySource*> Registry::libraries() const {
   std::vector<LibrarySource*> result;
   result.reserve(libraries_.size());
   for (const auto& [store, source] : libraries_) result.push_back(source.get());
+  return result;
+}
+
+std::vector<DetailsSource*> Registry::details_sources() const {
+  std::vector<DetailsSource*> result;
+  result.reserve(details_.size());
+  for (const auto& [store, source] : details_) result.push_back(source.get());
   return result;
 }
 

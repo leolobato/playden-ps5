@@ -4382,14 +4382,18 @@ void RuntimeHost::LoadGeneratedRecipes(Composition& c) {
     }
     c.recipes.push_back(std::move(recipe));
   }
-  // The registry values community recipes left in bottles, for the cache's garbage collection.
-  for (const auto& record : c.repository.Snapshot()) {
-    const auto bytes = c.storage.Read(RecipeRegistryFile(record.install_id), 64 * 1024);
+  // The registry values community recipes left in bottles, for the cache's garbage collection. A later build's game
+  // (a foreign record) keeps its own too.
+  std::vector<std::string> install_ids;
+  for (const auto& record : c.repository.Snapshot()) install_ids.push_back(record.install_id);
+  for (const auto& foreign : c.repository.ForeignInstalls()) install_ids.push_back(foreign.install_id);
+  for (const auto& install_id : install_ids) {
+    const auto bytes = c.storage.Read(RecipeRegistryFile(install_id), 64 * 1024);
     rt::RecipeRegistryState state;
     std::string reason;
     if (bytes.ok() && rt::ParseRecipeRegistryState(std::string(bytes.value().begin(), bytes.value().end()), &state, &reason) &&
         rt::IsCommunityRevision(state.revision))
-      c.registry_revisions[record.install_id] = state.revision;
+      c.registry_revisions[install_id] = state.revision;
   }
   PublishRecipes(c);
 }
@@ -4406,16 +4410,25 @@ std::string RuntimeHost::RebindRecipeMarkers(Composition& c, const rt::RuntimeIn
 
 void RuntimeHost::PublishCommunityReferences(const Composition& c) {
   std::set<std::string> references;
+  // An unfinished settings transaction carries the recipe it publishes.
+  const auto pending = [&](const std::string& operation, const std::string& operation_id) {
+    if (operation != "settings-request" && operation != "settings-publication") return;
+    const auto loaded = rt::LoadSettingsPublicationRequest(c.request_directory, operation_id);
+    if (loaded.request && rt::IsInstalledCommunityRecipeId(loaded.request->install.recipe_id) &&
+        rt::IsCommunityRevisionPrefix(loaded.request->install.recipe_version))
+      references.insert(loaded.request->install.recipe_version);
+  };
   for (const auto& record : c.repository.Snapshot()) {
     if (rt::IsInstalledCommunityRecipeId(record.recipe_id) && rt::IsCommunityRevisionPrefix(record.recipe_version))
       references.insert(record.recipe_version);
-    // An unfinished settings transaction carries the recipe it publishes.
-    if (record.journal && (record.journal->operation == "settings-request" || record.journal->operation == "settings-publication")) {
-      const auto loaded = rt::LoadSettingsPublicationRequest(c.request_directory, record.journal->operation_id);
-      if (loaded.request && rt::IsInstalledCommunityRecipeId(loaded.request->install.recipe_id) &&
-          rt::IsCommunityRevisionPrefix(loaded.request->install.recipe_version))
-        references.insert(loaded.request->install.recipe_version);
-    }
+    if (record.journal) pending(record.journal->operation, record.journal->operation_id);
+  }
+  // A later build's game keeps the community recipe it was published with. Its recipe id names a store this build
+  // can't read, so only its shape is checked; a request that doesn't parse here keeps nothing.
+  for (const auto& foreign : c.repository.ForeignInstalls()) {
+    if (foreign.recipe_id.rfind("community-", 0) == 0 && rt::IsCommunityRevisionPrefix(foreign.recipe_version))
+      references.insert(foreign.recipe_version);
+    if (!foreign.journal_operation_id.empty()) pending(foreign.journal_operation, foreign.journal_operation_id);
   }
   for (const auto& [install_id, revision] : c.registry_revisions) references.insert(revision);
   std::vector<std::string> list(references.begin(), references.end());

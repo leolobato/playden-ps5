@@ -197,6 +197,263 @@ void UpdateRefusesAnotherStoresGames() {
   assert(model.state().games.empty());
 }
 }
+namespace {
+// Another store with accounts: its library follows its own signed-in account, next to Steam's. Synthetic GOG games.
+GameSummary GogGame(std::uint64_t product,const char* title) {
+  GameSummary game;game.id=GameId::Gog(product);game.title=title;return game;
+}
+bool ShowsStore(const Simulation& model,Store store) {
+  for(const auto& game:model.state().games) if(game.id.store==store) return true;
+  return false;
+}
+// A model with Steam signed in and its synthetic library shown, through a fake Steam source.
+struct Stores {
+  Simulation model{{},{},ModelMode::Live};
+  test::FakeLibrarySource steam{Store::kSteam},gog{Store::kGog};
+  app::LibraryController controller{model,steam};
+  Stores() {
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    steam.games={{SteamId(42),"Synthetic title",{},{},{}}};
+    gog.games={GogGame(1207658924,"Synthetic GOG title")};
+    controller.Activate(123,false);controller.Tick();
+    assert(Shows(model,SteamId(42)) && !model.state().library_loading);
+  }
+};
+void AccountStoreWaitsForActivate() {
+  Stores s;
+  s.controller.AddSource(s.gog);s.controller.Tick();
+  assert(s.gog.refreshes==0 && s.gog.cached_loads==0 && !s.controller.Active(Store::kGog) && !s.controller.Busy(Store::kGog));
+  assert(!ShowsStore(s.model,Store::kGog) && !s.model.state().library_loading && s.model.state().games.size()==1);
+  // Not refreshed while signed out, nor with account 0.
+  s.controller.Refresh();s.controller.Refresh(Store::kGog);s.controller.Activate(Store::kGog,0,false);s.controller.Tick();
+  assert(s.gog.refreshes==0 && s.gog.cached_loads==0 && !ShowsStore(s.model,Store::kGog) && !s.model.state().library_loading);
+  // A store without accounts added the same way loads at once, with account 0.
+  test::FakeLibrarySource local;local.games={test::ImportedGame(kImported,"Imported title")};
+  s.controller.AddSource(local);
+  assert(local.refreshes==1 && local.last_account==0 && s.controller.Active(Store::kLocal));
+  s.controller.Tick();
+  assert(Shows(s.model,GameId::Local(kImported)) && !s.model.state().library_loading);
+}
+void ActivateLoadsTheAccount() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  s.gog.cache_available=true;
+  s.controller.Activate(Store::kGog,0xabc,false);
+  assert(s.gog.refreshes==1 && s.gog.cached_loads==0 && s.gog.last_account==0xabc);
+  assert(s.controller.Active(Store::kGog) && s.controller.Busy(Store::kGog) && !s.controller.Busy());
+  assert(s.model.state().library_loading);
+  s.controller.Tick();
+  const auto gog=GameId::Gog(1207658924);
+  assert(s.model.state().games.size()==2 && s.model.state().games[0].id==SteamId(42));
+  assert(s.model.state().games[1].id==gog && s.model.state().games[1].source=="GOG");
+  assert(!s.model.state().library_loading && !s.controller.Busy(Store::kGog));
+  assert(s.model.state().account(Store::kGog).cache_available && s.model.state().account(Store::kGog).error.empty());
+  // Steam's library and status are untouched.
+  assert(s.steam.refreshes==1 && s.model.state().account().error.empty() && !s.model.state().account().cache_available);
+  assert(!s.model.state().library_offline && s.model.state().account().authentication==AuthState::SignedIn);
+  // The saved copy's availability follows each answer.
+  s.gog.cache_available=false;
+  s.controller.Refresh(Store::kGog);s.controller.Tick();
+  assert(s.gog.refreshes==2 && s.gog.last_account==0xabc && !s.model.state().account(Store::kGog).cache_available);
+  assert(Shows(s.model,gog) && s.steam.refreshes==1);
+  // Activate for Steam is Steam's own.
+  s.controller.Activate(Store::kSteam,456,false);
+  assert(s.steam.refreshes==2 && s.steam.last_account==456 && s.controller.Active(Store::kSteam));
+  s.controller.Tick();
+  assert(Shows(s.model,SteamId(42)) && Shows(s.model,gog));
+}
+void OfflineActivateLoadsCached() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  s.controller.Activate(Store::kGog,0xabc,true);
+  assert(s.gog.cached_loads==1 && s.gog.refreshes==0 && s.gog.last_account==0xabc);
+  s.controller.Tick();
+  // Offline, the saved copy is the whole answer.
+  assert(Shows(s.model,GameId::Gog(1207658924)) && !s.model.state().library_loading && !s.controller.Busy(Store::kGog));
+  // Online, a saved copy shown first keeps the store loading until the fresh library arrives.
+  s.gog.hold=true;
+  s.controller.Activate(Store::kGog,0xabc,false);
+  assert(s.gog.refreshes==1 && s.gog.held.size()==1);
+  auto cached=s.gog.held.front();cached.kind=LibraryEventKind::kCached;cached.licenses_read=false;
+  cached.games={GogGame(1,"Synthetic saved GOG title")};
+  s.gog.Push(cached);s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(1)) && s.model.state().library_loading && s.controller.Busy(Store::kGog));
+  s.gog.Release();s.controller.Tick();
+  assert(!Shows(s.model,GameId::Gog(1)) && Shows(s.model,GameId::Gog(1207658924)));
+  assert(!s.model.state().library_loading && !s.controller.Busy(Store::kGog));
+}
+void StaleAndForeignEventsAreDropped() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  s.gog.hold=true;
+  s.controller.Activate(Store::kGog,0xabc,false);
+  assert(s.gog.held.size()==1);
+  const auto answer=s.gog.held.front();
+  // Another account's answer, same request and generation.
+  auto foreign=answer;foreign.account_id=0xdef;foreign.games={GogGame(2,"Synthetic foreign GOG title")};
+  s.gog.Push(foreign);s.controller.Tick();
+  assert(!ShowsStore(s.model,Store::kGog) && s.controller.Busy(Store::kGog));
+  // An older generation's answer, same request and account.
+  auto older=answer;older.account_generation=answer.account_generation-1;older.games={GogGame(3,"Synthetic older GOG title")};
+  s.gog.Push(older);s.controller.Tick();
+  assert(!ShowsStore(s.model,Store::kGog) && s.controller.Busy(Store::kGog));
+  // After Reset, the account's own answer is late.
+  const int invalidated=s.gog.invalidated;
+  s.controller.Reset(Store::kGog);
+  assert(s.gog.invalidated==invalidated+1 && s.gog.last_invalidated>answer.account_generation);
+  assert(!s.controller.Active(Store::kGog) && !s.controller.Busy(Store::kGog));
+  // The dropped load stops loading: nothing else will answer it.
+  assert(!s.model.state().library_loading && !s.model.state().library_syncing);
+  s.gog.Release();s.controller.Tick();
+  assert(!ShowsStore(s.model,Store::kGog) && Shows(s.model,SteamId(42)) && !s.model.state().library_loading);
+  // A late answer for the old account, then the new account's: only the new one shows.
+  s.controller.Activate(Store::kGog,0xabc,false);
+  s.controller.Reset(Store::kGog);
+  s.gog.games={GogGame(4,"Synthetic other GOG title")};
+  s.controller.Activate(Store::kGog,0x123,false);
+  assert(s.gog.held.size()==2 && s.gog.last_account==0x123);
+  s.gog.Release();s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(4)) && !Shows(s.model,GameId::Gog(1207658924)) && s.model.state().games.size()==2);
+  assert(!s.model.state().library_loading && !s.controller.Busy(Store::kGog));
+  // Steam's Reset leaves the GOG library and account alone.
+  s.controller.Reset();
+  assert(s.controller.Active(Store::kGog) && Shows(s.model,GameId::Gog(4)));
+}
+// A "Can't play" dialog with the reason.
+bool ToldPlayStopped(const Simulation& model,const std::string& reason) {
+  for(const auto& modal:model.state().navigation.modals)
+    if(modal.title=="Can't play" && modal.body.find(reason)!=std::string::npos) return true;
+  return false;
+}
+// A sign-out while a saved copy shows and the fresh library is awaited: the store stops loading, and its
+// games and status stay (what a sign-out removes is the caller's rule). Steam's own load is untouched.
+void ResetDuringLoadStopsLoading() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  // A GOG game that stopped at start waits for GOG's library to name it.
+  s.model.NotifyPlayStopped(GameId::Gog(7),"Synthetic stop reason.");
+  assert(!ToldPlayStopped(s.model,"Synthetic stop reason."));
+  s.gog.hold=true;
+  s.controller.Activate(Store::kGog,0xabc,false);
+  assert(s.gog.held.size()==1 && s.model.state().library_loading);
+  s.controller.Reset(Store::kGog);
+  // The load that would have named it is dropped: it is told now, without the name.
+  assert(!s.model.state().library_loading && ToldPlayStopped(s.model,"Synthetic stop reason."));
+  s.gog.held.clear();
+  s.controller.Activate(Store::kGog,0xabc,false);
+  assert(s.gog.held.size()==1 && s.model.state().library_loading);
+  auto cached=s.gog.held.front();cached.kind=LibraryEventKind::kCached;cached.licenses_read=false;
+  cached.games={GogGame(1,"Synthetic saved GOG title")};
+  s.gog.Push(cached);s.controller.Tick();
+  assert(Shows(s.model,GameId::Gog(1)) && s.model.state().library_loading);
+  AccountUpdate expired;expired.authentication=AuthState::Expired;expired.error="Synthetic expiry text.";expired.store=Store::kGog;
+  s.model.UpdateAccount(expired);
+  s.controller.Reset(Store::kGog);
+  assert(!s.model.state().library_loading && !s.model.state().library_syncing && !s.controller.Busy(Store::kGog));
+  assert(Shows(s.model,GameId::Gog(1)) && Shows(s.model,SteamId(42)));
+  assert(s.model.state().account(Store::kGog).error=="Synthetic expiry text.");
+  s.gog.Release();s.controller.Tick();
+  assert(!s.model.state().library_loading && Shows(s.model,GameId::Gog(1)) && !Shows(s.model,GameId::Gog(1207658924)));
+  // A Steam load running next to it keeps the library loading.
+  s.steam.hold=true;
+  s.controller.Activate(Store::kGog,0xabc,false);
+  s.controller.Refresh();
+  assert(s.controller.Busy() && s.controller.Busy(Store::kGog));
+  s.controller.Reset(Store::kGog);
+  assert(s.model.state().library_loading && s.controller.Busy());
+  s.steam.Release();s.controller.Tick();
+  assert(!s.model.state().library_loading);
+}
+void ClearPerStore() {
+  Stores s;
+  s.controller.AddSource(s.gog);
+  // Nothing signed in: nothing to delete.
+  s.controller.Clear(Store::kGog);
+  assert(s.gog.clears==0 && !s.controller.Busy(Store::kGog));
+  auto result=s.controller.TakeClearResult(Store::kGog);
+  assert(result && *result==LibraryError::kNone && !s.controller.TakeClearResult(Store::kGog));
+  assert(s.model.state().account(Store::kGog).error.empty());
+  s.controller.Activate(Store::kGog,0xabc,false);s.controller.Tick();
+  s.gog.hold=true;
+  s.controller.Clear(Store::kGog);
+  assert(s.gog.clears==1 && s.gog.last_account==0xabc && s.controller.Busy(Store::kGog) && !s.controller.Busy());
+  assert(!s.controller.TakeClearResult(Store::kGog));
+  // No refresh while the saved library is deleted.
+  s.controller.Refresh();
+  assert(s.gog.refreshes==1 && s.steam.refreshes==2);
+  s.gog.Release();s.controller.Tick();
+  result=s.controller.TakeClearResult(Store::kGog);
+  assert(result && *result==LibraryError::kNone && !s.controller.Busy(Store::kGog));
+  assert(!s.controller.TakeClearResult());
+  // A failed delete gives its error.
+  s.gog.hold=false;s.gog.fail_clear=true;s.gog.error=LibraryError::kPersistence;
+  s.controller.Clear(Store::kGog);s.controller.Tick();
+  result=s.controller.TakeClearResult(Store::kGog);
+  assert(result && *result==LibraryError::kPersistence && !s.controller.TakeClearResult());
+  // Steam's Clear is Steam's own.
+  s.controller.Clear();s.controller.Tick();
+  result=s.controller.TakeClearResult();
+  assert(result && *result==LibraryError::kNone && s.steam.clears==1 && s.gog.clears==2);
+  assert(!s.controller.TakeClearResult(Store::kGog));
+}
+void FailureMessagesNameTheStore() {
+  Stores s;
+  test::FakeLibrarySource local;local.games={test::ImportedGame(kImported,"Imported title")};
+  s.controller.AddSource(s.gog);s.controller.AddSource(local);
+  s.controller.Activate(Store::kGog,0xabc,false);s.controller.Tick();
+  struct Case { LibraryError error;StorageError cache;const char* steam;const char* gog; };
+  const Case cases[]={
+    {LibraryError::kNetwork,StorageError::kNone,"Steam could not be reached. Retry to refresh.",
+     "GOG could not be reached. Retry to refresh."},
+    {LibraryError::kProtocol,StorageError::kNone,"Steam returned an incomplete or invalid library. Retry to refresh.",
+     "GOG returned an incomplete or invalid library. Retry to refresh."},
+    {LibraryError::kCredentialsRevoked,StorageError::kNone,"Your Steam session needs renewal. Reconnect your account.",
+     "Your GOG session needs renewal. Reconnect your account."},
+    {LibraryError::kNoSession,StorageError::kNone,"Reconnect Steam to refresh your library.",
+     "Reconnect GOG to refresh your library."},
+    {LibraryError::kPersistence,StorageError::kNotFound,"No cached library is available. Connect to Steam to refresh.",
+     "No cached library is available. Connect to GOG to refresh."},
+    {LibraryError::kPersistence,StorageError::kRemoveFailed,"Saved library data is unavailable. Retry to refresh.",
+     "Saved library data is unavailable. Retry to refresh."},
+    {LibraryError::kCanceled,StorageError::kNone,"Library refresh canceled.","Library refresh canceled."},
+  };
+  for(const auto& c:cases) {
+    for(auto* source:{&s.steam,&s.gog,&local}) { source->fail=true;source->error=c.error;source->cache_error=c.cache; }
+    s.controller.Refresh();s.controller.Tick();
+    assert(s.model.state().account().error==c.steam);
+    assert(s.model.state().account(Store::kGog).error==c.gog);
+    // Imported keeps its own text.
+    assert(s.model.state().account(Store::kLocal).error=="Imported games could not be loaded. Retry to refresh.");
+    // The games stay.
+    assert(Shows(s.model,SteamId(42)) && Shows(s.model,GameId::Gog(1207658924)) && Shows(s.model,GameId::Local(kImported)));
+  }
+  // One store failing leaves the other's status alone.
+  for(auto* source:{&s.steam,&s.gog,&local}) source->fail=false;
+  s.controller.Refresh();s.controller.Tick();
+  assert(s.model.state().account().error.empty() && s.model.state().account(Store::kGog).error.empty());
+  s.gog.fail=true;s.gog.error=LibraryError::kNetwork;s.gog.cache_error=StorageError::kNone;
+  s.controller.Refresh(Store::kGog);s.controller.Tick();
+  assert(s.model.state().account(Store::kGog).error=="GOG could not be reached. Retry to refresh.");
+  assert(s.model.state().account().error.empty() && !s.model.state().library_offline);
+}
+void RefreshCoversActiveStores() {
+  Stores s;
+  test::FakeLibrarySource local,epic{Store::kEpic};
+  s.controller.AddSource(s.gog);s.controller.AddSource(local);s.controller.AddSource(epic);
+  s.controller.Activate(Store::kGog,0xabc,true);s.controller.Tick();
+  assert(s.steam.refreshes==1 && local.refreshes==1 && s.gog.refreshes==0 && s.gog.cached_loads==1 && epic.refreshes==0);
+  s.controller.Refresh();
+  assert(s.steam.refreshes==2 && local.refreshes==2 && s.gog.refreshes==1 && epic.refreshes==0 && epic.cached_loads==0);
+  assert(s.steam.last_account==123 && local.last_account==0 && s.gog.last_account==0xabc);
+  s.controller.Tick();
+  // Signed out of GOG: skipped.
+  s.controller.Reset(Store::kGog);
+  s.controller.Refresh();
+  assert(s.steam.refreshes==3 && local.refreshes==3 && s.gog.refreshes==1 && epic.refreshes==0);
+  s.controller.Tick();
+  assert(!s.model.state().library_loading);
+}
+}
 // A backend whose games named after the load arrive through the callback.
 struct LateBackend final : LibraryBackend {
   std::mutex mutex;
@@ -270,4 +527,5 @@ void ManyLateGamesKeepTheCompletion() {
   }
   Wait(controller,[&]{return !model.state().library_loading && model.state().games.size()==101;});
 }
-int main(){OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();}
+int main(){AccountStoreWaitsForActivate();ActivateLoadsTheAccount();OfflineActivateLoadsCached();StaleAndForeignEventsAreDropped();ResetDuringLoadStopsLoading();ClearPerStore();FailureMessagesNameTheStore();RefreshCoversActiveStores();
+  OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();}

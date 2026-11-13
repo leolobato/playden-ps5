@@ -1836,7 +1836,7 @@ std::vector<GameId> Simulation::manage_list(ManageTab tab) const {
         const auto id = installation.game_id;
         std::uint64_t bytes = installation.installed_bytes;
         // Move: imported games have their own Copy/Move into Playden; Move from lists one drive's games.
-        if (tab == ManageTab::Move && id.store == Store::kLocal) continue;
+        if (tab == ManageTab::Move && !Traits(id.store).downloads) continue;
         if (tab == ManageTab::Move && !manage_move_from_id_.empty() && installation.volume_id != manage_move_from_id_) continue;
         if (tab == ManageTab::Uninstall && !manage_uninstall_from_id_.empty() && installation.volume_id != manage_uninstall_from_id_)
             continue;
@@ -2316,7 +2316,7 @@ std::vector<const Volume*> Simulation::move_from_volumes() const {
     if (move_volumes().size() < 2) return volumes;
     for (const auto& volume : state_.volumes)
         if (volume.available && std::any_of(state_.installations.begin(), state_.installations.end(), [&](const Installation& installation) {
-                return installation.volume_id == volume.id && installation.game_id.store != Store::kLocal;
+                return installation.volume_id == volume.id && Traits(installation.game_id.store).downloads;
             }))
             volumes.push_back(&volume);
     return volumes;
@@ -3831,6 +3831,10 @@ void Simulation::apply_live_volume_usage() {
     }
 }
 
+void Simulation::RequestServiceAction(ServiceRequest request) {
+    if (live()) queue_service_action(request.action, request.store);
+}
+
 void Simulation::queue_service_action(ServiceAction action, Store store) {
     constexpr std::size_t kMaxPendingActions = 32;
     const bool barrier = action == ServiceAction::SignOut || action == ServiceAction::SwitchAccount;
@@ -3946,6 +3950,19 @@ void Simulation::clear_account_specific_state() {
 
 void Simulation::UpdateAccount(AccountUpdate update) {
     if (!live()) return;
+    if (update.store != Store::kSteam) {
+        // Another store's account: its row changes, nothing else does (what its sign-out removes is its own rule).
+        auto& account = state_.accounts[update.store];
+        account.storage_full = update.authentication == AuthState::Failed && update.storage_full;
+        account.authentication = update.authentication;
+        account.id = std::move(update.id);
+        account.display_name = std::move(update.display_name);
+        account.challenge_url = std::move(update.challenge_url);
+        account.error = std::move(update.error);
+        account.challenge_expiry = 0;
+        rebuild_view();
+        return;
+    }
     if (update.clear_library) clear_account_specific_state();
     // The saved sign-in is retried every few seconds; a repeat of the same failure leaves the
     // screen, its focus and any open list alone.
@@ -4597,14 +4614,7 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
     if (update.retrieved_at) account.last_sync = *update.retrieved_at;
     // Launches that stopped before this store's library arrived are told now, by name. A library that
     // could not load still tells them, without the name.
-    if (!update.loading) {
-        for (auto stop = pending_play_stops_.begin(); stop != pending_play_stops_.end();) {
-            if (stop->first.store != update.source) { ++stop; continue; }
-            const auto [id, reason] = *stop;
-            stop = pending_play_stops_.erase(stop);
-            tell_play_stopped(id, reason);
-        }
-    }
+    if (!update.loading) tell_pending_play_stops(update.source);
     // A game just added from the Import sheet is listed now: its page opens (from Startup too).
     if (!pending_imports_.empty()) settle_pending_imports();
     // A store without an account brought games while nothing is signed in (or Steam's saved sign-in
@@ -4626,6 +4636,24 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
     show_feedback_prompt();
     rebuild_view();
     return true;
+}
+
+void Simulation::EndLibraryLoading(Store store) {
+    if (!live() || !loading_sources_.erase(store)) return;
+    state_.library_loading = !loading_sources_.empty();
+    state_.library_syncing = state_.library_loading;
+    // Launches that waited for this load to name their game are told now, as after a failed load.
+    tell_pending_play_stops(store);
+    rebuild_view();
+}
+
+void Simulation::tell_pending_play_stops(Store store) {
+    for (auto stop = pending_play_stops_.begin(); stop != pending_play_stops_.end();) {
+        if (stop->first.store != store) { ++stop; continue; }
+        const auto [id, reason] = *stop;
+        stop = pending_play_stops_.erase(stop);
+        tell_play_stopped(id, reason);
+    }
 }
 
 playden::OrganizationSnapshot Simulation::ExportOrganization() const {
@@ -15323,7 +15351,7 @@ std::vector<std::string> Simulation::game_settings_list_actions() const {
     actions.push_back("heading-game");
     rows(G::kGame);
     // Another store's game may use Steamworks: the Steam app ID its emulator is given.
-    if (game.store == Store::kLocal) {
+    if (game.store != Store::kSteam) {
         const auto program = std::find(actions.begin(), actions.end(), "setting-launch_option");
         actions.insert(program == actions.end() ? actions.end() : program + 1, "steam-app-id");
     }
@@ -15492,8 +15520,9 @@ std::vector<std::string> Simulation::details_context_actions() const {
     if (live() && runtime != state_.runtime_games.end() && runtime->second.awaiting_registration &&
         runtime->second.can_prepare)
         actions.insert(actions.begin(), "runtime-check-again");
-    // The game's saves in the Saves tab, after Game settings and Maintenance; imported games have no link.
-    if (live() && is_installed(state_, state_.navigation.selected_game_id) && selected.store != Store::kLocal) {
+    // The game's saves in the Saves tab, after Game settings and Maintenance; only a store with cloud saves has the
+    // link (imported and GOG games have none).
+    if (live() && is_installed(state_, state_.navigation.selected_game_id) && Traits(selected.store).cloud_saves) {
         const auto maintenance = std::find(actions.begin(), actions.end(), "game-maintenance");
         actions.insert(maintenance == actions.end() ? actions.begin() : maintenance + 1, "manage-saves");
     }
@@ -15529,7 +15558,7 @@ std::vector<std::string> Simulation::maintenance_actions() const {
     const auto id = state_.navigation.selected_game_id;
     // Its DLC can be installed or removed later (Manage DLC), beside the move.
     if (manage_dlc_offered(id)) actions.insert(actions.end() - 1, "manage-dlc");
-    if (id.store != Store::kLocal && find_installation(state_, id))
+    if (Traits(id.store).downloads && find_installation(state_, id))
         actions.insert(actions.end() - 1, "game-move");
     return actions;
 }

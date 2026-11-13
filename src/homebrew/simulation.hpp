@@ -620,6 +620,9 @@ struct AccountUpdate {
     // full, the session revoked), not a sign-in the player started. With another store's games, Playden
     // stays on (or goes to) Home and a notification gives the error.
     bool restoring = false;
+    // The store whose account this is. Another store's update changes only its own account: never the
+    // screen, the sign-in form or Steam's account and games.
+    Store store = Store::kSteam;
 };
 
 struct LibraryUpdate {
@@ -1200,6 +1203,8 @@ public:
     // Another store has a signed-in account or games: Steam's sign-in screen need not take over.
     [[nodiscard]] bool HasGamesBeyondSteam() const { return beyond_steam(); }
     bool UpdateLibrary(LibraryUpdate update);
+    // The store's library stopped loading with nothing to show (its request was dropped): its games and status stay.
+    void EndLibraryLoading(Store store);
     // Live mode: requests for the real install service, and its state for display.
     [[nodiscard]] std::vector<InstallRequest> TakeInstallRequests();
     // Live mode: the exact sizes the install sheet asks for, and the answers. `measured` false: Steam's figures
@@ -1386,6 +1391,8 @@ public:
     void PreferencesSaveResult(std::uint64_t revision, playden::StorageError error);
     bool TakePersistenceRetryRequest();
     [[nodiscard]] std::vector<ServiceRequest> TakeServiceActions();
+    // Live mode: asks the controller to act on one store's account (another store's sign-out, from its own row).
+    void RequestServiceAction(ServiceRequest request);
     // The password sign-in's secrets, handed over once; the form keeps no copy of the password.
     [[nodiscard]] std::optional<SignInCredentials> TakeSignInCredentials();
     [[nodiscard]] std::optional<std::string> TakeGuardCode();
@@ -1940,6 +1947,8 @@ private:
     // starts): told once the game's name is known.
     std::map<GameId, std::string> pending_play_stops_;
     void tell_play_stopped(GameId id, const std::string& reason);
+    // Tells the launches of the store's games that waited for its library (pending_play_stops_).
+    void tell_pending_play_stops(Store store);
     // Game settings asked for on a game not set up yet: it opens once preparing makes a draft or a title.
     std::set<GameId> settings_after_prepare_;
     void open_settings_after_prepare();

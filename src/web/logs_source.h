@@ -22,10 +22,16 @@ struct LogsPaths {
   std::string app;       // /data/homebrew/FAKE77031: playden-version, playden-package.identity
 };
 
-// The signed-in Steam account, replaced in everything served. Not a credential.
+// One signed-in store account, replaced in everything served. Not a credential.
+struct RedactedAccount {
+  std::string label;  // "steam", "gog": the placeholders are <label-id> and <label-user>
+  std::string name;   // empty: none
+  std::string id;     // empty: none
+};
+
+// The signed-in accounts, one for each store.
 struct Redaction {
-  std::string account_name;
-  std::uint64_t steam_id = 0;
+  std::vector<RedactedAccount> accounts;
 };
 
 struct GameLog {
@@ -65,8 +71,9 @@ std::string TitleNameFromParam(std::string_view json);
 void AddAccountNames(std::string_view text, std::set<std::string>* names);
 // SteamIDs (7656119 and ten more digits) become <steam-id>, the signed-in account's ID too, and so do the
 // 32-bit account IDs older versions wrote as owner=<id> and owners=<id>:<count>,...; family_groupid=<id> becomes
-// <family-group>, the PS5 user ID (user=<id> and the pad users line) <ps5-user>, and a private IPv4 address <home-ip>;
-// every name (the signed-in one and the found ones, longest first, ignoring ASCII case) becomes <steam-user>.
+// <family-group>, the PS5 user ID (user=<id> and the pad users line) <ps5-user>, and a private IPv4 address <home-ip>.
+// Each signed-in account's ID (every occurrence) becomes <label-id>; then every name, longest first and ignoring
+// ASCII case, becomes <steam-user> for a found one and <label-user> for an account's.
 std::string Redact(std::string_view text, const std::set<std::string>& names, const Redaction& account);
 // The last console_firmware= value in the texts, in order; empty if none.
 std::string Firmware(const std::vector<std::string_view>& texts);

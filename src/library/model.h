@@ -6,6 +6,17 @@
 #include <string>
 
 namespace playden {
+// Why a store's library could not be read or kept, the same for every store.
+enum class LibraryError {
+    kNone,
+    kCanceled,
+    kNetwork,
+    kProtocol,
+    kCredentialsRevoked,
+    kNoSession,
+    kPersistence,
+};
+
 struct GameSummary {
     GameId id;  // stable across refreshes and account sessions; default: invalid
     std::string title;

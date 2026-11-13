@@ -59,7 +59,7 @@ class SharingService {
   void Start();
   // Queues a request; the worker handles them in order. Dropped after Shutdown.
   void Submit(SharingRequest request);
-  // The signed-in Steam account, removed from a report's logs (web::Redact). Not a credential.
+  // The signed-in store accounts, removed from a report's logs (web::Redact). Not a credential.
   void SetAccount(web::Redaction account);
   // The answers since the last call, in order.
   std::vector<SharingResult> TakeResults();

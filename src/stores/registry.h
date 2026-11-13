@@ -27,12 +27,16 @@ class Registry {
   void Add(std::unique_ptr<DetailsSource> source);
 
   StoreAccount* account(Store store) const;
+  // Every store's account, Steam's too, in store order.
+  std::vector<StoreAccount*> accounts() const;
   // Steam's account with its own sign-in (QR code, password, Steam Guard).
   SteamAccount* steam_account() const { return steam_; }
   LibrarySource* library(Store store) const;
   DetailsSource* details(Store store) const;
   // Every store's library, in store order.
   std::vector<LibrarySource*> libraries() const;
+  // Every store's details, in store order.
+  std::vector<DetailsSource*> details_sources() const;
 
  private:
   std::map<Store, std::unique_ptr<StoreAccount>> accounts_;

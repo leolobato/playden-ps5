@@ -2220,6 +2220,183 @@ void steam_library_folder_defaults(const std::filesystem::path& fixtures, const 
     }
 }
 
+// Another store's account update changes only that store's account: never the screen, the focus, the sign-in form,
+// Steam's account or Steam's games.
+void account_update_by_store() {
+    using namespace playden::homebrew;
+    using playden::Store;
+    const auto gog = [](AuthState state, std::string id = {}, std::string name = {}, std::string error = {}) {
+        AccountUpdate update;
+        update.authentication = state;
+        update.id = std::move(id);
+        update.display_name = std::move(name);
+        update.error = std::move(error);
+        update.store = Store::kGog;
+        return update;
+    };
+    {
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetWallClock(1700000000);
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+        playden::GameSummary game{SteamId(42), "Steam game", {}, {}, {}};
+        check(live.UpdateLibrary({{game}, false, {}, false, false, {}}), "the Steam library loads");
+        check(live.state().navigation.route == Route::Home, "Steam signed in opens Home");
+        // Syncing keeps Steam's library_syncing on, so a GOG update that cleared it would show.
+        live.UpdateAccount({AuthState::Syncing, "123", "Synthetic account"});
+        check(live.state().library_syncing, "Steam is syncing");
+        const auto focus = live.state().navigation.focus_key;
+        const auto step = live.state().sign_in.step;
+        const auto password = live.state().sign_in_password;
+        const auto steam_before = live.state().account();
+        live.UpdateAccount(gog(AuthState::SignedIn, "00000000000000ab", "Synthetic GOG"));
+        const auto& account = live.state().account(Store::kGog);
+        check(account.authentication == AuthState::SignedIn && account.id == "00000000000000ab" &&
+                  account.display_name == "Synthetic GOG" && account.error.empty() && account.challenge_expiry == 0,
+              "a GOG update sets GOG's account");
+        const auto& steam = live.state().account();
+        check(steam.authentication == steam_before.authentication && steam.id == steam_before.id &&
+                  steam.display_name == steam_before.display_name && steam.error == steam_before.error,
+              "a GOG update leaves Steam's account alone");
+        check(live.state().navigation.route == Route::Home && live.state().navigation.focus_key == focus &&
+                  live.state().sign_in.step == step && live.state().sign_in_password == password &&
+                  live.state().library_syncing,
+              "a GOG update leaves the screen, the focus, the sign-in form and library syncing alone");
+        live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account"});
+        check(live.state().navigation.route == Route::Home && !live.state().library_syncing,
+              "Steam's own updates work as before");
+        const auto home_focus = live.state().navigation.focus_key;
+
+        for (const auto state : {AuthState::Failed, AuthState::Expired}) {
+            live.UpdateAccount(gog(state, {}, {}, "GOG could not be reached."));
+            check(live.state().account(Store::kGog).authentication == state &&
+                      live.state().account(Store::kGog).error == "GOG could not be reached.",
+                  "a GOG failure or expiry is on GOG's account");
+            check(live.state().navigation.route == Route::Home && live.state().navigation.focus_key == home_focus,
+                  "a GOG failure or expiry doesn't open the sign-in screen");
+            check(live.state().account().authentication == AuthState::SignedIn && live.state().notices.empty(),
+                  "a GOG failure or expiry leaves Steam signed in, with no notice");
+        }
+
+        auto cleared = gog(AuthState::SignedOut);
+        cleared.clear_library = true;
+        const auto generation = live.state().account_generation;
+        live.UpdateAccount(std::move(cleared));
+        check(live.state().account(Store::kGog).authentication == AuthState::SignedOut &&
+                  live.state().account(Store::kGog).id.empty(),
+              "a GOG sign-out signs GOG out");
+        check(live.state().games.size() == 1 && live.state().games[0].id == SteamId(42) &&
+                  live.state().account_generation == generation && live.state().navigation.route == Route::Home,
+              "a GOG update with clear_library keeps Steam's games and account generation");
+    }
+    {
+        // Steam still restoring on Startup: GOG's restore and sign-in leave Startup to Steam.
+        Simulation live({}, {}, ModelMode::Live);
+        live.UpdateAccount({AuthState::Restoring});
+        check(live.state().navigation.route == Route::Startup, "Steam restoring shows Startup");
+        const auto focus = live.state().navigation.focus_key;
+        live.UpdateAccount(gog(AuthState::Restoring));
+        check(live.state().navigation.route == Route::Startup && live.state().navigation.focus_key == focus &&
+                  live.state().account(Store::kGog).authentication == AuthState::Restoring,
+              "GOG restoring leaves Startup alone");
+        live.UpdateAccount(gog(AuthState::SignedIn, "00000000000000ab", "Synthetic GOG"));
+        check(live.state().navigation.route == Route::Startup && live.state().navigation.focus_key == focus &&
+                  live.state().account().authentication == AuthState::Restoring,
+              "GOG signed in leaves Startup to Steam's restore");
+    }
+}
+
+// Game settings, a game's page and Maintenance follow what its store does, not whether it is Steam: a GOG game has the
+// Steam app ID row as an imported one does, no Saves link (no cloud saves) and Move to… (it was downloaded).
+void rows_follow_store_traits(const std::filesystem::path& profile) {
+    using namespace playden::homebrew;
+    using playden::Store;
+    const auto settings_file = profile.string() + ".store-traits.settings";
+    std::error_code ignored;
+    std::filesystem::remove(settings_file, ignored);
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGameSettingsFile(settings_file);
+    live.SetSettingsData({{"playden-default", "Playden default", "Most games", "", {}}}, {});
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+    AccountUpdate gog_account;
+    gog_account.authentication = AuthState::SignedIn;
+    gog_account.id = "00000000000000ab";
+    gog_account.display_name = "Synthetic GOG";
+    gog_account.store = Store::kGog;
+    live.UpdateAccount(gog_account);
+    const auto gog = playden::GameId::Gog(1000000001);
+    const auto steam = SteamId(42);
+    const auto local = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    const auto library = [&](playden::GameId id, const char* title, Store store) {
+        LibraryUpdate update{{playden::GameSummary{id, title, {}, {}, {}}}, false, {}, false, false, {}};
+        update.source = store;
+        check(live.UpdateLibrary(update), "a store's library loads");
+    };
+    library(steam, "Steam game", Store::kSteam);
+    library(gog, "GOG game", Store::kGog);
+    library(local, "Imported game", Store::kLocal);
+    live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull},
+                        {"usb0", "USB drive", true, 1'000'000'000'000ull, 900'000'000'000ull}}, "internal");
+    live.UpdateInstalls({}, {{steam, 1024, "internal", true}, {gog, 1024, "internal", true}, {local, 1024, "internal", true}});
+    std::vector<LiveRuntimeGame> runtime_games;
+    for (const auto id : {steam, gog, local}) {
+        LiveRuntimeGame runtime;
+        runtime.game_id = id;
+        runtime.status = "Ready";
+        runtime.ready = runtime.prepared = runtime.has_title = true;
+        runtime_games.push_back(runtime);
+    }
+    live.UpdateRuntime(RuntimeState::Ready, runtime_games);
+    const auto close_all = [&] { while (!live.state().navigation.modals.empty()) live.action("circle"); };
+    const auto keys = [&] {
+        std::vector<std::string> result;
+        for (const auto& row : live.view().rows) result.push_back(row.key);
+        return result;
+    };
+    const auto has = [&](const std::string& key) {
+        const auto rows = keys();
+        return std::find(rows.begin(), rows.end(), key) != rows.end();
+    };
+    // On each game's page: More, then Maintenance.
+    const auto open_more = [&](playden::GameId id) {
+        close_all();
+        check(live.action("details:" + playden::ToKey(id)), "the game's page opens");
+        activate(live, "details-more");
+    };
+    for (const auto id : {steam, gog, local}) {
+        open_more(id);
+        const bool saves = has("manage-saves");
+        check(has("game-settings") && has("game-maintenance"), "an installed game has Game settings and Maintenance");
+        check(saves == (id == steam), "only the Steam game has a Saves link: GOG and imported games have no cloud saves");
+        activate(live, "game-maintenance");
+        check(has("game-move") == (id != local), "Steam and GOG installs move to another drive; imported games don't");
+    }
+    // Game settings: the GOG game's Steam app ID row follows Program, and it is saved as an imported game's is.
+    for (const auto id : {steam, gog, local}) {
+        open_more(id);
+        activate(live, "game-settings");
+        if (!has("setting-launch_option")) activate(live, "change-settings");
+        const auto rows = keys();
+        const auto program = std::find(rows.begin(), rows.end(), "setting-launch_option");
+        const auto app = std::find(rows.begin(), rows.end(), "steam-app-id");
+        check(program != rows.end(), "Game settings lists Program");
+        check(id == steam ? app == rows.end() : app == program + 1,
+              "a non-Steam game's Steam app ID row comes right after Program; a Steam game has none");
+    }
+    activate(live, "steam-app-id");  // still on the imported game's sheet
+    live.SubmitEditorText("620");
+    check(live.state().game_settings.at(local).steam_app_id == 620, "the imported game's Steam app ID is saved");
+    open_more(gog);
+    activate(live, "game-settings");
+    if (!has("steam-app-id")) activate(live, "change-settings");
+    activate(live, "steam-app-id");
+    check(live.state().editor.active && live.state().editor.purpose == "Steam app ID", "Steam app ID opens the keyboard");
+    live.SubmitEditorText("440");
+    check(live.state().game_settings.at(gog).steam_app_id == 440 && !live.state().editor.active,
+          "the GOG game's Steam app ID is saved in its settings");
+    std::filesystem::remove(settings_file, ignored);
+}
+
 // Reset takes an imported game back to the program it was added with, not to none: it has no other way to start.
 void reset_keeps_the_imported_program(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     namespace rt = playden::runtime;
@@ -3530,6 +3707,8 @@ int main(int argc, char** argv) {
     clean();
     leftover_titles_simulation_uses_controller_navigation(fixtures, profile);
     t01_authentication_ignores_late_approval(fixtures, profile);
+    account_update_by_store();
+    rows_follow_store_traits(profile);
     clean();
     t02_focus_and_nested_modal_restoration(fixtures, profile);
     clean();

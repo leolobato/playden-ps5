@@ -1162,7 +1162,7 @@ void report_with_logs(const std::filesystem::path& base) {
     config.now = [] { return std::int64_t{1'762'000'000}; };
     playden::homebrew::SharingService service(config);
     service.Start();
-    service.SetAccount({"leoaccount", 76561198000000001ull});
+    service.SetAccount({{{"steam", "leoaccount", "76561198000000001"}}});
     api.answer_with({answer(201, R"({"id":"att_9","url":"https://attachments.playden.club/att_9/playden-logs.zip"})"),
                      answer(201, R"({"id":"r_9","state":"open","issue_url":"https://github.com/leolobato/playden-ps5/issues/809"})")});
     SharingRequest request;

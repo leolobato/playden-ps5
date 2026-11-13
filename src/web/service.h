@@ -52,7 +52,7 @@ class Service {
 
   // Turns the server on or off; it happens on the worker.
   void SetEnabled(bool enabled);
-  // The signed-in account to redact exactly; empty when signed out (the patterns still apply).
+  // The signed-in accounts to redact exactly, one for each store; empty when signed out (the patterns still apply).
   void SetAccount(Redaction account);
   ServiceSnapshot Snapshot() const;
   // What the Files tab offers; the controller keeps it current.

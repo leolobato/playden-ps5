@@ -1,15 +1,13 @@
 #pragma once
 #include "library/store.h"
 #include "steam/app_details_service.h"
+#include "stores/game_details.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace playden::stores {
-
-// What a store says about installing one game: sizes, whether it installs here, its launch options.
-using GameDetails = steam::AppDetails;
 
 // One store's game details, fetched off the presentation thread for the games the player opens.
 // Requests for another store's games are ignored.

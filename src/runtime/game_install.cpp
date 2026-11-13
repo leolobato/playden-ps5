@@ -414,9 +414,16 @@ std::optional<ForeignInstall> ParseForeign(const JsonValue& value, RepositoryErr
       game->text().size() > 64)
     return std::nullopt;
   ForeignInstall install{install_id->text(), title_id->text(), static_cast<std::uint32_t>(*number), {}};
-  if (const auto* journal = value.Find("journal"); journal && journal->is_object())
+  if (const auto* journal = value.Find("journal"); journal && journal->is_object()) {
     if (const auto* operation = journal->Find("operation_id"); operation && operation->is_string())
       install.journal_operation_id = operation->text();
+    if (const auto* operation = journal->Find("operation"); operation && operation->is_string())
+      install.journal_operation = operation->text();
+  }
+  // Optional and unchecked: a later build's recipe fields never make the record unreadable.
+  if (const auto* recipe = value.Find("recipe_id"); recipe && recipe->is_string()) install.recipe_id = recipe->text();
+  if (const auto* version = value.Find("recipe_version"); version && version->is_string())
+    install.recipe_version = version->text();
   return install;
 }
 

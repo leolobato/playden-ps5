@@ -2,19 +2,22 @@
 #include "stores/steam.h"
 #include <algorithm>
 #include <limits>
+#include <string>
 
 namespace playden::app {
 namespace {
-const char* Message(const LibraryEvent& event) {
-  using E=steam::LibraryError;
+// The status line for a failed load of a store with accounts. Steam's texts name Steam.
+std::string Message(const LibraryEvent& event,Store store) {
+  using E=LibraryError;
+  const std::string name(Traits(store).name);
   switch(event.error) {
     case E::kCanceled:return "Library refresh canceled.";
-    case E::kNetwork:return "Steam could not be reached. Retry to refresh.";
-    case E::kProtocol:return "Steam returned an incomplete or invalid library. Retry to refresh.";
-    case E::kCredentialsRevoked:return "Your Steam session needs renewal. Reconnect your account.";
-    case E::kNoSession:return "Reconnect Steam to refresh your library.";
+    case E::kNetwork:return name+" could not be reached. Retry to refresh.";
+    case E::kProtocol:return name+" returned an incomplete or invalid library. Retry to refresh.";
+    case E::kCredentialsRevoked:return "Your "+name+" session needs renewal. Reconnect your account.";
+    case E::kNoSession:return "Reconnect "+name+" to refresh your library.";
     case E::kPersistence:return event.cache_error==StorageError::kNotFound
-        ? "No cached library is available. Connect to Steam to refresh."
+        ? "No cached library is available. Connect to "+name+" to refresh."
         : "Saved library data is unavailable. Retry to refresh.";
     case E::kNone:return "";
   }
@@ -33,14 +36,35 @@ void LibraryController::AddSource(stores::LibrarySource& source) {
   if(source.store()==Store::kSteam) return;
   for(const auto& other:others_) if(other.source==&source || other.source->store()==source.store()) return;
   others_.push_back({&source});
+  // A store with accounts is skipped here: it loads once one is signed in (Activate).
   RefreshOther(others_.back());
 }
-void LibraryController::RefreshOther(Other& other) {
+LibraryController::Other* LibraryController::Find(Store store) {
+  for(auto& other:others_) if(other.source->store()==store) return &other;
+  return nullptr;
+}
+const LibraryController::Other* LibraryController::Find(Store store) const {
+  for(const auto& other:others_) if(other.source->store()==store) return &other;
+  return nullptr;
+}
+bool LibraryController::Active(const Other& other) {
+  return !Traits(other.source->store()).needs_account || other.account!=0;
+}
+void LibraryController::LoadingOther(const Other& other) {
   const auto store=other.source->store();
   model_.UpdateLibrary({{},true,{},false,model_.state().account(store).cache_available,{},store});
-  other.request=other.source->Refresh(0,other.generation);
-  if(!other.request) model_.UpdateLibrary({{},false,"Library is busy. Retry to refresh.",false,
-                                           model_.state().account(store).cache_available,{},store});
+}
+void LibraryController::BusyOther(const Other& other) {
+  const auto store=other.source->store();
+  model_.UpdateLibrary({{},false,"Library is busy. Retry to refresh.",false,
+                        model_.state().account(store).cache_available,{},store});
+}
+void LibraryController::RefreshOther(Other& other) {
+  if(!Active(other) || other.clearing) return;
+  LoadingOther(other);
+  other.offline=false;
+  other.request=other.source->Refresh(other.account,other.generation);
+  if(!other.request) BusyOther(other);
 }
 bool LibraryController::SteamGamesShown() const {
   const auto& games=model_.state().games;
@@ -60,6 +84,17 @@ void LibraryController::Activate(std::uint64_t account,bool offline) {
   request_=offline ? steam_.LoadCached(account_,generation_) : steam_.Refresh(account_,generation_);
   if(!request_) model_.UpdateLibrary({{},false,"Library is busy. Retry to refresh.",model_.state().library_offline,model_.state().account().cache_available,{}});
 }
+void LibraryController::Activate(Store store,std::uint64_t account,bool offline) {
+  if(store==Store::kSteam) { Activate(account,offline);return; }
+  auto* other=Find(store);
+  if(!other || !Traits(store).needs_account) return;
+  Reset(store);other->account=account;other->offline=offline;
+  if(!account) return;
+  LoadingOther(*other);
+  other->request=offline ? other->source->LoadCached(account,other->generation)
+                         : other->source->Refresh(account,other->generation);
+  if(!other->request) BusyOther(*other);
+}
 void LibraryController::Refresh() {
   for(auto& other:others_) RefreshOther(other);
   if(!account_ || clearing_) return;
@@ -72,14 +107,50 @@ void LibraryController::Refresh(Store store) {
 void LibraryController::Reset() {
   steam_.Invalidate(++generation_);request_=0;completed_request_=0;account_=0;clearing_=false;clear_result_.reset();offline_=false;needs_renewal_=false;
 }
+void LibraryController::Reset(Store store) {
+  if(store==Store::kSteam) { Reset();return; }
+  auto* other=Find(store);
+  if(!other) return;
+  // The store's games stay: what a sign-out removes is up to the caller. A load it drops stops loading.
+  other->source->Invalidate(++other->generation);
+  if(other->request) model_.EndLibraryLoading(store);
+  other->request=0;other->account=0;other->offline=false;other->clearing=false;other->clear_result.reset();
+}
+void LibraryController::Clear(Store store) {
+  if(store==Store::kSteam) { Clear();return; }
+  auto* other=Find(store);
+  if(!other) return;
+  other->clear_result.reset();
+  if(!other->account) { other->clear_result=LibraryError::kNone;return; }
+  other->clearing=true;
+  model_.UpdateLibrary({{},false,"Clearing saved library…",false,model_.state().account(store).cache_available,{},store});
+  other->request=other->source->Clear(other->account,++other->generation);
+  if(!other->request) { other->clear_result=LibraryError::kPersistence;other->clearing=false; }
+}
+std::optional<LibraryError> LibraryController::TakeClearResult(Store store) {
+  if(store==Store::kSteam) return TakeClearResult();
+  auto* other=Find(store);
+  if(!other) return std::nullopt;
+  auto value=other->clear_result;other->clear_result.reset();return value;
+}
+bool LibraryController::Busy(Store store) const {
+  if(store==Store::kSteam) return Busy();
+  const auto* other=Find(store);
+  return other && (other->request!=0 || other->clearing);
+}
+bool LibraryController::Active(Store store) const {
+  if(store==Store::kSteam) return account_!=0;
+  const auto* other=Find(store);
+  return other && Active(*other);
+}
 void LibraryController::Clear() {
   clear_result_.reset();clearing_=true;
   model_.UpdateLibrary({{},false,"Clearing saved library…",model_.state().library_offline,model_.state().account().cache_available,{}});
-  if(!account_) { clear_result_=steam::LibraryError::kNone;clearing_=false;return; }
+  if(!account_) { clear_result_=LibraryError::kNone;clearing_=false;return; }
   request_=steam_.Clear(account_,++generation_);
-  if(!request_) { clear_result_=steam::LibraryError::kPersistence;clearing_=false; }
+  if(!request_) { clear_result_=LibraryError::kPersistence;clearing_=false; }
 }
-std::optional<steam::LibraryError> LibraryController::TakeClearResult() {
+std::optional<LibraryError> LibraryController::TakeClearResult() {
   auto value=clear_result_;clear_result_.reset();return value;
 }
 void LibraryController::Tick() {
@@ -88,26 +159,36 @@ void LibraryController::Tick() {
     for(auto& event:other.source->Pump(16)) TickOther(other,event);
 }
 void LibraryController::TickOther(Other& other,LibraryEvent& event) {
-  if(!other.request || event.request_id!=other.request || event.account_generation!=other.generation) return;
   const auto store=other.source->store();
-  if(event.kind==LibraryEventKind::kLoading) {
-    model_.UpdateLibrary({{},true,{},false,model_.state().account(store).cache_available,{},store});
+  const bool accounts=Traits(store).needs_account;
+  if(!other.request || event.request_id!=other.request || event.account_generation!=other.generation ||
+     (accounts && event.account_id!=other.account)) return;
+  if(other.clearing) {
+    if(event.kind==LibraryEventKind::kCleared || event.kind==LibraryEventKind::kFailure) {
+      other.clear_result=event.kind==LibraryEventKind::kCleared ? LibraryError::kNone : event.error;
+      other.clearing=false;other.request=0;
+      if(*other.clear_result==LibraryError::kNone)
+        model_.UpdateLibrary({{},false,"Clearing saved session…",false,false,{},store});
+    }
     return;
   }
+  if(event.kind==LibraryEventKind::kLoading) { LoadingOther(other);return; }
   if(event.kind==LibraryEventKind::kFailure) {
     // The store's games stay; only its status changes.
-    model_.UpdateLibrary({{},false,std::string(Traits(store).name)+" games could not be loaded. Retry to refresh.",false,
-                          event.cache_available,{},store});
+    model_.UpdateLibrary({{},false,accounts ? Message(event,store)
+                              : std::string(Traits(store).name)+" games could not be loaded. Retry to refresh.",
+                          false,event.cache_available,{},store});
     other.request=0;return;
   }
   if(event.kind!=LibraryEventKind::kCached && event.kind!=LibraryEventKind::kComplete) return;
-  const bool cached=event.kind==LibraryEventKind::kCached;
+  // A saved copy shown while the store is reached keeps the store loading until the fresh library arrives.
+  const bool awaiting_fresh=event.kind==LibraryEventKind::kCached && !other.offline;
   if(!model_.UpdateLibrary({std::move(event.games),false,{},false,event.cache_available,Time(event),store})) {
-    model_.UpdateLibrary({{},false,"Library data could not be displayed.",false,event.cache_available,{},store});
-    if(!cached) other.request=0;
+    model_.UpdateLibrary({{},awaiting_fresh,"Library data could not be displayed.",false,event.cache_available,{},store});
+    if(!awaiting_fresh) other.request=0;
     return;
   }
-  if(cached) model_.UpdateLibrary({{},true,{},false,event.cache_available,{},store});
+  if(awaiting_fresh) model_.UpdateLibrary({{},true,{},false,event.cache_available,{},store});
   else other.request=0;
 }
 void LibraryController::TickSteam(LibraryEvent& event) {
@@ -124,17 +205,17 @@ void LibraryController::TickSteam(LibraryEvent& event) {
   if(!request_ || event.request_id!=request_ || event.account_id!=account_ || event.account_generation!=generation_) return;
   if(clearing_) {
     if(event.kind==LibraryEventKind::kCleared || event.kind==LibraryEventKind::kFailure) {
-      clear_result_=event.kind==LibraryEventKind::kCleared ? steam::LibraryError::kNone : event.error;
+      clear_result_=event.kind==LibraryEventKind::kCleared ? LibraryError::kNone : event.error;
       clearing_=false;request_=0;
-      if(*clear_result_==steam::LibraryError::kNone)
+      if(*clear_result_==LibraryError::kNone)
         model_.UpdateLibrary({{},false,"Clearing saved session…",false,false,{}});
     }
     return;
   }
   if(event.kind==LibraryEventKind::kLoading) { Loading();return; }
   if(event.kind==LibraryEventKind::kFailure) {
-    needs_renewal_=event.error==steam::LibraryError::kCredentialsRevoked || event.error==steam::LibraryError::kNoSession;
-    model_.UpdateLibrary({{},false,Message(event),model_.state().account().cache_available || SteamGamesShown(),
+    needs_renewal_=event.error==LibraryError::kCredentialsRevoked || event.error==LibraryError::kNoSession;
+    model_.UpdateLibrary({{},false,Message(event,Store::kSteam),model_.state().account().cache_available || SteamGamesShown(),
                           event.cache_available,{}});
     request_=0;return;
   }

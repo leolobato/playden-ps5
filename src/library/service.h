@@ -23,7 +23,7 @@ struct LibraryEvent {
   std::uint64_t request_id = 0;
   std::uint64_t account_id = 0;
   std::uint64_t account_generation = 0;
-  steam::LibraryError error = steam::LibraryError::kNone;
+  LibraryError error = LibraryError::kNone;
   std::vector<GameSummary> games;
   bool metadata_partial = false;
   std::uint64_t retrieved_at_unix_seconds = 0;

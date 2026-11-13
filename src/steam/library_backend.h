@@ -10,15 +10,7 @@
 
 namespace playden::steam {
 
-enum class LibraryError {
-  kNone,
-  kCanceled,
-  kNetwork,
-  kProtocol,
-  kCredentialsRevoked,
-  kNoSession,
-  kPersistence,
-};
+using LibraryError = playden::LibraryError;
 
 struct LibraryResult {
   LibraryError error = LibraryError::kProtocol;

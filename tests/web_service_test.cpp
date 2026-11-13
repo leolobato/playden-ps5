@@ -93,7 +93,7 @@ int main() {
   config.now = [] { return std::int64_t{1791601941}; };
   Service service(config);
   CHECK(service.Snapshot().state == ServiceSnapshot::State::kOff);
-  service.SetAccount({"Bob", 76561198000000002ull});
+  service.SetAccount({{{"steam", "Bob", "76561198000000002"}}});
   service.SetEnabled(true);
   const auto on = WaitFor(service, ServiceSnapshot::State::kOn);
   CHECK(on.port != 0 && on.error.empty());

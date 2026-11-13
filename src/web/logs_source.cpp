@@ -364,11 +364,16 @@ std::string Redact(std::string_view text, const std::set<std::string>& found, co
   out = RedactKeyedNumber(out, "pad users initial=", "<ps5-user>");
   out = RedactKeyedNumber(out, "foreground=", "<ps5-user>", "pad users initial=");
   out = RedactHomeAddresses(out);
-  if (account.steam_id != 0) ReplaceAll(out, std::to_string(account.steam_id), "<steam-id>");
-  std::vector<std::string> names(found.begin(), found.end());
-  if (!account.account_name.empty()) names.push_back(account.account_name);
-  std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
-  for (const auto& name : names) {
+  for (const auto& entry : account.accounts)
+    if (!entry.id.empty()) ReplaceAll(out, entry.id, "<" + entry.label + "-id>");
+  // Each name with its placeholder: found ones first, then the accounts', so equal lengths keep that order.
+  std::vector<std::pair<std::string, std::string>> names;
+  for (const auto& name : found) names.emplace_back(name, "<steam-user>");
+  for (const auto& entry : account.accounts)
+    if (!entry.name.empty()) names.emplace_back(entry.name, "<" + entry.label + "-user>");
+  std::stable_sort(names.begin(), names.end(),
+                   [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+  for (const auto& [name, placeholder] : names) {
     if (name.empty()) continue;
     // ASCII case only: Python also folds other letters, which account names rarely have.
     const auto needle = LowerAscii(name);
@@ -377,7 +382,7 @@ std::string Redact(std::string_view text, const std::set<std::string>& found, co
     std::size_t start = 0;
     for (std::size_t at; (at = lowered.find(needle, start)) != std::string::npos; start = at + needle.size()) {
       replaced.append(out, start, at - start);
-      replaced += "<steam-user>";
+      replaced += placeholder;
     }
     if (start == 0) continue;
     replaced.append(out, start, std::string::npos);

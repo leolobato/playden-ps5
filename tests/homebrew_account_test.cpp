@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <unistd.h>
@@ -716,6 +717,389 @@ void OtherRestoreFailuresWithOtherGamesOpenHome() {
     controller.Shutdown();
   }
 }
+// Another store's account for tests: RestoreSession hands out request numbers, and its events are the ones the
+// test pushes.
+class FakeStoreAccount final : public stores::StoreAccount {
+ public:
+  explicit FakeStoreAccount(Store store) : store_(store) {}
+  std::mutex mutex;
+  int restores = 0;
+  int sign_outs = 0;
+  std::uint64_t last_request = 0;
+  std::vector<std::uint64_t> canceled;
+  Store store() const override { return store_; }
+  std::uint64_t RestoreSession() override {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++restores;
+    return last_request = ++next_;
+  }
+  void Cancel(std::uint64_t request) override { std::lock_guard<std::mutex> lock(mutex); canceled.push_back(request); }
+  void SignOut() override { std::lock_guard<std::mutex> lock(mutex); ++sign_outs; }
+  std::vector<stores::AccountEvent> PumpEvents(std::size_t max_events) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<stores::AccountEvent> result;
+    while (!events_.empty() && result.size() < max_events) { result.push_back(std::move(events_.front())); events_.pop_front(); }
+    return result;
+  }
+  void Push(stores::AccountEvent event) { std::lock_guard<std::mutex> lock(mutex); events_.push_back(std::move(event)); }
+ private:
+  Store store_;
+  std::uint64_t next_ = 100;
+  std::deque<stores::AccountEvent> events_;
+};
+// Synthetic GOG account details: none of them may reach a log line.
+constexpr const char* kGogName = "Synthetic GOG player";
+constexpr const char* kGogUserId = "48151623421";
+constexpr std::uint64_t kGogKey = 0xabc;
+stores::AccountEvent GogEvent(stores::AccountEventKind kind, std::uint64_t request) {
+  stores::AccountEvent event;
+  event.store = Store::kGog;
+  event.kind = kind;
+  event.request_id = request;
+  event.generation = 1;
+  if (kind == stores::AccountEventKind::kSignedIn || kind == stores::AccountEventKind::kOffline) {
+    event.account_key = kGogKey;
+    event.display_name = kGogName;
+    event.user_id = kGogUserId;
+  }
+  return event;
+}
+// One store's details for tests: what was asked (and with which sign-in generation), what was invalidated; answers
+// are the ones the test queues.
+class RecordingDetails final : public stores::DetailsSource {
+ public:
+  explicit RecordingDetails(Store store) : store_(store) {}
+  struct Ask {
+    GameId id;
+    std::uint64_t generation = 0;
+    bool first = false;  // RequestFirst: ahead of anything queued
+    bool operator==(const Ask&) const = default;
+  };
+  std::mutex mutex;
+  std::vector<Ask> asked;
+  std::vector<std::uint64_t> invalidated;
+  std::vector<stores::GameDetails> answers;
+  Store store() const override { return store_; }
+  void Request(const GameId& id, std::uint64_t generation) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    asked.push_back({id, generation, false});
+  }
+  void RequestFirst(const GameId& id, std::uint64_t generation) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    asked.push_back({id, generation, true});
+  }
+  void Invalidate(std::uint64_t generation) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    invalidated.push_back(generation);
+  }
+  std::vector<stores::GameDetails> Pump(std::size_t) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::exchange(answers, {});
+  }
+  void Shutdown() override {}
+  void Answer(const GameId& id, std::uint64_t generation, std::uint64_t download_bytes, std::uint64_t install_bytes) {
+    stores::GameDetails details;
+    details.id = id;
+    details.account_generation = generation;
+    details.available = true;
+    details.download_bytes = download_bytes;
+    details.install_bytes = install_bytes;
+    details.windows_installable = true;
+    std::lock_guard<std::mutex> lock(mutex);
+    answers.push_back(details);
+  }
+  std::vector<Ask> Asked() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return asked;
+  }
+  std::vector<std::uint64_t> Invalidated() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return invalidated;
+  }
+ private:
+  Store store_;
+};
+// Steam's fixtures with a saved session, a GOG account and a GOG library with one game, all in one registry.
+struct TwoStores {
+  Repository repo;
+  CacheFixture cache;
+  Simulation model{{}, {}, ModelMode::Live};
+  Backend backend;
+  LibraryBackendFixture library_backend;
+  LibraryService library_service{library_backend, repo, &cache};
+  stores::Registry registry;
+  FakeStoreAccount* gog = nullptr;
+  test::FakeLibrarySource* gog_library = nullptr;
+  RecordingDetails* steam_details = nullptr;  // with_details only
+  RecordingDetails* gog_details = nullptr;
+  std::mutex log_mutex;
+  std::vector<std::string> log;
+  std::unique_ptr<Controller> controller;
+  // with_details: each store has a details source too.
+  explicit TwoStores(bool with_details = false) {
+    repo.value = Session();
+    registry.Add(std::make_unique<stores::SteamAccount>(backend, repo));
+    registry.Add(std::make_unique<stores::SteamLibrarySource>(library_service));
+    if (with_details) {
+      auto steam = std::make_unique<RecordingDetails>(Store::kSteam);
+      steam_details = steam.get();
+      registry.Add(std::move(steam));
+      auto gog_source = std::make_unique<RecordingDetails>(Store::kGog);
+      gog_details = gog_source.get();
+      registry.Add(std::move(gog_source));
+    }
+    auto account = std::make_unique<FakeStoreAccount>(Store::kGog);
+    gog = account.get();
+    registry.Add(std::move(account));
+    auto library = std::make_unique<test::FakeLibrarySource>(Store::kGog);
+    GameSummary game;
+    game.id = GameId::Gog(1000000001);
+    game.title = "Synthetic GOG game";
+    library->games = {game};
+    gog_library = library.get();
+    registry.Add(std::move(library));
+    controller = std::make_unique<Controller>(model, registry, nullptr, nullptr, nullptr, nullptr, [this](const std::string& line) {
+      std::lock_guard<std::mutex> lock(log_mutex);
+      log.push_back(line);
+    });
+  }
+  ~TwoStores() { controller->Shutdown(); }
+  bool Has(const GameId& id) const {
+    const auto& games = model.state().games;
+    return std::any_of(games.begin(), games.end(), [&](const homebrew::Game& game) { return game.id == id; });
+  }
+  // Both stores signed in, with both games shown.
+  void SignInBoth() {
+    gog->Push(GogEvent(stores::AccountEventKind::kSignedIn, gog->last_request));
+    Wait(*controller, [&] {
+      return model.state().account().authentication == AuthState::SignedIn &&
+             model.state().account(Store::kGog).authentication == AuthState::SignedIn && Has(SteamId(42)) &&
+             Has(GameId::Gog(1000000001)) && !model.state().library_loading;
+    });
+  }
+  // The auth log names neither the GOG account nor its key.
+  void CheckLog() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    assert(!log.empty());
+    for (const auto& line : log) {
+      assert(line.find(kGogName) == std::string::npos && line.find("Synthetic GOG") == std::string::npos);
+      assert(line.find(kGogUserId) == std::string::npos);
+      assert(line.find("0abc") == std::string::npos && line.find("2748") == std::string::npos);
+    }
+  }
+  const homebrew::Game* Find(const GameId& id) const {
+    for (const auto& game : model.state().games)
+      if (game.id == id) return &game;
+    return nullptr;
+  }
+  bool Logged(const std::string& part) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    return std::any_of(log.begin(), log.end(), [&](const std::string& line) { return line.find(part) != std::string::npos; });
+  }
+};
+// Another store's details reach the model for the account that asked for them: a GOG game's page asks GOG's details
+// source, not Steam's, and an answer from an earlier sign-in is dropped. Steam's details flow as before.
+void OtherStoreDetailsReachTheModel() {
+  TwoStores stores(true);
+  auto& model = stores.model;
+  auto& controller = *stores.controller;
+  const auto gog_game = GameId::Gog(1000000001);
+  stores.SignInBoth();
+  controller.Tick();
+  const auto generation = controller.StoreGeneration(Store::kGog);
+  assert(generation == 2 && stores.gog_details->Invalidated().back() == generation);
+  assert(stores.gog_details->Asked().empty());
+  const auto steam_asked = stores.steam_details->Asked().size();
+  // The GOG game's page asks GOG first, for this sign-in; Steam's source hears nothing of it.
+  assert(model.action("details:" + ToKey(gog_game)));
+  TickFor(controller, 10ms);
+  assert((stores.gog_details->Asked() == std::vector<RecordingDetails::Ask>{{gog_game, generation, true}}));
+  assert(stores.steam_details->Asked().size() == steam_asked);
+  // An answer for an earlier sign-in is dropped; this one's shows on the game.
+  stores.gog_details->Answer(gog_game, generation - 1, 7, 9);
+  TickFor(controller, 10ms);
+  assert(!stores.Find(gog_game)->download_bytes && !stores.Find(gog_game)->windows_installable);
+  stores.gog_details->Answer(gog_game, generation, 300'000'000, 600'000'000);
+  TickFor(controller, 10ms);
+  const auto* game = stores.Find(gog_game);
+  assert(game->download_bytes == 300'000'000u && game->install_bytes == 600'000'000u && game->windows_installable == true);
+  // Steam's game page asks Steam's source, and its answer shows as before.
+  assert(model.action("details:42"));
+  TickFor(controller, 10ms);
+  const auto steam = stores.steam_details->Asked();
+  assert(steam.size() == steam_asked + 1 && steam.back().id == SteamId(42) && steam.back().first &&
+         steam.back().generation == model.state().account_generation);
+  assert(stores.gog_details->Asked().size() == 1);
+  stores.steam_details->Answer(SteamId(42), model.state().account_generation, 1000, 2000);
+  TickFor(controller, 10ms);
+  assert(stores.Find(SteamId(42))->download_bytes == 1000u && stores.Find(SteamId(42))->install_bytes == 2000u);
+  // GOG's sign-in expires on its page: the source drops the old sign-in's work, and nothing is asked while signed out.
+  assert(model.action("details:" + ToKey(gog_game)));
+  TickFor(controller, 10ms);
+  const auto asked = stores.gog_details->Asked().size();
+  auto expired = GogEvent(stores::AccountEventKind::kExpired, 0);
+  expired.error = "Your GOG sign-in expired. Sign in again.";
+  stores.gog->Push(expired);
+  Wait(controller, [&] { return model.state().account(Store::kGog).authentication == AuthState::Expired; });
+  controller.Tick();
+  assert(controller.StoreGeneration(Store::kGog) == generation + 1);
+  assert(stores.gog_details->Invalidated().back() == generation + 1);
+  stores.gog_details->Answer(gog_game, generation, 1, 1);
+  TickFor(controller, 10ms);
+  assert(stores.Find(gog_game) && stores.Find(gog_game)->download_bytes == 300'000'000u);
+  assert(model.action("details:42") && model.action("details:" + ToKey(gog_game)));
+  TickFor(controller, 10ms);
+  assert(model.state().navigation.detail_id == gog_game && stores.gog_details->Asked().size() == asked);
+  stores.CheckLog();
+}
+// A Steam sign-out drops what Steam said about how its games start; what GOG said about its own stays, so a GOG
+// game prepared next still has its launch options.
+void SteamSignOutKeepsOtherStoresLaunches() {
+  TwoStores stores(true);
+  auto& model = stores.model;
+  auto& controller = *stores.controller;
+  const auto gog_game = GameId::Gog(1000000001);
+  stores.SignInBoth();
+  controller.Tick();
+  assert(model.action("details:" + ToKey(gog_game)));
+  TickFor(controller, 10ms);
+  stores.gog_details->Answer(gog_game, controller.StoreGeneration(Store::kGog), 300'000'000, 600'000'000);
+  assert(model.action("details:42"));
+  TickFor(controller, 10ms);
+  stores.steam_details->Answer(SteamId(42), model.state().account_generation, 1000, 2000);
+  TickFor(controller, 10ms);
+  assert(controller.KnowsLaunchOptions(gog_game) && controller.KnowsLaunchOptions(SteamId(42)));
+  const auto generation = model.state().account_generation;
+  SignOut(model);
+  controller.Tick();
+  Wait(controller, [&] { return model.state().account().authentication == AuthState::SignedOut; });
+  TickFor(controller, 10ms);
+  assert(model.state().account_generation != generation);
+  assert(!controller.KnowsLaunchOptions(SteamId(42)) && controller.KnowsLaunchOptions(gog_game));
+  assert(model.state().account(Store::kGog).authentication == AuthState::SignedIn && stores.Has(gog_game));
+  stores.CheckLog();
+}
+// GOG's saved sign-in restores next to Steam's, and both stores' games show.
+void OtherStoreAccountRestoresBesideSteam() {
+  TwoStores stores;
+  auto& model = stores.model;
+  assert(stores.gog->restores == 1 && model.state().account(Store::kGog).authentication == AuthState::Restoring);
+  assert(stores.controller->StoreGeneration(Store::kGog) == 1 && stores.controller->StoreGeneration(Store::kSteam) == 0);
+  // An answer to another request is stale: nothing changes.
+  stores.gog->Push(GogEvent(stores::AccountEventKind::kSignedIn, stores.gog->last_request + 7));
+  TickFor(*stores.controller, 30ms);
+  assert(model.state().account(Store::kGog).authentication == AuthState::Restoring);
+  assert(stores.gog_library->refreshes == 0 && stores.controller->StoreGeneration(Store::kGog) == 1);
+  assert(stores.Logged("\"store\":\"gog\",\"kind\":\"signed-in\"") && stores.Logged("ignored=other-request"));
+  stores.SignInBoth();
+  const auto& gog = model.state().account(Store::kGog);
+  assert(gog.id == "0000000000000abc" && gog.display_name == kGogName && gog.error.empty());
+  assert(stores.gog_library->refreshes == 1 && stores.gog_library->last_account == kGogKey);
+  assert(stores.controller->StoreGeneration(Store::kGog) == 2);
+  assert(stores.backend.restores == 1 && stores.backend.calls == 0 && model.state().account().id == "12345");
+  assert(model.state().navigation.route == Route::Home && model.state().games.size() == 2);
+  // The answer came: nothing is left to cancel at shutdown.
+  stores.controller->Shutdown();
+  assert(stores.gog->canceled.empty());
+  stores.CheckLog();
+}
+// A GOG sign-out signs GOG out and resets its library; Steam stays signed in with its games and saved session.
+void OtherStoreSignOutLeavesSteam() {
+  TwoStores stores;
+  auto& model = stores.model;
+  stores.SignInBoth();
+  // A GOG library refresh refreshes GOG's library only.
+  const int steam_fetches = stores.library_backend.calls;
+  model.RequestServiceAction({ServiceAction::RefreshLibrary, Store::kGog});
+  stores.controller->Tick();
+  assert(stores.gog_library->refreshes == 2 && stores.library_backend.calls == steam_fetches);
+  Wait(*stores.controller, [&] { return !model.state().library_loading; });
+  const int invalidated = stores.gog_library->invalidated;
+  // A sign-out that fails leaves GOG signed in, with the reason; nothing is reset.
+  model.RequestServiceAction({ServiceAction::SignOut, Store::kGog});
+  stores.controller->Tick();
+  assert(stores.gog->sign_outs == 1 && model.state().account(Store::kGog).authentication == AuthState::SigningOut);
+  auto failed = GogEvent(stores::AccountEventKind::kFailure, 0);
+  failed.error = "Sign-out failed. Retry sign-out in Settings.";
+  stores.gog->Push(failed);
+  Wait(*stores.controller, [&] { return model.state().account(Store::kGog).authentication == AuthState::SignedIn; });
+  assert(model.state().account(Store::kGog).error == failed.error && model.state().account(Store::kGog).display_name == kGogName);
+  assert(stores.gog_library->invalidated == invalidated && stores.controller->StoreGeneration(Store::kGog) == 2);
+  model.RequestServiceAction({ServiceAction::SignOut, Store::kGog});
+  stores.controller->Tick();
+  assert(stores.gog->sign_outs == 2 && model.state().account(Store::kGog).authentication == AuthState::SigningOut);
+  // An answer to a request from before the sign-out (a canceled restore) is not the sign-out's.
+  stores.gog->Push(GogEvent(stores::AccountEventKind::kFailure, stores.gog->last_request));
+  stores.controller->Tick();
+  assert(model.state().account(Store::kGog).authentication == AuthState::SigningOut);
+  // A sign-in answer that arrives now is from before the sign-out: it doesn't count.
+  stores.gog->Push(GogEvent(stores::AccountEventKind::kSignedIn, 0));
+  stores.controller->Tick();
+  assert(model.state().account(Store::kGog).authentication == AuthState::SigningOut);
+  stores.gog->Push(GogEvent(stores::AccountEventKind::kSignedOut, 0));
+  Wait(*stores.controller, [&] { return model.state().account(Store::kGog).authentication == AuthState::SignedOut; });
+  assert(model.state().account(Store::kGog).id.empty() && model.state().account(Store::kGog).display_name.empty());
+  assert(stores.gog_library->invalidated == invalidated + 1 && stores.controller->StoreGeneration(Store::kGog) == 3);
+  // Its library is reset: a refresh now has no account to load.
+  model.RequestServiceAction({ServiceAction::RefreshLibrary, Store::kGog});
+  TickFor(*stores.controller, 20ms);
+  assert(stores.gog_library->refreshes == 2);
+  assert(model.state().account().authentication == AuthState::SignedIn && stores.Has(SteamId(42)));
+  { std::lock_guard<std::mutex> lock(stores.repo.mutex); assert(stores.repo.value && stores.repo.clears == 0); }
+  assert(stores.backend.calls == 0 && model.state().navigation.route == Route::Home);
+  stores.CheckLog();
+}
+// A GOG session that expires shows on GOG's account; the screen stays where it is.
+void OtherStoreExpiryKeepsTheScreen() {
+  {
+    TwoStores stores;
+    auto& model = stores.model;
+    stores.SignInBoth();
+    const auto route = model.state().navigation.route;
+    const auto focus = model.state().navigation.focus_key;
+    const int invalidated = stores.gog_library->invalidated;
+    auto expired = GogEvent(stores::AccountEventKind::kExpired, 0);
+    expired.error = "Your GOG sign-in expired. Sign in again.";
+    stores.gog->Push(expired);
+    Wait(*stores.controller, [&] { return model.state().account(Store::kGog).authentication == AuthState::Expired; });
+    assert(model.state().account(Store::kGog).error == expired.error && model.state().account(Store::kGog).id.empty());
+    assert(model.state().navigation.route == route && model.state().navigation.focus_key == focus);
+    assert(stores.gog_library->invalidated == invalidated + 1 && stores.controller->StoreGeneration(Store::kGog) == 3);
+    assert(model.state().account().authentication == AuthState::SignedIn && stores.Has(SteamId(42)));
+    stores.CheckLog();
+  }
+  {
+    // It expires while GOG's library is still loading: the load is dropped and the library stops loading, with
+    // GOG's games still listed and the expiry on its account.
+    TwoStores stores;
+    auto& model = stores.model;
+    stores.SignInBoth();
+    stores.gog_library->hold = true;
+    model.RequestServiceAction({ServiceAction::RefreshLibrary, Store::kGog});
+    stores.controller->Tick();
+    assert(stores.gog_library->held.size() == 1 && model.state().library_loading);
+    auto expired = GogEvent(stores::AccountEventKind::kExpired, 0);
+    expired.error = "Your GOG sign-in expired. Sign in again.";
+    stores.gog->Push(expired);
+    Wait(*stores.controller, [&] { return model.state().account(Store::kGog).authentication == AuthState::Expired; });
+    assert(!model.state().library_loading && !model.state().library_syncing);
+    assert(model.state().account(Store::kGog).error == expired.error);
+    assert(stores.Has(GameId::Gog(1000000001)) && stores.Has(SteamId(42)));
+    // Its late answer changes nothing.
+    stores.gog_library->Release();
+    TickFor(*stores.controller, 10ms);
+    assert(!model.state().library_loading && model.state().account(Store::kGog).error == expired.error);
+    stores.CheckLog();
+  }
+  {
+    // A restore that never answers is canceled at shutdown.
+    TwoStores stores;
+    const auto request = stores.gog->last_request;
+    TickFor(*stores.controller, 10ms);
+    stores.controller->Shutdown();
+    assert(stores.gog->canceled == std::vector<std::uint64_t>{request});
+  }
+}
 // PS5 title names carry their store with "Store name in PS5 titles": Steam's, GOG's and Epic's; imported
 // games have no store to name.
 void TitleNamesCarryTheirStore() {
@@ -810,4 +1194,4 @@ void SteamPersonaFollowsThePreference() {
   }
   std::filesystem::remove_all(root);
 }
-int main() { SteamPersonaFollowsThePreference(); StaySignedInOffKeepsTheTokenInMemory(); TitleNamesCarryTheirStore(); NoSteamSessionWithOtherGamesOpensHome(); FailedRestoreWithOtherGamesOpensHome(); OtherRestoreFailuresWithOtherGamesOpenHome(); SteamSignOutKeepsOtherGames(); PasswordSignInWithGuardCode(); PasswordFailuresAndCancel(); SlowLicenseCheckShowsAfterAFewSeconds(); CanceledStorageRetryKeepsSavedSessionIntent(); RevokedSessionCleanupRetriesAfterStorageRecovery(); StorageFailureKeepsVisibleAccount(); StorageFailureRetriesSavedSession(); ChallengeAndCancel(); AuthenticationRestoreAndSignOut(); FailedClearDoesNotSwitch(); SignInAgainKeepsTheAccount(); ExitHonorsClearWithoutStartingNewQr(); StorageFailureAndRevocation(); ConnectedLibraryAndOfflineRestart(); LicenseChangesRefreshTheLibrary(); OfflineRefreshFromTheLibraryReconnects(); ShutdownClearsLibraryBeforeSession(); RepeatedClearPreservesFirstIntent(); }
+int main() { OtherStoreDetailsReachTheModel(); SteamSignOutKeepsOtherStoresLaunches(); OtherStoreAccountRestoresBesideSteam(); OtherStoreSignOutLeavesSteam(); OtherStoreExpiryKeepsTheScreen(); SteamPersonaFollowsThePreference(); StaySignedInOffKeepsTheTokenInMemory(); TitleNamesCarryTheirStore(); NoSteamSessionWithOtherGamesOpensHome(); FailedRestoreWithOtherGamesOpensHome(); OtherRestoreFailuresWithOtherGamesOpenHome(); SteamSignOutKeepsOtherGames(); PasswordSignInWithGuardCode(); PasswordFailuresAndCancel(); SlowLicenseCheckShowsAfterAFewSeconds(); CanceledStorageRetryKeepsSavedSessionIntent(); RevokedSessionCleanupRetriesAfterStorageRecovery(); StorageFailureKeepsVisibleAccount(); StorageFailureRetriesSavedSession(); ChallengeAndCancel(); AuthenticationRestoreAndSignOut(); FailedClearDoesNotSwitch(); SignInAgainKeepsTheAccount(); ExitHonorsClearWithoutStartingNewQr(); StorageFailureAndRevocation(); ConnectedLibraryAndOfflineRestart(); LicenseChangesRefreshTheLibrary(); OfflineRefreshFromTheLibraryReconnects(); ShutdownClearsLibraryBeforeSession(); RepeatedClearPreservesFirstIntent(); }

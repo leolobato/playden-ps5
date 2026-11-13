@@ -139,6 +139,12 @@ class Controller {
   // model's import requests (look for games, add, remove) go to it, and removing an imported game
   // removes its PS5 title first, keeping its bottle as kept data. Set before the first Tick.
   void SetLocalLibrary(stores::local::LocalLibrarySource* local) { local_ = local; }
+  // The sign-in generation of another store's account: starts at 1 and goes up at each sign-in, offline start,
+  // sign-out and expiry, so work asked for under an older one can be dropped. 0 for Steam (its own is the model's
+  // account generation) and for a store with no account registered.
+  std::uint64_t StoreGeneration(Store store) const;
+  // Tests: whether the game's launch options, from its store's details, are known.
+  bool KnowsLaunchOptions(const GameId& id) const { return launch_options_.count(id) != 0; }
   // Tests: how long a Play or preparation waits for a drop-folder game's files to be opened.
   void SetDropFolderOpenTimeout(std::chrono::milliseconds timeout) { drop_folder_open_timeout_ = timeout; }
   Controller(const Controller&) = delete;
@@ -162,10 +168,39 @@ class Controller {
   void BeginOrganizationClear();
   void AdvanceOrganizationClear();
   void Apply(const steam::SteamEvent& event);
+  // Every other store's account (GOG): restored at startup next to Steam's, signed out from its own row, and
+  // its library loaded for the account that signs in. Steam's sign-in is untouched by it.
+  struct OtherAccount {
+    stores::StoreAccount* account = nullptr;
+    std::uint64_t request = 0;     // the restore or sign-in waiting for its answer; 0 for none
+    std::uint64_t generation = 1;  // StoreGeneration
+    std::uint64_t account_key = 0;  // the signed-in account's (0: none)
+    AuthState state = AuthState::SignedOut;        // as the model last got it
+    AuthState established = AuthState::SignedOut;  // SignedIn or Offline while an account is signed in
+    bool signing_out = false;      // SignOut asked: only its answer (or a failure) counts until it comes
+  };
+  std::vector<OtherAccount> other_accounts_;
+  OtherAccount* FindOtherAccount(Store store);
+  void OtherAccountAction(OtherAccount& other, ServiceAction action);
+  void Apply(OtherAccount& other, stores::AccountEvent& event);
+  void UpdateOther(OtherAccount& other, AccountUpdate update);
   void Update(AuthState state, const std::string& error = {}, bool clear = false,
               const std::string& challenge = {}, SignInStep step = SignInStep::Qr,
               const steam::SteamEvent* prompt = nullptr, bool storage_full = false, bool restoring = false);
   void TickAppDetails();
+  // Every other store's details (GOG): asked for when one of its games' pages opens while the store can answer,
+  // and dropped when they are from an earlier sign-in. Their update checks and exact sizes are not wired.
+  void TickOtherDetails();
+  struct OtherDetails {
+    std::uint64_t generation = 0;  // StoreGeneration (1 for a store without accounts) the source last had
+    std::optional<GameId> requested;
+    std::map<GameId, DetailsAsked> pages;  // what each visited page's details were last asked with
+  };
+  std::map<Store, OtherDetails> other_details_;
+  // One store's details answer, for its own account: the game's sizes and versions in the model, and its launch
+  // options for the next preparation. check_waits: Steam's update check still waits for the licenses, so the answer
+  // leaves the saved update list alone.
+  void ApplyGameDetails(const stores::GameDetails& details, bool check_waits);
   void TickStoreDetails();
   steam::StoreDetailsService* store_details_ = nullptr;
   std::optional<GameId> requested_store_detail_;
@@ -213,6 +248,11 @@ class Controller {
   void TickCommunity();
   void TickSharing();
   SharingService* sharing_ = nullptr;
+  // The signed-in accounts web access and shared reports redact, by store label ("steam"): one store's sign-out
+  // leaves the others'.
+  std::map<std::string, web::RedactedAccount> redacted_accounts_;
+  // Keeps one store's account (removed when it has no name and no ID) and hands them all to web access and sharing.
+  void SetRedactedAccount(web::RedactedAccount account);
   std::uint64_t sharing_memory_revision_ = ~0ull;
   community::CommunityRecipeService* community_ = nullptr;
   std::shared_ptr<CommunityKeepSet> community_keep_;
