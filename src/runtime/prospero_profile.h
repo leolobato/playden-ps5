@@ -69,6 +69,8 @@ bool IsProsperoDllOverrides(std::string_view value);
 // DXVK_, MESA_, RADV_ or SDL_ families or WINE_CPU_TOPOLOGY (not DXVK_HUD or
 // SDL_JOYSTICK_RAWINPUT, which the title sets), and a printable value without quotes.
 constexpr std::size_t kProsperoMaxEnvironmentEntries = 8;
+// The runtime's buffer for an [environment] value, terminator included: values are shorter.
+constexpr std::size_t kProsperoMaxEnvironmentValueBytes = 128;
 bool IsProsperoEnvironmentEntry(std::string_view name, std::string_view value);
 
 // Applies the rules of prospero-win's profile parsers (and prospero-win-profiles'

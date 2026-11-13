@@ -183,7 +183,7 @@ bool IsProsperoDllOverrides(std::string_view value) {
 }
 
 bool IsProsperoEnvironmentEntry(std::string_view name, std::string_view value) {
-  if (name.empty() || name.size() >= 64 || value.empty() || value.size() >= 128) return false;
+  if (name.empty() || name.size() >= 64 || value.empty() || value.size() >= kProsperoMaxEnvironmentValueBytes) return false;
   for (std::size_t i = 0; i < name.size(); ++i) {
     const char c = name[i];
     if (!((c >= 'A' && c <= 'Z') || c == '_' || (i > 0 && c >= '0' && c <= '9'))) return false;

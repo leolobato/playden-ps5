@@ -1054,6 +1054,7 @@ bool BuildEffectiveSettings(const GameRecipe& recipe, const SettingsPreset* pres
   out.graphics = out.values["graphics"].value;
   out.environment_as_debug_env = !kit.environment && kit.opengl_zink;
   out.debug_env_lines = kit.opengl_zink;
+  out.environment_section = kit.environment;
   out.profile_version = kit.profile_version_2 ? 2 : 1;
   out.long_profile = kit.launch_arguments_4096;
   out.display_120hz = kit.display_120hz;
@@ -1620,6 +1621,20 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
       if (name == "DXVK_FRAME_RATE" && FrameLimitOwnsCap(settings)) continue;
       if (!IsProsperoEnvironmentEntry(name, item) || environment_count == kProsperoMaxEnvironmentEntries) continue;
       environment_lines += name + " = " + item + "\n";
+      ++environment_count;
+    }
+  }
+  // DXVK reads dxvk.conf by a relative name when it loads, from whatever folder the game is in by then; a game that
+  // changes folder first (Dota 2 moves to game\bin\win64) never sees Playden's file. Naming it in full makes the
+  // folder not matter. After the player's variables, so it never takes one's place; left to the player's own
+  // DXVK_CONFIG_FILE (the runtime refuses a name given twice). A path the runtime could not hold once it puts a USB
+  // drive's number in it is left out: the file then still works for a game that stays in its folder.
+  if (settings.environment_section && !RenderDxvkConfig(settings).empty() &&
+      (!environment.available || !EnvironmentSetsName(environment.value, "DXVK_CONFIG_FILE")) &&
+      environment_count < kProsperoMaxEnvironmentEntries) {
+    const auto config = (working.empty() ? *root : *root + "\\" + Backslashes(working)) + "\\dxvk.conf";
+    if (config.size() < kProsperoMaxEnvironmentValueBytes - 1 && IsProsperoEnvironmentEntry("DXVK_CONFIG_FILE", config)) {
+      environment_lines += "DXVK_CONFIG_FILE = " + config + "\n";
       ++environment_count;
     }
   }

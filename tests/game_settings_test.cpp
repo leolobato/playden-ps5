@@ -603,6 +603,61 @@ int main(int argc, char** argv) {
   CHECK(RenderDxvkConfig(settings).find("dxvk.hud = fps,frametimes\n") != std::string::npos);
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("show_fps = false\n") != std::string::npos);
+  // A kit without [environment] gets no DXVK_CONFIG_FILE (its title would refuse the profile).
+  CHECK(profile.text.find("DXVK_CONFIG_FILE") == std::string::npos);
+  {
+    // DXVK finds Playden's dxvk.conf by its full path, so a game that changes folder before DXVK loads (Dota 2) still
+    // reads it.
+    auto environment_kit = dxvk_kit;
+    environment_kit.environment = true;
+    EffectiveSettings with_config;
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"performance_overlay", "on"}}, environment_kit, &with_config, &error));
+    CHECK(RenderProsperoProfile(hl2, with_config, target, &profile, &reason));
+    CHECK(profile.text.find("\nDXVK_CONFIG_FILE = Z:\\data\\homebrew\\FAKE77031\\games\\220\\dxvk.conf\n") !=
+          std::string::npos);
+    // The launch working folder holds dxvk.conf (ApplyGameSettings), so the path names it.
+    auto nested = hl2;
+    nested.launch_entries.front().executable = "bin/hl2.exe";
+    nested.launch_entries.front().working_directory = "bin";
+    CHECK(BuildEffectiveSettings(nested, nullptr, {{"frame_limit", "30"}}, environment_kit, &with_config, &error));
+    CHECK(RenderProsperoProfile(nested, with_config, target, &profile, &reason));
+    CHECK(profile.text.find("DXVK_CONFIG_FILE = Z:\\data\\homebrew\\FAKE77031\\games\\220\\bin\\dxvk.conf\n") !=
+          std::string::npos);
+    // No dxvk.conf, no variable.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, environment_kit, &with_config, &error));
+    CHECK(RenderDxvkConfig(with_config).empty());
+    CHECK(RenderProsperoProfile(hl2, with_config, target, &profile, &reason));
+    CHECK(profile.text.find("DXVK_CONFIG_FILE") == std::string::npos);
+    // The player's own DXVK_CONFIG_FILE wins, named once.
+    CHECK(BuildEffectiveSettings(hl2, nullptr,
+                                 {{"performance_overlay", "on"}, {"environment", "DXVK_CONFIG_FILE=C:\\mine.conf"}},
+                                 environment_kit, &with_config, &error));
+    CHECK(RenderProsperoProfile(hl2, with_config, target, &profile, &reason));
+    CHECK(profile.text.find("DXVK_CONFIG_FILE = C:\\mine.conf\n") != std::string::npos);
+    CHECK(profile.text.find("DXVK_CONFIG_FILE") == profile.text.rfind("DXVK_CONFIG_FILE"));
+    // Eight variables of the player's fill [environment]: it is the same as without a dxvk.conf, so none of theirs
+    // gives way to DXVK_CONFIG_FILE.
+    std::string eight;
+    for (char name = 'A'; name < 'A' + 8; ++name) eight += std::string(eight.empty() ? "" : ";") + "DXVK_" + name + "=1";
+    const auto environment_of = [&](const std::map<std::string, std::string>& overrides) {
+      CHECK(BuildEffectiveSettings(hl2, nullptr, overrides, environment_kit, &with_config, &error));
+      CHECK(RenderProsperoProfile(hl2, with_config, target, &profile, &reason));
+      const auto section = profile.text.find("\n[environment]\n");
+      return section == std::string::npos ? std::string() : profile.text.substr(section, profile.text.find("\n[", section + 1) - section);
+    };
+    const auto without_config = environment_of({{"environment", eight}});
+    CHECK(without_config.find("DXVK_A = 1\n") != std::string::npos);
+    CHECK(environment_of({{"performance_overlay", "on"}, {"environment", eight}}) == without_config);
+    // A path the runtime could not hold once it adds a USB drive's number is left out; the profile still renders.
+    // "Z:\data\" + folder + "\dxvk.conf" is 18 bytes plus the folder name: 126 bytes fit, 127 don't.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"performance_overlay", "on"}}, environment_kit, &with_config, &error));
+    const ProfileTarget fits{"playden-steam-220", "/data/" + std::string(108, 'x')};
+    CHECK(RenderProsperoProfile(hl2, with_config, fits, &profile, &reason));
+    CHECK(profile.text.find("DXVK_CONFIG_FILE = Z:\\data\\" + std::string(108, 'x') + "\\dxvk.conf\n") != std::string::npos);
+    const ProfileTarget deep{"playden-steam-220", "/data/" + std::string(109, 'x')};
+    CHECK(RenderProsperoProfile(hl2, with_config, deep, &profile, &reason));
+    CHECK(profile.text.find("DXVK_CONFIG_FILE") == std::string::npos);
+  }
   // The runtime log names the overlay and the player's own rows; typed text stays out of it.
   CHECK(SettingsLogSummary(settings) ==
         "overlay=on detail=frametimes chosen=overlay_detail=frametimes,performance_overlay=on");

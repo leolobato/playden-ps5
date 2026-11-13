@@ -406,6 +406,8 @@ struct EffectiveSettings {
   // needs it.
   bool helper_process = false;
   bool helper_process_needs_update = false;
+  // The title's runtime reads the profile's [environment] section (KitCapabilities::environment).
+  bool environment_section = false;
 };
 
 // The launch entry id of a program the player chose from the game folder.
