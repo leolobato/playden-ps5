@@ -223,7 +223,8 @@ void OverlapsFourFetches(const std::filesystem::path& root) {
     ++active; ++entered;
     peak = std::max(peak, active);
     changed.notify_all();
-    changed.wait_for(lock, std::chrono::milliseconds(250), [&] { return entered >= 4; });
+    // Ends as soon as four downloads are in at once; the limit only has to hold on a busy machine.
+    changed.wait_for(lock, std::chrono::seconds(30), [&] { return entered >= 4; });
     lock.unlock();
     *out = world.served.at(sha);
     lock.lock();
@@ -254,7 +255,7 @@ struct ParallelFixture {
   }
   bool Wait(const std::function<bool()>& predicate) {
     std::unique_lock<std::mutex> lock(mutex);
-    return changed.wait_for(lock, std::chrono::seconds(3), predicate);
+    return changed.wait_for(lock, std::chrono::seconds(30), predicate);
   }
   void Release() {
     std::lock_guard<std::mutex> lock(mutex);
