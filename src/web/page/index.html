@@ -129,6 +129,17 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
 .choice small { display: block; color: var(--soft); font-size: 13px; }
 .choice input[type=checkbox] { flex: none; width: 18px; height: 18px; margin-top: 2px; cursor: pointer; }
 .pair .choice { max-width: 440px; margin-bottom: 12px; cursor: pointer; }
+.dialog .choice { cursor: pointer; }
+.dialog .crumbs { margin: 0 0 10px; }
+.dialog .crumbs button { all: unset; cursor: pointer; color: var(--accent); }
+.dialog .crumbs button:hover { text-decoration: underline; }
+.dialog .error { color: #f2a48f; }
+.dialog input.search { width: 100%; min-width: 0; }
+.folders li button { all: unset; box-sizing: border-box; display: block; width: 100%; cursor: pointer; font-weight: 600; }
+.folders li button:hover:not(:disabled) { color: var(--accent); }
+.folders li button:disabled { cursor: not-allowed; opacity: .45; }
+.folders li button::before { content: ""; display: inline-block; width: 9px; height: 7px; margin-right: 8px; border: 1.5px solid var(--accent); border-radius: 1px; }
+.folders li small { display: block; color: var(--soft); font-size: 13px; font-weight: 400; }
 .pair { max-width: 520px; margin: 40px auto 0; }
 .pair h2 { margin: 0 0 8px; font-size: 26px; line-height: 1.2; font-weight: 600; }
 .pair p { color: var(--soft); margin: 0 0 12px; }
@@ -434,9 +445,10 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   const files = { game: null, root: null, path: "", listing: null, selected: new Set(), route: 0, poll: 0, games: null, refreshes: 0, sortGames: null, sortFolder: null };
 
   class Answer extends Error {
-    constructor(status, message) {
+    constructor(status, message, body = "") {
       super(message);
       this.status = status;
+      this.body = body;
     }
   }
   const busyWords = () => files.setting_up
@@ -454,14 +466,20 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       // A setup takes minutes: say so now. Anything else that's busy is over in a moment.
       files.setting_up = response.status === 503 && response.headers.get("X-Playden-Busy") === "setup";
       if (response.status === 503 && !files.setting_up && attempt < 3) { await sleep(1000); continue; }
-      const text = await response.text();
+      let text;
+      try {
+        text = await response.text();
+      } catch (error) {
+        // The answer stopped halfway (a timeout or a dropped connection): the same as no answer.
+        throw new Answer(0, "Playden isn't answering. Is it open on the PS5? It closes when a game starts.");
+      }
       if (response.ok) {
         const answer = text ? JSON.parse(text) : {};
         files.setting_up = !!(answer.games ? answer.setting_up : answer.all_setting_up);
         return answer;
       }
       if (response.status === 401) { showPairing(); throw new Answer(401, "Pair this browser first."); }
-      throw new Answer(response.status, response.status === 503 ? busyWords() : text.trim() || `Playden answered ${response.status}.`);
+      throw new Answer(response.status, response.status === 503 ? busyWords() : text.trim() || `Playden answered ${response.status}.`, text);
     }
   };
   const act = (path) => api(path, { method: "POST", headers: { "X-Playden-Action": "files" } });
@@ -727,7 +745,8 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     const selected = [...files.selected];
     const bar = element("div", { class: "bar" }, upload, picker, uploadFolder, folderPicker, newFolder, refresh, listing.exists ? zip : "");
     if (listing.read_only) { upload.disabled = true; newFolder.disabled = true; if (uploadFolder) uploadFolder.disabled = true; }
-    if (selected.length) bar.append(button(`Delete ${selected.length} selected`, () => askDelete(selected), "ghost danger end"));
+    if (selected.length && !listing.read_only) bar.append(button(`Move ${selected.length} selected`, () => askMove(selected), "ghost end"));
+    if (selected.length) bar.append(button(`Delete ${selected.length} selected`, () => askDelete(selected), selected.length && !listing.read_only ? "ghost danger" : "ghost danger end"));
     if (listing.read_only)
       pane.append(element("p", { class: "lede", text: "Read-only: Playden writes this folder itself when it prepares the game, so changes here wouldn't last. Change these settings in Game settings on the PS5." }));
     if (root === "game" && !listing.read_only)
@@ -757,6 +776,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       else if (!entry.directory && entry.previous) name.append(element("span", { text: `Previous version from ${whenInText(entry.previous.modified)}, ${longSize(entry.previous.size)}` }));
       if (entry.name.toLowerCase() === "configs.user.ini") name.append(element("span", { text: "Names your Steam account. Look through it before you share it." }));
       const acts = element("td", { class: "acts" });
+      if (editableRow(entry)) acts.append(button("Rename", () => askRename(entry)));
       if (!entry.directory) {
         if (!entry.recoverable) acts.append(anchor("Download", `/api/files/download?${q({ ...ctx, path: full })}`));
         if (entry.previous) {
@@ -913,6 +933,226 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       folders.length && inGameFolder ? element("p", { text: "If these are the game's own files, the game may stop working until you install it again." }) : "",
       element("ul", {}, ...names.map((name) => element("li", { text: name }))),
       element("div", { class: "foot" }, button("Keep them", () => close()), button("Delete", remove, "primary")));
+  };
+  // A move's answer when the name is there: { clash, name, folder, message }; anything else is a plain refusal.
+  const clashOf = (error) => {
+    if (error.status !== 409 || !error.body) return null;
+    try { const answer = JSON.parse(error.body); return answer.clash ? answer : null; } catch (_) { return null; }
+  };
+  const askRename = (entry) => {
+    const batch = { game: files.game.id, root: files.root };
+    const name = element("input", { class: "search", "aria-label": "New name", value: entry.name });
+    const problem = element("p", { class: "error", hidden: "" });
+    let close;
+    const rename = async () => {
+      const wanted = name.value.trim();
+      if (!wanted || wanted === entry.name) return close();
+      try {
+        await act(`/api/files/move?${q({ ...batch, path: relPath(entry.name), name: wanted })}`);
+      } catch (error) {
+        if (error.status === 401) return close();
+        const clash = clashOf(error);
+        problem.textContent = clash ? `${clash.folder ? "A folder" : "A file"} named "${clash.name}" is already here. Pick another name.` : error.message;
+        problem.hidden = false;
+        return;
+      }
+      close();
+      files.selected.delete(entry.name);
+      refreshFolder();
+    };
+    name.addEventListener("keydown", (event) => { if (event.key === "Enter") rename(); });
+    close = dialog(`Rename ${entry.directory ? "folder" : "file"}`, name, problem,
+      entry.directory || !entry.previous ? "" : element("p", { class: "note", text: "Its previous version keeps up with it." }),
+      element("div", { class: "foot" }, button("Cancel", () => close()), button("Rename", rename, "primary")));
+    name.focus();
+    // The name without its extension, ready to type over.
+    const dot = entry.directory ? -1 : entry.name.lastIndexOf(".");
+    name.setSelectionRange(0, dot > 0 ? dot : entry.name.length);
+  };
+
+  // Move: a folder picker over every folder of the game, then one item at a time, asking at each name that's there.
+  const askMove = (names) => {
+    // Fixed now: the player can move to another folder or game while these go.
+    const from = { game: files.game, root: files.root, path: files.path, listing: files.listing };
+    const entries = names.map((name) => from.listing.entries.find((entry) => entry.name === name)).filter(Boolean);
+    const moving = new Set(entries.map((entry) => entry.name.toLowerCase()));
+    const roots = (from.game.roots || []).map((root) => root.id);
+    const at = { root: from.root, path: from.path, listing: null, token: 0 };
+    let close;
+    const body = element("div", {});
+    const label = (root) => (ROOTS[root] || { label: root }).label;
+    const where = (root, path) => [label(root), ...(path ? path.split("/") : [])].join(" / ");
+    const open = async (root, path) => {
+      const token = ++at.token;
+      Object.assign(at, { root, path, listing: null });
+      paint();
+      if (root === null) return;
+      try {
+        const listing = await fetchListing(from.game.id, root, path);
+        if (token !== at.token) return;
+        at.listing = listing;
+      } catch (error) {
+        if (token !== at.token) return;
+        if (error.status === 401) return close();
+        at.listing = { error: error.message };
+      }
+      paint();
+    };
+    const crumb = (text, onClick) => {
+      const node = element("button", { type: "button", text });
+      node.addEventListener("click", onClick);
+      return node;
+    };
+    const paint = () => {
+      const crumbs = element("nav", { class: "crumbs", "aria-label": "Destination" }, crumb(from.game.name, () => open(null, "")));
+      if (at.root !== null) {
+        crumbs.append(element("span", { text: "/" }));
+        const parts = at.path ? at.path.split("/") : [];
+        if (parts.length) crumbs.append(crumb(label(at.root), () => open(at.root, "")));
+        else crumbs.append(element("b", { text: label(at.root) }));
+        parts.forEach((part, index) => {
+          crumbs.append(element("span", { text: "/" }));
+          if (index === parts.length - 1) crumbs.append(element("b", { text: part }));
+          else crumbs.append(crumb(part, () => open(at.root, parts.slice(0, index + 1).join("/"))));
+        });
+      }
+      const list = element("ul", { class: "folders" });
+      const row = (text, note, onClick, disabled) => {
+        const node = element("button", { type: "button", text });
+        node.disabled = !!disabled;
+        node.addEventListener("click", onClick);
+        list.append(element("li", {}, node, note ? element("small", { text: note }) : ""));
+      };
+      let here = false;
+      if (at.root === null) {
+        for (const root of roots) row(label(root), (ROOTS[root] || {}).detail, () => open(root, ""));
+      } else if (!at.listing) {
+        list.append(element("li", { text: "Loading…" }));
+      } else if (at.listing.error) {
+        list.append(element("li", { text: at.listing.error }));
+      } else {
+        const sameFolder = at.root === from.root && at.path === from.path;
+        const folders = at.listing.entries.filter((entry) => entry.directory);
+        for (const entry of folders) {
+          // The items being moved, and what's in them, can't hold themselves.
+          const own = sameFolder && moving.has(entry.name.toLowerCase());
+          row(entry.name, entry.read_only ? "Read-only. Playden writes this folder." : own ? "Being moved" : "",
+            () => open(at.root, at.path ? `${at.path}/${entry.name}` : entry.name), entry.read_only || own);
+        }
+        if (!folders.length) list.append(element("li", { text: "No folders here." }));
+        here = !sameFolder && !at.listing.read_only;
+      }
+      const make = button("New folder", () => askFolderName());
+      make.disabled = at.root === null || !at.listing || !!at.listing.error || !!at.listing.read_only;
+      const go = button("Move here", () => run(), "primary");
+      go.disabled = !here;
+      const across = at.root !== null && at.root !== from.root;
+      body.replaceChildren(crumbs, list,
+        across ? element("p", { class: "note", text: "This is another folder of the game, maybe on another drive: each file is copied, then deleted here. Keep this tab open until it finishes." }) : "",
+        from.root === "game" ? element("p", { class: "note", text: "If these are the game's own files, the game may stop working until you install it again." }) : "",
+        element("div", { class: "foot" }, button("Cancel", () => close()), make, go));
+    };
+    const askFolderName = () => {
+      const name = element("input", { class: "search", "aria-label": "Folder name", placeholder: "Folder name" });
+      const problem = element("p", { class: "error", hidden: "" });
+      const make = async () => {
+        if (!name.value) return;
+        const path = at.path ? `${at.path}/${name.value}` : name.value;
+        try { await act(`/api/files/mkdir?${q({ game: from.game.id, root: at.root, path })}`); } catch (error) {
+          if (error.status === 401) return close();
+          problem.textContent = error.message;
+          problem.hidden = false;
+          return;
+        }
+        open(at.root, path);
+      };
+      name.addEventListener("keydown", (event) => { if (event.key === "Enter") make(); });
+      body.replaceChildren(element("p", { text: `New folder in ${where(at.root, at.path)}` }), name, problem,
+        element("div", { class: "foot" }, button("Back", () => paint()), button("Make folder", make, "primary")));
+      name.focus();
+    };
+    // Replace, keep or skip for one name: the player's answer, and whether it stands for the rest.
+    const askClash = (clash, left) => new Promise((resolve) => {
+      const all = element("input", { type: "checkbox" });
+      const choose = (answer) => () => resolve({ answer, all: all.checked });
+      body.replaceChildren(
+        element("p", { text: `${where(at.root, at.path)} already has ${clash.folder ? "a folder" : "a file"} named "${clash.name}".` }),
+        element("p", { class: "note", text: clash.folder
+          ? "Replace puts what's in it into that folder. Files with the same names are replaced and kept as their previous versions; other files there stay."
+          : "Replace keeps the file that's there as its previous version." }),
+        element("p", { class: "note", text: "Keep both gives the one you move a numbered name. Skip leaves it where it is." }),
+        left ? element("label", { class: "choice" }, all, element("span", {}, "Apply to all", element("small", { text: "Do the same for any other name already there." }))) : "",
+        element("div", { class: "foot" }, button("Skip", choose("skip")), button("Keep both", choose("keep")), button("Replace", choose("replace"), "primary")));
+    });
+    const run = async () => {
+      const target = { root: at.root, path: at.path };
+      const batch = { game: from.game.id, root: from.root, to_root: target.root, to: target.path };
+      let always = null, left = 0;
+      // A copy to another folder goes on on the PS5 by itself: its answer says how far it is.
+      const progress = (index, state = null) => {
+        const lines = [element("p", { text: `Moving ${index + 1} of ${entries.length}: ${entries[index].name}` })];
+        if (state) {
+          const percent = state.total_bytes ? Math.min(100, Math.round((state.bytes / state.total_bytes) * 100)) : 0;
+          const count = state.total_files ? ` · ${state.files} of ${state.total_files} ${state.total_files === 1 ? "file" : "files"}` : "";
+          lines.push(element("span", { class: "meter" }, element("i", { style: `width:${percent}%` })),
+            element("p", { class: "note", text: `${size(state.bytes)} of ${size(state.total_bytes)}${count}${state.current ? ` · ${state.current}` : ""}` }));
+          if (state.lost) lines.push(element("p", { class: "note", text: "Playden isn't answering. If it's still open on the PS5, the move goes on there. Waiting for it…" }));
+        }
+        lines.push(element("p", { class: "note", text: "Keep this tab open until it finishes." }));
+        body.replaceChildren(...lines);
+      };
+      const follow = async (index, job, first) => {
+        let state = first, quiet = 0;
+        for (;;) {
+          progress(index, state);
+          await sleep(700);
+          try {
+            // A PS5 that stops answering leaves a request open: give up on this one and ask again.
+            const answer = await api(`/api/files/move/status?${q({ job })}`, { signal: AbortSignal.timeout(10000) });
+            if (!answer.running) return answer;
+            state = answer;
+            quiet = 0;
+          } catch (error) {
+            // A missed answer isn't a failed move: Playden goes on with it.
+            if (error.status !== 0 && error.status !== 503) throw error;
+            if (++quiet > 30) throw new Answer(0, "Playden stopped answering. The move may still finish on the PS5: check both folders, and move again to finish it.");
+            state = { ...state, lost: true };
+          }
+        }
+      };
+      let index = 0;
+      for (; index < entries.length; ++index) {
+        const entry = entries[index];
+        const path = from.path ? `${from.path}/${entry.name}` : entry.name;
+        let clash = always ? { answer: always } : null;
+        for (;;) {
+          progress(index);
+          try {
+            let answer = await act(`/api/files/move?${q({ ...batch, path, ...(clash && clash.answer !== "skip" ? { clash: clash.answer } : {}) })}`);
+            if (answer.job) answer = await follow(index, answer.job, answer);
+            left += answer.left || 0;
+            break;
+          } catch (error) {
+            const found = clashOf(error);
+            if (!found) { close(); report(error); index = entries.length; break; }
+            if (always === "skip") break;
+            const choice = await askClash(found, entries.length - index - 1);
+            if (choice.all) always = choice.answer;
+            if (choice.answer === "skip") break;
+            clash = choice;
+          }
+        }
+      }
+      close();
+      files.selected = new Set();
+      if (left) {
+        fail(`${left} ${left === 1 ? "item stays" : "items stay"} where ${left === 1 ? "it was" : "they were"}, because Playden protects ${left === 1 ? "it" : "them"} or can't move ${left === 1 ? "it" : "them"} from here.`);
+        $("retry").hidden = true;
+      }
+      if (onFolder(from.game.id, from.root, from.path)) refreshFolder();
+    };
+    close = dialog(`Move ${entries.length} ${entries.length === 1 ? "item" : "items"} to…`, body);
+    open(from.root, from.path);
   };
   const restore = async (full) => {
     try { await act(`/api/files/restore?${q({ game: files.game.id, root: files.root, path: full })}`); }

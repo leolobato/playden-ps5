@@ -42,5 +42,10 @@ std::optional<std::vector<std::string>> SplitRelativePath(std::string_view path)
 bool ReadOnlyPath(const std::vector<std::string>& parts);
 // Whether parts is at or below one of the private paths (each '/'-separated, relative to the same root).
 bool PrivatePath(const std::vector<std::string>& parts, const std::vector<std::string>& private_paths);
+// Whether parts holds one of the private paths below it: moving or renaming it would take that path along.
+bool HoldsPrivatePath(const std::vector<std::string>& parts, const std::vector<std::string>& private_paths);
+// The name a second copy takes when the player keeps both: "save (2).dat", "Saves (2)". Nothing when it can't be a new
+// name (too long).
+std::optional<std::string> NumberedName(std::string_view name, bool folder, int number);
 
 }  // namespace playden::web

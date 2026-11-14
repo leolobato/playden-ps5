@@ -96,6 +96,36 @@ struct RedistFolderInfo {
   std::string physx_installer;        // what Play would install from here, relative to the game folder; empty: none
 };
 
+// What a move does when the destination already has that name (compared without regard to case).
+enum class MoveClash {
+  kAsk,       // nothing changes: 409, and the summary names what is there
+  kReplace,   // a file replaces the one there, which is kept as its previous version; a folder merges into the one there
+  kKeepBoth,  // the moved file or folder takes a free numbered name: "save (2).dat"
+};
+
+// What a move did, or why it asks.
+struct MoveSummary {
+  std::string name;          // the name it has in the destination
+  std::uint64_t files = 0;   // moved
+  std::uint64_t folders = 0;
+  std::uint64_t left = 0;    // stayed where it was, with the folders that hold it: what DeleteTree leaves
+  bool clash = false;        // kAsk only: the destination has that name (status 409)
+  bool clash_folder = false; // and it is a folder
+};
+
+// How far a move across roots is. Totals are what a summary of the source found before the copy began, so bytes can
+// pass total_bytes when a file grows meanwhile.
+struct MoveProgress {
+  std::uint64_t bytes = 0;  // copied so far, previous versions too
+  std::uint64_t total_bytes = 0;
+  std::uint64_t files = 0;  // moved so far
+  std::uint64_t total_files = 0;
+  std::string name;         // the file being copied
+};
+// Called as a move across roots goes on, on the thread that moves. False stops the move within a chunk: the file being
+// copied stays where it was, and a second run goes on with what is left.
+using MoveObserver = std::function<bool(const MoveProgress&)>;
+
 struct UploadOptions {
   std::uint64_t length = 0;
   bool overwrite = false;
@@ -156,6 +186,13 @@ class FileStore {
   FileError DeleteTree(const FileRoot& root, const std::string& path, TreeSummary* out);
   // What DeleteTree would do, changing nothing.
   FileError SummarizeTree(const FileRoot& root, const std::string& path, TreeSummary* out);
+  // Moves or renames a file or folder (with any previous versions) to folder/name, in the same root or another root of
+  // the same game. In one root it renames, so a folder goes whole. Across roots it copies each file the page can show
+  // into a temporary there, publishes it whole and deletes the source after that: a stop leaves each file whole on
+  // one side or the other, and a second run goes on with what is left. What stays is what DeleteTree leaves. A path
+  // that holds or is a private path, or passes through a read-only folder, is refused on either side.
+  FileError Move(const FileRoot& from, const std::string& path, const FileRoot& to, const std::string& folder,
+                 const std::string& name, MoveClash clash, MoveSummary* out, const MoveObserver& observe = {});
   // Swaps a file with its previous version, or brings back a previous version with no file.
   FileError Restore(const FileRoot& root, const std::string& path);
   // A folder as a zip, its entries named from the folder's own name down. Before any byte goes out, a folder too
@@ -183,6 +220,18 @@ class FileStore {
   void Sweep(const platform::ManagedDirectory& folder);
   void DeferCleanup(const FileRoot& root, std::string folder, std::string name, platform::DirectoryPolicy policy);
   bool RemoveTemporary(const std::string& folder, const std::string& name, platform::DirectoryPolicy policy);
+  struct MoveFrame;
+  struct MoveTally;
+  FileError MoveEntries(const FileRoot& from, const FileRoot& to, std::vector<MoveFrame>* stack, MoveSummary* out, MoveTally* tally);
+  FileError RenameFile(const platform::ManagedDirectory& from, const std::string& name, const platform::ManagedDirectory& to,
+                       const std::string& target, bool replace);
+  FileError CopyFile(const FileRoot& from, const std::vector<std::string>& source, const FileRoot& to,
+                     const std::vector<std::string>& target, bool replace, MoveTally* tally);
+  FileError StageCopy(const FileRoot& to, const std::vector<std::string>& folder, int fd, std::uint64_t size,
+                      std::string* temporary, std::string* folder_path, platform::DirectoryPolicy* policy, MoveTally* tally);
+  void DropTemporary(const FileRoot& root, const std::string& folder_path, const std::string& temporary,
+                     platform::DirectoryPolicy policy);
+  FileError CaseRename(const platform::ManagedDirectory& folder, const std::string& name, const std::string& target);
   bool CommitUpload(const FileRoot& root, const std::vector<std::string>& parts, const std::string& temporary,
                     const UploadOptions& options, const struct stat* expected, bool* replaced, FileError* error);
 

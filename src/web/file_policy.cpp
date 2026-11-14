@@ -145,4 +145,26 @@ bool PrivatePath(const std::vector<std::string>& parts, const std::vector<std::s
   return false;
 }
 
+bool HoldsPrivatePath(const std::vector<std::string>& parts, const std::vector<std::string>& private_paths) {
+  for (const auto& path : private_paths) {
+    const auto split = SplitRelativePath(path);
+    if (!split || split->size() <= parts.size()) continue;
+    bool above = true;
+    for (std::size_t i = 0; i < parts.size(); ++i) above = above && LowerAscii((*split)[i]) == LowerAscii(parts[i]);
+    if (above) return true;
+  }
+  return false;
+}
+
+std::optional<std::string> NumberedName(std::string_view name, bool folder, int number) {
+  // The extension stays last, as Windows does. A name starting with its only dot ("".config"") has none.
+  const auto dot = folder ? std::string_view::npos : name.rfind('.');
+  const bool has_extension = dot != std::string_view::npos && dot > 0;
+  const auto base = has_extension ? name.substr(0, dot) : name;
+  const auto extension = has_extension ? name.substr(dot) : std::string_view();
+  std::string out = std::string(base) + " (" + std::to_string(number) + ")" + std::string(extension);
+  if (!NewName(out)) return std::nullopt;
+  return out;
+}
+
 }  // namespace playden::web

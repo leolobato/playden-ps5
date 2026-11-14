@@ -103,9 +103,15 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(web_file_store_test "${CMAKE_SOURCE_DIR}/tests/web_file_store_test.cpp")
     target_link_libraries(web_file_store_test PRIVATE playden_web)
     add_test(NAME web_file_store COMMAND web_file_store_test)
+    add_executable(web_file_move_test "${CMAKE_SOURCE_DIR}/tests/web_file_move_test.cpp")
+    target_link_libraries(web_file_move_test PRIVATE playden_web)
+    add_test(NAME web_file_move COMMAND web_file_move_test)
     add_executable(web_files_api_test "${CMAKE_SOURCE_DIR}/tests/web_files_api_test.cpp")
     target_link_libraries(web_files_api_test PRIVATE playden_web)
     add_test(NAME web_files_api COMMAND web_files_api_test)
+    add_executable(web_files_move_job_test "${CMAKE_SOURCE_DIR}/tests/web_files_move_job_test.cpp")
+    target_link_libraries(web_files_move_job_test PRIVATE playden_web)
+    add_test(NAME web_files_move_job COMMAND web_files_move_job_test)
     # A real server over a made-up game for a browser or a script; prints each pairing code.
     add_executable(web_files_fixture_server "${CMAKE_SOURCE_DIR}/tests/web_files_fixture_server.cpp")
     target_link_libraries(web_files_fixture_server PRIVATE playden_web)
@@ -122,4 +128,15 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     target_compile_definitions(web_file_store_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1 PLAYDEN_TEST_AT_UNAVAILABLE=1)
     target_link_libraries(web_file_store_native_policy_test PRIVATE playden_runtime_artifact_hash playden_storage playden_curl_8_22 Threads::Threads)
     add_test(NAME web_file_store_native_policy COMMAND web_file_store_native_policy_test)
+    add_executable(web_file_move_native_policy_test
+        "${CMAKE_SOURCE_DIR}/tests/web_file_move_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/file_store.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/file_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/web/zip.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_include_directories(web_file_move_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_compile_features(web_file_move_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(web_file_move_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1 PLAYDEN_TEST_AT_UNAVAILABLE=1)
+    target_link_libraries(web_file_move_native_policy_test PRIVATE playden_runtime_artifact_hash playden_storage playden_curl_8_22 Threads::Threads)
+    add_test(NAME web_file_move_native_policy COMMAND web_file_move_native_policy_test)
 endif()

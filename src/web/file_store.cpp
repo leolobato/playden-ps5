@@ -348,7 +348,9 @@ void FileStore::Sweep(const ManagedDirectory& folder) {
   const auto now = Now();
   for (const auto& entry : raw) {
     if (entry.name.rfind(kUploadPrefix, 0) != 0 && entry.name.rfind(kRestorePrefix, 0) != 0) continue;
-    if (!S_ISREG(entry.info.st_mode)) continue;
+    const bool restore = entry.name.rfind(kRestorePrefix, 0) == 0;
+    // A rename's temporary can be a folder (a new case for its name): put back, never removed.
+    if (!S_ISREG(entry.info.st_mode) && !(restore && S_ISDIR(entry.info.st_mode))) continue;
     // A restore's temporary is the player's file, with its old time: its age is in its name.
     std::int64_t made = entry.info.st_mtime;
     if (entry.name.rfind(kRestorePrefix, 0) == 0) {
@@ -368,14 +370,15 @@ void FileStore::Sweep(const ManagedDirectory& folder) {
           struct stat there{};
           return !folder.InspectChild(child, &there) && errno == ENOENT;
         };
-        const auto target = free(name) ? name : free(kPreviousPrefix + name) ? kPreviousPrefix + name : std::string();
+        const bool directory = S_ISDIR(entry.info.st_mode);
+        const auto target = free(name) ? name : !directory && free(kPreviousPrefix + name) ? kPreviousPrefix + name : std::string();
         if (!target.empty()) {
           if (folder.RenameChild(entry.name, folder, target, false)) folder.Sync();
           continue;
         }
       }
     }
-    folder.RemoveRegularFile(entry.name);
+    if (S_ISREG(entry.info.st_mode)) folder.RemoveRegularFile(entry.name);
   }
 }
 
@@ -744,6 +747,579 @@ FileError FileStore::WalkTree(const FileRoot& root, const std::string& path, boo
       if (!folder->Sync()) return FromErrno(errno, "The change can't be saved");
     }
   }
+  return kOk;
+}
+
+// Moves and renames. In one root a rename does it; across roots each file is copied whole, then published, then its
+// source goes. Path operations hold the commit lock and the path lock a step at a time; bytes move with neither.
+namespace {
+
+FileError ReadOnly() { return {403, "Playden writes this folder itself, so it can't be changed here."}; }
+FileError KeepsSignIn() { return {403, "Playden keeps a sign-in in this folder, so it can't be moved or renamed here."}; }
+
+struct Present {
+  std::string name;
+  bool directory = false;
+};
+
+// What a folder has, by name without regard to case, as the page and Wine see it. A previous version alone is its
+// file (listed as Recoverable).
+std::map<std::string, Present> PresentNames(const std::vector<RawEntry>& raw) {
+  std::map<std::string, Present> out;
+  const std::string prefix = kPreviousPrefix;
+  const auto previous = [&](const RawEntry& entry) { return entry.name.rfind(prefix, 0) == 0 && entry.name.size() > prefix.size(); };
+  for (const auto& entry : raw)
+    if (!previous(entry)) out[LowerAscii(entry.name)] = {entry.name, S_ISDIR(entry.info.st_mode)};
+  for (const auto& entry : raw)
+    if (previous(entry)) out.emplace(LowerAscii(entry.name.substr(prefix.size())), Present{entry.name.substr(prefix.size()), false});
+  return out;
+}
+
+std::string Lowered(const FileRoot& root, const std::vector<std::string>& parts) {
+  return LowerAscii(parts.empty() ? root.path : root.path + "/" + Join(parts, parts.size()));
+}
+
+bool Below(const std::string& path, const std::string& folder) {
+  return path.size() > folder.size() && path.compare(0, folder.size(), folder) == 0 && path[folder.size()] == '/';
+}
+
+// What a step of a folder's move does with an error: the item stays (the console won't let this user change it, or
+// it is gone already), or the move stops.
+enum class Outcome { kDone, kLeft, kGone, kStop };
+Outcome Classify(const FileError& error) {
+  if (error.ok()) return Outcome::kDone;
+  if (error.status == 403) return Outcome::kLeft;
+  if (error.status == 404) return Outcome::kGone;
+  return Outcome::kStop;
+}
+
+}  // namespace
+
+struct FileStore::MoveFrame {
+  std::vector<std::string> source, target;
+  bool read = false;
+};
+
+// A move across roots: what it has done so far, for whoever watches it.
+struct FileStore::MoveTally {
+  const MoveObserver* observe = nullptr;
+  MoveProgress progress;
+  // False: the watcher wants it to stop.
+  bool Report() { return !observe || !*observe || (*observe)(progress); }
+};
+
+namespace {
+FileError Stopped() { return {500, "The move stopped before it finished. Move it again to finish it."}; }
+}  // namespace
+
+FileError FileStore::Move(const FileRoot& from, const std::string& path, const FileRoot& to, const std::string& folder,
+                          const std::string& name, MoveClash clash, MoveSummary* out, const MoveObserver& observe) {
+  *out = {};
+  MoveTally tally;
+  tally.observe = &observe;
+  bool counted = false;  // a file: its size is the total
+  const auto source = SplitRelativePath(path);
+  if (!source || source->empty() || PrivatePath(*source, from.private_paths)) return NotFound();
+  if (ReadOnlyPath(*source)) return ReadOnly();
+  if (HoldsPrivatePath(*source, from.private_paths)) return KeepsSignIn();
+  auto target = SplitRelativePath(folder);
+  if (!target || PrivatePath(*target, to.private_paths)) return NotFound();
+  if (!NewName(name)) return BadPath();
+  target->push_back(name);
+  if (ReadOnlyPath(*target)) return ReadOnly();
+  if (PrivatePath(*target, to.private_paths) || HoldsPrivatePath(*target, to.private_paths)) return KeepsSignIn();
+  const bool same_root = from.path == to.path;
+  const auto source_text = Lowered(from, *source);
+  if (Below(Lowered(to, *target), source_text)) return {400, "A folder can't go inside itself."};
+  const std::vector<std::string> source_above(source->begin(), source->end() - 1);
+  const std::vector<std::string> target_above(target->begin(), target->end() - 1);
+  const auto& source_name = source->back();
+  out->name = name;
+  bool directory = false, replace = false;
+  std::vector<MoveFrame> stack;
+  {
+    std::lock_guard<std::mutex> commit(commit_mutex_);
+    const auto held = Hold();
+    if (!held) return Busy();
+    CleanUpDeferred();
+    std::optional<ManagedDirectory> from_folder, to_folder;
+    if (auto error = Locate(from, source_above, true, false, &from_folder); !error.ok()) return error;
+    struct stat info{};
+    if (!from_folder->InspectChild(source_name, &info)) return errno == ENOENT ? NotFound() : FromErrno(errno, "This folder can't be read");
+    if (HardLinked(info)) return NotFound();
+    directory = S_ISDIR(info.st_mode);
+    if (same_root && *source == *target) return kOk;
+    if (!directory) {
+      struct stat old{};
+      tally.progress.total_files = 1;
+      tally.progress.total_bytes = static_cast<std::uint64_t>(info.st_size);
+      // Replace keeps the file there as the previous version: this one's own isn't copied then.
+      if (clash != MoveClash::kReplace && from_folder->InspectChild(kPreviousPrefix + source_name, &old) && S_ISREG(old.st_mode))
+        tally.progress.total_bytes += static_cast<std::uint64_t>(old.st_size);
+      counted = true;
+    }
+    // Only in the same folder: on a case-sensitive drive "A" and "a" can be two folders.
+    if (same_root && source_above == target_above && LowerAscii(source_name) == LowerAscii(name)) {
+      // A new case for the same name. A case-sensitive drive can have both names as two files: that's a clash.
+      struct stat other{};
+      if (from_folder->InspectChild(name, &other) && (other.st_ino != info.st_ino || other.st_dev != info.st_dev))
+        return FromErrno(EEXIST, "");
+      if (auto error = CaseRename(*from_folder, source_name, name); !error.ok()) return error;
+      ++(directory ? out->folders : out->files);
+      return kOk;
+    }
+    if (auto error = Locate(to, target_above, true, target_above.empty(), &to_folder); !error.ok()) return error;
+    std::vector<RawEntry> raw;
+    if (!ReadFolder(to_folder->path().string(), &raw, kMaxTreeFolderEntries, nullptr)) return FromErrno(errno, "This folder can't be read");
+    const auto present = PresentNames(raw);
+    const auto found = present.find(LowerAscii(name));
+    if (found != present.end()) {
+      if (clash == MoveClash::kAsk) {
+        out->clash = true;
+        out->clash_folder = found->second.directory;
+        out->name = found->second.name;
+        return {409, "\"" + found->second.name + "\" is already there."};
+      }
+      if (clash == MoveClash::kKeepBoth) {
+        std::optional<std::string> free;
+        for (int number = 2; number < 1000 && !free; ++number) {
+          auto candidate = NumberedName(name, directory, number);
+          if (!candidate) return {400, "That name is too long for a second copy."};
+          if (!present.count(LowerAscii(*candidate))) free = std::move(candidate);
+        }
+        if (!free) return FromErrno(EEXIST, "");
+        target->back() = *free;
+      } else {
+        if (found->second.directory != directory)
+          return {409, std::string(found->second.directory ? "A folder" : "A file") + " named \"" + found->second.name + "\" is in the way."};
+        target->back() = found->second.name;
+        // A merge into the folder that holds this one would take it into itself.
+        if (directory && Below(source_text, Lowered(to, *target))) return {409, "A folder can't be merged into a folder that holds it."};
+        replace = true;
+      }
+      out->name = target->back();
+    }
+    if (!directory && same_root) {
+      auto error = RenameFile(*from_folder, source_name, *to_folder, target->back(), replace);
+      if (error.ok()) ++out->files;
+      return error;
+    }
+    if (directory && same_root && !replace) {
+      if (!Step("move-rename") || !from_folder->RenameChild(source_name, *to_folder, target->back(), false))
+        return FromErrno(errno ? errno : EIO, "The folder can't be moved");
+      if (!from_folder->Sync() || !to_folder->Sync()) return FromErrno(errno, "The change can't be saved");
+      ++out->folders;
+      return kOk;
+    }
+    if (directory) {
+      if (!replace) {
+        auto made = to_folder->OpenChild(target->back(), to_folder->policy(), true, to.folder_mode);
+        if (!made || !made->Sync() || !to_folder->Sync()) return FromErrno(errno, "The folder can't be made");
+      }
+      stack.push_back({*source, *target});
+    }
+  }
+  if (!counted && !same_root) {
+    // What a delete of the source would take: the same files a move copies. Without it the page shows no fraction.
+    TreeSummary tree;
+    if (WalkTree(from, path, false, &tree).ok()) {
+      tally.progress.total_files = tree.files;
+      tally.progress.total_bytes = tree.bytes;
+    }
+  }
+  if (!tally.Report()) return Stopped();
+  if (!directory) {
+    auto error = CopyFile(from, *source, to, *target, replace, &tally);
+    if (error.ok()) {
+      ++out->files;
+      ++tally.progress.files;
+      tally.Report();
+    }
+    return error;
+  }
+  return MoveEntries(from, to, &stack, out, &tally);
+}
+
+// A folder's contents, iteratively (worker stacks are small): each folder's files move, then its folders, then it goes
+// itself if it is empty by then. In one root a folder that isn't in the way goes whole.
+FileError FileStore::MoveEntries(const FileRoot& from, const FileRoot& to, std::vector<MoveFrame>* stack, MoveSummary* out, MoveTally* tally) {
+  const bool same_root = from.path == to.path;
+  const std::string prefix = kPreviousPrefix;
+  while (!stack->empty()) {
+    // Folders too: a stop with only folders left must not finish the move.
+    if (tally && !tally->Report()) return Stopped();
+    if (stack->back().read) {
+      const auto source = stack->back().source;
+      stack->pop_back();
+      ++out->folders;
+      std::lock_guard<std::mutex> commit(commit_mutex_);
+      const auto held = Hold();
+      if (!held) return Busy();
+      std::optional<ManagedDirectory> parent;
+      if (auto error = Locate(from, {source.begin(), source.end() - 1}, true, false, &parent); !error.ok()) {
+        if (error.status == 404) continue;
+        return error;
+      }
+      if (!Step("move-folder") || !parent->RemoveEmptyDirectory(source.back())) {
+        const int error = errno;
+        if (error == ENOENT || error == ENOTEMPTY || error == EEXIST) continue;
+        if (error == EACCES || error == EPERM) { ++out->left; continue; }
+        return FromErrno(error, "The folder can't be removed");
+      }
+      if (!parent->Sync()) return FromErrno(errno, "The change can't be saved");
+      continue;
+    }
+    stack->back().read = true;
+    const auto frame = stack->back();
+    struct Pending {
+      std::string name, target;
+      bool replace = false;
+    };
+    std::vector<Pending> files;
+    {
+      std::lock_guard<std::mutex> commit(commit_mutex_);
+      const auto held = Hold();
+      if (!held) return Busy();
+      std::optional<ManagedDirectory> source_folder, target_folder;
+      if (auto error = Locate(from, frame.source, true, false, &source_folder); !error.ok()) {
+        // Gone, or can't be opened: what's in it stays. The rest goes on.
+        if (error.status != 404) ++out->left;
+        stack->pop_back();
+        continue;
+      }
+      if (auto error = Locate(to, frame.target, true, false, &target_folder); !error.ok()) return error;
+      Sweep(*source_folder);
+      std::vector<RawEntry> raw, there;
+      bool truncated = false;
+      if (!ReadFolder(source_folder->path().string(), &raw, kMaxTreeFolderEntries, &truncated, &out->left)) {
+        ++out->left;
+        stack->pop_back();
+        continue;
+      }
+      if (truncated) ++out->left;
+      if (!ReadFolder(target_folder->path().string(), &there, kMaxTreeFolderEntries, nullptr)) return FromErrno(errno, "This folder can't be read");
+      const auto present = PresentNames(there);
+      std::set<std::string> beside;
+      for (const auto& entry : raw)
+        if (S_ISREG(entry.info.st_mode) && entry.name.rfind(prefix, 0) != 0) beside.insert(LowerAscii(entry.name));
+      bool changed = false;
+      auto child = frame.source;
+      child.emplace_back();
+      for (const auto& entry : raw) {
+        if (S_ISREG(entry.info.st_mode) && entry.name.rfind(prefix, 0) == 0 && entry.name.size() > prefix.size()) {
+          // Goes with its file. Alone, it is what a stopped replace left: it stays here to be restored.
+          if (!beside.count(LowerAscii(entry.name.substr(prefix.size())))) ++out->left;
+          continue;
+        }
+        child.back() = entry.name;
+        const bool folder = S_ISDIR(entry.info.st_mode);
+        auto target = frame.target;
+        target.push_back(entry.name);
+        if (!UsableName(entry.name) || HiddenName(entry.name) || PrivatePath(child, from.private_paths) || HardLinked(entry.info) ||
+            (folder && ReadOnlyFolderName(entry.name)) || PrivatePath(target, to.private_paths) || HoldsPrivatePath(target, to.private_paths)) {
+          ++out->left;
+          continue;
+        }
+        const auto found = present.find(LowerAscii(entry.name));
+        if (found != present.end()) {
+          // A file and a folder of the same name: neither replaces the other.
+          if (found->second.directory != folder) { ++out->left; continue; }
+          target.back() = found->second.name;
+          if (folder) stack->push_back({child, target});
+          else files.push_back({entry.name, target.back(), true});
+          continue;
+        }
+        if (!folder) {
+          files.push_back({entry.name, entry.name, false});
+          continue;
+        }
+        if (same_root) {
+          if (!Step("move-rename") || !source_folder->RenameChild(entry.name, *target_folder, entry.name, false)) {
+            if (errno == EACCES || errno == EPERM) { ++out->left; continue; }
+            if (errno == ENOENT) continue;
+            return FromErrno(errno ? errno : EIO, "The folder can't be moved");
+          }
+          ++out->folders;
+          changed = true;
+          continue;
+        }
+        auto made = target_folder->OpenChild(entry.name, target_folder->policy(), true, to.folder_mode);
+        if (!made || !made->Sync()) return FromErrno(errno, "The folder can't be made");
+        changed = true;
+        stack->push_back({child, target});
+      }
+      if (changed && (!source_folder->Sync() || !target_folder->Sync())) return FromErrno(errno, "The change can't be saved");
+    }
+    if (same_root) {
+      // Renames, a batch under one hold of the locks.
+      for (std::size_t done = 0; done < files.size();) {
+        std::lock_guard<std::mutex> commit(commit_mutex_);
+        const auto held = Hold();
+        if (!held) return Busy();
+        std::optional<ManagedDirectory> source_folder, target_folder;
+        if (auto error = Locate(from, frame.source, true, false, &source_folder); !error.ok()) return error;
+        if (auto error = Locate(to, frame.target, true, false, &target_folder); !error.ok()) return error;
+        for (const auto end = std::min(files.size(), done + kTreeBatch); done < end; ++done) {
+          const auto error = RenameFile(*source_folder, files[done].name, *target_folder, files[done].target, files[done].replace);
+          switch (Classify(error)) {
+            case Outcome::kDone: ++out->files; break;
+            case Outcome::kLeft: ++out->left; break;
+            case Outcome::kGone: break;
+            case Outcome::kStop: return error;
+          }
+        }
+      }
+      continue;
+    }
+    for (const auto& file : files) {
+      auto source = frame.source, target = frame.target;
+      source.push_back(file.name);
+      target.push_back(file.target);
+      tally->progress.name = file.name;
+      if (!tally->Report()) return Stopped();
+      const auto error = CopyFile(from, source, to, target, file.replace, tally);
+      switch (Classify(error)) {
+        case Outcome::kDone:
+          ++out->files;
+          ++tally->progress.files;
+          if (!tally->Report()) return Stopped();
+          break;
+        case Outcome::kLeft: ++out->left; break;
+        case Outcome::kGone: break;
+        case Outcome::kStop: return error;
+      }
+    }
+  }
+  return kOk;
+}
+
+// In one root: a file and its previous version. With replace, the file there becomes the previous version, as an
+// upload's Replace keeps it, and the moved file's own previous version goes. Hold both locks.
+FileError FileStore::RenameFile(const ManagedDirectory& from, const std::string& name, const ManagedDirectory& to,
+                                const std::string& target, bool replace) {
+  const auto backup = kPreviousPrefix + name, target_backup = kPreviousPrefix + target;
+  struct stat info{}, old{}, existing{}, there{};
+  if (!from.InspectChild(name, &info)) return errno == ENOENT ? NotFound() : FromErrno(errno, "This folder can't be read");
+  if (!S_ISREG(info.st_mode) || HardLinked(info)) return NotFound();
+  if (from.policy() != DirectoryPolicy::kUnownedTree && info.st_uid != ::geteuid()) return FromErrno(EACCES, "");
+  const bool has_backup = from.InspectChild(backup, &old) && S_ISREG(old.st_mode) && !HardLinked(old);
+  const bool exists = to.InspectChild(target, &existing);
+  if (!exists && errno != ENOENT) return FromErrno(errno, "This folder can't be read");
+  if (exists && !replace) return FromErrno(EEXIST, "");
+  if (exists && !S_ISREG(existing.st_mode)) return {409, "A folder with that name is already there."};
+  if (exists && to.policy() != DirectoryPolicy::kUnownedTree && existing.st_uid != ::geteuid()) return FromErrno(EACCES, "");
+  const bool target_has_backup = to.InspectChild(target_backup, &there);
+  if (exists) {
+    if (target_has_backup && (!Step("remove-backup") || !to.RemoveRegularFile(target_backup)))
+      return FromErrno(errno ? errno : EIO, "The previous version can't be replaced");
+    if (!Step("move-current") || !to.RenameChild(target, to, target_backup, false)) return FromErrno(errno ? errno : EIO, "The file can't be replaced");
+    if (!to.Sync()) return {500, "The move stopped at \"sync\". Check this folder."};
+  }
+  if (!Step("move-rename") || !from.RenameChild(name, to, target, false)) {
+    // The file there is its previous version now: the page lists it, and Restore brings it back.
+    if (exists) return {500, "The move stopped at \"move\". Check this folder."};
+    return FromErrno(errno ? errno : EIO, "The file can't be moved");
+  }
+  if (!from.Sync() || !to.Sync()) return {500, "The move stopped at \"sync\". Check this folder."};
+  if (has_backup) {
+    const bool carried = !exists && !target_has_backup;
+    if (!Step("move-previous") || (carried ? !from.RenameChild(backup, to, target_backup, false) : !from.RemoveRegularFile(backup)))
+      return {500, "The move stopped at \"previous version\". Check this folder."};
+    if (!from.Sync() || !to.Sync()) return {500, "The move stopped at \"sync\". Check this folder."};
+  }
+  return kOk;
+}
+
+// A new case for a name, through a temporary name: a drive that ignores case takes the new name for the old one. The
+// temporary carries the name, so the sweep finishes the rename if it stops between the two steps. Hold both locks.
+FileError FileStore::CaseRename(const ManagedDirectory& folder, const std::string& name, const std::string& target) {
+  const auto rename = [&](const std::string& from, const std::string& to) -> FileError {
+    const auto id = RandomText();
+    if (!id) return {500, "Playden couldn't make a temporary name."};
+    const auto aside = kRestorePrefix + std::to_string(Now()) + "-" + *id + "." + to;
+    if (!Step("rename-aside") || !folder.RenameChild(from, folder, aside, false)) return FromErrno(errno ? errno : EIO, "This can't be renamed");
+    if (!folder.Sync()) return FromErrno(errno, "The change can't be saved");
+    if (!Step("rename-back") || !folder.RenameChild(aside, folder, to, false) || !folder.Sync())
+      return {500, "The rename stopped. Check this folder in a while."};
+    return kOk;
+  };
+  if (auto error = rename(name, target); !error.ok()) return error;
+  struct stat old{};
+  if (folder.InspectChild(kPreviousPrefix + name, &old) && S_ISREG(old.st_mode)) return rename(kPreviousPrefix + name, kPreviousPrefix + target);
+  return kOk;
+}
+
+// A temporary file in the folder with the bytes of fd, synced. Its name is in active_uploads_ until DropTemporary or
+// the caller takes it out. Holds no lock while bytes move.
+FileError FileStore::StageCopy(const FileRoot& to, const std::vector<std::string>& folder, int fd, std::uint64_t size,
+                               std::string* temporary, std::string* folder_path, DirectoryPolicy* policy, MoveTally* tally) {
+  int out_fd = -1;
+  {
+    const auto held = Hold();
+    if (!held) return Busy();
+    std::optional<ManagedDirectory> opened;
+    if (auto error = Locate(to, folder, true, false, &opened); !error.ok()) return error;
+    if (options_.free_space) {
+      const auto free = options_.free_space(opened->path().string());
+      if (free && size + kSpaceMargin > *free) return {507, "There is no room for this on that drive."};
+    }
+    const auto id = RandomText();
+    if (!id) return {500, "Playden couldn't make a temporary name."};
+    *temporary = kUploadPrefix + *id;
+    out_fd = opened->CreateExclusiveFile(*temporary, to.file_mode);
+    if (out_fd < 0) return FromErrno(errno, "The file can't be made");
+    *folder_path = opened->path().string();
+    *policy = opened->policy();
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    active_uploads_.insert(*folder_path + "/" + *temporary);
+  }
+  FdCloser closer{out_fd};
+  std::vector<char> buffer(kTransferBytes);
+  std::uint64_t total = 0;
+  while (true) {
+    const auto count = ::read(fd, buffer.data(), buffer.size());
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0) {
+      const int error = errno;
+      DropTemporary(to, *folder_path, *temporary, *policy);
+      return FromErrno(error, "The file can't be read");
+    }
+    if (count == 0) break;
+    std::size_t written = 0;
+    while (written < static_cast<std::size_t>(count)) {
+      const auto wrote = ::write(out_fd, buffer.data() + written, static_cast<std::size_t>(count) - written);
+      if (wrote < 0 && errno == EINTR) continue;
+      if (wrote <= 0) {
+        const int error = wrote < 0 ? errno : EIO;
+        DropTemporary(to, *folder_path, *temporary, *policy);
+        return FromErrno(error, "The file can't be written");
+      }
+      written += static_cast<std::size_t>(wrote);
+    }
+    total += static_cast<std::uint64_t>(count);
+    tally->progress.bytes += static_cast<std::uint64_t>(count);
+    if (!tally->Report()) {
+      DropTemporary(to, *folder_path, *temporary, *policy);
+      return Stopped();
+    }
+  }
+  if (total != size) {
+    DropTemporary(to, *folder_path, *temporary, *policy);
+    return {409, "A file changed while it was moved. Try again."};
+  }
+  if (!Step("copy-sync") || ::fsync(out_fd) != 0) {
+    const int error = errno ? errno : EIO;
+    DropTemporary(to, *folder_path, *temporary, *policy);
+    return FromErrno(error, "The file can't be saved");
+  }
+  return kOk;
+}
+
+void FileStore::DropTemporary(const FileRoot& root, const std::string& folder_path, const std::string& temporary, DirectoryPolicy policy) {
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    active_uploads_.erase(folder_path + "/" + temporary);
+  }
+  // Cleaned up now if the lock is free. A setup holds it for minutes: then at a later file request.
+  const auto held = options_.try_hold ? options_.try_hold() : std::make_shared<int>(0);
+  if (!held || !RemoveTemporary(folder_path, temporary, policy)) DeferCleanup(root, folder_path, temporary, policy);
+}
+
+// Across roots: the file (and its previous version) copied whole to the target, published as an upload is, and only
+// then the source deleted, if it is still what was copied. A stop leaves the file whole on one side or both.
+FileError FileStore::CopyFile(const FileRoot& from, const std::vector<std::string>& source, const FileRoot& to,
+                              const std::vector<std::string>& target, bool replace, MoveTally* tally) {
+  tally->progress.name = source.back();
+  const std::vector<std::string> source_above(source.begin(), source.end() - 1), target_above(target.begin(), target.end() - 1);
+  const auto source_path = Join(source, source.size());
+  // One the console won't let this user delete would end up in both places.
+  bool has_backup = false;
+  {
+    const auto held = Hold();
+    if (!held) return Busy();
+    std::optional<ManagedDirectory> folder;
+    if (auto error = Locate(from, source_above, true, false, &folder); !error.ok()) return error;
+    struct stat info{}, old{};
+    if (!folder->InspectChild(source.back(), &info)) return errno == ENOENT ? NotFound() : FromErrno(errno, "This folder can't be read");
+    if (!S_ISREG(info.st_mode) || HardLinked(info)) return NotFound();
+    if (folder->policy() != DirectoryPolicy::kUnownedTree && info.st_uid != ::geteuid()) return FromErrno(EACCES, "");
+    has_backup = folder->InspectChild(kPreviousPrefix + source.back(), &old) && S_ISREG(old.st_mode) && !HardLinked(old);
+  }
+  std::string temporary, folder_path;
+  DirectoryPolicy policy;
+  // Its previous version goes first, unless it replaces a file (that one becomes the previous version). A stop between
+  // the two leaves it listed as Recoverable beside the source, and a second run with Replace puts the file beside it.
+  if (has_backup && !replace) {
+    OpenedFile previous;
+    const auto opened = OpenForRead(from, source_path, true, &previous);
+    if (!opened.ok() && opened.status != 404) return opened;
+    if (opened.ok()) {
+      FdCloser previous_closer{previous.fd};
+      if (auto staged = StageCopy(to, target_above, previous.fd, previous.size, &temporary, &folder_path, &policy, tally); !staged.ok()) return staged;
+      bool published = false;
+      {
+        std::lock_guard<std::mutex> commit(commit_mutex_);
+        const auto held = Hold();
+        std::optional<ManagedDirectory> folder;
+        if (held && Locate(to, target_above, true, false, &folder).ok() && Step("copy-previous") &&
+            folder->RenameChild(temporary, *folder, kPreviousPrefix + target.back(), false))
+          published = folder->Sync();
+      }
+      if (!published) {
+        DropTemporary(to, folder_path, temporary, policy);
+        return {500, "The move stopped at \"previous version\". Nothing moved."};
+      }
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      active_uploads_.erase(folder_path + "/" + temporary);
+    }
+  }
+  OpenedFile file;
+  if (auto error = OpenForRead(from, source_path, false, &file); !error.ok()) return error;
+  FdCloser closer{file.fd};
+  struct stat copied{};
+  if (::fstat(file.fd, &copied) != 0) return FromErrno(errno, "This file can't be read");
+  if (auto error = StageCopy(to, target_above, file.fd, file.size, &temporary, &folder_path, &policy, tally); !error.ok()) return error;
+  FileError error;
+  bool changed_disk = false;
+  {
+    std::lock_guard<std::mutex> commit(commit_mutex_);
+    const auto held = Hold();
+    if (held) {
+      UploadOptions options;
+      options.length = file.size;
+      options.overwrite = replace;
+      changed_disk = CommitUpload(to, target, temporary, options, nullptr, nullptr, &error);
+    } else {
+      error = Busy();
+    }
+  }
+  if (!changed_disk) {
+    DropTemporary(to, folder_path, temporary, policy);
+    return error;
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    active_uploads_.erase(folder_path + "/" + temporary);
+  }
+  if (!error.ok()) return error;
+  std::lock_guard<std::mutex> commit(commit_mutex_);
+  const auto held = Hold();
+  if (!held) return {503, "Playden is busy, so the file is in both places. Move it again in a moment."};
+  std::optional<ManagedDirectory> folder;
+  if (auto located = Locate(from, source_above, true, false, &folder); !located.ok()) return located.status == 404 ? kOk : located;
+  struct stat now{}, old{};
+  if (!folder->InspectChild(source.back(), &now)) return errno == ENOENT ? kOk : FromErrno(errno, "This folder can't be read");
+  // To the nanosecond the drive keeps: a same-size save written in the same second still counts as changed.
+  if (now.st_size != copied.st_size || now.st_mtimespec.tv_sec != copied.st_mtimespec.tv_sec ||
+      now.st_mtimespec.tv_nsec != copied.st_mtimespec.tv_nsec)
+    return {409, "\"" + source.back() + "\" changed while it was moved, so it is in both places."};
+  // The previous version first: a stop leaves the file, not a file the player thought was gone.
+  if (folder->InspectChild(kPreviousPrefix + source.back(), &old) && S_ISREG(old.st_mode) &&
+      (!Step("move-delete-previous") || !folder->RemoveRegularFile(kPreviousPrefix + source.back())))
+    return FromErrno(errno ? errno : EIO, "The moved file's previous version can't be deleted");
+  if (!Step("move-delete-source") || !folder->RemoveRegularFile(source.back()))
+    return {500, "The file is in both places: the old one can't be deleted (" + std::string(std::strerror(errno ? errno : EIO)) + ")."};
+  if (!folder->Sync()) return FromErrno(errno, "The change can't be saved");
   return kOk;
 }
 

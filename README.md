@@ -230,14 +230,16 @@ yet, so most people should use the release download.
 Open Playden's web page from a phone or computer on the same network: Settings › Web access shows the address and a
 QR code. In the **Game files** tab, pair the browser with the 6-digit code the TV shows. The pairing ends when Playden closes.
 
-Pick a game to download, upload, replace or delete its files. Playden answers only while it is open, and starting a
-game closes it.
+Pick a game to download, upload, replace, rename, move or delete its files. Playden answers only while it is open, and
+starting a game closes it.
 
 - **Saves and most configs** are in the game's Windows user folder (`Documents`, `AppData`, `Saved Games`). They are on
   the console even when the game plays from a USB drive, and they stay when you uninstall the game.
 - **The game folder** has mods and game-side configs. A game update can overwrite the game's own files, and
   uninstalling removes the folder with everything you added. `steam_settings` is read-only, because Playden writes it.
 - **Replacing a file** keeps the old one as its previous version, which you can download or restore.
+- **Moving** works between any folders of the same game. Between the game folder and the Windows folders, each file is
+  copied and then deleted, so a move that stops leaves each file whole in one place or both.
 - A game that is still running can overwrite what you change, so close it on the PS5 first. The page marks a game as
   Running when it can tell.
 - A save you upload can replace the one in Steam Cloud at the next sync.

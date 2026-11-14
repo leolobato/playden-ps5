@@ -265,6 +265,8 @@ void Service::Run() {
   lock.unlock();
   server_.Stop();
   if (was_running) Log("stopped");
+  // A move across roots runs on past its request: it stops at its next chunk, the file it copies staying where it was.
+  files_.StopMoves();
   // A change still unwritten (the file lock was busy) gets one last try.
   std::string line;
   files_.DoStoreWork(&line);

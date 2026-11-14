@@ -141,6 +141,25 @@ def run(port, server):
     wolverine = ok(call("GET", "/api/files/game", game="local-3fa9c1", redist=1))
     assert next(folder for folder in wolverine["redist"] if folder["path"] == "_Redist")["physx_installer"] == "_Redist/PhysX_9.09.msi"
 
+    # Rename a save folder, then move it out of the bottle into the game folder and back, asking at a name that's there.
+    profiles = "Documents/Rockstar Games/GTA IV/Profiles"
+    assert ok(call("POST", "/api/files/move", path=profiles + "/7A3C91F0", name="Backup", **place))["name"] == "Backup"
+    moved = ok(call("POST", "/api/files/move", path=profiles + "/Backup", to_root="game", to="", **place))
+    assert (moved["files"], moved["left"]) == (2, 0)
+    assert ok(call("GET", "/api/files/download", path="Backup/SGTA400", **game_place)) == original
+    assert call("GET", "/api/files/list", path=profiles + "/Backup", **place)[0] == 404
+    ok(call("POST", "/api/files/mkdir", path=profiles + "/Backup", **place))
+    ok(call("POST", "/api/files/upload", body=b"other", path=profiles + "/Backup/cfg.set", **place))
+    clash = call("POST", "/api/files/move", path="Backup", to_root="user", to=profiles, **game_place)
+    assert clash[0] == 409 and json.loads(clash[1])["clash"] is True and json.loads(clash[1])["folder"] is True
+    merged = ok(call("POST", "/api/files/move", path="Backup", to_root="user", to=profiles, clash="replace", **game_place))
+    assert merged["files"] == 2
+    entries = {e["name"]: e for e in ok(call("GET", "/api/files/list", path=profiles + "/Backup", **place))["entries"]}
+    assert set(entries) == {"cfg.set", "SGTA400"} and entries["cfg.set"]["previous"]["size"] == 5
+    assert call("GET", "/api/files/list", path="Backup", **game_place)[0] == 404
+    # A move that answered 202 is asked about by its job; one Playden doesn't know is 404.
+    assert call("GET", "/api/files/move/status", job="0-0")[0] == 404
+
 
 if __name__ == "__main__":
     main(sys.argv[1])

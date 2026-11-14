@@ -6,8 +6,11 @@
 #include "web/router.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -60,21 +63,33 @@ struct FilesConfig {
   // Uses a recipe file for a game (its FileGame id, or empty: the game the recipe is for), on the calling server worker;
   // the controller answers. Empty: the route answers 503.
   std::function<RecipeImportAnswer(const std::string& game, std::string file)> import_recipe;
+  // How long POST /api/files/move waits for a move across roots before it answers 202 and the move goes on alone.
+  int move_wait_ms = 1000;
 };
 
 // How many downloads, zips and uploads may run at once. The rest answer 503, so lists stay served.
 inline constexpr int kMaxTransfers = 2;
+
+// How long a finished move's answer stays for the page to ask for, and how many finished moves are kept at most.
+inline constexpr int kMoveAnswerSeconds = 600;
+inline constexpr std::size_t kMaxKeptMoves = 16;
 
 // The Files tab's routes, and POST /api/files/recipe, which makes a game use a recipe file. Every route but pairing's needs a paired browser's cookie; everything that changes
 // something also needs X-Playden-Action: files (Service refuses another Origin, and a name in Host, before this).
 class FilesApi {
  public:
   explicit FilesApi(FilesConfig config);
+  // Stops a move still running at the next chunk (the file it copies stays where it was) and waits for it.
+  ~FilesApi();
+  // The same, for the service's shutdown: no move starts after it. Safe to call again.
+  void StopMoves();
+  FilesApi(const FilesApi&) = delete;
+  FilesApi& operator=(const FilesApi&) = delete;
   void Register(Router& router);
   void SetCatalog(FileCatalog catalog);
   std::string PairingCode() const;
   void CancelPairing();
-  // A paired browser asked for something in the last half a minute.
+  // A paired browser asked for something in the last half a minute, or a move it started still runs.
   bool InUse() const;
   // Browsers paired now, remembered or not (no file access), and Forget all.
   std::size_t PairedBrowsers() const;
@@ -85,6 +100,9 @@ class FilesApi {
 
  private:
   class Transfer;
+  struct MoveJob;
+  // Finished moves past their time, and their threads. Holds jobs_mutex_.
+  void ReapMoves();
   bool Paired(const Request& request);
   Pairing::Browser Check(const std::string& token);
   bool Remembers() const;
@@ -104,6 +122,13 @@ class FilesApi {
   FileCatalog catalog_;
   std::atomic<int> transfers_{0};
   std::atomic<std::int64_t> last_used_{0};  // steady seconds; 0: never
+  // Moves across roots run on their own thread: they take as long as an upload, and the page asks how far they are.
+  std::mutex jobs_mutex_;
+  std::condition_variable jobs_changed_;
+  std::map<std::string, std::shared_ptr<MoveJob>> jobs_;
+  std::uint64_t next_job_ = 0;
+  std::atomic<bool> stopping_{false};
+  std::atomic<int> running_moves_{0};
 };
 
 }  // namespace playden::web

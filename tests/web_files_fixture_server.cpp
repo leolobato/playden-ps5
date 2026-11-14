@@ -100,6 +100,14 @@ int main(int argc, char** argv) {
   fs::create_directories(base / "logs");
   config.server.first_port = config.server.last_port = wanted;
   config.server.loopback_only = true;
+  // PLAYDEN_FIXTURE_SLOW_MOVE=<ms>: each file a move copies waits that long, so the page's progress can be seen.
+  if (const char* slow = std::getenv("PLAYDEN_FIXTURE_SLOW_MOVE")) {
+    const int ms = std::atoi(slow);
+    config.files.store.fault = [ms](const std::string& step) {
+      if (step == "copy-sync") std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+      return true;
+    };
+  }
   // Import recipe: any file is used by the game named, or by GTA IV from the games list; a file with "bad" is refused.
   config.files.import_recipe = [](const std::string& game, std::string file) -> RecipeImportAnswer {
     if (file.find("bad") != std::string::npos) return {422, "This file isn't a Playden recipe."};

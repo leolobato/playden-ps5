@@ -159,7 +159,8 @@ int main() {
   for (const std::string& target : std::vector<std::string>{"/api/files/games", "/api/files/game?game=steam-12210", "/api/files/list?" + game + "user", "/api/files/download?" + game + "game&path=game.exe",
                                    "/api/files/zip?" + game + "game", "/api/files/text?" + game + "game&path=game.exe"})
     CHECK(Status(get(target)) == 401);
-  for (const std::string& target : std::vector<std::string>{"/api/files/upload?" + game + "game&path=x", "/api/files/mkdir?" + game + "game&path=x", "/api/files/delete?" + game + "game&path=game.exe", "/api/files/restore?" + game + "game&path=x", "/api/files/recipe?game=steam-12210"}) {
+  for (const std::string& target : std::vector<std::string>{"/api/files/upload?" + game + "game&path=x", "/api/files/mkdir?" + game + "game&path=x", "/api/files/delete?" + game + "game&path=game.exe", "/api/files/restore?" + game + "game&path=x", "/api/files/recipe?game=steam-12210",
+                                   "/api/files/move?" + game + "game&path=game.exe&name=moved.exe"}) {
     CHECK(Status(post(target, "", "data")) == 401);
     CHECK(Status(post(target, "playden_files=0123456789", "data")) == 401);
   }
@@ -279,6 +280,30 @@ int main() {
   }
   CHECK(Status(post("/api/files/delete?" + game + "game&path=_Redist2", cookie)) == 200 && !fs::exists(game_folder / "_Redist2"));
   CHECK(Status(post("/api/files/delete?" + game + "user&path=Documents/new.sav", cookie)) == 200 && !fs::exists(profile / "Documents/new.sav"));
+  // Move and rename: in one root, across roots of the same game, and what a name already there answers.
+  {
+    Put(profile / "Documents/move/a.sav", "a");
+    Put(profile / "Documents/b.sav", "b");
+    CHECK(Status(post("/api/files/move?" + game + "user&path=Documents/b.sav&name=c.sav", cookie, "", "")) == 403 && fs::exists(profile / "Documents/b.sav"));
+    answer = post("/api/files/move?" + game + "user&path=Documents/b.sav&name=c.sav", cookie);
+    CHECK(Status(answer) == 200 && Body(answer).find("\"name\":\"c.sav\"") != std::string::npos && Text(profile / "Documents/c.sav") == "b");
+    answer = post("/api/files/move?" + game + "user&path=Documents/c.sav&to=Documents/move&name=a.sav", cookie);
+    CHECK(Status(answer) == 409 && Body(answer).find("\"clash\":true") != std::string::npos && Body(answer).find("\"folder\":false") != std::string::npos);
+    answer = post("/api/files/move?" + game + "user&path=Documents/c.sav&to=Documents/move&name=a.sav&clash=keep", cookie);
+    CHECK(Status(answer) == 200 && Body(answer).find("\"name\":\"a (2).sav\"") != std::string::npos && Text(profile / "Documents/move/a (2).sav") == "b");
+    // To the game folder, on another root: copied, then gone from the bottle.
+    answer = post("/api/files/move?" + game + "user&path=Documents/move&to_root=game&to=" + Encode("_Redist"), cookie);
+    CHECK(Status(answer) == 200 && Body(answer).find("\"files\":2") != std::string::npos);
+    CHECK(Text(game_folder / "_Redist/move/a.sav") == "a" && !fs::exists(profile / "Documents/move"));
+    CHECK(Status(post("/api/files/move?" + game + "game&path=_Redist/move&to_root=nope", cookie)) == 404);
+    CHECK(Status(post("/api/files/move?" + game + "game&path=_Redist/move&to_root=user&to=" + Encode("AppData/Local/Launcher"), cookie)) == 404);
+    CHECK(Status(post("/api/files/move?" + game + "game&path=_Redist/move&to=steam_settings", cookie)) == 403);
+    CHECK(Status(post("/api/files/move?" + game + "game&path=steam_settings&name=x", cookie)) == 403);
+    CHECK(Status(post("/api/files/move?" + game + "game&path=.playden-install.json&name=x", cookie)) == 404);
+    CHECK(Status(post("/api/files/move?game=steam-274520&root=user&path=Documents&to_root=game", cookie)) == 404);
+    CHECK(Status(post("/api/files/move?" + game + "game&path=_Redist/move&to_root=programdata&to=", cookie)) == 200);
+    CHECK(Text(bottle / "drive_c/ProgramData/move/a (2).sav") == "b" && !fs::exists(game_folder / "_Redist/move"));
+  }
   // A POST from another origin never reaches these.
   CHECK(Status(post("/api/files/mkdir?" + game + "game&path=evil", cookie, "", "X-Playden-Action: files\r\nOrigin: http://evil.example\r\n")) == 403);
   CHECK(!fs::exists(game_folder / "evil"));

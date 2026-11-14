@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <optional>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -111,6 +113,21 @@ std::string GameJson(const FileGame& game) {
   return out + "}";
 }
 
+// A move's answer, whether it finished at once or on its own thread: the clash JSON, the summary, or the error.
+void SendMoveAnswer(Response& response, const FileError& error, const MoveSummary& summary) {
+  if (summary.clash)
+    return SendJson(response, 409, "{" + Field("clash", true) + "," + Field("name", summary.name) + "," + Field("folder", summary.clash_folder) + "," +
+                                       Field("message", error.message) + "}");
+  if (!error.ok()) return Fail(response, error);
+  SendJson(response, 200, "{" + Field("name", summary.name) + "," + Number("files", summary.files) + "," + Number("folders", summary.folders) + "," +
+                              Number("left", summary.left) + "}");
+}
+
+std::string ProgressJson(const MoveProgress& progress) {
+  return Number("bytes", progress.bytes) + "," + Number("total_bytes", progress.total_bytes) + "," + Number("files", progress.files) + "," +
+         Number("total_files", progress.total_files) + "," + Field("current", progress.name);
+}
+
 FileStore::Options StoreOptions(const FilesConfig& config) {
   auto options = config.store;
   if (config.try_hold) options.try_hold = config.try_hold;
@@ -132,8 +149,48 @@ class FilesApi::Transfer {
   bool held_ = false;
 };
 
+// A move across roots on its own thread. Its fields are under the API's jobs_mutex_.
+struct FilesApi::MoveJob {
+  std::thread thread;
+  std::unique_ptr<Transfer> transfer;  // counts as a transfer until it ends
+  MoveProgress progress;
+  bool done = false;
+  FileError error;
+  MoveSummary summary;
+  std::int64_t finished = 0;  // steady seconds
+};
+
 FilesApi::FilesApi(FilesConfig config)
     : config_(std::move(config)), pairing_(config_.pairing), store_(StoreOptions(config_)) {}
+
+FilesApi::~FilesApi() { StopMoves(); }
+
+void FilesApi::StopMoves() {
+  stopping_.store(true);
+  std::map<std::string, std::shared_ptr<MoveJob>> jobs;
+  {
+    std::lock_guard<std::mutex> lock(jobs_mutex_);
+    jobs.swap(jobs_);
+  }
+  for (auto& [id, job] : jobs)
+    if (job->thread.joinable()) job->thread.join();
+}
+
+void FilesApi::ReapMoves() {
+  const auto now = SteadySeconds();
+  std::vector<std::pair<std::int64_t, std::string>> finished;
+  for (const auto& [id, job] : jobs_)
+    if (job->done) finished.emplace_back(job->finished, id);
+  std::sort(finished.begin(), finished.end());
+  for (std::size_t i = 0; i < finished.size(); ++i) {
+    // The oldest go first when too many are kept; any past their time go anyway.
+    if (now - finished[i].first < kMoveAnswerSeconds && finished.size() - i <= kMaxKeptMoves) continue;
+    auto& job = jobs_[finished[i].second];
+    // Done is set as its last step: the join waits only for the thread to return.
+    if (job->thread.joinable()) job->thread.join();
+    jobs_.erase(finished[i].second);
+  }
+}
 
 void FilesApi::SetCatalog(FileCatalog catalog) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -145,6 +202,7 @@ std::string FilesApi::PairingCode() const { return pairing_.ActiveCode(); }
 void FilesApi::CancelPairing() { pairing_.Cancel(); }
 
 bool FilesApi::InUse() const {
+  if (running_moves_.load() > 0) return true;
   const auto used = last_used_.load();
   return used != 0 && SteadySeconds() - used < 30;
 }
@@ -507,6 +565,103 @@ void FilesApi::Register(Router& router) {
     SendJson(response, 200, tree_json(tree));
   });
   router.Post("/api/files/restore", action(&FileStore::Restore));
+  // Moves or renames one file or folder: to a folder of any root of the same game, under its own name or a new one.
+  // A name already there answers 409 with clash set, and the page asks; clash=replace or clash=keep answers that.
+  router.Post("/api/files/move", [this](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response) || !RequireAction(request, response)) return;
+    FileGame game;
+    FileRoot root;
+    if (!Find(request, response, &game, &root)) return;
+    const auto root_id = QueryValue(request.query, "root").value_or(std::string());
+    const auto to_id = QueryValue(request.query, "to_root").value_or(root_id);
+    std::optional<FileRoot> to;
+    for (auto& [id, value] : Roots(game))
+      if (id == to_id) to = std::move(value);
+    if (!to) return SendError(response, 404, "This game has no such folder.");
+    const auto path = QueryValue(request.query, "path").value_or(std::string());
+    const auto slash = path.rfind('/');
+    const auto name = QueryValue(request.query, "name").value_or(path.substr(slash == std::string::npos ? 0 : slash + 1));
+    const auto answer = QueryValue(request.query, "clash");
+    const auto clash = answer == std::string("replace") ? MoveClash::kReplace : answer == std::string("keep") ? MoveClash::kKeepBoth : MoveClash::kAsk;
+    // No folder named: the one it is in (a rename).
+    const auto folder = QueryValue(request.query, "to").value_or(slash == std::string::npos ? std::string() : path.substr(0, slash));
+    if (to_id == root_id) {
+      // Renames: over at once.
+      MoveSummary summary;
+      const auto error = store_.Move(root, path, *to, folder, name, clash, &summary);
+      return SendMoveAnswer(response, error, summary);
+    }
+    // Across roots every file is copied: a transfer, as a download is. It runs on its own thread, so a long copy
+    // answers 202 and the page asks how far it is; one over within move_wait_ms answers as a rename does.
+    auto transfer = std::make_unique<Transfer>(transfers_);
+    if (!transfer->held()) return Fail(response, {503, "Other transfers are running. Try again in a moment."});
+    auto job = std::make_shared<MoveJob>();
+    job->transfer = std::move(transfer);
+    std::string id;
+    {
+      std::lock_guard<std::mutex> lock(jobs_mutex_);
+      if (stopping_.load()) return Fail(response, {503, "Playden is closing."});
+      ReapMoves();
+      // The time keeps an id from a page that outlived a restart from naming a new move.
+      id = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "-" + std::to_string(++next_job_);
+      jobs_[id] = job;
+      ++running_moves_;
+      job->thread = std::thread([this, job, from = root, to = *to, path, folder, name, clash] {
+        const MoveObserver observe = [this, &job](const MoveProgress& progress) {
+          std::lock_guard<std::mutex> lock(jobs_mutex_);
+          job->progress = progress;
+          return !stopping_.load();
+        };
+        MoveSummary summary;
+        const auto error = store_.Move(from, path, to, folder, name, clash, &summary, observe);
+        job->transfer.reset();
+        {
+          std::lock_guard<std::mutex> lock(jobs_mutex_);
+          job->error = error;
+          job->summary = summary;
+          job->finished = SteadySeconds();
+          job->done = true;
+          --running_moves_;
+        }
+        jobs_changed_.notify_all();
+      });
+    }
+    std::unique_lock<std::mutex> lock(jobs_mutex_);
+    if (jobs_changed_.wait_for(lock, std::chrono::milliseconds(config_.move_wait_ms), [&] { return job->done; })) {
+      const auto error = job->error;
+      const auto summary = job->summary;
+      // Answered here: the page never asks for it.
+      if (job->thread.joinable()) job->thread.join();
+      jobs_.erase(id);
+      lock.unlock();
+      return SendMoveAnswer(response, error, summary);
+    }
+    const auto progress = job->progress;
+    lock.unlock();
+    SendJson(response, 202, "{" + Field("job", id) + "," + ProgressJson(progress) + "}");
+  });
+  // How far a move that answered 202 is. When it's over: the answer the move itself would have given, for as long as
+  // kMoveAnswerSeconds; 404 after that or after a restart.
+  router.Exact("/api/files/move/status", [this](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response)) return;
+    const auto id = QueryValue(request.query, "job").value_or(std::string());
+    std::unique_lock<std::mutex> lock(jobs_mutex_);
+    ReapMoves();
+    const auto found = jobs_.find(id);
+    if (found == jobs_.end()) return SendError(response, 404, "Playden has no news of this move. Check both folders: moving again finishes it.");
+    const auto job = found->second;
+    if (!job->done) {
+      const auto progress = job->progress;
+      lock.unlock();
+      return SendJson(response, 200, "{" + Field("running", true) + "," + ProgressJson(progress) + "}");
+    }
+    auto error = job->error;
+    const auto summary = job->summary;
+    lock.unlock();
+    // Busy is over for the move, not for this answer: a page that waits out a 503 would ask again for ever.
+    if (error.status == 503) error.status = 409;
+    SendMoveAnswer(response, error, summary);
+  });
 }
 
 }  // namespace playden::web
