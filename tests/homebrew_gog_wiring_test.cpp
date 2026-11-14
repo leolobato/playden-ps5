@@ -6,7 +6,8 @@
 // workers are joined, and keeps a sign-out asked for in the last frame. A sign-in the relay ends leaves the QR code; a
 // restart whose saved session expired shows the saved GOG library; Refresh library signs an offline session in once
 // GOG answers. An installed GOG game whose record names an older build shows "Update…": the install service's
-// records reach the details source. Synthetic tokens and accounts only.
+// records reach the details source. An installed GOG game installed without its DLC offers Manage DLC, which turns the
+// DLC on through the install service. Synthetic tokens and accounts only.
 #include "gog/account_key.h"
 #include "gog/auth.h"
 #include "gog/session_store.h"
@@ -603,6 +604,145 @@ void InstalledOlderBuildShowsAnUpdate() {
   CheckLogs(app.root);
 }
 
+const Installation* FindInstallation(const Simulation& model, const GameId& id) {
+  for (const auto& item : model.state().installations)
+    if (item.game_id == id) return &item;
+  return nullptr;
+}
+
+const homebrew::Game* FindGame(const Simulation& model, const GameId& id) {
+  for (const auto& game : model.state().games)
+    if (game.id == id) return &game;
+  return nullptr;
+}
+
+void Choose(App& app, const std::string& key) {
+  CHECK(app.model.action("focus:" + key) && app.model.state().navigation.focus_key == key);
+  CHECK(app.model.action("cross"));
+  app.controller->Tick();
+}
+
+// An installed GOG game whose record leaves its owned DLC out: the controller reads the record's products and
+// "excluded" list into the model, the details list the DLC, and Maintenance › Manage DLC turns it on through the
+// install service's update, which finishes with the DLC in the record. The logs name no account, token or address.
+void InstalledGameWithDlcOffersManageDlc() {
+  const auto id = GameId::Gog(gog_test::kBase);
+  const auto dlc = GameId::Gog(gog_test::kDlc);
+  // The DLC's chunks wait while `hold` is set, so the change is seen running.
+  auto hold = std::make_shared<std::atomic<bool>>(false);
+  auto held = std::make_shared<std::atomic<int>>(0);
+  App app(true, [hold, held](App& app) {
+    app.with_installs = true;
+    gog_test::Game game;
+    gog_test::GameDepot base;
+    base.files.push_back({"DepotFile", "bin\\Game.exe", gog_test::RandomBytes(4096, 7)});
+    game.depots.push_back(base);
+    gog_test::GameDepot info;
+    info.gog = true;
+    info.files.push_back({"DepotFile", "goggame-1900000001.info", ReadFile(g_fixtures + "/goggame-1900000001.info")});
+    game.depots.push_back(info);
+    gog_test::GameDepot extra;
+    extra.product = gog_test::kDlc;
+    extra.files.push_back({"DepotFile", "dlc\\extra.dat", gog_test::RandomBytes(8192, 8)});
+    game.depots.push_back(extra);
+    gog_test::Publish(app.cdn, game);
+    app.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+    app.cdn.SetSecureLink(ReadFile(g_fixtures + "/secure-link-200.json"));
+    app.cdn.SetFault([hold, held](const gog_test::Request& request) -> std::optional<gog_test::Fault> {
+      if (request.kind == gog_test::Kind::kChunk && request.product == gog_test::kDlc) {
+        ++*held;
+        while (*hold) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      return std::nullopt;
+    });
+  });
+  app.OpenSignIn();
+  app.session_stub.Script(Endpoint::kToken, Tokens(1));
+  app.session_stub.Script(Endpoint::kUser, Answer(200, ReadFile(g_fixtures + "/user-data.json")));
+  // The library lists the game only: a DLC is no game of its own.
+  app.library_stub.Script(Endpoint::kOwned, Answer(200, "{\"owned\":[1900000001]}"));
+  app.library_stub.SetProducts([](std::uint64_t product, const std::string&) {
+    const auto text = std::to_string(product);
+    return Stub::Step{Answer(200, R"({"external_id":")" + text +
+                                      R"(","type":"game","title":{"*":"Synthetic Game"},"summary":{"*":"Synthetic"},)"
+                                      R"("supported_operating_systems":[{"slug":"windows","name":"Windows"}],"dlcs":[],)"
+                                      R"("game":{"visible_in_library":true}})"),
+                      nullptr};
+  });
+  CHECK(PostCode(*app.web, kToken).status == 200);
+  Wait(*app.controller, [&] { return app.Gog().authentication == AuthState::SignedIn && GameShown(app.model, id); });
+  CHECK(!GameShown(app.model, dlc));
+  // Installed with the DLC turned off, as the install sheet does.
+  installs::InstallOptions options;
+  options.excluded_dlc = {dlc};
+  app.installs->Install(id, std::nullopt, {}, options);
+  Wait(*app.controller, [&] {
+    const auto* installation = FindInstallation(app.model, id);
+    return installation && installation->dlc_known && app.installs->Snapshot().jobs.empty();
+  });
+  {
+    const auto* installation = FindInstallation(app.model, id);
+    CHECK(installation->installed_dlc.empty() && (installation->excluded_dlc == std::vector<GameId>{dlc}));
+    const auto snapshot = app.installs->Snapshot();
+    CHECK(snapshot.installed.size() == 1 && snapshot.installed[0].record && snapshot.installed[0].record->gog);
+    CHECK((snapshot.installed[0].record->gog->products == std::vector<std::uint64_t>{gog_test::kBase}));
+    CHECK((snapshot.installed[0].record->gog->excluded == std::vector<std::uint64_t>{gog_test::kDlc}));
+  }
+  CHECK(*held == 0);
+  // The page's details bring the DLC.
+  CHECK(app.model.action("details:" + ToKey(id)));
+  Wait(*app.controller, [&] {
+    const auto* game = FindGame(app.model, id);
+    return game && std::any_of(game->dlc.begin(), game->dlc.end(), [&](const GameDlc& item) {
+             return item.id == dlc && item.install_bytes != 0;
+           });
+  });
+  Choose(app, "details-more");
+  Choose(app, "game-maintenance");
+  const auto* manage = FindRow(app.model, "manage-dlc");
+  CHECK(manage && manage->enabled && manage->value == "0 of 1");
+  Choose(app, "manage-dlc");
+  const auto key = "manage-dlc-" + ToKey(dlc);
+  CHECK(FindRow(app.model, key) && !FindRow(app.model, key)->selected);
+  Choose(app, key);
+  CHECK(FindRow(app.model, key)->selected && FindRow(app.model, key)->subtitle == "Downloads");
+  *hold = true;
+  Choose(app, "manage-dlc-apply");
+  // The install service runs it as an update with the DLC change, and Queue names it.
+  bool changing = false, named = false;
+  Wait(*app.controller, [&] {
+    const auto snapshot = app.installs->Snapshot();
+    for (const auto& job : snapshot.jobs)
+      if (job.id == id && job.kind == installs::InstallJobKind::kUpdate && job.dlc_change) changing = true;
+    for (const auto& job : app.model.state().jobs)
+      if (job.game_id == id && job.stage_text == "Changing DLC") named = true;
+    return changing && named && *held > 0;
+  });
+  *hold = false;
+  Wait(*app.controller, [&] {
+    const auto* installation = FindInstallation(app.model, id);
+    return app.installs->Snapshot().jobs.empty() && installation && installation->dlc_known &&
+           installation->installed_dlc == std::vector<GameId>{dlc};
+  });
+  {
+    const auto* installation = FindInstallation(app.model, id);
+    CHECK(installation->excluded_dlc.empty());
+    const auto snapshot = app.installs->Snapshot();
+    CHECK(snapshot.installed.size() == 1 && snapshot.installed[0].record && snapshot.installed[0].record->gog);
+    CHECK((snapshot.installed[0].record->gog->products == std::vector<std::uint64_t>{gog_test::kBase, gog_test::kDlc}));
+    CHECK(snapshot.installed[0].record->gog->excluded.empty());
+    CHECK(Exists(fs::path(snapshot.installed[0].root) / "dlc" / "extra.dat"));
+  }
+  app.controller->Shutdown();
+  CheckLogs(app.root);
+  // gog.log and install.log say what ran, without an address.
+  for (const char* name : {"gog.log", "install.log"}) {
+    const auto text = ReadText(app.root / "logs" / name);
+    CHECK(!text.empty() && text.find("://") == std::string::npos);
+  }
+  CHECK(ReadText(app.root / "logs" / "install.log").find("gog update game=gog-1900000001") != std::string::npos);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -624,6 +764,7 @@ int main(int argc, char** argv) {
   ExpiredAtStartupWithoutALibrary();
   OfflineRefreshSignsIn();
   InstalledOlderBuildShowsAnUpdate();
+  InstalledGameWithDlcOffersManageDlc();
   fs::remove_all(g_base, ignored);
   std::puts("homebrew_gog_wiring: ok");
   return 0;

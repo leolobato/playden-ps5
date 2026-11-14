@@ -663,7 +663,8 @@ void ExcludedDlcForARun() {
   playden::installs::InstalledRecord record;
   record.excluded_dlc = {900, 901};
   InstallOptions options;
-  options.excluded_dlc = {902};
+  // Only Steam's DLC reach a Steam run.
+  options.excluded_dlc = {playden::GameId::Steam(902), playden::GameId::Gog(903)};
   CHECK(ExcludedDlcFor(options, false, record) == (U32s{902}));
   CHECK(ExcludedDlcFor(options, true, record) == (U32s{900, 901, 902}));
   CHECK(ExcludedDlcFor(options, true, std::nullopt) == (U32s{902}));

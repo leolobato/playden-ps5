@@ -3,6 +3,7 @@
 
 #include "steam/backend/json.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 
@@ -71,7 +72,8 @@ std::optional<GogRecord> ParseGog(const Value& value) {
     gog.generation = static_cast<int>(*number);
   }
   const auto* products = value.Find("products");
-  if (!products || !products->is_array() || products->array().empty() || products->array().size() > 1024)
+  if (!products || !products->is_array() || products->array().empty() ||
+      products->array().size() > kMaxGogRecordProducts)
     return std::nullopt;
   for (const auto& entry : products->array()) {
     const auto id = AsGogId(&entry);
@@ -85,6 +87,17 @@ std::optional<GogRecord> ParseGog(const Value& value) {
   if (const auto* meta = value.Find("meta")) {
     if (!meta->is_string() || (!meta->text().empty() && !IsHash(meta->text()))) return std::nullopt;
     gog.meta_id = meta->text();
+  }
+  // Optional: the DLC the player turned off. Kept sorted and unique, never the base game.
+  if (const auto* excluded = value.Find("excluded")) {
+    if (!excluded->is_array() || excluded->array().size() > kMaxGogRecordProducts) return std::nullopt;
+    for (const auto& entry : excluded->array()) {
+      const auto id = AsGogId(&entry);
+      if (!id) return std::nullopt;
+      if (*id != gog.products.front()) gog.excluded.push_back(*id);
+    }
+    std::sort(gog.excluded.begin(), gog.excluded.end());
+    gog.excluded.erase(std::unique(gog.excluded.begin(), gog.excluded.end()), gog.excluded.end());
   }
   return gog;
 }
@@ -199,7 +212,21 @@ std::string FormatGogInstallRecord(const GameId& game, std::uint64_t install_byt
                      "\",\"generation\":" + std::to_string(gog.generation) + ",\"products\":[";
   for (std::size_t index = 0; index < gog.products.size(); ++index)
     text += std::string(index ? "," : "") + "\"" + std::to_string(gog.products[index]) + "\"";
-  text += "],\"language\":\"" + JsonText(gog.language) + "\",\"meta\":\"" + JsonText(gog.meta_id) + "\"},\"launches\":[";
+  text += "],\"language\":\"" + JsonText(gog.language) + "\",\"meta\":\"" + JsonText(gog.meta_id) + "\"";
+  // Only when the player turned a DLC off: a record without one stays as earlier builds wrote it.
+  std::vector<std::uint64_t> excluded;
+  for (const auto id : gog.excluded)
+    if (id != 0 && (gog.products.empty() || id != gog.products.front())) excluded.push_back(id);
+  std::sort(excluded.begin(), excluded.end());
+  excluded.erase(std::unique(excluded.begin(), excluded.end()), excluded.end());
+  if (excluded.size() > kMaxGogRecordProducts) excluded.resize(kMaxGogRecordProducts);
+  if (!excluded.empty()) {
+    text += ",\"excluded\":[";
+    for (std::size_t index = 0; index < excluded.size(); ++index)
+      text += std::string(index ? "," : "") + "\"" + std::to_string(excluded[index]) + "\"";
+    text += "]";
+  }
+  text += "},\"launches\":[";
   std::size_t written = 0;
   for (const auto& launch : launches) {
     if (written >= kMaxRecordedLaunches) break;

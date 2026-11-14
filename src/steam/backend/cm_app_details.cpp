@@ -135,7 +135,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
   if (installed && any) {
     const std::set<std::uint32_t> refused_dlc = free_dlc_refused ? *free_dlc_refused : std::set<std::uint32_t>{};
     for (auto& offer : OfferedDlc(*app, dlc_apps, apps, depots_owned, selection, refused_dlc))
-      details.dlc.push_back({offer.app_id, std::move(offer.name), offer.download_bytes, offer.install_bytes, offer.free, {},
+      details.dlc.push_back({GameId::Steam(offer.app_id), std::move(offer.name), offer.download_bytes, offer.install_bytes, offer.free, {},
                              offer.optional});
   }
   if (!installed && any) {
@@ -180,7 +180,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
         if (branch != "public" || choice != selection.language) compare(branch, choice);
     SortDlcOffers(&offers);
     for (auto& offer : offers)
-      details.dlc.push_back({offer.app_id, std::move(offer.name), offer.download_bytes, offer.install_bytes, offer.free,
+      details.dlc.push_back({GameId::Steam(offer.app_id), std::move(offer.name), offer.download_bytes, offer.install_bytes, offer.free,
                              std::move(other_sizes[offer.app_id]), offer.optional});
   }
   std::vector<AppLaunch> launches;

@@ -4364,6 +4364,129 @@ void gog_updates() {
           "the GOG game's update is queued");
 }
 
+// Manage DLC of an installed GOG game: its owned DLC from the details, as its install record holds them; a toggle says
+// what changes without naming Steam, and Apply queues one DLC change with every GOG DLC to leave out. Offline, the change
+// still queues; signed out of GOG, the row waits for the sign-in; a GOG game whose record isn't read has no row.
+void gog_manage_dlc() {
+    const auto game = GameId::Gog(1000000001), unread = GameId::Gog(1000000002);
+    const auto a = GameId::Gog(1000000011), b = GameId::Gog(1000000012), c = GameId::Gog(1000000013);
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.SetStoreInstalls(Store::kGog, true);
+    live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}, {1000000002, "GOG unread"}})), "GOG's games load");
+    // A is installed, C was turned off at install, B was bought since.
+    LiveInstalledGame installed{game, 1'000'000'000ull, "internal", true, 0};
+    installed.dlc_known = true;
+    installed.installed_dlc = {a};
+    installed.excluded_dlc = {c};
+    LiveInstalledGame not_read{unread, 1'000'000'000ull, "internal", true, 0};
+    live.UpdateInstalls({}, {installed, not_read});
+    const std::vector<GameDlc> dlc{{a, "Art Book", 40'000'000, 50'000'000, false},
+                                   {b, "Campaign", 200'000'000, 300'000'000, false},
+                                   {c, "Texture Pack", 100'000'000, 120'000'000, false}};
+    live.UpdateAppDetails(game, 700'000'000ull, 1'200'000'000ull, true, {}, dlc);
+    live.UpdateAppDetails(unread, 700'000'000ull, 1'200'000'000ull, true, {}, dlc);
+    const auto open_maintenance = [&](GameId id) {
+        while (!live.state().navigation.modals.empty()) live.action("circle");
+        if (live.state().navigation.route == Route::Details) live.action("circle");
+        check(live.action("details:" + playden::ToKey(id)), "the GOG game's page opens");
+        choose(live, "details-more");
+        choose(live, "game-maintenance");
+    };
+    const auto no_steam = [&](const char* what) {
+        for (const auto& item : live.view().rows)
+            check(item.title.find("Steam") == std::string::npos && item.subtitle.find("Steam") == std::string::npos &&
+                      item.value.find("Steam") == std::string::npos,
+                  what);
+    };
+
+    open_maintenance(unread);
+    check(!row(live, "manage-dlc"), "a GOG game whose record isn't read has no Manage DLC");
+
+    open_maintenance(game);
+    const auto* manage = row(live, "manage-dlc");
+    check(manage && manage->enabled && manage->value == "1 of 3", "Maintenance offers Manage DLC with what is installed");
+    choose(live, "manage-dlc");
+    check(live.view().surface == "manage-dlc" && live.view().title == "Manage DLC", "the row opens the sheet");
+    check(row(live, "heading-manage-dlc-installed") && row(live, "heading-manage-dlc-other"), "Installed, then Not installed");
+    check(row(live, "heading-manage-dlc-installed")->title == "Installed" &&
+              row(live, "heading-manage-dlc-other")->title == "Not installed",
+          "the headings say so");
+    const auto* on = row(live, "manage-dlc-gog-1000000011");
+    const auto* off = row(live, "manage-dlc-gog-1000000012");
+    check(on && on->kind == RowKind::Toggle && on->selected && on->title == "Art Book", "the installed DLC starts on");
+    check(off && off->kind == RowKind::Toggle && !off->selected && off->value == "300 MB", "a DLC bought since starts off");
+    check(row(live, "manage-dlc-gog-1000000013") && !row(live, "manage-dlc-gog-1000000013")->selected,
+          "the DLC turned off at install stays off");
+    no_steam("the sheet names no Steam");
+
+    choose(live, "manage-dlc-gog-1000000011");
+    choose(live, "manage-dlc-gog-1000000012");
+    check(live.view().surface == "manage-dlc", "a toggle keeps the sheet open");
+    check(row(live, "manage-dlc-gog-1000000011")->subtitle == "Its files are deleted", "turning one off says what happens");
+    check(row(live, "manage-dlc-gog-1000000012")->subtitle == "Downloads", "turning one on says what happens");
+    const auto* apply = row(live, "manage-dlc-apply");
+    check(apply && apply->enabled && apply->subtitle == "Runs in Queue", "Apply is ready");
+    no_steam("the changed sheet names no Steam");
+    check(live.TakeInstallRequests().empty(), "toggling asks for nothing");
+    choose(live, "manage-dlc-apply");
+    const auto requests = live.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::ChangeDlc && requests[0].game_id == game &&
+              (requests[0].excluded_dlc == std::vector<GameId>{a, c}) &&
+              requests[0].install_bytes == std::optional<std::uint64_t>(300'000'000),
+          "Apply asks for the whole choice with GOG IDs and reserves what turns on");
+    check(live.state().navigation.modals.empty() && live.state().navigation.route == Route::Details, "back on the game's page");
+
+    // Its change in Queue, and its end, name no store.
+    LiveInstallJob change;
+    change.game_id = game;
+    change.state = JobState::Downloading;
+    change.update = true;
+    change.dlc_change = true;
+    live.UpdateInstalls({change}, {installed, not_read});
+    const auto job = std::find_if(live.state().jobs.begin(), live.state().jobs.end(), [&](const Job& value) { return value.game_id == game; });
+    check(job != live.state().jobs.end() && job->stage_text == "Changing DLC", "Queue names the DLC change");
+    installed.installed_dlc = {b};
+    installed.excluded_dlc = {a, c};
+    live.UpdateInstalls({}, {installed, not_read});
+    check(std::any_of(live.state().notices.begin(), live.state().notices.end(),
+                      [](const auto& notice) { return notice.message == "DLC changed"; }),
+          "its end says the DLC changed");
+
+    // With a pending update the change comes with it.
+    live.UpdateAppDetails(game, 700'000'000ull, 1'200'000'000ull, true, {}, dlc, {}, GameUpdate{true, false, 0, 0, 7, false});
+    open_maintenance(game);
+    choose(live, "manage-dlc");
+    choose(live, "manage-dlc-gog-1000000011");
+    check(row(live, "manage-dlc-apply")->subtitle == "With the game's update", "Apply says the update comes with it");
+
+    // Offline keeps the GOG session: Manage DLC stays, and the change waits in Queue.
+    live.UpdateAccount(gog(AuthState::Offline, "Synthetic GOG"));
+    open_maintenance(game);
+    manage = row(live, "manage-dlc");
+    check(manage && manage->enabled, "Manage DLC stays while GOG is offline");
+    choose(live, "manage-dlc");
+    check(live.view().surface == "manage-dlc", "and opens");
+    choose(live, "manage-dlc-gog-1000000011");
+    choose(live, "manage-dlc-apply");
+    const auto offline = live.TakeInstallRequests();
+    check(offline.size() == 1 && offline[0].kind == InstallRequestKind::ChangeDlc && offline[0].game_id == game,
+          "Apply queues the change while GOG is offline");
+
+    // Signed out of GOG: the game stays, and the change waits for the sign-in.
+    live.UpdateAccount(gog(AuthState::SigningOut, "Synthetic GOG"));
+    live.UpdateAccount(gog(AuthState::SignedOut));
+    check(listed(live, game), "the installed GOG game stays listed");
+    open_maintenance(game);
+    manage = row(live, "manage-dlc");
+    check(manage && !manage->enabled && manage->subtitle == "Sign in to GOG.", "Manage DLC waits for the GOG sign-in");
+    check(live.action("focus:manage-dlc") && (live.action("cross"), live.view().surface != "manage-dlc"),
+          "and doesn't open");
+}
+
 // The Steam-only places, for a player with only GOG: Friends asks for Steam, Online rows stay hidden, GOG games have
 // no Cloud saves row, and the download servers ask for Steam to test.
 void steam_only_places() {
@@ -4459,6 +4582,7 @@ int main(int argc, char** argv) {
     gog_view::gog_game_installs();
     gog_view::steam_only_places();
     gog_view::gog_updates();
+    gog_view::gog_manage_dlc();
     clean();
     gog_view::gog_scenarios(fixtures);
     clean();

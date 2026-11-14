@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // GOG's details source (stores/gog_details) against the stub CDN (gog_cdn_stub.h): what installing a game takes. The
 // Elder Scrolls: Arena's recorded public meta with DOSBox from the recorded public dependency store, a synthetic game
-// naming __redist installers from the same store, a synthetic game with a DLC owned or not, Monkey Island 2's recorded
-// gen 1 build and repository with its redists and language_setup from the same store, no Windows build, the network
-// failing, and Invalidate dropping an answer that comes late. Installed games: updates from the install record, the
-// installed check's progress (also past kMaximumEvents answers), and an update's size measured against a synthetic
-// game the install runner put in place, which the measure leaves as it was.
+// naming __redist installers from the same store, a synthetic game with a DLC owned or not (counted and listed), a
+// synthetic gen 1 game's DLC, Monkey Island 2's recorded gen 1 build and repository with its redists and language_setup
+// from the same store, no Windows build, the network failing, and Invalidate dropping an answer that comes late.
+// Installed games: updates from the install record (a newer build or a DLC bought since), sizes in the record's
+// language, the installed check's progress (also past kMaximumEvents answers), and an update's size measured against a
+// synthetic game the install runner put in place, which the measure leaves as it was.
 // Usage: gog_details_test <fixtures/gog> <scratch folder>.
 
 #include "gog/session.h"
@@ -220,8 +221,9 @@ void Gen2SizesCountTheDependencies() {
   // 382 + 4437; DOSBox074_2CS (dependencies-manifest): 8868679, compressed 6105676.
   CHECK(details.install_bytes == std::optional<std::uint64_t>(104671172ull + 8868679ull));
   CHECK(details.download_bytes == std::optional<std::uint64_t>(68520292ull + 6105676ull));
-  // Installed games' launches come from the install record; nothing else is offered yet.
+  // Installed games' launches come from the install record; nothing else is offered yet. Arena has no DLC.
   CHECK(details.launches.empty() && details.languages.empty() && details.versions.empty() && details.dlc.empty());
+  CHECK(world.Logged("details result=gen2 depots=5 products=1 dependencies=1 owned=list dlc=0"));
   CHECK(details.install_dir.empty() && !details.update.available());
   CHECK(world.Logged("details result=gen2 depots=5 products=1 dependencies=1 owned=list"));
   CHECK(world.transports == 1);
@@ -263,7 +265,8 @@ void Gen2SizesCountTheRedists() {
   world.CheckLogs();
 }
 
-// A synthetic game with a DLC: the DLC's depot counts only when the account owns it. With no session, only the game.
+// A synthetic game with a DLC: the DLC's depot counts only when the account owns it, and only then is it listed, by
+// its GOG ID and its meta name with its own depot's sizes. With no session, only the game, and no DLC.
 void OwnedDlcCountsOnlyWhenOwned() {
   Game game;
   GameDepot main;
@@ -273,22 +276,62 @@ void OwnedDlcCountsOnlyWhenOwned() {
   dlc.product = kDlc;
   dlc.files.push_back({"DepotFile", "dlc\\extra.pak", RandomBytes(30 * 1024, 32)});
   game.depots.push_back(dlc);
-  const auto sizes = [&](const char* owned, bool signed_in) {
+  const auto ask = [&](const char* owned, bool signed_in) {
     World world(signed_in);
     world.cdn.SetOwned(owned);
     Publish(world.cdn, game);
     const auto details = world.Ask(kBase);
     CHECK(details.available && details.windows_installable && !details.failed);
     CHECK(world.cdn.Count(Kind::kOwned) == (signed_in ? 1 : 0));
+    CHECK(!details.update.available());
+    if (!signed_in) CHECK(world.Logged("details result=gen2 depots=1 products=1 dependencies=0 owned=base dlc=0"));
     world.CheckLogs();
-    return std::make_pair(*details.install_bytes, *details.download_bytes);
+    return details;
   };
-  const auto base = sizes("{\"owned\":[1900000001]}", true);
-  const auto with_dlc = sizes("{\"owned\":[1900000001,1900000002]}", true);
-  CHECK(base.first == 40 * 1024 && base.second > 0);
-  CHECK(with_dlc.first == 70 * 1024 && with_dlc.second > base.second);
-  // Signed out: no owned list can be read, so the game alone, and still an answer.
-  CHECK(sizes("{\"owned\":[1900000001,1900000002]}", false) == base);
+  const auto base = ask("{\"owned\":[1900000001]}", true);
+  const auto with_dlc = ask("{\"owned\":[1900000001,1900000002]}", true);
+  CHECK(*base.install_bytes == 40 * 1024 && *base.download_bytes > 0);
+  CHECK(*with_dlc.install_bytes == 70 * 1024 && *with_dlc.download_bytes > *base.download_bytes);
+  CHECK(base.dlc.empty());
+  CHECK(with_dlc.dlc.size() == 1);
+  const auto& choice = with_dlc.dlc[0];
+  CHECK(choice.id == GameId::Gog(kDlc) && choice.name == "Synthetic DLC");
+  CHECK(choice.install_bytes == 30 * 1024 && choice.download_bytes == *with_dlc.download_bytes - *base.download_bytes);
+  CHECK(!choice.free && !choice.optional && choice.other_sizes.empty());
+  // Signed out: no owned list can be read, so the game alone, no DLC listed, and still an answer.
+  const auto signed_out = ask("{\"owned\":[1900000001,1900000002]}", false);
+  CHECK(signed_out.install_bytes == base.install_bytes && signed_out.download_bytes == base.download_bytes);
+  CHECK(signed_out.dlc.empty());
+}
+
+// A gen 1 game with a DLC depot and a depot both name (the base first): the DLC is listed without a name, with only its
+// own depot's bytes; the shared one is the base game's.
+void DlcListedForGen1() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+  GameV1 game;
+  GameDepotV1 main;
+  main.files.push_back({"bin/Game.exe", RandomBytes(40 * 1024, 61)});
+  game.depots.push_back(main);
+  GameDepotV1 shared;
+  shared.products = {kBase, kDlc};
+  shared.files.push_back({"data/shared.pak", RandomBytes(10 * 1024, 62)});
+  game.depots.push_back(shared);
+  GameDepotV1 dlc;
+  dlc.products = {kDlc};
+  dlc.files.push_back({"dlc/extra.pak", RandomBytes(30 * 1024, 63)});
+  game.depots.push_back(dlc);
+  PublishV1(world.cdn, game);
+  const auto details = world.Ask(kBase);
+  CHECK(details.available && details.windows_installable && !details.failed);
+  CHECK(details.install_bytes == std::optional<std::uint64_t>(80 * 1024));
+  CHECK(details.dlc.size() == 1);
+  const auto& choice = details.dlc[0];
+  CHECK(choice.id == GameId::Gog(kDlc) && choice.name.empty());
+  CHECK(choice.install_bytes == 30 * 1024 && choice.download_bytes == 30 * 1024);
+  CHECK(!choice.free && !choice.optional && choice.other_sizes.empty());
+  CHECK(world.Logged("details result=gen1 depots=3 products=2 dependencies=0 owned=list dlc=1"));
+  world.CheckLogs();
 }
 
 // Monkey Island 2's default build is gen 1 only: installable, its sizes from its recorded repository (the Neutral and
@@ -463,7 +506,7 @@ void UpdatesFromTheRecord() {
   World world(true);
   world.cdn.SetOwned("{\"owned\":[1900000001]}");
   Publish(world.cdn, SyntheticAt(kBuildB));
-  const auto target = gog::UpdateTarget(kBuildB, 2);
+  const auto target = gog::UpdateTarget(kBuildB, 2, {kBase});
   world.Install(kBase, GogRecord(kBuildA));
   const auto newer = world.Ask(kBase);
   CHECK(newer.available && newer.windows_installable && !newer.failed);
@@ -498,6 +541,100 @@ void UpdatesFromTheRecord() {
   world.Install(kGone, gone_record);
   const auto gone = world.Ask(kGone);
   CHECK(gone.available && !gone.windows_installable && !gone.update.available());
+  world.CheckLogs();
+}
+
+// Without the owned list (signed out of GOG) a newer build is still an update, but which DLC it takes isn't known: no
+// target, and the measure names it.
+void UpdateWithoutTheOwnedList() {
+  World world(false);
+  Publish(world.cdn, SyntheticAt(kBuildB));
+  world.Install(kBase, GogRecord(kBuildA));
+  const auto details = world.Ask(kBase);
+  CHECK(details.windows_installable && details.dlc.empty());
+  CHECK(details.update.newer && details.update.available() && details.update.target == 0);
+  world.CheckLogs();
+}
+
+// A game with a German and an English depot, and a DLC with the same: installed in German, its sizes and its DLC's are
+// the German ones while Settings says English. Not installed, Settings' language decides again.
+void InstalledDlcUsesTheRecordLanguage() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+  Game game = SyntheticAt(kBuildB);
+  const auto depot = [&](std::uint64_t product, const char* language, const char* path, std::size_t bytes,
+                         std::uint32_t seed) {
+    GameDepot added;
+    added.product = product;
+    added.languages = {language};
+    added.files.push_back({"DepotFile", path, RandomBytes(bytes, seed)});
+    game.depots.push_back(added);
+  };
+  depot(kBase, "de-DE", "lang\\de.pak", 5 * 1024, 71);
+  depot(kBase, "en-US", "lang\\en.pak", 6 * 1024, 72);
+  depot(kDlc, "de-DE", "dlc\\de.pak", 7 * 1024, 73);
+  depot(kDlc, "en-US", "dlc\\en.pak", 9 * 1024, 74);
+  Publish(world.cdn, game);
+  auto record = GogRecord(kBuildB);
+  record.gog->language = "de-DE";
+  record.gog->products = {kBase, kDlc};
+  world.Install(kBase, record);
+  const auto german = world.Ask(kBase);
+  CHECK(german.install_bytes == std::optional<std::uint64_t>((40 + 5 + 7) * 1024));
+  CHECK(german.dlc.size() == 1 && german.dlc[0].install_bytes == 7 * 1024);
+  CHECK(!german.update.available());
+  world.Install(kBase, std::nullopt);
+  const auto english = world.Again(kBase);
+  CHECK(english.install_bytes == std::optional<std::uint64_t>((40 + 6 + 9) * 1024));
+  CHECK(english.dlc.size() == 1 && english.dlc[0].install_bytes == 9 * 1024);
+  world.CheckLogs();
+}
+
+// The record against the owned DLC on the same build: one it neither holds nor left out is new (an update to the same
+// build, which brings it); one left out is no update but still listed; one held is current.
+void NewDlcFromTheRecord() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+  Game game = SyntheticAt(kBuildB);
+  GameDepot dlc;
+  dlc.product = kDlc;
+  dlc.files.push_back({"DepotFile", "dlc\\extra.pak", RandomBytes(30 * 1024, 52)});
+  game.depots.push_back(dlc);
+  Publish(world.cdn, game);
+  world.Install(kBase, GogRecord(kBuildB));
+  const auto bought = world.Ask(kBase);
+  CHECK(!bought.update.newer && bought.update.new_dlc && bought.update.available());
+  CHECK(bought.update.target == gog::UpdateTarget(kBuildB, 2, {kBase, kDlc}));
+  CHECK(bought.install_bytes == std::optional<std::uint64_t>(70 * 1024));
+  CHECK(world.Logged("details update result=new_dlc"));
+
+  auto left_out = GogRecord(kBuildB);
+  left_out.gog->excluded = {kDlc};
+  world.Install(kBase, left_out);
+  const auto excluded = world.Again(kBase);
+  CHECK(!excluded.update.available() && excluded.update.target == 0);
+  // The sizes leave it out; the list doesn't.
+  CHECK(excluded.install_bytes == std::optional<std::uint64_t>(40 * 1024));
+  CHECK(excluded.dlc.size() == 1 && excluded.dlc[0].install_bytes == 30 * 1024);
+
+  auto holds = GogRecord(kBuildB);
+  holds.gog->products = {kBase, kDlc};
+  world.Install(kBase, holds);
+  const auto current = world.Again(kBase);
+  CHECK(!current.update.available() && current.update.target == 0);
+  CHECK(world.Logged("details update result=current"));
+
+  // A newer build and a new DLC: newer, both set.
+  world.Install(kBase, GogRecord(kBuildA));
+  const auto both = world.Again(kBase);
+  CHECK(both.update.newer && both.update.new_dlc && both.update.target == gog::UpdateTarget(kBuildB, 2, {kBase, kDlc}));
+
+  // A newer build with the DLC left out: the update takes the base game only, and its target says so.
+  auto older_left_out = GogRecord(kBuildA);
+  older_left_out.gog->excluded = {kDlc};
+  world.Install(kBase, older_left_out);
+  const auto without = world.Again(kBase);
+  CHECK(without.update.newer && !without.update.new_dlc && without.update.target == gog::UpdateTarget(kBuildB, 2, {kBase}));
   world.CheckLogs();
 }
 
@@ -665,7 +802,7 @@ void MeasureAnUpdate() {
   b.depots.push_back(depot_b);
   const auto published = Publish(world.cdn, b);
   const auto details = world.Ask(kBase);
-  CHECK(details.update.newer && details.update.target == gog::UpdateTarget(kBuildB, 2));
+  CHECK(details.update.newer && details.update.target == gog::UpdateTarget(kBuildB, 2, {kBase}));
   const auto before = Snapshot(root);
   const auto measure_folder = root / ".playden-gog" / "measure";
 
@@ -710,7 +847,7 @@ void MeasureAnUpdate() {
   b.depots[0].files.push_back({"DepotFile", "data\more.dat", RandomBytes(5 * 1024, 65)});
   Publish(world.cdn, b);
   const auto moved = world.Again(kBase);
-  CHECK(moved.update.newer && moved.update.target == gog::UpdateTarget(kBuildC, 2));
+  CHECK(moved.update.newer && moved.update.target == gog::UpdateTarget(kBuildC, 2, {kBase}));
   world.cdn.ClearRequests();
   const auto c = world.Measured(kBase);
   CHECK(c.measured && c.target == moved.update.target && world.cdn.Count(Kind::kMeta) > 0);
@@ -734,6 +871,134 @@ void MeasureAnUpdate() {
   CHECK(!world.source->Measure({GameId::Steam(220), {}, {}, true}, 1));
   CHECK(!world.source->Measure({GameId::Gog(kBase), {}, {}, true}, 0));
   CHECK(Snapshot(root) == before);
+  world.CheckLogs();
+}
+
+// An installed game with its DLC turned off: the page's sizes and the update's measure leave the DLC's bytes out, and
+// once the record's products change on the same build the size is measured again, never taken from the cache.
+void MeasureWithoutATurnedOffDlc() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+  world.cdn.SetSecureLink(ReadFile(g_fixtures + "/secure-link-200.json"));
+  const auto exe = RandomBytes(16 * 1024, 71);
+  const auto extra = RandomBytes(12 * 1024, 72);
+  const auto extra_b = RandomBytes(13 * 1024, 73);
+  const auto add = RandomBytes(5 * 1024, 74);
+  const auto game = [&](const std::string& build, bool b) {
+    Game made;
+    made.build_id = build;
+    GameDepot main;
+    main.files.push_back({"DepotFile", "bin\\Game.exe", exe});
+    if (b) main.files.push_back({"DepotFile", "data\\add.dat", add});
+    made.depots.push_back(main);
+    GameDepot dlc;
+    dlc.product = kDlc;
+    dlc.files.push_back({"DepotFile", "dlc\\extra.dat", b ? extra_b : extra});
+    made.depots.push_back(dlc);
+    return made;
+  };
+  Publish(world.cdn, game(kBuildA, false));
+  const auto root = world.user / "games" / "gog-1900000001";
+  fs::create_directories(root.parent_path());
+  {
+    stores::GogInstallRunner runner(
+        *world.session, [&world] { return world.cdn.Transport(); }, [] { return std::string("english"); }, {},
+        [](const std::string&) { return std::optional<std::uint64_t>(1ull << 40); });
+    const std::atomic<bool> no_cancel{false};
+    installs::InstallOptions options;
+    options.excluded_dlc = {GameId::Gog(kDlc)};
+    CHECK(runner.Install(GameId::Gog(kBase), root.string(), options, no_cancel, {}, {}).ok);
+  }
+  const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && (record->gog->products == std::vector<std::uint64_t>{kBase}));
+  CHECK((record->gog->excluded == std::vector<std::uint64_t>{kDlc}) && !fs::exists(root / "dlc"));
+  world.Install(kBase, *record, root.string());
+
+  const auto published = Publish(world.cdn, game(kBuildB, true));
+  const auto details = world.Ask(kBase);
+  CHECK(details.update.newer && details.install_bytes && *details.install_bytes == exe.size() + add.size());
+  const auto before = Snapshot(root);
+  world.cdn.ClearRequests();
+  const auto size = world.Measured(kBase);
+  CHECK(size.measured && size.staged_bytes == add.size() && size.install_bytes == exe.size() + add.size());
+  CHECK(size.download_bytes == Download(published.chunks.at("data\\add.dat")));
+  // The update without the DLC: the details and the measure name the same one.
+  CHECK(size.target == details.update.target && size.target == gog::UpdateTarget(kBuildB, 2, {kBase}));
+  CHECK(world.cdn.Count(Kind::kChunk) == 0 && Snapshot(root) == before);
+  CHECK(world.Logged("details size result=measured changed=1 removed=0"));
+  // Nothing changed: the same answer from the cache.
+  world.cdn.ClearRequests();
+  const auto cached = world.Measured(kBase);
+  CHECK(cached.measured && cached.staged_bytes == size.staged_bytes && world.cdn.requests().empty());
+
+  // The DLC turned on in the record, same build: measured again with the DLC's bytes.
+  auto with_dlc = *record;
+  with_dlc.gog->products = {kBase, kDlc};
+  with_dlc.gog->excluded.clear();
+  world.Install(kBase, with_dlc, root.string());
+  world.cdn.ClearRequests();
+  const auto again = world.Measured(kBase);
+  CHECK(again.measured && world.cdn.Count(Kind::kMeta) > 0);
+  CHECK(again.staged_bytes == add.size() + extra_b.size());
+  CHECK(again.install_bytes == exe.size() + add.size() + extra_b.size());
+  CHECK(world.Logged("details size result=measured changed=2 removed=0"));
+  // With the DLC it is another update, and the details name it too.
+  const auto turned_on = world.Again(kBase);
+  CHECK(again.target != size.target && again.target == turned_on.update.target);
+  CHECK(Snapshot(root) == before);
+  world.CheckLogs();
+}
+
+// A newer build measured, then a DLC bought: the update now takes the DLC too, so it names another target and is
+// measured again with the DLC's files. The measure's plan reads the owned list afresh; the details, asked again, take
+// the DLC it found and name the same update.
+void BoughtDlcIsAnotherUpdate() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  world.cdn.SetSecureLink(ReadFile(g_fixtures + "/secure-link-200.json"));
+  const auto exe = RandomBytes(16 * 1024, 81);
+  const auto add = RandomBytes(6 * 1024, 82);
+  const auto extra = RandomBytes(11 * 1024, 83);
+  const auto game = [&](const std::string& build, bool b) {
+    Game made;
+    made.build_id = build;
+    GameDepot main;
+    main.files.push_back({"DepotFile", "bin\\Game.exe", exe});
+    if (b) main.files.push_back({"DepotFile", "data\\add.dat", add});
+    made.depots.push_back(main);
+    GameDepot dlc;
+    dlc.product = kDlc;
+    dlc.files.push_back({"DepotFile", "dlc\\extra.dat", extra});
+    made.depots.push_back(dlc);
+    return made;
+  };
+  Publish(world.cdn, game(kBuildA, false));
+  const auto root = world.user / "games" / "gog-1900000001";
+  fs::create_directories(root.parent_path());
+  {
+    stores::GogInstallRunner runner(
+        *world.session, [&world] { return world.cdn.Transport(); }, [] { return std::string("english"); }, {},
+        [](const std::string&) { return std::optional<std::uint64_t>(1ull << 40); });
+    const std::atomic<bool> no_cancel{false};
+    CHECK(runner.Install(GameId::Gog(kBase), root.string(), {}, no_cancel, {}, {}).ok);
+  }
+  const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && (record->gog->products == std::vector<std::uint64_t>{kBase}));
+  world.Install(kBase, *record, root.string());
+
+  Publish(world.cdn, game(kBuildB, true));
+  const auto details = world.Ask(kBase);
+  CHECK(details.update.newer && !details.update.new_dlc && details.update.target == gog::UpdateTarget(kBuildB, 2, {kBase}));
+  const auto size = world.Measured(kBase);
+  CHECK(size.measured && size.target == details.update.target && size.staged_bytes == add.size());
+
+  // The DLC bought; a later generation (a restart, a sign-in) measures it again.
+  world.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+  const auto bought = world.Measured(kBase, 2);
+  CHECK(bought.measured && bought.target != size.target && bought.target == gog::UpdateTarget(kBuildB, 2, {kBase, kDlc}));
+  CHECK(bought.staged_bytes == add.size() + extra.size());
+  const auto again = world.Again(kBase, 2);
+  CHECK(again.update.newer && again.update.new_dlc && again.update.target == bought.target);
   world.CheckLogs();
 }
 
@@ -781,14 +1046,20 @@ int main(int argc, char** argv) {
   Gen2SizesCountTheDependencies();
   Gen2SizesCountTheRedists();
   OwnedDlcCountsOnlyWhenOwned();
+  DlcListedForGen1();
   Gen1AndNoBuild();
   NetworkFailureFails();
   UnexpectedAnswersSayWhy();
   InvalidateDropsALateAnswer();
   UpdatesFromTheRecord();
+  InstalledDlcUsesTheRecordLanguage();
+  NewDlcFromTheRecord();
   CheckCountsInstalledGames();
   CheckAnswersAreNeverDropped();
   MeasureAnUpdate();
+  MeasureWithoutATurnedOffDlc();
+  BoughtDlcIsAnotherUpdate();
+  UpdateWithoutTheOwnedList();
   InvalidateDropsAMeasure();
   fs::remove_all(g_scratch);
   std::puts("gog_details: ok");

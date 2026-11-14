@@ -466,11 +466,7 @@ class Planner {
     Meta meta;
     if (const auto error = LoadMeta(choice, &meta); error != Error::kNone) return error;
     std::set<std::uint64_t> owned;
-    if (const auto error = Owned(&owned); error != Error::kNone) return error;
-    if (!owned.count(target_.product)) {
-      log_("gog plan owned result=not_owned");
-      return Error::kNotOwned;
-    }
+    if (const auto error = OwnedIncluded(&owned); error != Error::kNone) return error;
     const auto selection = SelectDepots(meta, owned, target_.language);
     for (const auto& endpoint : choice.meta) {
       const auto url = FillUrl(endpoint, "");
@@ -524,11 +520,9 @@ class Planner {
       return Error::kProtocol;
     }
     std::set<std::uint64_t> owned;
-    if (const auto error = Owned(&owned); error != Error::kNone) return error;
-    if (!owned.count(target_.product)) {
-      log_("gog plan owned result=not_owned");
-      return Error::kNotOwned;
-    }
+    if (const auto error = OwnedIncluded(&owned); error != Error::kNone) return error;
+    // A depot an excluded DLC shares with the base game is the base game's (SelectDepotsV1 takes the first product of
+    // the depot's gameIDs that the install takes).
     const auto selection = SelectDepotsV1(*repository, owned, target_.language);
     // Base first, then each DLC in product order, as gen 2 does: a later depot's file wins (PathSet), so a DLC's file
     // replaces the base game's. The repository may list a DLC depot before a base one.
@@ -623,6 +617,22 @@ class Planner {
     auto parsed = ParseMeta(inflated);
     if (!parsed || parsed->base_product != target_.product) return Error::kProtocol;
     *meta = std::move(*parsed);
+    return Error::kNone;
+  }
+
+  // The owned products the install takes: the owned list (mandatory: without it nothing is planned), the base game
+  // in it, then the DLC the player turned off taken out. The base game is never taken out.
+  Error OwnedIncluded(std::set<std::uint64_t>* owned) {
+    if (const auto error = Owned(owned); error != Error::kNone) return error;
+    if (!owned->count(target_.product)) {
+      log_("gog plan owned result=not_owned");
+      return Error::kNotOwned;
+    }
+    std::size_t excluded = 0;
+    for (const auto id : target_.excluded)
+      if (id != target_.product) excluded += owned->erase(id);
+    // A count only: never the products.
+    if (!target_.excluded.empty()) log_("gog plan dlc excluded=%zu", excluded);
     return Error::kNone;
   }
 

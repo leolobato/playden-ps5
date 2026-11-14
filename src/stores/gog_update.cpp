@@ -468,7 +468,8 @@ GogApplyResult ApplyGogUpdate(const std::string& root, const std::atomic<bool>& 
   SyncFolder(root);
 
   // 5. The work folder: the staged files by their list (the console's readdir is unreliable), the journal, gog/, the
-  // lists, and the state last. Without the state the game is updated; a folder the sweep leaves goes at uninstall.
+  // lists and the runner's DLC sidecar, and the state last. Without the state the game is updated; a folder the sweep
+  // leaves goes at uninstall.
   {
     std::vector<ListedPath> leftovers;
     std::uint64_t ignored = 0;
@@ -486,7 +487,8 @@ GogApplyResult ApplyGogUpdate(const std::string& root, const std::atomic<bool>& 
   ::rmdir(staging.c_str());
   std::remove(Join(work, kWorkJournal).c_str());
   (void)RemoveTree(work_gog);
-  for (const char* name : {gog::kUpdateStagedName, gog::kUpdatePathsName, gog::kUpdateFilesName, gog::kUpdateOldName})
+  for (const char* name : {gog::kUpdateStagedName, gog::kUpdatePathsName, gog::kUpdateFilesName, gog::kUpdateOldName,
+                           kGogUpdateDlcName})
     std::remove(Join(work, name).c_str());
   if (std::remove(Join(work, installs::kUpdateStateName).c_str()) != 0 && errno != ENOENT)
     return fail(Error::kStorage);

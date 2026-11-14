@@ -37,7 +37,7 @@ struct AppVersion {
 
 // A DLC an install can include or leave out. Its sizes are for the public branch in the Settings language.
 struct DlcChoice {
-  std::uint32_t app_id = 0;
+  GameId id;  // the DLC's own ID in the game's store
   std::string name;  // empty: the store doesn't describe it
   std::uint64_t download_bytes = 0;
   std::uint64_t install_bytes = 0;

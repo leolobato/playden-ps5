@@ -397,11 +397,17 @@ void TestUpdateTarget() {
     std::uint64_t value = std::stoull(hex.substr(0, 16), nullptr, 16);
     return value == 0 ? 1 : value;
   };
-  CHECK(gog::UpdateTarget("1000000000000000101", 2) == expect("gog\n2\n1000000000000000101"));
-  CHECK(gog::UpdateTarget("1000000000000000101", 1) == expect("gog\n1\n1000000000000000101"));
-  CHECK(gog::UpdateTarget("1000000000000000101", 1) != gog::UpdateTarget("1000000000000000101", 2));
-  CHECK(gog::UpdateTarget("1000000000000000102", 2) != gog::UpdateTarget("1000000000000000101", 2));
-  CHECK(gog::UpdateTarget("", 2) != 0);
+  const std::vector<std::uint64_t> base{1900000001};
+  CHECK(gog::UpdateTarget("1000000000000000101", 2, base) == expect("gog\n2\n1000000000000000101\n1900000001"));
+  CHECK(gog::UpdateTarget("1000000000000000101", 1, base) == expect("gog\n1\n1000000000000000101\n1900000001"));
+  CHECK(gog::UpdateTarget("1000000000000000101", 1, base) != gog::UpdateTarget("1000000000000000101", 2, base));
+  CHECK(gog::UpdateTarget("1000000000000000102", 2, base) != gog::UpdateTarget("1000000000000000101", 2, base));
+  // The products it takes: sorted, without repeats; another DLC is another update.
+  CHECK(gog::UpdateTarget("1000000000000000101", 2, {1900000002, 1900000001, 1900000002}) ==
+        expect("gog\n2\n1000000000000000101\n1900000001,1900000002"));
+  CHECK(gog::UpdateTarget("1000000000000000101", 2, {1900000001, 1900000002}) !=
+        gog::UpdateTarget("1000000000000000101", 2, base));
+  CHECK(gog::UpdateTarget("", 2, {}) != 0);
 }
 
 // ---- Seeds --------------------------------------------------------------------------------------------------------
@@ -439,6 +445,7 @@ struct Harness {
   std::atomic<bool> revoked{false};
   std::atomic<std::uint64_t> free{1ull << 40};
   int parallel = 4;
+  std::vector<std::uint64_t> excluded;  // the DLC Install, Plan and Stage leave out
   std::mutex mutex;
   std::vector<std::string> logs;
   GogInstaller::Progress last_progress;
@@ -476,13 +483,16 @@ struct Harness {
 
   GogInstaller::Outcome Install(const std::string& root) {
     GogInstaller installer(Hooks());
-    return installer.Run({kBase, root, "english"}, cancel);
+    GogInstaller::Target target{kBase, root, "english"};
+    target.excluded = excluded;
+    return installer.Run(target, cancel);
   }
 
   GogInstaller::Outcome Plan(const std::string& root, const gog::PlanLayout& layout, bool seed) {
     GogInstaller installer(Hooks());
     GogInstaller::Target target{kBase, root, "english"};
     if (seed) target.seed_list = root + "/.playden-files";
+    target.excluded = excluded;
     return installer.Plan(target, layout, cancel);
   }
 
@@ -494,7 +504,9 @@ struct Harness {
 
   GogInstaller::StageOutcome Stage(const std::string& root) {
     GogInstaller installer(Hooks());
-    return installer.Stage({kBase, root, "english"}, cancel, [this](const GogInstaller::Progress& progress) {
+    GogInstaller::Target target{kBase, root, "english"};
+    target.excluded = excluded;
+    return installer.Stage(target, cancel, [this](const GogInstaller::Progress& progress) {
       CHECK(progress.done <= progress.total && progress.held == 0);
       last_progress = progress;
     });
@@ -1465,6 +1477,22 @@ void TestDiscard() {
   CHECK(ApplyGogUpdate(root, kNoCancel).error == Error::kProtocol);
 }
 
+// The runner's DLC sidecar in the work folder goes with it: once the update is in place, and when it is discarded.
+void TestDlcSidecarGoes() {
+  const auto applied = Root("dlc-sidecar-applied");
+  WriteOldGame(applied);
+  HandMade(applied, kOldList, kNewList, kStagedFiles, UpdatePhase::kReplacing);
+  WriteBytes(Work(applied) + "/" + playden::stores::kGogUpdateDlcName, "1900000002\n");
+  CHECK(ApplyGogUpdate(applied, kNoCancel).error == Error::kNone);
+  CheckSwapped(applied);
+  const auto discarded = Root("dlc-sidecar-discarded");
+  WriteOldGame(discarded);
+  HandMade(discarded, kOldList, kNewList, kStagedFiles, UpdatePhase::kStaging);
+  WriteBytes(Work(discarded) + "/" + playden::stores::kGogUpdateDlcName, "");
+  CHECK(playden::stores::DiscardGogUpdate(discarded));
+  CHECK(!Exists(Work(discarded)));
+}
+
 // What Stage left, put in place the way the runner does: the record first, then the phase, then apply.
 GogApplyResult ApplyStaged(const std::string& root) {
   WriteBytes(Work(root) + "/record", RecordText("1000000000000000202", 4242, "new.exe"));
@@ -1542,6 +1570,215 @@ void TestApplyStagedSpellingAndSupport() {
     CHECK(Contents(root + "/bin/Game.exe") == kExe && !Exists(Work(root)));
   }
 }
+
+// ---- DLC turned off and on again ----------------------------------------------------------------------------------
+
+const std::string kDlcExtra = RandomBytes(14 * 1024, 51);
+const std::string kShared = RandomBytes(8 * 1024, 52);     // the base game's shared/shared.dat
+const std::string kDlcShared = RandomBytes(9 * 1024, 53);  // the DLC's version of the same path, which wins
+const std::string kDlcInfo = "{\"gameId\":\"1900000002\",\"rootGameId\":\"1900000001\"}\n";
+const std::string kDlcScript = "{\"actions\":[],\"productId\":\"1900000002\"}\n";
+
+// The base game, and a DLC with its own file, a support file, its goggame-<id> files and, with `shared`, a file the
+// base game has too.
+Game DlcGame(bool shared) {
+  Game game;
+  GameDepot base;
+  base.files.push_back({"DepotFile", "bin\\Game.exe", kExe});
+  if (shared) base.files.push_back({"DepotFile", "shared\\shared.dat", kShared});
+  game.depots.push_back(base);
+  GameDepot dlc;
+  dlc.product = kDlc;
+  dlc.files.push_back({"DepotFile", "dlc\\extra.dat", kDlcExtra});
+  dlc.files.push_back({"DepotFile", "save\\dlc.sav", "dlc save\n", {}, true});
+  if (shared) dlc.files.push_back({"DepotFile", "shared\\shared.dat", kDlcShared});
+  game.depots.push_back(dlc);
+  GameDepot dlc_gog;
+  dlc_gog.product = kDlc;
+  dlc_gog.gog = true;
+  dlc_gog.files.push_back({"DepotFile", "goggame-1900000002.info", kDlcInfo});
+  dlc_gog.files.push_back({"DepotFile", "goggame-1900000002.script", kDlcScript});
+  game.depots.push_back(dlc_gog);
+  return game;
+}
+
+// The DLC's files, as the drive and the file list hold them.
+const char* const kDlcPaths[] = {"dlc/extra.dat", ".playden-gog/support/1900000002/save/dlc.sav",
+                                 "goggame-1900000002.info", "goggame-1900000002.script"};
+
+void CheckDlcInstalled(const std::string& root) {
+  CHECK(Contents(root + "/dlc/extra.dat") == kDlcExtra);
+  CHECK(Contents(root + "/.playden-gog/support/1900000002/save/dlc.sav") == "dlc save\n");
+  CHECK(Contents(root + "/goggame-1900000002.info") == kDlcInfo);
+  CHECK(Contents(root + "/goggame-1900000002.script") == kDlcScript);
+  const auto list = ReadFile(root + "/.playden-files");
+  for (const char* path : kDlcPaths) CHECK(list.find(std::string("f\t") + path + "\n") != std::string::npos);
+  CHECK((gog::ReadPlanHeader(root + "/" + gog::kPlanPath)->products == std::vector<std::uint64_t>{kBase, kDlc}));
+}
+
+void CheckDlcGone(const std::string& root) {
+  for (const char* path : kDlcPaths) CHECK(!Exists(root + "/" + path));
+  CHECK(!Exists(root + "/dlc") && !Exists(root + "/.playden-gog/support/1900000002"));
+  const auto list = ReadFile(root + "/.playden-files");
+  CHECK(list.find("dlc/") == std::string::npos && list.find("1900000002") == std::string::npos);
+  CHECK((gog::ReadPlanHeader(root + "/" + gog::kPlanPath)->products == std::vector<std::uint64_t>{kBase}));
+  CHECK(Contents(root + "/bin/Game.exe") == kExe);
+}
+
+// A plan that leaves the DLC out holds only the base game's files and names only the base product; the base game is
+// never left out.
+void TestPlanExcludesDlc() {
+  Harness harness;
+  Publish(harness.stub, DlcGame(false));
+  const auto root = g_scratch + "/plan-dlc-off";
+  CHECK(harness.Install(root).error == Error::kNone);
+  CheckDlcInstalled(root);
+  CHECK(!harness.Logged("gog plan dlc excluded="));
+  const auto before = Snapshot(root, gog::kUpdateDirName);
+  const auto layout = gog::UpdateLayout(root);
+
+  harness.excluded = {kDlc};
+  auto outcome = harness.Plan(root, layout, true);
+  CHECK(outcome.error == Error::kNone && (outcome.products == std::vector<std::uint64_t>{kBase}));
+  auto header = gog::ReadPlanHeader(layout.plan);
+  CHECK(header && (header->products == std::vector<std::uint64_t>{kBase}));
+  auto plan = ReadFile(layout.plan);
+  CHECK(plan.find("F\tbin/Game.exe\t") != std::string::npos);
+  CHECK(plan.find("dlc/") == std::string::npos && plan.find("1900000002") == std::string::npos);
+  CHECK(outcome.files == 1 && outcome.install_bytes == kExe.size());
+  CHECK(harness.Logged("gog plan dlc excluded=1"));
+  CHECK(Snapshot(root, gog::kUpdateDirName) == before);
+
+  harness.excluded = {kBase};
+  outcome = harness.Plan(root, layout, true);
+  CHECK(outcome.error == Error::kNone && (outcome.products == std::vector<std::uint64_t>{kBase, kDlc}));
+  header = gog::ReadPlanHeader(layout.plan);
+  CHECK(header && (header->products == std::vector<std::uint64_t>{kBase, kDlc}));
+  plan = ReadFile(layout.plan);
+  CHECK(plan.find("F\tbin/Game.exe\t") != std::string::npos && plan.find("F\tdlc/extra.dat\t") != std::string::npos);
+  CHECK(harness.Logged("gog plan dlc excluded=0"));
+
+  // The owned list stays mandatory: without it nothing is planned, never the base game alone.
+  harness.excluded = {kDlc};
+  harness.stub.SetOwned("not json");
+  CHECK(harness.Plan(root, layout, true).error == Error::kProtocol);
+  harness.CheckLogs();
+}
+
+// Gen 1: a depot an excluded DLC shares with the base game (the DLC first in its gameIDs) stays, as the base game's.
+void TestPlanGen1ExcludesDlc() {
+  Harness harness;
+  Publish(harness.stub, BuildA());
+  const auto root = g_scratch + "/plan-gen1-dlc-off";
+  CHECK(harness.Install(root).error == Error::kNone);
+  GameV1 game;
+  GameDepotV1 base;
+  base.files.push_back({"bin\\Game.exe", kExe});
+  game.depots.push_back(base);
+  GameDepotV1 dlc;
+  dlc.products = {kDlc};
+  dlc.files.push_back({"dlc\\extra.dat", kDlcExtra});
+  game.depots.push_back(dlc);
+  GameDepotV1 shared;
+  shared.products = {kDlc, kBase};
+  GameFileV1 shared_file{"shared\\shared.dat", kShared};
+  shared_file.no_url = true;  // its source is the product the depot was selected for
+  shared.files.push_back(shared_file);
+  GameFileV1 shared_support{"save\\shared.sav", "shared save\n"};
+  shared_support.support = true;
+  shared.files.push_back(shared_support);
+  game.depots.push_back(shared);
+  PublishV1(harness.stub, game);
+  const auto layout = gog::UpdateLayout(root);
+
+  // With the DLC the shared depot is the DLC's.
+  auto outcome = harness.Plan(root, layout, true);
+  CHECK(outcome.error == Error::kNone && outcome.generation == 1);
+  CHECK((outcome.products == std::vector<std::uint64_t>{kBase, kDlc}));
+  auto plan = ReadFile(layout.plan);
+  CHECK(plan.find("F\tdlc/extra.dat\t") != std::string::npos);
+  CHECK(plan.find("F\tshared/shared.dat\t1900000002\t") != std::string::npos);
+  CHECK(plan.find("F\t.playden-gog/support/1900000002/save/shared.sav\t") != std::string::npos);
+
+  harness.excluded = {kDlc};
+  outcome = harness.Plan(root, layout, true);
+  CHECK(outcome.error == Error::kNone && (outcome.products == std::vector<std::uint64_t>{kBase}));
+  plan = ReadFile(layout.plan);
+  CHECK(plan.find("dlc/extra.dat") == std::string::npos && plan.find("support/1900000002") == std::string::npos);
+  CHECK(plan.find("F\tbin/Game.exe\t") != std::string::npos);
+  CHECK(plan.find("F\tshared/shared.dat\t1900000001\t") != std::string::npos);
+  CHECK(plan.find("F\t.playden-gog/support/1900000001/save/shared.sav\t") != std::string::npos);
+  CHECK(outcome.install_bytes == kExe.size() + kShared.size() + 12);
+  harness.CheckLogs();
+}
+
+// Installed with the DLC, then staged without it: nothing new is downloaded, the DLC's files are removed, and once in
+// place its folder, support files and goggame-<id> files are gone and the file list no longer names them.
+void TestStageDlcRemoved() {
+  Harness harness;
+  Publish(harness.stub, DlcGame(false));
+  const auto root = g_scratch + "/stage-dlc-removed";
+  harness.InstallGame(root);
+  CheckDlcInstalled(root);
+  harness.stub.ClearRequests();
+  harness.excluded = {kDlc};
+  const auto outcome = harness.Stage(root);
+  CHECK(outcome.error == Error::kNone && outcome.staged_files == 0 && outcome.staged_bytes == 0);
+  CHECK(outcome.removed_files == 4 && outcome.files == 1);
+  CHECK((outcome.products == std::vector<std::uint64_t>{kBase}));
+  CHECK(harness.Chunks().empty() && Contents(Work(root) + "/staged").empty());
+  CheckDlcInstalled(root);  // nothing changes before the apply
+  const auto result = ApplyStaged(root);
+  CHECK(result.error == Error::kNone && result.replaced == 0 && result.deleted == 4 && result.skipped == 0);
+  CheckDlcGone(root);
+  CHECK(!Exists(Work(root)));
+  harness.CheckLogs();
+}
+
+// A path the base game and the DLC both have (the DLC's won): without the DLC the base game's version is staged and
+// put in place.
+void TestStageDlcFileOverridesBase() {
+  Harness harness;
+  Publish(harness.stub, DlcGame(true));
+  const auto root = g_scratch + "/stage-dlc-override";
+  harness.InstallGame(root);
+  CheckDlcInstalled(root);
+  CHECK(Contents(root + "/shared/shared.dat") == kDlcShared);
+  harness.excluded = {kDlc};
+  const auto outcome = harness.Stage(root);
+  CHECK(outcome.error == Error::kNone && outcome.staged_files == 1 && outcome.staged_bytes == kShared.size());
+  CHECK(outcome.removed_files == 4 && outcome.files == 2);
+  CHECK(Contents(Work(root) + "/staged") == "shared/shared.dat\n");
+  CHECK(Contents(Staging(root) + "/shared/shared.dat") == kShared);
+  CHECK(Contents(root + "/shared/shared.dat") == kDlcShared);
+  const auto result = ApplyStaged(root);
+  CHECK(result.error == Error::kNone && result.replaced == 1 && result.deleted == 4);
+  CHECK(Contents(root + "/shared/shared.dat") == kShared);
+  CheckDlcGone(root);
+  CHECK(ReadFile(root + "/.playden-files").find("f\tshared/shared.dat\n") != std::string::npos);
+  harness.CheckLogs();
+}
+
+// Installed without the DLC, then staged with it: its files are staged and put in place.
+void TestStageDlcAdded() {
+  Harness harness;
+  Publish(harness.stub, DlcGame(false));
+  const auto root = g_scratch + "/stage-dlc-added";
+  harness.excluded = {kDlc};
+  harness.InstallGame(root);
+  CheckDlcGone(root);
+  harness.excluded.clear();
+  const auto outcome = harness.Stage(root);
+  CHECK(outcome.error == Error::kNone && outcome.staged_files == 4 && outcome.removed_files == 0);
+  CHECK((outcome.products == std::vector<std::uint64_t>{kBase, kDlc}));
+  CHECK(outcome.staged_bytes == kDlcExtra.size() + 9 + kDlcInfo.size() + kDlcScript.size());
+  CHECK(Contents(Staging(root) + "/dlc/extra.dat") == kDlcExtra);
+  CHECK(!harness.Logged("gog plan dlc excluded=0"));
+  const auto result = ApplyStaged(root);
+  CHECK(result.error == Error::kNone && result.replaced == 4 && result.deleted == 0);
+  CheckDlcInstalled(root);
+  harness.CheckLogs();
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1596,8 +1833,14 @@ int main(int argc, char** argv) {
   TestApplyMarker();
   TestApplySupportAndRedist();
   TestDiscard();
+  TestDlcSidecarGoes();
   TestApplyStageOutput();
   TestApplyStagedSpellingAndSupport();
+  TestPlanExcludesDlc();
+  TestPlanGen1ExcludesDlc();
+  TestStageDlcRemoved();
+  TestStageDlcFileOverridesBase();
+  TestStageDlcAdded();
   fs::remove_all(g_scratch, ignored);
   std::puts("gog_update: ok");
   return 0;

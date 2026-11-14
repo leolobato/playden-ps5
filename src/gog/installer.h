@@ -39,8 +39,9 @@
 // Stage downloads an update of an installed game beside it, into <root>/.playden-update/ (installs::kUpdateDirName),
 // and never changes the installed game:
 // - gog/ holds the new build's plan, metas, manifests and redist list (UpdateLayout), planned once and reused as Run
-//   reuses its own; files is its file list. The planner keeps an install's rules: the owned DLC, the default branch,
-//   the dependencies and the redist list.
+//   reuses its own; files is its file list. The planner keeps an install's rules: the owned DLC (less
+//   Target::excluded), the default branch, the dependencies and the redist list. A DLC the new plan lacks (turned
+//   off) is removed as any file the new build drops: its files, support files, goggame-<id> files and redist entries.
 // - old (a copy of the live .playden-files), paths (every path either version lists, in the file list format, so
 //   RemoveManagedInstall removes both versions if the game is uninstalled in between) and staged last (one changed
 //   path per line, from DiffPlans against the installed plan): the names the Steam installer's update uses, which
@@ -127,6 +128,9 @@ class GogInstaller {
     std::string language;  // Playden's content language, Steam's name ("english")
     // The installed .playden-files (absolute) whose spellings the plan keeps (PathSet::Seed); empty for an install.
     std::string seed_list;
+    // Owned DLC the player turned off: the planner leaves their depots out, as if they weren't owned. The base
+    // product is never left out. A saved plan that is reused keeps the products it has.
+    std::vector<std::uint64_t> excluded;
   };
 
   // Download bytes done and in all (compressed chunks, and gen 1 ranges by their length), and the installed bytes already finished when the run started.

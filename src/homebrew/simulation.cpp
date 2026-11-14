@@ -737,14 +737,11 @@ std::vector<std::string> split_overrides(const std::string& list) {
     return entries;
 }
 
-// The app ID in a DLC row's action ("install-dlc-1234" on the install sheet, "manage-dlc-1234" in Manage DLC); 0 for
-// anything else.
-std::uint32_t parse_dlc_action(std::string_view action, std::string_view prefix = "install-dlc-") {
-    if (action.substr(0, prefix.size()) != prefix) return 0;
-    const auto digits = action.substr(prefix.size());
-    std::uint32_t app = 0;
-    const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), app);
-    return parsed.ec == std::errc{} && parsed.ptr == digits.data() + digits.size() ? app : 0;
+// The DLC in a DLC row's action, the prefix then its key ("install-dlc-1234" on the install sheet, "manage-dlc-1234" or
+// "manage-dlc-gog-1234" in Manage DLC); nothing for anything else ("install-dlc-all" is no key).
+std::optional<GameId> parse_dlc_action(std::string_view action, std::string_view prefix = "install-dlc-") {
+    if (action.substr(0, prefix.size()) != prefix) return std::nullopt;
+    return ParseKey(action.substr(prefix.size()));
 }
 
 // A sheet row that only sets the others apart: a section heading ("heading-sort") or an untitled divider.
@@ -4197,7 +4194,7 @@ SizeCheckRequest Simulation::install_size_check(GameId id) const {
                            install_language_.empty() ? state_.content_language : install_language_, {}};
     // Free DLC isn't owned yet, so the check doesn't count it whether it is on or off.
     for (const auto& dlc : install_dlc(id))
-        if (!dlc.free && install_dlc_off(dlc)) check.excluded_dlc.push_back(dlc.app_id);
+        if (!dlc.free && install_dlc_off(dlc)) check.excluded_dlc.push_back(dlc.id);
     std::sort(check.excluded_dlc.begin(), check.excluded_dlc.end());
     return check;
 }
@@ -4243,7 +4240,7 @@ SizeCheckRequest Simulation::default_size_check(const Game& game) const {
                 dlc.install_bytes = other.install_bytes;
                 dlc.optional = other.optional;
             }
-        if (dlc.install_bytes != 0 && dlc.optional && !dlc.free) check.excluded_dlc.push_back(dlc.app_id);
+        if (dlc.install_bytes != 0 && dlc.optional && !dlc.free) check.excluded_dlc.push_back(dlc.id);
     }
     std::sort(check.excluded_dlc.begin(), check.excluded_dlc.end());
     return check;
@@ -4279,16 +4276,16 @@ void Simulation::refresh_install_sheet(GameId id) {
 }
 
 bool Simulation::install_dlc_off(const GameDlc& dlc) const {
-    const auto chosen = install_dlc_choice_.find(dlc.app_id);
+    const auto chosen = install_dlc_choice_.find(dlc.id);
     if (chosen != install_dlc_choice_.end()) return !chosen->second;
     return dlc.optional && !dlc.free;
 }
 
-std::vector<std::uint32_t> Simulation::install_excluded_dlc(GameId id) const {
+std::vector<GameId> Simulation::install_excluded_dlc(GameId id) const {
     // Every version's list: the install may select from any, and what is off stays off in its updates.
-    std::vector<std::uint32_t> excluded;
+    std::vector<GameId> excluded;
     for (const auto& dlc : install_dlc_for_choice(id))
-        if (install_dlc_off(dlc)) excluded.push_back(dlc.app_id);
+        if (install_dlc_off(dlc)) excluded.push_back(dlc.id);
     std::sort(excluded.begin(), excluded.end());
     return excluded;
 }
@@ -4319,19 +4316,20 @@ std::vector<GameDlc> Simulation::manage_dlc(GameId id) const {
     std::vector<GameDlc> offered;
     const auto* game = find_game(state_, id);
     if (!game) return offered;
-    // Steam's details of an installed game have its record's version and language: no other sizes to pick from.
+    // The details of an installed game have its record's version and language (Steam's and GOG's): no other sizes to
+    // pick from.
     for (const auto& dlc : game->dlc)
         if (dlc.install_bytes != 0) offered.push_back(dlc);
     return offered;
 }
 
-bool Simulation::manage_dlc_installed(GameId id, std::uint32_t dlc) const {
+bool Simulation::manage_dlc_installed(GameId id, const GameId& dlc) const {
     const auto* installation = find_installation(state_, id);
     return installation && std::find(installation->installed_dlc.begin(), installation->installed_dlc.end(), dlc) !=
                                installation->installed_dlc.end();
 }
 
-bool Simulation::manage_dlc_on(GameId id, std::uint32_t dlc) const {
+bool Simulation::manage_dlc_on(GameId id, const GameId& dlc) const {
     const auto chosen = manage_dlc_choice_.find(dlc);
     return chosen != manage_dlc_choice_.end() ? chosen->second : manage_dlc_installed(id, dlc);
 }
@@ -4341,13 +4339,13 @@ Simulation::ManageDlcPlan Simulation::manage_dlc_plan(GameId id) const {
     const auto* installation = find_installation(state_, id);
     // What the record leaves out stays out unless the sheet turns it on; a listed DLC that is off is left out, also one
     // bought since the install, so it doesn't download with a later update.
-    std::set<std::uint32_t> excluded;
+    std::set<GameId> excluded;
     if (installation) excluded.insert(installation->excluded_dlc.begin(), installation->excluded_dlc.end());
     for (const auto& dlc : manage_dlc(id)) {
-        const bool installed = manage_dlc_installed(id, dlc.app_id);
-        const bool on = manage_dlc_on(id, dlc.app_id);
-        if (on) excluded.erase(dlc.app_id);
-        else excluded.insert(dlc.app_id);
+        const bool installed = manage_dlc_installed(id, dlc.id);
+        const bool on = manage_dlc_on(id, dlc.id);
+        if (on) excluded.erase(dlc.id);
+        else excluded.insert(dlc.id);
         if (on && !installed) {
             ++plan.turned_on;
             plan.download_bytes += dlc.download_bytes;
@@ -4364,6 +4362,13 @@ Simulation::ManageDlcPlan Simulation::manage_dlc_plan(GameId id) const {
 
 std::string Simulation::manage_dlc_blocker(GameId id) const {
     if (!find_installation(state_, id)) return "Not installed";
+    // A GOG change asks GOG what the account owns: its game stays listed after a sign-out, the change waits for the
+    // sign-in. Offline keeps the session and the job waits in Queue, as a Steam game's does in any account state.
+    const auto& traits = Traits(id.store);
+    const auto authentication = state_.account(id.store).authentication;
+    if (id.store != Store::kSteam && traits.needs_account && authentication != AuthState::SignedIn &&
+        authentication != AuthState::Offline)
+        return "Sign in to " + std::string(traits.name);
     // Its job, an uninstall, a preparation or the game running; then its drive, as an update checks it.
     if (auto blocker = installed_blocker(id); !blocker.empty()) return blocker;
     if (const auto check = update_check(id); !check.allowed) return check.reason;
@@ -4377,9 +4382,9 @@ bool Simulation::manage_dlc_short_of_room(GameId id) const {
 }
 
 bool Simulation::manage_dlc_offered(GameId id) const {
-    // Steam games only: their install record says which DLC they hold.
+    // Games of a store that downloads (Steam, GOG) whose install record says which DLC they hold.
     const auto* installation = find_installation(state_, id);
-    return id.store == Store::kSteam && installation && installation->dlc_known && external_game(id) == nullptr &&
+    return Traits(id.store).downloads && installation && installation->dlc_known && external_game(id) == nullptr &&
            !manage_dlc(id).empty();
 }
 
@@ -4388,15 +4393,15 @@ void Simulation::open_manage_dlc(GameId id) {
     const auto offered = manage_dlc(id);
     if (offered.empty()) return;
     // By what the install holds, so a row stays put when it is toggled; one kind needs no headings.
-    const auto held = std::count_if(offered.begin(), offered.end(), [&](const GameDlc& dlc) { return manage_dlc_installed(id, dlc.app_id); });
+    const auto held = std::count_if(offered.begin(), offered.end(), [&](const GameDlc& dlc) { return manage_dlc_installed(id, dlc.id); });
     const bool sections = held > 0 && held < static_cast<std::ptrdiff_t>(offered.size());
     std::vector<std::string> actions;
     if (sections) actions.push_back("heading-manage-dlc-installed");
     for (const auto& dlc : offered)
-        if (manage_dlc_installed(id, dlc.app_id)) actions.push_back("manage-dlc-" + std::to_string(dlc.app_id));
+        if (manage_dlc_installed(id, dlc.id)) actions.push_back("manage-dlc-" + ToKey(dlc.id));
     if (sections) actions.push_back("heading-manage-dlc-other");
     for (const auto& dlc : offered)
-        if (!manage_dlc_installed(id, dlc.app_id)) actions.push_back("manage-dlc-" + std::to_string(dlc.app_id));
+        if (!manage_dlc_installed(id, dlc.id)) actions.push_back("manage-dlc-" + ToKey(dlc.id));
     actions.push_back("divider");
     actions.push_back("manage-dlc-apply");
     actions.push_back("cancel");
@@ -6618,16 +6623,16 @@ bool Simulation::scenario(const std::string& name) {
         std::erase_if(state_.jobs, [id](const Job& job) { return job.game_id == id; });
         if (auto* game = const_cast<Game*>(find_game(state_, id))) {
             game->update = {};
-            game->dlc = {{900201, "Soundtrack", 610'000'000, 640'000'000, false},
-                         {900202, "Old Lighthouse Expansion", 3'900'000'000, 4'700'000'000, false},
-                         {900203, "HD Textures", 11'200'000'000, 14'100'000'000, false},
-                         {900204, "Photo Mode Filters", 40'000'000, 52'000'000, true}};
+            game->dlc = {{GameId::Steam(900201), "Soundtrack", 610'000'000, 640'000'000, false},
+                         {GameId::Steam(900202), "Old Lighthouse Expansion", 3'900'000'000, 4'700'000'000, false},
+                         {GameId::Steam(900203), "HD Textures", 11'200'000'000, 14'100'000'000, false},
+                         {GameId::Steam(900204), "Photo Mode Filters", 40'000'000, 52'000'000, true}};
         }
         if (auto* installation = find_installation(state_, id)) {
             installation->runtime_ready = true;
             installation->dlc_known = true;
-            installation->installed_dlc = {900201, 900202};
-            installation->excluded_dlc = {900203};
+            installation->installed_dlc = {GameId::Steam(900201), GameId::Steam(900202)};
+            installation->excluded_dlc = {GameId::Steam(900203)};
         }
         state_.navigation.route = Route::Details;
         state_.navigation.detail_origin = Route::Library;
@@ -6643,8 +6648,8 @@ bool Simulation::scenario(const std::string& name) {
         state_.account().authentication = AuthState::SignedIn;
         if (auto* game = const_cast<Game*>(find_game(state_, id))) {
             game->content_languages = {"english", "german", "french", "japanese"};
-            game->dlc = {{900101, "Art Book", 90'000'000, 120'000'000, false},
-                         {900102, "Texture Pack", 3'400'000'000, 4'200'000'000, true}};
+            game->dlc = {{GameId::Steam(900101), "Art Book", 90'000'000, 120'000'000, false},
+                         {GameId::Steam(900102), "Texture Pack", 3'400'000'000, 4'200'000'000, true}};
             game->versions = {{"public", "", 1'760'000'000, 90, game->download_bytes, game->install_bytes},
                               {"4.04", "Patch 4.04 (DirectX 11)", 1'670'000'000, 40, game->download_bytes, game->install_bytes}};
         }
@@ -7673,11 +7678,12 @@ void Simulation::rebuild_view() {
                 item.value = std::to_string(on) + " of " + std::to_string(total);
             } else if (modal.id == "install-dlc" && action_key.rfind("install-dlc-", 0) == 0 && action_key != "install-dlc-done") {
                 const auto offered = install_dlc(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
-                const auto app = parse_dlc_action(action_key);
+                const auto key = parse_dlc_action(action_key);
+                const auto app = key.value_or(GameId{});
                 item.kind = RowKind::Toggle;
-                item.title = "DLC " + std::to_string(app);
+                item.title = "DLC " + app.value;
                 for (const auto& dlc : offered)
-                    if (dlc.app_id == app) {
+                    if (key && dlc.id == app) {
                         item.selected = !install_dlc_off(dlc);
                         if (!dlc.name.empty()) item.title = dlc.name;
                         item.value = (dlc.free ? "Free · " : "") + format_bytes(dlc.install_bytes);
@@ -7694,16 +7700,17 @@ void Simulation::rebuild_view() {
                 if (!blocker.empty()) item.subtitle = blocker;
                 else if (!plan.changed()) item.subtitle = "Nothing changed";
                 else if (short_of_room) item.subtitle = "Not enough space";
-                // The job selects the content Steam has now: a pending update of the game comes with it.
+                // The job selects the content the store has now: a pending update of the game comes with it.
                 else if (game && game->update.newer) item.subtitle = "With the game's update";
                 else item.subtitle = "Runs in Queue";
             } else if (modal.id == "manage-dlc" && action_key.rfind("manage-dlc-", 0) == 0) {
                 const auto id = state_.navigation.selected_game_id;
-                const auto app = parse_dlc_action(action_key, "manage-dlc-");
+                const auto key = parse_dlc_action(action_key, "manage-dlc-");
+                const auto app = key.value_or(GameId{});
                 item.kind = RowKind::Toggle;
-                item.title = "DLC " + std::to_string(app);
+                item.title = "DLC " + app.value;
                 for (const auto& dlc : manage_dlc(id))
-                    if (dlc.app_id == app) {
+                    if (key && dlc.id == app) {
                         const bool installed = manage_dlc_installed(id, app);
                         item.selected = manage_dlc_on(id, app);
                         if (!dlc.name.empty()) item.title = dlc.name;
@@ -8394,7 +8401,7 @@ void Simulation::rebuild_view() {
                 // The game's DLC, installed or not: the same check boxes as the install sheet's.
                 const auto offered = manage_dlc(settings_game);
                 const auto held = std::count_if(offered.begin(), offered.end(), [&](const GameDlc& dlc) {
-                    return manage_dlc_installed(settings_game, dlc.app_id);
+                    return manage_dlc_installed(settings_game, dlc.id);
                 });
                 item.value = std::to_string(held) + " of " + std::to_string(offered.size());
                 const auto blocker = manage_dlc_blocker(settings_game);
@@ -11590,10 +11597,10 @@ void Simulation::activate() {
         std::vector<std::string> actions{"install-dlc-all"};
         if (sections) actions.push_back("heading-dlc-included");
         for (const auto& dlc : offered)
-            if (!starts_off(dlc)) actions.push_back("install-dlc-" + std::to_string(dlc.app_id));
+            if (!starts_off(dlc)) actions.push_back("install-dlc-" + ToKey(dlc.id));
         if (sections) actions.push_back("heading-dlc-optional");
         for (const auto& dlc : offered)
-            if (starts_off(dlc)) actions.push_back("install-dlc-" + std::to_string(dlc.app_id));
+            if (starts_off(dlc)) actions.push_back("install-dlc-" + ToKey(dlc.id));
         actions.push_back("divider");
         actions.push_back("install-dlc-done");
         open_modal({"install-dlc", "DLC", state_.navigation.focus_key, std::move(actions), 0, false});
@@ -11603,10 +11610,10 @@ void Simulation::activate() {
         const auto offered = install_dlc(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
         // Any DLC off: all on. All on: all off, for "only this one".
         const bool any_off = std::any_of(offered.begin(), offered.end(), [this](const GameDlc& dlc) { return install_dlc_off(dlc); });
-        for (const auto& dlc : offered) install_dlc_choice_[dlc.app_id] = any_off;
+        for (const auto& dlc : offered) install_dlc_choice_[dlc.id] = any_off;
     } else if (const auto dlc_app = parse_dlc_action(action_name)) {
         for (const auto& dlc : install_dlc(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id)))
-            if (dlc.app_id == dlc_app) install_dlc_choice_[dlc_app] = install_dlc_off(dlc);
+            if (dlc.id == *dlc_app) install_dlc_choice_[*dlc_app] = install_dlc_off(dlc);
     } else if (action_name == "storage-picker") {
         // From the install sheet the choice is for that install only; Settings changes the default.
         picking_install_volume_ = live() && !state_.navigation.modals.empty() && state_.navigation.modals.back().id == "install";
@@ -12810,8 +12817,8 @@ void Simulation::activate() {
     } else if (const auto manage_app = parse_dlc_action(action_name, "manage-dlc-")) {
         const auto game = state_.navigation.selected_game_id;
         const auto offered = manage_dlc(game);
-        if (std::any_of(offered.begin(), offered.end(), [manage_app](const GameDlc& dlc) { return dlc.app_id == manage_app; }))
-            manage_dlc_choice_[manage_app] = !manage_dlc_on(game, manage_app);
+        if (std::any_of(offered.begin(), offered.end(), [&manage_app](const GameDlc& dlc) { return dlc.id == *manage_app; }))
+            manage_dlc_choice_[*manage_app] = !manage_dlc_on(game, *manage_app);
     } else if (action_name == "game-move") {
         const auto game = state_.navigation.selected_game_id;
         if (move_blocker(game, {}).empty() && move_volumes().size() >= 2) open_move_picker(game);

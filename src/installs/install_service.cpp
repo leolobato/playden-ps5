@@ -217,13 +217,18 @@ bool ValidOptionValue(std::string_view value) {
 // Past this a job's excluded DLC would not fit a registry line (Scan), and the game would be lost with its line.
 constexpr std::size_t kMaxRegisteredDlc = 1000;
 
-InstallOptions Registrable(InstallOptions options) {
+// A job's options as the registry keeps them. Excluded DLC are sorted and unique, and only valid IDs of the game's own
+// store other than the game itself stay: a DLC is always in its game's store.
+InstallOptions Registrable(InstallOptions options, const GameId& game) {
   if (!ValidOptionValue(options.language)) options.language.clear();
   if (!ValidOptionValue(options.branch)) options.branch.clear();
-  std::sort(options.excluded_dlc.begin(), options.excluded_dlc.end());
-  options.excluded_dlc.erase(std::unique(options.excluded_dlc.begin(), options.excluded_dlc.end()), options.excluded_dlc.end());
-  options.excluded_dlc.erase(std::remove(options.excluded_dlc.begin(), options.excluded_dlc.end(), 0u), options.excluded_dlc.end());
-  if (options.excluded_dlc.size() > kMaxRegisteredDlc) options.excluded_dlc.resize(kMaxRegisteredDlc);
+  auto& excluded = options.excluded_dlc;
+  excluded.erase(std::remove_if(excluded.begin(), excluded.end(),
+                                [&game](const GameId& dlc) { return !dlc.valid() || dlc.store != game.store || dlc == game; }),
+                 excluded.end());
+  std::sort(excluded.begin(), excluded.end());
+  excluded.erase(std::unique(excluded.begin(), excluded.end()), excluded.end());
+  if (excluded.size() > kMaxRegisteredDlc) excluded.resize(kMaxRegisteredDlc);
   return options;
 }
 
@@ -249,7 +254,7 @@ struct RegistryEntry {
 // followed by "\tpaused" for a job that should wait for Resume after a restart, or "\tremoving" for
 // an uninstall whose folder is not deleted yet, or "\tupdate" for an installed game with an update job
 // (then "\tpaused" is the update's), or "\tmove=<volume>\tfrom=<volume>" for one with a move job, then a job's install options as "\tlang=<code>",
-// "\tbranch=<name>" and "\tnodlc=<app>,<app>" (none: the defaults), "\tdlcset" for an update that changes the game's DLC
+// "\tbranch=<name>" and "\tnodlc=<key>,<key>" (none: the defaults; each DLC's ToKey: a Steam app ID, "gog-<id>"), "\tdlcset" for an update that changes the game's DLC
 // (InstallOptions::dlc_choice; an older Playden skips it and updates with the record's DLC), its estimate as "\test=<bytes>", and "\tfinished=<unix seconds>" for a moved game's install time. Fields
 // after the install bytes may come in any order, and
 // unknown ones are skipped. The key is ToKey: a Steam game's app ID, "gog-<id>" for a GOG game, "local-<uuid>" for an
@@ -300,9 +305,8 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
           const auto comma = list.find(',');
           const auto text = list.substr(0, comma);
           list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
-          std::uint32_t dlc = 0;
-          const auto parsed = std::from_chars(text.data(), text.data() + text.size(), dlc);
-          if (parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size()) entry.options.excluded_dlc.push_back(dlc);
+          // An entry that isn't a canonical key is skipped, and the rest of the line stays.
+          if (const auto dlc = ParseKey(text)) entry.options.excluded_dlc.push_back(*dlc);
         }
       }
       else if (field.substr(0, kFinished.size()) == kFinished) {
@@ -312,7 +316,7 @@ std::optional<RegistryEntry> ParseRegistryLine(std::string_view line) {
         if (parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() && time > 0) entry.finished_at = time;
       }
     }
-    entry.options = Registrable(std::move(entry.options));
+    entry.options = Registrable(std::move(entry.options), entry.id);
   }
   return entry;
 }
@@ -488,8 +492,11 @@ void InstallService::Scan() {
   FILE* registry = std::fopen((primary + "/" + kRegistry).c_str(), "r");
   const int open_error = registry ? 0 : errno;
   if (registry) {
-    // A job's excluded DLC makes for long lines: kMaxRegisteredDlc entries fit. Not on the stack: it is small on the console.
-    std::vector<char> buffer(16 * 1024);
+    // A job's excluded DLC makes for long lines: kMaxRegisteredDlc entries fit, GOG keys too ("gog-" and up to 20 digits,
+    // with a comma: 25 bytes each). Not on the stack: it is small on the console. Builds before GOG DLC read 16 KiB and
+    // parse "nodlc=" as Steam app IDs: they skip a "gog-<id>" entry (that update then keeps the record's DLC), and drop
+    // a GOG game's line with more than about 640 excluded DLC.
+    std::vector<char> buffer(32 * 1024);
     char* const line = buffer.data();
     while (std::fgets(line, static_cast<int>(buffer.size()), registry) && entries.size() < kMaxJobs * 4) {
       const auto length = std::strcspn(line, "\r\n");
@@ -608,7 +615,7 @@ void InstallService::Scan() {
           if (job.options.language.empty()) job.options.language = update->language;
           if (job.options.branch.empty()) job.options.branch = update->branch;
         }
-        job.options = Registrable(job.options);
+        job.options = Registrable(job.options, job.view.id);
         job.view.dlc_change = job.options.dlc_choice;
         job.view.locked = update && update->phase != UpdatePhase::kStaging;
         if (job.view.locked || (entry.update && !entry.paused)) {
@@ -682,7 +689,7 @@ bool InstallService::SaveRegistry() {
     if (!job.options.language.empty()) fields += "\tlang=" + job.options.language;
     if (!job.options.branch.empty()) fields += "\tbranch=" + job.options.branch;
     for (std::size_t index = 0; index < job.options.excluded_dlc.size(); ++index)
-      fields += (index ? "," : "\tnodlc=") + std::to_string(job.options.excluded_dlc[index]);
+      fields += (index ? "," : "\tnodlc=") + ToKey(job.options.excluded_dlc[index]);
     // Also with nothing left out: turning every DLC on is a choice too.
     if (job.view.kind == InstallJobKind::kUpdate && job.options.dlc_choice) fields += "\tdlcset";
     if (job.view.kind != InstallJobKind::kMove && job.estimated_bytes) fields += "\test=" + std::to_string(*job.estimated_bytes);
@@ -801,7 +808,7 @@ void InstallService::Install(GameId id, std::optional<std::uint64_t> estimated_b
   Job job;
   job.view.id = id;
   const auto& target = volume_id.empty() ? default_volume_id_ : volume_id;
-  job.options = Registrable(options);
+  job.options = Registrable(options, id);
   Admit(job, target, estimated_bytes);
   jobs_.push_back(job);
   Publish();
@@ -825,7 +832,7 @@ std::string InstallService::Update(GameId id, const InstallOptions& options, std
     if (job.options.language.empty()) job.options.language = game->record->language;
     if (job.options.branch.empty()) job.options.branch = game->record->branch;
   }
-  job.options = Registrable(job.options);
+  job.options = Registrable(job.options, id);
   job.view.dlc_change = job.options.dlc_choice;
   Admit(job, game->volume_id, estimated_bytes);
   jobs_.push_back(job);
@@ -1161,7 +1168,7 @@ std::size_t InstallService::Recover(const std::vector<std::pair<GameId, std::str
       job.view.volume_id = volume->id;
       job.options.language = update->language;
       job.options.branch = update->branch;
-      job.options = Registrable(job.options);
+      job.options = Registrable(job.options, id);
       job.view.dlc_change = job.options.dlc_choice;
       job.view.locked = update->phase != UpdatePhase::kStaging;
       if (job.view.locked) {

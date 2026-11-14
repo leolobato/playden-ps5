@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <ctime>
@@ -154,7 +155,83 @@ bool RemoveDownloadFolder(const std::string& root) {
   return ::rmdir(folder.c_str()) == 0 || errno == ENOENT;
 }
 
+// `excluded` less what `products` hold: a record never names a product as both installed and left out.
+std::vector<std::uint64_t> LeftOut(const std::vector<std::uint64_t>& excluded,
+                                   const std::vector<std::uint64_t>& products) {
+  std::vector<std::uint64_t> left_out;
+  for (const auto id : excluded)
+    if (std::find(products.begin(), products.end(), id) == products.end()) left_out.push_back(id);
+  return left_out;
+}
+
+// The DLC sidecar's text: one decimal per line, in `excluded`'s (sorted) order; empty for none.
+std::string FormatDlcSidecar(const std::vector<std::uint64_t>& excluded) {
+  std::string text;
+  for (const auto id : excluded) text += std::to_string(id) + "\n";
+  return text;
+}
+
+enum class Sidecar { kRead, kMissing, kBad };
+
+// The DLC sidecar at `path` into `ids` (sorted, once each). kBad: it can't be read, is too long or holds a line that
+// isn't a whole decimal.
+Sidecar ReadDlcSidecar(const std::string& path, std::vector<std::uint64_t>* ids) {
+  ids->clear();
+  struct stat info {};
+  if (::lstat(path.c_str(), &info) != 0) return errno == ENOENT ? Sidecar::kMissing : Sidecar::kBad;
+  if (!S_ISREG(info.st_mode)) return Sidecar::kBad;
+  FILE* file = std::fopen(path.c_str(), "rb");
+  if (!file) return Sidecar::kBad;
+  // Up to kMaxGogRecordProducts IDs of at most 20 digits, with their newlines; one byte more says it is longer.
+  constexpr std::size_t kLimit = installs::kMaxGogRecordProducts * 21;
+  std::string text(kLimit + 1, '\0');
+  const auto size = std::fread(&text[0], 1, text.size(), file);
+  const bool failed = std::ferror(file) != 0;
+  std::fclose(file);
+  if (failed || size > kLimit) return Sidecar::kBad;
+  text.resize(size);
+  std::size_t start = 0;
+  while (start < text.size()) {
+    const auto end = text.find('\n', start);
+    if (end == std::string::npos || end == start || end - start > 20) return Sidecar::kBad;
+    std::uint64_t id = 0;
+    for (std::size_t at = start; at < end; ++at) {
+      const char c = text[at];
+      if (c < '0' || c > '9') return Sidecar::kBad;
+      const std::uint64_t digit = static_cast<std::uint64_t>(c - '0');
+      if (id > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) return Sidecar::kBad;
+      id = id * 10 + digit;
+    }
+    ids->push_back(id);
+    start = end + 1;
+  }
+  std::sort(ids->begin(), ids->end());
+  ids->erase(std::unique(ids->begin(), ids->end()), ids->end());
+  return Sidecar::kRead;
+}
+
+bool Contains(const std::vector<std::uint64_t>& ids, std::uint64_t id) {
+  return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
+
 }  // namespace
+
+std::vector<std::uint64_t> GogExcludedDlc(const installs::InstallOptions& options, bool update,
+                                          const std::optional<installs::InstalledRecord>& record, std::uint64_t base) {
+  std::vector<std::uint64_t> excluded;
+  // GOG DLC only: the install service keeps a job's to its game's store.
+  for (const auto& dlc : options.excluded_dlc)
+    if (dlc.store == Store::kGog)
+      if (const auto id = dlc.gog_product()) excluded.push_back(*id);
+  if (update && !options.dlc_choice && record && record->gog)
+    excluded.insert(excluded.end(), record->gog->excluded.begin(), record->gog->excluded.end());
+  const auto dropped = [base](std::uint64_t id) { return id == 0 || id == base; };
+  excluded.erase(std::remove_if(excluded.begin(), excluded.end(), dropped), excluded.end());
+  std::sort(excluded.begin(), excluded.end());
+  excluded.erase(std::unique(excluded.begin(), excluded.end()), excluded.end());
+  if (excluded.size() > installs::kMaxGogRecordProducts) excluded.resize(installs::kMaxGogRecordProducts);
+  return excluded;
+}
 
 GogInstallRunner::GogInstallRunner(gog::Session& session, std::function<gog::Transport()> make_transport,
                                    std::function<std::string()> content_language,
@@ -292,6 +369,7 @@ installs::InstallRunner::Result GogInstallRunner::Run(
   target.product = product;
   target.root = root;
   target.language = language;
+  target.excluded = GogExcludedDlc(options, /*update=*/false, std::nullopt, product);
   const auto outcome = installer.Run(target, cancel, [&progress](const gog::GogInstaller::Progress& state) {
     if (progress) progress(state.done, state.total, state.held);
   });
@@ -308,7 +386,7 @@ installs::InstallRunner::Result GogInstallRunner::Run(
   // The record names the language the plan holds (a resume keeps its own), as a Steam code.
   std::string steam_language = gog::SteamCodeFor(outcome.language);
   if (steam_language.empty()) steam_language = language;
-  return Finish(id, product, root, steam_language, outcome);
+  return Finish(id, product, root, steam_language, outcome, target.excluded);
 }
 
 void GogInstallRunner::RunScripts(const std::string& game, const std::string& root,
@@ -349,7 +427,8 @@ void GogInstallRunner::RunScripts(const std::string& game, const std::string& ro
 
 installs::InstallRunner::Result GogInstallRunner::Finish(const GameId& id, std::uint64_t product,
                                                          const std::string& root, const std::string& steam_language,
-                                                         const gog::GogInstaller::Outcome& outcome) {
+                                                         const gog::GogInstaller::Outcome& outcome,
+                                                         const std::vector<std::uint64_t>& excluded) {
   Result result;
   const std::string game = "gog install game=" + ToKey(id);
 
@@ -367,6 +446,7 @@ installs::InstallRunner::Result GogInstallRunner::Finish(const GameId& id, std::
   record.products = outcome.products;
   record.language = outcome.language;
   record.meta_id = outcome.meta_id;
+  record.excluded = LeftOut(excluded, outcome.products);
   const auto text =
       installs::FormatGogInstallRecord(id, outcome.install_bytes, outcome.files, steam_language, record, launches);
   const bool written = WriteRecord(root, text);
@@ -389,7 +469,7 @@ installs::InstallRunner::Result GogInstallRunner::Update(
     const GameId& id, const std::string& root, const installs::InstallOptions& options, const std::atomic<bool>& cancel,
     const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
     const std::function<void(InstallStep)>& step, const std::function<bool()>& may_apply) {
-  (void)options;  // an update keeps the installed language, and GOG has no branches Playden installs
+  // An update keeps the installed language, and GOG has no branches Playden installs: options choose only the DLC.
   Result result;
   const auto product = id.store == Store::kGog && id.valid() ? id.gog_product() : std::nullopt;
   if (!product || root.empty() || root.front() != '/') {
@@ -401,7 +481,7 @@ installs::InstallRunner::Result GogInstallRunner::Update(
     endpoint_.clear();
   }
   if (!RunOnStack(gog::kPlannerStackBytes,
-                  [&] { result = RunUpdate(id, *product, root, cancel, progress, step, may_apply); })) {
+                  [&] { result = RunUpdate(id, *product, root, options, cancel, progress, step, may_apply); })) {
     Log("gog update game=" + ToKey(id) + " step=plan result=no_thread");
     result = Result{};
     result.failure = InstallerFailure(Error::kNetwork);
@@ -410,7 +490,8 @@ installs::InstallRunner::Result GogInstallRunner::Update(
 }
 
 installs::InstallRunner::Result GogInstallRunner::RunUpdate(
-    const GameId& id, std::uint64_t product, const std::string& root, const std::atomic<bool>& cancel,
+    const GameId& id, std::uint64_t product, const std::string& root, const installs::InstallOptions& options,
+    const std::atomic<bool>& cancel,
     const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>& progress,
     const std::function<void(InstallStep)>& step, const std::function<bool()>& may_apply) {
   Result result;
@@ -442,9 +523,31 @@ installs::InstallRunner::Result GogInstallRunner::RunUpdate(
   std::string steam_language = gog::SteamCodeFor(record->gog->language);
   if (steam_language.empty()) steam_language = record->language;
   if (steam_language.empty()) steam_language = "english";
+  // The DLC left out: the record's too, unless the update changes the game's DLC.
+  const auto excluded = GogExcludedDlc(options, /*update=*/true, record, product);
 
   const std::string work = root + "/" + installs::kUpdateDirName;
   const std::string state_path = work + "/" + installs::kUpdateStateName;
+  const std::string dlc_path = work + "/" + kGogUpdateDlcName;
+  // A work folder staged for another DLC choice is never reused: Stage reuses its plan and staged files as they are,
+  // and a full staging would go in place at once. Its sidecar names the choice; without one (a build before the
+  // sidecar) it was the record's. Still staging here, so the discard can't stop an update halfway.
+  {
+    struct stat info {};
+    if (::lstat(work.c_str(), &info) == 0) {
+      std::vector<std::uint64_t> planned;
+      const auto read = ReadDlcSidecar(dlc_path, &planned);
+      if (read == Sidecar::kMissing) planned = GogExcludedDlc({}, /*update=*/true, record, product);
+      if (read == Sidecar::kBad || planned != excluded) {
+        if (!DiscardGogUpdate(root)) {
+          Log(game + " step=plan result=storage");
+          result.failure = InstallerFailure(Error::kStorage);
+          return result;
+        }
+        Log(game + " step=plan result=restaged");
+      }
+    }
+  }
   installs::UpdateState staging_state;
   staging_state.phase = installs::UpdatePhase::kStaging;
   staging_state.language = steam_language;
@@ -462,8 +565,14 @@ installs::InstallRunner::Result GogInstallRunner::RunUpdate(
         return result;
       }
     }
-    if (!installs::ReadUpdateState(root) &&
-        !WriteSynced(work, state_path, installs::FormatUpdateState(staging_state))) {
+    const bool created = !installs::ReadUpdateState(root);
+    if (created && !WriteSynced(work, state_path, installs::FormatUpdateState(staging_state))) {
+      Log(game + " step=plan result=storage");
+      result.failure = InstallerFailure(Error::kStorage);
+      return result;
+    }
+    // The DLC choice this staging is planned with, before Stage plans anything.
+    if ((created || !IsRegular(dlc_path)) && !WriteSynced(work, dlc_path, FormatDlcSidecar(excluded))) {
       Log(game + " step=plan result=storage");
       result.failure = InstallerFailure(Error::kStorage);
       return result;
@@ -489,21 +598,33 @@ installs::InstallRunner::Result GogInstallRunner::RunUpdate(
     target.product = product;
     target.root = root;
     target.language = steam_language;
+    target.excluded = excluded;
     const auto outcome = installer.Stage(target, cancel, [&](const gog::GogInstaller::Progress& state) {
       if (!downloading.exchange(true) && step) step(InstallStep::kDownloading);
       if (progress) progress(state.done, state.total, state.held);
     });
     {
-      char line[320];
+      // The DLC the game had (installed or turned off) that this run keeps on but the plan doesn't hold: no longer
+      // owned, or not in the meta. A count only.
+      std::size_t dlc_missing = 0;
+      if (outcome.error == Error::kNone) {
+        auto known = record->gog->products;
+        known.insert(known.end(), record->gog->excluded.begin(), record->gog->excluded.end());
+        std::sort(known.begin(), known.end());
+        known.erase(std::unique(known.begin(), known.end()), known.end());
+        for (const auto id : known)
+          if (id != product && !Contains(excluded, id) && !Contains(outcome.products, id)) ++dlc_missing;
+      }
+      char line[352];
       std::snprintf(line, sizeof(line),
                     " step=stage result=%s files=%zu changed=%llu removed=%llu hashed=%llu bytes=%llu corrupt=%d "
-                    "links=%d parallel=%d",
+                    "links=%d parallel=%d dlc_missing=%zu",
                     outcome.error == Error::kNone ? "ok" : gog::InstallerErrorName(outcome.error), outcome.files,
                     static_cast<unsigned long long>(outcome.staged_files),
                     static_cast<unsigned long long>(outcome.removed_files),
                     static_cast<unsigned long long>(outcome.hashed_files),
                     static_cast<unsigned long long>(outcome.download_bytes), outcome.stats.corrupt_retries,
-                    outcome.stats.link_fetches, outcome.stats.parallel);
+                    outcome.stats.link_fetches, outcome.stats.parallel, dlc_missing);
       Log(game + line);
     }
     if (Stopped(outcome.error, cancel, &result)) return result;
@@ -521,6 +642,8 @@ installs::InstallRunner::Result GogInstallRunner::RunUpdate(
     gog_record.products = outcome.products;
     gog_record.language = outcome.language;
     gog_record.meta_id = outcome.meta_id;
+    // Never a product the plan holds (a reused plan keeps its own products).
+    gog_record.excluded = LeftOut(excluded, outcome.products);
     const auto text = installs::FormatGogInstallRecord(id, outcome.install_bytes, outcome.files, record->language,
                                                        gog_record, launches);
     const bool written = WriteSynced(work, record_path, text);

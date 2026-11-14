@@ -1060,6 +1060,53 @@ void InstallRecordsParse(const std::filesystem::path& root) {
     const auto read = ParseInstallRecord(std::string("{\"install_bytes\":5,") + bad + "}");
     CHECK(read && read->install_bytes == 5 && !read->gog);
   }
+  // A record without DLC turned off has no "excluded" key: byte for byte what earlier builds wrote.
+  CHECK(gog_text.find("excluded") == std::string::npos);
+  CHECK(gog_text.find("\"meta\":\"0123456789abcdef0123456789abcdef\"},\"launches\":[") != std::string::npos);
+  // The DLC turned off round-trip, written sorted and once each, never the base game.
+  {
+    GogRecord off = gog;
+    off.products = {1900000001ull};
+    off.excluded = {1900000003ull, 1900000002ull, 1900000003ull, 1900000001ull};
+    const auto text = FormatGogInstallRecord(playden::GameId::Gog(1900000001), 5, 1, "english", off, {});
+    CHECK(text.find("\"meta\":\"0123456789abcdef0123456789abcdef\",\"excluded\":[\"1900000002\",\"1900000003\"]},") !=
+          std::string::npos);
+    const auto read = ParseInstallRecord(text);
+    CHECK(read && read->gog && (read->gog->excluded == std::vector<std::uint64_t>{1900000002ull, 1900000003ull}));
+    off.excluded = {1900000002ull, 1900000003ull};
+    CHECK(*read->gog == off);
+    // Numbers read too; an empty list reads as none.
+    const auto numbers = ParseInstallRecord(
+        "{\"gog\":{\"build_id\":\"1\",\"products\":[\"5\"],\"excluded\":[7,\"6\",7,5]}}");
+    CHECK(numbers && numbers->gog && (numbers->gog->excluded == std::vector<std::uint64_t>{6, 7}));
+    const auto none = ParseInstallRecord("{\"gog\":{\"build_id\":\"1\",\"products\":[\"5\"],\"excluded\":[]}}");
+    CHECK(none && none->gog && none->gog->excluded.empty());
+  }
+  // A malformed "excluded" leaves the gog object out, never the record; so do more than 1024 entries.
+  for (const char* bad : {"\"excluded\":[\"01\"]", "\"excluded\":[-1]", "\"excluded\":[{}]", "\"excluded\":[\"0\"]",
+                          "\"excluded\":[\"x\"]", "\"excluded\":\"1900000002\"", "\"excluded\":{}"}) {
+    const auto read = ParseInstallRecord(
+        std::string("{\"install_bytes\":5,\"gog\":{\"build_id\":\"1\",\"products\":[\"1\"],") + bad + "}}");
+    CHECK(read && read->install_bytes == 5 && !read->gog);
+  }
+  {
+    std::string many = "{\"install_bytes\":5,\"gog\":{\"build_id\":\"1\",\"products\":[\"1\"],\"excluded\":[";
+    for (int index = 0; index < 1025; ++index)
+      many += std::string(index ? "," : "") + "\"" + std::to_string(index + 2) + "\"";
+    const auto over = ParseInstallRecord(many + "]}}");
+    CHECK(over && over->install_bytes == 5 && !over->gog);
+    many = "{\"install_bytes\":5,\"gog\":{\"build_id\":\"1\",\"products\":[\"1\"],\"excluded\":[";
+    for (int index = 0; index < 1024; ++index)
+      many += std::string(index ? "," : "") + "\"" + std::to_string(index + 2) + "\"";
+    const auto full = ParseInstallRecord(many + "]}}");
+    CHECK(full && full->gog && full->gog->excluded.size() == 1024);
+    // The writer keeps to the cap, so its record always reads.
+    GogRecord capped = gog;
+    for (std::uint64_t id = 2; id < 1200; ++id) capped.excluded.push_back(id);
+    const auto capped_read =
+        ParseInstallRecord(FormatGogInstallRecord(playden::GameId::Gog(1900000001), 5, 1, "english", capped, {}));
+    CHECK(capped_read && capped_read->gog && capped_read->gog->excluded.size() == 1024);
+  }
   // Launch strings over 4096 bytes are left out, and at most 32 are read.
   {
     std::string many = "{\"launches\":[";
@@ -1220,12 +1267,12 @@ void InstallOptionsReachTheRunner(const std::filesystem::path& root) {
     // Values the registry can't hold are dropped: the defaults apply.
     service.Install(SteamId(903), std::nullopt, {}, {"bad value", "a\tb"});
     // DLC turned off, kept sorted; hundreds of them still fit a registry line.
-    service.Install(SteamId(906), std::nullopt, {}, {{}, {}, {30, 10, 20, 10, 0}});
+    service.Install(SteamId(906), std::nullopt, {}, {{}, {}, SteamIds({30, 10, 20, 10, 0})});
     // What the job was asked with, which its drive reserves, also comes back.
     service.Install(SteamId(909), 4096);
     service.Pause(SteamId(909));
-    std::vector<std::uint32_t> many;
-    for (std::uint32_t dlc = 0; dlc < 900; ++dlc) many.push_back(4000000000u + dlc);
+    std::vector<GameId> many;
+    for (std::uint32_t dlc = 0; dlc < 900; ++dlc) many.push_back(SteamId(4000000000u + dlc));
     service.Install(SteamId(907), std::nullopt, {}, {{}, {}, many});
   }
   {
@@ -1255,9 +1302,9 @@ void InstallOptionsReachTheRunner(const std::filesystem::path& root) {
     return Installed(s, SteamId(900)) && Installed(s, SteamId(901)) && Installed(s, SteamId(903)) && Installed(s, SteamId(905)) &&
            Installed(s, SteamId(906)) && Installed(s, SteamId(907)) && Installed(s, SteamId(908));
   });
-  CHECK(options_at(root / "906") == (InstallOptions{{}, {}, {10, 20, 30}}));
+  CHECK(options_at(root / "906") == (InstallOptions{{}, {}, SteamIds({10, 20, 30})}));
   CHECK(options_at(root / "907") && options_at(root / "907")->excluded_dlc.size() == 900);
-  CHECK(options_at(root / "908") == (InstallOptions{{}, {}, {7, 9}}));
+  CHECK(options_at(root / "908") == (InstallOptions{{}, {}, SteamIds({7, 9})}));
   CHECK(options_at(root / "900") == (InstallOptions{"german", "beta"}));
   CHECK(options_at(root / "901") == InstallOptions{});
   CHECK(options_at(root / "903") == InstallOptions{});
@@ -1460,6 +1507,114 @@ void DlcChangeKeepsItsChoice(const std::filesystem::path& root) {
     AwaitAt(__LINE__, again, [&](const InstallSnapshot& s) { return !JobOf(s, game) && runner.updates == 3; });
     std::lock_guard<std::mutex> lock(runner.mutex);
     CHECK(!runner.update_options.back().dlc_choice);
+  }
+  // A Steam game's DLC are its app IDs in the registry, as before they were named by game ID.
+  runner.block = true;
+  {
+    InstallService service(runner, root.string());
+    InstallOptions some_off;
+    some_off.excluded_dlc = SteamIds({712, 711, 712});
+    some_off.dlc_choice = true;
+    CHECK(service.Update(game, some_off).empty());
+    // Awaited by what it was asked with: the runner counts an update before it records the options.
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) {
+      std::lock_guard<std::mutex> lock(runner.mutex);
+      return runner.update_options.size() == 4;
+    });
+    // The runner's last update wrote the record this one starts from.
+    CHECK(RegistryLine(root, "710") == "710\tinternal\t8192\tupdate\tlang=english\tbranch=beta\tnodlc=711,712\tdlcset");
+    std::lock_guard<std::mutex> lock(runner.mutex);
+    CHECK(runner.update_options.back().excluded_dlc == SteamIds({711, 712}));
+  }
+  runner.block = false;
+
+  // A GOG game's DLC are GOG keys. Only the game's own store's DLC stay, other than the game itself.
+  const auto gog_game = GameId::Gog(1900000001);
+  const std::vector<InstallVolume> volumes{{InstallService::kPrimaryVolumeId, "Console storage", root.string(), true}};
+  const auto gog_options = [](GogRunner& gog) {
+    std::lock_guard<std::mutex> lock(gog.mutex);
+    return gog.update_options.empty() ? InstallOptions{} : gog.update_options.back();
+  };
+  const auto gog_line = [&root] { return RegistryLine(root, "gog-1900000001"); };
+  // The runner counts an update before it records the options: they are what is awaited.
+  const auto gog_asked = [](GogRunner& gog) {
+    std::lock_guard<std::mutex> lock(gog.mutex);
+    return gog.update_options.size() == 1;
+  };
+  std::filesystem::remove_all(root);
+  WriteInstalledGog(root, "english");
+  {
+    GogRunner gog;
+    gog.block = true;
+    InstallService service({{Store::kGog, &gog}}, volumes);
+    InstallOptions mixed;
+    mixed.excluded_dlc = {GameId::Steam(711), gog_game, GameId::Gog(1900000003), GameId{}};
+    mixed.dlc_choice = true;
+    CHECK(service.Update(gog_game, mixed).empty());
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return gog_asked(gog); });
+    CHECK(gog_options(gog).excluded_dlc == std::vector<GameId>{GameId::Gog(1900000003)});
+    CHECK(gog_line().find("\tnodlc=gog-1900000003\tdlcset") != std::string::npos);
+  }
+  // A DLC change keeps its GOG keys across a restart, up to the largest product ID.
+  std::filesystem::remove_all(root);
+  WriteInstalledGog(root, "english");
+  const std::vector<GameId> two{GameId::Gog(1900000002), GameId::Gog(18446744073709551615ull)};
+  {
+    GogRunner gog;
+    gog.block = true;
+    InstallService service({{Store::kGog, &gog}}, volumes);
+    InstallOptions choice;
+    choice.excluded_dlc = {two[1], two[0]};
+    choice.dlc_choice = true;
+    CHECK(service.Update(gog_game, choice).empty());
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return gog_asked(gog); });
+    CHECK(gog_line().find("\tnodlc=gog-1900000002,gog-18446744073709551615\tdlcset") != std::string::npos);
+  }
+  {
+    GogRunner gog;
+    gog.block = true;
+    InstallService again({{Store::kGog, &gog}}, volumes);
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot&) { return gog_asked(gog); });
+    const auto restored = gog_options(gog);
+    CHECK(restored.excluded_dlc == two && restored.dlc_choice);
+  }
+  // A line written by hand: an entry that isn't a key is skipped, and the line and its other entries stay.
+  std::filesystem::remove_all(root);
+  WriteInstalledGog(root, "english");
+  std::ofstream(root / ".playden-games") << "gog-1900000001\tinternal\t5555\tupdate\tnodlc=gog-01,abc,gog-5,711\tdlcset\n";
+  {
+    GogRunner gog;
+    gog.block = true;
+    InstallService service({{Store::kGog, &gog}}, volumes);
+    CHECK(Installed(service.Snapshot(), gog_game));
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return gog_asked(gog); });
+    const auto restored = gog_options(gog);
+    CHECK(restored.excluded_dlc == std::vector<GameId>{GameId::Gog(5)} && restored.dlc_choice);
+  }
+  // As many GOG DLC as the registry keeps, each with the longest key, fit its line.
+  std::filesystem::remove_all(root);
+  WriteInstalledGog(root, "english");
+  std::vector<GameId> most;
+  for (std::uint64_t dlc = 0; dlc < 1000; ++dlc) most.push_back(GameId::Gog(18446744073709551615ull - dlc));
+  std::sort(most.begin(), most.end());
+  {
+    GogRunner gog;
+    gog.block = true;
+    InstallService service({{Store::kGog, &gog}}, volumes);
+    InstallOptions choice;
+    choice.excluded_dlc = most;
+    choice.dlc_choice = true;
+    CHECK(service.Update(gog_game, choice).empty());
+    AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return gog_asked(gog); });
+    CHECK(gog_line().size() > 24 * 1024);
+  }
+  {
+    GogRunner gog;
+    gog.block = true;
+    InstallService again({{Store::kGog, &gog}}, volumes);
+    CHECK(Installed(again.Snapshot(), gog_game));
+    AwaitAt(__LINE__, again, [&](const InstallSnapshot&) { return gog_asked(gog); });
+    CHECK(gog_options(gog).excluded_dlc == most);
   }
   std::filesystem::remove_all(root);
 }

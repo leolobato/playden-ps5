@@ -24,18 +24,23 @@ struct RecordedDepot {
 };
 
 // What a GOG install holds: the build, its generation, the product IDs installed (the base game first, then each DLC),
-// the GOG language code ("en-US") and the build meta's hash (32 hex digits).
+// the GOG language code ("en-US"), the build meta's hash (32 hex digits) and the owned DLC the player turned off
+// (sorted, unique, never the base game): an update leaves them out too.
 struct GogRecord {
   std::string build_id;
   int generation = 2;
   std::vector<std::uint64_t> products;
   std::string language;
   std::string meta_id;
+  std::vector<std::uint64_t> excluded;
   bool operator==(const GogRecord& other) const {
     return build_id == other.build_id && generation == other.generation && products == other.products &&
-           language == other.language && meta_id == other.meta_id;
+           language == other.language && meta_id == other.meta_id && excluded == other.excluded;
   }
 };
+
+// At most this many products and excluded DLC in a GOG record; a longer list makes the "gog" object unreadable.
+inline constexpr std::size_t kMaxGogRecordProducts = 1024;
 
 // A program the install's own files name (GOG's play tasks), kept so Play works signed out and offline. The paths
 // are relative to the game folder with `/`; an empty working directory is the game folder itself.
@@ -99,10 +104,13 @@ std::optional<InstalledRecord> ParseInstallRecord(std::string_view text);
 // A GOG install's record:
 // {"version":2,"app_id":0,"store":"gog","game":"<id>","install_bytes":N,"files":N,"branch":"public",
 //  "language":"<steam code>","depots":[],"gog":{"build_id":"..","generation":2,"products":["<id>"],
-//  "language":"en-US","meta":"<hash>"},"launches":[{"executable":"..","arguments":"..","working_directory":"..",
-//  "label":".."}]}
+//  "language":"en-US","meta":"<hash>","excluded":["<id>"]},"launches":[{"executable":"..","arguments":"..",
+//  "working_directory":"..","label":".."}]}
 // "install_bytes" comes early and without a space, as InstallService reads it from the first 4096 bytes. No depots:
-// the Steam DLC fields stay Steam's. Launches past kMaxRecordedLaunches, or with an empty program or a string over
+// the Steam DLC fields stay Steam's. "excluded" (the DLC turned off, as canonical decimal strings) is written only when
+// it lists one, so a record without it is as earlier builds wrote it; at most kMaxGogRecordProducts are written,
+// sorted, without repeats or the base game. Earlier builds skip the key: an update made by one of them brings the DLC
+// back. Launches past kMaxRecordedLaunches, or with an empty program or a string over
 // kMaxRecordedLaunchBytes, are left out, as ParseInstallRecord would leave them.
 std::string FormatGogInstallRecord(const GameId& game, std::uint64_t install_bytes, std::uint64_t files,
                                    const std::string& steam_language, const GogRecord& gog,

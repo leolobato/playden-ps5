@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <memory>
@@ -208,8 +209,12 @@ DiffResult DiffPlans(const std::string& old_plan, const std::string& new_plan, c
   return result;
 }
 
-std::uint64_t UpdateTarget(std::string_view build_id, int generation) {
-  const std::string text = "gog\n" + std::to_string(generation) + "\n" + std::string(build_id);
+std::uint64_t UpdateTarget(std::string_view build_id, int generation, std::vector<std::uint64_t> products) {
+  std::sort(products.begin(), products.end());
+  products.erase(std::unique(products.begin(), products.end()), products.end());
+  std::string text = "gog\n" + std::to_string(generation) + "\n" + std::string(build_id) + "\n";
+  for (std::size_t index = 0; index < products.size(); ++index)
+    text += (index == 0 ? "" : ",") + std::to_string(products[index]);
   Sha256 sha;
   sha.Update(text.data(), text.size());
   const auto hex = sha.FinalHex();

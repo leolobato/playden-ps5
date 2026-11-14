@@ -5,7 +5,10 @@
 // pause and resume, a restart, cancel, signed out and revoked sessions, uninstall, a move to the USB drive, free space,
 // a synthetic gen 1 game (ranges of a main.bin) to the end, moved and uninstalled, a game with __redist installers
 // installed, moved and uninstalled, and updates from build A to build B (waiting for the game, cancel, pause, restarts
-// while staging and while putting files in place, signed out, uninstall and move in the middle, the same build). Built twice: with the host's walks, and with the console's walk by path.
+// while staging and while putting files in place, signed out, uninstall and move in the middle, the same build), and
+// Manage DLC's changes as updates (a DLC turned on and off, with a newer build, interrupted, restarted, a staging of
+// another choice, no owned list, signed out, an unowned DLC, uninstalled in the middle). Built twice: with the host's
+// walks, and with the console's walk by path.
 // Usage: gog_install_runner_test <fixtures/gog> <scratch folder>.
 
 #include "gog/dependencies.h"
@@ -35,6 +38,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -168,6 +172,8 @@ struct World {
   // GOG's content system (builds) or its CDN (chunks) out of reach: every such request fails to connect.
   std::atomic<bool> builds_down{false};
   std::atomic<bool> chunks_down{false};
+  // GOG's owned list out of reach: it answers 503.
+  std::atomic<bool> owned_down{false};
 
   // What the apply gate answers; while `block_scripts`, an update's script step waits (its files are in place, its
   // record not yet).
@@ -200,6 +206,11 @@ struct World {
       if ((builds_down.load() && request.kind == Kind::kBuilds) || (chunks_down.load() && request.kind == Kind::kChunk)) {
         Fault fault;
         fault.response = Failure(HttpError::kConnectionFailed);
+        return fault;
+      }
+      if (owned_down.load() && request.kind == Kind::kOwned) {
+        Fault fault;
+        fault.response = Answer(503, "");
         return fault;
       }
       if (!revoked.load()) return std::nullopt;
@@ -443,6 +454,24 @@ struct World {
   int Served() {
     std::lock_guard<std::mutex> lock(hold_mutex);
     return served;
+  }
+  // install.log's finished updates so far.
+  std::size_t Finishes() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    return static_cast<std::size_t>(std::count_if(logs.begin(), logs.end(), [](const std::string& line) {
+      return line.find("gog update game=gog-1900000001 step=finish result=ok") == 0;
+    }));
+  }
+  // An update finished after `before` others: no job, the game listed.
+  void WaitFinished(std::size_t before) {
+    WaitFor([&] {
+      const auto snapshot = service->Snapshot();
+      if (const auto* job = Job(snapshot); job && job->state == InstallJobState::kFailed) {
+        std::fprintf(stderr, "update failed: %s\n", job->failure.c_str());
+        std::exit(1);
+      }
+      return !Job(snapshot) && Finishes() > before && Installed().has_value();
+    }, "the update");
   }
   // The update finished: no job, and the listed record names B.
   void WaitUpdated() {
@@ -1260,6 +1289,464 @@ void UpdatesToTheSameBuild() {
   world.CheckLogs();
   std::printf("updates to the same build ok\n");
 }
+
+// ---- DLC turned off -----------------------------------------------------------------------------------------------
+
+const std::string kDlcExtra = RandomBytes(20 * 1024, 26);
+const std::string kDlcExtraB = RandomBytes(21 * 1024, 27);
+const std::string kDlcInfo = "{\"gameId\":\"1900000002\",\"rootGameId\":\"1900000001\"}\n";
+const std::string kDlcScript = "{\"actions\":[],\"productId\":\"1900000002\"}\n";
+
+// The synthetic game (A, or with `b` build B) with a DLC depot of its own (a file and a support file) and the DLC's
+// goggame-<id> files.
+Game DlcGame(bool b) {
+  auto game = b ? SyntheticGameB() : SyntheticGame();
+  GameDepot dlc;
+  dlc.product = kDlc;
+  dlc.files.push_back({"DepotFile", "dlc\\extra.dat", b ? kDlcExtraB : kDlcExtra});
+  dlc.files.push_back({"DepotFile", "save\\dlc.sav", "dlc save\n", {}, true});
+  game.depots.push_back(dlc);
+  GameDepot dlc_gog;
+  dlc_gog.product = kDlc;
+  dlc_gog.gog = true;
+  dlc_gog.files.push_back({"DepotFile", "goggame-1900000002.info", kDlcInfo});
+  dlc_gog.files.push_back({"DepotFile", "goggame-1900000002.script", kDlcScript});
+  game.depots.push_back(dlc_gog);
+  return game;
+}
+
+// The DLC's chunks were never asked for.
+void CheckNoDlcChunk(World& world, const Published& published) {
+  std::set<std::string> dlc;
+  for (const char* path : {"dlc\\extra.dat", "save\\dlc.sav"})
+    for (const auto& chunk : published.chunks.at(path)) dlc.insert(chunk.compressed_md5);
+  for (const auto& request : world.cdn.requests())
+    if (request.kind == Kind::kChunk) CHECK(!dlc.count(request.hash));
+}
+
+void CheckDlcOff(World& world, const std::string& build) {
+  const auto root = world.Root();
+  CHECK(!Exists(root / "dlc") && !Exists(root / ".playden-gog/support/1900000002"));
+  CHECK(!Exists(root / "goggame-1900000002.info") && !Exists(root / "goggame-1900000002.script"));
+  CHECK(Text(root / ".playden-files").find("dlc/") == std::string::npos);
+  CHECK(Text(root / ".playden-files").find("1900000002") == std::string::npos);
+  const auto text = Text(root / installs::kInstallRecordName);
+  CHECK(text.find(",\"excluded\":[\"1900000002\"]},") != std::string::npos);
+  const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && record->gog->build_id == build);
+  CHECK((record->gog->products == std::vector<std::uint64_t>{kBase}));
+  CHECK((record->gog->excluded == std::vector<std::uint64_t>{kDlc}));
+  const auto header = gog::ReadPlanHeader((root / gog::kPlanPath).string());
+  CHECK(header && (header->products == std::vector<std::uint64_t>{kBase}));
+  const auto game = world.Installed();
+  CHECK(game && game->record && game->record->gog && game->record->gog->excluded == record->gog->excluded);
+}
+
+// The install sheet turned the DLC off: its files are never downloaded, and the record keeps it off.
+void InstallsWithoutATurnedOffDlc() {
+  World world;
+  world.published = Publish(world.cdn, DlcGame(false));
+  world.SignIn();
+  world.Start();
+  installs::InstallOptions options;
+  options.excluded_dlc = {GameId::Gog(kDlc)};
+  world.service->Install(kGame, std::nullopt, {}, options);
+  world.WaitInstalled();
+  const auto root = world.Root();
+  CHECK(Text(root / "bin/Game.exe") == kExe && Text(root / "data/level.dat") == kData);
+  CheckDlcOff(world, "1000000000000000101");
+  CheckNoDlcChunk(world, world.published);
+  CHECK(world.Logged("gog plan dlc excluded=1"));
+  world.CheckLogs();
+  std::printf("installs without a turned-off DLC ok\n");
+}
+
+// A newer build through a plain update (no options): the record's DLC stays off.
+void UpdateKeepsTurnedOffDlcOff() {
+  World world;
+  world.published = Publish(world.cdn, DlcGame(false));
+  world.SignIn();
+  world.Start();
+  installs::InstallOptions options;
+  options.excluded_dlc = {GameId::Gog(kDlc)};
+  world.service->Install(kGame, std::nullopt, {}, options);
+  world.WaitInstalled();
+  CheckDlcOff(world, "1000000000000000101");
+  world.published = Publish(world.cdn, DlcGame(true));
+  world.cdn.ClearRequests();
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitUpdated();
+  const auto root = world.Root();
+  CHECK(Text(root / "data/level.dat") == kDataB && Text(root / "data/new.dat") == kNewFile);
+  CheckDlcOff(world, kBuildB);
+  CheckNoDlcChunk(world, world.published);
+  CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ok files=6 changed=3 removed=1"));
+  world.CheckLogs();
+  std::printf("update keeps a turned-off DLC off ok\n");
+}
+
+// GogExcludedDlc: an install takes the options' GOG DLC, an update adds the record's, a DLC choice replaces them; the
+// base game and other stores' IDs are dropped, the rest sorted once each.
+void ExcludedDlcRules() {
+  using stores::GogExcludedDlc;
+  using Ids = std::vector<std::uint64_t>;
+  installs::InstallOptions options;
+  options.excluded_dlc = {GameId::Gog(7), GameId::Steam(440), GameId::Gog(kBase), GameId::Gog(5), GameId::Gog(7)};
+  installs::InstalledRecord record;
+  record.gog = installs::GogRecord{};
+  record.gog->products = {kBase};
+  record.gog->excluded = {9, 3, kBase};
+  CHECK((GogExcludedDlc(options, false, record, kBase) == Ids{5, 7}));
+  CHECK((GogExcludedDlc(options, true, record, kBase) == Ids{3, 5, 7, 9}));
+  CHECK((GogExcludedDlc({}, true, record, kBase) == Ids{3, 9}));
+  CHECK((GogExcludedDlc(options, true, std::nullopt, kBase) == Ids{5, 7}));
+  installs::InstalledRecord steam_record;
+  steam_record.excluded_dlc = {11};
+  CHECK((GogExcludedDlc(options, true, steam_record, kBase) == Ids{5, 7}));
+  options.dlc_choice = true;
+  CHECK((GogExcludedDlc(options, true, record, kBase) == Ids{5, 7}));
+  options.excluded_dlc.clear();
+  CHECK(GogExcludedDlc(options, true, record, kBase).empty());
+  std::printf("excluded DLC rules ok\n");
+}
+
+// ---- DLC changed (Manage DLC) -------------------------------------------------------------------------------------
+
+const std::string kBuildA = "1000000000000000101";
+const char* const kDlcPaths[] = {"dlc/extra.dat", ".playden-gog/support/1900000002/save/dlc.sav",
+                                 "goggame-1900000002.info", "goggame-1900000002.script"};
+
+// The DLC game (A) installed through the queue, with its DLC or with it turned off.
+void InstallDlcGame(World& world, bool dlc_on) {
+  world.published = Publish(world.cdn, DlcGame(false));
+  world.SignIn();
+  world.Start();
+  installs::InstallOptions options;
+  if (!dlc_on) options.excluded_dlc = {GameId::Gog(kDlc)};
+  world.service->Install(kGame, std::nullopt, {}, options);
+  world.WaitInstalled();
+}
+
+// Manage DLC's choice: `off` turns the DLC off, otherwise on.
+installs::InstallOptions DlcChoice(bool off) {
+  installs::InstallOptions options;
+  if (off) options.excluded_dlc = {GameId::Gog(kDlc)};
+  options.dlc_choice = true;
+  return options;
+}
+
+// The DLC installed with the game (A's or B's): its files, support file and goggame-<id> files, listed, and the record
+// and plan naming it, with nothing left out.
+void CheckDlcOn(World& world, const std::string& build, bool b) {
+  const auto root = world.Root();
+  CHECK(Text(root / "dlc/extra.dat") == (b ? kDlcExtraB : kDlcExtra));
+  CHECK(Text(root / ".playden-gog/support/1900000002/save/dlc.sav") == "dlc save\n");
+  CHECK(Text(root / "goggame-1900000002.info") == kDlcInfo && Text(root / "goggame-1900000002.script") == kDlcScript);
+  CHECK(Text(root / "bin/Game.exe") == kExe);
+  const auto listed = Text(root / ".playden-files");
+  for (const char* path : kDlcPaths) CHECK(listed.find(std::string("f\t") + path + "\n") != std::string::npos);
+  CHECK(Text(root / installs::kInstallRecordName).find("\"excluded\"") == std::string::npos);
+  const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && record->gog->build_id == build);
+  CHECK((record->gog->products == std::vector<std::uint64_t>{kBase, kDlc}) && record->gog->excluded.empty());
+  const auto header = gog::ReadPlanHeader((root / gog::kPlanPath).string());
+  CHECK(header && header->build_id == build && (header->products == std::vector<std::uint64_t>{kBase, kDlc}));
+  const auto game = world.Installed();
+  CHECK(game && game->record && game->record->gog && game->record->gog->products == record->gog->products);
+}
+
+// The chunks of the DLC's files in `published`.
+std::set<std::string> DlcChunks(const Published& published) {
+  std::set<std::string> chunks;
+  for (const char* path : {"dlc\\extra.dat", "save\\dlc.sav", "goggame-1900000002.info", "goggame-1900000002.script"})
+    for (const auto& chunk : published.chunks.at(path)) chunks.insert(chunk.compressed_md5);
+  return chunks;
+}
+
+// The registry line's options: what a restart restores the job with.
+std::string Registry(World& world) { return Text(world.internal / ".playden-games"); }
+
+// Installed without the DLC, then turned on on the same build: only the DLC's files download, and the record names it.
+void DlcChangeAddsTheDlc() {
+  World world;
+  InstallDlcGame(world, false);
+  CheckDlcOff(world, kBuildA);
+  world.cdn.ClearRequests();
+  const auto before = world.Finishes();
+  world.Hold(world.Served());
+  CHECK(world.service->Update(kGame, DlcChoice(false)).empty());
+  world.WaitHeld();
+  {
+    const auto snapshot = world.service->Snapshot();
+    const auto* job = world.Job(snapshot);
+    CHECK(job && job->kind == installs::InstallJobKind::kUpdate && job->dlc_change);
+  }
+  CHECK(Registry(world).find("\tdlcset") != std::string::npos);
+  CHECK(Text(world.Root() / ".playden-update/dlc").empty() && Exists(world.Root() / ".playden-update/dlc"));
+  world.Hold(-1);
+  world.WaitFinished(before);
+  CheckDlcOn(world, kBuildA, false);
+  CHECK(Text(world.Root() / "data/level.dat") == kData && Text(world.Root() / "Music/theme.ogg") == kMusic);
+  // The DLC's chunks, each once, and nothing else.
+  const auto dlc = DlcChunks(world.published);
+  std::map<std::string, int> fetched;
+  for (const auto& request : world.cdn.requests())
+    if (request.kind == Kind::kChunk) ++fetched[request.hash];
+  CHECK(fetched.size() == dlc.size());
+  for (const auto& entry : fetched) CHECK(dlc.count(entry.first) && entry.second == 1);
+  CHECK(!Exists(world.Root() / installs::kUpdateDirName));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ok files=10 changed=4 removed=0"));
+  CHECK(world.Logged(" dlc_missing=0"));
+  CHECK(!world.Logged("result=restaged"));
+  world.CheckLogs();
+  std::printf("a DLC change adds the DLC ok\n");
+}
+
+// Installed with the DLC, then turned off: nothing downloads, the DLC's files, support folder and goggame-<id> files
+// go, and Downloads lists an update of 0 bytes.
+void DlcChangeRemovesTheDlc() {
+  World world;
+  InstallDlcGame(world, true);
+  CheckDlcOn(world, kBuildA, false);
+  world.cdn.ClearRequests();
+  const auto before = world.Finishes();
+  CHECK(world.service->Update(kGame, DlcChoice(true)).empty());
+  world.WaitFinished(before);
+  CheckDlcOff(world, kBuildA);
+  CHECK(Text(world.Root() / "bin/Game.exe") == kExe && Text(world.Root() / "data/level.dat") == kData);
+  CHECK(world.cdn.Count(Kind::kChunk) == 0 && world.cdn.Count(Kind::kSecureLink) == 0);
+  CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ok files=6 changed=0 removed=4"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=apply result=ok replaced=0 deleted=4"));
+  const auto snapshot = world.service->Snapshot();
+  const auto completed = std::find_if(snapshot.completed.begin(), snapshot.completed.end(),
+                                      [](const installs::CompletedDownload& entry) { return entry.id == kGame; });
+  CHECK(completed != snapshot.completed.end() && completed->updated && completed->update_bytes == 0);
+  world.CheckLogs();
+  std::printf("a DLC change removes the DLC ok\n");
+}
+
+// A newer build is out when the DLC is turned on: the change brings both.
+void DlcChangeWithANewerBuild() {
+  World world;
+  InstallDlcGame(world, false);
+  world.published = Publish(world.cdn, DlcGame(true));
+  world.cdn.ClearRequests();
+  CHECK(world.service->Update(kGame, DlcChoice(false)).empty());
+  world.WaitUpdated();
+  CheckDlcOn(world, kBuildB, true);
+  CHECK(Text(world.Root() / "data/level.dat") == kDataB && Text(world.Root() / "data/new.dat") == kNewFile);
+  CHECK(!Exists(world.Root() / "Music"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ok files=10 changed=7 removed=1"));
+  world.CheckLogs();
+  std::printf("a DLC change with a newer build ok\n");
+}
+
+// Playden stopped while a change that turns the DLC off was putting its files in place: at the next start it finishes
+// signed out and offline, from the work folder's record.
+void DlcChangeInterruptedAtReplacing() {
+  World world;
+  InstallDlcGame(world, true);
+  world.gate = installs::ApplyAnswer::kGameRunning;
+  CHECK(world.service->Update(kGame, DlcChoice(true)).empty());
+  world.WaitState(InstallJobState::kQueued, installs::InstallRunner::kWaitingForGame);
+  CHECK(world.Phase() == installs::UpdatePhase::kStaging && Exists(world.Root() / ".playden-update/record"));
+  CHECK(Text(world.Root() / ".playden-update/dlc") == "1900000002\n");
+  CheckDlcOn(world, kBuildA, false);
+  world.service.reset();
+  WriteUpdatePhase(world.Root(), installs::UpdatePhase::kReplacing);
+  CHECK(world.session->SignOut().ok);
+  world.revoked = true;
+  world.builds_down = true;
+  world.chunks_down = true;
+  world.owned_down = true;
+  world.auth.Script(Endpoint::kToken, Failure(HttpError::kConnectionFailed));
+  world.cdn.ClearRequests();
+  world.gate = installs::ApplyAnswer::kApply;
+  const auto before = world.Finishes();
+  world.Restart();
+  world.WaitFinished(before);
+  CheckDlcOff(world, kBuildA);
+  CHECK(!Exists(world.Root() / installs::kUpdateDirName));
+  CHECK(world.cdn.requests().empty() && !world.session->signed_in());
+  world.CheckLogs();
+  std::printf("a DLC change interrupted at replacing ok\n");
+}
+
+// Playden closes while a change (a newer build, the DLC turned off) stages: the job comes back with its choice and
+// carries on from the journal, not staged again.
+void DlcChangeRestartsMidStaging() {
+  World world;
+  InstallDlcGame(world, true);
+  world.published = Publish(world.cdn, DlcGame(true));
+  world.cdn.ClearRequests();
+  world.Hold(world.Served() + 2);
+  CHECK(world.service->Update(kGame, DlcChoice(true)).empty());
+  world.WaitHeld();
+  const auto registry = Registry(world);
+  CHECK(registry.find("\tnodlc=gog-1900000002") != std::string::npos && registry.find("\tdlcset") != std::string::npos);
+  world.service.reset();
+  // Still held: the job comes back and waits at its next chunk.
+  world.Restart();
+  WaitFor([&] {
+    const auto snapshot = world.service->Snapshot();
+    const auto* job = world.Job(snapshot);
+    std::lock_guard<std::mutex> lock(world.hold_mutex);
+    return job && job->state == InstallJobState::kRunning && world.waiting > 0;
+  }, "the restored change");
+  {
+    const auto snapshot = world.service->Snapshot();
+    const auto* job = world.Job(snapshot);
+    CHECK(job && job->kind == installs::InstallJobKind::kUpdate && job->dlc_change);
+  }
+  world.Hold(-1);
+  world.WaitUpdated();
+  CheckDlcOff(world, kBuildB);
+  CHECK(Text(world.Root() / "data/level.dat") == kDataB && Text(world.Root() / "data/new.dat") == kNewFile);
+  CheckNoDlcChunk(world, world.published);
+  std::map<std::string, int> fetched;
+  for (const auto& request : world.cdn.requests())
+    if (request.kind == Kind::kChunk) CHECK(++fetched[request.hash] == 1);
+  CHECK(!world.Logged("result=restaged"));
+  CHECK(world.Logged("gog update plan reused"));
+  world.CheckLogs();
+  std::printf("a DLC change restarts mid-staging ok\n");
+}
+
+// A work folder staged with the DLC (a plain update, fully staged while the game ran) and a change that turns it off:
+// it is staged again for the change. A work folder from a build before the sidecar, for a plain update of a record
+// with nothing left out, is put in place as it is.
+void StagingOfAnotherChoiceIsRestaged() {
+  const auto stage_plain = [](World& world) {
+    const std::atomic<bool> cancel{false};
+    const auto result =
+        world.runner->Update(kGame, world.Root().string(), {}, cancel, {}, {}, [] { return false; });
+    CHECK(!result.ok && result.retry_later && result.waiting == installs::InstallRunner::kWaitingForGame);
+    CHECK(Exists(world.Root() / ".playden-update/record") && world.Phase() == installs::UpdatePhase::kStaging);
+  };
+  {
+    World world;
+    InstallDlcGame(world, true);
+    world.published = Publish(world.cdn, DlcGame(true));
+    stage_plain(world);
+    CHECK(Exists(world.Root() / ".playden-update/dlc") && Text(world.Root() / ".playden-update/dlc").empty());
+    CHECK(Text(world.Root() / ".playden-update/staging/dlc/extra.dat") == kDlcExtraB);
+    CHECK(world.service->Update(kGame, DlcChoice(true)).empty());
+    world.WaitUpdated();
+    CheckDlcOff(world, kBuildB);
+    CHECK(world.Logged("gog update game=gog-1900000001 step=plan result=restaged"));
+    CHECK(Text(world.Root() / "data/level.dat") == kDataB && Text(world.Root() / "data/new.dat") == kNewFile);
+    world.CheckLogs();
+  }
+  {
+    World world;
+    InstallDlcGame(world, true);
+    world.published = Publish(world.cdn, DlcGame(true));
+    stage_plain(world);
+    CHECK(::unlink((world.Root() / ".playden-update/dlc").c_str()) == 0);
+    world.cdn.ClearRequests();
+    CHECK(world.service->Update(kGame).empty());
+    world.WaitUpdated();
+    CHECK(!world.Logged("result=restaged"));
+    CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ready"));
+    CHECK(world.cdn.Count(Kind::kChunk) == 0);
+    CheckDlcOn(world, kBuildB, true);
+    world.CheckLogs();
+  }
+  std::printf("staging of another choice is restaged ok\n");
+}
+
+// GOG's owned list out of reach: the change waits to reach GOG and deletes nothing; once it answers, the change ends.
+void DlcChangeWaitsWithoutOwnedList() {
+  World world;
+  InstallDlcGame(world, true);
+  world.owned_down = true;
+  const auto before = world.Finishes();
+  CHECK(world.service->Update(kGame, DlcChoice(true)).empty());
+  world.WaitState(InstallJobState::kQueued, GogInstallRunner::kWaitingForGog);
+  CHECK(world.Logged("gog plan owned status=503"));
+  CheckDlcOn(world, kBuildA, false);
+  CHECK(world.Phase() == installs::UpdatePhase::kStaging && !world.service->Locked(kGame));
+  world.owned_down = false;
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitFinished(before);
+  CheckDlcOff(world, kBuildA);
+  world.CheckLogs();
+  std::printf("a DLC change waits without the owned list ok\n");
+}
+
+// Signed out: the change waits for the GOG sign-in, and ends after it.
+void DlcChangeWaitsForSignIn() {
+  World world;
+  InstallDlcGame(world, true);
+  CHECK(world.session->SignOut().ok);
+  const auto before = world.Finishes();
+  CHECK(world.service->Update(kGame, DlcChoice(true)).empty());
+  world.WaitState(InstallJobState::kQueued, GogInstallRunner::kWaitingForSignIn);
+  CheckDlcOn(world, kBuildA, false);
+  CHECK(!Exists(world.Root() / installs::kUpdateDirName));
+  world.SignIn(2);
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitFinished(before);
+  CheckDlcOff(world, kBuildA);
+  world.CheckLogs();
+  std::printf("a DLC change waits for sign-in ok\n");
+}
+
+// A DLC turned on that GOG no longer lists as owned isn't planned: the change ends with the base game alone, and the
+// stage line counts it.
+void DlcChangeSkipsAnUnownedDlc() {
+  World world;
+  InstallDlcGame(world, false);
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  world.cdn.ClearRequests();
+  const auto before = world.Finishes();
+  CHECK(world.service->Update(kGame, DlcChoice(false)).empty());
+  world.WaitFinished(before);
+  CHECK(world.Logged(" dlc_missing=1"));
+  CHECK(world.cdn.Count(Kind::kChunk) == 0 && !Exists(world.Root() / "dlc"));
+  const auto record = installs::ReadInstallRecord((world.Root() / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && (record->gog->products == std::vector<std::uint64_t>{kBase}));
+  CHECK(record->gog->excluded.empty());
+  world.CheckLogs();
+  std::printf("a DLC change skips an unowned DLC ok\n");
+}
+
+// Installed before the DLC was bought: a plain update on the same build (what the page offers as a new DLC) brings it,
+// and the record names it.
+void PlainUpdateBringsABoughtDlc() {
+  World world;
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  InstallDlcGame(world, true);
+  auto record = installs::ReadInstallRecord((world.Root() / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && (record->gog->products == std::vector<std::uint64_t>{kBase}));
+  CHECK(record->gog->excluded.empty() && !Exists(world.Root() / "dlc"));
+  world.cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
+  const auto before = world.Finishes();
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitFinished(before);
+  CheckDlcOn(world, kBuildA, false);
+  world.CheckLogs();
+  std::printf("a plain update brings a bought DLC ok\n");
+}
+
+// Uninstalled while a change stages: the game folder goes, the work folder and its sidecar with it.
+void UninstallMidDlcChange() {
+  World world;
+  InstallDlcGame(world, false);
+  world.cdn.ClearRequests();
+  world.Hold(world.Served() + 1);
+  CHECK(world.service->Update(kGame, DlcChoice(false)).empty());
+  world.WaitHeld();
+  CHECK(Exists(world.Root() / ".playden-update/dlc"));
+  world.service->Uninstall(kGame);
+  WaitFor([&] {
+    const auto snapshot = world.service->Snapshot();
+    return !world.Installed() && snapshot.uninstalling.empty() && !world.Job(snapshot);
+  }, "the uninstall");
+  world.WaitReleased();
+  CHECK(!Exists(world.Root()));
+  std::printf("uninstall mid DLC change ok\n");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1295,6 +1782,20 @@ int main(int argc, char** argv) {
   UninstallsMidUpdate();
   MoveRefusedDuringUpdate();
   UpdatesToTheSameBuild();
+  ExcludedDlcRules();
+  InstallsWithoutATurnedOffDlc();
+  UpdateKeepsTurnedOffDlcOff();
+  DlcChangeAddsTheDlc();
+  DlcChangeRemovesTheDlc();
+  DlcChangeWithANewerBuild();
+  DlcChangeInterruptedAtReplacing();
+  DlcChangeRestartsMidStaging();
+  StagingOfAnotherChoiceIsRestaged();
+  DlcChangeWaitsWithoutOwnedList();
+  DlcChangeWaitsForSignIn();
+  DlcChangeSkipsAnUnownedDlc();
+  PlainUpdateBringsABoughtDlc();
+  UninstallMidDlcChange();
   fs::remove_all(g_scratch);
   std::printf("gog install runner ok\n");
   return 0;

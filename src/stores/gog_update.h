@@ -14,7 +14,9 @@
 //   (the new build's file list), paths (both versions' paths, for an uninstall in between);
 // - staging/<path>: each staged file, at the path the new plan places it; gog-journal: Stage's journal;
 // - gog/: the new build's plan (files), metas (meta/<hash>), depot manifests (manifests/<name>) and redist.list;
-// - record: the new .playden-install.json, written by the runner before the phase leaves staging.
+// - record: the new .playden-install.json, written by the runner before the phase leaves staging;
+// - dlc: the DLC the staging was planned without (the runner's sidecar, kGogUpdateDlcName): the excluded GOG IDs, one
+//   decimal per line, sorted; empty for none. Written by the runner right after update.json {staging}, before Stage.
 //
 // Paths it acts on: a game path (relative, no empty, "." or ".." component, no control character) whose first
 // component doesn't start with ".playden" in any case, or a path under .playden-gog/support/ or a placed redist path
@@ -37,8 +39,8 @@
 //   replaced), gog/redist.list and files are
 //   renamed into .playden-gog/ and .playden-files, each only when still there; a leftover .playden-gog/measure/ goes;
 //   `after_replace` runs; record is renamed to .playden-install.json and the folder synced; then the work folder goes:
-//   the staged files by the staged list (the console's readdir is unreliable), the journal, gog/, the lists, update.json
-//   last.
+//   the staged files by the staged list (the console's readdir is unreliable), the journal, gog/, the lists and dlc,
+//   update.json last, then whatever is left of the folder.
 // Cancel stops between files: the phase stays and the next call carries on.
 //
 // Plain absolute-path POSIX and stdio calls only (no descriptor-relative calls, no streams), so the console runs the
@@ -56,6 +58,8 @@ namespace playden::stores {
 
 // The work folder's record, renamed over .playden-install.json when the update finishes.
 inline constexpr char kGogUpdateRecordName[] = "record";
+// The work folder's DLC sidecar: the excluded GOG IDs the staging was planned with (see the top of this file).
+inline constexpr char kGogUpdateDlcName[] = "dlc";
 
 struct GogUpdateHooks {
   // After every file is in place and the new plan and lists are, before the record: the runner's install scripts.

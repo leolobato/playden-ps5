@@ -53,7 +53,8 @@ std::vector<InstallRequest> ParseInstallRequests(const std::string& text);
 struct InstallOptions {
   std::string language;  // a Steam content language code ("german")
   std::string branch;    // a Steam branch name
-  std::vector<std::uint32_t> excluded_dlc;  // DLC the player turned off, sorted: not claimed, downloaded or reported
+  // DLC the player turned off, sorted, each in the game's own store: not claimed, downloaded or reported
+  std::vector<GameId> excluded_dlc;
   // An update that changes the game's DLC (Manage DLC): `excluded_dlc` is the whole choice and replaces what the
   // install record left out, so DLC can be turned on again. Otherwise an update leaves out the record's DLC too.
   bool dlc_choice = false;

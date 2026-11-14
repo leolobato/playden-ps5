@@ -104,6 +104,29 @@ std::string LastSegment(const std::string& url) {
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+// A DLC's name from a build meta, as a page shows it: control characters dropped, trimmed, at most kMaxDlcNameBytes
+// (cut on a character boundary).
+constexpr std::size_t kMaxDlcNameBytes = 256;
+std::string DlcName(const std::string& raw) {
+  std::string name;
+  for (const char c : raw) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 || byte == 0x7f) continue;
+    name.push_back(c);
+  }
+  const auto first = name.find_first_not_of(' ');
+  if (first == std::string::npos) return {};
+  name = name.substr(first, name.find_last_not_of(' ') - first + 1);
+  if (name.size() > kMaxDlcNameBytes) {
+    std::size_t cut = kMaxDlcNameBytes;
+    while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0) == 0x80) --cut;
+    name.resize(cut);
+    const auto last = name.find_last_not_of(' ');
+    name.resize(last == std::string::npos ? 0 : last + 1);
+  }
+  return name;
+}
+
 }  // namespace
 
 GogDetailsSource::GogDetailsSource(gog::Session& session, std::function<gog::Transport()> make_transport,
@@ -455,28 +478,78 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
     if (!meta || meta->base_product != product) return unusable("protocol");
   }
 
-  // Every owned DLC is installed with the game; without the owned list, only the game is counted.
+  // The language the depots are selected in: an installed game's own, as its update keeps it (MeasureUpdate);
+  // otherwise Settings › Game language.
+  std::string language;
+  if (record && record->gog) {
+    language = gog::SteamCodeFor(record->gog->language);
+    if (language.empty()) language = record->language;
+    if (language.empty()) language = "english";
+  } else if (content_language_) {
+    language = content_language_();
+  }
+  // Every owned DLC is installed with the game; without the owned list, only the game is counted (and no DLC is
+  // listed). An installed game's sizes leave out the DLC its record left out; its DLC list doesn't: a DLC turned off
+  // is still one the player can choose.
   std::set<std::uint64_t> owned{product};
   const auto list = Owned(cancel);
   if (cancel.load()) return details;
   if (list) owned.insert(list->begin(), list->end());
-  const auto language = content_language_ ? content_language_() : std::string();
+  std::set<std::uint64_t> sized = owned;
+  if (record && record->gog)
+    for (const auto id : record->gog->excluded)
+      if (id != product) sized.erase(id);
+  // Each owned DLC the selection takes, after the base: its selected depots' sizes. One whose depots are all of
+  // another language or none is still listed with 0 install bytes (the model hides it, as for Steam's).
+  std::vector<DlcChoice> dlc;
   std::uint64_t download = 0, install = 0;
   std::size_t depots = 0, products = 0;
   std::vector<std::string> wanted;
+  std::vector<std::uint64_t> taken;  // the products the sizes count: the update's, for its target
   if (gen1) {
-    const auto selection = gog::SelectDepotsV1(*repository, owned, language);
+    const auto all = gog::SelectDepotsV1(*repository, owned, language);
+    for (const auto id : all.products) {
+      if (id == product) continue;
+      DlcChoice entry;
+      entry.id = GameId::Gog(id);
+      for (const auto& depot : all.depots)
+        if (depot.selected_product == id) {
+          entry.download_bytes += depot.size;
+          entry.install_bytes += depot.size;
+        }
+      dlc.push_back(std::move(entry));
+    }
+    const auto selection = sized == owned ? all : gog::SelectDepotsV1(*repository, sized, language);
     download = selection.compressed_size;
     install = selection.size;
     depots = selection.depots.size();
     products = selection.products.size();
+    taken = selection.products;
     wanted = selection.dependencies;
   } else {
-    const auto selection = gog::SelectDepots(*meta, owned, language);
+    const auto all = gog::SelectDepots(*meta, owned, language);
+    for (const auto id : all.products) {
+      if (id == product) continue;
+      DlcChoice entry;
+      entry.id = GameId::Gog(id);
+      for (const auto& [named, name] : meta->products)
+        if (named == id) {
+          entry.name = DlcName(name);
+          break;
+        }
+      for (const auto& depot : all.depots)
+        if (depot.product == id) {
+          entry.download_bytes += depot.compressed_size;
+          entry.install_bytes += depot.size;
+        }
+      dlc.push_back(std::move(entry));
+    }
+    const auto selection = sized == owned ? all : gog::SelectDepots(*meta, sized, language);
     download = selection.compressed_size;
     install = selection.size;
     depots = selection.depots.size();
     products = selection.products.size();
+    taken = selection.products;
     wanted = meta->dependencies;
   }
   std::size_t folder_dependencies = 0;
@@ -491,23 +564,40 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
   details.windows_installable = true;
   details.download_bytes = download;
   details.install_bytes = install;
-  char line[160];
-  std::snprintf(line, sizeof(line), "details result=%s depots=%zu products=%zu dependencies=%zu owned=%s",
-                gen1 ? "gen1" : "gen2", depots, products, folder_dependencies, list ? "list" : "base");
+  char line[192];
+  std::snprintf(line, sizeof(line), "details result=%s depots=%zu products=%zu dependencies=%zu owned=%s dlc=%zu",
+                gen1 ? "gen1" : "gen2", depots, products, folder_dependencies, list ? "list" : "base", dlc.size());
   Log(line);
   if (record) {
-    // GOG never changes a published build: another build ID, or the same one in another generation, is an update.
+    // GOG never changes a published build: another build ID, or the same one in another generation, is an update. An
+    // owned DLC with files that the record neither holds nor left out was bought since: the update brings it.
     const char* update = "none";
     if (record->gog) {
       update = "current";
-      if (choice.build_id != record->gog->build_id || choice.generation != record->gog->generation) {
-        details.update.newer = true;
-        details.update.target = gog::UpdateTarget(choice.build_id, choice.generation);
-        update = "newer";
+      const auto& gog_record = *record->gog;
+      const auto in = [](const std::vector<std::uint64_t>& ids, std::uint64_t id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+      };
+      for (const auto& entry : dlc) {
+        const auto id = *entry.id.gog_product();
+        if (entry.install_bytes != 0 && !in(gog_record.products, id) && !in(gog_record.excluded, id))
+          details.update.new_dlc = true;
       }
+      if (choice.build_id != gog_record.build_id || choice.generation != gog_record.generation) {
+        details.update.newer = true;
+        update = "newer";
+      } else if (details.update.new_dlc) {
+        update = "new_dlc";
+      }
+      // The target names the build and the products the update takes, as the measure's plan does: a DLC bought or
+      // turned off since is another update, measured again. Without the owned list the products aren't known: no
+      // target (0), and the measure names it.
+      if (details.update.available() && list)
+        details.update.target = gog::UpdateTarget(choice.build_id, choice.generation, taken);
     }
     Log(std::string("details update result=") + update);
   }
+  details.dlc = std::move(dlc);
   return details;
 }
 
@@ -542,12 +632,19 @@ steam::MeasuredSize GogDetailsSource::MeasureUpdate(const steam::SizeRequest& re
   if (language.empty()) language = record->language;
   if (language.empty()) language = "english";
 
-  // Measured before: the folder, the installed build and the one GOG last named for the game decide.
+  // Measured before: the folder, the installed build and its products and DLC left out, and the one GOG last named
+  // for the game decide. A DLC change on the same build is measured again.
   if (measured_generation_ != generation) {
     measured_updates_.clear();
     measured_generation_ = generation;
   }
-  const auto installed_build = std::to_string(record->gog->generation) + ":" + record->gog->build_id;
+  const auto joined = [](const std::vector<std::uint64_t>& ids) {
+    std::string text;
+    for (const auto id : ids) text += (text.empty() ? "" : ",") + std::to_string(id);
+    return text;
+  };
+  const auto installed_build = std::to_string(record->gog->generation) + ":" + record->gog->build_id + "\n" +
+                               joined(record->gog->products) + "\n" + joined(record->gog->excluded);
   const auto key = [&](const std::string& latest) {
     return *root + "\n" + installed_build + "\n" + latest + "\n" + language;
   };
@@ -582,6 +679,8 @@ steam::MeasuredSize GogDetailsSource::MeasureUpdate(const steam::SizeRequest& re
   target.root = *root;
   target.language = language;
   target.seed_list = *root + "/" + gog::kFileListName;
+  // As the update would plan it: without the DLC the record left out.
+  target.excluded = record->gog->excluded;
   const auto layout = gog::MeasureLayout(*root);
   const auto planned = installer.Plan(target, layout, cancel);
   if (cancel.load() || planned.error == Error::kCanceled) {
@@ -607,7 +706,11 @@ steam::MeasuredSize GogDetailsSource::MeasureUpdate(const steam::SizeRequest& re
   result.download_bytes = diff.download_bytes;
   result.staged_bytes = diff.staged_bytes;
   result.install_bytes = diff.install_bytes;
-  result.target = gog::UpdateTarget(planned.build_id, planned.generation);
+  result.target = gog::UpdateTarget(planned.build_id, planned.generation, planned.products);
+  // The plan read the owned list now: a DLC bought since this sign-in's list was read joins it, so that the game's
+  // details, asked again, name the same update.
+  if (owned_generation_ != 0 && owned_generation_ == session_.generation())
+    owned_.insert(planned.products.begin(), planned.products.end());
   measured_updates_[key(latest)] = {result.download_bytes, result.staged_bytes, result.install_bytes, result.target,
                                     changed, removed};
   return answer("measured", nullptr);

@@ -206,7 +206,10 @@ bool UpdateNeedsUnfetchedDlc(const installs::InstalledRecord& record, std::uint3
 
 std::set<std::uint32_t> ExcludedDlcFor(const InstallOptions& options, bool update,
                                        const std::optional<installs::InstalledRecord>& record) {
-  std::set<std::uint32_t> excluded(options.excluded_dlc.begin(), options.excluded_dlc.end());
+  std::set<std::uint32_t> excluded;
+  // Steam DLC only: the install service keeps a job's to its game's store.
+  for (const auto& dlc : options.excluded_dlc)
+    if (const auto app = dlc.steam_app()) excluded.insert(*app);
   if (update && !options.dlc_choice && record) excluded.insert(record->excluded_dlc.begin(), record->excluded_dlc.end());
   return excluded;
 }

@@ -1946,9 +1946,9 @@ void Controller::TickUninstalls() {
       case UninstallAction::Kind::kStop: StopUninstall(id, action.reason); break;
       case UninstallAction::Kind::kFinished:
         model_.NotifyUninstallFinished(id);
-        // Steam's details of the installed game had its DLC for that install only: the install sheet asks with every
-        // version's and language's sizes.
-        if (id.store == Store::kSteam) refresh_details_.insert(id);
+        // The details of the installed game had its DLC for that install only (Steam: its version and language; GOG:
+        // its language): the install sheet asks again with every version's and Settings' language's sizes.
+        if (id.store == Store::kSteam || Details(id.store)) refresh_details_.insert(id);
         ++play_notes_revision_;
         break;
     }
@@ -2639,15 +2639,36 @@ void Controller::TickInstalls() {
   std::vector<LiveInstalledGame> installed;
   for (const auto& game : snapshot.installed) {
     installed.push_back({game.id, game.install_bytes, game.volume_id, game.available, game.finished_at});
-    // What Manage DLC starts from: the DLC whose depots the install holds, and the ones the player turned off.
-    if (game.record) {
+    // What Manage DLC starts from: the DLC whose depots the install holds, and the ones the player turned off. A Steam
+    // record says so by its depots' owners, a GOG one by its products (the base game first) and its "excluded" list.
+    if (game.record && game.id.store == Store::kSteam) {
       auto& live = installed.back();
       live.dlc_known = true;
-      live.excluded_dlc = game.record->excluded_dlc;
-      for (const auto& depot : game.record->depots)
-        if (depot.owner != 0 && depot.owner != game.record->app_id &&
-            std::find(live.installed_dlc.begin(), live.installed_dlc.end(), depot.owner) == live.installed_dlc.end())
-          live.installed_dlc.push_back(depot.owner);
+      for (const auto dlc : game.record->excluded_dlc)
+        if (dlc != 0) live.excluded_dlc.push_back(GameId::Steam(dlc));
+      for (const auto& depot : game.record->depots) {
+        if (depot.owner == 0 || depot.owner == game.record->app_id) continue;
+        const auto owner = GameId::Steam(depot.owner);
+        if (std::find(live.installed_dlc.begin(), live.installed_dlc.end(), owner) == live.installed_dlc.end())
+          live.installed_dlc.push_back(owner);
+      }
+    } else if (game.record && game.record->gog && game.id.store == Store::kGog) {
+      auto& live = installed.back();
+      const auto& gog = *game.record->gog;
+      live.dlc_known = true;
+      const auto base = game.id.gog_product();
+      for (std::size_t i = 1; i < gog.products.size(); ++i) {
+        const auto dlc = GameId::Gog(gog.products[i]);
+        if (!dlc.valid() || gog.products[i] == base) continue;
+        if (std::find(live.installed_dlc.begin(), live.installed_dlc.end(), dlc) == live.installed_dlc.end())
+          live.installed_dlc.push_back(dlc);
+      }
+      for (const auto product : gog.excluded) {
+        const auto dlc = GameId::Gog(product);
+        if (!dlc.valid() || product == base) continue;
+        if (std::find(live.excluded_dlc.begin(), live.excluded_dlc.end(), dlc) == live.excluded_dlc.end())
+          live.excluded_dlc.push_back(dlc);
+      }
     }
   }
   std::vector<LiveCompletedDownload> completed;
@@ -2795,8 +2816,12 @@ void Controller::TickAppDetails() {
   const bool signed_in = model_.state().account().authentication == AuthState::SignedIn;
   for (const auto& check : model_.TakeSizeChecks()) {
     auto* details = Details(check.id.store);
+    // Steam measures by app ID: a DLC of another store has no place in its request.
+    std::vector<std::uint32_t> excluded;
+    for (const auto& dlc : check.excluded_dlc)
+      if (const auto app = dlc.steam_app()) excluded.push_back(*app);
     // Not queued: as a check that failed, asked again when the sheet opens next.
-    if (!signed_in || details != app_details_ || !details->Measure({check.id, check.branch, check.language, false, check.excluded_dlc}, generation))
+    if (!signed_in || details != app_details_ || !details->Measure({check.id, check.branch, check.language, false, excluded}, generation))
       model_.UpdateMeasuredSize(check, false, true, {});
   }
   // Updates' sizes: the files that change, from the new manifests and each install's tree. Signed out, they wait
@@ -2810,8 +2835,12 @@ void Controller::TickAppDetails() {
         app_details_->Refresh(size.request.id, generation);
       continue;
     }
-    model_.UpdateMeasuredSize({size.request.id, size.request.branch, size.request.language, size.request.excluded_dlc}, size.measured, size.failed,
-                              {size.install_bytes, size.download_bytes});
+    // Keyed as the model asked: its DLC by game ID, sorted.
+    std::vector<GameId> excluded;
+    for (const auto dlc : size.request.excluded_dlc) excluded.push_back(GameId::Steam(dlc));
+    std::sort(excluded.begin(), excluded.end());
+    model_.UpdateMeasuredSize({size.request.id, size.request.branch, size.request.language, std::move(excluded)}, size.measured,
+                              size.failed, {size.install_bytes, size.download_bytes});
   }
 }
 void Controller::TickOtherDetails() {
@@ -2940,7 +2969,7 @@ void Controller::ApplyGameDetails(const stores::GameDetails& details, bool check
     std::vector<GameDlc> dlc;
     for (const auto& choice : details.dlc)
     {
-      dlc.push_back({choice.app_id, choice.name, choice.download_bytes, choice.install_bytes, choice.free, {}});
+      dlc.push_back({choice.id, choice.name, choice.download_bytes, choice.install_bytes, choice.free, {}});
       for (const auto& other : choice.other_sizes)
         dlc.back().other_sizes.push_back({other.branch, other.language, other.download_bytes, other.install_bytes, other.optional});
       dlc.back().optional = choice.optional;

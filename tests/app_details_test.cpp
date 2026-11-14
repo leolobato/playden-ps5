@@ -660,7 +660,7 @@ void IncludedDlcIsCounted() {
   const auto details = DetailsFromAppInfo(6000, buffer, grant);
   // 6001 counts once for its two depots; 6002 isn't owned and 6003 is Mac only.
   assert(details.install_bytes == 1020u);
-  assert(details.dlc.size() == 1 && details.dlc[0].app_id == 6001 && details.dlc[0].install_bytes == 20 &&
+  assert(details.dlc.size() == 1 && details.dlc[0].id == SteamId(6001) && details.dlc[0].install_bytes == 20 &&
          details.dlc[0].download_bytes == 10 && !details.dlc[0].free);
   // An installed game offers its DLC for Manage DLC, also one its install left out, as the record's branch and language
   // have them (no other sizes): a DLC change keeps those.
@@ -670,7 +670,7 @@ void IncludedDlcIsCounted() {
   record.depots = {{6000, 1, 6000, 6000}};
   record.excluded_dlc = {6001};
   const auto installed = DetailsFromAppInfo(6000, buffer, grant, "english", record);
-  assert(installed.dlc.size() == 1 && installed.dlc[0].app_id == 6001 && installed.dlc[0].install_bytes == 20 &&
+  assert(installed.dlc.size() == 1 && installed.dlc[0].id == SteamId(6001) && installed.dlc[0].install_bytes == 20 &&
          installed.dlc[0].other_sizes.empty());
   // Without licenses, nothing says what is owned: no list.
   assert(DetailsFromAppInfo(6000, buffer, std::nullopt, "english", record).dlc.empty());
@@ -724,7 +724,7 @@ void IncludedDlcIsCounted() {
   const LicensedDepots::Grant all{{6200, 6201, 6202, 6203}, {6200, 6211, 6212, 6213, 6221, 6222}};
   const auto choices = DetailsFromAppInfo(6200, branched, all).dlc;
   const auto choice = [&](std::uint32_t app) {
-    const auto found = std::find_if(choices.begin(), choices.end(), [&](const DlcChoice& dlc) { return dlc.app_id == app; });
+    const auto found = std::find_if(choices.begin(), choices.end(), [&](const DlcChoice& dlc) { return dlc.id == SteamId(app); });
     assert(found != choices.end());
     return *found;
   };

@@ -24,6 +24,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace playden::gog {
 
@@ -56,8 +57,10 @@ DiffResult DiffPlans(const std::string& old_plan, const std::string& new_plan, c
                      const std::atomic<bool>& cancel,
                      const std::function<void(std::uint64_t index, const PlanEntry&, bool changed)>& each);
 
-// The update a check and a measure both name: the first 8 bytes (big-endian) of SHA-256("gog\n" + generation + "\n" +
-// build_id), 0 made 1.
-std::uint64_t UpdateTarget(std::string_view build_id, int generation);
+// The update a check and a measure both name: the build and the products it takes (the base game and the owned DLC
+// the player didn't turn off), so a DLC bought or turned off since names another update. The first 8 bytes
+// (big-endian) of SHA-256("gog\n" + generation + "\n" + build_id + "\n" + the products sorted, without repeats,
+// comma-separated), 0 made 1.
+std::uint64_t UpdateTarget(std::string_view build_id, int generation, std::vector<std::uint64_t> products);
 
 }  // namespace playden::gog

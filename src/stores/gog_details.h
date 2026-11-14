@@ -26,18 +26,24 @@ namespace playden::stores {
 
 // GOG's game details on their own worker: what installing a GOG game takes on this console, and whether an installed
 // one has an update. Per game, the default-branch Windows build (gog::ChooseBuild), then for a gen 2 build its meta and
-// the depots an install takes (gog::SelectDepots, in Settings › Game language), for a gen 1 build its repository.json
-// (unsigned, plain JSON) and gog::SelectDepotsV1, as the install runner would choose them:
+// the depots an install takes (gog::SelectDepots), for a gen 1 build its repository.json (unsigned, plain JSON) and
+// gog::SelectDepotsV1, as the install runner would choose them. The language is Settings › Game language, or for an
+// installed game (a record with `gog`) the record's, as its update keeps it:
 // - download_bytes: the depots' compressed size (gen 1 files are stored whole: their size), plus the dependencies'
 //   from the public dependency store, game-folder ones (DOSBox, ScummVM, language_setup) and __redist installers
 //   (MSVC, DirectX…) alike; install_bytes: their sizes.
 // - The owned DLC are counted (the owned list, read once per GOG sign-in); with no usable token, the base game only.
+//   An installed game's leave out the DLC its record left out.
+// - dlc: one entry per owned DLC the selection takes, in meta (gen 1: repository) order, with the full owned list
+//   (a DLC left out is still listed): its selected depots' sizes, and its name from the gen 2 meta (gen 1: none).
+//   Empty when the owned list could not be read; a later details refresh fills it.
 // - A game with no Windows build is answered as not installable here, with the reason.
-// - launches stay empty (an installed game's come from its install record), and so do languages, versions and DLC.
+// - launches stay empty (an installed game's come from its install record), and so do languages and versions.
 // - An installed game (SetInstalled) whose record has `gog`: update.newer when the default build's ID or generation
-//   differs from the record's (GOG builds never change once published, so the build decides), with update.target
-//   gog::UpdateTarget of the new build. new_dlc stays false: an update, like an install, takes every owned DLC. No
-//   update when the game is not installed, its record has no `gog`, or it has no installable Windows build now.
+//   differs from the record's (GOG builds never change once published, so the build decides); update.new_dlc when an
+//   owned DLC with files is in neither the record's products nor its left-out DLC. Either way update.target is
+//   gog::UpdateTarget of the default build and the products the sizes count (0 without the owned list). No update
+//   when the game is not installed, its record has no `gog`, or it has no installable Windows build now.
 // - No answer from GOG sets `failed`: asking again may work.
 //
 // Requests are deduplicated and cached for the current generation, as Steam's are; Invalidate drops what is queued
@@ -54,9 +60,10 @@ namespace playden::stores {
 // disk. The measure folder is deleted afterwards whatever happened; the install's own plan, file list and redist
 // list are never touched. A game with an update under way (.playden-update/update.json) is not measured. Answers are
 // kept on the worker by the folder, the record's build and the new one (the default build GOG last answered for the
-// game), so measuring again asks GOG nothing.
+// game), so measuring again asks GOG nothing. The update's target names the plan's products; the plan reads the owned
+// list afresh, and a DLC it takes that this sign-in's owned list lacks joins that list.
 //
-// gog.log gets "details result=<kind>", "details update result=newer|current|none" (installed games) and
+// gog.log gets "details result=<kind>", "details update result=newer|new_dlc|current|none" (installed games) and
 // "details size result=measured|skipped|failed changed=N removed=N" lines with counts only: never an ID, a URL or a
 // token.
 class GogDetailsSource final : public DetailsSource {
@@ -73,7 +80,8 @@ class GogDetailsSource final : public DetailsSource {
 
   // make_transport is called on the worker, before its first request (the transport is the worker's own), and once
   // more for each measure that plans: the planner runs on its own thread.
-  // content_language is Settings › Game language as a Steam code, read for each game; empty: English.
+  // content_language is Settings › Game language as a Steam code, read for each game without a GOG install record;
+  // empty: English.
   GogDetailsSource(gog::Session& session, std::function<gog::Transport()> make_transport,
                    std::function<std::string()> content_language, LogSink log = {});
   ~GogDetailsSource() override;
