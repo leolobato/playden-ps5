@@ -3772,6 +3772,115 @@ void live_refused_preparation_offers_uninstall() {
     check(!has_row(model, "uninstall") && !has_row(model, "import-remove"), "nothing to remove without its files");
 }
 
+// The Library's Game actions uninstall an installed game, with the question Home and its page ask, and the uninstall
+// joins the Queue. An imported game playing from its folder leaves the library instead; one not installed has no row.
+// A game that runs, waits in Queue or is uninstalling already says so and can't be uninstalled from there.
+void live_library_actions_offer_uninstall() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    const auto local = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    const auto copied = playden::GameId::Local("7c9e6679-7425-40de-944b-e07fc1f90ae7");
+    check(model.UpdateLibrary({{game(SteamId(36), "Doom 3"), game(SteamId(37), "Elsewhere"), game(SteamId(38), "Running"),
+                                game(SteamId(39), "Moving"), game(SteamId(40), "Updating"), game(SteamId(41), "Update failed")},
+                               false, {}, false, false, {}}),
+          "library loaded");
+    LibraryUpdate imported{{game(local, "Rally"), game(copied, "Copied")}, false, {}, false, false, {}};
+    imported.source = playden::Store::kLocal;
+    check(model.UpdateLibrary(imported), "imported library");
+    LiveInstallJob moving{SteamId(39), JobState::Downloading, 50, 200, {}, "usb0"};
+    moving.move = true;
+    moving.from_volume_id = "internal";
+    LiveInstallJob updating{SteamId(40), JobState::Downloading, 50, 200, {}};
+    updating.update = true;
+    // An update that failed while putting its files in place stays in Queue, locked: only an uninstall ends it.
+    LiveInstallJob failed{SteamId(41), JobState::Failed, 50, 200, "Disk error"};
+    failed.update = true;
+    failed.locked = true;
+    model.UpdateInstalls({moving, updating, failed},
+                         {{SteamId(36), 600'000'000}, {SteamId(38), 700'000'000}, {SteamId(39), 100}, {SteamId(40), 100},
+                          {SteamId(41), 100}, {copied, 300'000'000}});
+    model.UpdateExternalGames({{local, "usb0", true, ""}});
+    LiveRuntimeGame running; running.game_id = SteamId(38); running.status = "Ready"; running.activity = TitleActivity::Running;
+    model.UpdateRuntime(RuntimeState::Ready, {running});
+    const auto options = [&model](playden::GameId id) {
+        check(model.action("select:" + ToKey(id)) && model.action("options") && !model.state().navigation.modals.empty() &&
+                  model.state().navigation.modals.back().id == "context",
+              "the tile's Game actions open");
+    };
+    const auto close = [&model] { while (!model.state().navigation.modals.empty()) model.action("circle"); };
+    check(model.action("r1") && model.state().navigation.route == Route::Library, "Library opened");
+
+    // A page opened earlier must not decide which game the Library's actions act on.
+    check(model.action("details:37") && model.action("circle") && model.state().navigation.route == Route::Library,
+          "another game's page was opened before");
+    options(SteamId(36));
+    check(has_row(model, "uninstall") && find_row(model, "uninstall")->enabled && !has_row(model, "import-remove"),
+          "an installed game can be uninstalled from the Library");
+    activate(model, "uninstall");
+    check(model.state().navigation.modals.size() == 2 && model.state().navigation.modals.back().title == "Uninstall this game?",
+          "it asks first, as Home and the game page do");
+    close();
+    check(model.state().navigation.route == Route::Library && model.TakeInstallRequests().empty(), "Cancel asks for nothing");
+    options(SteamId(36));
+    activate(model, "uninstall");
+    activate(model, "confirm-destructive");
+    const auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Uninstall && requests[0].game_id == SteamId(36) &&
+              model.state().navigation.modals.empty() && model.state().navigation.route == Route::Library &&
+              model.state().navigation.focus_key == "game-36",
+          "confirmed, that game is uninstalled and focus stays on its tile");
+    options(SteamId(36));
+    check(has_row(model, "uninstall") && !find_row(model, "uninstall")->enabled &&
+              find_row(model, "uninstall")->subtitle == "Uninstalling…",
+          "an uninstall already asked for is not asked again");
+    close();
+
+    // Not installed: nothing to uninstall.
+    options(SteamId(37));
+    check(!has_row(model, "uninstall") && !has_row(model, "import-remove"), "a game that isn't installed has no row");
+    close();
+    // Running or waiting in Queue: the row says why it can't start.
+    options(SteamId(38));
+    check(has_row(model, "uninstall") && !find_row(model, "uninstall")->enabled && find_row(model, "uninstall")->subtitle == "Playing",
+          "a running game is not uninstalled");
+    close();
+    options(SteamId(39));
+    check(has_row(model, "uninstall") && !find_row(model, "uninstall")->enabled && find_row(model, "uninstall")->subtitle == "Moving",
+          "a moving game is not uninstalled");
+    close();
+    // An update, running or failed, doesn't stop it: the uninstall drops the update.
+    options(SteamId(40));
+    check(has_row(model, "uninstall") && find_row(model, "uninstall")->enabled, "a game with an update in Queue can be uninstalled");
+    close();
+    options(SteamId(41));
+    check(has_row(model, "uninstall") && find_row(model, "uninstall")->enabled, "a failed update can still be uninstalled");
+    close();
+
+    // An imported game copied into storage is uninstalled like any other.
+    options(copied);
+    check(has_row(model, "uninstall") && find_row(model, "uninstall")->enabled && !has_row(model, "import-remove"),
+          "a copied imported game is uninstalled");
+    close();
+    // An imported game playing from its folder leaves the library, and the Library stays open.
+    options(local);
+    check(has_row(model, "import-remove") && !has_row(model, "uninstall"), "an in-place imported game is removed from the library");
+    activate(model, "import-remove");
+    check(model.state().navigation.modals.back().title == "Remove Rally from the library?", "it asks about the Library's game");
+    activate(model, "confirm-destructive");
+    const auto removed = model.TakeImportRequests();
+    check(removed.size() == 1 && removed[0].kind == ImportRequestKind::Remove && removed[0].game_id == local &&
+              model.state().navigation.route == Route::Library && model.state().navigation.modals.empty(),
+          "confirmed, that game leaves the library and the Library stays open");
+    LibraryUpdate without{{game(copied, "Copied")}, false, {}, false, false, {}};
+    without.source = playden::Store::kLocal;
+    model.UpdateExternalGames({});
+    check(model.UpdateLibrary(without), "the library drops the game");
+    check(model.state().navigation.selected_game_id.valid() &&
+              model.state().navigation.focus_key == "game-" + ToKey(model.state().navigation.selected_game_id),
+          "focus moves to a neighbouring tile");
+}
+
 // A setup an earlier kit left (its title or bottle from that kit) can't be finished by Try again: Queue and the
 // game page offer Recreate bottle instead, say so in plain words, and ask before it runs.
 void live_setup_from_an_earlier_kit_offers_recreate() {
@@ -4716,6 +4825,7 @@ int main() {
     live_queue_history_and_empty_states();
     live_queue_lists_preparations_needing_attention();
     live_refused_preparation_offers_uninstall();
+    live_library_actions_offer_uninstall();
     live_setup_from_an_earlier_kit_offers_recreate();
     live_queue_lists_uninstalls();
     live_details_prepare_next();

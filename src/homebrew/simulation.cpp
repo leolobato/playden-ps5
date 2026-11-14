@@ -1885,6 +1885,15 @@ std::string Simulation::installed_blocker(GameId id) const {
     return {};
 }
 
+std::string Simulation::sheet_uninstall_blocker(GameId id) const {
+    auto blocker = installed_blocker(id);
+    if (blocker != "In Queue") return blocker;
+    const bool moving = std::any_of(state_.jobs.begin(), state_.jobs.end(), [id](const Job& job) {
+        return job.game_id == id && job.move && job.state != JobState::Downloaded && job.state != JobState::Cancelled;
+    });
+    return moving ? "Moving" : std::string();
+}
+
 namespace {
 const Volume* volume_of(const State& state, const std::string& id);
 }
@@ -8377,6 +8386,14 @@ void Simulation::rebuild_view() {
             }
             else if (action_key == "verify" || action_key == "uninstall") {
                 if (!is_installed(state_, state_.navigation.selected_game_id)) { item.enabled = false; item.subtitle = "Game is not installed"; }
+                // A game that runs, is being set up, is moving or is already uninstalling can't be uninstalled now,
+                // and the row says why, as Manage installed games does. Its update doesn't stop it: the uninstall drops
+                // the update (InstallService::Uninstall), which is the way out of one that failed.
+                else if (const auto blocker = sheet_uninstall_blocker(state_.navigation.selected_game_id);
+                         live() && action_key == "uninstall" && !blocker.empty()) {
+                    item.enabled = false;
+                    item.subtitle = blocker;
+                }
             } else if (action_key == "hide") item.title = state_.library.hidden.contains(state_.navigation.selected_game_id) ? "Unhide" : "Hide";
             else if (action_key == "runtime-retry") item.subtitle = state_.runtime == RuntimeState::Ready ? "Ready — simulated" : state_.runtime == RuntimeState::Checking ? "Checking — simulated" : state_.runtime == RuntimeState::Failed ? "Failed — retry available" : "Unavailable — retry available";
             else if (action_key == "account-auth") { item.kind = RowKind::Status; item.value = auth_name(state_.account().authentication); item.subtitle = state_.account().error; item.enabled = false; }
@@ -13536,7 +13553,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         else if (!state_.editor.active && state_.navigation.route == Route::Library && state_.navigation.selected_game_id.valid() && state_.navigation.modals.empty()
                  && state_.navigation.focus_key.rfind("game-", 0) == 0) {
             if (live()) force_organization_selection_ = true;
-            open_modal({"context", "Game actions", state_.navigation.focus_key, {"favorite", "collection", "note", "hide", "cancel"}, 0, false});
+            open_modal({"context", "Game actions", state_.navigation.focus_key, library_context_actions(), 0, false});
         }
         else if (!state_.editor.active && state_.navigation.route == Route::Downloads && state_.navigation.modals.empty()) activate();
     } else if (logical_action == "square") {
@@ -15414,6 +15431,22 @@ bool Simulation::known_problem(GameId id) const {
     for (const auto& program : setup->second.programs)
         if (program.refusal_soft && program.path == values.launch->executable) return true;
     return false;
+}
+
+std::vector<std::string> Simulation::library_context_actions() {
+    std::vector<std::string> actions{"favorite", "collection", "note", "hide", "cancel"};
+    // An installed game is uninstalled from here as from Home and its page: the same question, then the Queue.
+    // An imported game playing from its folder leaves the library instead; a game that isn't installed has no row.
+    const auto id = state_.navigation.selected_game_id;
+    if (external_game(id)) {
+        // Remove from library acts on the page's game and goes back where the page was opened from: here.
+        state_.navigation.detail_id = id;
+        state_.navigation.detail_origin = Route::Library;
+        actions.insert(actions.end() - 1, "import-remove");
+    } else if (is_installed(state_, id)) {
+        actions.insert(actions.end() - 1, "uninstall");
+    }
+    return actions;
 }
 
 std::vector<std::string> Simulation::details_context_actions() const {

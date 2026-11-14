@@ -708,6 +708,18 @@ void t09_uninstall_and_reset_preserve_declared_data(const std::filesystem::path&
     activate(simulation, "uninstall");
     activate(simulation, "confirm-destructive");
     simulation.action("details:900001"); simulation.action("options"); activate(simulation, "uninstall"); activate(simulation, "confirm-destructive");
+    // The Library tile's Game actions offer it too, for installed games only, with the same question.
+    check(simulation.action("route:library") && simulation.state().navigation.route == playden::homebrew::Route::Library &&
+              simulation.action("select:900010") && simulation.action("options"),
+          "T09 a Library tile opens Game actions");
+    const auto& library_actions = simulation.state().navigation.modals.back().action_keys;
+    check(std::find(library_actions.begin(), library_actions.end(), "uninstall") == library_actions.end(),
+          "T09 a game that isn't installed has no Uninstall in the Library");
+    simulation.action("circle");
+    check(simulation.action("select:900001") && simulation.action("options"), "T09 an installed tile opens Game actions");
+    activate(simulation, "uninstall");
+    check(simulation.state().navigation.modals.back().id == "confirmation", "T09 Uninstall in the Library asks first");
+    activate(simulation, "confirm-destructive");
     const auto uninstalls = std::count_if(simulation.state().jobs.begin(), simulation.state().jobs.end(),
         [](const playden::homebrew::Job& job) { return job.game_id == SteamId(900001) && job.kind == "uninstall" && job.state != playden::homebrew::JobState::Cancelled; });
     check(uninstalls == 1, "T09 repeated uninstall confirmation is idempotent");

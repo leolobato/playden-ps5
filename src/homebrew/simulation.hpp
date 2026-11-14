@@ -2157,6 +2157,8 @@ private:
     // can), and the screen's refresh when installs, jobs or the runtime change.
     [[nodiscard]] std::vector<GameId> manage_list(ManageTab tab) const;
     [[nodiscard]] std::string installed_blocker(GameId id) const;
+    // Why Game actions' Uninstall can't start now: installed_blocker, but only a move counts of the game's Queue jobs.
+    [[nodiscard]] std::string sheet_uninstall_blocker(GameId id) const;
     // On Updates also a game whose drive is disconnected or read-only.
     [[nodiscard]] std::string manage_blocker(ManageTab tab, GameId id) const;
     // What the Runtimes tab would do for a game: update its runtime or repair it; nothing when it is current.
@@ -2258,6 +2260,8 @@ private:
     [[nodiscard]] std::vector<std::string> maintenance_actions() const;
     // The game page's More menu: Game settings and Maintenance first for a prepared game.
     [[nodiscard]] std::vector<std::string> details_context_actions() const;
+    // The Library tile's Game actions; it fixes the game Remove from library acts on.
+    [[nodiscard]] std::vector<std::string> library_context_actions();
     void request_maintenance(GameId id, MaintenanceKind kind);
     // Rows the preset chooser compares: Current → This preset for the focused preset.
     void build_preset_comparison(GameId id, const std::string& preset_id);
