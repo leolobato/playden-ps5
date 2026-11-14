@@ -488,6 +488,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::stores::local::ImportStore> imports;
     std::unique_ptr<playden::stores::local::LocalCopyRunner> copy_runner;  // declared first: the install service uses it
     std::unique_ptr<playden::installs::GameMover> game_mover;  // declared first: the install service moves games with it
+    // GOG (features.txt gog-store): declared before the install service, which runs its install runner, and before
+    // the registry, which owns its account and library source.
+    std::unique_ptr<playden::homebrew::GogServices> gog;
     std::unique_ptr<playden::steam::InstallService> installs;
     // Declared after installs: the fallback callback must finish before installs is destroyed.
     std::unique_ptr<playden::steam::CmClient> servers_cm;
@@ -507,8 +510,6 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::LocalSessionRepository> cloud_sessions;
     std::unique_ptr<playden::steam::CloudService> cloud;
     std::unique_ptr<playden::steam::StoreDetailsService> store_details;  // declared first: the controller uses it
-    // GOG (features.txt gog-store): declared before the registry, which owns its account and library source.
-    std::unique_ptr<playden::homebrew::GogServices> gog;
     std::unique_ptr<playden::stores::Registry> stores;  // declared first: the controller uses it
     // Community recipes; declared first: the controller uses the service, the service its HTTP client.
     std::unique_ptr<playden::steam::HttpClient> community_http;
@@ -712,10 +713,26 @@ int main(int argc, char** argv) {
             playden::app::AppendLogLine(log_directory, "install.log", line);
         };
         copy_runner = std::make_unique<playden::stores::local::LocalCopyRunner>(*imports, std::move(copy_options));
-        installs = std::make_unique<playden::steam::InstallService>(
-            playden::installs::InstallService::Runners{{playden::Store::kSteam, install_runner.get()},
-                                                       {playden::Store::kLocal, copy_runner.get()}},
-            playden::steam::DiscoverInstallVolumes(candidates));
+        {
+            // GOG, with the gog-store line: its account, library and install runner beside Steam's, made before the
+            // install service runs the runner. Off, nothing is made; a GOG session left from an earlier run still
+            // goes when "Stay signed in" is off.
+            playden::homebrew::GogWiringConfig gog_config;
+            gog_config.enabled = features.gog_store;
+            gog_config.stay_signed_in = stay_signed_in;
+            gog_config.user_root = options->data_directory.string();
+            gog_config.ca_bundle = PLAYDEN_HOMEBREW_CA_BUNDLE;
+            gog_config.log_directory = log_directory;
+            gog_config.install_log_directory = log_directory;
+            gog_config.library_storage = library_storage.get();
+            gog_config.content_language = [] { return selected_content_language(); };
+            gog = playden::homebrew::MakeGogServices(std::move(gog_config));
+        }
+        playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, install_runner.get()},
+                                                                   {playden::Store::kLocal, copy_runner.get()}};
+        if (gog) install_runners[playden::Store::kGog] = gog->install_runner();
+        installs = std::make_unique<playden::steam::InstallService>(std::move(install_runners),
+                                                                    playden::steam::DiscoverInstallVolumes(candidates));
         // Moving installed games between drives (--extra-volume): no PS5 title follows on the Mac.
         playden::installs::GameMoveOptions move_options;
         move_options.log = [log_directory](const std::string& line) {
@@ -776,19 +793,8 @@ int main(int argc, char** argv) {
         stores->Add(std::make_unique<playden::stores::SteamAccount>(*auth, *sessions, auth_log));
         stores->Add(std::make_unique<playden::stores::SteamLibrarySource>(*library_service));
         stores->Add(std::make_unique<playden::stores::SteamDetailsSource>(*app_details));
-        {
-            // GOG, with the gog-store line: its account and library beside Steam's. Off, nothing is made; a GOG
-            // session left from an earlier run still goes when "Stay signed in" is off.
-            playden::homebrew::GogWiringConfig gog_config;
-            gog_config.enabled = features.gog_store;
-            gog_config.stay_signed_in = stay_signed_in;
-            gog_config.user_root = options->data_directory.string();
-            gog_config.ca_bundle = PLAYDEN_HOMEBREW_CA_BUNDLE;
-            gog_config.log_directory = log_directory;
-            gog_config.library_storage = library_storage.get();
-            gog = playden::homebrew::MakeGogServices(std::move(gog_config));
-            if (gog) gog->Register(*stores, simulation);
-        }
+        // GOG's account and library join Steam's (gog-store line on).
+        if (gog) gog->Register(*stores, simulation);
         // Imported games: <data>/playden-import is the drop folder, playden/import on each extra drive.
         playden::stores::local::LocalLibraryConfig import_config;
         import_config.volumes = {{playden::steam::InstallService::kPrimaryVolumeId, options->data_directory.string(),

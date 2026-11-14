@@ -303,6 +303,14 @@ std::optional<Meta> ParseMeta(std::string_view inflated) {
   return meta;
 }
 
+bool PlainLanguageCode(std::string_view code) {
+  if (code.empty() || code.size() > 16) return false;
+  for (const char c : code)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+      return false;
+  return true;
+}
+
 Selection SelectDepots(const Meta& meta, const std::set<std::uint64_t>& owned, std::string_view steam_code) {
   Selection selection;
   selection.products.push_back(meta.base_product);
@@ -334,8 +342,13 @@ Selection SelectDepots(const Meta& meta, const std::set<std::uint64_t>& owned, s
     codes = LanguageCodes("english");
     if (!carried(codes)) {
       codes.clear();
+      // A code the plan can't hold (a tab, 40 bytes) is passed over: it would be recorded and never read back. A name
+      // the table knows ("Brazilian Portuguese") stands, as its plain code is what is recorded.
+      const auto usable = [](const std::string& code) {
+        return Specific(code) && (!SteamCodeFor(code).empty() || PlainLanguageCode(code));
+      };
       for (const MetaDepot* depot : carriers) {
-        const auto first = std::find_if(depot->languages.begin(), depot->languages.end(), Specific);
+        const auto first = std::find_if(depot->languages.begin(), depot->languages.end(), usable);
         if (first == depot->languages.end()) continue;
         const auto steam = SteamCodeFor(*first);
         if (!steam.empty()) {

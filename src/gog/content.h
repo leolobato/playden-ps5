@@ -108,10 +108,15 @@ struct Selection {
   std::uint64_t compressed_size = 0;
 };
 
+// A language code an install can record: 1 to 16 letters, digits, '-' or '_' ("en-US", "en", "English").
+bool PlainLanguageCode(std::string_view code);
+
 // The depots an install takes.
 // - Products: the base and every other meta product in `owned`, in meta order: every owned DLC is installed.
 // - Language: the requested one when a base depot carries it, else English, else the first language of the base
-//   depots. Non-gog depots that name a language decide; "*" carries none in particular.
+//   depots that the language table knows or that is a PlainLanguageCode (any other is never chosen, as if the depot
+//   named "*"); the table's own code is recorded for a name it knows. Non-gog depots
+//   that name a language decide; "*" carries none in particular.
 // - Each kept depot names "*" or the language, gog depots too: each language has its own goggame .info and .script.
 // - Bitness, per product: depots whose osBitness is absent or has "*" or "64". A depot of another bitness ("32") goes
 //   only when its product has a depot that names "64"; otherwise it stays (Wine runs 32-bit programs).

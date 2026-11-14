@@ -1,7 +1,8 @@
 # Community recipes
 
-A community recipe tells Playden how to start one game on the PS5: a Steam game, or a game imported from a folder
-(GOG and Epic games once Playden has those stores). It is a
+A community recipe tells Playden how to start one game on the PS5: a Steam game, a GOG game installed from GOG (the
+`gog-store` experimental feature, see [docs/gog-store.md](gog-store.md)), or a game imported from a folder (Epic games
+once Playden has that store). It is a
 Playden recipe (the same JSON as `runtime/recipes/*.json`) with a few more fields
 that say who tested it, where and how well. Playden reads the recipe part with
 `ParseGameRecipe` and the whole file with `ParseCommunityRecipe`
@@ -70,8 +71,9 @@ recipes on or off.
 1. Open the web page (Settings › Web access) and pair the browser in the **Game files** tab.
 2. Choose **Import recipe** and pick the file: an Export as recipe file, a file from playden-ps5-recipes, or one
    somebody sent you.
-   - Above the games list, the recipe goes to the game it names: a Steam game by its app ID, an imported game by its
-     Steam app ID or name. If no game on the console matches, or more than one copy does, Playden says so.
+   - Above the games list, the recipe goes to the game it names: a Steam game by its app ID, a GOG game by its GOG
+     product ID (`gog/<ID>`), an imported game by its Steam app ID or name. If no game on the console matches, or more
+     than one copy does, Playden says so.
    - On a game's page, under **Recipe**, the recipe goes to that game.
 
 The game uses the recipe at once and keeps the changes you made that still apply. The TV shows a notification.
@@ -288,14 +290,17 @@ fine.
 Which recipes a game gets, matched only by ID:
 
 - A Steam game: those of `steam/<its app ID>`.
+- A GOG game installed from GOG: those of `gog/<its GOG product ID>`, also when Game settings give it a Steam app ID.
+  It doesn't get the `steam/` recipes of the same game; search for them by name.
 - An imported game with a Steam app ID (its `steam_appid.txt`, or the **Steam app ID** in Game settings): those of
   `steam/<that ID>`. Without one, none: an imported game is never matched by its name.
 
 Games are never mapped between stores. A player who wants another game's recipe (the same game from another store, or
 an imported copy under another name) searches for it by name, below.
 
-What a share or an export is for: the same `steam/<ID>`, with `"made_on": "imported"` for an imported copy, or for an
-imported game without a Steam app ID `imported/<name key of its title>`.
+What a share or an export is for: the same `steam/<ID>` or `gog/<ID>`, with `"made_on": "imported"` for an imported
+copy, or for an imported game without a Steam app ID `imported/<name key of its title>`. A GOG copy imported from a
+folder is an imported game, not a `gog/` one.
 
 A share saved before shares recorded their game (Playden builds before store and key) counts as made for
 `steam/<app ID>` on a Steam game, the only kind that could share then, so its next share updates it. On any other game
@@ -438,7 +443,7 @@ CI, with each file's `format_version` (0 when it doesn't parse):
 
 Applying community recipes from the preset chooser is planned.
 
-## Recipes for imported games on this console
+## Recipes for imported and GOG games on this console
 
 A recipe Playden makes for one console's imported game (not a community recipe) names it with two more fields:
 
@@ -447,9 +452,10 @@ A recipe Playden makes for one console's imported game (not a community recipe) 
 "game": "local-<uuid>"
 ```
 
-Give both or neither; a file with only one is refused, as is an unknown `store`. `local` is the only store so far.
-Without them, the recipe is for the Steam game `app_id`. An imported game is keyed by its local ID, which Playden makes
-when you add it, so such a recipe only fits that console. A community recipe has neither field nor `app_id`: its
+A GOG game's names `"store": "gog"` and its GOG product ID as `"game"`. Give both or neither; a file with only one is
+refused, as is an unknown `store`. `local` and `gog` are the stores so far. Without them, the recipe is for the Steam
+game `app_id`. An imported game is keyed by its local ID, which Playden makes when you add it, so such a recipe only
+fits that console. A community recipe has neither field nor `app_id`: its
 `game` object names its game on every console.
 
 ## Registry values

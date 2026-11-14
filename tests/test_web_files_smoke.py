@@ -60,8 +60,18 @@ def run(port, server):
 
     # The games.
     games = ok(call("GET", "/api/files/games"))["games"]
-    assert {game["id"] for game in games} == {"steam-12210", "local-3fa9c1", "steam-1091500", "steam-274520"}
+    assert {game["id"] for game in games} == {"steam-12210", "local-3fa9c1", "steam-1091500", "steam-274520", "gog-1351891846"}
     assert next(game for game in games if game["id"] == "steam-1091500")["running"] is True
+
+    # A GOG game: its own store kind, no Steam app ID, and its files reached by its gog-<id> key.
+    jazz = next(game for game in games if game["id"] == "gog-1351891846")
+    assert (jazz["kind"], jazz["app"]) == ("gog", 0)
+    jazz_game = ok(call("GET", "/api/files/game", game="gog-1351891846", redist=1))
+    assert {root["id"] for root in jazz_game["roots"]} >= {"game", "user"}
+    listing = ok(call("GET", "/api/files/list", game="gog-1351891846", root="game", path="save"))
+    assert [entry["name"] for entry in listing["entries"]] == ["slot1.lst"]
+    assert ok(call("GET", "/api/files/download", game="gog-1351891846", root="game", path="save/slot1.lst")) == b"slot"
+    assert ok(call("GET", "/api/files/download", game="gog-1351891846", root="user", path="Documents/Jazz2/config.ini")) == b"[video]\nfullscreen=1\n"
 
     # A game playing in place from USB: its redistributable folders, by Play's rules, and what it needs.
     wolverine = ok(call("GET", "/api/files/game", game="local-3fa9c1", redist=1))

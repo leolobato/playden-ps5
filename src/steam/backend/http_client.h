@@ -40,6 +40,8 @@ inline constexpr std::size_t kMaxHttpResponseBytes = 16 * 1024 * 1024;
 inline constexpr std::size_t kMaxHttpManifestResponseBytes = 64 * 1024 * 1024;
 // A streamed body (HttpRequest::body_sink): its byte cap, the longest stall it may set, and its total deadline cap.
 inline constexpr std::size_t kMaxHttpStreamResponseBytes = 64 * 1024 * 1024;
+// A streamed request's non-2xx body: the first this many bytes are kept, whatever max_response_bytes says.
+inline constexpr std::size_t kMaxHttpStreamErrorBodyBytes = 64 * 1024;
 inline constexpr std::uint32_t kMaxHttpStallTimeoutMs = 120'000;
 inline constexpr std::uint32_t kMaxHttpStreamTimeoutMs = 30 * 60 * 1000;
 inline constexpr std::size_t kMaxHttpResponseHeaderBytes = 16 * 1024;
@@ -61,7 +63,9 @@ struct HttpRequest {
   bool depot_manifest = false;
   // GET only. A 2xx body goes to the sink block by block, in order, and is not kept in HttpResponse::body
   // (timing.body_bytes counts it). Returning false fails the request with kSinkFailed. Any other status keeps its
-  // body (up to 64 KiB) in HttpResponse::body and never reaches the sink. With a sink:
+  // body in HttpResponse::body and never reaches the sink: up to kMaxHttpStreamErrorBodyBytes, whatever
+  // max_response_bytes is (a refused link to a small chunk still reads as its status); a longer one is cut there and
+  // the transfer stops, still with that status. With a sink:
   // - max_response_bytes may be up to kMaxHttpStreamResponseBytes; depot_manifest is not allowed;
   // - stall_timeout_ms (1..kMaxHttpStallTimeoutMs) is required: the request fails with kTimeout when no body byte
   //   arrives for that long, counted from the start of the transfer;

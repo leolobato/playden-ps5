@@ -2964,6 +2964,39 @@ int main(int argc, char** argv) {
     std::filesystem::remove_all(game_root);
   }
 
+  // A GOG game's recipe from its install record's play tasks (fixtures/gog/goggame-1900000002.info's shape: the
+  // primary task names jazz2.exe, the disk spells it Jazz2.exe; the tool is in a folder, with no working folder).
+  {
+    const auto game_root = std::filesystem::temp_directory_path() / ("playden-gog-recipe-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(game_root);
+    WritePe(game_root / "Jazz2.exe", false);
+    WritePe(game_root / "Tools" / "JCS.exe", false);
+    const auto jazz = playden::GameId::Gog(1900000002);
+    const std::vector<LaunchEntry> launches = {
+        {"", "Synthetic Platformer", "jazz2.exe", "", ""},
+        {"", "Level Editor", "tools/jcs.exe", "", ""},
+    };
+    GameRecipe recipe;
+    CHECK(GenerateGameRecipe(jazz, 0xF0000002u, "Synthetic Platformer", launches, game_root.string(), &recipe, &reason));
+    CHECK(recipe.id == "gog-1900000002-auto" && RecipeGame(recipe) == jazz && recipe.architecture == "pe32");
+    CHECK(recipe.launch_entries.size() == 2);
+    CHECK(recipe.launch_entries[0].executable == "Jazz2.exe" && recipe.launch_entries[0].label == "Synthetic Platformer");
+    CHECK(recipe.launch_entries[0].working_directory.empty() && !recipe.launch_entries[0].in_install_root);
+    // GOG starts a task with no working folder in the install root, also one in a folder (gogdl launch.py).
+    CHECK(recipe.launch_entries[1].executable == "Tools/JCS.exe" && recipe.launch_entries[1].label == "Level Editor");
+    CHECK(recipe.launch_entries[1].working_directory.empty() && recipe.launch_entries[1].in_install_root);
+    // Nothing startable names GOG, not Steam: the programs come from the game's own files.
+    CHECK(!GenerateGameRecipe(jazz, 0xF0000002u, "Synthetic Platformer", {{"", "", "readme.txt", "", ""}},
+                              game_root.string(), &recipe, &reason));
+    CHECK(reason == "GOG lists no Windows program this console can start for this game.");
+    CHECK(!GenerateGameRecipe(jazz, 0xF0000002u, "Synthetic Platformer", {}, game_root.string(), &recipe, &reason));
+    CHECK(reason == "GOG lists no Windows program this console can start for this game.");
+    // Steam's sentence is Steam's.
+    CHECK(!GenerateGameRecipe(4247, "Steam", {}, game_root.string(), &recipe, &reason));
+    CHECK(reason == "Steam lists no Windows program this console can start for this game.");
+    std::filesystem::remove_all(game_root);
+  }
+
   // Steam names a working folder as Windows sees it: Unreal Tournament (13240) and UT2004 (13230) start
   // "system\UnrealTournament.exe" in "system", which is System/ on disk (#844). The recipe, the profile and the
   // folder dxvk.conf goes in use the disk's spelling, as the console's disk tells the two apart.

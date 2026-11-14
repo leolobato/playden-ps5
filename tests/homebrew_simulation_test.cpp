@@ -2490,6 +2490,7 @@ void community_recipes_imported(const std::filesystem::path& fixtures, const std
     const auto exported = [&](playden::homebrew::Simulation& simulation) {
         while (!simulation.state().navigation.modals.empty() && top(simulation).id != "game-settings") simulation.action("circle");
         if (!has_row(simulation, "export-recipe")) activate(simulation, "section-advanced");
+        check(find_row(simulation, "export-recipe") != nullptr, "the imported game has an export row");
         activate(simulation, "export-recipe");
         rt::CommunityRecipe community;
         std::string reason;
@@ -4226,6 +4227,74 @@ void gog_game_page(const std::filesystem::path& fixtures) {
           "the fixture's GOG game can't be installed either");
 }
 
+// With GOG installs on: "Checking GOG…" until the details answer, then "Install…" with the size, or the reason a game
+// can't be installed here (a gen 1 only build) with no way to install it.
+void gog_game_installs() {
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.SetStoreInstalls(Store::kGog, true);
+    live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}, {1000000002, "GOG old"}})), "GOG's games load");
+    check(live.action("details:" + playden::ToKey(GameId::Gog(1000000001))), "the GOG game's page opens");
+    const auto* checking = row(live, "details-checking");
+    check(checking && checking->title == "Checking GOG…", "Checking GOG… while its details are asked for");
+    check(row(live, "details-install") && !row(live, "details-install")->enabled, "Install waits, disabled");
+    for (const auto& item : live.view().rows) check(item.title.find("Steam") == std::string::npos, "nothing names Steam");
+    live.UpdateAppDetails(GameId::Gog(1000000001), 700'000'000ull, 1'200'000'000ull, true);
+    const auto* install = row(live, "details-install");
+    check(install && install->enabled && install->title == "Install…" && install->action == "live-install",
+          "Install… once the details answer");
+    check(install->value == "1.2 GB", "with the install size");
+    check(!row(live, "details-checking") && !row(live, "details-unavailable"), "no status row then");
+    // GOG measures no exact size: the controller answers the page's size check as one that failed, and GOG's figure
+    // stands, on the page and in the install sheet, which installs.
+    const auto checks = live.TakeSizeChecks();
+    check(!checks.empty(), "the page asks for the exact size");
+    for (const auto& size_check : checks) live.UpdateMeasuredSize(size_check, false, true, {});
+    check(row(live, "details-install") && row(live, "details-install")->value == "1.2 GB", "GOG's size stays");
+    activate(live, "details-install");
+    check(!live.state().navigation.modals.empty() && live.state().navigation.modals.back().id == "install",
+          "the install sheet opens");
+    for (const auto& item : live.view().rows) check(item.title.find("Steam") == std::string::npos &&
+                                                    item.value.find("Steam") == std::string::npos &&
+                                                    item.subtitle.find("Steam") == std::string::npos,
+                                                    "the sheet names no Steam");
+    activate(live, "install-confirm");
+    const auto requests = live.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install &&
+              requests[0].game_id == GameId::Gog(1000000001),
+          "Install queues the GOG game");
+    // A gen 1 only game: the reason, and Install is not offered.
+    live.action("circle");
+    check(live.action("details:" + playden::ToKey(GameId::Gog(1000000002))), "the old GOG game's page opens");
+    live.UpdateAppDetails(GameId::Gog(1000000002), std::nullopt, std::nullopt, false, {}, {}, {}, {}, true,
+                          "Playden can't install this GOG game yet: it uses an older GOG download format.");
+    const auto* reason = row(live, "details-unavailable");
+    check(reason && !reason->enabled &&
+              reason->title == "Playden can't install this GOG game yet: it uses an older GOG download format.",
+          "the page says why");
+    const auto* none = row(live, "details-install");
+    check(!none || (!none->enabled && none->action.empty()), "Install is absent or disabled");
+    check(!row(live, "details-checking"), "no longer checking");
+    check(live.TakeInstallRequests().empty(), "nothing is installed");
+    // A later answer that it installs clears the reason.
+    live.UpdateAppDetails(GameId::Gog(1000000002), 10'000'000ull, 20'000'000ull, true);
+    check(!row(live, "details-unavailable") && row(live, "details-install") && row(live, "details-install")->enabled,
+          "an installable answer shows Install again");
+    // A Steam game without a reason keeps its own text.
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+    check(live.UpdateLibrary({{playden::GameSummary{GameId::Steam(42), "Steam game", {}, {}, {}}}, false, {}, false, false, {}}),
+          "Steam's games load");
+    live.action("circle");
+    check(live.action("details:" + playden::ToKey(GameId::Steam(42))), "the Steam game's page opens");
+    check(row(live, "details-checking") && row(live, "details-checking")->title == "Checking Steam…", "Checking Steam…");
+    live.UpdateAppDetails(GameId::Steam(42), std::nullopt, std::nullopt, false);
+    check(row(live, "details-unavailable") && row(live, "details-unavailable")->title == "No Windows version to install",
+          "Steam's own text");
+}
+
 // The Steam-only places, for a player with only GOG: Friends asks for Steam, Online rows stay hidden, GOG games have
 // no Cloud saves row, and the download servers ask for Steam to test.
 void steam_only_places() {
@@ -4318,6 +4387,7 @@ int main(int argc, char** argv) {
     gog_view::sign_out_and_expiry();
     gog_view::gog_scope();
     gog_view::gog_game_page(fixtures);
+    gog_view::gog_game_installs();
     gog_view::steam_only_places();
     clean();
     gog_view::gog_scenarios(fixtures);

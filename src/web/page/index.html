@@ -542,6 +542,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     if (game.running) badges.push(element("span", { class: "badge running", text: "Running" }));
     if (!game.installed) badges.push(element("span", { class: "badge", text: "Not installed" }));
     if (game.kind === "imported") badges.push(element("span", { class: "badge", text: "Imported" }));
+    if (game.kind === "gog") badges.push(element("span", { class: "badge", text: "GOG" }));
     return badges;
   };
   // A column's sort: { key, down }. A first click goes the way that column is usually read; another turns it round.
@@ -637,6 +638,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     if (!game.installed) lede.push("You uninstalled this game, and Playden kept its saves.");
     if (game.cloud) lede.push("A save you upload here can replace the one in Steam Cloud at the next sync.");
     if (game.kind === "imported") lede.push("You added this game yourself, so Playden doesn't know where it saves. Look in the folders below.");
+    if (game.kind === "gog") lede.push("Playden doesn't know where GOG games save. Look in the folders below.");
     if (lede.length) pane.append(element("p", { class: "lede", text: lede.join(" ") }));
     if (game.running) pane.append(runningNote());
     if (game.physx_needed !== undefined) {
@@ -678,7 +680,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     if (!bottleRoots.length && !gameRoot) pane.append(element("p", { class: "lede", text: "This game has no folders to show yet." }));
     pane.append(recipeSection(game));
   };
-  const storeLabel = (game) => (game.kind === "imported" ? "Imported" : "Steam");
+  const storeLabel = (game) => ({ imported: "Imported", gog: "GOG" })[game.kind] || "Steam";
   // Import recipe: a file goes to the game named, or (gameId null) to the game the recipe is for. Playden uses it at
   // once and says so on the TV.
   const recipeImport = (gameId, describe = (answer) => [answer.message]) => {

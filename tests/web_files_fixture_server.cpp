@@ -43,6 +43,11 @@ int main(int argc, char** argv) {
   const auto wolverine_folder = base / "usb/playden/import/Wolverine";
   Put(wolverine_folder / "Binaries/Wolverine.exe", "exe");
   Put(wolverine_folder / "Support/DirectX/DXSETUP.exe", "dx");
+  const auto jazz = bottle("gog-1351891846");
+  Put(jazz / "drive_c/users/prospero/Documents/Jazz2/config.ini", "[video]\nfullscreen=1\n");
+  const auto jazz_folder = base / "playden-games/gog-1351891846";
+  Put(jazz_folder / "Jazz2.exe", "exe");
+  Put(jazz_folder / "save/slot1.lst", "slot");
   const auto darkwood = bottle("steam-274520");
   Put(darkwood / "drive_c/users/prospero/AppData/LocalLow/Acid Wizard Studio/Darkwood/save.dat", "kept");
 
@@ -82,6 +87,16 @@ int main(int argc, char** argv) {
     game.drive_absent = true;
     game.running = true;
     game.cloud = true;
+    catalog.games.push_back(game);
+    game = {};
+    game.id = "gog-1351891846";
+    game.name = "Jazz Jackrabbit 2: The Secret Files";
+    game.kind = FileGameKind(playden::Store::kGog);
+    game.bottle = jazz.string();
+    game.game_folder = jazz_folder.string();
+    game.game_folder_shown = "/data/playden-games/gog-1351891846";
+    game.drive = "console";
+    game.last_played = 1793600000;
     catalog.games.push_back(game);
     game = {};
     game.id = "steam-274520";

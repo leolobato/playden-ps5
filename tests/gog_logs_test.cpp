@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// gog.log after a stubbed run of everything GOG does so far: restore, a sign-in with a code, a library refresh, the
-// library cleared and a sign-out, with the session, the account and the library writing to one log file. The file
-// must not name the account (username, user ID), hold a token or the code, or carry an address. The install half
-// comes with installs. Synthetic tokens, accounts and products only.
+// gog.log and install.log after a stubbed run of everything GOG does: restore, a sign-in with a code, a library
+// refresh, an install of a synthetic game from the stub CDN (the install runner writing install.log), the library
+// cleared and a sign-out, with the session, the account and the library writing to gog.log. Neither file may name the
+// account (username, user ID), hold a token, the code or a secure link's signature, or carry an address. Synthetic
+// tokens, accounts and products only.
 #include "gog/account_key.h"
 #include "gog/session.h"
 #include "gog/session_store.h"
+#include "gog_cdn_stub.h"
 #include "gog_stub_transport.h"
+#include "gog_synthetic_game.h"
 #include "library/cache.h"
 #include "stores/gog.h"
+#include "stores/gog_install.h"
 #include "stores/gog_library.h"
 
 #include <atomic>
@@ -91,6 +95,7 @@ int main(int argc, char** argv) {
   fs::create_directories(library);
   CHECK(::chmod(root.c_str(), 0755) == 0);
   const fs::path log_file = logs / "gog.log";
+  const fs::path install_log = logs / "install.log";
   const auto sink = [&](const std::string& line) { Append(log_file, line); };
   const std::string code = "SyntheticCode-logged-0123456789";
   {
@@ -135,6 +140,29 @@ int main(int argc, char** argv) {
     const auto complete = Last(source, LibraryEventKind::kComplete);
     CHECK(complete.games.size() == 1);
 
+    // An install: the runner's lines and the installer's go to install.log.
+    {
+      CdnStub cdn;
+      cdn.SetOwned("{\"owned\":[1900000001]}");
+      cdn.SetSecureLink(ReadFile(g_fixtures + "/secure-link-200.json"));
+      Game game;
+      GameDepot depot;
+      depot.files.push_back({"DepotFile", "bin\\Game.exe", RandomBytes(90 * 1024, 31), {30 * 1024, 30 * 1024, 30 * 1024}});
+      depot.files.push_back({"DepotFile", "goggame-1900000001.info", ReadFile(g_fixtures + "/goggame-1900000001.info")});
+      depot.files.push_back({"DepotFile", "goggame-1900000001.script", ReadFile(g_fixtures + "/goggame-1900000001.script")});
+      game.depots.push_back(depot);
+      Publish(cdn, game);
+      stores::GogInstallRunner runner(
+          session, [&cdn] { return cdn.Transport(); }, [] { return std::string("english"); },
+          [&](const std::string& line) { Append(install_log, line); },
+          [](const std::string&) { return std::optional<std::uint64_t>(1ull << 40); });
+      const auto root = g_base / "games" / "gog-1900000001";
+      fs::create_directories(root.parent_path());
+      const std::atomic<bool> no_cancel{false};
+      const auto result = runner.Install(GameId::Gog(1900000001), root.string(), {}, no_cancel, {}, {});
+      CHECK(result.ok);
+    }
+
     // Sign-out: the library is cleared and the session forgotten.
     CHECK(source.Clear(key, 2) != 0);
     Last(source, LibraryEventKind::kCleared);
@@ -146,6 +174,17 @@ int main(int argc, char** argv) {
 
   const std::string log = ReadFile(log_file.string());
   std::printf("%s", log.c_str());
+  const std::string installs = ReadFile(install_log.string());
+  std::printf("%s", installs.c_str());
+  CHECK(installs.find("gog install game=gog-1900000001 step=record result=ok") != std::string::npos);
+  for (const std::string& secret : {kUsername, kUserId, AccessText(1), RefreshText(1), code, std::string("https://"),
+                                    std::string("synthetic-fastly-signature"), std::string("synthetic-gcore-signature"),
+                                    std::string("wsSecret"), std::string("nva="), std::string("token="),
+                                    std::string("1900000000"), std::string("6af8e0a5"),
+                                    std::string("example.invalid")}) {
+    CHECK(installs.find(secret) == std::string::npos);
+    CHECK(log.find(secret) == std::string::npos);
+  }
   CHECK(log.find("library owned=3 fetched=1 not_modified=0 missing=1 hidden=0 failed=1") != std::string::npos);
   for (const std::string& secret : {kUsername, kUserId, AccessText(1), RefreshText(1), code, std::string("https://"),
                                     std::string("images.gog.com"), std::string("synthetic-etag"),

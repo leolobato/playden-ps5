@@ -3,7 +3,8 @@
 // A stub GOG content system and CDN for the downloader's tests: builds, build metas and depot manifests, the owned
 // list, secure links, the open link, the dependency repository and chunks, every one answered from memory. Bodies go
 // through HttpRequest::body_sink in small blocks under the same rules as HttpClient: a 2xx body reaches the sink, any
-// other keeps its body; the byte limit is checked before each block (kResponseTooLarge); a sink that returns false
+// other keeps its body, cut at kMaxHttpStreamErrorBodyBytes whatever max_response_bytes says; the byte limit is
+// checked before each 2xx block (kResponseTooLarge); a sink that returns false
 // gives kSinkFailed; cancel stops it between blocks. A stall is answered at once with kTimeout, after the bytes the
 // test asks for. A test changes any answer through a fault hook. Synthetic data and public answers only.
 
@@ -81,6 +82,7 @@ struct Request {
 struct Fault {
   std::optional<playden::steam::HttpResponse> response;
   std::optional<std::string> body;
+  std::optional<long> status;  // with `body`, answered through the client's rules (unlike `response`)
   std::optional<std::size_t> stall_after;
 };
 
@@ -205,7 +207,9 @@ class CdnStub {
     response.status_code = status;
     if (!http.body_sink || status < 200 || status > 299) {
       if (!http.body_sink && body.size() > http.max_response_bytes) return Failure(HttpError::kResponseTooLarge);
-      response.body.assign(body.begin(), body.end());
+      const std::size_t kept =
+          http.body_sink ? std::min(body.size(), playden::steam::kMaxHttpStreamErrorBodyBytes) : body.size();
+      response.body.assign(body.begin(), body.begin() + static_cast<std::ptrdiff_t>(kept));
       if (stall_after) return Failure(HttpError::kTimeout);
       return response;
     }
@@ -270,6 +274,7 @@ class CdnStub {
       }
     }
     if (chosen && chosen->body) body = *chosen->body;
+    if (chosen && chosen->status) status = *chosen->status;
     return Serve(http, status, body, chosen ? chosen->stall_after : std::nullopt, cancel);
   }
 

@@ -2304,7 +2304,7 @@ void Controller::TickWebFiles() {
     auto& game = games[id];
     if (!game.id.empty()) return game;
     game.id = ToInstallId(id);
-    game.kind = id.store == Store::kLocal ? "imported" : "steam";
+    game.kind = web::FileGameKind(id.store);
     game.app = id.steam_app().value_or(0);
     const auto cloud = state.cloud.find(id);
     game.cloud = CloudCapable(id) && (cloud == state.cloud.end() || cloud->second.status != CloudStatus::Unsupported);
@@ -2502,6 +2502,20 @@ void Controller::TickInstalls() {
   for (const auto& volume : snapshot.volumes)
     if (volume.available) drives_present_.insert(volume.id);
   ProjectLocations(snapshot.installed);
+  // The programs each installed game's record names, for Prepare (GOG's play tasks). Steam's come from its app
+  // details and an imported game's from Game settings.
+  if (!record_launches_revision_ || *record_launches_revision_ != snapshot.revision) {
+    record_launches_revision_ = snapshot.revision;
+    record_launches_.clear();
+    for (const auto& game : snapshot.installed) {
+      if (game.id.store == Store::kSteam || game.id.store == Store::kLocal || !game.record ||
+          game.record->launches.empty())
+        continue;
+      auto& launches = record_launches_[game.id];
+      for (const auto& launch : game.record->launches)
+        launches.push_back({launch.executable, launch.arguments, launch.working_directory, launch.label});
+    }
+  }
   // A download that finished in this session is prepared next, so the game is ready to play.
   std::set<GameId> downloading, updating, moving;
   for (const auto& job : snapshot.jobs) {
@@ -2856,9 +2870,13 @@ void Controller::ApplyGameDetails(const stores::GameDetails& details, bool check
         dlc.back().other_sizes.push_back({other.branch, other.language, other.download_bytes, other.install_bytes, other.optional});
       dlc.back().optional = choice.optional;
     }
+    // Why another store's game can't be installed here (GOG: an older download format) shows on its page; Steam's
+    // page keeps its own text.
+    const bool say_why = !details.windows_installable && details.id.store != Store::kSteam;
     model_.UpdateAppDetails(details.id, details.download_bytes, details.install_bytes, details.windows_installable,
                             details.languages, std::move(dlc), std::move(versions),
-                            {details.update.newer, details.update.new_dlc, 0, 0, details.update.target, false}, !check_waits);
+                            {details.update.newer, details.update.new_dlc, 0, 0, details.update.target, false}, !check_waits,
+                            say_why ? details.reason : std::string());
     if (details.launches_any_branch) launches_any_branch_.insert(details.id);
     else launches_any_branch_.erase(details.id);
     if (!details.install_dir.empty()) steam_install_dirs_[details.id] = details.install_dir;
@@ -2911,21 +2929,29 @@ void Controller::SubmitPrepare(GameId id, bool announce) {
   // A new import prepares straight away, maybe before the library lists it: Home keeps the name it registers with.
   if (request.title_name.empty()) request.title_name = imported_name;
   if (model_.state().title_store_suffix && !request.title_name.empty()) request.title_name += TitleStoreSuffix(id.store);
-  if (const auto found = launch_options_.find(id); found != launch_options_.end())
+  // A GOG game starts the programs its install record names (its play tasks), signed in or not; its details
+  // name none.
+  const auto recorded = id.store == Store::kGog ? record_launches_.find(id) : record_launches_.end();
+  const bool from_record = recorded != record_launches_.end() && !recorded->second.empty();
+  if (from_record)
+    for (const auto& option : recorded->second)
+      request.launches.push_back({"", option.description, option.executable, option.working_directory, option.arguments});
+  else if (const auto found = launch_options_.find(id); found != launch_options_.end())
     for (const auto& option : found->second)
       request.launches.push_back({"", option.description, option.executable, option.working_directory, option.arguments});
-  request.launches_any_branch = launches_any_branch_.count(id) != 0;
+  request.launches_any_branch = !from_record && launches_any_branch_.count(id) != 0;
   // Steam's launch options and app details are for Steam games only: another store's game starts the
-  // program the player picks in Game settings.
+  // programs its install record names, else the program the player picks in Game settings.
   const bool steam = id.store == Store::kSteam;
   if (const auto folder = steam_install_dirs_.find(id); steam && folder != steam_install_dirs_.end())
     request.steam_install_dir = folder->second;
-  if (!steam)
-    request.launch_reason = "Choose the program that starts this game in Game settings.";
-  else if (const auto reason = launch_options_reason_.find(id); reason != launch_options_reason_.end())
+  if (!steam) {
+    if (!from_record) request.launch_reason = "Choose the program that starts this game in Game settings.";
+  } else if (const auto reason = launch_options_reason_.find(id); reason != launch_options_reason_.end()) {
     request.launch_reason = "Playden could not read how to start this game from Steam: " + reason->second;
-  else if (!launch_options_.count(id))
+  } else if (!launch_options_.count(id)) {
     request.launch_reason = "Sign in to Steam so Playden can read how to start this game.";
+  }
   // After a failed answer, ask Steam again so a later Prepare can use the options.
   if (auto* details = Details(id.store); steam && details && !launch_options_.count(id))
     details->Request(id, model_.state().account_generation);

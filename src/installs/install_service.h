@@ -33,9 +33,9 @@ struct InstallRequest {
   std::string program;
 };
 // Development request file (dev/install-request.txt), one command per line, in order, at most 64:
-//   <game>                              Steam: install; Local: prepare (set up) the imported game
-//   uninstall <game>                    Steam: uninstall; Local: remove from the library (files stay)
-//   cancel <app id>                     Steam only: cancel the download
+//   <game>                              Steam, GOG: install; Local: prepare (set up) the imported game
+//   uninstall <game>                    Steam, GOG: uninstall; Local: remove from the library (files stay)
+//   cancel <game>                       Steam, GOG: cancel the download
 //   copy <local game> [volume]          copy an imported game playing in place into Playden (volume:
 //                                       an install volume id; default: the default volume)
 //   move <local game>                   move an imported game from the drop folder into Playden
@@ -43,7 +43,7 @@ struct InstallRequest {
 //   import <volume> <folder> <program>  add a game playing in place (volume: internal, m2, extended,
 //                                       usb0 to usb7; folder: a name in that drive's import folder, or a
 //                                       path from the drive's root; program: inside the folder)
-// <game> is a Steam app ID (strict decimal) or "local-<uuid>". Words are separated by spaces or tabs;
+// <game> is a Steam app ID (strict decimal), "gog-<product id>" (strict decimal) or "local-<uuid>". Words are separated by spaces or tabs;
 // a word with spaces goes in double quotes ("Old School Rally"), which can't hold a quote themselves.
 // A line that doesn't parse is skipped.
 std::vector<InstallRequest> ParseInstallRequests(const std::string& text);

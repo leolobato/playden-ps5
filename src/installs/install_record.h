@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "library/store.h"
+
 namespace playden::installs {
 
 // One depot of an install, as its record names it.
@@ -21,6 +23,36 @@ struct RecordedDepot {
   }
 };
 
+// What a GOG install holds: the build, its generation, the product IDs installed (the base game first, then each DLC),
+// the GOG language code ("en-US") and the build meta's hash (32 hex digits).
+struct GogRecord {
+  std::string build_id;
+  int generation = 2;
+  std::vector<std::uint64_t> products;
+  std::string language;
+  std::string meta_id;
+  bool operator==(const GogRecord& other) const {
+    return build_id == other.build_id && generation == other.generation && products == other.products &&
+           language == other.language && meta_id == other.meta_id;
+  }
+};
+
+// A program the install's own files name (GOG's play tasks), kept so Play works signed out and offline. The paths
+// are relative to the game folder with `/`; an empty working directory is the game folder itself.
+struct RecordedLaunch {
+  std::string executable;
+  std::string arguments;
+  std::string working_directory;
+  std::string label;
+  bool operator==(const RecordedLaunch& other) const {
+    return executable == other.executable && arguments == other.arguments &&
+           working_directory == other.working_directory && label == other.label;
+  }
+};
+
+inline constexpr std::size_t kMaxRecordedLaunches = 32;
+inline constexpr std::size_t kMaxRecordedLaunchBytes = 4096;  // each string of a launch
+
 // What a finished install's record (.playden-install.json at the game's root) says it holds.
 // Version 1 records (and imported games' copies, which list no depots) read as the public branch in
 // English, each depot owned by and listed in the game itself.
@@ -33,10 +65,14 @@ struct InstalledRecord {
   std::vector<RecordedDepot> depots;
   // DLC the player turned off when installing: its updates leave them out too, and they don't count as new DLC.
   std::vector<std::uint32_t> excluded_dlc;
+  // A GOG install's build and products; nothing for every other store.
+  std::optional<GogRecord> gog;
+  // The programs the install's files name (GOG); empty for Steam, whose launch options come from appinfo.
+  std::vector<RecordedLaunch> launches;
   bool operator==(const InstalledRecord& other) const {
     return version == other.version && app_id == other.app_id && install_bytes == other.install_bytes &&
            branch == other.branch && language == other.language && depots == other.depots &&
-           excluded_dlc == other.excluded_dlc;
+           excluded_dlc == other.excluded_dlc && gog == other.gog && launches == other.launches;
   }
 };
 
@@ -55,8 +91,22 @@ inline constexpr const char* kFilesChangedName = ".playden-files-changed";
 inline constexpr std::size_t kMaxInstallRecordBytes = 1024 * 1024;
 
 // Reads a record's text: a JSON object; unknown keys are skipped and missing ones keep the defaults.
-// Nothing for text that isn't a JSON object or a depot entry without an id.
+// Nothing for text that isn't a JSON object or a depot entry without an id. A malformed "gog" object or "launches"
+// entry is left out, never the whole record: Steam records go through the same parser. At most
+// kMaxRecordedLaunches launches are read, each string at most kMaxRecordedLaunchBytes.
 std::optional<InstalledRecord> ParseInstallRecord(std::string_view text);
+
+// A GOG install's record:
+// {"version":2,"app_id":0,"store":"gog","game":"<id>","install_bytes":N,"files":N,"branch":"public",
+//  "language":"<steam code>","depots":[],"gog":{"build_id":"..","generation":2,"products":["<id>"],
+//  "language":"en-US","meta":"<hash>"},"launches":[{"executable":"..","arguments":"..","working_directory":"..",
+//  "label":".."}]}
+// "install_bytes" comes early and without a space, as InstallService reads it from the first 4096 bytes. No depots:
+// the Steam DLC fields stay Steam's. Launches past kMaxRecordedLaunches, or with an empty program or a string over
+// kMaxRecordedLaunchBytes, are left out, as ParseInstallRecord would leave them.
+std::string FormatGogInstallRecord(const GameId& game, std::uint64_t install_bytes, std::uint64_t files,
+                                   const std::string& steam_language, const GogRecord& gog,
+                                   const std::vector<RecordedLaunch>& launches);
 // The record at `path`; nothing when it is missing, larger than kMaxInstallRecordBytes or unreadable.
 std::optional<InstalledRecord> ReadInstallRecord(const std::string& path);
 

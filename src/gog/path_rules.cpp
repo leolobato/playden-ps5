@@ -15,6 +15,61 @@ const char* const kReserved[] = {
 
 char Lower(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
 
+// A two-byte UTF-8 code point's uppercase, as the exFAT default upcase table (Unicode's simple uppercase) gives it,
+// for Latin-1, Latin Extended-A, basic Greek and Cyrillic; any other code point is its own.
+char32_t Upper(char32_t c) {
+  if ((c >= 0xE0 && c <= 0xFE && c != 0xF7)) return c - 0x20;
+  if (c == 0xFF) return 0x178;
+  if (c == 0xB5) return 0x39C;  // micro sign: Greek capital mu
+  if (c >= 0x100 && c <= 0x17F) {
+    if (c == 0x131) return 'I';  // dotless i
+    if (c == 0x17F) return 'S';  // long s
+    const bool odd_lower = (c <= 0x137 && c != 0x130) || (c >= 0x14A && c <= 0x177);
+    const bool even_lower = (c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E);
+    if ((odd_lower && (c & 1)) || (even_lower && !(c & 1))) return c - 1;
+    return c;
+  }
+  if ((c >= 0x3B1 && c <= 0x3C1) || (c >= 0x3C3 && c <= 0x3CB)) return c - 0x20;
+  if (c == 0x3C2) return 0x3A3;  // final sigma
+  if (c == 0x3AC) return 0x386;
+  if (c >= 0x3AD && c <= 0x3AF) return c - 0x25;
+  if (c == 0x3CC) return 0x38C;
+  if (c == 0x3CD || c == 0x3CE) return c - 0x3F;
+  if (c >= 0x430 && c <= 0x44F) return c - 0x20;
+  if (c >= 0x450 && c <= 0x45F) return c - 0x50;
+  return c;
+}
+
+// The lowercase that stands for an uppercase code point in a key (Upper's inverse, and ASCII).
+char32_t LowerOfUpper(char32_t c) {
+  if (c >= 'A' && c <= 'Z') return c + 0x20;
+  if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20;
+  if (c == 0x178) return 0xFF;
+  if (c >= 0x100 && c <= 0x17F) {
+    const bool even_upper = (c <= 0x137 && c != 0x130) || (c >= 0x14A && c <= 0x177);
+    const bool odd_upper = (c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E);
+    if ((even_upper && !(c & 1)) || (odd_upper && (c & 1))) return c + 1;
+    return c;
+  }
+  if ((c >= 0x391 && c <= 0x3A1) || (c >= 0x3A3 && c <= 0x3AB)) return c + 0x20;
+  if (c == 0x386) return 0x3AC;
+  if (c >= 0x388 && c <= 0x38A) return c + 0x25;
+  if (c == 0x38C) return 0x3CC;
+  if (c == 0x38E || c == 0x38F) return c + 0x3F;
+  if (c >= 0x410 && c <= 0x42F) return c + 0x20;
+  if (c >= 0x400 && c <= 0x40F) return c + 0x50;
+  return c;
+}
+
+void AppendUtf8(char32_t c, std::string& out) {
+  if (c < 0x80) {
+    out += static_cast<char>(c);
+  } else {
+    out += static_cast<char>(0xC0 | (c >> 6));
+    out += static_cast<char>(0x80 | (c & 0x3F));
+  }
+}
+
 bool BadNameCharacter(char c) {
   return c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|';
 }
@@ -45,15 +100,33 @@ const char* PathRefusalName(PathRefusal refusal) {
 }
 
 std::string FoldCase(std::string_view text) {
-  std::string folded(text);
-  for (char& c : folded) c = Lower(c);
+  std::string folded;
+  folded.reserve(text.size());
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const auto lead = static_cast<unsigned char>(text[i]);
+    const auto next = i + 1 < text.size() ? static_cast<unsigned char>(text[i + 1]) : 0;
+    if (lead >= 0xC2 && lead <= 0xDF && (next & 0xC0) == 0x80) {
+      const char32_t code = (static_cast<char32_t>(lead & 0x1F) << 6) | (next & 0x3F);
+      AppendUtf8(LowerOfUpper(Upper(code)), folded);
+      ++i;
+      continue;
+    }
+    // ASCII, longer sequences and stray bytes as they are (ASCII lowercased).
+    folded += Lower(text[i]);
+  }
   return folded;
 }
 
 bool IsReservedName(std::string_view name) {
-  const auto folded = FoldCase(name);
+  // Every ".playden…" name, not only today's: no non-ASCII letter upcases to one of these, so the ASCII fold is enough,
+  // and a name such as ".playden-fıles" (dotless i) that exFAT may take for Playden's own file is refused too.
+  constexpr std::string_view kPrefix = ".playden";
+  if (name.size() < kPrefix.size()) return false;
+  std::string start(name.substr(0, kPrefix.size()));
+  for (char& c : start) c = Lower(c);
+  if (start == kPrefix) return true;
   for (const char* reserved : kReserved)
-    if (folded == reserved) return true;
+    if (FoldCase(name) == reserved) return true;
   return false;
 }
 

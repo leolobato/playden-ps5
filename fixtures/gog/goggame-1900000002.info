@@ -1,0 +1,43 @@
+{
+    "buildId": "50000000000000003",
+    "clientId": "50000000000000001",
+    "gameId": "1900000002",
+    "language": "English",
+    "languages": [
+        "en-US"
+    ],
+    "name": "Synthetic Platformer",
+    "playTasks": [
+        {
+            "category": "game",
+            "compatibilityFlags": "DWM8And16BitMitigation DISABLEDWM",
+            "isPrimary": true,
+            "languages": [
+                "*"
+            ],
+            "name": "Synthetic Platformer",
+            "path": "jazz2.exe",
+            "type": "FileTask"
+        },
+        {
+            "category": "tool",
+            "languages": [
+                "*"
+            ],
+            "name": "Level Editor",
+            "path": "jcs.exe",
+            "type": "FileTask"
+        },
+        {
+            "category": "document",
+            "languages": [
+                "*"
+            ],
+            "link": "https://example.invalid/manual",
+            "name": "Manual",
+            "type": "URLTask"
+        }
+    ],
+    "rootGameId": "1900000002",
+    "version": 1
+}

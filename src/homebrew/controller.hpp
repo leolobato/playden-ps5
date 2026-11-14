@@ -346,6 +346,10 @@ class Controller {
   // Steam's folder name for each game (installdir), from app details: a preparation records it for the title.
   std::map<GameId, std::string> steam_install_dirs_;
   std::map<GameId, std::string> launch_options_reason_;
+  // The programs an installed game's own files name (GOG's play tasks), from its install record: Prepare uses them
+  // signed out and offline. Refilled from every install snapshot; no sign-in or sign-out touches them.
+  std::map<GameId, std::vector<stores::LaunchOption>> record_launches_;
+  std::optional<std::uint64_t> record_launches_revision_;  // the install snapshot they were read from
   std::set<GameId> prepare_after_details_;
   // announce: tell the player when this preparation leaves the game ready to play
   // (waiting for the PS5 to register it); the startup check does not.

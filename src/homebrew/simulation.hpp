@@ -756,7 +756,10 @@ struct Game {
     std::optional<std::int64_t> added_at;
     std::optional<std::int64_t> last_played;
     std::optional<std::uint64_t> playtime_minutes;
-    std::optional<bool> windows_installable;  // from Steam app info; absent until fetched
+    std::optional<bool> windows_installable;  // from the store's details; absent until fetched
+    // Why the store's details say this console can't install the game (GOG: an older download format), shown on its
+    // page instead of "No Windows version to install"; empty: no reason given.
+    std::string install_unavailable;
     std::vector<std::string> content_languages;  // from Steam app info: the languages an install can choose
     std::vector<GameDlc> dlc;  // from Steam app info: what an install's DLC list offers
     std::vector<GameVersion> versions;  // from Steam app info: public first; two or more offer a choice
@@ -1347,10 +1350,12 @@ public:
     // files an install can leave out, which the install sheet lists. `versions`: the versions an
     // install can choose, public first. `update`: an installed game's update or new DLC, which the account's
     // saved update list takes only when `updates_known` (the library refresh has read the licenses).
+    // `install_unavailable`: why the game can't be installed here, when `windows_installable` is false.
     bool UpdateAppDetails(GameId id, std::optional<std::uint64_t> download_bytes,
                           std::optional<std::uint64_t> install_bytes, std::optional<bool> windows_installable,
                           std::vector<std::string> languages = {}, std::vector<GameDlc> dlc = {},
-                          std::vector<GameVersion> versions = {}, GameUpdate update = {}, bool updates_known = true);
+                          std::vector<GameVersion> versions = {}, GameUpdate update = {}, bool updates_known = true,
+                          std::string install_unavailable = {});
     // Live mode: the Steam store's description, genres, controller support and whether it uses Valve Anti-Cheat,
     // for one game; kept across library refreshes.
     void UpdateStoreDetails(GameId id, std::string description, std::vector<std::string> genres,

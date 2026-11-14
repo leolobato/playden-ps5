@@ -139,6 +139,8 @@ void Refs() {
   CHECK(SharingGameRef(gog, 220, "Name") == gog_ref && SharingGameRef(gog, 0, "Name") == gog_ref);
   CHECK(MatchingGameRef(GameId::Gog(std::numeric_limits<std::uint64_t>::max()), 0)->valid());
   CHECK(!MatchingGameRef(GameId{playden::Store::kGog, "01"}, 220));
+  // An invalid GOG key shares nothing: no Steam ref, and no imported name key either.
+  CHECK(!SharingGameRef(GameId{playden::Store::kGog, "01"}, 220, "Name") && !SharingGameRef(GameId{playden::Store::kGog, "01"}, 0, "Name"));
   CHECK(RecipeStoreOf(Store::kLocal) == "imported" && RecipeStoreOf(Store::kSteam) == "steam");
 }
 

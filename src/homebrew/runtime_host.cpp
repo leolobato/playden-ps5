@@ -4,6 +4,8 @@
 #include "homebrew/runtime_host.hpp"
 
 #include "homebrew/gog_icon.hpp"
+#include "gog/install_script.h"
+#include "gog/installer.h"
 #include "pw_app_profile.h"
 #include "platform/usb_mount.h"
 #include "installs/install_record.h"
@@ -1846,6 +1848,59 @@ std::string RuntimeHost::RecipeIniStep(const GameFiles& files) {
   return applied.ok ? std::string() : applied.message;
 }
 
+// GOG step: the setIni and folder steps of each installed product's goggame-<id>.script, before every start, as the
+// install ran them. `{app}` is the game folder as Wine sees it (the console path, which a move changes: ScummVM's game
+// `path`). The script's copies ran once at install and never again: they could overwrite the player's files. A
+// failure is logged and never stops the start.
+void RuntimeHost::GogScriptStep(const GameFiles& files) {
+  const auto& record = files.record;
+  if (GameOf(record).store != Store::kGog) return;
+  const auto app = "gog script app=" + std::to_string(record.runtime_number);
+  const auto root = files.root.string();
+  const auto installed = installs::ReadInstallRecord((files.root / installs::kInstallRecordName).string());
+  if (!installed || !installed->gog) {
+    Log(app + " failed=the install record has no GOG build");
+    return;
+  }
+  const auto windows_app = rt::ProsperoWindowsPath(record.install_path);
+  if (!windows_app) {
+    Log(app + " failed=the game folder has no Windows path");
+    return;
+  }
+  std::size_t scripts = 0, ini = 0, changed = 0, skipped = 0, failed = 0;
+  std::string failure;
+  for (const auto product : installed->gog->products) {
+    const auto path = gog::FindScriptFile(root, product);
+    if (!path) continue;
+    ++scripts;
+    const auto script = gog::ReadScript(*path);
+    if (!script) {
+      ++failed;
+      if (failure.empty()) failure = "goggame-" + std::to_string(product) + ".script can't be read";
+      continue;
+    }
+    gog::ScriptContext context;
+    context.game_root = root;
+    context.support_root = root + "/" + gog::kGogDirName + "/support/" + std::to_string(product);
+    context.product = std::to_string(product);
+    context.gog_language = installed->gog->language;
+    context.windows_app = *windows_app;
+    std::size_t left_out = 0;
+    const auto steps = gog::PlanScript(*script, context, /*skip_copies=*/true, &left_out);
+    ini += static_cast<std::size_t>(std::count_if(steps.begin(), steps.end(), [](const gog::ScriptStep& step) {
+      return step.kind == gog::ScriptStep::Kind::kSetIni;
+    }));
+    const auto run = gog::RunScript(steps);
+    changed += run.changed;
+    skipped += left_out + run.skipped;
+    failed += run.failed;
+    if (failure.empty()) failure = run.failure;
+  }
+  if (scripts == 0) return;
+  Log(app + " ini=" + std::to_string(ini) + " changed=" + std::to_string(changed) + " skipped=" +
+      std::to_string(skipped) + (failed ? " failed=" + (failure.empty() ? std::to_string(failed) : failure) : std::string()));
+}
+
 // Generic step: files Playden ships for a game that can't run on the console without them (docs/community-recipes.md).
 std::string RuntimeHost::RecipeFilesStep(const GameFiles& files) {
   if (!files.game_files_recipe) return {};
@@ -1887,8 +1942,8 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
 
 // The steps run in this order for every game, whatever its store: generic ones (media, EULA, Direct3D 12, Wine
 // Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values and files, the
-// .NET heap) and Steam-file ones, which act only on the Steam files a game has (SteamStub, Steamworks and steam.dll,
-// install scripts and redistributables, Cloud save folders).
+// .NET heap), GOG's install script INI values, and Steam-file ones, which act only on the Steam files a game has
+// (SteamStub, Steamworks and steam.dll, install scripts and redistributables, Cloud save folders).
 std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known) {
   MediaStep(c, record);
   GameFiles files{record};
@@ -1952,6 +2007,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;
   if (auto refused = RecipeIniStep(files); !refused.empty()) return refused;
+  GogScriptStep(files);
   if (auto refused = RecipeFilesStep(files); !refused.empty()) return refused;
   return DotnetHeapStep(files);
 }

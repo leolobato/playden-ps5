@@ -329,6 +329,22 @@ int main(int argc, char** argv) {
     Check(response.ok() && response.status_code == 404 && sink_calls == 0, "an error status skips the sink");
     Check(Text(response.body) == "{\"error\":\"not_found\"}", "an error status keeps its body");
 
+    // An error body longer than max_response_bytes (sized for the 2xx body) still reads as its status: a refused
+    // link to a 68-byte chunk must not look like an overlong chunk.
+    HttpRequest refused = missing;
+    refused.url = base_url + "/stream-403/500";
+    refused.max_response_bytes = 69;
+    sink_calls = 0;
+    response = client.Perform(refused, cancel);
+    Check(response.ok() && response.status_code == 403 && sink_calls == 0 && response.body.size() == 500,
+          "an error body over max_response_bytes keeps its status and body");
+    refused.url = base_url + "/stream-403/" + std::to_string(playden::steam::kMaxHttpStreamErrorBodyBytes + 3 * 4096);
+    response = client.Perform(refused, cancel);
+    Check(response.ok() && response.status_code == 403 && sink_calls == 0 &&
+              response.body.size() == playden::steam::kMaxHttpStreamErrorBodyBytes,
+          "an error body over the cap is cut there and keeps its status");
+    Check(Text(client.Perform(missing, cancel).body) == "{\"error\":\"not_found\"}", "the client works after a cut");
+
     HttpRequest invalid_stream = missing;
     invalid_stream.method = HttpMethod::kPost;
     Check(client.Perform(invalid_stream, cancel).error == HttpError::kInvalidRequest, "a sink is GET only");

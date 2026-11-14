@@ -18,9 +18,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// A streamed request keeps a non-2xx body (such as a JSON error) up to this size.
-constexpr std::size_t kMaxStreamErrorBodyBytes = 64 * 1024;
-
 struct CurlGlobal {
   CurlGlobal() : ready(curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK) {}
   ~CurlGlobal() {
@@ -51,6 +48,7 @@ struct TransferBuffer {
   Clock::time_point last_activity;
   bool sink_failed = false;
   bool canceled = false;
+  bool error_body_cut = false;  // a non-2xx body reached kMaxHttpStreamErrorBodyBytes: stopped, status kept
 };
 
 bool MultiplyWithin(std::size_t left, std::size_t right, std::size_t limit,
@@ -60,12 +58,29 @@ bool MultiplyWithin(std::size_t left, std::size_t right, std::size_t limit,
   return true;
 }
 
-// A 2xx body goes to the sink, checked against the limit before each block; any other status is buffered (bounded)
-// so the caller can read the error. Headers have all arrived before the first body block.
+// A 2xx body goes to the sink, checked against the limit before each block; any other status is buffered so the
+// caller can read the error: its first kMaxHttpStreamErrorBodyBytes, apart from max_response_bytes (which sizes the
+// 2xx body), then the transfer stops with the status kept. Headers have all arrived before the first body block.
 size_t StreamBody(TransferBuffer& transfer, const char* bytes, size_t size, size_t count) {
   if (transfer.cancel->load(std::memory_order_acquire)) {
     transfer.canceled = true;
     return 0;
+  }
+  long status = 0;
+  if (curl_easy_getinfo(transfer.easy, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK) return 0;
+  const auto* begin = reinterpret_cast<const std::uint8_t*>(bytes);
+  if (status < 200 || status > 299) {
+    std::size_t length = 0;
+    const std::size_t room = kMaxHttpStreamErrorBodyBytes - transfer.response.body.size();
+    if (!MultiplyWithin(size, count, std::numeric_limits<std::size_t>::max(), length)) length = room + 1;
+    if (length == 0) return 0;
+    transfer.response.body.insert(transfer.response.body.end(), begin, begin + std::min(length, room));
+    transfer.last_activity = Clock::now();
+    if (length > room) {
+      transfer.error_body_cut = true;
+      return 0;
+    }
+    return length;
   }
   std::size_t length = 0;
   if (!MultiplyWithin(size, count, transfer.body_limit, length)) {
@@ -73,19 +88,6 @@ size_t StreamBody(TransferBuffer& transfer, const char* bytes, size_t size, size
     return 0;
   }
   if (length == 0) return 0;
-  long status = 0;
-  if (curl_easy_getinfo(transfer.easy, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK) return 0;
-  const auto* begin = reinterpret_cast<const std::uint8_t*>(bytes);
-  if (status < 200 || status > 299) {
-    const std::size_t limit = std::min(transfer.body_limit, kMaxStreamErrorBodyBytes);
-    if (length > limit - transfer.response.body.size()) {
-      transfer.body_overflow = true;
-      return 0;
-    }
-    transfer.response.body.insert(transfer.response.body.end(), begin, begin + length);
-    transfer.last_activity = Clock::now();
-    return length;
-  }
   if (length > transfer.body_limit - transfer.streamed) {
     transfer.body_overflow = true;
     return 0;
@@ -231,6 +233,8 @@ HttpError MapError(CURLcode code, const TransferBuffer& transfer, bool canceled)
   if (transfer.body_overflow) return HttpError::kResponseTooLarge;
   if (transfer.header_overflow) return HttpError::kResponseHeadersTooLarge;
   if (transfer.malformed_header) return HttpError::kProtocolError;
+  // The write callback stopped it on purpose: the status and the start of the error body stand.
+  if (transfer.error_body_cut && code == CURLE_WRITE_ERROR) return HttpError::kNone;
   switch (code) {
     case CURLE_OK:
       return HttpError::kNone;

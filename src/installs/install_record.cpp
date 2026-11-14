@@ -34,6 +34,79 @@ std::optional<std::uint64_t> AsGid(const Value* value) {
   return gid;
 }
 
+bool HasControl(std::string_view text) {
+  for (const char c : text)
+    if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) return true;
+  return false;
+}
+
+// A GOG ID in a record: canonical decimal (a string; a number is accepted too).
+std::optional<std::uint64_t> AsGogId(const Value* value) {
+  if (!value) return std::nullopt;
+  if (value->is_number()) {
+    const auto number = value->AsUint64();
+    return number && *number != 0 ? number : std::nullopt;
+  }
+  return value->is_string() ? ParseGogValue(value->text()) : std::nullopt;
+}
+
+bool IsHash(std::string_view text) {
+  if (text.size() != 32) return false;
+  for (const char c : text)
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  return true;
+}
+
+// The "gog" object; nothing when any of its fields is malformed.
+std::optional<GogRecord> ParseGog(const Value& value) {
+  if (!value.is_object()) return std::nullopt;
+  GogRecord gog;
+  const auto* build = value.Find("build_id");
+  if (!build || !build->is_string() || build->text().empty() || build->text().size() > 64 || HasControl(build->text()))
+    return std::nullopt;
+  gog.build_id = build->text();
+  if (const auto* generation = value.Find("generation")) {
+    const auto number = generation->AsUint64();
+    if (!number || (*number != 1 && *number != 2)) return std::nullopt;
+    gog.generation = static_cast<int>(*number);
+  }
+  const auto* products = value.Find("products");
+  if (!products || !products->is_array() || products->array().empty() || products->array().size() > 1024)
+    return std::nullopt;
+  for (const auto& entry : products->array()) {
+    const auto id = AsGogId(&entry);
+    if (!id) return std::nullopt;
+    gog.products.push_back(*id);
+  }
+  if (const auto* language = value.Find("language")) {
+    if (!language->is_string() || language->text().size() > 32 || HasControl(language->text())) return std::nullopt;
+    gog.language = language->text();
+  }
+  if (const auto* meta = value.Find("meta")) {
+    if (!meta->is_string() || (!meta->text().empty() && !IsHash(meta->text()))) return std::nullopt;
+    gog.meta_id = meta->text();
+  }
+  return gog;
+}
+
+// One string field of a launch: absent is empty; nothing when it isn't a string or is too long.
+std::optional<std::string> LaunchText(const Value& entry, std::string_view key) {
+  const auto* value = entry.Find(key);
+  if (!value) return std::string();
+  if (!value->is_string() || value->text().size() > kMaxRecordedLaunchBytes) return std::nullopt;
+  return value->text();
+}
+
+std::optional<RecordedLaunch> ParseLaunch(const Value& entry) {
+  if (!entry.is_object()) return std::nullopt;
+  auto executable = LaunchText(entry, "executable");
+  auto arguments = LaunchText(entry, "arguments");
+  auto working = LaunchText(entry, "working_directory");
+  auto label = LaunchText(entry, "label");
+  if (!executable || executable->empty() || !arguments || !working || !label) return std::nullopt;
+  return RecordedLaunch{std::move(*executable), std::move(*arguments), std::move(*working), std::move(*label)};
+}
+
 }  // namespace
 
 std::optional<InstalledRecord> ParseInstallRecord(std::string_view text) {
@@ -67,6 +140,12 @@ std::optional<InstalledRecord> ParseInstallRecord(std::string_view text) {
   if (const auto* excluded = root->Find("excluded_dlc"); excluded && excluded->is_array())
     for (const auto& entry : excluded->array())
       if (const auto dlc = AsUint32(&entry); dlc && *dlc != 0) record.excluded_dlc.push_back(*dlc);
+  if (const auto* gog = root->Find("gog")) record.gog = ParseGog(*gog);
+  if (const auto* launches = root->Find("launches"); launches && launches->is_array())
+    for (const auto& entry : launches->array()) {
+      if (record.launches.size() >= kMaxRecordedLaunches) break;
+      if (auto launch = ParseLaunch(entry)) record.launches.push_back(std::move(*launch));
+    }
   return record;
 }
 
@@ -107,6 +186,35 @@ std::string JsonText(const std::string& value) {
   return text;
 }
 }  // namespace
+
+std::string FormatGogInstallRecord(const GameId& game, std::uint64_t install_bytes, std::uint64_t files,
+                                   const std::string& steam_language, const GogRecord& gog,
+                                   const std::vector<RecordedLaunch>& launches) {
+  // install_bytes first after the identity, with no space: InstallService reads it from the first 4096 bytes.
+  std::string text = "{\"version\":2,\"app_id\":0,\"store\":\"" + std::string(Traits(game.store).key) + "\",\"game\":\"" +
+                     JsonText(game.value) + "\",\"install_bytes\":" + std::to_string(install_bytes) +
+                     ",\"files\":" + std::to_string(files) + ",\"branch\":\"public\",\"language\":\"" +
+                     JsonText(steam_language.empty() ? std::string("english") : steam_language) +
+                     "\",\"depots\":[],\"gog\":{\"build_id\":\"" + JsonText(gog.build_id) +
+                     "\",\"generation\":" + std::to_string(gog.generation) + ",\"products\":[";
+  for (std::size_t index = 0; index < gog.products.size(); ++index)
+    text += std::string(index ? "," : "") + "\"" + std::to_string(gog.products[index]) + "\"";
+  text += "],\"language\":\"" + JsonText(gog.language) + "\",\"meta\":\"" + JsonText(gog.meta_id) + "\"},\"launches\":[";
+  std::size_t written = 0;
+  for (const auto& launch : launches) {
+    if (written >= kMaxRecordedLaunches) break;
+    if (launch.executable.empty() || launch.executable.size() > kMaxRecordedLaunchBytes ||
+        launch.arguments.size() > kMaxRecordedLaunchBytes || launch.working_directory.size() > kMaxRecordedLaunchBytes ||
+        launch.label.size() > kMaxRecordedLaunchBytes)
+      continue;
+    text += std::string(written ? "," : "") + "{\"executable\":\"" + JsonText(launch.executable) +
+            "\",\"arguments\":\"" + JsonText(launch.arguments) + "\",\"working_directory\":\"" +
+            JsonText(launch.working_directory) + "\",\"label\":\"" + JsonText(launch.label) + "\"}";
+    ++written;
+  }
+  text += "]}\n";
+  return text;
+}
 
 const char* UpdatePhaseName(UpdatePhase phase) {
   switch (phase) {

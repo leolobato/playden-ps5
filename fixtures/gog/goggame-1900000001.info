@@ -1,0 +1,71 @@
+{
+    "buildId": "50000000000000002",
+    "clientId": "50000000000000001",
+    "gameId": "1900000001",
+    "language": "English",
+    "languages": [
+        "en-US"
+    ],
+    "name": "Synthetic Game",
+    "playTasks": [
+        {
+            "category": "launcher",
+            "isPrimary": true,
+            "languages": [
+                "*"
+            ],
+            "name": "Synthetic Game",
+            "path": "SyntheticLauncher.exe",
+            "type": "FileTask"
+        },
+        {
+            "category": "game",
+            "icon": "goggame-1900000001.ico",
+            "languages": [
+                "*"
+            ],
+            "name": "Synthetic Game (Classic)",
+            "path": "synthetic.exe",
+            "type": "FileTask"
+        },
+        {
+            "category": "game",
+            "isHidden": true,
+            "languages": [
+                "*"
+            ],
+            "name": "SyntheticHR",
+            "path": "syntheticHR.exe",
+            "type": "FileTask"
+        },
+        {
+            "category": "tool",
+            "languages": [
+                "*"
+            ],
+            "name": "Config",
+            "path": "synthetic_config.exe",
+            "type": "FileTask"
+        },
+        {
+            "category": "document",
+            "languages": [
+                "*"
+            ],
+            "name": "Manual",
+            "path": "manual.pdf",
+            "type": "FileTask"
+        },
+        {
+            "category": "document",
+            "languages": [
+                "*"
+            ],
+            "link": "https://example.invalid/support",
+            "name": "Support",
+            "type": "URLTask"
+        }
+    ],
+    "rootGameId": "1900000001",
+    "version": 1
+}

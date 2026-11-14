@@ -1,0 +1,25 @@
+{
+    "actions": [
+        {
+            "install": {
+                "action": "setIni",
+                "arguments": {
+                    "conditions": [
+                        "onLanguageChange"
+                    ],
+                    "filename": "{app}\\synthetic.cfg",
+                    "keyName": "language",
+                    "keyType": "string",
+                    "keyValue": "english",
+                    "section": "system",
+                    "utf8": false
+                }
+            },
+            "languages": [
+                "en-US"
+            ],
+            "name": "ini"
+        }
+    ],
+    "productId": "1900000001"
+}

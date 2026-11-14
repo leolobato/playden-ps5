@@ -808,6 +808,7 @@ class RuntimeHost {
   // removes what the earlier recipe wrote and left; idempotent.
   std::string RecipeRegistryStep(Composition& composition, const GameFiles& files);
   std::string RecipeIniStep(const GameFiles& files);
+  void GogScriptStep(const GameFiles& files);  // never stops the start
   std::string RecipeFilesStep(const GameFiles& files);
   std::string DotnetHeapStep(const GameFiles& files);
   void MfcStep(const GameFiles& files);  // an upgrade: never stops the start

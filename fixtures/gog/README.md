@@ -75,3 +75,13 @@ chunks compressed with miniz, manifests, meta and builds); these files are the a
   The tokens are made up and `base_url` points at stub hosts (`https://cdn.example.invalid`,
   `https://gcore.example.invalid`). The product is the made-up `1900000001`; the stub puts another product's ID in its
   place.
+
+Play tasks and install scripts for the `gog_info_file` and `gog_install_script` tests. All synthetic: the real files
+come from purchased builds and stay out of the repository.
+
+- `goggame-1900000001.info` and `goggame-1900000001.script`: the exact shape of a locally installed game's files (a
+  `launcher` primary task, a task `icon`, a hidden `game` task, a `tool`, a `document` FileTask and a `document`
+  URLTask; a `setIni` action with `conditions` and `keyType`), with made-up IDs, names and paths.
+- `goggame-1900000002.info`: the shape of Jazz Jackrabbit 2's info file as read on 2026-11-13 (a primary `game`
+  FileTask named `jazz2.exe` in lower case while the build's file is `Jazz2.exe`, with `compatibilityFlags`; a `tool`
+  FileTask `jcs.exe`; a `document` URLTask; no `workingDir`). The IDs, names and link are made up.

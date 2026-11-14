@@ -17,7 +17,8 @@ Did you test a game? [Open a test report](../../issues/new?template=test-report.
 | ❌ Broken | Starts, but does not reach a playable state. |
 | ⛔ Refused | Playden refuses to prepare it and tells you why. For .NET and shared-section refusals, Game settings › Known problems › Try anyway prepares it anyway. |
 
-The **Kit** column is the newest runtime kit the game was checked on. The **Graphics** column is what the game
+The **Game** column links the game's store page: the Steam store, or gog.com for a GOG game. An
+imported copy says so in the notes. The **Kit** column is the newest runtime kit the game was checked on. The **Graphics** column is what the game
 uses: Direct3D 8–11 goes through DXVK to Vulkan, and Direct3D 12 through vkd3d-proton (from kit 0.11).
 
 ## Games

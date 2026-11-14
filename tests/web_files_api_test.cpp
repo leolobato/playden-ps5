@@ -70,6 +70,10 @@ std::string Encode(const std::string& text) {
 }  // namespace
 
 int main() {
+  // The page names each store by the kind: GOG games are "gog", games the player added "imported".
+  CHECK(std::string(FileGameKind(playden::Store::kSteam)) == "steam");
+  CHECK(std::string(FileGameKind(playden::Store::kGog)) == "gog");
+  CHECK(std::string(FileGameKind(playden::Store::kLocal)) == "imported");
   const auto base = fs::canonical(fs::temp_directory_path()) / ("playden-web-api-" + std::to_string(::getpid()));
   fs::remove_all(base);
   const auto bottle = base / "games/steam-12210/library/prefixes/game";

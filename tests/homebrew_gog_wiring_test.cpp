@@ -15,6 +15,7 @@
 #include "library/cache.h"
 #include "stores/gog.h"
 #include "stores/gog_library.h"
+#include "stores/gog_details.h"
 #include "stores/registry.h"
 #include "stores/steam.h"
 #include "web/gog_relay.h"
@@ -266,6 +267,9 @@ void LineOffMakesNothing() {
   };
   CHECK(MakeGogServices(config) == nullptr);
   CHECK(transports == 0 && !Exists(root / "gog") && LogFiles(root) == 0);
+  // No runner: GOG games can't install, as the apps' model says without the line.
+  Simulation model{{}, {}, ModelMode::Live};
+  CHECK(!model.StoreInstalls(Store::kGog) && model.StoreInstalls(Store::kSteam));
   // "Stay signed in" off with no GOG folder: still nothing is made.
   config.stay_signed_in = false;
   CHECK(MakeGogServices(config) == nullptr);
@@ -323,9 +327,16 @@ void StaySignedInOffForgetsTheSession() {
 void LineOnSignsInThroughThePhone() {
   App app;
   CHECK(app.model.GogStoreEnabled());
+  // GOG games install through the queue: the runner is made (its transports only when a download runs).
+  CHECK(app.gog->install_runner() != nullptr && app.model.StoreInstalls(Store::kGog));
+  CHECK(app.transports == 2);
   CHECK(app.registry.account(Store::kGog) == app.gog->account());
   const auto libraries = app.registry.libraries();
   CHECK(std::find(libraries.begin(), libraries.end(), app.gog->library()) != libraries.end());
+  // The details source (install sizes) too; its transport waits for its first request.
+  CHECK(app.gog->details() != nullptr && app.registry.details(Store::kGog) == app.gog->details());
+  const auto sources = app.registry.details_sources();
+  CHECK(std::find(sources.begin(), sources.end(), app.gog->details()) != sources.end());
   CHECK(Ask(*app.web, web::Method::kGet, "/gog").status == 200);
   app.SignIn();
   CHECK(app.Gog().display_name == kUsername);

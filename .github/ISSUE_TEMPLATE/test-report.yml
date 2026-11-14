@@ -24,7 +24,7 @@ body:
     id: game
     attributes:
       label: Game
-      description: The name and the Steam store link (the link has the app ID). For an imported game, its name and where it comes from (GOG, Epic, a disc).
+      description: The name and its store link, on the Steam store or gog.com (the link names the game). For an imported game, its name and where it comes from (GOG, Epic, a disc).
       placeholder: "Vampire Survivors — https://store.steampowered.com/app/1794680"
     validations:
       required: true

@@ -18,8 +18,25 @@ restart Playden after you change it. Dev builds and nightlies also need the line
   offline, and while you sign in again after GOG ends your sign-in. If Playden started offline, Refresh library asks
   GOG again and signs you in when GOG answers.
 - **The Stores section** in Settings, with Sign in, Refresh library and Sign out for GOG.
+- **Installs.** Install on a GOG game's page puts it in the Queue, as for a Steam game. You can pause and resume it,
+  and a download that stops when Playden closes continues at the next start. You can install to a USB drive. The page
+  shows the install size before you start.
+- **Play.** An installed GOG game becomes its own PS5 title, named "<name> (GOG)" when "Store name in PS5 titles" is
+  on. It starts the program that the game's primary play task names. Game settings, recipes (`gog/<product id>`),
+  uninstall and Move to… work as for a Steam game.
+- **DOSBox and ScummVM games.** Playden installs the DOSBox or ScummVM files that the game needs into its game
+  folder. It also runs the install script's `supportData` and `setIni` steps: they copy the game's support files into
+  the game folder and set INI keys, such as ScummVM's game path. `setIni` runs again before each Play, so a moved game
+  keeps the right paths.
 
-Installs come later. A GOG game's page shows Install, but you can't select it.
+Not there yet:
+
+- **Older GOG builds.** A game whose Windows build uses GOG's older download format (gen 1) can't install. Its page
+  says "Playden can't install this GOG game yet: it uses an older GOG download format."
+- **Redistributable installers.** Playden does not run the installers in a game's `__redist` packages (DirectX,
+  Visual C++, .NET). If a game needs one, use "Run launcher or setup" on its page.
+- **Game updates.** Playden does not look for new GOG builds of an installed game.
+- **Choosing DLC.** Every DLC you own for a game installs with it. You can't add or remove DLC.
 
 With the line off, Playden does not change: there is no Stores section, no GOG sign-in, no GOG routes in web access,
 and no `gog` folder in user data.
@@ -50,6 +67,11 @@ a token, the sign-in code, the address you paste, or the QR code's token. A log 
 only, for example `library owned=27 fetched=27 not_modified=0 missing=0 hidden=4 failed=0`. Web access's log bundle
 also removes the signed-in GOG name and user ID if they appear in a log.
 
+GOG install lines are in `install.log`, next to Steam's. Each step gives the game's key (`gog-<product id>`) and the
+result, for example `gog install game=gog-1351891846 step=plan result=ok language=english`. The download's own lines
+(`gog plan …`, `gog chunk …`) give counts, HTTP statuses and the CDN's name only (`fastly`, `gcore` or `other`). No
+line gives your account, a token or a download address.
+
 ## Going back to an older build
 
 Before you go back to an older build of Playden with GOG games in your data, read this:
@@ -57,9 +79,9 @@ Before you go back to an older build of Playden with GOG games in your data, rea
 - A build older than the first release that reads GOG records (the release with Phase 1 of the GOG plan) does not
   read the Library organization at all while a GOG game is in it: favorites, hidden games, collections, ratings and
   notes are lost on that build for every store, Steam and imported games included.
-- From the build that installs GOG games, going back to a build older than that release also breaks Play for every
-  game until the GOG titles are removed. The older build refuses the whole install records file when one record names
-  GOG.
+- After you install a GOG game, the same older builds (those that can't read GOG records) also break Play for every
+  game until the GOG titles are removed: they refuse the whole install records file when one record names GOG. A build
+  that reads GOG records but doesn't install GOG games keeps Play working.
 
 ## For maintainers
 

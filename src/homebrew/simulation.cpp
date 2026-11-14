@@ -4497,7 +4497,7 @@ bool Simulation::UpdateAppDetails(GameId id, std::optional<std::uint64_t> downlo
                                   std::optional<std::uint64_t> install_bytes,
                                   std::optional<bool> windows_installable, std::vector<std::string> languages,
                                   std::vector<GameDlc> dlc, std::vector<GameVersion> versions, GameUpdate update,
-                                  bool updates_known) {
+                                  bool updates_known, std::string install_unavailable) {
     if (!live()) return false;
     // New details may name other files (a newer build): the game's exact sizes are checked again.
     const auto of_game = [id](const auto& key) { return std::get<0>(key) == id; };
@@ -4521,6 +4521,7 @@ bool Simulation::UpdateAppDetails(GameId id, std::optional<std::uint64_t> downlo
     game->download_bytes = download_bytes;
     game->install_bytes = install_bytes;
     game->windows_installable = windows_installable;
+    game->install_unavailable = windows_installable.value_or(true) ? std::string() : std::move(install_unavailable);
     game->content_languages = std::move(languages);
     game->dlc = std::move(dlc);
     game->versions = std::move(versions);
@@ -9159,13 +9160,16 @@ void Simulation::rebuild_view() {
                         ? " · " + format_bytes(*assessment.free_bytes) + " free" : std::string());
                 }
             } else if (game->windows_installable.has_value()) {
-                row("details-unavailable", RowKind::Status, "No Windows version to install", "").enabled = false;
+                row("details-unavailable", RowKind::Status,
+                    game->install_unavailable.empty() ? "No Windows version to install" : game->install_unavailable, "")
+                    .enabled = false;
             } else {
-                // Install keeps its place while Steam answers: disabled, then enabled with the size.
+                // Install keeps its place while the store answers: disabled, then enabled with the size.
                 auto& install = row("details-install", RowKind::Action, "Install", "");
                 install.value = "…";  // narrower than any size, so the button keeps its width
                 install.enabled = false;
-                row("details-checking", RowKind::Status, "Checking Steam…", "").enabled = false;
+                row("details-checking", RowKind::Status, "Checking " + std::string(Traits(game->id.store).name) + "…", "")
+                    .enabled = false;
             }
             // Saves kept when the game was uninstalled: Install brings them back.
             if (!installed)

@@ -2818,7 +2818,11 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
   if (out.launch_entries.empty()) {
     if (!first_refusal.empty()) return fail(first_refusal, first_refusal_soft);
     // Choosing a program in Game settings gets past both of these.
-    return fail(first_missing.empty() ? "Steam lists no Windows program this console can start for this game."
+    // A game from another store names that store: its programs come from its own install files, not from Steam. An
+    // imported game keeps Steam's sentence, as before.
+    const std::string lister =
+        game.store == Store::kSteam || game.store == Store::kLocal ? "Steam" : std::string(Traits(game.store).name);
+    return fail(first_missing.empty() ? lister + " lists no Windows program this console can start for this game."
                                       : "The game's program " + first_missing + " is missing; verify the download.",
                 true);
   }

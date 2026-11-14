@@ -467,6 +467,28 @@ void TestSyntheticSelection() {
   CHECK(odd.has_value());
   const auto odd_pick = SelectDepots(*odd, {}, "english");
   CHECK(odd_pick.language == "xx-XX" && Manifests(odd_pick) == (std::vector<std::string>{kM1, kM3}));
+  // A first language the plan can't record (a tab, over 16 bytes) is passed over for the next one; with none left,
+  // it is as if the depots named "*": the requested language is recorded and only "*" depots go.
+  const auto tabbed = ParseMeta(SyntheticMeta(Depot("1900000001", R"("x\ty","yy-YY")", kM1) + "," +
+                                              Depot("1900000001", R"("yy-YY")", kM2) + "," +
+                                              Depot("1900000001", R"("*")", kM3, R"(,"isGogDepot":true)")));
+  CHECK(tabbed.has_value());
+  const auto tabbed_pick = SelectDepots(*tabbed, {}, "english");
+  CHECK(tabbed_pick.language == "yy-YY" && Manifests(tabbed_pick) == (std::vector<std::string>{kM1, kM2, kM3}));
+  const auto long_code = ParseMeta(SyntheticMeta(Depot("1900000001", R"("abcdefghijklmnopq")", kM1) + "," +
+                                                 Depot("1900000001", R"("*")", kM2, R"(,"isGogDepot":true)")));
+  CHECK(long_code.has_value());
+  const auto long_pick = SelectDepots(*long_code, {}, "german");
+  CHECK(long_pick.language == "de-DE" && Manifests(long_pick) == (std::vector<std::string>{kM2}));
+  // A deprecated name the table knows, spaces and all, still counts, and its plain code is recorded.
+  const auto named = ParseMeta(SyntheticMeta(Depot("1900000001", R"("Brazilian Portuguese")", kM1) + "," +
+                                             Depot("1900000001", R"("pt-BR")", kM2, R"(,"isGogDepot":true)")));
+  CHECK(named.has_value());
+  const auto named_pick = SelectDepots(*named, {}, "german");
+  CHECK(named_pick.language == "pt-BR" && Manifests(named_pick) == (std::vector<std::string>{kM1, kM2}));
+  CHECK(PlainLanguageCode("en-US") && PlainLanguageCode("English") && PlainLanguageCode("zh_Hans"));
+  CHECK(!PlainLanguageCode("") && !PlainLanguageCode("a b") && !PlainLanguageCode("x\ty") &&
+        !PlainLanguageCode("abcdefghijklmnopq") && !PlainLanguageCode("*"));
   const auto ja = ParseMeta(SyntheticMeta(Depot("1900000001", R"("jp")", kM1) + "," +
                                           Depot("1900000001", R"("ja-JP")", kM2, R"(,"isGogDepot":true)")));
   CHECK(ja.has_value());

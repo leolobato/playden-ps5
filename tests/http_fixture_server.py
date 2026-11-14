@@ -89,6 +89,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+        elif self.path.startswith("/stream-403/"):
+            body = pattern(int(self.path[len("/stream-403/"):]))
+            self._stream(403, len(body), ((body[start:start + STREAM_BLOCK], 0)
+                                          for start in range(0, len(body), STREAM_BLOCK)))
         elif self.path.startswith("/keep/"):
             if self.path == "/keep/slow":
                 self._reply(200, b"late", keep=True, marker="slow", slow=True)

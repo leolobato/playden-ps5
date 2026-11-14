@@ -92,6 +92,14 @@ std::vector<InstallRequest> ParseInstallRequests(const std::string& text) {
       id = token();
     }
     if (malformed || id.empty() || !token().empty() || malformed) continue;
+    if (id.rfind("gog-", 0) == 0) {
+      // A GOG game by its key: install, uninstall or cancel, as a Steam game.
+      const auto game = ParseKey(id);
+      if (!game || game->store != Store::kGog) continue;
+      request.game = *game;
+      requests.push_back(std::move(request));
+      continue;
+    }
     if (id.rfind("local-", 0) == 0) {
       // Imported games have no download to cancel.
       const auto game = ParseKey(id);

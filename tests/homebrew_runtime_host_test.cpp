@@ -9231,6 +9231,95 @@ void LinkedRecipeAppliesUnderItsAlias() {
   restarted.Shutdown();
 }
 
+// A GOG game prepares to Ready from the programs its install record names (what the controller sends), and before each
+// start its goggame-<id>.script's setIni steps run again with `{app}` as the folder's console path, as Wine sees it:
+// moved to a USB drive, the value follows. The script's supportData copy ran at install and is never run again.
+void GogScriptSetsIniAtEachStart() {
+  using playden::GameId;
+  const auto gog = GameId::Gog(1900000001);
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  const auto config = MoveConfig(fixture, kit, &uuids, move);
+  const std::string console_root = "/data/playden-games/gog-1900000001";
+  const auto root = fixture.root / fs::path(console_root).relative_path();
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(root / "SYNTHETIC.EXE", pe, 0644);
+  playden::installs::GogRecord record;
+  record.build_id = "1000000000000000101";
+  record.products = {1900000001};
+  record.language = "en-US";
+  record.meta_id = std::string(32, 'a');
+  Write(root / playden::installs::kInstallRecordName,
+        playden::installs::FormatGogInstallRecord(gog, 4096, 2, "english", record,
+                                                  {{"synthetic.exe", "-windowed", "", "Synthetic"}}),
+        0644);
+  // The script as GOG writes it (Beneath a Steel Sky's ScummVM path, Arena's save copy), spelled in capitals on disk.
+  Write(root / "GOGGAME-1900000001.SCRIPT", R"({"actions":[
+ {"install":{"action":"setIni","arguments":{"filename":"{app}\\synthetic.cfg","keyName":"path","keyType":"string","keyValue":"{app}\\data","section":"system","utf8":false}},"languages":["*"],"name":"ini"},
+ {"install":{"action":"supportData","arguments":{"overwrite":true,"source":"{supportDir}/save","target":"{app}/save","type":"folder"}},"languages":["*"],"name":"copySave"}
+],"productId":"1900000001"})", 0644);
+  // What the install's copy left in the support folder; the player has since deleted the game's own copy.
+  Write(root / ".playden-gog/support/1900000001/save/slot.sav", "install-time-save", 0644);
+  Write(root / "synthetic.cfg", "[system]\r\npath=C:\\GOG Games\\Synthetic\\data\r\nvolume=7\r\n", 0644);
+  CHECK(chmod(root.c_str(), 0777) == 0);
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto number = *host.RuntimeNumberFor(gog);
+  RuntimePrepareRequest request{number, console_root, "internal", "Synthetic GOG game (GOG)"};
+  request.game = gog;
+  request.launches = {{"", "Synthetic", "synthetic.exe", "", "-windowed"}};
+  host.Prepare(request);
+  const auto ready = WaitFor(host, [number](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(number).c_str());
+  CHECK(!ready.refusals.count(number) && ready.installs.size() == 1);
+  CHECK(ready.installs[0].recipe_id == "gog-1900000001-auto" && ready.installs[0].launch_path == "SYNTHETIC.EXE");
+  const auto ini = [&](const fs::path& folder) { return Read(folder / "synthetic.cfg"); };
+  // Only the key changes; the other lines and the CRLF line ends stay.
+  CHECK(ini(root) == "[system]\r\npath=Z:\\data\\playden-games\\gog-1900000001\\data\r\nvolume=7\r\n");
+  CHECK(!fs::exists(root / "save"));
+  CHECK(move.Logged("gog script app=" + std::to_string(number) + " ini=1 changed=1 skipped=0"));
+
+  // Moved to a USB drive: the next start names the new folder.
+  const std::string usb_root = "/mnt/usb0/playden/games/gog-1900000001";
+  const auto usb = fixture.root / fs::path(usb_root).relative_path();
+  for (const auto& folder : {fixture.root / "mnt", fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden",
+                             fixture.root / "mnt/usb0/playden/games"}) {
+    fs::create_directories(folder);
+    CHECK(chmod(folder.c_str(), 0755) == 0);
+  }
+  RuntimeRelocation relocation;
+  relocation.runtime_number = number;
+  relocation.to = usb_root;
+  relocation.volume_id = "usb0";
+  relocation.move_files = [&]() -> std::string {
+    std::error_code error;
+    if (!fs::exists(usb)) fs::rename(root, usb, error);
+    return error ? error.message() : std::string();
+  };
+  const auto moved = host.Relocate(std::move(relocation), std::chrono::seconds(60));
+  if (!moved.message.empty()) std::fprintf(stderr, "Relocate: %s\n", moved.message.c_str());
+  CHECK(moved.outcome == RuntimeRelocationResult::Outcome::kDone);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && !s.installs[0].republish_pending; }, 30);
+  CHECK(host.Snapshot().installs[0].install_path == usb_root);
+  // Play sets it before the title starts, whatever the file says by then.
+  Write(usb / "synthetic.cfg", "[system]\r\npath=C:\\elsewhere\r\nvolume=7\r\n", 0644);
+  host.Play(number);
+  const auto played = WaitFor(host, [number](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(number); }, 30);
+  if (played.play_refusals.count(number)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(number).c_str());
+  CHECK(played.handoff_ready && host.Handoff());
+  CHECK(ini(usb) == "[system]\r\npath=Z:\\mnt\\usb0\\playden\\games\\gog-1900000001\\data\r\nvolume=7\r\n");
+  CHECK(!fs::exists(usb / "save") && Read(usb / ".playden-gog/support/1900000001/save/slot.sav") == "install-time-save");
+  host.Shutdown();
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
@@ -9265,6 +9354,7 @@ int main(int argc, char** argv) {
   DriveUpdateSkipsABusyGame();
   UsbGameNamesNoMount();
   MoveAfterUsbSwap();
+  GogScriptSetsIniAtEachStart();
   OlderTitleKeepsItsMount();
   PreparesGameOnUnownedDrive();
   PrepareFixesRootOwnedHomebrewFolder();

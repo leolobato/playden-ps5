@@ -8,6 +8,8 @@
 #include "homebrew/controller.hpp"
 #include "homebrew/simulation.hpp"
 #include "stores/gog.h"
+#include "stores/gog_details.h"
+#include "stores/gog_install.h"
 #include "stores/gog_library.h"
 #include "stores/registry.h"
 #include "web/gog_relay.h"
@@ -51,10 +53,19 @@ GogServices::GogServices(GogWiringConfig config) : config_(std::move(config)) {
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
   }, gog_log);
   cache_ = std::make_unique<LibraryCache>(*config_.library_storage, "library-gog-");
+  // Its transports are made per download thread while an install runs, never here.
+  const std::string install_logs = config_.install_log_directory.empty() ? logs : config_.install_log_directory;
+  install_runner_ = std::make_unique<stores::GogInstallRunner>(
+      *session_, transport, config_.content_language,
+      [install_logs](const std::string& line) { app::AppendLogLine(install_logs, "install.log", line); },
+      config_.free_bytes);
   owned_account_ = std::make_unique<stores::GogAccount>(*session_, *store_, gog_log);
   account_ = owned_account_.get();
   owned_library_ = std::make_unique<stores::GogLibrarySource>(*session_, transport(), *cache_, config_.user_root, gog_log);
   library_ = owned_library_.get();
+  // Its transport is made on its own worker, at its first request.
+  owned_details_ = std::make_unique<stores::GogDetailsSource>(*session_, transport, config_.content_language, gog_log);
+  details_ = owned_details_.get();
 
   web::GogRelayConfig relay;
   relay.parse_code = [](std::string_view paste) { return gog::CodeFromPaste(paste); };
@@ -77,8 +88,12 @@ GogServices::~GogServices() = default;
 void GogServices::Register(stores::Registry& registry, Simulation& model) {
   if (owned_account_) registry.Add(std::move(owned_account_));
   if (owned_library_) registry.Add(std::move(owned_library_));
+  if (owned_details_) registry.Add(std::unique_ptr<stores::DetailsSource>(std::move(owned_details_)));
   model.SetGogStoreEnabled(true);
+  model.SetStoreInstalls(Store::kGog, true);
 }
+
+installs::InstallRunner* GogServices::install_runner() const { return install_runner_.get(); }
 
 void GogServices::ConfigureWeb(web::ServiceConfig& config) const {
   config.gog = relay_;

@@ -1038,8 +1038,23 @@ int main() {
             return answer;
         };
         playden::installs::GameMover game_mover(std::move(move_options));
+        // GOG, with the gog-store line (after the /data grant, as Steam's session): declared before the install
+        // service, which runs its install runner, and before the registry, which owns its account and library
+        // source. Off, nothing is made; a GOG session left from an earlier run still goes when "Stay signed in" is
+        // off.
+        playden::homebrew::GogWiringConfig gog_config;
+        gog_config.enabled = features.gog_store;
+        gog_config.stay_signed_in = stay_signed_in;
+        gog_config.user_root = user_root;
+        gog_config.ca_bundle = paths.trust_store;
+        gog_config.log_directory = log_root;
+        gog_config.install_log_directory = log_root;
+        gog_config.library_storage = &library_storage;
+        gog_config.content_language = [] { return selected_content_language(); };
+        const auto gog = playden::homebrew::MakeGogServices(std::move(gog_config));
         playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, &install_runner}};
         if (copy_runner) install_runners[playden::Store::kLocal] = copy_runner.get();
+        if (gog) install_runners[playden::Store::kGog] = gog->install_runner();
         playden::steam::InstallService installs(std::move(install_runners), std::move(install_volumes));
         installs.SetMoveRunner(&game_mover);
         installs.SetLog([](const std::string& line) { playden::app::AppendLogLine(log_root, "install.log", line); });
@@ -1099,17 +1114,6 @@ int main() {
                 [](const std::string& line) { playden::app::AppendLogLine(log_root, "install.log", line); });
         });
         const auto auth_log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "auth.log", "sign-in " + line); };
-        // GOG, with the gog-store line (after the /data grant, as Steam's session): declared before the registry,
-        // which owns its account and library source. Off, nothing is made; a GOG session left from an earlier run
-        // still goes when "Stay signed in" is off.
-        playden::homebrew::GogWiringConfig gog_config;
-        gog_config.enabled = features.gog_store;
-        gog_config.stay_signed_in = stay_signed_in;
-        gog_config.user_root = user_root;
-        gog_config.ca_bundle = paths.trust_store;
-        gog_config.log_directory = log_root;
-        gog_config.library_storage = &library_storage;
-        const auto gog = playden::homebrew::MakeGogServices(std::move(gog_config));
         playden::stores::Registry stores;
         stores.Add(std::make_unique<playden::stores::SteamAccount>(auth, sessions, auth_log));
         stores.Add(std::make_unique<playden::stores::SteamLibrarySource>(library_service));

@@ -327,8 +327,7 @@ bool ParseHeader(const std::string& line, PlanHeader* header) {
   const auto fields = Split(line, '\t');
   if (fields.size() != 7 || fields[0] != "v1") return false;
   std::uint64_t number = 0;
-  if (!CanonicalId(fields[1], &number) || !IsMd5Hex(fields[2]) || fields[3].empty() || fields[3].size() > 16)
-    return false;
+  if (!CanonicalId(fields[1], &number) || !IsMd5Hex(fields[2]) || !PlainLanguageCode(fields[3])) return false;
   header->build_id = std::string(fields[1]);
   header->meta_id = std::string(fields[2]);
   header->language = std::string(fields[3]);
@@ -1236,6 +1235,13 @@ class Download {
         Stop(Error::kCorrupt);
         return;
       }
+      if (file->chunks.empty()) {
+        // An empty file the manifest gives another hash: nothing to fetch again.
+        log_("gog file check failed chunks=0");
+        lock.unlock();
+        Stop(Error::kCorrupt);
+        return;
+      }
       file->redone = true;
       ++stats_.redone_files;
       log_("gog file check failed chunks=%zu: fetching it again", file->chunks.size());
@@ -1381,6 +1387,7 @@ class Download {
       if (result.attempts > 1)
         log_("gog chunk ok attempts=%d corrupt=%d stalls=%d endpoint=%s", result.attempts, result.corrupt,
              result.stalls, result.endpoint.c_str());
+      if (hooks_.endpoint) hooks_.endpoint(result.endpoint.c_str());
       return journal_.Chunk(file.index, task.chunk);
     }
   }

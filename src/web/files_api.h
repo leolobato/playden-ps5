@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "library/store.h"
 #include "web/file_store.h"
 #include "web/pairing.h"
 #include "web/router.h"
@@ -21,10 +22,10 @@ namespace playden::web {
 // A game the Files tab offers, as the controller reports it. No path comes from a request: a request names a game's
 // id and one of its roots, and these fields say where those are.
 struct FileGame {
-  std::string id;    // "steam-220", "local-<uuid>"
+  std::string id;    // "steam-220", "gog-<product id>", "local-<uuid>"
   std::string name;
-  std::string kind;  // "steam" or "imported"
-  std::uint32_t app = 0;  // a Steam game's app ID; 0: none
+  std::string kind;  // FileGameKind: "steam", "gog" or "imported"
+  std::uint32_t app = 0;  // a Steam game's app ID; 0: none (GOG and imported games)
   std::string bottle;       // the private bottle (holding drive_c), as this process opens it; empty: none yet
   std::string game_folder;  // the game's folder, as this process opens it; empty: not installed
   std::string game_folder_shown;  // the same, as the console names it
@@ -37,6 +38,17 @@ struct FileGame {
   std::optional<std::int64_t> last_played;
   std::optional<std::string> physx_needed;          // needs PhysX: the version, empty when it isn't known
 };
+
+// The page's name for a game's store: "imported" for a game the player added, else the store's own ("steam", "gog").
+inline const char* FileGameKind(Store store) {
+  switch (store) {
+    case Store::kGog: return "gog";
+    case Store::kLocal: return "imported";
+    case Store::kSteam:
+    case Store::kEpic: break;
+  }
+  return "steam";
+}
 
 struct FileCatalog {
   std::vector<FileGame> games;

@@ -76,6 +76,9 @@ class GogInstaller {
     // Wall-clock Unix seconds (a secure link's expires_at is one), also for the stall window.
     std::function<std::int64_t()> now_seconds;
     std::function<void(const std::string& line)> log;
+    // A chunk came from this CDN endpoint: "fastly", "gcore" or "other" (EndpointLogName), never a host. Called on
+    // the download workers; may be empty.
+    std::function<void(const char* endpoint)> endpoint;
     int parallel = kDefaultParallel;
   };
 

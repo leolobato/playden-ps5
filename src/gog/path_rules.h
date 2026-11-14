@@ -41,11 +41,12 @@ inline constexpr std::size_t kMaxComponentBytes = 255;
 // `\` becomes `/` and one leading `/` is dropped. Refused (nullopt, *why set when why is given): an empty path, a
 // remaining leading `/`, a drive letter or a name Windows can't hold (a `:`, `*`, `?`, `"`, `<`, `>` or `|`, or a
 // trailing dot or space), a `.` or `..` component, an empty component, a control character, a path
-// over 1024 bytes or a component over 255, and a first component that is one of Playden's own names in any case
+// over 1024 bytes or a component over 255, and a first component that starts with ".playden" in any case
 // (.playden-install.json, .playden-files, …): a manifest must never overwrite Playden's record or journals.
 std::optional<std::string> NormalizePath(std::string_view raw, PathRefusal* why = nullptr);
 
-// Whether `name` is one of the names Playden keeps at a game folder's top, ignoring ASCII case.
+// Whether `name` is Playden's at a game folder's top: any name that starts with ".playden", ignoring ASCII case (no
+// non-ASCII letter upcases to one of those letters, so a look-alike such as ".playden-fıles" is refused too).
 bool IsReservedName(std::string_view name);
 
 // Where a normalized path goes in the game folder. A file without the support flag stays where it is. A support file
@@ -57,7 +58,8 @@ std::optional<std::string> PlaceFile(std::string_view path, std::uint64_t produc
 
 enum class PathKind { kFile, kDirectory, kLink };
 
-// ASCII lowercase, the key exFAT compares by.
+// The key exFAT compares names by: ASCII lowercase, and the case pairs of its upcase table in two-byte UTF-8 (Latin-1,
+// Latin Extended-A, basic Greek and Cyrillic; dotless i is "i", long s is "s"). Other bytes stay as they are.
 std::string FoldCase(std::string_view text);
 
 // Every depot's entries, merged as they will sit on disk. Add them in depot order: the base product's depots first,

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 
 #define CHECK(condition)                                                                  \
   do {                                                                                    \
@@ -103,8 +104,42 @@ void TestReserved() {
   // Deeper down, or a different name, is the game's own business.
   CHECK(Normal("data/.playden-files") == "data/.playden-files");
   CHECK(Normal("data/.playden-install.json") == "data/.playden-install.json");
-  CHECK(Normal(".playden-files2") == ".playden-files2");
-  CHECK(Normal(".playden") == ".playden");
+  // Any ".playden…" name at the top is Playden's, today's names or not, and a non-ASCII letter that exFAT's upcase
+  // table may take for an ASCII one doesn't get past it (U+0131 dotless i, U+017F long s).
+  for (const char* name : {".playden-files2", ".playden", ".PLAYDENx", ".Playden-NEW.DAT.tmp",
+                           ".playden-f\xC4\xB1les", ".playden-\xC4\xB1nstall.json", ".playden-update\xC5\xBF"}) {
+    CHECK(Refusal(name) == PathRefusal::kReserved);
+    CHECK(IsReservedName(name));
+  }
+  CHECK(Normal(".playde") == ".playde");
+  CHECK(Normal("playden-files") == "playden-files");
+  CHECK(Normal("x.playden-files") == "x.playden-files");
+}
+
+void TestFoldCase() {
+  // exFAT compares names through its upcase table, which also pairs non-ASCII letters: each pair gets one key.
+  const std::pair<const char*, const char*> same[] = {
+      {"Jazz2.EXE", "jazz2.exe"},
+      {"Donn\xC3\xA9" "es", "DONN\xC3\x89" "ES"},              // é / É
+      {"\xC3\xBF", "\xC5\xB8"},                                 // ÿ / Ÿ
+      {"\xC4\x81", "\xC4\x80"},                                 // ā / Ā
+      {"\xC5\x82\xC3\xB3" "d\xC5\xBA", "\xC5\x81\xC3\x93" "D\xC5\xB9"},  // łódź / ŁÓDŹ
+      {"f\xC4\xB1le", "FILE"},                                   // dotless i: I
+      {"\xC5\xBF" "ave", "SAVE"},                                // long s: S
+      {"\xCE\xB1\xCF\x82", "\xCE\x91\xCE\xA3"},              // ας / ΑΣ (final sigma)
+      {"\xD0\xB4\xD0\xB0\xD0\xBD\xD1\x96", "\xD0\x94\xD0\x90\xD0\x9D\xD0\x86"},  // дані / ДАНІ
+      {"\xC2\xB5", "\xCE\xBC"},                                 // micro sign / mu
+  };
+  for (const auto& [a, b] : same) CHECK(FoldCase(a) == FoldCase(b));
+  CHECK(FoldCase("DONN\xC3\x89" "ES") == "donn\xC3\xA9" "es");
+  CHECK(FoldCase("f\xC4\xB1le") == "file");
+  // Not pairs: ß, İ (exFAT keeps it apart from I), the multiplication sign, a three-byte letter, stray bytes.
+  CHECK(FoldCase("\xC3\x9F") == "\xC3\x9F");
+  CHECK(FoldCase("\xC4\xB0") != FoldCase("I"));
+  CHECK(FoldCase("\xC3\x97") == "\xC3\x97" && FoldCase("\xC3\xB7") == "\xC3\xB7");
+  CHECK(FoldCase("\xE2\x84\xAA") == "\xE2\x84\xAA");
+  CHECK(FoldCase("A\xC3") == "a\xC3" && FoldCase("\xC3" "A") == "\xC3" "a" && FoldCase("\xFF\xC0\x80") == "\xFF\xC0\x80");
+  CHECK(FoldCase("\xC3\xA9") != FoldCase("e"));
 }
 
 void TestPlacement() {
@@ -135,6 +170,16 @@ void TestPathSet() {
     CHECK(first.ok() && first.path == "Jazz2.exe" && !first.replaced);
     const auto second = set.Add("JAZZ2.EXE", PathKind::kFile, 1351891846, false, 1);
     CHECK(second.ok() && second.path == "JAZZ2.EXE" && second.replaced == std::optional<std::size_t>(0));
+    CHECK(set.entries() == 1);
+  }
+  {
+    // Non-ASCII case too: two depots' "Données" and "DONNÉES" are one folder on exFAT, so one entry, in the first
+    // spelling; a file under each lands in it.
+    PathSet set;
+    const auto lower = set.Add("Donn\xC3\xA9" "es/a.txt", PathKind::kFile, 1, false, 0);
+    const auto upper = set.Add("DONN\xC3\x89" "ES/A.TXT", PathKind::kFile, 1, false, 1);
+    CHECK(lower.ok() && upper.ok() && upper.replaced == std::optional<std::size_t>(0));
+    CHECK(upper.path == "Donn\xC3\xA9" "es/A.TXT");
     CHECK(set.entries() == 1);
   }
   {
@@ -220,6 +265,7 @@ int main() {
   TestSeparators();
   TestRefusals();
   TestReserved();
+  TestFoldCase();
   TestPlacement();
   TestPathSet();
   return 0;

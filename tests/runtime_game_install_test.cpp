@@ -1,4 +1,5 @@
 #include "runtime/game_install.h"
+#include "runtime/leftover_titles.h"
 
 #include "platform/storage.h"
 #include "library/store.h"
@@ -17,6 +18,7 @@
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace playden::runtime;
@@ -808,6 +810,25 @@ void GogRecordsLoadAndKeepTheirBytes() {
           found->state == PreparationState::kReady && found->recipe_id == "gog-1207658924-auto");
     CHECK(repository.RuntimeNumberFor(gog).value() == 0xF0000001u);  // from its record
     CHECK(repository.Save().ok());
+    CHECK(ReadText(path) == kGogRegistry);
+    CHECK((repository.ReservedTitles() == std::vector<std::string>{"FAKE78000"}));
+  }
+  // After a restart: its title stays reserved and its number its own, and leftover-title cleanup leaves the title.
+  {
+    RuntimeInstallRepository restarted(storage, "installs.json", Free);
+    CHECK(restarted.Load().ok());
+    CHECK((restarted.ReservedTitles() == std::vector<std::string>{"FAKE78000"}));
+    CHECK(restarted.RuntimeNumberFor(gog).value() == 0xF0000001u);
+    CHECK(restarted.Find("gog-1207658924")->recipe_id == "gog-1207658924-auto");
+    const auto candidate = [](const char* id) {
+      return playden::runtime::LeftoverTitleCandidate{id, true, false, 1234, true, "Synthetic", 42, 3, 99};
+    };
+    const auto leftovers = playden::runtime::FindLeftoverTitles(
+        "/data/homebrew", true, restarted.Snapshot(), [](const std::string&) { return NativeActivity::kStopped; }, 1234,
+        [&](const std::filesystem::path&, uid_t, const std::unordered_set<std::string>&) {
+          return std::vector<playden::runtime::LeftoverTitleCandidate>{candidate("FAKE78000"), candidate("FAKE78005")};
+        });
+    CHECK(leftovers.size() == 1 && leftovers[0].title_id == "FAKE78005");
     CHECK(ReadText(path) == kGogRegistry);
   }
   // A GOG game written by Reserve reads back the same way.
