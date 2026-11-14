@@ -156,6 +156,7 @@ struct LiveInstalledGame {
     std::string volume_id;
     bool available = true;  // false while the game's drive is absent
     std::int64_t finished_at = 0;  // when it was installed (Unix seconds; a move keeps it), 0 unknown
+    std::string branch = "public";  // the branch the install record holds
     // From its install record (dlc_known): the DLC whose depots it holds, and the DLC the player turned off.
     bool dlc_known = false;
     std::vector<std::uint32_t> installed_dlc;
@@ -806,6 +807,7 @@ struct UserLibrary {
 struct Installation {
     GameId game_id;
     std::string volume_id;
+    std::string branch = "public";  // the branch the install's depots come from
     std::uint64_t installed_bytes = 0;
     bool available = true;
     bool runtime_ready = true;

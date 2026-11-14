@@ -1579,7 +1579,7 @@ void Simulation::start_import_transfer(GameId id, ImportRequestKind kind, const 
     } else {
         std::erase_if(state_.external_games, [id](const LiveExternalGame& external) { return external.game_id == id; });
         if (!find_installation(state_, id))
-            state_.installations.push_back({id, kImportDropVolume, std::max<std::uint64_t>(bytes, 1), true, true, true});
+            state_.installations.push_back({id, kImportDropVolume, "public", std::max<std::uint64_t>(bytes, 1), true, true, true, 0, false, {}, {}});
         reconcile_storage(state_);
     }
 }
@@ -3682,7 +3682,7 @@ void Simulation::UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const s
     }
     std::vector<Installation> installations;
     for (const auto& game : installed)
-        installations.push_back({game.game_id, game.volume_id, game.install_bytes, game.available,
+        installations.push_back({game.game_id, game.volume_id, game.branch, game.install_bytes, game.available,
                                  state_.runtime_games.count(game.game_id) && state_.runtime_games.at(game.game_id).ready, false,
                                  game.finished_at, game.dlc_known, game.installed_dlc, game.excluded_dlc});
     state_.jobs = std::move(projected);
@@ -5350,6 +5350,8 @@ void Simulation::load_fixtures() {
             installation.available = bool_value(item.get("available"), true);
             installation.runtime_ready = bool_value(item.get("runtime_ready"), false);
             installation.saves_present = bool_value(item.get("saves_preserved"), true);
+            installation.branch = string_value(item.get("branch"));
+            if (installation.branch.empty()) installation.branch = "public";
             state_.installations.push_back(std::move(installation));
         }
     }
@@ -5524,7 +5526,18 @@ void Simulation::load_profile() {
     next_job_serial_ = std::max(next_job_serial_, uint_value(root->get("next_job_serial"), next_job_serial_));
     if (const auto* installations = root->get("installations"); installations && installations->array()) {
         state_.installations.clear();
-        for (const auto& item : *installations->array()) state_.installations.push_back({steam_value(item.get("game_id")), string_value(item.get("volume")), uint_value(item.get("bytes")), bool_value(item.get("available"), true), bool_value(item.get("runtime")), bool_value(item.get("saves"), true)});
+        for (const auto& item : *installations->array()) {
+            Installation in;
+            in.game_id = steam_value(item.get("game_id"));
+            in.volume_id = string_value(item.get("volume"));
+            in.installed_bytes = uint_value(item.get("bytes"));
+            in.available = bool_value(item.get("available"), true);
+            in.runtime_ready = bool_value(item.get("runtime"));
+            in.saves_present = bool_value(item.get("saves"), true);
+            in.branch = string_value(item.get("branch"));
+            if (in.branch.empty()) in.branch = "public";
+            state_.installations.push_back(std::move(in));
+        }
     }
     if (const auto* volumes = root->get("volumes"); volumes && volumes->array()) {
         for (const auto& item : *volumes->array()) {
@@ -5938,7 +5951,7 @@ bool Simulation::scenario(const std::string& name) {
         for (std::size_t index = 0; index < seeds.size() && index < state_.games.size(); ++index) {
             const auto id = state_.games[index].id;
             const auto& seed = seeds[index];
-            if (index + 1 < seeds.size()) state_.installations.push_back({id, "internal", 4'000'000'000, true, true, true});
+            if (index + 1 < seeds.size()) state_.installations.push_back({id, "internal", "public", 4'000'000'000, true, true, true});
             else state_.kept_bottles.push_back({id, state_.games[index].title, now - 21 * 86'400, 1'900'000'000});
             LiveCloudGame cloud{id, seed.status, seed.status == CloudStatus::Failed ? "Steam is not reachable. Try again." : "",
                                 seed.files, seed.status == CloudStatus::Unsupported ? 0 : seed.files + (seed.first ? 1 : 0),
@@ -5994,7 +6007,7 @@ bool Simulation::scenario(const std::string& name) {
         for (std::size_t index = 0; index < seeds.size(); ++index) {
             auto& game = state_.games[index];
             const auto& seed = seeds[index];
-            state_.installations.push_back({game.id, seed.volume, seed.bytes, true, true, true});
+            state_.installations.push_back({game.id, seed.volume, "public", seed.bytes, true, true, true});
             game.last_played = seed.played > 0 ? std::optional<std::int64_t>(seed.played) : std::nullopt;
             if (seed.download > 0) state_.update_check.games[game.id] = {seed.newer, seed.dlc, seed.download, seed.download, index + 1, true};
         }
@@ -6083,7 +6096,7 @@ bool Simulation::scenario(const std::string& name) {
         state_.runtime_games.clear();
         state_.preparation_queue = {};
         state_.queue_expanded.clear();
-        if (!is_installed(state_, id)) state_.installations.push_back({id, "internal", 1'900'000'000});
+        if (!is_installed(state_, id)) state_.installations.push_back({id, "internal", "public", 1'900'000'000});
         LiveRuntimeGame runtime;
         runtime.game_id = id;
         runtime.status = "Not prepared";
@@ -8689,7 +8702,8 @@ void Simulation::rebuild_view() {
             if (const auto* external = external_game(game->id)) {
                 const auto runtime_game = state_.runtime_games.find(game->id);
                 // Fixture mode: a folder there plays at once (its size stands for the install).
-                in_place = Installation{game->id, external->volume_id, live() ? 0 : std::max<std::uint64_t>(game->install_bytes.value_or(1), 1),
+                in_place = Installation{game->id, external->volume_id, "public",
+                                        live() ? 0 : std::max<std::uint64_t>(game->install_bytes.value_or(1), 1),
                                         external->available && external->reason.empty(),
                                         live() ? runtime_game != state_.runtime_games.end() && runtime_game->second.ready : true, false};
                 in_place_reason = external->reason;
@@ -17418,7 +17432,7 @@ void Simulation::seed_friends_scenario() {
         own.graphics = "dxvk";
         generated_recipes_[GameId::Steam(app)] = std::move(own);
         std::erase_if(state_.installations, [app](const Installation& item) { return item.game_id == GameId::Steam(app); });
-        state_.installations.push_back({GameId::Steam(app), "internal", 6'000'000'000, true, true, true});
+        state_.installations.push_back({GameId::Steam(app), "internal", "public", 6'000'000'000, true, true, true});
     }
     state_.game_settings[GameId::Steam(900009)].overrides["steam_features"] = "online";
     state_.game_settings.erase(GameId::Steam(900011));

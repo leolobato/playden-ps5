@@ -105,7 +105,7 @@ std::uint64_t UpdateTarget(const std::vector<DepotInfo>& selected);
 
 // The depots an update of `record` selects, as DetailsFromAppInfo compares them: the record's branch and language,
 // with the licenses. Empty without licenses or when they grant nothing.
-std::vector<DepotInfo> DepotsToUpdate(std::uint32_t id, const std::string& buffer,
+std::vector<DepotInfo> DepotsToUpdate(std::uint32_t id, const std::string& buffer, const std::string& branch_override,
                                       const std::optional<LicensedDepots::Grant>& licensed,
                                       const installs::InstalledRecord& record, const std::vector<AppInfo>& dlc_apps);
 
