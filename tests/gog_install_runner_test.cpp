@@ -3,12 +3,14 @@
 // and a USB drive: a synthetic gen 2 game from the stub CDN (gog_cdn_stub.h, gog_synthetic_game.h) with its
 // goggame-<id>.info and .script, a GOG session on the scripted auth stub (gog_stub_transport.h). Install to the end,
 // pause and resume, a restart, cancel, signed out and revoked sessions, uninstall, a move to the USB drive, free space,
-// a synthetic gen 1 game (ranges of a main.bin) to the end, moved and uninstalled, and a game with __redist installers
-// installed, moved and uninstalled. Built twice: with the host's walks, and with the console's walk by path.
+// a synthetic gen 1 game (ranges of a main.bin) to the end, moved and uninstalled, a game with __redist installers
+// installed, moved and uninstalled, and updates from build A to build B (waiting for the game, cancel, pause, restarts
+// while staging and while putting files in place, signed out, uninstall and move in the middle, the same build). Built twice: with the host's walks, and with the console's walk by path.
 // Usage: gog_install_runner_test <fixtures/gog> <scratch folder>.
 
 #include "gog/dependencies.h"
 #include "gog/info_file.h"
+#include "gog/plan_file.h"
 #include "gog/session.h"
 #include "gog/session_store.h"
 #include "gog_cdn_stub.h"
@@ -100,6 +102,32 @@ Game SyntheticGame() {
   return game;
 }
 
+// B, a newer build of the same game: level.dat changed, theme.ogg dropped (its folder with it), new.dat added, and an
+// info file whose primary task is another program.
+const std::string kDataB = RandomBytes(2 * 64 * 1024 + 500, 24);
+const std::string kNewFile = RandomBytes(30 * 1024, 25);
+const std::string kBuildB = "1000000000000000202";
+
+std::string InfoB() {
+  auto text = ReadFile(g_fixtures + "/goggame-1900000001.info");
+  const std::string from = "\"path\": \"SyntheticLauncher.exe\"";
+  const auto at = text.find(from);
+  CHECK(at != std::string::npos);
+  text.replace(at, from.size(), "\"path\": \"bin/SyntheticLauncherB.exe\"");
+  return text;
+}
+
+Game SyntheticGameB() {
+  auto game = SyntheticGame();
+  game.build_id = kBuildB;
+  auto& files = game.depots[0].files;
+  files[1] = {"DepotFile", "data\\level.dat", kDataB, {64 * 1024, 64 * 1024, 500}};
+  files.erase(files.begin() + 2);  // Music/theme.ogg
+  files.push_back({"DepotFile", "data\\new.dat", kNewFile});
+  game.depots[1].files[0].bytes = InfoB();
+  return game;
+}
+
 int ChunkCount(const Published& published) {
   int count = 0;
   for (const auto& file : published.chunks) count += static_cast<int>(file.second.size());
@@ -140,6 +168,12 @@ struct World {
   // GOG's content system (builds) or its CDN (chunks) out of reach: every such request fails to connect.
   std::atomic<bool> builds_down{false};
   std::atomic<bool> chunks_down{false};
+
+  // What the apply gate answers; while `block_scripts`, an update's script step waits (its files are in place, its
+  // record not yet).
+  std::atomic<installs::ApplyAnswer> gate{installs::ApplyAnswer::kApply};
+  std::atomic<bool> block_scripts{false};
+  std::atomic<bool> scripts_blocked{false};
 
   std::unique_ptr<GogInstallRunner> runner;
   std::unique_ptr<installs::GameMover> mover;
@@ -257,6 +291,11 @@ struct World {
     runner = std::make_unique<GogInstallRunner>(
         *session, [this] { return Transport(); }, [] { return std::string("english"); },
         [this](const std::string& line) {
+          if (line.find("gog update ") == 0 && line.find(" step=script") != std::string::npos)
+            while (block_scripts.load()) {
+              scripts_blocked = true;
+              std::this_thread::sleep_for(1ms);
+            }
           std::lock_guard<std::mutex> lock(log_mutex);
           logs.push_back(line);
         },
@@ -278,6 +317,7 @@ struct World {
     service->SetSpaceQuery([](const std::string&) { return std::optional<std::uint64_t>(1ull << 40); });
     service->SetRetryDelays(retry, retry);
     service->SetMoveRunner(mover.get());
+    service->SetApplyGate([this](GameId) { return gate.load(); });
   }
   // Playden closes and starts again: the service and the runner are made again, the session stays.
   void Restart() {
@@ -380,6 +420,101 @@ struct World {
     // The support file stays in .playden-gog/support; the script copied it into the game.
     CHECK(Text(root / ".playden-gog/support/1900000001/save/defaults.cfg") == kDefaults);
     CHECK(!Exists(root / "save/defaults.cfg") || Text(root / "save/defaults.cfg") == kDefaults);
+  }
+
+  // ---- Updates ----
+
+  // A installed through the queue, signed in.
+  void InstallA() {
+    SignIn();
+    Start();
+    service->Install(kGame);
+    WaitInstalled();
+    CheckInstalledAt(Root());
+  }
+  // B published: `published` is B's from here (WaitHeld counts its chunks), and the CDN's requests start afresh.
+  Published PublishB() {
+    a_meta = published.meta_id;
+    published = Publish(cdn, SyntheticGameB());
+    cdn.ClearRequests();
+    return published;
+  }
+  std::string a_meta;
+  int Served() {
+    std::lock_guard<std::mutex> lock(hold_mutex);
+    return served;
+  }
+  // The update finished: no job, and the listed record names B.
+  void WaitUpdated() {
+    WaitFor([&] {
+      const auto snapshot = service->Snapshot();
+      if (const auto* job = Job(snapshot); job && job->state == InstallJobState::kFailed) {
+        std::fprintf(stderr, "update failed: %s\n", job->failure.c_str());
+        std::exit(1);
+      }
+      const auto game = Installed();
+      return !Job(snapshot) && game && game->record && game->record->gog && game->record->gog->build_id == kBuildB;
+    }, "the update");
+  }
+  std::optional<installs::UpdatePhase> Phase() {
+    const auto state = installs::ReadUpdateState(Root().string());
+    return state ? std::optional<installs::UpdatePhase>(state->phase) : std::nullopt;
+  }
+  // The game as A left it: its files, its record.
+  void CheckA() {
+    const auto root = Root();
+    CHECK(Text(root / "data/level.dat") == kData && Text(root / "Music/theme.ogg") == kMusic);
+    CHECK(Text(root / "bin/Game.exe") == kExe && !Exists(root / "data/new.dat"));
+    const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+    CHECK(record && record->gog && record->gog->build_id == "1000000000000000101" && record->gog->meta_id == a_meta);
+    CHECK(Text(root / ".playden-files").find("f\tMusic/theme.ogg\n") != std::string::npos);
+    CHECK(!Exists(root / installs::kFilesChangedName));
+  }
+  // The game as B: files, file list, plan, record and launches from B's info file; the work folder gone.
+  void CheckB() {
+    const auto root = Root();
+    CHECK(Text(root / "bin/Game.exe") == kExe && Text(root / "data/level.dat") == kDataB);
+    CHECK(Text(root / "data/new.dat") == kNewFile && !Exists(root / "Music"));
+    CHECK(Text(root / "goggame-1900000001.info") == InfoB() && Text(root / "save/defaults.cfg") == kDefaults);
+    CHECK(!Exists(root / installs::kUpdateDirName) && Exists(root / installs::kFilesChangedName));
+    const auto listed = Text(root / ".playden-files");
+    CHECK(listed.find("f\tdata/new.dat\n") != std::string::npos && listed.find("Music") == std::string::npos);
+    const auto header = gog::ReadPlanHeader((root / gog::kPlanPath).string());
+    CHECK(header && header->build_id == kBuildB && header->meta_id == published.meta_id);
+    CHECK(Exists(root / ".playden-gog/meta" / published.meta_id));
+    const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+    CHECK(record && record->gog && record->gog->build_id == kBuildB && record->gog->meta_id == published.meta_id);
+    CHECK((record->gog->products == std::vector<std::uint64_t>{kBase, kDlc}));
+    CHECK(record->gog->language == "en-US" && record->language == "english");
+    CHECK(record->install_bytes == kExe.size() + kDataB.size() + kNewFile.size() + kDefaults.size() +
+                                       InfoB().size() + kScript.size());
+    const auto info = gog::ParseInfo(InfoB());
+    CHECK(info);
+    const auto expected = gog::LaunchesFromInfo(*info);
+    CHECK(!expected.empty() && expected[0].executable == "bin/SyntheticLauncherB.exe");
+    CHECK(record->launches.size() == expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index)
+      CHECK(record->launches[index].executable == expected[index].executable &&
+            record->launches[index].working_directory == expected[index].working_directory);
+    const auto game = Installed();
+    CHECK(game && game->record && game->record->gog && game->record->gog->build_id == kBuildB);
+    CHECK(game->install_bytes == record->install_bytes && !game->record->launches.empty());
+    CHECK(game->record->launches[0].executable == "bin/SyntheticLauncherB.exe");
+    // The script ran again on the new files: its INI key is there.
+    CHECK(Text(root / "synthetic.cfg").find("path=" + WindowsApp(root.string()) + "\\data") != std::string::npos);
+    CHECK(!service->Locked(kGame));
+  }
+  // The chunks the update needed (B's changed files), each fetched once, and nothing else.
+  void CheckStagedOnce() const {
+    std::map<std::string, int> wanted;
+    for (const char* path : {"data\\level.dat", "data\\new.dat", "goggame-1900000001.info"})
+      for (const auto& chunk : published.chunks.at(path)) wanted[chunk.compressed_md5] = 0;
+    for (const auto& request : cdn.requests())
+      if (request.kind == Kind::kChunk) {
+        CHECK(wanted.count(request.hash));
+        ++wanted[request.hash];
+      }
+    for (const auto& entry : wanted) CHECK(entry.second == 1);
   }
 };
 
@@ -814,6 +949,317 @@ void RefusesOtherStores() {
   std::printf("refuses other stores ok\n");
 }
 
+
+// ---- Updates ------------------------------------------------------------------------------------------------------
+
+void WriteUpdatePhase(const fs::path& root, installs::UpdatePhase phase) {
+  installs::UpdateState state;
+  state.phase = phase;
+  const auto path = root / installs::kUpdateDirName / installs::kUpdateStateName;
+  FILE* file = std::fopen(path.c_str(), "wb");
+  const auto text = installs::FormatUpdateState(state);
+  CHECK(file && std::fwrite(text.data(), 1, text.size(), file) == text.size() && std::fclose(file) == 0);
+}
+
+// A to B through the queue: while it stages the game is unlocked and A's files are as they were; once done the
+// record has B's build, meta and launches, .playden-files is B's, only B's changed chunks were fetched, and install.log
+// names no account, address or token.
+void UpdatesThroughTheQueue() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.Hold(world.Served() + 2);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitHeld();
+  {
+    const auto snapshot = world.service->Snapshot();
+    const auto* job = world.Job(snapshot);
+    CHECK(job && job->kind == installs::InstallJobKind::kUpdate && job->state == InstallJobState::kRunning);
+    CHECK(!job->locked && job->step == installs::InstallStep::kDownloading);
+  }
+  CHECK(!world.service->Locked(kGame) && world.Phase() == installs::UpdatePhase::kStaging);
+  world.CheckA();
+  world.Hold(-1);
+  world.WaitUpdated();
+  world.CheckB();
+  world.CheckStagedOnce();
+  CHECK(world.Logged("gog update game=gog-1900000001 step=plan result=ok language=english"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ok files=6 changed=3 removed=1"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=record result=ok files=6"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=script product=1900000001 result=ok"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=apply result=ok replaced=3 deleted=1 skipped=0"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=finish result=ok"));
+  world.CheckLogs();
+  std::printf("updates through the queue ok\n");
+}
+
+// The game runs when everything is staged: the update waits for it with no file changed; once the gate lets it, it
+// finishes.
+void UpdateWaitsForTheGame() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.gate = installs::ApplyAnswer::kGameRunning;
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitState(InstallJobState::kQueued, installs::InstallRunner::kWaitingForGame);
+  world.CheckA();
+  CHECK(world.Phase() == installs::UpdatePhase::kStaging && !world.service->Locked(kGame));
+  CHECK(Exists(world.Root() / ".playden-update/record") && Exists(world.Root() / ".playden-update/staging/data/new.dat"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=apply result=game_running"));
+  world.gate = installs::ApplyAnswer::kApply;
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitUpdated();
+  world.CheckB();
+  world.CheckStagedOnce();
+  world.CheckLogs();
+  std::printf("update waits for the game ok\n");
+}
+
+// Everything staged while the game runs, then the player goes offline and signed out: once the game closes the update
+// is put in place with no session, no GOG and no CDN, since nothing is left to download.
+void StagedUpdateAppliesSignedOut() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.gate = installs::ApplyAnswer::kGameRunning;
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitState(InstallJobState::kQueued, installs::InstallRunner::kWaitingForGame);
+  CHECK(world.Phase() == installs::UpdatePhase::kStaging);
+  CHECK(world.session->SignOut().ok);
+  world.revoked = true;
+  world.builds_down = true;
+  world.chunks_down = true;
+  world.auth.Script(Endpoint::kToken, Failure(HttpError::kConnectionFailed));
+  world.cdn.ClearRequests();
+  world.gate = installs::ApplyAnswer::kApply;
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitUpdated();
+  world.CheckB();
+  CHECK(world.cdn.requests().empty() && !world.session->signed_in());
+  CHECK(world.Logged("gog update game=gog-1900000001 step=stage result=ready"));
+  world.CheckLogs();
+  std::printf("staged update applies signed out ok\n");
+}
+
+// A staged update whose saved plan is damaged while it waits for the game is staged again, never put in place from
+// the earlier record: that record goes before the new Stage, so a Stage that stops (the CDN down) leaves none.
+void RestagedUpdateDropsItsRecord() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.gate = installs::ApplyAnswer::kGameRunning;
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitState(InstallJobState::kQueued, installs::InstallRunner::kWaitingForGame);
+  CHECK(Exists(world.Root() / ".playden-update/record"));
+  {
+    FILE* plan = std::fopen((world.Root() / ".playden-update/gog/files").c_str(), "wb");
+    CHECK(plan && std::fclose(plan) == 0);
+  }
+  world.chunks_down = true;
+  world.gate = installs::ApplyAnswer::kApply;
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitState(InstallJobState::kQueued, GogInstallRunner::kWaitingForGog);
+  CHECK(!Exists(world.Root() / ".playden-update/record") && world.Phase() == installs::UpdatePhase::kStaging);
+  CHECK(!world.service->Locked(kGame));
+  world.CheckA();
+  world.chunks_down = false;
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitUpdated();
+  world.CheckB();
+  world.CheckLogs();
+  std::printf("restaged update drops its record ok\n");
+}
+
+// Cancel while it stages: the game and its record stay A's, and the work folder goes.
+void CancelsUpdateDuringStaging() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.Hold(world.Served() + 1);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitHeld();
+  CHECK(Exists(world.Root() / ".playden-update/staged"));
+  world.service->Cancel(kGame);
+  WaitFor([&] { return !world.Job(world.service->Snapshot()) && !Exists(world.Root() / ".playden-update"); },
+          "the canceled update to go");
+  world.WaitReleased();
+  world.CheckA();
+  const auto game = world.Installed();
+  CHECK(game && game->record && game->record->gog && game->record->gog->build_id == "1000000000000000101");
+  CHECK(world.Logged("gog update-discard result=ok"));
+  world.CheckLogs();
+  std::printf("cancels an update during staging ok\n");
+}
+
+// Pause while it stages, then Resume: it finishes, no chunk fetched twice.
+void PausesAndResumesUpdate() {
+  World world;
+  world.parallel = 1;
+  world.InstallA();
+  world.PublishB();
+  world.Hold(world.Served() + 2);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitHeld();
+  world.service->Pause(kGame);
+  world.WaitState(InstallJobState::kPaused, "");
+  world.WaitReleased();
+  world.CheckA();
+  world.Hold(-1);
+  world.service->Resume(kGame);
+  world.WaitUpdated();
+  world.CheckB();
+  world.CheckStagedOnce();
+  std::printf("pauses and resumes an update ok\n");
+}
+
+// Playden closes while the update stages: a new service and runner carry on from the journal, no chunk fetched twice.
+void RestartsMidStaging() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.Hold(world.Served() + 3);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitHeld();
+  world.service.reset();
+  world.Hold(-1);
+  world.Restart();
+  world.WaitUpdated();
+  world.CheckB();
+  world.CheckStagedOnce();
+  world.CheckLogs();
+  std::printf("restarts mid-staging ok\n");
+}
+
+// Playden stopped once the update was putting its files in place: at the next start the game is locked and the update
+// finishes signed out, with GOG and its CDN out of reach.
+void FinishesAfterRestartAtReplacing() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.gate = installs::ApplyAnswer::kGameRunning;
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitState(InstallJobState::kQueued, installs::InstallRunner::kWaitingForGame);
+  world.service.reset();
+  WriteUpdatePhase(world.Root(), installs::UpdatePhase::kReplacing);
+  CHECK(world.session->SignOut().ok);
+  world.revoked = true;
+  world.builds_down = true;
+  world.chunks_down = true;
+  world.auth.Script(Endpoint::kToken, Failure(HttpError::kConnectionFailed));
+  world.cdn.ClearRequests();
+  {
+    // The game running: the runner asks the gate before anything else (signed out, it would otherwise wait for the
+    // sign-in) and changes nothing.
+    world.StartRunner();
+    const std::atomic<bool> cancel{false};
+    int asked = 0;
+    const auto result = world.runner->Update(kGame, world.Root().string(), {}, cancel, {}, {}, [&] {
+      ++asked;
+      return false;
+    });
+    CHECK(!result.ok && result.retry_later && result.waiting == installs::InstallRunner::kWaitingForGame && asked == 1);
+    CHECK(world.Phase() == installs::UpdatePhase::kReplacing);
+    world.CheckA();
+  }
+  world.gate = installs::ApplyAnswer::kApply;
+  world.block_scripts = true;
+  world.Restart();
+  WaitFor([&] { return world.scripts_blocked.load(); }, "the update's scripts");
+  {
+    // Its files are in place, the record isn't yet: the game can't run.
+    const auto snapshot = world.service->Snapshot();
+    const auto* job = world.Job(snapshot);
+    CHECK(job && job->kind == installs::InstallJobKind::kUpdate && job->locked && world.service->Locked(kGame));
+    const auto record = installs::ReadInstallRecord((world.Root() / installs::kInstallRecordName).string());
+    CHECK(record && record->gog && record->gog->build_id == "1000000000000000101");
+  }
+  world.block_scripts = false;
+  world.WaitUpdated();
+  world.CheckB();
+  CHECK(world.cdn.requests().empty() && !world.session->signed_in());
+  world.CheckLogs();
+  std::printf("finishes after a restart at replacing ok\n");
+}
+
+// Signed out when the update would stage: it waits for the GOG sign-in, and carries on after it.
+void UpdateWaitsForSignIn() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  CHECK(world.session->SignOut().ok);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitState(InstallJobState::kQueued, GogInstallRunner::kWaitingForSignIn);
+  CHECK(world.cdn.requests().empty() && !Exists(world.Root() / ".playden-update"));
+  CHECK(world.Logged("gog update game=gog-1900000001 step=plan result=signed_out"));
+  world.CheckA();
+  world.SignIn(2);
+  world.service->RetryWaiting(Store::kGog);
+  world.WaitUpdated();
+  world.CheckB();
+  world.CheckLogs();
+  std::printf("update waits for sign-in ok\n");
+}
+
+// Uninstalled while the update stages: both versions' files go with the folder. A move is refused meanwhile.
+void UninstallsMidUpdate() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.Hold(world.Served() + 2);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitHeld();
+  CHECK(Exists(world.Root() / ".playden-update/staging/data/level.dat"));
+  CHECK(!world.service->Move(kGame, "usb0").empty());
+  world.service->Uninstall(kGame);
+  WaitFor([&] {
+    const auto snapshot = world.service->Snapshot();
+    return !world.Installed() && snapshot.uninstalling.empty() && !world.Job(snapshot);
+  }, "the uninstall");
+  world.WaitReleased();
+  CHECK(!Exists(world.Root()) && !Exists(world.usb / "gog-1900000001"));
+  std::printf("uninstalls mid-update ok\n");
+}
+
+// A move asked for while the update runs is refused; the update finishes and the game moves after it.
+void MoveRefusedDuringUpdate() {
+  World world;
+  world.InstallA();
+  world.PublishB();
+  world.Hold(world.Served() + 1);
+  CHECK(world.service->Update(kGame).empty());
+  world.WaitHeld();
+  CHECK(world.service->Move(kGame, "usb0") == "The game is already in the Queue.");
+  world.Hold(-1);
+  world.WaitUpdated();
+  world.CheckB();
+  CHECK(world.service->Move(kGame, "usb0").empty());
+  WaitFor([&] {
+    const auto game = world.Installed();
+    return game && game->volume_id == "usb0" && !world.Job(world.service->Snapshot()) && !Exists(world.Root());
+  }, "the move");
+  const auto record = installs::ReadInstallRecord((world.usb / "gog-1900000001" / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && record->gog->build_id == kBuildB);
+  std::printf("move refused during an update ok\n");
+}
+
+// The same build again: it finishes with nothing downloaded, no marker, and the record as it was.
+void UpdatesToTheSameBuild() {
+  World world;
+  world.InstallA();
+  const auto before = Text(world.Root() / installs::kInstallRecordName);
+  world.cdn.ClearRequests();
+  CHECK(world.service->Update(kGame).empty());
+  WaitFor([&] {
+    return !world.Job(world.service->Snapshot()) && world.Logged("gog update game=gog-1900000001 step=finish result=ok");
+  }, "the update");
+  CHECK(world.cdn.Count(Kind::kChunk) == 0 && world.cdn.Count(Kind::kSecureLink) == 0);
+  CHECK(!Exists(world.Root() / installs::kFilesChangedName) && !Exists(world.Root() / installs::kUpdateDirName));
+  CHECK(Text(world.Root() / installs::kInstallRecordName) == before);
+  world.CheckInstalledAt(world.Root());
+  CHECK(world.Logged("gog update game=gog-1900000001 step=apply result=ok replaced=0 deleted=0"));
+  world.CheckLogs();
+  std::printf("updates to the same build ok\n");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -837,6 +1283,18 @@ int main(int argc, char** argv) {
   FreeSpaceShort();
   Gen1Installs();
   RedistInstallsMovesAndUninstalls();
+  UpdatesThroughTheQueue();
+  UpdateWaitsForTheGame();
+  StagedUpdateAppliesSignedOut();
+  RestagedUpdateDropsItsRecord();
+  CancelsUpdateDuringStaging();
+  PausesAndResumesUpdate();
+  RestartsMidStaging();
+  FinishesAfterRestartAtReplacing();
+  UpdateWaitsForSignIn();
+  UninstallsMidUpdate();
+  MoveRefusedDuringUpdate();
+  UpdatesToTheSameBuild();
   fs::remove_all(g_scratch);
   std::printf("gog install runner ok\n");
   return 0;

@@ -472,6 +472,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::PreferencesStore> preferences;
     std::unique_ptr<playden::OrganizationStore> organization;
     std::unique_ptr<playden::UpdateCheckStore> update_checks;
+    std::unique_ptr<playden::UpdateCheckStore> gog_update_checks;
     std::unique_ptr<playden::app::PersistenceService> persistence;
     std::unique_ptr<playden::steam::CmClient> details_cm;
     std::unique_ptr<playden::steam::CmClient> sizes_cm;
@@ -630,7 +631,10 @@ int main(int argc, char** argv) {
         }
         organization=std::make_unique<playden::OrganizationStore>(*library_storage);
         update_checks=std::make_unique<playden::UpdateCheckStore>(*library_storage);
+        // GOG's, named by its account key; read and written only once GOG signs in.
+        gog_update_checks=std::make_unique<playden::UpdateCheckStore>(*library_storage,"updates-gog-");
         persistence=std::make_unique<playden::app::PersistenceService>(*preferences,*organization,update_checks.get());
+        persistence->SetUpdateChecks(playden::Store::kGog,gog_update_checks.get());
         details_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
         details_cm->SetOwner("details");
         details_cm->SetSharedSession(steam_cm);
@@ -726,6 +730,22 @@ int main(int argc, char** argv) {
             gog_config.install_log_directory = log_directory;
             gog_config.library_storage = library_storage.get();
             gog_config.content_language = [] { return selected_content_language(); };
+            // Installed GOG games' records and folders, for their updates, as Steam's details source has them: the
+            // install service is made below and joined after the details worker (Controller::Shutdown).
+            gog_config.installed_record = [&installs](const playden::GameId& id) -> std::optional<playden::installs::InstalledRecord> {
+                if (!installs) return std::nullopt;
+                const auto snapshot = installs->Snapshot();
+                for (const auto& game : snapshot.installed)
+                    if (game.id == id && game.available) return game.record;
+                return std::nullopt;
+            };
+            gog_config.install_root = [&installs](const playden::GameId& id) -> std::optional<std::string> {
+                if (!installs) return std::nullopt;
+                const auto snapshot = installs->Snapshot();
+                for (const auto& game : snapshot.installed)
+                    if (game.id == id && game.available) return game.root;
+                return std::nullopt;
+            };
             gog = playden::homebrew::MakeGogServices(std::move(gog_config));
         }
         playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, install_runner.get()},

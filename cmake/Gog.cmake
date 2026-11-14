@@ -20,9 +20,11 @@ add_library(playden_gog STATIC
     "${CMAKE_SOURCE_DIR}/src/gog/languages.cpp"
     "${CMAKE_SOURCE_DIR}/src/gog/manifest_v1.cpp"
     "${CMAKE_SOURCE_DIR}/src/gog/path_rules.cpp"
+    "${CMAKE_SOURCE_DIR}/src/gog/plan_file.cpp"
     "${CMAKE_SOURCE_DIR}/src/gog/product_cache.cpp"
     "${CMAKE_SOURCE_DIR}/src/gog/session.cpp"
     "${CMAKE_SOURCE_DIR}/src/gog/session_store.cpp"
+    "${CMAKE_SOURCE_DIR}/src/gog/update_diff.cpp"
     "${CMAKE_SOURCE_DIR}/src/gog/user.cpp")
 target_include_directories(playden_gog PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_gog PUBLIC cxx_std_17)
@@ -35,11 +37,13 @@ endif()
 
 # GOG as a store (src/stores/gog*): the account, the library and the game details (install sizes), each on its own
 # worker, over the GOG session, and the install service's runner for GOG games (it removes folders with the depot
-# installer's RemoveManagedInstall). The apps make them with features.txt's gog-store line (src/homebrew/gog_wiring.*).
+# installer's RemoveManagedInstall) with its updates put in place (gog_update.*). The apps make them with features.txt's
+# gog-store line (src/homebrew/gog_wiring.*).
 add_library(playden_gog_store STATIC "${CMAKE_SOURCE_DIR}/src/stores/gog.cpp"
     "${CMAKE_SOURCE_DIR}/src/stores/gog_library.cpp"
     "${CMAKE_SOURCE_DIR}/src/stores/gog_details.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stores/gog_install.cpp")
+    "${CMAKE_SOURCE_DIR}/src/stores/gog_install.cpp"
+    "${CMAKE_SOURCE_DIR}/src/stores/gog_update.cpp")
 target_include_directories(playden_gog_store PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_features(playden_gog_store PUBLIC cxx_std_17)
 target_link_libraries(playden_gog_store PUBLIC playden_gog playden_library_service playden_steam_cm playden_steam_core
@@ -167,8 +171,8 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_test(NAME gog_install_script_native_policy COMMAND gog_install_script_native_policy_test
         "${CMAKE_SOURCE_DIR}/fixtures/gog" "${CMAKE_CURRENT_BINARY_DIR}/gog_install_script_native_policy.tmp")
     # GOG's install runner in a real install service on two volumes, against the stub CDN and a stubbed session:
-    # install, pause and resume, restart, cancel, signed out and revoked sessions, uninstall, a move, space, gen 1, and
-    # a game with __redist installers.
+    # install, pause and resume, restart, cancel, signed out and revoked sessions, uninstall, a move, space, gen 1, a
+    # game with __redist installers, and updates from one build to the next.
     add_executable(gog_install_runner_test "${CMAKE_SOURCE_DIR}/tests/gog_install_runner_test.cpp")
     target_link_libraries(gog_install_runner_test PRIVATE playden_gog_store playden_game_move)
     add_test(NAME gog_install_runner COMMAND gog_install_runner_test "${CMAKE_SOURCE_DIR}/fixtures/gog"
@@ -179,6 +183,7 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(gog_install_runner_native_policy_test
         "${CMAKE_SOURCE_DIR}/tests/gog_install_runner_test.cpp"
         "${CMAKE_SOURCE_DIR}/src/stores/gog_install.cpp"
+        "${CMAKE_SOURCE_DIR}/src/stores/gog_update.cpp"
         ${playden_gog_sources}
         "${CMAKE_SOURCE_DIR}/src/installs/game_move.cpp"
         "${CMAKE_SOURCE_DIR}/src/stores/local/copy_plan.cpp"
@@ -191,14 +196,41 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
         playden_miniz Threads::Threads)
     add_test(NAME gog_install_runner_native_policy COMMAND gog_install_runner_native_policy_test
         "${CMAKE_SOURCE_DIR}/fixtures/gog" "${CMAKE_CURRENT_BINARY_DIR}/gog_install_runner_native_policy.tmp")
+    # GOG updates: two plans diffed (hashes of either generation, case-folded paths, files on disk, no old plan,
+    # cancel), a new build planned into the update layout beside the live install, keeping its spellings, and its
+    # changed files staged there (resume, plan reuse, support and redist files, space, corrupt chunks, sign-out), then
+    # put in place from hand-made work folders and Stage's output (files in the way, cancel and restart, the lists
+    # swapped, support and redist files, discard).
+    add_executable(gog_update_test "${CMAKE_SOURCE_DIR}/tests/gog_update_test.cpp")
+    target_link_libraries(gog_update_test PRIVATE playden_gog_store playden_game_move)
+    add_test(NAME gog_update COMMAND gog_update_test "${CMAKE_SOURCE_DIR}/fixtures/gog"
+        "${CMAKE_CURRENT_BINARY_DIR}/gog_update.tmp")
+    # The same with the console's path handling, run on the host.
+    add_executable(gog_update_native_policy_test
+        "${CMAKE_SOURCE_DIR}/tests/gog_update_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/stores/gog_install.cpp"
+        "${CMAKE_SOURCE_DIR}/src/stores/gog_update.cpp"
+        ${playden_gog_sources}
+        "${CMAKE_SOURCE_DIR}/src/installs/game_move.cpp"
+        "${CMAKE_SOURCE_DIR}/src/stores/local/copy_plan.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_include_directories(gog_update_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_compile_features(gog_update_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(gog_update_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    target_link_libraries(gog_update_native_policy_test PRIVATE playden_steam_cm playden_steam_core
+        playden_storage playden_library playden_steam_http playden_steam_protocol playden_runtime_artifact_hash
+        playden_miniz Threads::Threads)
+    add_test(NAME gog_update_native_policy COMMAND gog_update_native_policy_test
+        "${CMAKE_SOURCE_DIR}/fixtures/gog" "${CMAKE_CURRENT_BINARY_DIR}/gog_update_native_policy.tmp")
     # The GOG details source against the stub CDN: gen 2 sizes with game-folder and __redist dependencies, owned DLC,
-    # gen 1 and no Windows build, network failures, and Invalidate dropping a late answer.
+    # gen 1 and no Windows build, network failures, and Invalidate dropping a late answer; installed games' updates,
+    # the installed check's progress, and an update's size measured beside an installed synthetic game.
     add_executable(gog_details_test "${CMAKE_SOURCE_DIR}/tests/gog_details_test.cpp")
     target_link_libraries(gog_details_test PRIVATE playden_gog_store playden_miniz)
     add_test(NAME gog_details COMMAND gog_details_test "${CMAKE_SOURCE_DIR}/fixtures/gog"
         "${CMAKE_CURRENT_BINARY_DIR}/gog_details.tmp")
-    # gog.log and install.log after a stubbed restore, sign-in, library refresh, install and sign-out: no account,
-    # token, code, signed link or address.
+    # gog.log and install.log after a stubbed restore, sign-in, library refresh, install, update check and update size,
+    # and sign-out: no account, token, code, signed link or address.
     add_executable(gog_logs_test "${CMAKE_SOURCE_DIR}/tests/gog_logs_test.cpp")
     target_link_libraries(gog_logs_test PRIVATE playden_gog_store)
     add_test(NAME gog_logs COMMAND gog_logs_test "${CMAKE_SOURCE_DIR}/fixtures/gog"

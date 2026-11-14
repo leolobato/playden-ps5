@@ -5,13 +5,18 @@
 // GOG session left from an earlier run either way. Shutdown answers a phone post still waiting before web access's
 // workers are joined, and keeps a sign-out asked for in the last frame. A sign-in the relay ends leaves the QR code; a
 // restart whose saved session expired shows the saved GOG library; Refresh library signs an offline session in once
-// GOG answers. Synthetic tokens and accounts only.
+// GOG answers. An installed GOG game whose record names an older build shows "Update…": the install service's
+// records reach the details source. Synthetic tokens and accounts only.
 #include "gog/account_key.h"
 #include "gog/auth.h"
 #include "gog/session_store.h"
+#include "gog_cdn_stub.h"
 #include "gog_stub_transport.h"
+#include "gog_synthetic_game.h"
 #include "homebrew/controller.hpp"
 #include "homebrew/gog_wiring.hpp"
+#include "installs/install_record.h"
+#include "installs/install_service.h"
 #include "library/cache.h"
 #include "stores/gog.h"
 #include "stores/gog_library.h"
@@ -172,14 +177,20 @@ void Wait(Controller& controller, const std::function<bool()>& done) {
   }
 }
 
-// The apps' GOG, on stub transports (the session's, then the library's), with Steam signed out beside it.
+// The apps' GOG, on stub transports (the session's, then the library's, then the details source's CDN), with Steam
+// signed out beside it. With installs, an install service over <root>/games runs GOG's runner, and the wiring's
+// installed_record and install_root read its snapshot, as host.cpp's do.
 struct App {
   fs::path root = FreshRoot();
   Stub session_stub;
   Stub library_stub;
+  gog_test::CdnStub cdn;
   int transports = 0;
+  bool with_installs = false;
   std::unique_ptr<Storage> library_storage = std::make_unique<Storage>(root.string());
   std::unique_ptr<GogServices> gog;
+  // After the services: GOG's install runner outlives the install service.
+  std::unique_ptr<installs::InstallService> installs;
   NoSteamSession steam_sessions;
   NoSteamSignIn steam_sign_in;
   Simulation model{{}, {}, ModelMode::Live};
@@ -199,7 +210,24 @@ struct App {
     config.ca_bundle = "unused";
     config.log_directory = (root / "logs").string();
     config.library_storage = library_storage.get();
-    config.transport = [this] { return ++transports == 1 ? session_stub.Transport() : library_stub.Transport(); };
+    config.transport = [this] {
+      ++transports;
+      return transports == 1 ? session_stub.Transport() : transports == 2 ? library_stub.Transport() : cdn.Transport();
+    };
+    if (with_installs) {
+      config.installed_record = [this](const GameId& id) -> std::optional<installs::InstalledRecord> {
+        if (!installs) return std::nullopt;
+        for (const auto& game : installs->Snapshot().installed)
+          if (game.id == id && game.available) return game.record;
+        return std::nullopt;
+      };
+      config.install_root = [this](const GameId& id) -> std::optional<std::string> {
+        if (!installs) return std::nullopt;
+        for (const auto& game : installs->Snapshot().installed)
+          if (game.id == id && game.available) return game.root;
+        return std::nullopt;
+      };
+    }
     config.random_token = [this] {
       return random_works ? std::optional<std::string>(kToken) : std::optional<std::string>();
     };
@@ -212,12 +240,17 @@ struct App {
     gog->ConfigureWeb(web_config);
     CHECK(web_config.gog == gog->relay() && web_config.gog_auth_url == gog::AuthorizeUrl());
     web = std::make_unique<web::Service>(std::move(web_config));
-    controller = std::make_unique<Controller>(model, registry);
+    if (with_installs)
+      installs = std::make_unique<installs::InstallService>(
+          installs::InstallService::Runners{{Store::kGog, gog->install_runner()}},
+          std::vector<installs::InstallVolume>{{"internal", "Console storage", (root / "games").string(), true}});
+    controller = std::make_unique<Controller>(model, registry, nullptr, installs.get());
     controller->SetWebAccess(web.get());
     gog->Attach(*controller);
   }
   ~App() {
     controller->Shutdown();
+    if (installs) installs->Shutdown();
     web->Shutdown();
   }
   const Account& Gog() const { return model.state().account(Store::kGog); }
@@ -428,10 +461,11 @@ void SaveLibrary(App& app) {
   CHECK(cache.Save(gog::AccountKey(kUserId), snapshot).ok());
 }
 
-bool GogGameShown(const Simulation& model) {
+bool GameShown(const Simulation& model, const GameId& id) {
   const auto& games = model.state().games;
-  return std::any_of(games.begin(), games.end(), [](const Game& game) { return game.id == GameId::Gog(1207658924); });
+  return std::any_of(games.begin(), games.end(), [&](const auto& game) { return game.id == id; });
 }
+bool GogGameShown(const Simulation& model) { return GameShown(model, GameId::Gog(1207658924)); }
 
 // A restart whose saved refresh token GOG refuses: signed out with "GOG sign-in expired", and the saved GOG library is
 // still shown while the player signs in again.
@@ -502,6 +536,73 @@ void OfflineRefreshSignsIn() {
   CheckLogs(app.root);
 }
 
+void WriteText(const std::string& path, const std::string& text) {
+  FILE* file = std::fopen(path.c_str(), "wb");
+  CHECK(file != nullptr);
+  CHECK(std::fwrite(text.data(), 1, text.size(), file) == text.size());
+  CHECK(std::fclose(file) == 0);
+}
+
+const ViewRow* FindRow(const Simulation& model, const std::string& key) {
+  for (const auto& row : model.view().rows)
+    if (row.key == key) return &row;
+  return nullptr;
+}
+
+// An installed GOG game whose record names an older build than GOG's default one: its page shows "Update…". The
+// details source learns of the install only through the wiring's installed_record.
+void InstalledOlderBuildShowsAnUpdate() {
+  const auto id = GameId::Gog(gog_test::kBase);
+  App app(true, [](App& app) {
+    app.with_installs = true;
+    const auto folder = app.root / "games" / "gog-1900000001";
+    fs::create_directories(folder);
+    installs::GogRecord record;
+    record.build_id = "1000000000000000101";
+    record.products = {gog_test::kBase};
+    record.language = "en-US";
+    record.meta_id = std::string(32, 'a');
+    WriteText((folder / installs::kInstallRecordName).string(),
+              installs::FormatGogInstallRecord(GameId::Gog(gog_test::kBase), 4096, 1, "english", record,
+                                               {{"bin/Game.exe", "", "", "Synthetic Game"}}));
+    WriteText((app.root / "games" / ".playden-games").string(), "gog-1900000001\tinternal\t4096\n");
+    // GOG's default build is a newer one.
+    gog_test::Game game;
+    game.build_id = "1000000000000000202";
+    gog_test::GameDepot depot;
+    depot.files.push_back({"DepotFile", "bin\\Game.exe", gog_test::RandomBytes(4096, 7)});
+    game.depots.push_back(depot);
+    gog_test::Publish(app.cdn, game);
+    app.cdn.SetOwned("{\"owned\":[1900000001]}");
+  });
+  app.OpenSignIn();
+  app.session_stub.Script(Endpoint::kToken, Tokens(1));
+  app.session_stub.Script(Endpoint::kUser, Answer(200, ReadFile(g_fixtures + "/user-data.json")));
+  app.library_stub.Script(Endpoint::kOwned, Answer(200, "{\"owned\":[1900000001]}"));
+  app.library_stub.SetProducts([](std::uint64_t product, const std::string&) {
+    const auto text = std::to_string(product);
+    return Stub::Step{Answer(200, R"({"external_id":")" + text +
+                                      R"(","type":"game","title":{"*":"Synthetic Game"},"summary":{"*":"Synthetic"},)"
+                                      R"("supported_operating_systems":[{"slug":"windows","name":"Windows"}],"dlcs":[],)"
+                                      R"("game":{"visible_in_library":true}})"),
+                      nullptr};
+  });
+  CHECK(PostCode(*app.web, kToken).status == 200);
+  Wait(*app.controller, [&] {
+    const auto& state = app.model.state();
+    return app.Gog().authentication == AuthState::SignedIn && GameShown(app.model, id) &&
+           std::any_of(state.installations.begin(), state.installations.end(),
+                       [&](const Installation& item) { return item.game_id == id; });
+  });
+  CHECK(app.model.action("details:" + ToKey(id)));
+  Wait(*app.controller, [&] {
+    const auto* update = FindRow(app.model, "details-update");
+    return update && update->title == "Update…";
+  });
+  app.controller->Shutdown();
+  CheckLogs(app.root);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -522,6 +623,7 @@ int main(int argc, char** argv) {
   ExpiredAtStartupKeepsTheLibrary();
   ExpiredAtStartupWithoutALibrary();
   OfflineRefreshSignsIn();
+  InstalledOlderBuildShowsAnUpdate();
   fs::remove_all(g_base, ignored);
   std::puts("homebrew_gog_wiring: ok");
   return 0;

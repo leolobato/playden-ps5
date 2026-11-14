@@ -2773,6 +2773,202 @@ void live_update_check(const std::filesystem::path& base) {
     check(unclocked.state().update_check.checked_at == 0, "update check: no clock, no time saved");
 }
 
+// Steam's and GOG's update checks side by side: each store's saved file holds its own games, the list shows both,
+// the copy names the stores checked or failing, and one store's sign-out keeps the other's updates.
+void live_update_check_stores(const std::filesystem::path& base) {
+    using playden::GameId;
+    using playden::Store;
+    using playden::homebrew::GameUpdate;
+    using playden::homebrew::ManageTab;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t kSteamAccount = 76561198000000003ull;
+    constexpr std::uint64_t kGogAccount = 0x8000000000000abcull;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    const auto witcher = GameId::Gog(1207658924), gwent = GameId::Gog(1207658925), idle = GameId::Gog(1207658926);
+    const auto setup = [&](Simulation& model, bool steam, bool clock = true) {
+        if (clock) model.SetWallClock(kNow);
+        model.SetGogStoreEnabled(true);
+        model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
+        std::vector<playden::homebrew::LiveInstalledGame> installed{{witcher, 10 * gb, "internal"}, {gwent, 20 * gb, "internal"},
+                                                                    {idle, 5 * gb, "internal"}};
+        if (steam) {
+            model.UpdateAccount({AuthState::SignedIn, std::to_string(kSteamAccount), "Owner", {}, {}, false});
+            check(model.UpdateLibrary({{{SteamId(10), "Portal", "", "", ""}, {SteamId(20), "Stray", "", "", ""}}, false, {},
+                                       false, true, kNow}),
+                  "stores: Steam's library delivered");
+            installed.push_back({SteamId(10), 30 * gb, "internal"});
+            installed.push_back({SteamId(20), 40 * gb, "internal"});
+        }
+        AccountUpdate gog;
+        gog.store = Store::kGog;
+        gog.authentication = AuthState::SignedIn;
+        gog.id = "8000000000000abc";
+        gog.display_name = "Synthetic GOG";
+        model.UpdateAccount(gog);
+        playden::homebrew::LibraryUpdate library;
+        library.games = {playden::GameSummary{witcher, "Witcher", {}, {}, {}}, playden::GameSummary{gwent, "Gwent", {}, {}, {}},
+                         playden::GameSummary{idle, "Idle", {}, {}, {}}};
+        library.source = Store::kGog;
+        library.retrieved_at = kNow;
+        check(model.UpdateLibrary(library), "stores: GOG's library delivered");
+        model.UpdateInstalls({}, installed);
+    };
+    const auto open_updates = [](Simulation& model) {
+        while (!model.state().navigation.modals.empty() || model.state().navigation.route == Route::ManageGames)
+            model.action("circle");
+        for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+        activate(model, "settings-game-updates");
+        check(model.state().navigation.manage_tab == ManageTab::Updates, "stores: Manage opens on Updates");
+    };
+    const auto settings_row = [](Simulation& model) {
+        while (!model.state().navigation.modals.empty() || model.state().navigation.route == Route::ManageGames)
+            model.action("circle");
+        for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+        const auto* found = find_row(model, "settings-game-updates");
+        check(found, "stores: the Game updates row is there");
+        return *found;
+    };
+
+    auto model = make_live(base / "both");
+    setup(model, true);
+    const auto& check_state = model.state().update_check;
+    model.BeginUpdateCheckLoad(kSteamAccount);
+    model.BeginUpdateCheckLoad(Store::kGog, kGogAccount);
+    check(model.UpdateCheckAccount(Store::kGog) == kGogAccount && model.UpdateCheckAccount() == kSteamAccount,
+          "stores: each store has its account");
+    // A GOG page that answers before GOG's file is read wins once it is.
+    model.UpdateAppDetails(gwent, 1, 1, true, {}, {}, {}, GameUpdate{true, false, 3 * gb, 3 * gb, 4, true});
+    check(!check_state.games.count(gwent), "stores: an early GOG answer waits for GOG's file");
+    playden::SavedUpdateCheck steam_saved;
+    steam_saved.checked_at = kNow - 2 * 60 * 60;
+    steam_saved.games[SteamId(10)] = {true, false, 2 * gb, 2 * gb, 1, true};
+    model.ApplyUpdateCheck(kSteamAccount, steam_saved);
+    check(!check_state.loaded && check_state.stores.at(Store::kSteam).loaded, "stores: loaded only when every store is");
+    playden::SavedUpdateCheck gog_saved;
+    gog_saved.checked_at = kNow - 5 * 60 * 60;
+    gog_saved.games[witcher] = {true, false, 1 * gb, 1 * gb, 3, true};
+    gog_saved.games[gwent] = {false, true, 1, 1, 2, true};
+    gog_saved.games[SteamId(20)] = {true, false, 9 * gb, 9 * gb, 9, true};  // not GOG's
+    model.ApplyUpdateCheck(Store::kSteam, kGogAccount, gog_saved);
+    check(!check_state.stores.at(Store::kGog).loaded, "stores: a file read for another store's account is ignored");
+    model.ApplyUpdateCheck(Store::kGog, kGogAccount, gog_saved);
+    check(check_state.loaded && check_state.games.size() == 3 && check_state.games.count(SteamId(10)) &&
+              check_state.games.count(witcher) && !check_state.games.count(SteamId(20)),
+          "stores: GOG's file gives GOG's games only");
+    check(check_state.games.at(gwent) == (GameUpdate{true, false, 3 * gb, 3 * gb, 4, true}),
+          "stores: the early GOG answer is applied after GOG's file");
+    check(check_state.checked_at == kNow - 5 * 60 * 60, "stores: the oldest store's check is shown");
+    check(model.UpdateCheckDirty(Store::kGog) && !model.UpdateCheckDirty(), "stores: only GOG changed");
+
+    // Each store's export holds only its games: Steam's file never gets a gog- key.
+    const auto steam_export = model.ExportUpdateCheck();
+    const auto gog_export = model.ExportUpdateCheck(Store::kGog);
+    check(steam_export.checked_at == steam_saved.checked_at && steam_export.games.size() == 1 && steam_export.games.count(SteamId(10)),
+          "stores: Steam's export is Steam's");
+    check(gog_export.checked_at == gog_saved.checked_at && gog_export.games.size() == 2 && gog_export.games.count(witcher) &&
+              gog_export.games.count(gwent),
+          "stores: GOG's export is GOG's");
+    model.UpdateCheckSaveResult(Store::kGog, kGogAccount, model.UpdateCheckRevision(Store::kGog), playden::StorageError::kNone);
+    check(!model.UpdateCheckDirty(Store::kGog), "stores: GOG's saved");
+
+    // Manage Updates lists both stores' games; neither is due, so opening asks nothing.
+    open_updates(model);
+    check(!model.TakeUpdateCheckRequest() && !model.TakeUpdateCheckRequest(Store::kGog), "stores: neither store is due");
+    check(find_row(model, "manage-toggle-10") && find_row(model, "manage-toggle-" + playden::ToKey(witcher)) &&
+              find_row(model, "manage-toggle-" + playden::ToKey(gwent)) && !find_row(model, "manage-toggle-20") &&
+              !find_row(model, "manage-toggle-" + playden::ToKey(idle)),
+          "stores: Updates lists Steam's and GOG's games with an update");
+    check(model.view().subtitle == "Checked 5 h ago · only games with an update or new DLC", "stores: the oldest check is the list's");
+
+    // Check for updates asks both stores; progress adds up, and the copy names them.
+    activate(model, "manage-check");
+    check(model.TakeUpdateCheckRequest() && model.TakeUpdateCheckRequest(Store::kGog), "stores: both are asked");
+    check(check_state.checking && model.view().subtitle == "Checking Steam and GOG…", "stores: both are checked");
+    model.UpdateCheckProgress(3, 1, 3);
+    model.UpdateCheckProgress(Store::kGog, 6, 2, 6);
+    check(check_state.asked == 9 && check_state.answered == 3 && check_state.total == 9, "stores: progress sums");
+    check(model.view().subtitle == "Checking Steam and GOG · 3 of 9", "stores: the sums are shown");
+    model.FinishUpdateCheck(false);
+    check(check_state.checking && model.view().subtitle == "Checking GOG · 2 of 6", "stores: GOG still checks");
+    model.FinishUpdateCheck(Store::kGog, true);
+    check(!check_state.checking && check_state.failed && check_state.stores.at(Store::kSteam).checked_at == kNow &&
+              check_state.stores.at(Store::kGog).checked_at == gog_saved.checked_at,
+          "stores: Steam's check moves on, GOG's stays");
+    check(model.view().subtitle == "Couldn't check GOG · last checked 5 h ago", "stores: the list names the store that failed");
+    const auto failed_row = settings_row(model);
+    check(failed_row.value == "Couldn't check" && failed_row.subtitle == "GOG didn't answer · last checked 5 h ago",
+          "stores: Settings names the store that failed");
+
+    // Steam signs out: GOG's updates and its loaded state stay.
+    model.ResetUpdateCheck();
+    check(check_state.loaded && !check_state.stores.count(Store::kSteam) && check_state.games.size() == 2 &&
+              check_state.games.count(witcher) && check_state.games.count(gwent) && !check_state.games.count(SteamId(10)),
+          "stores: Steam's sign-out keeps GOG's updates");
+    check(model.UpdateCheckAccount(Store::kGog) == kGogAccount && model.ExportUpdateCheck(Store::kGog).games.size() == 2,
+          "stores: GOG's account stays");
+    open_updates(model);
+    check(find_row(model, "manage-toggle-" + playden::ToKey(witcher)) && !find_row(model, "manage-toggle-10"),
+          "stores: the list keeps GOG's games");
+
+    // GOG only, no Steam account: the list asks GOG, and only GOG's finish counts.
+    auto only = make_live(base / "gog-only");
+    setup(only, false);
+    only.BeginUpdateCheckLoad(Store::kGog, kGogAccount);
+    only.ApplyUpdateCheck(Store::kGog, kGogAccount, std::nullopt);
+    open_updates(only);
+    check(!only.TakeUpdateCheckRequest() && only.TakeUpdateCheckRequest(Store::kGog), "gog only: opening the list asks GOG");
+    check(only.view().subtitle == "Checking GOG…", "gog only: the list says GOG is checked");
+    only.FinishUpdateCheck(false);
+    check(only.state().update_check.checking, "gog only: a Steam finish is ignored");
+    only.UpdateAppDetails(witcher, 1, 1, true, {}, {}, {}, GameUpdate{true, false, 2 * gb});
+    only.FinishUpdateCheck(Store::kGog, false);
+    check(!only.state().update_check.checking && only.state().update_check.stores.at(Store::kGog).checked_at == kNow &&
+              only.state().update_check.checked_at == kNow && only.UpdateCheckDirty(Store::kGog),
+          "gog only: GOG's finish sets its time");
+    check(only.ExportUpdateCheck(Store::kGog).checked_at == kNow && only.ExportUpdateCheck(Store::kGog).games.count(witcher),
+          "gog only: GOG's export has the time and the game");
+    check(find_row(only, "manage-toggle-" + playden::ToKey(witcher)), "gog only: the game is listed");
+    only.UpdateAppDetails(witcher, 1, 1, true, {}, {}, {}, {});
+    activate(only, "manage-check");
+    check(only.TakeUpdateCheckRequest(Store::kGog), "gog only: the button asks GOG");
+    only.FinishUpdateCheck(Store::kGog, true);
+    const auto* empty = find_row(only, "manage-empty");
+    check(empty && empty->title == "Couldn't check" && empty->subtitle == "GOG didn't answer. Check for updates to try again.",
+          "gog only: the empty list names GOG");
+    check(only.view().subtitle.rfind("Couldn't check GOG · last checked", 0) == 0, "gog only: the subtitle names GOG");
+
+    // Not checked yet, with no clock: the copy names the stores; with only Steam it is as before.
+    auto steam_only = make_live(base / "steam-only");
+    steam_only.UpdateAccount({AuthState::SignedIn, std::to_string(kSteamAccount), "Owner", {}, {}, false});
+    check(steam_only.UpdateLibrary({{{SteamId(10), "Portal", "", "", ""}}, false, {}, false, true, kNow}),
+          "steam only: library delivered");
+    steam_only.UpdateInstalls({}, {{SteamId(10), 30 * gb, "internal"}});
+    steam_only.BeginUpdateCheckLoad(kSteamAccount);
+    steam_only.ApplyUpdateCheck(kSteamAccount, std::nullopt);
+    check(settings_row(steam_only).subtitle == "Steam is checked once a day when you open it", "steam only: Settings as before");
+    open_updates(steam_only);
+    const auto* never = find_row(steam_only, "manage-empty");
+    check(never && never->title == "Not checked" &&
+              never->subtitle == "Check for updates to ask Steam about your installed games." &&
+              steam_only.view().subtitle == "Not checked yet",
+          "steam only: the list as before");
+    auto unclocked = make_live(base / "unclocked");
+    setup(unclocked, true, false);
+    unclocked.BeginUpdateCheckLoad(kSteamAccount);
+    unclocked.ApplyUpdateCheck(kSteamAccount, std::nullopt);
+    unclocked.BeginUpdateCheckLoad(Store::kGog, kGogAccount);
+    unclocked.ApplyUpdateCheck(Store::kGog, kGogAccount, std::nullopt);
+    check(settings_row(unclocked).subtitle == "Steam and GOG are checked once a day when you open it",
+          "stores: Settings names both stores");
+    open_updates(unclocked);
+    const auto* both_never = find_row(unclocked, "manage-empty");
+    check(both_never && both_never->subtitle == "Check for updates to ask Steam and GOG about your installed games.",
+          "stores: the empty list names both stores");
+    // A store's finish when it isn't checking is ignored.
+    unclocked.FinishUpdateCheck(Store::kGog, true);
+    check(!unclocked.state().update_check.failed, "stores: a finish without a check is ignored");
+}
+
 // Manage installed games: L1/R1 switch between Updates and Uninstall, each tab keeps its own selection and
 // focus, Updates lists only installed Steam games with an update (all checked), and says how the check went.
 void live_manage_games_tabs(const std::filesystem::path& base) {
@@ -4001,6 +4197,7 @@ int main() {
     live_self_update(base);
     live_kit_install(base / "kit");
     live_update_check(base / "update-check");
+    live_update_check_stores(base / "update-check-stores");
     live_manage_games_tabs(base / "manage-games");
     live_manage_update_selected(base / "update-selected");
     live_manage_runtimes(base / "manage-runtimes");

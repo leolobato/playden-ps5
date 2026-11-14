@@ -1268,7 +1268,8 @@ void Controller::TickRuntime() {
       }
     // An updated game is set up for its new files as soon as nothing uses it, so it also starts the new version from
     // Home; Play does it only when this couldn't. Asked once per update and per Playden start (a refusal waits for
-    // Play), and signed in, after Steam's details for the new content (TickAppDetails asks for them again).
+    // Play), and signed in to Steam, after Steam's details for the new content (TickAppDetails asks for them again).
+    // Another store's game is set up again from its new install record at once.
     if (usable)
       for (const auto& view : prepared.installs) {
         const auto id = view.game;
@@ -1277,7 +1278,8 @@ void Controller::TickRuntime() {
             prepare_after_details_.count(id) || PrepareQueued(prepared, NumberIn(prepared, id)) ||
             IsNumber(prepared, prepared.preparing_app, id) || cloud_busy_.count(id) || SessionActive(id) ||
             (installs_ && installs_->Locked(id)) ||
-            (refresh_details_.count(id) && model_.state().account().authentication == AuthState::SignedIn))
+            (id.store == Store::kSteam && refresh_details_.count(id) &&
+             model_.state().account().authentication == AuthState::SignedIn))
           continue;
         refresh_asked_.insert(id);
         RequestPrepare(id);
@@ -2670,7 +2672,8 @@ void Controller::TickAppDetails() {
   if (!app_details_) {
     // Nothing measures sizes: Steam's figures stand. Nothing checks for updates either.
     for (const auto& check : model_.TakeSizeChecks()) model_.UpdateMeasuredSize(check, false, false, {});
-    if (model_.TakeUpdateCheckRequest()) model_.FinishUpdateCheck(true);
+    if (model_.TakeUpdateCheckRequest(Store::kSteam)) model_.FinishUpdateCheck(Store::kSteam, true);
+    for (const auto id : model_.TakeUpdateSizeChecks(Store::kSteam)) model_.UpdateMeasuredUpdate(id, false, 0, 0, 0);
     return;
   }
   const auto& state = model_.state();
@@ -2691,8 +2694,8 @@ void Controller::TickAppDetails() {
     prepare_after_details_.clear();
     requested_language_ = state.content_language;
     reissue_after_language_ = false;
-    // Another account: its check, if any, starts over when its screen asks.
-    if (std::exchange(update_check_running_, false)) model_.FinishUpdateCheck(true);
+    // Another account: its check, if any, starts over when its screen asks. Only Steam's check ends.
+    if (std::exchange(update_check_running_, false)) model_.FinishUpdateCheck(Store::kSteam, true);
   } else if (state.content_language != requested_language_) {
     // Sizes count the depots of the download language. The details worker reads the language when
     // a fetch starts and the host passes the new one on after this tick, so ask again next tick.
@@ -2708,12 +2711,16 @@ void Controller::TickAppDetails() {
     // Download sizes follow the language: a running update check starts again in the new one.
     if (update_check_running_ && !app_details_->CheckInstalled(update_check_ids_, generation)) {
       update_check_running_ = false;
-      model_.FinishUpdateCheck(true);
+      model_.FinishUpdateCheck(Store::kSteam, true);
     }
   }
   if (state.account().authentication == AuthState::SignedIn) {
-    // A finished update: the game's details are asked again (they were answered for the old content).
-    for (const auto& id : std::exchange(refresh_details_, {})) {
+    // A finished update: the game's details are asked again (they were answered for the old content). Only Steam's
+    // games: another store's are asked by TickOtherDetails, signed in to Steam or not.
+    for (auto it = refresh_details_.begin(); it != refresh_details_.end();) {
+      const auto id = *it;
+      if (id.store != Store::kSteam) { ++it; continue; }
+      it = refresh_details_.erase(it);
       launch_options_.erase(id);
       launch_options_reason_.erase(id);
       launches_any_branch_.erase(id);
@@ -2734,21 +2741,22 @@ void Controller::TickAppDetails() {
   // run now: it ends as "Couldn't check", and the saved results stay.
   const bool check_waits = state.account().authentication == AuthState::SignedIn &&
                            (!library_ || library_->LicensesGeneration() != generation);
-  if (check_waits && (!library_ || !library_->Busy()) && model_.TakeUpdateCheckRequest()) model_.FinishUpdateCheck(true);
-  if (!check_waits && model_.TakeUpdateCheckRequest()) {
+  if (check_waits && (!library_ || !library_->Busy()) && model_.TakeUpdateCheckRequest(Store::kSteam))
+    model_.FinishUpdateCheck(Store::kSteam, true);
+  if (!check_waits && model_.TakeUpdateCheckRequest(Store::kSteam)) {
     std::vector<GameId> ids;
     for (const auto& [id, root] : game_roots_)
       if (id.steam_app() && Details(id.store) == app_details_) ids.push_back(id);
     if (state.account().authentication != AuthState::SignedIn) {
-      model_.FinishUpdateCheck(true);  // offline: "Couldn't check", the saved results stay
+      model_.FinishUpdateCheck(Store::kSteam, true);  // offline: "Couldn't check", the saved results stay
     } else if (ids.empty()) {
-      model_.FinishUpdateCheck(false);  // nothing installed from Steam: up to date
+      model_.FinishUpdateCheck(Store::kSteam, false);  // nothing installed from Steam: up to date
     } else if (app_details_->CheckInstalled(ids, generation)) {
       update_check_running_ = true;
       update_check_ids_ = std::move(ids);
-      model_.UpdateCheckProgress(0, 0, update_check_ids_.size());
+      model_.UpdateCheckProgress(Store::kSteam, 0, 0, update_check_ids_.size());
     } else {
-      model_.FinishUpdateCheck(true);
+      model_.FinishUpdateCheck(Store::kSteam, true);
     }
   }
   // Fetch Steam app info when the player opens a game's details while signed in, ahead of anything queued. An
@@ -2774,12 +2782,12 @@ void Controller::TickAppDetails() {
     const auto check = app_details_->CheckProgress();
     if (check.account_generation != generation || check.total == 0) {
       update_check_running_ = false;  // dropped (Invalidate)
-      model_.FinishUpdateCheck(true);
+      model_.FinishUpdateCheck(Store::kSteam, true);
     } else {
-      model_.UpdateCheckProgress(check.asked, check.answered, check.total);
+      model_.UpdateCheckProgress(Store::kSteam, check.asked, check.answered, check.total);
       if (check.done()) {
         update_check_running_ = false;
-        model_.FinishUpdateCheck(check.failed != 0);
+        model_.FinishUpdateCheck(Store::kSteam, check.failed != 0);
       }
     }
   }
@@ -2791,10 +2799,9 @@ void Controller::TickAppDetails() {
     if (!signed_in || details != app_details_ || !details->Measure({check.id, check.branch, check.language, false, check.excluded_dlc}, generation))
       model_.UpdateMeasuredSize(check, false, true, {});
   }
-  // Updates' sizes: the files that change, from the new manifests and each install's tree.
-  if (signed_in)
-    for (const auto id : model_.TakeUpdateSizeChecks())
-      if (!app_details_->Measure({id, {}, {}, true}, generation)) model_.UpdateMeasuredUpdate(id, false, 0, 0, 0);
+  // Updates' sizes: the files that change, from the new manifests and each install's tree. Signed out, they wait
+  // for the sign-in.
+  if (signed_in) MeasureUpdates(Store::kSteam, generation);
   for (const auto& size : app_details_->PumpMeasured()) {
     if (size.account_generation != generation) continue;
     if (size.request.update) {
@@ -2825,10 +2832,25 @@ void Controller::TickOtherDetails() {
       std::erase_if(launch_options_, of_store);
       std::erase_if(launch_options_reason_, of_store);
       std::erase_if(launches_any_branch_, [store](const GameId& id) { return id.store == store; });
+      // Its check and its updates' sizes were dropped with it: the check ends as "Couldn't check" (only this
+      // store's), and the sizes are asked again.
+      if (std::exchange(asked.checking, false)) model_.FinishUpdateCheck(store, true);
+      model_.ResetUpdateSizeChecks(store);
     }
     const auto authentication = state.account(store).authentication;
-    const bool usable = !Traits(store).needs_account || authentication == AuthState::SignedIn ||
-                        authentication == AuthState::Offline;
+    const bool signed_in = !Traits(store).needs_account || authentication == AuthState::SignedIn;
+    const bool usable = signed_in || authentication == AuthState::Offline;
+    // A finished update: the game's details are asked again (they were answered for the old content), whether or
+    // not Steam is signed in.
+    for (auto it = refresh_details_.begin(); it != refresh_details_.end();) {
+      const auto id = *it;
+      if (id.store != store) { ++it; continue; }
+      it = refresh_details_.erase(it);
+      launch_options_.erase(id);
+      launch_options_reason_.erase(id);
+      launches_any_branch_.erase(id);
+      if (usable) source->Refresh(id, generation);
+    }
     // As Steam's: the page of one of this store's games asks when it opens, and away from it the next visit asks again.
     if (state.navigation.route != Route::Details && state.navigation.route != Route::Session) asked.requested.reset();
     if (usable && state.navigation.detail_id && state.navigation.detail_id->store == store) {
@@ -2844,11 +2866,64 @@ void Controller::TickOtherDetails() {
         else source->RequestFirst(id, generation);
       }
     }
-    // No update check for this store: its answers never touch the saved update list.
+    // The store's installed-games update check, when the model asks: on its own sign-in, never waiting for Steam's
+    // licenses. Offline or signed out it can't run: "Couldn't check", and the saved results stay.
+    if (model_.TakeUpdateCheckRequest(store)) {
+      std::vector<GameId> ids;
+      for (const auto& [id, root] : game_roots_)
+        if (id.store == store) ids.push_back(id);
+      if (!signed_in) {
+        model_.FinishUpdateCheck(store, true);
+      } else if (ids.empty()) {
+        model_.FinishUpdateCheck(store, false);  // nothing installed from the store: up to date
+      } else if (source->CheckInstalled(ids, generation)) {
+        asked.checking = true;
+        model_.UpdateCheckProgress(store, 0, 0, ids.size());
+      } else {
+        model_.FinishUpdateCheck(store, true);
+      }
+    }
+    // Signed in, the answers are what the saved update list keeps; offline, they leave it alone.
     for (const auto& details : source->Pump(8)) {
       if (details.account_generation != generation || details.id.store != store) continue;
-      ApplyGameDetails(details, true);
+      ApplyGameDetails(details, !signed_in);
     }
+    if (asked.checking) {
+      const auto check = source->CheckProgress();
+      if (check.account_generation != generation || check.total == 0) {
+        asked.checking = false;  // dropped (Invalidate)
+        model_.FinishUpdateCheck(store, true);
+      } else {
+        model_.UpdateCheckProgress(store, check.asked, check.answered, check.total);
+        if (check.done()) {
+          asked.checking = false;
+          model_.FinishUpdateCheck(store, check.failed != 0);
+        }
+      }
+    }
+    // Updates' sizes, signed in (otherwise they wait for the sign-in).
+    if (signed_in) MeasureUpdates(store, generation);
+    for (const auto& size : source->PumpMeasured()) {
+      if (size.account_generation != generation || size.request.id.store != store || !size.request.update) continue;
+      // Measured for a newer update than the one listed: the store is asked about the game again.
+      if (model_.UpdateMeasuredUpdate(size.request.id, size.measured, size.target, size.download_bytes, size.staged_bytes))
+        source->Refresh(size.request.id, generation);
+    }
+  }
+  // A store with an account but no details source can't check or measure anything.
+  for (const auto& other : other_accounts_) {
+    const auto store = other.account->store();
+    if (Details(store)) continue;
+    if (model_.TakeUpdateCheckRequest(store)) model_.FinishUpdateCheck(store, true);
+    for (const auto id : model_.TakeUpdateSizeChecks(store)) model_.UpdateMeasuredUpdate(id, false, 0, 0, 0);
+  }
+  // Nothing asks again for a game of a store without a details source (an imported game).
+  std::erase_if(refresh_details_, [this](const GameId& id) { return id.store != Store::kSteam && !Details(id.store); });
+}
+void Controller::MeasureUpdates(Store store, std::uint64_t generation) {
+  for (const auto id : model_.TakeUpdateSizeChecks(store)) {
+    auto* source = Details(id.store);
+    if (!source || !source->Measure({id, {}, {}, true}, generation)) model_.UpdateMeasuredUpdate(id, false, 0, 0, 0);
   }
 }
 void Controller::ApplyGameDetails(const stores::GameDetails& details, bool check_waits) {
@@ -3153,6 +3228,8 @@ void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
       UpdateOther(other, std::move(update));
       SetRedactedAccount({std::string(Traits(store).key), event.display_name, event.user_id});
       if (library_) library_->Activate(store, event.account_key, offline);
+      // Its saved update check, from its own file (updates-gog-<account key>.v2), beside Steam's.
+      if (persistence_) persistence_->Activate(store, event.account_key);
       // That store's downloads that waited for a sign-in start now.
       if (installs_ && !offline) installs_->RetryWaiting(store);
       break;
@@ -3168,6 +3245,8 @@ void Controller::Apply(OtherAccount& other, stores::AccountEvent& event) {
       // the account update, whose sign-out text replaces the clear's status.
       if (library_ && was_signing_out && !expired) library_->Clear(store);
       if (library_) library_->Reset(store);
+      // Its updates leave the list; their file stays for the next sign-in of the account.
+      if (persistence_) persistence_->Reset(store);
       // Expired at startup, before its library was shown: the saved one is shown while the player signs in again.
       if (library_ && expired && event.account_key) library_->Activate(store, event.account_key, true);
       AccountUpdate update;

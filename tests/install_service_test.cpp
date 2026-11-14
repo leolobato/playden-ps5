@@ -620,7 +620,101 @@ class GogRunner final : public playden::installs::InstallRunner {
     std::filesystem::remove_all(root);
     return {};
   }
+  // Updates: it records the options, holds while `block` (staging) or `apply_block` (past staging), then finishes.
+  std::atomic<bool> apply_block{false};
+  std::atomic<int> updates{0};
+  std::mutex mutex;
+  std::vector<InstallOptions> update_options;
+  Result Update(const GameId&, const std::string& root, const InstallOptions& options, const std::atomic<bool>& cancel,
+                const std::function<void(std::uint64_t, std::uint64_t, std::uint64_t)>&,
+                const std::function<void(InstallStep)>& step, const std::function<bool()>&) override {
+    ++updates;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      update_options.push_back(options);
+    }
+    const auto state = playden::installs::ReadUpdateState(root);
+    const bool applying = state && state->phase != playden::installs::UpdatePhase::kStaging;
+    step(applying ? InstallStep::kApplying : InstallStep::kDownloading);
+    while (applying ? apply_block.load() : block.load()) {
+      if (cancel && !applying) return {false, true, {}, 0};
+      std::this_thread::sleep_for(1ms);
+    }
+    std::filesystem::remove_all(std::filesystem::path(root) / ".playden-update");
+    return {true, false, {}, 4096};
+  }
+  std::string DiscardUpdate(const std::string& root) override {
+    std::filesystem::remove_all(std::filesystem::path(root) / ".playden-update");
+    return {};
+  }
 };
+
+std::uint64_t InstalledBytes(const InstallSnapshot& snapshot, GameId id);
+
+// An installed GOG game at <root>/gog-1900000001 with its record (the Steam language `language`), listed in the
+// registry.
+void WriteInstalledGog(const std::filesystem::path& root, const std::string& language) {
+  const auto folder = root / "gog-1900000001";
+  std::filesystem::create_directories(folder);
+  playden::installs::GogRecord record;
+  record.build_id = "1000000000000000101";
+  record.products = {1900000001};
+  record.language = "de-DE";
+  record.meta_id = std::string(32, 'a');
+  std::ofstream(folder / ".playden-install.json")
+      << playden::installs::FormatGogInstallRecord(GameId::Gog(1900000001), 5555, 3, language, record,
+                                                   {{"bin/Game.exe", "", "", "Synthetic Game"}});
+  std::ofstream(root / ".playden-games") << "gog-1900000001\tinternal\t5555\n";
+}
+
+// Update() of an installed GOG game queues an update with its record's language; it runs on GOG's runner.
+void GogUpdateUsesTheRecordLanguage(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  WriteInstalledGog(root, "german");
+  const auto game = GameId::Gog(1900000001);
+  GogRunner gog;
+  gog.block = true;
+  InstallService service({{Store::kGog, &gog}}, {{InstallService::kPrimaryVolumeId, "Console storage", root.string(), true}});
+  CHECK(service.Update(game).empty());
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) {
+    const auto* job = JobOf(s, game);
+    return job && job->kind == InstallJobKind::kUpdate && job->state == InstallJobState::kRunning;
+  });
+  {
+    std::lock_guard<std::mutex> lock(gog.mutex);
+    CHECK(gog.update_options.size() == 1 && gog.update_options[0].language == "german");
+  }
+  CHECK(!service.Locked(game) && gog.installs == 0);
+  gog.block = false;
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game) && InstalledBytes(s, game) == 4096; });
+  std::filesystem::remove_all(root);
+}
+
+// At start a GOG game whose update.json says replacing comes back as an update job, locked until it finishes.
+void GogUpdateAtReplacingRestoresLocked(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  WriteInstalledGog(root, "english");
+  const auto game = GameId::Gog(1900000001);
+  std::filesystem::create_directories(root / "gog-1900000001" / ".playden-update");
+  playden::installs::UpdateState state;
+  state.phase = playden::installs::UpdatePhase::kReplacing;
+  std::ofstream(root / "gog-1900000001" / ".playden-update" / "update.json") << playden::installs::FormatUpdateState(state);
+  GogRunner gog;
+  gog.apply_block = true;
+  InstallService service({{Store::kGog, &gog}}, {{InstallService::kPrimaryVolumeId, "Console storage", root.string(), true}});
+  {
+    const auto snapshot = service.Snapshot();
+    const auto* job = JobOf(snapshot, game);
+    CHECK(job && job->kind == InstallJobKind::kUpdate && job->locked && Installed(snapshot, game));
+    CHECK(service.Locked(game));
+  }
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot&) { return gog.updates == 1; });
+  CHECK(service.Locked(game));
+  gog.apply_block = false;
+  AwaitAt(__LINE__, service, [&](const InstallSnapshot& s) { return !JobOf(s, game) && InstalledBytes(s, game) == 4096; });
+  CHECK(!service.Locked(game) && gog.installs == 0);
+  std::filesystem::remove_all(root);
+}
 
 // A GOG job is in the registry like any other: one paused (or running) when Playden stopped comes back paused (or
 // queued, carrying on by itself) under its gog-<id> folder.
@@ -1644,6 +1738,8 @@ int main() {
   GogJobSurvivesARestart(std::filesystem::temp_directory_path() / ("playden-gog-restart-service-" + std::to_string(::getpid())));
   GogSignInWakesOnlyGogJobs(std::filesystem::temp_directory_path() / ("playden-gog-wait-service-" + std::to_string(::getpid())));
   GogGameStaysWithoutItsRunner(std::filesystem::temp_directory_path() / ("playden-gog-no-runner-service-" + std::to_string(::getpid())));
+  GogUpdateUsesTheRecordLanguage(std::filesystem::temp_directory_path() / ("playden-gog-update-service-" + std::to_string(::getpid())));
+  GogUpdateAtReplacingRestoresLocked(std::filesystem::temp_directory_path() / ("playden-gog-locked-service-" + std::to_string(::getpid())));
   CompletedDownloadsList(std::filesystem::temp_directory_path() / ("playden-completed-service-" + std::to_string(::getpid())));
   const auto requests = ParseInstallRequests("uninstall 439490\n439490\ncancel 108600\n108600\n");
   CHECK(requests.size() == 4);

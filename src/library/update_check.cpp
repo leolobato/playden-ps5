@@ -15,10 +15,6 @@ namespace {
 constexpr std::size_t kMaximumBytes = 1024 * 1024;
 constexpr std::size_t kMaximumGames = 20000;
 
-std::string Path(std::uint64_t account, int version = 2) {
-  return "updates-" + std::to_string(account) + ".v" + std::to_string(version);
-}
-
 // Plain decimal, no sign or leading zero (but "0"); the console's libc has no stream parsing.
 std::optional<std::uint64_t> Decimal(std::string_view text) {
   if (text.empty() || text.size() > 20 || (text.size() > 1 && text[0] == '0')) return std::nullopt;
@@ -33,6 +29,10 @@ std::optional<std::uint64_t> Decimal(std::string_view text) {
 }
 
 }  // namespace
+
+std::string UpdateCheckStore::Path(std::uint64_t account, int version) const {
+  return prefix_ + std::to_string(account) + ".v" + std::to_string(version);
+}
 
 bool operator==(const SavedGameUpdate& left, const SavedGameUpdate& right) {
   return left.newer == right.newer && left.new_dlc == right.new_dlc && left.download_bytes == right.download_bytes &&

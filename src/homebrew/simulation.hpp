@@ -724,17 +724,31 @@ struct GameUpdate {
     bool operator==(const GameUpdate&) const = default;
 };
 
-// Live: the check of the Steam account's installed games for updates (Manage installed games). It runs at
-// most once a day when the screen opens, or when the player asks; the result is saved per account.
-struct UpdateCheckState {
+// One store's part of the update check: its signed-in account's saved check and its running check.
+struct StoreUpdateCheck {
+    std::uint64_t account = 0;
     bool loaded = false;          // the account's saved check has been read (or there was none)
-    std::int64_t checked_at = 0;  // the last check that finished for every game, unix seconds; 0: never
-    bool checking = false;
-    std::size_t asked = 0;     // games sent to Steam so far
-    std::size_t answered = 0;  // games Steam answered (or failed to)
-    std::size_t total = 0;     // games the running check covers; 0 until the controller starts it
-    bool failed = false;       // the last check couldn't reach Steam: the saved results stand ("Couldn't check")
-    std::map<GameId, GameUpdate> games;  // installed games with an update or new DLC, from checks and game pages
+    std::int64_t checked_at = 0;  // the store's last check that finished for every game, unix seconds; 0: never
+    bool failed = false;          // its last check couldn't reach the store: the saved results stand
+    bool pending = false;         // a check of the store's games runs
+    std::size_t asked = 0;
+    std::size_t answered = 0;
+    std::size_t total = 0;
+};
+
+// Live: the check of the signed-in store accounts' installed games for updates (Manage installed games). It runs
+// at most once a day when the screen opens, or when the player asks; the result is saved per store account. The
+// fields above `games` are what the screens show, made from `stores`.
+struct UpdateCheckState {
+    bool loaded = false;          // every store's saved check has been read (or there was none); none: false
+    std::int64_t checked_at = 0;  // the oldest store's last full check, unix seconds; 0: a store never finished one
+    bool checking = false;     // a store's check runs
+    std::size_t asked = 0;     // games sent to the stores so far
+    std::size_t answered = 0;  // games the stores answered (or failed to)
+    std::size_t total = 0;     // games the running checks cover; 0 until the controller starts them
+    bool failed = false;       // a store's last check couldn't reach it: the saved results stand ("Couldn't check")
+    std::map<GameId, GameUpdate> games;  // installed games of every store with an update or new DLC
+    std::map<Store, StoreUpdateCheck> stores;  // the stores with an account, Steam first
 };
 
 struct Game {
@@ -1223,13 +1237,16 @@ public:
     // and the answers. `target` is the selection measured: a size for another one than the saved update's is
     // dropped. Not measured (the network, a full queue): the size stays unknown until Steam answers for the
     // game again. True when Steam should be asked about the game again (a size for a newer update than the
-    // one listed), once per update measured.
-    [[nodiscard]] std::vector<GameId> TakeUpdateSizeChecks();
+    // one listed), once per update measured. Take gives one store's games; without a store, Steam's.
+    [[nodiscard]] std::vector<GameId> TakeUpdateSizeChecks(Store store);
+    [[nodiscard]] std::vector<GameId> TakeUpdateSizeChecks() { return TakeUpdateSizeChecks(Store::kSteam); }
     bool UpdateMeasuredUpdate(GameId id, bool measured, std::uint64_t target, std::uint64_t download_bytes,
                               std::uint64_t staged_bytes);
     // The details service dropped what it was asked (another account, or the language changed): checks
     // still waiting for an answer are asked again.
     void ResetSizeChecks();
+    // As ResetSizeChecks for one store's updates only (its details source dropped them at a new sign-in).
+    void ResetUpdateSizeChecks(Store store);
     void UpdateInstalls(const std::vector<LiveInstallJob>& jobs, const std::vector<LiveInstalledGame>& installed,
                         const std::vector<LiveCompletedDownload>& completed = {});
     // Live mode: Steam Cloud save requests for the cloud service, and its state for display.
@@ -1367,23 +1384,45 @@ public:
                               playden::StorageError error);
     void OrganizationCleared(std::uint64_t account);
     PersistenceLoadToken BeginPreferencesLoad();
-    // Live mode: the update check of installed games, saved per Steam account. BeginUpdateCheckLoad: that
-    // account's saved check is read next (ApplyUpdateCheck; nothing saved: an empty optional). Reset: no account.
-    void BeginUpdateCheckLoad(std::uint64_t account);
-    void ApplyUpdateCheck(std::uint64_t account, std::optional<playden::SavedUpdateCheck> saved);
-    void ResetUpdateCheck();
-    [[nodiscard]] std::uint64_t UpdateCheckAccount() const noexcept { return update_check_account_; }
-    [[nodiscard]] std::uint64_t UpdateCheckRevision() const noexcept { return update_check_revision_; }
+    // Live mode: the update check of installed games, saved per store account. BeginUpdateCheckLoad: that
+    // store account's saved check is read next (ApplyUpdateCheck; nothing saved: an empty optional; only the
+    // store's own games are taken from it). Reset: the store has no account; its games leave the list, other
+    // stores' stay. Export gives the store's own games only: an older Playden refuses a file with a key it
+    // can't read. Each call without a store means Steam's.
+    void BeginUpdateCheckLoad(Store store, std::uint64_t account);
+    void ApplyUpdateCheck(Store store, std::uint64_t account, std::optional<playden::SavedUpdateCheck> saved);
+    void ResetUpdateCheck(Store store);
+    [[nodiscard]] std::uint64_t UpdateCheckAccount(Store store) const noexcept;
+    [[nodiscard]] std::uint64_t UpdateCheckRevision(Store store) const noexcept;
     // Loaded, and changed since the last save that worked.
-    [[nodiscard]] bool UpdateCheckDirty() const noexcept;
-    [[nodiscard]] playden::SavedUpdateCheck ExportUpdateCheck() const;
-    void UpdateCheckSaveResult(std::uint64_t account, std::uint64_t revision, playden::StorageError error);
-    // A check the controller should start: the player asked, or the screen opened a day after the last one.
-    [[nodiscard]] bool TakeUpdateCheckRequest();
-    // The running check's progress, in games; Finish ends it. `failed`: Steam gave no answer for some games,
-    // so the time of the last full check stays and their saved results stand.
-    void UpdateCheckProgress(std::size_t asked, std::size_t answered, std::size_t total);
-    void FinishUpdateCheck(bool failed);
+    [[nodiscard]] bool UpdateCheckDirty(Store store) const noexcept;
+    [[nodiscard]] playden::SavedUpdateCheck ExportUpdateCheck(Store store) const;
+    void UpdateCheckSaveResult(Store store, std::uint64_t account, std::uint64_t revision, playden::StorageError error);
+    void BeginUpdateCheckLoad(std::uint64_t account) { BeginUpdateCheckLoad(Store::kSteam, account); }
+    void ApplyUpdateCheck(std::uint64_t account, std::optional<playden::SavedUpdateCheck> saved) {
+        ApplyUpdateCheck(Store::kSteam, account, std::move(saved));
+    }
+    void ResetUpdateCheck() { ResetUpdateCheck(Store::kSteam); }
+    [[nodiscard]] std::uint64_t UpdateCheckAccount() const noexcept { return UpdateCheckAccount(Store::kSteam); }
+    [[nodiscard]] std::uint64_t UpdateCheckRevision() const noexcept { return UpdateCheckRevision(Store::kSteam); }
+    [[nodiscard]] bool UpdateCheckDirty() const noexcept { return UpdateCheckDirty(Store::kSteam); }
+    [[nodiscard]] playden::SavedUpdateCheck ExportUpdateCheck() const { return ExportUpdateCheck(Store::kSteam); }
+    void UpdateCheckSaveResult(std::uint64_t account, std::uint64_t revision, playden::StorageError error) {
+        UpdateCheckSaveResult(Store::kSteam, account, revision, error);
+    }
+    // A check the store's controller should start: the player asked, or the screen opened a day after the
+    // store's last one.
+    [[nodiscard]] bool TakeUpdateCheckRequest(Store store);
+    [[nodiscard]] bool TakeUpdateCheckRequest() { return TakeUpdateCheckRequest(Store::kSteam); }
+    // The store's running check's progress, in games; Finish ends it (ignored when the store isn't checking).
+    // `failed`: the store gave no answer for some games, so the time of its last full check stays and their saved
+    // results stand.
+    void UpdateCheckProgress(Store store, std::size_t asked, std::size_t answered, std::size_t total);
+    void FinishUpdateCheck(Store store, bool failed);
+    void UpdateCheckProgress(std::size_t asked, std::size_t answered, std::size_t total) {
+        UpdateCheckProgress(Store::kSteam, asked, answered, total);
+    }
+    void FinishUpdateCheck(bool failed) { FinishUpdateCheck(Store::kSteam, failed); }
     bool ApplyPreferences(PersistenceLoadToken token,
                           const playden::PreferencesLoadResult& loaded);
     [[nodiscard]] playden::OrganizationSnapshot ExportOrganization() const;
@@ -2049,21 +2088,32 @@ private:
     playden::OrganizationSnapshot captured_organization_;
     playden::OrganizationSnapshot persisted_organization_;
     playden::Preferences captured_preferences_;
-    std::uint64_t update_check_account_ = 0;
-    std::uint64_t update_check_revision_ = 0;
-    std::uint64_t update_check_saved_revision_ = 0;
-    bool update_check_requested_ = false;
-    std::optional<bool> update_check_waiting_;  // asked (true: by the player) before the saved check was read
-    std::map<GameId, GameUpdate> update_check_early_;  // results before the saved check was read
+    // Per store, kept when its account leaves: the update check's revisions and the controller's request.
+    struct UpdateCheckBook {
+        std::uint64_t revision = 0;
+        std::uint64_t saved_revision = 0;
+        bool requested = false;
+        std::optional<bool> waiting;  // asked (true: by the player) before the store's saved check was read
+    };
+    std::map<Store, UpdateCheckBook> update_check_books_;
+    std::map<GameId, GameUpdate> update_check_early_;  // results before their store's saved check was read
     std::map<GameId, std::uint64_t> update_sizes_running_;          // asked, with the target then saved
     std::set<std::pair<GameId, std::uint64_t>> update_sizes_ended_;  // answered without a size: not asked again
     std::set<std::pair<GameId, std::uint64_t>> update_sizes_newer_;  // measured targets Steam was asked about again
     // An update's size as the screens say it: the download, "Checking size…" while it is measured, else "Size unknown".
     [[nodiscard]] std::string update_size_text(GameId id) const;
 
-    // The screen opened (`forced` false: only a day after the last full check) or Check for updates.
+    // The screen opened (`forced` false: only a store whose last full check is a day old) or Check for updates:
+    // every store with an account, or one.
     void request_update_check(bool forced);
-    // A game's update as Steam answered it: kept when there is one, dropped otherwise.
+    void request_store_update_check(Store store, bool forced);
+    // The shown fields of the update check, from its stores.
+    void summarize_update_check();
+    // The stores of the update check that `which` picks, as the screens name them ("Steam", "Steam and GOG"),
+    // Steam first; no store with an account: "Steam". `checked_at` gets their oldest full check (0: one never).
+    [[nodiscard]] std::string update_check_names(bool (*which)(const StoreUpdateCheck&),
+                                                 std::int64_t* checked_at = nullptr) const;
+    // A game's update as its store answered it: kept when there is one, dropped otherwise.
     void set_saved_update(GameId id, const GameUpdate& update);
     void load_fixtures();
     void load_profile();

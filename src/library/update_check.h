@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <string>
+#include <utility>
 
 namespace playden {
 
@@ -23,7 +25,7 @@ struct SavedGameUpdate {
 };
 bool operator==(const SavedGameUpdate& left, const SavedGameUpdate& right);
 
-// The last check of a Steam account's installed games for updates: when it last finished for all of them,
+// The last check of a store account's installed games for updates: when it last finished for all of them,
 // and the games it found with an update (none without one), so Settings and the update list work after a
 // restart without going online.
 struct SavedUpdateCheck {
@@ -40,18 +42,24 @@ class UpdateCheckRepository {
   virtual Result<void> Save(std::uint64_t account_id, const SavedUpdateCheck& check) const = 0;
 };
 
-// `updates-<account>.v2` in the storage root, owner-only: "version=2", "checked_at=<seconds>", then one
+// `<prefix><account>.v2` in the storage root, owner-only: "version=2", "checked_at=<seconds>", then one
 // "<game key> <flags> <download bytes> <staged bytes> <target>" line per game (flags: 1 newer, 2 new DLC,
-// 4 sized). Without it, `updates-<account>.v1` ("version=1", lines "<game key> <flags> <bytes>" with Steam's
+// 4 sized). Without it, `<prefix><account>.v1` ("version=1", lines "<game key> <flags> <bytes>" with Steam's
 // whole-depot estimate) is read for its flags only. A damaged file fails the load with kInvalidData.
+// Steam's prefix is "updates-" (its account number); GOG's is "updates-gog-" (its account key, a hash of the
+// user ID). A load keeps the games of every store the file names: the reader takes its own store's.
 class UpdateCheckStore final : public UpdateCheckRepository {
  public:
-  explicit UpdateCheckStore(Storage& storage) : storage_(storage) {}
+  explicit UpdateCheckStore(Storage& storage, std::string prefix = "updates-")
+      : storage_(storage), prefix_(std::move(prefix)) {}
   Result<std::optional<SavedUpdateCheck>> Load(std::uint64_t account_id) const override;
   Result<void> Save(std::uint64_t account_id, const SavedUpdateCheck& check) const override;
 
  private:
+  std::string Path(std::uint64_t account, int version = 2) const;
+
   Storage& storage_;
+  std::string prefix_;
 };
 
 }  // namespace playden

@@ -78,25 +78,26 @@ void PersistenceController::BeginOrganizationLoad() {
 }
 
 // Organization belongs to the device: store accounts coming and going leave it alone. The update check is
-// the account's own.
-void PersistenceController::Activate(std::uint64_t account) {
-  if (shutting_down_ || !account || account == update_account_) return;
-  if (update_account_) Reset();
-  update_account_ = account;
-  submitted_update_revision_ = 0;
-  model_.BeginUpdateCheckLoad(account);
-  update_load_request_ = service_.LoadUpdateCheck(account);
+// the account's own, one per store.
+void PersistenceController::Activate(Store store, std::uint64_t account) {
+  if (shutting_down_ || !account) return;
+  if (const auto found = update_slots_.find(store); found != update_slots_.end()) {
+    if (found->second.account == account) return;
+    Reset(store);
+  }
+  auto& slot = update_slots_[store];
+  slot.account = account;
+  model_.BeginUpdateCheckLoad(store, account);
+  slot.load_request = service_.LoadUpdateCheck(store, account);
   // Nowhere to read it from: the account starts with no check.
-  if (!update_load_request_) model_.ApplyUpdateCheck(account, std::nullopt);
+  if (!slot.load_request) model_.ApplyUpdateCheck(store, account, std::nullopt);
 }
 
-void PersistenceController::Reset() {
+void PersistenceController::Reset(Store store) {
   if (shutting_down_) return;
   ObserveAndSave();
-  update_account_ = 0;
-  update_load_request_ = 0;
-  submitted_update_revision_ = 0;
-  model_.ResetUpdateCheck();
+  update_slots_.erase(store);
+  model_.ResetUpdateCheck(store);
 }
 
 void PersistenceController::Tick() {
@@ -113,8 +114,8 @@ void PersistenceController::Retry() {
 
   if (organization_load_failed_) BeginOrganizationLoad();
   else submitted_organization_revision_ = 0;
-  // The update check's last save may have failed too.
-  submitted_update_revision_ = 0;
+  // The update checks' last saves may have failed too.
+  for (auto& [store, slot] : update_slots_) slot.submitted_revision = 0;
 }
 
 void PersistenceController::Clear() {
@@ -152,17 +153,20 @@ void PersistenceController::Apply(PersistenceEvent event) {
     return;
   }
   if (event.kind == PersistenceEventKind::kUpdateCheckLoaded) {
-    if (event.request_id != update_load_request_ || event.account_id != update_account_) return;
-    update_load_request_ = 0;
+    const auto slot = update_slots_.find(event.store);
+    if (slot == update_slots_.end() || event.request_id != slot->second.load_request ||
+        event.account_id != slot->second.account)
+      return;
+    slot->second.load_request = 0;
     // A damaged file starts the account over; the next check writes a new one.
     Report(kUpdateCheckLoad, event.error == StorageError::kNone ? std::string() : Failure(event.error, event.message));
-    model_.ApplyUpdateCheck(event.account_id, event.error == StorageError::kNone ? std::move(event.update_check)
-                                                                                 : std::nullopt);
+    model_.ApplyUpdateCheck(event.store, event.account_id,
+                            event.error == StorageError::kNone ? std::move(event.update_check) : std::nullopt);
     return;
   }
   if (event.kind == PersistenceEventKind::kUpdateCheckSaved) {
     Report(kUpdateCheckSave, event.error == StorageError::kNone ? std::string() : Failure(event.error, event.message));
-    model_.UpdateCheckSaveResult(event.account_id, event.revision, event.error);
+    model_.UpdateCheckSaveResult(event.store, event.account_id, event.revision, event.error);
     return;
   }
   if (event.kind == PersistenceEventKind::kOrganizationCleared) return;
@@ -202,14 +206,16 @@ void PersistenceController::Report(Channel channel, const std::string& failure) 
 }
 
 void PersistenceController::ObserveAndSave() {
-  if (update_account_ && !update_load_request_ && model_.UpdateCheckAccount() == update_account_ &&
-      model_.UpdateCheckDirty()) {
-    const auto revision = model_.UpdateCheckRevision();
-    if (revision != submitted_update_revision_) {
-      submitted_update_revision_ = revision;
-      if (!service_.SaveUpdateCheck(update_account_, revision, model_.ExportUpdateCheck()))
-        model_.UpdateCheckSaveResult(update_account_, revision, StorageError::kWriteFailed);
-    }
+  // Each store's update check goes to its own repository.
+  for (auto& [store, slot] : update_slots_) {
+    if (!slot.account || slot.load_request || model_.UpdateCheckAccount(store) != slot.account ||
+        !model_.UpdateCheckDirty(store))
+      continue;
+    const auto revision = model_.UpdateCheckRevision(store);
+    if (revision == slot.submitted_revision) continue;
+    slot.submitted_revision = revision;
+    if (!service_.SaveUpdateCheck(store, slot.account, revision, model_.ExportUpdateCheck(store)))
+      model_.UpdateCheckSaveResult(store, slot.account, revision, StorageError::kWriteFailed);
   }
 
   if (!preferences_load_request_ && !preferences_load_failed_ &&

@@ -66,6 +66,8 @@ GogServices::GogServices(GogWiringConfig config) : config_(std::move(config)) {
   // Its transport is made on its own worker, at its first request.
   owned_details_ = std::make_unique<stores::GogDetailsSource>(*session_, transport, config_.content_language, gog_log);
   details_ = owned_details_.get();
+  if (config_.installed_record) details_->SetInstalled(config_.installed_record);
+  if (config_.install_root) details_->SetInstallRoot(config_.install_root);
 
   web::GogRelayConfig relay;
   relay.parse_code = [](std::string_view paste) { return gog::CodeFromPaste(paste); };

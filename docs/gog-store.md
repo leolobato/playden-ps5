@@ -43,9 +43,16 @@ restart Playden after you change it. Dev builds and nightlies also need the line
   an installer, upload your own copy of it into the game folder with the Game files tab, outside folders such as
   `redist` or `__installer`, then pick it in "Run launcher or setup".
 
+- **Game updates.** When GOG has a newer build of an installed game on its default branch, the game's page shows
+  Update… with the exact download size, and Settings › Game updates lists the game. Check for updates and the daily
+  check ask GOG and Steam each on their own, so a player signed in to GOG only gets them too. The update goes through
+  the Queue: it downloads beside the game, and the files go in place once the game is closed. The DLC you own are
+  part of the update, as they are part of an install.
+
 Not there yet:
 
-- **Game updates.** Playden does not look for new GOG builds of an installed game.
+- **Other builds.** Playden offers only the newest build of the default branch. It doesn't offer branch builds or
+  older builds, and it downloads changed files whole instead of using GOG's patches.
 - **Choosing DLC.** Every DLC you own for a game installs with it. You can't add or remove DLC.
 
 With the line off, Playden does not change: there is no Stores section, no GOG sign-in, no GOG routes in web access,

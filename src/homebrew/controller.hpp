@@ -200,18 +200,23 @@ class Controller {
               const steam::SteamEvent* prompt = nullptr, bool storage_full = false, bool restoring = false);
   void TickAppDetails();
   // Every other store's details (GOG): asked for when one of its games' pages opens while the store can answer,
-  // and dropped when they are from an earlier sign-in. Their update checks and exact sizes are not wired.
+  // and dropped when they are from an earlier sign-in. A store whose source checks updates (GOG) runs its own
+  // update check and measures its updates' sizes, on its own sign-in generation, not Steam's.
   void TickOtherDetails();
   struct OtherDetails {
     std::uint64_t generation = 0;  // StoreGeneration (1 for a store without accounts) the source last had
     std::optional<GameId> requested;
     std::map<GameId, DetailsAsked> pages;  // what each visited page's details were last asked with
+    bool checking = false;  // the store's installed-games update check runs on its source
   };
   std::map<Store, OtherDetails> other_details_;
   // One store's details answer, for its own account: the game's sizes and versions in the model, and its launch
   // options for the next preparation. check_waits: Steam's update check still waits for the licenses, so the answer
   // leaves the saved update list alone.
   void ApplyGameDetails(const stores::GameDetails& details, bool check_waits);
+  // The store's installed games whose update has no size yet, each sent to its store's details source; one that
+  // can't take it (no source, a full queue) leaves the size unknown.
+  void MeasureUpdates(Store store, std::uint64_t generation);
   void TickStoreDetails();
   steam::StoreDetailsService* store_details_ = nullptr;
   std::optional<GameId> requested_store_detail_;
@@ -388,7 +393,8 @@ class Controller {
   std::set<GameId> downloading_;
   std::set<GameId> updating_;  // the install jobs that are updates of installed games
   std::set<GameId> moving_;    // the install jobs that move installed games to another drive
-  // Installed games whose update finished: their Steam details (launch options, update state) are asked again.
+  // Installed games whose update finished: their store's details (launch options, update state) are asked again,
+  // Steam's by TickAppDetails while signed in to Steam, other stores' by TickOtherDetails.
   std::set<GameId> refresh_details_;
   std::uint64_t licenses_read_ = 0;  // app::LibraryController::LicensesRead last seen
   std::vector<GameId> auto_prepare_;  // in the order their downloads (copies, imports) finished

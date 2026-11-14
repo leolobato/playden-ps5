@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,6 +32,7 @@ struct PersistenceEvent {
   PersistenceEventKind kind = PersistenceEventKind::kPreferencesLoaded;
   PersistenceRequestId request_id = 0;
   std::uint64_t account_id = 0;
+  Store store = Store::kSteam;  // update checks: the store whose account `account_id` is
   std::uint64_t account_generation = 0;
   std::uint64_t revision = 0;
   StorageError error = StorageError::kNone;
@@ -48,8 +50,11 @@ struct PersistenceEvent {
 // shutdown work; loads may be discarded when stale or during shutdown.
 class PersistenceService {
  public:
-  // Without `updates`, update checks are neither loaded nor saved (their requests return 0).
+  // `updates` is Steam's update check repository. A store without one has its update checks neither loaded nor
+  // saved (their requests return 0).
   PersistenceService(PreferencesStore&, OrganizationRepository&, UpdateCheckRepository* updates = nullptr);
+  // Another store's update check repository (GOG's), set before its first request; nullptr removes it.
+  void SetUpdateChecks(Store store, UpdateCheckRepository* updates);
   ~PersistenceService();
   PersistenceService(const PersistenceService&) = delete;
   PersistenceService& operator=(const PersistenceService&) = delete;
@@ -66,9 +71,15 @@ class PersistenceService {
   PersistenceRequestId ClearOrganization(std::uint64_t account_id,
                                          std::uint64_t account_generation);
   void InvalidateOrganization(std::uint64_t account_generation);
-  // A Steam account's last update check. A save replaces one of the same account still waiting.
-  PersistenceRequestId LoadUpdateCheck(std::uint64_t account_id);
-  PersistenceRequestId SaveUpdateCheck(std::uint64_t account_id, std::uint64_t revision, SavedUpdateCheck check);
+  // A store account's last update check. A save replaces one of the same store and account still waiting.
+  // Without a store, Steam's.
+  PersistenceRequestId LoadUpdateCheck(Store store, std::uint64_t account_id);
+  PersistenceRequestId SaveUpdateCheck(Store store, std::uint64_t account_id, std::uint64_t revision,
+                                       SavedUpdateCheck check);
+  PersistenceRequestId LoadUpdateCheck(std::uint64_t account_id) { return LoadUpdateCheck(Store::kSteam, account_id); }
+  PersistenceRequestId SaveUpdateCheck(std::uint64_t account_id, std::uint64_t revision, SavedUpdateCheck check) {
+    return SaveUpdateCheck(Store::kSteam, account_id, revision, std::move(check));
+  }
   // Waits for all currently accepted work to finish without stopping the
   // worker. Used by shutdown coordination when a load must be merged before
   // the final save is submitted.
@@ -90,6 +101,8 @@ class PersistenceService {
     Command command = Command::kLoadPreferences;
     PersistenceRequestId request = 0;
     std::uint64_t account = 0;
+    Store store = Store::kSteam;
+    UpdateCheckRepository* updates = nullptr;  // the store's, resolved when the job is accepted
     std::uint64_t generation = 0;
     std::uint64_t revision = 0;
     Preferences preferences;
@@ -107,7 +120,7 @@ class PersistenceService {
 
   PreferencesStore& preferences_;
   OrganizationRepository& organizations_;
-  UpdateCheckRepository* updates_;
+  std::map<Store, UpdateCheckRepository*> updates_;  // guarded by mutex_
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::condition_variable idle_;

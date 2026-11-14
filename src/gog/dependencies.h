@@ -60,6 +60,9 @@ struct RedistEntry {
 // over kRedistListPath. 0, or the errno of the failure; EINVAL when an entry is one ReadRedistList would refuse, or
 // the list would pass kMaxRedistEntries or kMaxRedistListBytes.
 int WriteRedistList(const std::string& root, const std::vector<RedistEntry>& entries);
+// The same at `list_path` (absolute, its folder made): the temporary is `list_path` + ".tmp". WriteRedistList writes
+// <root>/kRedistListPath through it.
+int WriteRedistListFile(const std::string& list_path, const std::vector<RedistEntry>& entries);
 
 struct RedistList {
   enum class Status {

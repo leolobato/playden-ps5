@@ -1849,11 +1849,11 @@ std::vector<GameId> Simulation::manage_list(ManageTab tab) const {
             const auto runtime = state_.runtime_games.find(id);
             if (!runtime_work(id) && (runtime == state_.runtime_games.end() || !runtime->second.setup_other_kit)) continue;
         }
-        // Updates: installed Steam games whose update or new DLC Steam told of; their size is the download (an
+        // Updates: installed games whose update or new DLC their store told of; their size is the download (an
         // unknown one sorts last).
         if (updates) {
             const auto update = state_.update_check.games.find(id);
-            if (!id.steam_app() || update == state_.update_check.games.end() || !update->second.available()) continue;
+            if (update == state_.update_check.games.end() || !update->second.available()) continue;
             bytes = update->second.sized ? update->second.download_bytes : 0;
         }
         const auto* game = find_game(state_, id);
@@ -2562,12 +2562,15 @@ void Simulation::build_manage_games_view() {
     } else if (!updates) {
         view_.subtitle = !manage_message_.empty() ? manage_message_ : "Saves and settings are kept · free up space on your drives";
     } else if (check.checking) {
-        view_.subtitle = check.total > 0 ? "Checking Steam · " + std::to_string(std::min(check.answered, check.total)) + " of " +
-                                               std::to_string(check.total)
-                                         : "Checking Steam…";
+        const auto names = update_check_names([](const StoreUpdateCheck& store) { return store.pending; });
+        view_.subtitle = check.total > 0 ? "Checking " + names + " · " + std::to_string(std::min(check.answered, check.total)) +
+                                               " of " + std::to_string(check.total)
+                                         : "Checking " + names + "…";
     } else if (check.failed) {
-        const auto when = check.checked_at > 0 ? time_ago(now, check.checked_at) : std::string();
-        view_.subtitle = "Couldn't check Steam" + (when.empty() ? std::string() : " · last checked " + when);
+        std::int64_t checked_at = 0;
+        const auto names = update_check_names([](const StoreUpdateCheck& store) { return store.failed; }, &checked_at);
+        const auto when = checked_at > 0 ? time_ago(now, checked_at) : std::string();
+        view_.subtitle = "Couldn't check " + names + (when.empty() ? std::string() : " · last checked " + when);
     } else if (check.checked_at > 0) {
         const auto when = time_ago(now, check.checked_at);
         view_.subtitle = (when.empty() ? std::string("Checked") : "Checked " + when) + " · only games with an update or new DLC";
@@ -2693,10 +2696,12 @@ void Simulation::build_manage_games_view() {
             empty.title = "Nothing installed";
         } else if (check.failed) {
             empty.title = "Couldn't check";
-            empty.subtitle = "Steam didn't answer. Check for updates to try again.";
+            empty.subtitle = update_check_names([](const StoreUpdateCheck& store) { return store.failed; }) +
+                             " didn't answer. Check for updates to try again.";
         } else if (check.checked_at == 0) {
             empty.title = "Not checked";
-            empty.subtitle = "Check for updates to ask Steam about your installed games.";
+            empty.subtitle = "Check for updates to ask " + update_check_names([](const StoreUpdateCheck&) { return true; }) +
+                             " about your installed games.";
         } else {
             empty.title = "Up to date";
             empty.subtitle = "Every installed game is up to date.";
@@ -4406,6 +4411,11 @@ void Simulation::ResetSizeChecks() {
     rebuild_view();
 }
 
+void Simulation::ResetUpdateSizeChecks(Store store) {
+    if (!std::erase_if(update_sizes_running_, [store](const auto& entry) { return entry.first.store == store; })) return;
+    rebuild_view();
+}
+
 const MeasuredInstallSize* Simulation::measured_install_size(GameId id) const {
     const auto check = install_size_check(id);
     const auto found = measured_sizes_.find({check.id, check.branch, check.language, check.excluded_dlc});
@@ -5162,111 +5172,226 @@ void Simulation::OrganizationSaveResult(std::uint64_t account, std::uint64_t rev
     rebuild_view();
 }
 
-void Simulation::BeginUpdateCheckLoad(std::uint64_t account) {
-    if (!live() || account == update_check_account_) return;
-    ResetUpdateCheck();
-    update_check_account_ = account;
+void Simulation::BeginUpdateCheckLoad(Store store, std::uint64_t account) {
+    if (!live() || store == Store::kLocal) return;
+    const auto& stores = state_.update_check.stores;
+    const auto found = stores.find(store);
+    if (found == stores.end() ? account == 0 : found->second.account == account) return;
+    ResetUpdateCheck(store);
+    if (account == 0) return;
+    state_.update_check.stores[store].account = account;
+    summarize_update_check();
 }
 
-void Simulation::ApplyUpdateCheck(std::uint64_t account, std::optional<playden::SavedUpdateCheck> saved) {
-    if (!live() || account == 0 || account != update_check_account_ || state_.update_check.loaded) return;
+void Simulation::ApplyUpdateCheck(Store store, std::uint64_t account, std::optional<playden::SavedUpdateCheck> saved) {
+    if (!live() || account == 0) return;
+    const auto found = state_.update_check.stores.find(store);
+    if (found == state_.update_check.stores.end() || found->second.account != account || found->second.loaded) return;
+    auto& slot = found->second;
     auto& check = state_.update_check;
-    check.loaded = true;
+    slot.loaded = true;
     if (saved) {
-        check.checked_at = saved->checked_at;
+        slot.checked_at = saved->checked_at;
+        // Only the store's own games: another store's are its own file's.
         for (const auto& [id, game] : saved->games)
-            check.games[id] = {game.newer, game.new_dlc, game.download_bytes, game.staged_bytes, game.target, game.sized};
+            if (id.store == store)
+                check.games[id] = {game.newer, game.new_dlc, game.download_bytes, game.staged_bytes, game.target, game.sized};
     }
-    update_check_saved_revision_ = update_check_revision_;
+    auto& book = update_check_books_[store];
+    book.saved_revision = book.revision;
     // Pages opened before the file was read answered for now: they win.
-    for (const auto& [id, update] : std::exchange(update_check_early_, {})) set_saved_update(id, update);
-    if (const auto waiting = std::exchange(update_check_waiting_, std::nullopt)) request_update_check(*waiting);
+    std::map<GameId, GameUpdate> early;
+    for (auto it = update_check_early_.begin(); it != update_check_early_.end();) {
+        if (it->first.store != store) { ++it; continue; }
+        early.insert(*it);
+        it = update_check_early_.erase(it);
+    }
+    for (const auto& [id, update] : early) set_saved_update(id, update);
+    summarize_update_check();
+    if (const auto waiting = std::exchange(book.waiting, std::nullopt)) request_store_update_check(store, *waiting);
     rebuild_view();
 }
 
-void Simulation::ResetUpdateCheck() {
-    update_check_account_ = 0;
-    state_.update_check = {};
-    update_check_requested_ = false;
-    update_check_waiting_.reset();
-    update_check_early_.clear();
-    update_sizes_running_.clear();
-    update_sizes_ended_.clear();
-    update_sizes_newer_.clear();
-    update_check_saved_revision_ = update_check_revision_;
+void Simulation::ResetUpdateCheck(Store store) {
+    auto& check = state_.update_check;
+    check.stores.erase(store);
+    const auto of_store = [store](const auto& entry) { return entry.first.store == store; };
+    std::erase_if(check.games, of_store);
+    std::erase_if(update_check_early_, of_store);
+    std::erase_if(update_sizes_running_, of_store);
+    std::erase_if(update_sizes_ended_, [store](const auto& key) { return key.first.store == store; });
+    std::erase_if(update_sizes_newer_, [store](const auto& key) { return key.first.store == store; });
+    auto& book = update_check_books_[store];
+    book.requested = false;
+    book.waiting.reset();
+    book.saved_revision = book.revision;
+    summarize_update_check();
 }
 
-bool Simulation::UpdateCheckDirty() const noexcept {
-    return update_check_account_ != 0 && state_.update_check.loaded && update_check_revision_ > update_check_saved_revision_;
+std::uint64_t Simulation::UpdateCheckAccount(Store store) const noexcept {
+    const auto found = state_.update_check.stores.find(store);
+    return found == state_.update_check.stores.end() ? 0 : found->second.account;
 }
 
-playden::SavedUpdateCheck Simulation::ExportUpdateCheck() const {
+std::uint64_t Simulation::UpdateCheckRevision(Store store) const noexcept {
+    const auto found = update_check_books_.find(store);
+    return found == update_check_books_.end() ? 0 : found->second.revision;
+}
+
+bool Simulation::UpdateCheckDirty(Store store) const noexcept {
+    const auto slot = state_.update_check.stores.find(store);
+    const auto book = update_check_books_.find(store);
+    return slot != state_.update_check.stores.end() && slot->second.account != 0 && slot->second.loaded &&
+           book != update_check_books_.end() && book->second.revision > book->second.saved_revision;
+}
+
+playden::SavedUpdateCheck Simulation::ExportUpdateCheck(Store store) const {
     playden::SavedUpdateCheck saved;
-    saved.checked_at = state_.update_check.checked_at;
+    if (const auto slot = state_.update_check.stores.find(store); slot != state_.update_check.stores.end())
+        saved.checked_at = slot->second.checked_at;
     for (const auto& [id, update] : state_.update_check.games)
-        saved.games[id] = {update.newer, update.new_dlc, update.download_bytes, update.staged_bytes, update.target, update.sized};
+        if (id.store == store)
+            saved.games[id] = {update.newer, update.new_dlc, update.download_bytes, update.staged_bytes, update.target, update.sized};
     return saved;
 }
 
-void Simulation::UpdateCheckSaveResult(std::uint64_t account, std::uint64_t revision, playden::StorageError error) {
-    if (!live() || account != update_check_account_ || error != playden::StorageError::kNone) return;
-    update_check_saved_revision_ = std::max(update_check_saved_revision_, std::min(revision, update_check_revision_));
+void Simulation::UpdateCheckSaveResult(Store store, std::uint64_t account, std::uint64_t revision, playden::StorageError error) {
+    if (!live() || account == 0 || account != UpdateCheckAccount(store) || error != playden::StorageError::kNone) return;
+    auto& book = update_check_books_[store];
+    book.saved_revision = std::max(book.saved_revision, std::min(revision, book.revision));
 }
 
-bool Simulation::TakeUpdateCheckRequest() { return std::exchange(update_check_requested_, false); }
+bool Simulation::TakeUpdateCheckRequest(Store store) {
+    const auto found = update_check_books_.find(store);
+    return found != update_check_books_.end() && std::exchange(found->second.requested, false);
+}
 
-void Simulation::UpdateCheckProgress(std::size_t asked, std::size_t answered, std::size_t total) {
-    auto& check = state_.update_check;
-    if (!live() || !check.checking) return;
-    if (check.asked == asked && check.answered == answered && check.total == total) return;
-    check.asked = asked;
-    check.answered = answered;
-    check.total = total;
+void Simulation::UpdateCheckProgress(Store store, std::size_t asked, std::size_t answered, std::size_t total) {
+    if (!live()) return;
+    const auto found = state_.update_check.stores.find(store);
+    if (found == state_.update_check.stores.end() || !found->second.pending) return;
+    auto& slot = found->second;
+    if (slot.asked == asked && slot.answered == answered && slot.total == total) return;
+    slot.asked = asked;
+    slot.answered = answered;
+    slot.total = total;
+    summarize_update_check();
     rebuild_view();
 }
 
-void Simulation::FinishUpdateCheck(bool failed) {
-    auto& check = state_.update_check;
-    if (!live() || !check.checking) return;
-    check.checking = false;
-    check.failed = failed;
+void Simulation::FinishUpdateCheck(Store store, bool failed) {
+    if (!live()) return;
+    const auto found = state_.update_check.stores.find(store);
+    if (found == state_.update_check.stores.end() || !found->second.pending) return;
+    auto& slot = found->second;
+    slot.pending = false;
+    slot.failed = failed;
     // Only a check that reached every game moves the day on; a failed one leaves the saved results.
     if (!failed && state_.clock_ticks > 0) {
-        check.checked_at = state_.clock_ticks;
-        ++update_check_revision_;
+        slot.checked_at = state_.clock_ticks;
+        ++update_check_books_[store].revision;
     }
+    summarize_update_check();
     rebuild_view();
+}
+
+void Simulation::summarize_update_check() {
+    auto& check = state_.update_check;
+    const auto& stores = check.stores;
+    check.loaded = !stores.empty();
+    check.checked_at = 0;
+    check.checking = check.failed = false;
+    bool never = false;
+    for (const auto& [store, slot] : stores) {
+        check.loaded = check.loaded && slot.loaded;
+        check.checking = check.checking || slot.pending;
+        check.failed = check.failed || slot.failed;
+        never = never || slot.checked_at == 0;
+        if (check.checked_at == 0 || slot.checked_at < check.checked_at) check.checked_at = slot.checked_at;
+    }
+    if (never) check.checked_at = 0;
+    // While checks run, their progress; otherwise what the last ones reached.
+    check.asked = check.answered = check.total = 0;
+    for (const auto& [store, slot] : stores) {
+        if (check.checking && !slot.pending) continue;
+        check.asked += slot.asked;
+        check.answered += slot.answered;
+        check.total += slot.total;
+    }
+}
+
+std::string Simulation::update_check_names(bool (*which)(const StoreUpdateCheck&), std::int64_t* checked_at) const {
+    const auto& stores = state_.update_check.stores;
+    std::vector<Store> named;
+    for (const auto& [store, slot] : stores)
+        if (which(slot)) named.push_back(store);
+    // None picked (a fixture without stores): every store, else Steam.
+    if (named.empty())
+        for (const auto& [store, slot] : stores) named.push_back(store);
+    if (checked_at) {
+        *checked_at = state_.update_check.checked_at;
+        if (!stores.empty()) {
+            *checked_at = 0;
+            bool never = false;
+            for (const auto store : named) {
+                const auto when = stores.at(store).checked_at;
+                never = never || when == 0;
+                if (*checked_at == 0 || when < *checked_at) *checked_at = when;
+            }
+            if (never) *checked_at = 0;
+        }
+    }
+    if (named.empty()) return "Steam";
+    std::string text;
+    for (std::size_t index = 0; index < named.size(); ++index) {
+        if (index > 0) text += index + 1 == named.size() ? " and " : ", ";
+        text += Traits(named[index]).name;
+    }
+    return text;
 }
 
 void Simulation::request_update_check(bool forced) {
-    if (!live() || update_check_account_ == 0) return;
-    auto& check = state_.update_check;
-    if (check.checking || update_check_requested_) return;
-    if (!check.loaded) {
-        update_check_waiting_ = forced || update_check_waiting_.value_or(false);
+    if (!live()) return;
+    std::vector<Store> stores;
+    for (const auto& [store, slot] : state_.update_check.stores) stores.push_back(store);
+    for (const auto store : stores) request_store_update_check(store, forced);
+}
+
+void Simulation::request_store_update_check(Store store, bool forced) {
+    const auto found = state_.update_check.stores.find(store);
+    if (!live() || found == state_.update_check.stores.end() || found->second.account == 0) return;
+    auto& slot = found->second;
+    auto& book = update_check_books_[store];
+    if (slot.pending || book.requested) return;
+    if (!slot.loaded) {
+        book.waiting = forced || book.waiting.value_or(false);
         return;
     }
     if (!forced) {
         const auto now = state_.clock_ticks;
         if (now <= 0) return;  // no wall clock yet: the day can't be told
         // A check saved "in the future" (the clock was set back) counts as old.
-        if (check.checked_at > 0 && now >= check.checked_at && now - check.checked_at < kUpdateCheckInterval) return;
+        if (slot.checked_at > 0 && now >= slot.checked_at && now - slot.checked_at < kUpdateCheckInterval) return;
     }
-    update_check_requested_ = true;
-    check.checking = true;
-    check.failed = false;
-    check.asked = check.answered = check.total = 0;
+    book.requested = true;
+    slot.pending = true;
+    slot.failed = false;
+    slot.asked = slot.answered = slot.total = 0;
+    summarize_update_check();
     rebuild_view();
 }
 
 void Simulation::set_saved_update(GameId id, const GameUpdate& update) {
-    if (!live() || !id.steam_app()) return;
-    if (!state_.update_check.loaded) {
-        if (update_check_account_) update_check_early_[id] = update;
+    if (!live() || id.store == Store::kLocal) return;
+    // Kept for a store with an account; before its saved check is read, until it is.
+    const auto slot = state_.update_check.stores.find(id.store);
+    if (slot == state_.update_check.stores.end()) return;
+    if (!slot->second.loaded) {
+        update_check_early_[id] = update;
         return;
     }
     auto& games = state_.update_check.games;
-    // Steam answered again: an update whose size couldn't be measured is asked again.
+    // The store answered again: an update whose size couldn't be measured is asked again.
     std::erase_if(update_sizes_ended_, [id](const auto& key) { return key.first == id; });
     if (update.available()) {
         const auto found = games.find(id);
@@ -5282,14 +5407,16 @@ void Simulation::set_saved_update(GameId id, const GameUpdate& update) {
     } else if (!games.erase(id)) {
         return;
     }
-    ++update_check_revision_;
+    ++update_check_books_[id.store].revision;
 }
 
-std::vector<GameId> Simulation::TakeUpdateSizeChecks() {
+std::vector<GameId> Simulation::TakeUpdateSizeChecks(Store store) {
     std::vector<GameId> ids;
-    if (!live() || !state_.update_check.loaded) return ids;
+    if (!live()) return ids;
+    const auto slot = state_.update_check.stores.find(store);
+    if (slot == state_.update_check.stores.end() || !slot->second.loaded) return ids;
     for (const auto& [id, update] : state_.update_check.games) {
-        if (!update.available() || update.sized || update_sizes_running_.contains(id) ||
+        if (id.store != store || !update.available() || update.sized || update_sizes_running_.contains(id) ||
             update_sizes_ended_.contains({id, update.target}) || !find_installation(state_, id))
             continue;
         update_sizes_running_[id] = update.target;
@@ -5320,7 +5447,7 @@ bool Simulation::UpdateMeasuredUpdate(GameId id, bool measured, std::uint64_t ta
     update.download_bytes = download_bytes;
     update.staged_bytes = staged_bytes;
     update.sized = true;
-    ++update_check_revision_;
+    ++update_check_books_[id.store].revision;
     const auto game = std::find_if(state_.games.begin(), state_.games.end(), [id](const Game& candidate) { return candidate.id == id; });
     if (game != state_.games.end() && game->update.available() && (game->update.target == 0 || game->update.target == target)) {
         game->update.target = target;
@@ -5340,7 +5467,7 @@ std::string Simulation::update_size_text(GameId id) const {
         if (game && game->update.sized) return format_bytes(game->update.download_bytes);
     }
     const bool waiting = found != state_.update_check.games.end() && !update_sizes_ended_.contains({id, found->second.target}) &&
-                         state_.account().authentication == AuthState::SignedIn;
+                         state_.account(id.store).authentication == AuthState::SignedIn;
     return waiting ? "Checking size…" : "Size unknown";
 }
 
@@ -9847,8 +9974,10 @@ void Simulation::rebuild_view() {
             const auto& check = state_.update_check;
             const auto when = check.checked_at > 0 ? time_ago(state_.clock_ticks, check.checked_at) : std::string();
             const auto updates = manage_list(ManageTab::Updates);
+            const auto all = update_check_names([](const StoreUpdateCheck&) { return true; });
+            const bool several = check.stores.size() > 1;
             item.subtitle = check.checked_at > 0 ? (when.empty() ? std::string("Checked") : "Checked " + when)
-                                                 : "Steam is checked once a day when you open it";
+                                                 : all + (several ? " are" : " is") + " checked once a day when you open it";
             if (state_.installations.empty()) {
                 item.kind = RowKind::Status; item.action.clear(); item.enabled = false; item.value = "None";
                 item.subtitle = "No games installed";
@@ -9860,7 +9989,10 @@ void Simulation::rebuild_view() {
                                              : "Checking…";
             } else if (check.failed) {
                 item.value = "Couldn't check";
-                item.subtitle = "Steam didn't answer" + (when.empty() ? std::string() : " · last checked " + when);
+                std::int64_t checked_at = 0;
+                const auto names = update_check_names([](const StoreUpdateCheck& store) { return store.failed; }, &checked_at);
+                const auto last = checked_at > 0 ? time_ago(state_.clock_ticks, checked_at) : std::string();
+                item.subtitle = names + " didn't answer" + (last.empty() ? std::string() : " · last checked " + last);
             } else if (!updates.empty()) {
                 std::uint64_t bytes = 0;
                 bool all_sized = true;

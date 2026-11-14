@@ -3,30 +3,40 @@
 // Elder Scrolls: Arena's recorded public meta with DOSBox from the recorded public dependency store, a synthetic game
 // naming __redist installers from the same store, a synthetic game with a DLC owned or not, Monkey Island 2's recorded
 // gen 1 build and repository with its redists and language_setup from the same store, no Windows build, the network
-// failing, and Invalidate dropping an answer that comes late.
+// failing, and Invalidate dropping an answer that comes late. Installed games: updates from the install record, the
+// installed check's progress (also past kMaximumEvents answers), and an update's size measured against a synthetic
+// game the install runner put in place, which the measure leaves as it was.
 // Usage: gog_details_test <fixtures/gog> <scratch folder>.
 
 #include "gog/session.h"
 #include "gog/session_store.h"
+#include "gog/update_diff.h"
 #include "gog_cdn_stub.h"
 #include "gog_stub_transport.h"
 #include "gog_synthetic_game.h"
+#include "installs/install_record.h"
 #include "stores/gog_details.h"
+#include "stores/gog_install.h"
 
 #include <sys/stat.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
 using namespace playden;
 using namespace gog_test;
+using installs::InstalledRecord;
 using stores::GameDetails;
 using stores::GogDetailsSource;
 namespace fs = std::filesystem;
@@ -50,7 +60,11 @@ struct World {
   std::unique_ptr<gog::Session> session;
   std::mutex log_mutex;
   std::vector<std::string> logs;
-  int transports = 0;
+  std::atomic<int> transports{0};
+  // What the install service would say: each installed game's record and folder.
+  std::mutex installed_mutex;
+  std::map<GameId, InstalledRecord> records;
+  std::map<GameId, std::string> roots;
   std::unique_ptr<GogDetailsSource> source;
 
   explicit World(bool signed_in) {
@@ -81,6 +95,25 @@ struct World {
           std::lock_guard<std::mutex> lock(log_mutex);
           logs.push_back(line);
         });
+    source->SetInstalled([this](const GameId& id) -> std::optional<InstalledRecord> {
+      std::lock_guard<std::mutex> lock(installed_mutex);
+      const auto found = records.find(id);
+      if (found == records.end()) return std::nullopt;
+      return found->second;
+    });
+    source->SetInstallRoot([this](const GameId& id) -> std::optional<std::string> {
+      std::lock_guard<std::mutex> lock(installed_mutex);
+      const auto found = roots.find(id);
+      if (found == roots.end()) return std::nullopt;
+      return found->second;
+    });
+  }
+  void Install(std::uint64_t product, std::optional<InstalledRecord> record, const std::string& root = {}) {
+    std::lock_guard<std::mutex> lock(installed_mutex);
+    const auto id = GameId::Gog(product);
+    if (record) records[id] = *record;
+    else records.erase(id);
+    if (!root.empty()) roots[id] = root;
   }
   ~World() {
     source.reset();
@@ -107,14 +140,57 @@ struct World {
     CHECK(details.id == GameId::Gog(product));
     return details;
   }
-  // No line names the account, a token or the code.
+  // Asked again (the record changed).
+  GameDetails Again(std::uint64_t product, std::uint64_t generation = 1) {
+    source->Refresh(GameId::Gog(product), generation, true);
+    auto details = Next(generation);
+    CHECK(details.id == GameId::Gog(product));
+    return details;
+  }
+  // Every answer until the check of `generation` is done, with its progress never ahead of what was handed out.
+  std::vector<GameDetails> Drain(std::uint64_t generation = 1) {
+    std::vector<GameDetails> answers;
+    const auto until = std::chrono::steady_clock::now() + 30s;
+    for (;;) {
+      for (auto& details : source->Pump(8)) {
+        CHECK(details.account_generation == generation);
+        answers.push_back(std::move(details));
+      }
+      const auto check = source->CheckProgress();
+      CHECK(check.account_generation == generation && check.total != 0);
+      CHECK(check.answered <= check.asked && check.asked <= check.total && check.failed <= check.answered);
+      if (check.done()) return answers;
+      CHECK(std::chrono::steady_clock::now() < until);
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+  // The next update size of the generation, waiting for it.
+  steam::MeasuredSize Measured(std::uint64_t product, std::uint64_t generation = 1) {
+    CHECK(source->Measure({GameId::Gog(product), {}, {}, true}, generation));
+    const auto until = std::chrono::steady_clock::now() + 30s;
+    for (;;) {
+      auto sizes = source->PumpMeasured();
+      CHECK(sizes.size() <= 1);
+      if (!sizes.empty()) {
+        CHECK(sizes[0].account_generation == generation && sizes[0].request.update);
+        CHECK(sizes[0].request.id == GameId::Gog(product));
+        return sizes[0];
+      }
+      CHECK(std::chrono::steady_clock::now() < until);
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+  // No line names the account, a token, the code, an address or a folder.
   void CheckLogs() {
     std::lock_guard<std::mutex> lock(log_mutex);
     CHECK(!logs.empty());
     for (const auto& line : logs) {
-      CHECK(line.rfind("details result=", 0) == 0);
+      CHECK(line.rfind("details result=", 0) == 0 || line.rfind("details update result=", 0) == 0 ||
+            line.rfind("details size result=", 0) == 0);
       CHECK(line.find(kUserId) == std::string::npos && line.find(kUsername) == std::string::npos);
       CHECK(line.find(AccessText(1)) == std::string::npos && line.find("http") == std::string::npos);
+      CHECK(line.find(g_scratch.string()) == std::string::npos && line.find("content-system") == std::string::npos);
+      CHECK(line.find(std::to_string(kBase)) == std::string::npos);
     }
   }
   bool Logged(const std::string& start) {
@@ -351,6 +427,349 @@ void InvalidateDropsALateAnswer() {
   CHECK(world.source->Pump(8).empty());
 }
 
+
+// ---- Installed games ----------------------------------------------------------------------------------------------
+
+constexpr char kBuildA[] = "1000000000000000101";
+constexpr char kBuildB[] = "1000000000000000202";
+
+// A GOG install's record at `build`.
+InstalledRecord GogRecord(const std::string& build, int generation = 2) {
+  InstalledRecord record;
+  record.version = 2;
+  record.language = "english";
+  installs::GogRecord gog;
+  gog.build_id = build;
+  gog.generation = generation;
+  gog.products = {kBase};
+  gog.language = "en-US";
+  gog.meta_id = std::string(32, 'a');
+  record.gog = gog;
+  return record;
+}
+
+Game SyntheticAt(const std::string& build) {
+  Game game;
+  game.build_id = build;
+  GameDepot main;
+  main.files.push_back({"DepotFile", "bin\\Game.exe", RandomBytes(40 * 1024, 51)});
+  game.depots.push_back(main);
+  return game;
+}
+
+// The record against the default build: another build, or the same one in another generation, is an update; the same
+// build, no install, a record without `gog` or no Windows build now is none.
+void UpdatesFromTheRecord() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  Publish(world.cdn, SyntheticAt(kBuildB));
+  const auto target = gog::UpdateTarget(kBuildB, 2);
+  world.Install(kBase, GogRecord(kBuildA));
+  const auto newer = world.Ask(kBase);
+  CHECK(newer.available && newer.windows_installable && !newer.failed);
+  CHECK(newer.update.newer && !newer.update.new_dlc && newer.update.target == target && newer.update.available());
+  CHECK(world.Logged("details update result=newer"));
+
+  world.Install(kBase, GogRecord(kBuildB));
+  const auto current = world.Again(kBase);
+  CHECK(current.windows_installable && !current.update.available() && current.update.target == 0);
+  CHECK(world.Logged("details update result=current"));
+
+  // A gen 1 install of the same build ID: the gen 2 build is another one.
+  world.Install(kBase, GogRecord(kBuildB, 1));
+  const auto generation = world.Again(kBase);
+  CHECK(generation.update.newer && generation.update.target == target);
+
+  world.Install(kBase, std::nullopt);
+  const auto not_installed = world.Again(kBase);
+  CHECK(not_installed.windows_installable && !not_installed.update.available() && not_installed.update.target == 0);
+
+  InstalledRecord steam_style;
+  steam_style.version = 2;
+  world.Install(kBase, steam_style);
+  const auto no_gog = world.Again(kBase);
+  CHECK(no_gog.windows_installable && !no_gog.update.available());
+  CHECK(world.Logged("details update result=none"));
+
+  // Installed, but GOG has no Windows build of it now.
+  constexpr std::uint64_t kGone = 1900000050;
+  auto gone_record = GogRecord(kBuildA);
+  gone_record.gog->products = {kGone};
+  world.Install(kGone, gone_record);
+  const auto gone = world.Ask(kGone);
+  CHECK(gone.available && !gone.windows_installable && !gone.update.available());
+  world.CheckLogs();
+}
+
+// The installed check: three games (one GOG doesn't answer for) through Pump, a second check refused while it runs,
+// then asked again once done; Invalidate in the middle drops it and its late answers.
+void CheckCountsInstalledGames() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001,1435828982]}");
+  PublishArena(world.cdn);
+  Publish(world.cdn, SyntheticAt(kBuildB));
+  constexpr std::uint64_t kUnreachable = 1900000300;
+  world.Install(kBase, GogRecord(kBuildA));
+  world.Install(kArena, GogRecord("1000000000000000201"));
+  world.Install(kUnreachable, GogRecord(kBuildA));
+  auto gate = std::make_shared<Gate>();
+  std::atomic<bool> hold{true};
+  world.cdn.SetFault([&](const Request& request) -> std::optional<Fault> {
+    if (request.kind != Kind::kBuilds) return std::nullopt;
+    if (hold.load()) {
+      gate->Enter();
+      const std::atomic<bool> no_cancel{false};
+      gate->Wait(no_cancel);
+    }
+    if (request.product != kUnreachable) return std::nullopt;
+    Fault fault;
+    fault.response = Failure(HttpError::kTimeout);
+    return fault;
+  });
+  const std::vector<GameId> ids{GameId::Gog(kBase), GameId::Gog(kArena), GameId::Steam(220), GameId::Gog(kBase),
+                                GameId::Gog(kUnreachable)};
+  // Nothing to check: no GOG game, or nothing at all.
+  CHECK(!world.source->CheckInstalled({GameId::Steam(220)}, 1) && !world.source->CheckInstalled({}, 1));
+  CHECK(!world.source->CheckInstalled(ids, 0));
+  CHECK(world.source->CheckInstalled(ids, 1));
+  gate->WaitEntered(1);
+  auto progress = world.source->CheckProgress();
+  CHECK(progress.account_generation == 1 && progress.total == 3 && progress.asked == 1 && progress.answered == 0);
+  CHECK(!world.source->CheckInstalled(ids, 1));
+  hold = false;
+  gate->Open();
+  auto answers = world.Drain();
+  progress = world.source->CheckProgress();
+  CHECK(progress.total == 3 && progress.asked == 3 && progress.answered == 3 && progress.failed == 1);
+  CHECK(answers.size() == 3);
+  std::set<GameId> answered;
+  for (const auto& details : answers) {
+    answered.insert(details.id);
+    if (details.id == GameId::Gog(kBase)) CHECK(details.update.newer);
+    if (details.id == GameId::Gog(kArena)) CHECK(details.windows_installable && !details.update.available());
+    if (details.id == GameId::Gog(kUnreachable)) CHECK(details.failed && !details.update.available());
+  }
+  CHECK(answered.size() == 3);
+  // A page asking now has its answer already; another check asks GOG again.
+  const auto builds = world.cdn.Count(Kind::kBuilds);
+  world.source->Request(GameId::Gog(kBase), 1);
+  std::this_thread::sleep_for(20ms);
+  CHECK(world.source->Pump(8).empty() && world.cdn.Count(Kind::kBuilds) == builds);
+  CHECK(world.source->CheckInstalled(ids, 1));
+  CHECK(world.Drain().size() == 3 && world.cdn.Count(Kind::kBuilds) == builds + 3);
+
+  // Invalidate in the middle: the check is gone (total 0), and so are its answers still to come.
+  gate = std::make_shared<Gate>();
+  hold = true;
+  CHECK(world.source->CheckInstalled(ids, 1));
+  gate->WaitEntered(1);
+  world.source->Invalidate(2);
+  CHECK(world.source->CheckProgress().total == 0);
+  hold = false;
+  gate->Open();
+  std::this_thread::sleep_for(50ms);
+  CHECK(world.source->Pump(8).empty() && world.source->CheckProgress().total == 0);
+  // The next generation's check runs.
+  CHECK(world.source->CheckInstalled(ids, 2));
+  CHECK(world.Drain(2).size() == 3 && world.source->CheckProgress().failed == 1);
+  world.CheckLogs();
+}
+
+// More of the check's answers than kMaximumEvents wait for Pump: none is lost, the worker waits for room, and pages
+// asked meanwhile are still answered.
+void CheckAnswersAreNeverDropped() {
+  World world(true);
+  constexpr std::size_t kGames = GogDetailsSource::kMaximumEvents + 6;
+  std::vector<GameId> ids;
+  for (std::size_t i = 0; i < kGames; ++i) ids.push_back(GameId::Gog(1900001000 + i));  // no builds: answered at once
+  CHECK(world.source->CheckInstalled(ids, 1));
+  const auto until = std::chrono::steady_clock::now() + 30s;
+  while (world.source->CheckProgress().asked < GogDetailsSource::kMaximumEvents) {
+    CHECK(std::chrono::steady_clock::now() < until);
+    std::this_thread::sleep_for(1ms);
+  }
+  std::this_thread::sleep_for(50ms);
+  auto progress = world.source->CheckProgress();
+  CHECK(progress.asked == GogDetailsSource::kMaximumEvents && progress.answered == 0);
+  for (std::uint64_t i = 0; i < 3; ++i) world.source->Request(GameId::Gog(1900002000 + i), 1);
+  std::this_thread::sleep_for(50ms);
+  std::set<GameId> checked, pages;
+  for (const auto& details : world.Drain()) {
+    CHECK(details.available && !details.windows_installable && !details.failed);
+    if (details.id.gog_product() && *details.id.gog_product() >= 1900002000) pages.insert(details.id);
+    else checked.insert(details.id);
+  }
+  progress = world.source->CheckProgress();
+  CHECK(progress.total == kGames && progress.answered == kGames && progress.failed == 0);
+  CHECK(checked.size() == kGames && pages.size() == 3);
+  CHECK(world.source->Pump(8).empty());
+}
+
+// Everything under root: names and bytes, folders marked.
+std::map<std::string, std::string> Snapshot(const fs::path& root) {
+  std::map<std::string, std::string> files;
+  for (const auto& entry : fs::recursive_directory_iterator(root))
+    files[fs::relative(entry.path(), root).string()] =
+        entry.is_directory() ? std::string("<folder>") : ReadFile(entry.path().string());
+  return files;
+}
+
+void WriteText(const fs::path& path, const std::string& text) {
+  fs::create_directories(path.parent_path());
+  FILE* file = std::fopen(path.c_str(), "wb");
+  CHECK(file && std::fwrite(text.data(), 1, text.size(), file) == text.size() && std::fclose(file) == 0);
+}
+
+std::uint64_t Download(const std::vector<gog::DepotChunk>& chunks) {
+  std::uint64_t total = 0;
+  for (const auto& chunk : chunks) total += chunk.compressed_size;
+  return total;
+}
+
+// An update's size: A installed by the runner, B (one file changed into three chunks, one added) planned beside it
+// and diffed. The network down fails; the game folder stays as it was; a second measure is the first one's; an update
+// under way, or a game not installed, is not measured.
+void MeasureAnUpdate() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  world.cdn.SetSecureLink(ReadFile(g_fixtures + "/secure-link-200.json"));
+  const auto keep = RandomBytes(12 * 1024, 61);
+  const auto change = RandomBytes(18 * 1024, 62);
+  const auto changed = RandomBytes(24 * 1024, 63);
+  const auto add = RandomBytes(9 * 1024, 64);
+  Game a;
+  GameDepot depot_a;
+  depot_a.files.push_back({"DepotFile", "keep.dat", keep});
+  depot_a.files.push_back({"DepotFile", "data\\change.dat", change});
+  a.depots.push_back(depot_a);
+  Publish(world.cdn, a);
+  const auto root = world.user / "games" / "gog-1900000001";
+  fs::create_directories(root.parent_path());
+  {
+    stores::GogInstallRunner runner(
+        *world.session, [&world] { return world.cdn.Transport(); }, [] { return std::string("english"); }, {},
+        [](const std::string&) { return std::optional<std::uint64_t>(1ull << 40); });
+    const std::atomic<bool> no_cancel{false};
+    CHECK(runner.Install(GameId::Gog(kBase), root.string(), {}, no_cancel, {}, {}).ok);
+  }
+  const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+  CHECK(record && record->gog && record->gog->build_id == kBuildA);
+  world.Install(kBase, *record, root.string());
+
+  Game b;
+  b.build_id = kBuildB;
+  GameDepot depot_b;
+  depot_b.files.push_back({"DepotFile", "keep.dat", keep});
+  depot_b.files.push_back({"DepotFile", "data\\change.dat", changed, {8 * 1024, 8 * 1024, 8 * 1024}});
+  depot_b.files.push_back({"DepotFile", "data\\add.dat", add});
+  b.depots.push_back(depot_b);
+  const auto published = Publish(world.cdn, b);
+  const auto details = world.Ask(kBase);
+  CHECK(details.update.newer && details.update.target == gog::UpdateTarget(kBuildB, 2));
+  const auto before = Snapshot(root);
+  const auto measure_folder = root / ".playden-gog" / "measure";
+
+  // GOG out of reach: failed, and nothing left behind.
+  world.cdn.SetFault([](const Request&) -> std::optional<Fault> {
+    Fault fault;
+    fault.response = Failure(HttpError::kTimeout);
+    return fault;
+  });
+  const auto down = world.Measured(kBase);
+  CHECK(down.failed && !down.measured && down.download_bytes == 0);
+  CHECK(!fs::exists(measure_folder) && Snapshot(root) == before);
+  CHECK(world.Logged("details size result=failed changed=0 removed=0 why=network"));
+
+  world.cdn.SetFault({});
+  world.cdn.ClearRequests();
+  const auto size = world.Measured(kBase);
+  CHECK(size.measured && !size.failed);
+  const auto& change_chunks = published.chunks.at("data\\change.dat");
+  const auto& add_chunks = published.chunks.at("data\\add.dat");
+  CHECK(change_chunks.size() == 3);
+  CHECK(size.download_bytes == Download(change_chunks) + Download(add_chunks));
+  CHECK(size.staged_bytes == changed.size() + add.size());
+  CHECK(size.install_bytes == keep.size() + changed.size() + add.size());
+  CHECK(size.target == details.update.target);
+  // Planned, never downloaded; the game folder byte for byte as it was, and the measure folder gone.
+  CHECK(world.cdn.Count(Kind::kChunk) == 0 && world.cdn.Count(Kind::kMeta) > 0);
+  CHECK(!fs::exists(measure_folder) && Snapshot(root) == before);
+  CHECK(world.Logged("details size result=measured changed=2 removed=0"));
+
+  // Measured again: the same answer, and GOG is asked nothing.
+  world.cdn.ClearRequests();
+  const auto again = world.Measured(kBase);
+  CHECK(again.measured && again.download_bytes == size.download_bytes && again.staged_bytes == size.staged_bytes);
+  CHECK(again.install_bytes == size.install_bytes && again.target == size.target);
+  CHECK(world.cdn.requests().empty());
+  CHECK(world.Logged("details size result=measured changed=2 removed=0 cached=1"));
+
+  // GOG moves on to C: once a check names it, the size is C's, planned again.
+  constexpr char kBuildC[] = "1000000000000000303";
+  b.build_id = kBuildC;
+  b.depots[0].files.push_back({"DepotFile", "data\more.dat", RandomBytes(5 * 1024, 65)});
+  Publish(world.cdn, b);
+  const auto moved = world.Again(kBase);
+  CHECK(moved.update.newer && moved.update.target == gog::UpdateTarget(kBuildC, 2));
+  world.cdn.ClearRequests();
+  const auto c = world.Measured(kBase);
+  CHECK(c.measured && c.target == moved.update.target && world.cdn.Count(Kind::kMeta) > 0);
+  CHECK(c.staged_bytes == changed.size() + add.size() + 5 * 1024);
+  CHECK(!fs::exists(measure_folder) && Snapshot(root) == before);
+
+  // An update under way: not measured (nor failed), and its folder left alone.
+  WriteText(root / installs::kUpdateDirName / installs::kUpdateStateName, "{\"phase\":\"staging\"}\n");
+  const auto updating = world.Measured(kBase);
+  CHECK(!updating.measured && !updating.failed && fs::exists(root / installs::kUpdateDirName / installs::kUpdateStateName));
+  CHECK(world.Logged("details size result=skipped changed=0 removed=0 why=updating"));
+  fs::remove_all(root / installs::kUpdateDirName);
+  CHECK(Snapshot(root) == before);
+
+  // Not installed, or no folder: not measured.
+  world.Install(kBase, std::nullopt);
+  const auto gone = world.Measured(kBase);
+  CHECK(!gone.measured && !gone.failed);
+  // Only an update's size, of a GOG game.
+  CHECK(!world.source->Measure({GameId::Gog(kBase), "public", "english", false}, 1));
+  CHECK(!world.source->Measure({GameId::Steam(220), {}, {}, true}, 1));
+  CHECK(!world.source->Measure({GameId::Gog(kBase), {}, {}, true}, 0));
+  CHECK(Snapshot(root) == before);
+  world.CheckLogs();
+}
+
+// A newer generation drops a measure still to come.
+void InvalidateDropsAMeasure() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  Publish(world.cdn, SyntheticAt(kBuildB));
+  const auto root = world.user / "games" / "gog-measure-dropped";
+  fs::create_directories(root);
+  world.Install(kBase, GogRecord(kBuildA), root.string());
+  auto gate = std::make_shared<Gate>();
+  world.cdn.SetFault([&](const Request& request) -> std::optional<Fault> {
+    if (request.kind == Kind::kBuilds) {
+      gate->Enter();
+      const std::atomic<bool> no_cancel{false};
+      gate->Wait(no_cancel);
+    }
+    return std::nullopt;
+  });
+  CHECK(world.source->Measure({GameId::Gog(kBase), {}, {}, true}, 1));
+  // Asked twice: queued once.
+  CHECK(world.source->Measure({GameId::Gog(kBase), {}, {}, true}, 1));
+  gate->WaitEntered(1);
+  world.source->Invalidate(2);
+  // An earlier generation's request is refused.
+  CHECK(!world.source->Measure({GameId::Gog(kBase), {}, {}, true}, 1));
+  gate->Open();
+  std::this_thread::sleep_for(50ms);
+  CHECK(world.source->PumpMeasured().empty());
+  // Shutdown waits for the worker: the measure folder is gone with it.
+  world.source->Shutdown();
+  CHECK(world.source->PumpMeasured().empty());
+  CHECK(!fs::exists(root / ".playden-gog" / "measure"));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -366,6 +785,11 @@ int main(int argc, char** argv) {
   NetworkFailureFails();
   UnexpectedAnswersSayWhy();
   InvalidateDropsALateAnswer();
+  UpdatesFromTheRecord();
+  CheckCountsInstalledGames();
+  CheckAnswersAreNeverDropped();
+  MeasureAnUpdate();
+  InvalidateDropsAMeasure();
   fs::remove_all(g_scratch);
   std::puts("gog_details: ok");
   return 0;

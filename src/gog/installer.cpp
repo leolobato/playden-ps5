@@ -10,7 +10,9 @@
 #include "gog/inflate.h"
 #include "gog/manifest_v1.h"
 #include "gog/path_rules.h"
+#include "gog/plan_file.h"
 #include "gog/product_id.h"
+#include "gog/update_diff.h"
 #include "platform/secret.h"
 
 #include <fcntl.h>
@@ -42,15 +44,9 @@ using Hooks = GogInstaller::Hooks;
 
 constexpr std::size_t kMaxActiveFiles = 64;
 constexpr std::size_t kMaxQueuedChunks = 256;
-constexpr std::uint64_t kMaxChunksPerFile = 1u << 24;
 constexpr std::size_t kReadBufferBytes = 1024 * 1024;
-constexpr std::size_t kMaxLineBytes = 64 * 1024;
 // A build meta or manifest on the CDN: within the streaming client's cap.
 constexpr std::size_t kMaxCompressedMetaBytes = steam::kMaxHttpStreamResponseBytes;
-constexpr char kMetaDir[] = ".playden-gog/meta";
-constexpr char kManifestDir[] = ".playden-gog/manifests";
-constexpr char kItemsPath[] = ".playden-gog/items.tmp";
-constexpr char kDependencySourcePrefix[] = "dep:";
 
 // ---- Small helpers ----------------------------------------------------------------------------------------------
 
@@ -59,33 +55,6 @@ std::string Join(const std::string& root, std::string_view relative) {
   path += '/';
   path += relative;
   return path;
-}
-
-bool ParseU64(std::string_view text, std::uint64_t* out) {
-  if (text.empty() || text.size() > 20) return false;
-  std::uint64_t value = 0;
-  for (const char c : text) {
-    if (c < '0' || c > '9') return false;
-    const std::uint64_t digit = static_cast<std::uint64_t>(c - '0');
-    if (value > (UINT64_MAX - digit) / 10) return false;
-    value = value * 10 + digit;
-  }
-  *out = value;
-  return true;
-}
-
-std::vector<std::string_view> Split(std::string_view line, char separator) {
-  std::vector<std::string_view> fields;
-  std::size_t start = 0;
-  for (;;) {
-    const auto at = line.find(separator, start);
-    if (at == std::string_view::npos) {
-      fields.push_back(line.substr(start));
-      return fields;
-    }
-    fields.push_back(line.substr(start, at - start));
-    start = at + 1;
-  }
 }
 
 // A real folder, never a link: lstat, not stat.
@@ -128,18 +97,8 @@ bool MakeRoot(const std::string& root) {
 
 bool ValidRoot(const std::string& root) {
   if (root.size() < 2 || root[0] != '/' || root.back() == '/') return false;
-  for (const auto part : Split(std::string_view(root).substr(1), '/'))
+  for (const auto part : SplitFields(std::string_view(root).substr(1), '/'))
     if (part.empty() || part == "." || part == "..") return false;
-  return true;
-}
-
-// A plan path: relative, no empty, "." or ".." component.
-bool ValidPlanPath(std::string_view path) {
-  if (path.empty() || path.size() > kMaxPathBytes + 64 || path.front() == '/') return false;
-  for (const auto part : Split(path, '/'))
-    if (part.empty() || part == "." || part == "..") return false;
-  for (const char c : path)
-    if (static_cast<unsigned char>(c) < 0x20) return false;
   return true;
 }
 
@@ -149,39 +108,6 @@ bool Exists(const std::string& path) {
 }
 
 Error WriteFailure() { return errno == ENOSPC ? Error::kNoSpace : Error::kStorage; }
-
-// Reads lines through a heap buffer; `complete` is false for a last line without its newline.
-class LineReader {
- public:
-  explicit LineReader(const std::string& path) : file_(std::fopen(path.c_str(), "rb")), buffer_(new char[4096]) {}
-  ~LineReader() {
-    if (file_) std::fclose(file_);
-  }
-  LineReader(const LineReader&) = delete;
-  LineReader& operator=(const LineReader&) = delete;
-  bool open() const { return file_ != nullptr; }
-  bool Next(std::string* line, bool* complete) {
-    line->clear();
-    *complete = false;
-    if (!file_) return false;
-    while (std::fgets(buffer_.get(), 4096, file_)) {
-      const std::size_t length = std::strlen(buffer_.get());
-      line->append(buffer_.get(), length);
-      if (!line->empty() && line->back() == '\n') {
-        line->pop_back();
-        *complete = true;
-        return true;
-      }
-      if (line->size() > kMaxLineBytes) return true;  // too long: the caller refuses it
-    }
-    return !line->empty();
-  }
-  bool failed() const { return file_ && std::ferror(file_); }
-
- private:
-  FILE* file_;
-  std::unique_ptr<char[]> buffer_;
-};
 
 // A file written through a temporary one: synced, then renamed over the name.
 class DurableFile {
@@ -200,6 +126,10 @@ class DurableFile {
     if (error_ != Error::kNone) return;
     if (std::fwrite(line.data(), 1, line.size(), file_) != line.size() || std::fputc('\n', file_) == EOF)
       error_ = WriteFailure();
+  }
+  void Bytes(const std::uint8_t* data, std::size_t size) {
+    if (error_ != Error::kNone) return;
+    if (std::fwrite(data, 1, size, file_) != size) error_ = WriteFailure();
   }
   Error Commit() {
     if (error_ == Error::kNone && (std::fflush(file_) != 0 || fsync(fileno(file_)) != 0)) error_ = WriteFailure();
@@ -285,216 +215,6 @@ class Logger {
 
  private:
   const std::function<void(const std::string&)>& log_;
-};
-
-std::string Md5OrDash(const std::string& hash) { return hash.empty() ? "-" : hash; }
-
-// ---- The plan -----------------------------------------------------------------------------------------------------
-
-struct PlanHeader {
-  int generation = 2;
-  std::string build_id;
-  std::string meta_id;
-  std::string language;
-  std::vector<std::uint64_t> products;
-  std::uint64_t total_size = 0;
-  std::uint64_t total_compressed = 0;  // the download: compressed chunks, and gen 1 ranges by their length
-  std::uint64_t timestamp = 0;         // gen 1 only
-};
-
-// A byte range of a gen 1 main.bin.
-struct Range {
-  std::uint64_t offset = 0;  // in the blob
-  std::uint64_t length = 0;
-};
-
-// A file's units: chunks (gen 2) or ranges (gen 1), never both.
-struct Units {
-  std::vector<DepotChunk> chunks;
-  std::vector<Range> ranges;
-  std::size_t count() const { return chunks.empty() ? ranges.size() : chunks.size(); }
-  // The bytes a unit writes into the file.
-  std::uint64_t size(std::size_t unit) const { return chunks.empty() ? ranges[unit].length : chunks[unit].size; }
-  // The bytes a unit downloads.
-  std::uint64_t download(std::size_t unit) const {
-    return chunks.empty() ? ranges[unit].length : chunks[unit].compressed_size;
-  }
-};
-
-struct PlanEntry {
-  bool directory = false;
-  std::string path;
-  std::string source;
-  std::uint64_t size = 0;
-  std::string md5;
-  std::string sha256;
-  Units units;
-  std::uint64_t download() const {
-    std::uint64_t total = 0;
-    for (std::size_t unit = 0; unit < units.count(); ++unit) total += units.download(unit);
-    return total;
-  }
-};
-
-std::string HeaderLine(const PlanHeader& header) {
-  std::string line = "v2\t" + std::to_string(header.generation) + "\t" + header.build_id + "\t" + header.meta_id +
-                     "\t" + header.language + "\t";
-  for (std::size_t i = 0; i < header.products.size(); ++i) {
-    if (i) line += ',';
-    line += std::to_string(header.products[i]);
-  }
-  line += "\t" + std::to_string(header.total_size) + "\t" + std::to_string(header.total_compressed) + "\t" +
-          (header.generation == 1 ? std::to_string(header.timestamp) : std::string("-"));
-  return line;
-}
-
-// "v2\t<generation>\t…\t<timestamp or ->", or a Phase 3 "v1\t…" header (generation 2, no timestamp).
-bool ParseHeader(const std::string& line, PlanHeader* header) {
-  auto fields = Split(line, '\t');
-  std::uint64_t number = 0;
-  if (fields.size() == 7 && fields[0] == "v1") {
-    header->generation = 2;
-    header->timestamp = 0;
-    fields.erase(fields.begin());
-  } else if (fields.size() == 9 && fields[0] == "v2") {
-    if (fields[1] == "1") {
-      if (!CanonicalId(fields[8], &header->timestamp)) return false;
-      header->generation = 1;
-    } else if (fields[1] == "2") {
-      if (fields[8] != "-") return false;
-      header->generation = 2;
-      header->timestamp = 0;
-    } else {
-      return false;
-    }
-    fields.erase(fields.begin(), fields.begin() + 2);
-    fields.pop_back();
-  } else {
-    return false;
-  }
-  // fields: build, meta, language, products, total size, total download.
-  if (!CanonicalId(fields[0], &number) || !IsMd5Hex(fields[1]) || !PlainLanguageCode(fields[2])) return false;
-  header->build_id = std::string(fields[0]);
-  header->meta_id = std::string(fields[1]);
-  header->language = std::string(fields[2]);
-  header->products.clear();
-  for (const auto product : Split(fields[3], ',')) {
-    if (!CanonicalId(product, &number)) return false;
-    header->products.push_back(number);
-  }
-  return ParseU64(fields[4], &header->total_size) && ParseU64(fields[5], &header->total_compressed);
-}
-
-bool DependencySource(std::string_view source) {
-  const std::string_view prefix = kDependencySourcePrefix;
-  return source.size() > prefix.size() && source.substr(0, prefix.size()) == prefix &&
-         ValidDependencyId(source.substr(prefix.size()));
-}
-
-bool ValidSource(std::string_view source) {
-  std::uint64_t id = 0;
-  return CanonicalId(source, &id) || DependencySource(source);
-}
-
-std::string EntryLine(const PlanEntry& entry) {
-  if (entry.directory) return "D\t" + entry.path;
-  return "F\t" + entry.path + "\t" + entry.source + "\t" + std::to_string(entry.size) + "\t" + Md5OrDash(entry.md5) +
-         "\t" + Md5OrDash(entry.sha256) + "\t" + std::to_string(entry.units.count());
-}
-
-std::string ChunkLine(const DepotChunk& chunk) {
-  return "C\t" + chunk.compressed_md5 + "\t" + std::to_string(chunk.compressed_size) + "\t" + chunk.md5 + "\t" +
-         std::to_string(chunk.size);
-}
-
-std::string RangeLine(const Range& range) {
-  return "R\t" + std::to_string(range.offset) + "\t" + std::to_string(range.length);
-}
-
-// The entry line and its unit lines, each ending in a newline.
-std::string EntryText(const PlanEntry& entry) {
-  std::string text = EntryLine(entry) + '\n';
-  for (const auto& chunk : entry.units.chunks) text += ChunkLine(chunk) + '\n';
-  for (const auto& range : entry.units.ranges) text += RangeLine(range) + '\n';
-  return text;
-}
-
-// Reads the entries of a plan (or of items.tmp, which has the same entry lines). After Header, the units must fit the
-// plan's generation: gen 2 files have chunks only; in gen 1, a product's file has ranges and a dependency's chunks.
-class EntryReader {
- public:
-  explicit EntryReader(const std::string& path) : lines_(path) {}
-  bool open() const { return lines_.open(); }
-  bool Header(PlanHeader* header) {
-    std::string line;
-    bool complete = false;
-    if (!(lines_.Next(&line, &complete) && complete && ParseHeader(line, header))) return false;
-    generation_ = header->generation;
-    return true;
-  }
-  enum class Next { kEntry, kEnd, kBad };
-  Next Read(PlanEntry* entry) {
-    std::string line;
-    bool complete = false;
-    if (!lines_.Next(&line, &complete)) return lines_.failed() ? Next::kBad : Next::kEnd;
-    if (!complete) return Next::kBad;
-    const auto fields = Split(line, '\t');
-    *entry = PlanEntry();
-    if (fields.size() == 2 && fields[0] == "D") {
-      if (!ValidPlanPath(fields[1])) return Next::kBad;
-      entry->directory = true;
-      entry->path = std::string(fields[1]);
-      return Next::kEntry;
-    }
-    if (fields.size() != 7 || fields[0] != "F" || !ValidPlanPath(fields[1]) || !ValidSource(fields[2]))
-      return Next::kBad;
-    entry->path = std::string(fields[1]);
-    entry->source = std::string(fields[2]);
-    std::uint64_t count = 0;
-    if (!ParseU64(fields[3], &entry->size) || !ParseU64(fields[6], &count) || count > kMaxChunksPerFile)
-      return Next::kBad;
-    if (fields[4] != "-") {
-      if (!IsMd5Hex(fields[4])) return Next::kBad;
-      entry->md5 = std::string(fields[4]);
-    }
-    if (fields[5] != "-") {
-      if (!IsSha256Hex(fields[5])) return Next::kBad;
-      entry->sha256 = std::string(fields[5]);
-    }
-    std::uint64_t sum = 0;
-    for (std::uint64_t i = 0; i < count; ++i) {
-      if (!lines_.Next(&line, &complete) || !complete) return Next::kBad;
-      const auto parts = Split(line, '\t');
-      if (parts.size() == 3 && parts[0] == "R") {
-        Range range;
-        if (!entry->units.chunks.empty() || !ParseU64(parts[1], &range.offset) || !ParseU64(parts[2], &range.length) ||
-            range.length == 0 || range.length > kGen1RangeBytes || range.offset > UINT64_MAX - range.length)
-          return Next::kBad;
-        sum += range.length;
-        entry->units.ranges.push_back(range);
-        continue;
-      }
-      DepotChunk chunk;
-      if (!entry->units.ranges.empty() || parts.size() != 5 || parts[0] != "C" || !IsMd5Hex(parts[1]) ||
-          !IsMd5Hex(parts[3]) || !ParseU64(parts[2], &chunk.compressed_size) || !ParseU64(parts[4], &chunk.size) ||
-          chunk.compressed_size == 0 || chunk.compressed_size > kMaxChunkBytes || chunk.size > kMaxChunkBytes)
-        return Next::kBad;
-      chunk.compressed_md5 = std::string(parts[1]);
-      chunk.md5 = std::string(parts[3]);
-      sum += chunk.size;
-      entry->units.chunks.push_back(std::move(chunk));
-    }
-    if (sum != entry->size) return Next::kBad;
-    // Ranges come from a product's main.bin, never from the dependency store; chunks in a gen 1 plan only from it.
-    const bool dependency = DependencySource(entry->source);
-    if (!entry->units.ranges.empty() && (dependency || generation_ == 2)) return Next::kBad;
-    if (!entry->units.chunks.empty() && generation_ == 1 && !dependency) return Next::kBad;
-    return Next::kEntry;
-  }
-
- private:
-  LineReader lines_;
-  int generation_ = 0;  // 0 before Header (items.tmp): either generation's units
 };
 
 // ---- Streamed CDN files (metas and manifests) ---------------------------------------------------------------------
@@ -672,21 +392,21 @@ Error FromToken(AccessToken::Status status) {
 
 class Planner {
  public:
-  Planner(const Hooks& hooks, const GogInstaller::Target& target, const ChunkPause& pause,
+  Planner(const Hooks& hooks, const GogInstaller::Target& target, const PlanLayout& layout, const ChunkPause& pause,
           const std::atomic<bool>& cancel, const Logger& log)
-      : hooks_(hooks), target_(target), pause_(pause), cancel_(cancel), log_(log) {}
+      : hooks_(hooks), target_(target), layout_(layout), pause_(pause), cancel_(cancel), log_(log) {}
 
   Error Plan() {
     transport_ = hooks_.make_transport ? hooks_.make_transport() : Transport();
     if (!transport_) return Error::kNetwork;
-    for (const char* folder : {kMetaDir, kManifestDir})
-      if (!MakeDirectory(Join(target_.root, folder))) return Error::kStorage;
+    if (!MakeLayoutFolders()) return Error::kStorage;
+    if (!target_.seed_list.empty()) SeedFromFileList();
 
     BuildChoice choice;
     if (const auto error = Builds(&choice); error != Error::kNone) return error;
     PlanHeader header;
     header.build_id = choice.build_id;
-    const auto items_path = Join(target_.root, kItemsPath);
+    const auto& items_path = layout_.items;
     Error error = choice.kind == BuildChoice::Kind::kGen1 ? PlanV1(choice, &header) : PlanV2(choice, &header);
     if (items_) {
       if (std::fclose(items_) != 0 && error == Error::kNone) error = WriteFailure();
@@ -704,8 +424,40 @@ class Planner {
   }
 
  private:
+  // The layout's folders below the game folder, each a real folder: the meta and manifest folders, and the folder
+  // of every file the planner writes. A layout path outside the game folder is refused.
+  bool MakeLayoutFolders() const {
+    const auto make = [this](const std::string& path, bool include_last) {
+      const auto& root = target_.root;
+      if (path.size() <= root.size() + 1 || path.compare(0, root.size(), root) != 0 || path[root.size()] != '/')
+        return false;
+      const std::string_view relative = std::string_view(path).substr(root.size() + 1);
+      return ValidPlanPath(relative) && MakeFolders(root, relative, include_last);
+    };
+    return make(layout_.meta_dir, true) && make(layout_.manifest_dir, true) && make(layout_.items, false) &&
+           make(layout_.plan, false) && make(layout_.redist_list, false) && make(layout_.file_list, false);
+  }
+
+  // The installed spellings, before the first depot: every path of the installed file list and the folders above
+  // each, so a build that changes only a name's case keeps the name the drive has. A list that is missing or doesn't
+  // read seeds nothing; a torn last line is ignored.
+  void SeedFromFileList() {
+    LineReader reader(target_.seed_list);
+    std::string line;
+    bool complete = false;
+    std::size_t seeds = 0;
+    while (reader.Next(&line, &complete) && complete) {
+      if (line.size() < 3 || line[1] != '\t' || (line[0] != 'd' && line[0] != 'f')) continue;
+      const std::string_view path = std::string_view(line).substr(2);
+      if (!ValidPlanPath(path)) continue;
+      paths_.Seed(path, line[0] == 'd' ? PathKind::kDirectory : PathKind::kFile);
+      ++seeds;
+    }
+    log_("gog plan seeded paths=%zu", seeds);
+  }
+
   Error OpenItems() {
-    items_ = std::fopen(Join(target_.root, kItemsPath).c_str(), "wb");
+    items_ = std::fopen(layout_.items.c_str(), "wb");
     return items_ ? Error::kNone : WriteFailure();
   }
 
@@ -754,7 +506,7 @@ class Planner {
       sources.push_back({EndpointLogName(endpoint.name), std::move(*url)});
     }
     if (cdns_.empty()) return Error::kProtocol;
-    const auto meta_dir = Join(target_.root, kMetaDir);
+    const auto& meta_dir = layout_.meta_dir;
     std::string md5;
     const auto fetched = FetchUnhashedToFile(transport_, sources, kMaxRepositoryV1Bytes, meta_dir, "repository.json",
                                              std::string(), &md5, pause_, cancel_, log_, "repository");
@@ -810,7 +562,7 @@ class Planner {
                       std::to_string(timestamp) + "/" + depot.manifest;
     std::vector<Source> sources;
     for (const auto& cdn : cdns_) sources.push_back({cdn.name, cdn.url + path});
-    const auto folder = Join(target_.root, kManifestDir);
+    const auto& folder = layout_.manifest_dir;
     const auto name = "v1-" + depot.manifest;
     std::string md5;
     // Within the streaming client's cap; the reader checks kMaxDepotManifestBytes too.
@@ -858,7 +610,7 @@ class Planner {
     std::vector<Source> sources;
     for (const auto& endpoint : choice.meta)
       if (auto url = FillUrl(endpoint, "")) sources.push_back({EndpointLogName(endpoint.name), std::move(*url)});
-    const auto path = Join(target_.root, std::string(kMetaDir) + "/" + choice.meta_id);
+    const auto path = layout_.meta_dir + "/" + choice.meta_id;
     const auto fetched = FetchToFile(transport_, sources, choice.meta_id, path, pause_, cancel_, log_, "meta");
     if (fetched != FetchKind::kOk) return FromFetch(fetched);
     std::string inflated;
@@ -908,7 +660,7 @@ class Planner {
   // under .playden-gog/redist/ (RedistPlace).
   Error Depot(const std::string& folder, const std::string& hash, std::uint64_t product, const std::string& source,
               bool redist = false) {
-    const auto path = Join(target_.root, std::string(kManifestDir) + "/" + hash);
+    const auto path = layout_.manifest_dir + "/" + hash;
     const auto fetched = FetchToFile(transport_, Sources(folder, hash), hash, path, pause_, cancel_, log_, "manifest");
     if (fetched != FetchKind::kOk) return FromFetch(fetched);
     DepotItemReader reader([&](const DepotItem& item) { return Item(item, product, source, 2, redist); });
@@ -1005,7 +757,7 @@ class Planner {
         if (url != repository->manifest_url) sources.push_back({cdn.name, std::move(url)});
         else sources.front().name = cdn.name;
       }
-    const auto path = Join(target_.root, std::string(kManifestDir) + "/" + id);
+    const auto path = layout_.manifest_dir + "/" + id;
     const auto fetched = FetchToFile(transport_, sources, id, path, pause_, cancel_, log_, "dependencies");
     if (fetched != FetchKind::kOk) return FromFetch(fetched);
     std::string inflated;
@@ -1069,7 +821,7 @@ class Planner {
 
   // items.tmp, without the entries a later depot replaced, becomes the plan and .playden-files.
   Error WritePlan(PlanHeader* header) {
-    const auto items_path = Join(target_.root, kItemsPath);
+    const auto& items_path = layout_.items;
     std::size_t files = 0;
     {
       EntryReader reader(items_path);
@@ -1086,15 +838,16 @@ class Planner {
       }
     }
     // The old journal's indexes belong to another plan.
-    if (std::remove(Join(target_.root, kJournalPath).c_str()) != 0 && errno != ENOENT) return Error::kStorage;
+    if (!layout_.journal.empty() && std::remove(layout_.journal.c_str()) != 0 && errno != ENOENT)
+      return Error::kStorage;
     // The redist list before the file list and the plan: a saved plan always has its own (header only without
     // __redist dependencies), and planning again replaces the old one.
-    if (const int failure = WriteRedistList(target_.root, redist_); failure != 0) {
+    if (const int failure = WriteRedistListFile(layout_.redist_list, redist_); failure != 0) {
       log_("gog plan redist list result=%s", failure == EINVAL ? "refused" : "failed");
       return failure == EINVAL ? Error::kProtocol : failure == ENOSPC ? Error::kNoSpace : Error::kStorage;
     }
-    DurableFile plan(Join(target_.root, kPlanPath));
-    DurableFile list(Join(target_.root, kFileListName));
+    DurableFile plan(layout_.plan);
+    DurableFile list(layout_.file_list);
     plan.Line(HeaderLine(*header));
     EntryReader reader(items_path);
     if (!reader.open()) return Error::kStorage;
@@ -1120,6 +873,7 @@ class Planner {
 
   const Hooks& hooks_;
   const GogInstaller::Target& target_;
+  const PlanLayout& layout_;
   const ChunkPause& pause_;
   const std::atomic<bool>& cancel_;
   const Logger& log_;
@@ -1152,12 +906,12 @@ JournalState LoadJournal(const std::string& path) {
   bool complete = false;
   while (reader.Next(&line, &complete)) {
     if (!complete) break;  // a torn last line
-    const auto fields = Split(line, '\t');
+    const auto fields = SplitFields(line, '\t');
     std::uint64_t file = 0, chunk = 0;
-    if (fields.size() == 2 && fields[0] == "f" && ParseU64(fields[1], &file) && file < (1ull << 39))
+    if (fields.size() == 2 && fields[0] == "f" && ParsePlanNumber(fields[1], &file) && file < (1ull << 39))
       state.files.insert(file);
-    else if (fields.size() == 3 && fields[0] == "c" && ParseU64(fields[1], &file) && file < (1ull << 39) &&
-             ParseU64(fields[2], &chunk) && chunk < kMaxChunksPerFile)
+    else if (fields.size() == 3 && fields[0] == "c" && ParsePlanNumber(fields[1], &file) && file < (1ull << 39) &&
+             ParsePlanNumber(fields[2], &chunk) && chunk < kMaxChunksPerFile)
       state.chunks.insert(ChunkKey(file, chunk));
   }
   return state;
@@ -1732,6 +1486,309 @@ class Download {
   std::vector<std::unique_ptr<Worker>> workers_;
 };
 
+// ---- One plan's download ------------------------------------------------------------------------------------------
+
+// What a download covers: the plan's file entries (or those `wanted` picks), written under `dest_root` with their
+// progress in `journal`. An install's makes the plan's folders too and counts what it held at the start in progress;
+// an update's progress counts only its own files.
+struct DownloadJob {
+  std::string plan;
+  std::string journal;
+  std::string dest_root;
+  std::string drive;  // the game folder: free_bytes is asked for it
+  bool folders = false;
+  bool report_held = false;
+  std::function<bool(const PlanEntry&)> wanted;  // empty: every file entry
+};
+
+// Run's and Stage's download of a saved plan: Scan reads the journal and the plan (what is finished, what is left),
+// EnoughSpace checks the drive, Fetch gets the links each source needs and then feeds the workers in plan order.
+class PlanDownload {
+ public:
+  PlanDownload(const Hooks& hooks, const ChunkPause& pause, const std::atomic<bool>& cancel, const Logger& log,
+               const PlanHeader& header, DownloadJob job)
+      : hooks_(hooks), pause_(pause), cancel_(cancel), log_(log), header_(header), job_(std::move(job)) {}
+
+  // A plan that doesn't read is removed: it is made again next time, with a new journal.
+  Error Scan() {
+    state_ = LoadJournal(job_.journal);
+    EntryReader reader(job_.plan);
+    PlanHeader again;
+    if (!reader.open() || !reader.Header(&again)) return Error::kStorage;
+    PlanEntry entry;
+    for (std::uint64_t index = 0;; ++index) {
+      const auto next = reader.Read(&entry);
+      if (next == EntryReader::Next::kEnd) break;
+      if (next == EntryReader::Next::kBad) {
+        std::remove(job_.plan.c_str());
+        log_("gog plan damaged");
+        return Error::kStorage;
+      }
+      if (entry.directory) continue;
+      ++files_;
+      if (job_.wanted && !job_.wanted(entry)) continue;
+      ++wanted_files_;
+      wanted_size_ += entry.size;
+      wanted_download_ += entry.download();
+      const auto path = Join(job_.dest_root, entry.path);
+      struct stat info {};
+      const bool present = lstat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
+      const bool marked = state_.files.count(index) > 0;
+      if (marked && present && static_cast<std::uint64_t>(info.st_size) == entry.size) {
+        finished_.insert(index);
+        held_ += entry.size;
+        done_ += entry.download();
+        continue;
+      }
+      ++unfinished_;
+      // A finished file that is gone or has another size is fetched whole again; so is a file in progress that is
+      // gone.
+      const bool redo = marked || !present;
+      for (std::size_t unit = 0; unit < entry.units.count(); ++unit) {
+        const auto key = ChunkKey(index, unit);
+        if (!redo && state_.chunks.count(key)) {
+          held_ += entry.units.size(unit);
+          done_ += entry.units.download(unit);
+        } else {
+          state_.chunks.erase(key);
+          missing_ += entry.units.size(unit);
+          ++pending_chunks_;
+          sources_.insert(Links::Key(entry.source));
+        }
+      }
+    }
+    total_ = job_.wanted ? wanted_download_ : header_.total_compressed;
+    log_("gog download files=%zu finished=%zu units_left=%llu", wanted_files_, finished_.size(),
+         static_cast<unsigned long long>(pending_chunks_));
+    return Error::kNone;
+  }
+
+  // The bytes the unfinished units write, plus kGogSpaceMargin, against the drive's free bytes.
+  bool EnoughSpace() const {
+    const auto free = hooks_.free_bytes(job_.drive);
+    if (missing_ > UINT64_MAX - kGogSpaceMargin || missing_ + kGogSpaceMargin > free) {
+      log_("gog download space short need=%llu free=%llu", static_cast<unsigned long long>(missing_),
+           static_cast<unsigned long long>(free));
+      return false;
+    }
+    return true;
+  }
+
+  Error Fetch(const std::function<void(const GogInstaller::Progress&)>& progress,
+              GogInstaller::Outcome::Stats& stats) {
+    const std::uint64_t held = job_.report_held ? held_ : 0;
+    if (progress) progress({done_, total_, held});
+
+    Journal journal;
+    if (const auto error = journal.Open(job_.journal); error != Error::kNone) return error;
+    Links links(hooks_, log_, cancel_, header_.generation, header_.timestamp);
+
+    // The links each source needs, before any chunk.
+    const int parallel = std::max(1, std::min(kMaxParallel, hooks_.parallel));
+    Download download(hooks_, pause_, cancel_, log_, journal, links, stats);
+    download.AddDone(done_);
+    if (pending_chunks_ > 0) {
+      Error error = Error::kNone;
+      if (!RunOnStack(kWorkerStackBytes, [&] {
+            Transport transport = hooks_.make_transport ? hooks_.make_transport() : Transport();
+            if (!transport) {
+              error = Error::kNetwork;
+              return;
+            }
+            for (const auto& source : sources_) {
+              Endpoints endpoints;
+              std::uint64_t version = 0;
+              error = links.Get(transport, source, std::nullopt, &endpoints, &version);
+              if (error != Error::kNone) return;
+            }
+          }))
+        error = Error::kNetwork;
+      stats.link_fetches = links.fetches();
+      if (error != Error::kNone) return error;
+    }
+    // Workers also for a file whose chunks are all journaled: a failed whole-file check fetches it again.
+    if (unfinished_ > 0) {
+      if (!download.Start(parallel)) return Error::kNetwork;
+      log_("gog download start parallel=%d", parallel);
+    }
+
+    // Feed the workers in plan order.
+    auto last_sync = std::chrono::steady_clock::now();
+    Error journal_error = Error::kNone;
+    const auto tick = [&] {
+      if (cancel_.load()) download.Stop(Error::kCanceled);
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_sync >= std::chrono::seconds(2)) {
+        last_sync = now;
+        if (const auto error = journal.Sync(); error != Error::kNone && journal_error == Error::kNone) {
+          journal_error = error;
+          download.Stop(error);
+        }
+      }
+      if (progress) progress({std::min(download.done(), total_), total_, held});
+    };
+    Feed(download, tick);
+    download.Drain(tick);
+    download.Join();
+    stats.link_fetches = links.fetches();
+    stats.parallel = unfinished_ > 0 ? download.active_limit() : 0;
+    const auto closed = journal.Close();
+    if (progress) progress({std::min(download.done(), total_), total_, held});
+    Error error = download.error();
+    if (error == Error::kNone && cancel_.load()) error = Error::kCanceled;
+    if (error == Error::kNone) error = closed;
+    return error;
+  }
+
+  std::size_t files() const { return files_; }  // the plan's file entries
+  std::size_t wanted_files() const { return wanted_files_; }
+  std::uint64_t wanted_size() const { return wanted_size_; }
+  std::uint64_t wanted_download() const { return wanted_download_; }
+
+ private:
+  void Feed(Download& download, const std::function<void()>& tick) {
+    EntryReader reader(job_.plan);
+    PlanHeader again;
+    bool readable = reader.open() && reader.Header(&again);
+    PlanEntry entry;
+    for (std::uint64_t index = 0; readable && !download.stopped(); ++index) {
+      if (cancel_.load()) {
+        download.Stop(Error::kCanceled);
+        break;
+      }
+      const auto next = reader.Read(&entry);
+      if (next == EntryReader::Next::kEnd) break;
+      if (next == EntryReader::Next::kBad) {
+        readable = false;
+        break;
+      }
+      if (entry.directory) {
+        if (job_.folders && !MakeFolders(job_.dest_root, entry.path, true)) download.Stop(WriteFailure());
+        continue;
+      }
+      if (finished_.count(index) || (job_.wanted && !job_.wanted(entry))) continue;
+      if (!MakeFolders(job_.dest_root, entry.path, false)) {
+        download.Stop(WriteFailure());
+        break;
+      }
+      auto file = std::make_shared<FileWork>();
+      file->index = index;
+      file->path = Join(job_.dest_root, entry.path);
+      struct stat info {};
+      if (lstat(file->path.c_str(), &info) == 0 && !S_ISREG(info.st_mode)) {
+        log_("gog download a folder or link is in a file's place");
+        download.Stop(Error::kStorage);
+        break;
+      }
+      file->source = entry.source;
+      file->size = entry.size;
+      file->md5 = entry.md5;
+      file->sha256 = entry.sha256;
+      file->whole_md5 = header_.generation == 1 && !DependencySource(entry.source);
+      file->units = std::move(entry.units);
+      file->done.assign(file->units.count(), false);
+      std::uint64_t offset = 0;
+      for (std::size_t unit = 0; unit < file->units.count(); ++unit) {
+        file->offsets.push_back(offset);
+        offset += file->units.size(unit);
+        if (state_.chunks.count(ChunkKey(index, unit))) file->done[unit] = true;
+        else ++file->remaining;
+      }
+      if (file->remaining == 0) {
+        // No units (an empty file), or every unit already written: only its size and check are left.
+        download.Finish(file, false);
+        continue;
+      }
+      if (!download.Admit(file, tick)) break;
+    }
+    if (!readable) download.Stop(Error::kStorage);
+  }
+
+  const Hooks& hooks_;
+  const ChunkPause& pause_;
+  const std::atomic<bool>& cancel_;
+  const Logger& log_;
+  const PlanHeader& header_;
+  const DownloadJob job_;
+  JournalState state_;
+  std::size_t files_ = 0, wanted_files_ = 0;
+  std::uint64_t wanted_size_ = 0, wanted_download_ = 0;
+  std::uint64_t held_ = 0, done_ = 0, missing_ = 0, pending_chunks_ = 0, unfinished_ = 0, total_ = 0;
+  std::set<std::string> sources_;
+  std::unordered_set<std::uint64_t> finished_;
+};
+
+// ---- An update's lists --------------------------------------------------------------------------------------------
+
+bool IsRegularFile(const std::string& path) {
+  struct stat info {};
+  return lstat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
+}
+
+// Adds the "d\t<path>" and "f\t<path>" lines of a file list. A list that is missing adds nothing.
+bool AddListLines(const std::string& path, std::set<std::string>* lines) {
+  if (!Exists(path)) return true;
+  LineReader reader(path);
+  if (!reader.open()) return false;
+  std::string line;
+  bool complete = false;
+  while (reader.Next(&line, &complete)) {
+    if (!complete) break;  // a torn last line
+    if (line.size() >= 3 && line[1] == '\t' && (line[0] == 'd' || line[0] == 'f') &&
+        ValidPlanPath(std::string_view(line).substr(2)))
+      lines->insert(line);
+  }
+  return !reader.failed();
+}
+
+// Writes `old` (the live file list as it is) and `paths` (what either version lists, and what an earlier run of this
+// update listed: never fewer), each through a temporary file.
+Error WriteOldAndPaths(const std::string& root, const std::string& work, const PlanLayout& layout) {
+  const auto live_list = Join(root, kFileListName);
+  const auto old_path = Join(work, kUpdateOldName);
+  const auto paths_path = Join(work, kUpdatePathsName);
+  {
+    DurableFile old_list(old_path);
+    if (Exists(live_list) && !ReadFile(live_list, [&old_list](const std::uint8_t* data, std::size_t size) {
+          old_list.Bytes(data, size);
+          return true;
+        }))
+      return Error::kStorage;
+    if (const auto error = old_list.Commit(); error != Error::kNone) return error;
+  }
+  std::set<std::string> lines;
+  for (const auto& list : {paths_path, old_path, layout.file_list})
+    if (!AddListLines(list, &lines)) return Error::kStorage;
+  DurableFile paths(paths_path);
+  for (const auto& line : lines) paths.Line(line);
+  return paths.Commit();
+}
+
+// The installed plan's files the new plan lacks, by FoldCase(path), as DiffPlans counts them; 0 without an installed
+// plan that reads.
+std::uint64_t CountRemoved(const std::string& old_plan, const std::string& new_plan) {
+  std::unordered_set<std::string> kept;
+  PlanEntry entry;
+  {
+    EntryReader reader(new_plan);
+    PlanHeader header;
+    if (!reader.open() || !reader.Header(&header)) return 0;
+    while (reader.Read(&entry) == EntryReader::Next::kEntry)
+      if (!entry.directory) kept.insert(FoldCase(entry.path));
+  }
+  EntryReader reader(old_plan);
+  PlanHeader header;
+  if (!reader.open() || !reader.Header(&header)) return 0;
+  std::uint64_t removed = 0;
+  for (;;) {
+    const auto next = reader.Read(&entry);
+    if (next == EntryReader::Next::kBad) return 0;
+    if (next == EntryReader::Next::kEnd) break;
+    if (!entry.directory && !kept.count(FoldCase(entry.path))) ++removed;
+  }
+  return removed;
+}
+
 }  // namespace
 
 const char* InstallerErrorName(Error error) {
@@ -1751,6 +1808,46 @@ const char* InstallerErrorName(Error error) {
 }
 
 GogInstaller::GogInstaller(Hooks hooks) : hooks_(std::move(hooks)) {}
+
+GogInstaller::Outcome GogInstaller::Plan(const Target& target, const PlanLayout& layout,
+                                         const std::atomic<bool>& cancel) {
+  Outcome outcome;
+  const Logger log(hooks_.log);
+  const ChunkPause pause = hooks_.pause ? ChunkPause(hooks_.pause) : ChunkPause(SleepPause);
+  const auto finish = [&](Error error) {
+    outcome.error = error;
+    log("gog plan result=%s", InstallerErrorName(error));
+    return outcome;
+  };
+  // An installed game's folder: never made here.
+  if (target.product == 0 || !ValidRoot(target.root) || !IsRealDirectory(target.root)) return finish(Error::kStorage);
+  if (cancel.load()) return finish(Error::kCanceled);
+  Error error = Error::kNone;
+  if (!RunOnStack(kPlannerStackBytes, [&] {
+        Planner planner(hooks_, target, layout, pause, cancel, log);
+        error = planner.Plan();
+      }))
+    return finish(Error::kNetwork);
+  if (error != Error::kNone) return finish(error);
+  EntryReader reader(layout.plan);
+  PlanHeader header;
+  if (!reader.open() || !reader.Header(&header)) return finish(Error::kStorage);
+  PlanEntry entry;
+  for (;;) {
+    const auto next = reader.Read(&entry);
+    if (next == EntryReader::Next::kEnd) break;
+    if (next == EntryReader::Next::kBad) return finish(Error::kStorage);
+    if (!entry.directory) ++outcome.files;
+  }
+  outcome.generation = header.generation;
+  outcome.build_id = header.build_id;
+  outcome.meta_id = header.meta_id;
+  outcome.timestamp = header.timestamp;
+  outcome.language = header.language;
+  outcome.products = header.products;
+  outcome.install_bytes = header.total_size;
+  return finish(Error::kNone);
+}
 
 GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<bool>& cancel,
                                         const std::function<void(const Progress&)>& progress) {
@@ -1772,7 +1869,8 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
   if (cancel.load()) return finish(Error::kCanceled);
 
   // 2-4. A saved plan, or a new one.
-  const auto plan_path = Join(target.root, kPlanPath);
+  const auto layout = InstallLayout(target.root);
+  const auto& plan_path = layout.plan;
   PlanHeader header;
   bool have_plan = false;
   if (Exists(plan_path)) {
@@ -1788,7 +1886,7 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
   } else {
     Error error = Error::kNone;
     if (!RunOnStack(kPlannerStackBytes, [&] {
-          Planner planner(hooks_, target, pause, cancel, log);
+          Planner planner(hooks_, target, layout, pause, cancel, log);
           error = planner.Plan();
         }))
       return finish(Error::kNetwork);
@@ -1804,184 +1902,148 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
   outcome.products = header.products;
   outcome.install_bytes = header.total_size;
 
-  // 5-6. What the journal already has, and the space the rest needs.
-  const auto journal_path = Join(target.root, kJournalPath);
-  auto state = LoadJournal(journal_path);
-  std::uint64_t held = 0, done = 0, missing = 0, pending_chunks = 0, unfinished = 0;
-  std::set<std::string> sources;
-  std::unordered_set<std::uint64_t> finished;
-  {
-    EntryReader reader(plan_path);
-    PlanHeader again;
-    if (!reader.open() || !reader.Header(&again)) return finish(Error::kStorage);
-    PlanEntry entry;
-    for (std::uint64_t index = 0;; ++index) {
-      const auto next = reader.Read(&entry);
-      if (next == EntryReader::Next::kEnd) break;
-      if (next == EntryReader::Next::kBad) {
-        // A damaged plan is made again on the next run, with a new journal.
-        std::remove(plan_path.c_str());
-        log("gog plan damaged");
-        return finish(Error::kStorage);
-      }
-      if (entry.directory) continue;
-      ++outcome.files;
-      const auto path = Join(target.root, entry.path);
-      struct stat info {};
-      const bool present = lstat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
-      const bool marked = state.files.count(index) > 0;
-      if (marked && present && static_cast<std::uint64_t>(info.st_size) == entry.size) {
-        finished.insert(index);
-        held += entry.size;
-        done += entry.download();
-        continue;
-      }
-      ++unfinished;
-      // A finished file that is gone or has another size is fetched whole again; so is a file in progress that is
-      // gone.
-      const bool redo = marked || !present;
-      for (std::size_t unit = 0; unit < entry.units.count(); ++unit) {
-        const auto key = ChunkKey(index, unit);
-        if (!redo && state.chunks.count(key)) {
-          held += entry.units.size(unit);
-          done += entry.units.download(unit);
-        } else {
-          state.chunks.erase(key);
-          missing += entry.units.size(unit);
-          ++pending_chunks;
-          sources.insert(Links::Key(entry.source));
-        }
-      }
-    }
-  }
-  const auto free = hooks_.free_bytes(target.root);
-  log("gog download files=%zu finished=%zu units_left=%llu", outcome.files, finished.size(),
-      static_cast<unsigned long long>(pending_chunks));
-  if (missing > UINT64_MAX - kGogSpaceMargin || missing + kGogSpaceMargin > free) {
-    log("gog download space short need=%llu free=%llu", static_cast<unsigned long long>(missing),
-        static_cast<unsigned long long>(free));
-    return finish(Error::kNoSpace);
-  }
-  const Progress start{done, header.total_compressed, held};
-  if (progress) progress(start);
-
-  Journal journal;
-  if (const auto error = journal.Open(journal_path); error != Error::kNone) return finish(error);
-  Links links(hooks_, log, cancel, header.generation, header.timestamp);
-
-  // 8. The links each source needs, before any chunk.
-  const int parallel = std::max(1, std::min(kMaxParallel, hooks_.parallel));
-  Download download(hooks_, pause, cancel, log, journal, links, outcome.stats);
-  download.AddDone(done);
-  if (pending_chunks > 0) {
-    Error error = Error::kNone;
-    if (!RunOnStack(kWorkerStackBytes, [&] {
-          Transport transport = hooks_.make_transport ? hooks_.make_transport() : Transport();
-          if (!transport) {
-            error = Error::kNetwork;
-            return;
-          }
-          for (const auto& source : sources) {
-            Endpoints endpoints;
-            std::uint64_t version = 0;
-            error = links.Get(transport, source, std::nullopt, &endpoints, &version);
-            if (error != Error::kNone) return;
-          }
-        }))
-      error = Error::kNetwork;
-    outcome.stats.link_fetches = links.fetches();
-    if (error != Error::kNone) return finish(error);
-  }
-  // Workers also for a file whose chunks are all journaled: a failed whole-file check fetches it again.
-  if (unfinished > 0) {
-    if (!download.Start(parallel)) return finish(Error::kNetwork);
-    log("gog download start parallel=%d", parallel);
-  }
-
-  // 7. Feed the workers in plan order.
-  auto last_sync = std::chrono::steady_clock::now();
-  Error journal_error = Error::kNone;
-  const auto tick = [&] {
-    if (cancel.load()) download.Stop(Error::kCanceled);
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_sync >= std::chrono::seconds(2)) {
-      last_sync = now;
-      if (const auto error = journal.Sync(); error != Error::kNone && journal_error == Error::kNone) {
-        journal_error = error;
-        download.Stop(error);
-      }
-    }
-    if (progress) progress({std::min(download.done(), header.total_compressed), header.total_compressed, held});
-  };
-  {
-    EntryReader reader(plan_path);
-    PlanHeader again;
-    bool readable = reader.open() && reader.Header(&again);
-    PlanEntry entry;
-    for (std::uint64_t index = 0; readable && !download.stopped(); ++index) {
-      if (cancel.load()) {
-        download.Stop(Error::kCanceled);
-        break;
-      }
-      const auto next = reader.Read(&entry);
-      if (next == EntryReader::Next::kEnd) break;
-      if (next == EntryReader::Next::kBad) {
-        readable = false;
-        break;
-      }
-      if (entry.directory) {
-        if (!MakeFolders(target.root, entry.path, true)) download.Stop(WriteFailure());
-        continue;
-      }
-      if (finished.count(index)) continue;
-      if (!MakeFolders(target.root, entry.path, false)) {
-        download.Stop(WriteFailure());
-        break;
-      }
-      auto file = std::make_shared<FileWork>();
-      file->index = index;
-      file->path = Join(target.root, entry.path);
-      struct stat info {};
-      if (lstat(file->path.c_str(), &info) == 0 && !S_ISREG(info.st_mode)) {
-        log("gog download a folder or link is in a file's place");
-        download.Stop(Error::kStorage);
-        break;
-      }
-      file->source = entry.source;
-      file->size = entry.size;
-      file->md5 = entry.md5;
-      file->sha256 = entry.sha256;
-      file->whole_md5 = header.generation == 1 && !DependencySource(entry.source);
-      file->units = std::move(entry.units);
-      file->done.assign(file->units.count(), false);
-      std::uint64_t offset = 0;
-      for (std::size_t unit = 0; unit < file->units.count(); ++unit) {
-        file->offsets.push_back(offset);
-        offset += file->units.size(unit);
-        if (state.chunks.count(ChunkKey(index, unit))) file->done[unit] = true;
-        else ++file->remaining;
-      }
-      if (file->remaining == 0) {
-        // No units (an empty file), or every unit already written: only its size and check are left.
-        download.Finish(file, false);
-        continue;
-      }
-      if (!download.Admit(file, tick)) break;
-    }
-    if (!readable) download.Stop(Error::kStorage);
-  }
-  download.Drain(tick);
-  download.Join();
-  outcome.stats.link_fetches = links.fetches();
-  outcome.stats.parallel = unfinished > 0 ? download.active_limit() : 0;
-  const auto closed = journal.Close();
-  if (progress) progress({std::min(download.done(), header.total_compressed), header.total_compressed, held});
-  Error error = download.error();
-  if (error == Error::kNone && cancel.load()) error = Error::kCanceled;
-  if (error == Error::kNone) error = closed;
+  // 5-8. What the journal already has, the space the rest needs, then the rest.
+  DownloadJob job;
+  job.plan = plan_path;
+  job.journal = layout.journal;
+  job.dest_root = target.root;
+  job.drive = target.root;
+  job.folders = true;
+  job.report_held = true;
+  PlanDownload download(hooks_, pause, cancel, log, header, std::move(job));
+  if (const auto error = download.Scan(); error != Error::kNone) return finish(error);
+  outcome.files = download.files();
+  if (!download.EnoughSpace()) return finish(Error::kNoSpace);
+  const auto error = download.Fetch(progress, outcome.stats);
   if (error == Error::kNone)
     log("gog download done files=%zu size=%llu", outcome.files, static_cast<unsigned long long>(header.total_size));
   return finish(error);
+}
+
+GogInstaller::StageOutcome GogInstaller::Stage(const Target& target, const std::atomic<bool>& cancel,
+                                               const std::function<void(const Progress&)>& progress) {
+  StageOutcome outcome;
+  const Logger log(hooks_.log);
+  const ChunkPause pause = hooks_.pause ? ChunkPause(hooks_.pause) : ChunkPause(SleepPause);
+  const auto finish = [&](Error error) {
+    outcome.error = error;
+    log("gog update step=stage result=%s files=%zu changed=%llu removed=%llu bytes=%llu parallel=%d",
+        InstallerErrorName(error), outcome.files, static_cast<unsigned long long>(outcome.staged_files),
+        static_cast<unsigned long long>(outcome.removed_files),
+        static_cast<unsigned long long>(outcome.download_bytes), outcome.stats.parallel);
+    return outcome;
+  };
+  // 1. An installed game's folder (never made here), and the update's work folders, each a real folder.
+  const auto& root = target.root;
+  if (target.product == 0 || !ValidRoot(root) || !IsRealDirectory(root) ||
+      !IsRegularFile(Join(root, kInstallRecordName)) || !hooks_.free_bytes)
+    return finish(Error::kStorage);
+  const auto work = Join(root, kUpdateDirName);
+  const auto staging = Join(work, kUpdateStagingName);
+  if (!MakeDirectory(work) || !MakeDirectory(Join(work, "gog")) || !MakeDirectory(staging))
+    return finish(WriteFailure());
+  if (cancel.load()) return finish(Error::kCanceled);
+
+  // 2. A saved update plan (with its file list), or a new one seeded with the installed spellings.
+  const auto layout = UpdateLayout(root);
+  const auto staged_path = Join(work, kUpdateStagedName);
+  PlanHeader header;
+  bool have_plan = false;
+  if (Exists(layout.plan)) {
+    EntryReader reader(layout.plan);
+    have_plan = reader.open() && reader.Header(&header) && IsRegularFile(layout.file_list);
+    if (!have_plan) {
+      log("gog update plan saved one unreadable: planning again");
+      std::remove(layout.plan.c_str());
+    }
+  }
+  if (have_plan) {
+    log("gog update plan reused");
+  } else {
+    // A staged list names the files of the plan it was made from.
+    if (std::remove(staged_path.c_str()) != 0 && errno != ENOENT) return finish(Error::kStorage);
+    Target planned = target;
+    planned.seed_list = Join(root, kFileListName);
+    Error error = Error::kNone;
+    if (!RunOnStack(kPlannerStackBytes, [&] {
+          Planner planner(hooks_, planned, layout, pause, cancel, log);
+          error = planner.Plan();
+        }))
+      error = Error::kNetwork;
+    log("gog update step=plan result=%s", InstallerErrorName(error));
+    if (error != Error::kNone) return finish(error);
+    EntryReader reader(layout.plan);
+    if (!reader.open() || !reader.Header(&header)) return finish(Error::kStorage);
+  }
+  outcome.generation = header.generation;
+  outcome.build_id = header.build_id;
+  outcome.meta_id = header.meta_id;
+  outcome.timestamp = header.timestamp;
+  outcome.language = header.language;
+  outcome.products = header.products;
+  outcome.install_bytes = header.total_size;
+
+  // 3. The lists, before the first staged chunk: old, paths, then staged from the diff. Once staged exists it is the
+  // update's: a resume fetches what it names and never diffs again.
+  const auto installed_plan = InstallLayout(root).plan;
+  bool diffed = false;
+  if (!Exists(staged_path)) {
+    if (cancel.load()) return finish(Error::kCanceled);
+    if (const auto error = WriteOldAndPaths(root, work, layout); error != Error::kNone) return finish(error);
+    DurableFile staged(staged_path);
+    const auto diff = DiffPlans(installed_plan, layout.plan, root, cancel,
+                                [&staged](std::uint64_t, const PlanEntry& entry, bool changed) {
+                                  if (changed && !entry.directory) staged.Line(entry.path);
+                                });
+    const char* result = diff.canceled ? "canceled" : diff.readable ? "ok" : "damaged";
+    log("gog update step=diff result=%s changed=%llu removed=%llu hashed=%llu bytes=%llu", result,
+        static_cast<unsigned long long>(diff.changed_files), static_cast<unsigned long long>(diff.removed_files),
+        static_cast<unsigned long long>(diff.hashed_files), static_cast<unsigned long long>(diff.download_bytes));
+    if (diff.canceled) return finish(Error::kCanceled);
+    if (!diff.readable) {
+      // Planned again next time.
+      std::remove(layout.plan.c_str());
+      return finish(Error::kStorage);
+    }
+    if (const auto error = staged.Commit(); error != Error::kNone) return finish(error);
+    outcome.removed_files = diff.removed_files;
+    outcome.hashed_files = diff.hashed_files;
+    diffed = true;
+  }
+  std::unordered_set<std::string> staged;
+  {
+    LineReader reader(staged_path);
+    if (!reader.open()) return finish(Error::kStorage);
+    std::string line;
+    bool complete = false;
+    while (reader.Next(&line, &complete)) {
+      if (!complete) return finish(Error::kStorage);
+      staged.insert(line);
+    }
+    if (reader.failed()) return finish(Error::kStorage);
+  }
+  if (!diffed) outcome.removed_files = CountRemoved(installed_plan, layout.plan);
+
+  // 4-6. The staged files the journal hasn't finished, the space they need, then the download into staging/.
+  DownloadJob job;
+  job.plan = layout.plan;
+  job.journal = layout.journal;
+  job.dest_root = staging;
+  job.drive = root;
+  job.wanted = [&staged](const PlanEntry& entry) { return staged.count(entry.path) > 0; };
+  PlanDownload download(hooks_, pause, cancel, log, header, std::move(job));
+  if (const auto error = download.Scan(); error != Error::kNone) return finish(error);
+  outcome.files = download.files();
+  outcome.staged_files = download.wanted_files();
+  outcome.staged_bytes = download.wanted_size();
+  outcome.download_bytes = download.wanted_download();
+  // 7. Nothing staged: nothing to download.
+  if (outcome.staged_files == 0) {
+    if (progress) progress({0, 0, 0});
+    return finish(Error::kNone);
+  }
+  if (!download.EnoughSpace()) return finish(Error::kNoSpace);
+  return finish(download.Fetch(progress, outcome.stats));
 }
 
 }  // namespace playden::gog

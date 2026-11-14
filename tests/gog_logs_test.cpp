@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // gog.log and install.log after a stubbed run of everything GOG does: restore, a sign-in with a code, a library
 // refresh, installs of a synthetic gen 2 game and a synthetic gen 1 game from the stub CDN (the install runner writing
-// install.log), the library
-// cleared and a sign-out, with the session, the account and the library writing to gog.log. Neither file may name the
+// install.log), an update check and an update's size for the gen 2 game (the details source writing gog.log), the
+// library cleared and a sign-out, with the session, the account and the library writing to gog.log. Neither file may name the
 // account (username, user ID), hold a token, the code or a secure link's signature, or carry an address. Synthetic
 // tokens, accounts and products only.
 #include "gog/account_key.h"
@@ -12,7 +12,9 @@
 #include "gog_stub_transport.h"
 #include "gog_synthetic_game.h"
 #include "library/cache.h"
+#include "installs/install_record.h"
 #include "stores/gog.h"
+#include "stores/gog_details.h"
 #include "stores/gog_install.h"
 #include "stores/gog_library.h"
 
@@ -162,6 +164,38 @@ int main(int argc, char** argv) {
       const std::atomic<bool> no_cancel{false};
       const auto result = runner.Install(GameId::Gog(1900000001), root.string(), {}, no_cancel, {}, {});
       CHECK(result.ok);
+
+      // A newer build: the installed game is checked, then its update measured.
+      const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+      CHECK(record && record->gog);
+      game.build_id = "1000000000000000202";
+      game.depots[0].files[0].bytes = RandomBytes(90 * 1024, 41);
+      Publish(cdn, game);
+      stores::GogDetailsSource details(session, [&cdn] { return cdn.Transport(); }, [] { return std::string("english"); },
+                                       sink);
+      const auto id = GameId::Gog(1900000001);
+      details.SetInstalled([&](const GameId& asked) { return asked == id ? record : std::nullopt; });
+      details.SetInstallRoot([&](const GameId& asked) {
+        return asked == id ? std::optional<std::string>(root.string()) : std::nullopt;
+      });
+      CHECK(details.CheckInstalled({id}, 1));
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      bool newer = false;
+      while (!details.CheckProgress().done()) {
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        for (const auto& answer : details.Pump(8)) newer = newer || answer.update.newer;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      CHECK(newer && details.CheckProgress().failed == 0);
+      CHECK(details.Measure({id, {}, {}, true}, 1));
+      std::vector<steam::MeasuredSize> sizes;
+      while (sizes.empty()) {
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        sizes = details.PumpMeasured();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      CHECK(sizes.size() == 1 && sizes[0].measured && sizes[0].staged_bytes == 90 * 1024);
+      details.Shutdown();
     }
     // A gen 1 install: repository.json, plain manifests, ranges of main.bin behind a gen 1 secure link.
     {
@@ -214,6 +248,10 @@ int main(int argc, char** argv) {
     CHECK(log.find(secret) == std::string::npos);
   }
   CHECK(log.find("library owned=3 fetched=1 not_modified=0 missing=1 hidden=0 failed=1") != std::string::npos);
+  CHECK(log.find("details update result=newer") != std::string::npos);
+  CHECK(log.find("details size result=measured changed=1 removed=0") != std::string::npos);
+  // No folder of the console's either.
+  CHECK(log.find(g_base.string()) == std::string::npos && log.find("gog-1900000001") == std::string::npos);
   for (const std::string& secret : {kUsername, kUserId, AccessText(1), RefreshText(1), code, std::string("https://"),
                                     std::string("images.gog.com"), std::string("synthetic-etag"),
                                     std::string("Synthetic Logged Game"), std::string("1207658924")})

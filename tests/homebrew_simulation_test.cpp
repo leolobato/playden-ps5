@@ -4294,6 +4294,76 @@ void gog_game_installs() {
           "Steam's own text");
 }
 
+// A GOG-only player's updates: GOG's saved check lists its installed game in Manage Updates, and the game's page
+// offers Update… once GOG's details answer with one.
+void gog_updates() {
+    const auto game = GameId::Gog(1000000001);
+    constexpr std::uint64_t kAccount = 0x8000000000000abcull;
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.SetStoreInstalls(Store::kGog, true);
+    live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}, {1000000002, "GOG other"}})), "GOG's games load");
+    live.UpdateInstalls({}, {{game, 1'000'000'000ull, "internal", true}});
+    live.BeginUpdateCheckLoad(Store::kGog, kAccount);
+    playden::SavedUpdateCheck saved;
+    saved.checked_at = 1700000000 - 3600;
+    saved.games[game] = {true, false, 400'000'000ull, 400'000'000ull, 7, true};
+    live.ApplyUpdateCheck(Store::kGog, kAccount, saved);
+    check(live.state().update_check.loaded && live.state().update_check.games.count(game), "GOG's saved update is the model's");
+    // Its page: GOG's details answer with the update the saved check knows.
+    check(live.action("details:" + playden::ToKey(game)), "the GOG game's page opens");
+    live.UpdateAppDetails(game, 700'000'000ull, 1'200'000'000ull, true, {}, {}, {},
+                          GameUpdate{true, false, 0, 0, 7, false});
+    const auto* update = row(live, "details-update");
+    check(update && update->title == "Update…" && update->enabled, "the page offers Update…");
+    const auto* note = row(live, "details-update-note");
+    check(note && note->value == "400 MB", "with the size the saved check measured");
+    // Manage Updates lists it; GOG was checked an hour ago, so opening asks nothing.
+    live.action("circle");
+    to_route(live, Route::Settings);
+    choose(live, "settings-game-updates");
+    check(live.state().navigation.route == Route::ManageGames && live.state().navigation.manage_tab == ManageTab::Updates,
+          "Manage opens on Updates");
+    check(row(live, "manage-toggle-" + playden::ToKey(game)) && !row(live, "manage-toggle-gog-1000000002"),
+          "the installed GOG game with an update is listed");
+    check(!live.TakeUpdateCheckRequest(Store::kGog) && !live.TakeUpdateCheckRequest(), "nothing is due");
+    for (const auto& item : live.view().rows) check(item.subtitle.find("Steam") == std::string::npos, "nothing names Steam");
+    check(live.view().subtitle.find("Steam") == std::string::npos, "the list's subtitle names no Steam");
+
+    // Steam signs in beside it: Check for updates asks both, and the copy names both, then the one that failed.
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, false});
+    live.BeginUpdateCheckLoad(123);
+    live.ApplyUpdateCheck(123, std::nullopt);
+    choose(live, "manage-check");
+    check(live.TakeUpdateCheckRequest() && live.TakeUpdateCheckRequest(Store::kGog), "both stores are asked");
+    check(live.view().subtitle == "Checking Steam and GOG…", "the list says it checks Steam and GOG");
+    live.FinishUpdateCheck(false);
+    live.FinishUpdateCheck(Store::kGog, true);
+    check(live.view().subtitle.rfind("Couldn't check GOG", 0) == 0, "the list names GOG, which failed");
+    check(row(live, "manage-toggle-" + playden::ToKey(game)), "GOG's saved update stays listed");
+
+    // The GOG game's Update sheet: on its drive, the measured download, and its files go in place once it is closed.
+    live.action("circle");
+    check(live.action("details:" + playden::ToKey(game)), "the GOG game's page opens again");
+    choose(live, "details-update");
+    const auto& modals = live.state().navigation.modals;
+    check(!modals.empty() && modals.back().id == "update", "Update… opens the update sheet");
+    const auto& subtitle = live.view().subtitle;
+    check(subtitle.find("A newer version of the game downloads. On Console storage.") == 0, "the sheet says what downloads, and where");
+    check(subtitle.find("Downloads 400 MB, only the files that changed.") != std::string::npos, "with the measured size");
+    check(subtitle.find("You can play until the update puts its files in place.") != std::string::npos, "and that it can be played");
+    check(subtitle.find("Steam") == std::string::npos, "the sheet names no Steam");
+    const auto* confirm = row(live, "update-confirm");
+    check(confirm && confirm->enabled && confirm->value == "400 MB", "Download and install, with the size");
+    choose(live, "update-confirm");
+    const auto requests = live.TakeInstallRequests();
+    check(requests.size() == 1 && requests.front().kind == InstallRequestKind::Update && requests.front().game_id == game,
+          "the GOG game's update is queued");
+}
+
 // The Steam-only places, for a player with only GOG: Friends asks for Steam, Online rows stay hidden, GOG games have
 // no Cloud saves row, and the download servers ask for Steam to test.
 void steam_only_places() {
@@ -4388,6 +4458,7 @@ int main(int argc, char** argv) {
     gog_view::gog_game_page(fixtures);
     gog_view::gog_game_installs();
     gog_view::steam_only_places();
+    gog_view::gog_updates();
     clean();
     gog_view::gog_scenarios(fixtures);
     clean();

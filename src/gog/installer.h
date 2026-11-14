@@ -11,7 +11,7 @@
 //   Playden's: Cancel and Uninstall can delete a partial install. It holds gog-journal, append-only: "c\t<file>\t<unit>"
 //   once a chunk or range was written (and a chunk's hashes passed), "f\t<file>" once a file was finished and checked.
 //   A torn last line is ignored.
-// - .playden-gog/files is the plan, line by line: a header
+// - .playden-gog/files is the plan (gog/plan_file.h reads and writes it), line by line: a header
 //   "v2\t<generation>\t<build>\t<meta>\t<GOG language>\t<products, comma-separated>\t<total size>\t<total download>\t
 //   <timestamp or ->", then per entry "D\t<path>", or "F\t<path>\t<source>\t<size>\t<md5|->\t<sha256|->\t<units>"
 //   followed by one line per unit: "C\t<compressed md5>\t<compressed size>\t<md5>\t<size>" for a gen 2 chunk, or
@@ -32,6 +32,24 @@
 //   The list is written with each plan, before the file list.
 // - .playden-files lists every placed path ("d\t<path>", "f\t<path>"), redist files too, written before the plan.
 //
+// Plan writes a plan into another layout (plan_file.h: an update's under .playden-update/gog/, a measure's under
+// .playden-gog/measure/) without downloading anything and without touching the install's own plan, file list, redist
+// list or .playden-download. Seeded from the installed file list, its paths keep the spelling the drive has.
+//
+// Stage downloads an update of an installed game beside it, into <root>/.playden-update/ (installs::kUpdateDirName),
+// and never changes the installed game:
+// - gog/ holds the new build's plan, metas, manifests and redist list (UpdateLayout), planned once and reused as Run
+//   reuses its own; files is its file list. The planner keeps an install's rules: the owned DLC, the default branch,
+//   the dependencies and the redist list.
+// - old (a copy of the live .playden-files), paths (every path either version lists, in the file list format, so
+//   RemoveManagedInstall removes both versions if the game is uninstalled in between) and staged last (one changed
+//   path per line, from DiffPlans against the installed plan): the names the Steam installer's update uses, which
+//   steam::DiscardManagedUpdate and RemoveManagedInstall read. Written before the first staged chunk, and only while
+//   staged is missing: once it exists it is never computed again, so a game file the player deletes in the middle of
+//   an update doesn't change what is staged.
+// - staging/<path> receives each staged file, at the path the new plan places it; gog-journal is its journal (the
+//   install journal's format, keyed by the new plan's index). Directories are not staged.
+//
 // The installer writes no install record and leaves .playden-download in place; the runner writes the record. A gen 1
 // repository's support commands (GOG's Galaxy helper) are never run.
 //
@@ -39,6 +57,7 @@
 // token, a secure link's parameters or the account.
 
 #include "gog/http.h"
+#include "gog/plan_file.h"
 #include "gog/session.h"
 
 #include <atomic>
@@ -57,6 +76,14 @@ inline constexpr char kFileListName[] = ".playden-files";
 inline constexpr char kGogDirName[] = ".playden-gog";
 inline constexpr char kPlanPath[] = ".playden-gog/files";
 inline constexpr char kJournalPath[] = ".playden-download/gog-journal";
+// The install record the runner writes (steam::DepotInstaller::kInstallRecord): Stage refuses a folder without one.
+inline constexpr char kInstallRecordName[] = ".playden-install.json";
+// An update's work folder's names (the Steam installer's, in .playden-update/).
+inline constexpr char kUpdateStagingName[] = "staging";
+inline constexpr char kUpdateStagedName[] = "staged";
+inline constexpr char kUpdateOldName[] = "old";
+inline constexpr char kUpdateFilesName[] = "files";
+inline constexpr char kUpdatePathsName[] = "paths";
 // Free space kept beyond the download, as steam::kInstallSpaceMargin.
 inline constexpr std::uint64_t kGogSpaceMargin = 64ull * 1024 * 1024;
 inline constexpr int kDefaultParallel = 4;
@@ -98,6 +125,8 @@ class GogInstaller {
     std::uint64_t product = 0;
     std::string root;      // absolute; made when missing
     std::string language;  // Playden's content language, Steam's name ("english")
+    // The installed .playden-files (absolute) whose spellings the plan keeps (PathSet::Seed); empty for an install.
+    std::string seed_list;
   };
 
   // Download bytes done and in all (compressed chunks, and gen 1 ranges by their length), and the installed bytes already finished when the run started.
@@ -138,9 +167,32 @@ class GogInstaller {
     } stats;
   };
 
+  // An update's download: Outcome (the new build's header, its file count and install size) and what was staged.
+  struct StageOutcome : Outcome {
+    std::uint64_t staged_files = 0;    // the staged list's file entries in the new plan
+    std::uint64_t staged_bytes = 0;    // their sizes
+    std::uint64_t download_bytes = 0;  // their download (compressed chunks, gen 1 ranges by their length)
+    std::uint64_t removed_files = 0;   // installed files the new plan lacks (from the two plans, also on a resume)
+    std::uint64_t hashed_files = 0;    // disk files this run's diff hashed for want of an installed plan
+  };
+
   explicit GogInstaller(Hooks hooks);
+  // Plans the install into InstallLayout(target.root), or reuses the plan saved there, then downloads it.
   Outcome Run(const Target& target, const std::atomic<bool>& cancel,
               const std::function<void(const Progress&)>& progress = {});
+  // Plans the default branch's build into `layout` (its paths below target.root, an existing real folder) and stops:
+  // nothing is downloaded and no other layout's files change. The outcome names the planned build, its files and
+  // install size. Provisional: the update's runner (Phase 5) builds on it.
+  Outcome Plan(const Target& target, const PlanLayout& layout, const std::atomic<bool>& cancel);
+  // Stages an update of the game installed at target.root (a real folder with its install record) to the default
+  // branch's build, as the comment at the top says, and changes nothing else. target.language is the Steam name that
+  // selects the depots: the runner passes the installed GOG language (SteamCodeFor), so an update keeps the language
+  // the game has. A saved update plan is reused (no builds or meta are fetched again); otherwise it plans, seeded
+  // from <root>/.playden-files. The staged files that are not finished, plus kGogSpaceMargin, must fit: kNoSpace before
+  // any download. Progress counts the staged files' download (held is 0). Nothing staged is kNone at once. kCanceled,
+  // kSignedOut and kNetwork keep the journal and the staging folder for the next Stage.
+  StageOutcome Stage(const Target& target, const std::atomic<bool>& cancel,
+                     const std::function<void(const Progress&)>& progress = {});
 
  private:
   Hooks hooks_;

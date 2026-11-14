@@ -419,6 +419,90 @@ void UpdateChecksLoadAndSavePerAccount() {
   std::remove((directory.path() + "/updates-7.v2").c_str());
 }
 
+namespace {
+// An update check repository that can hold the worker in a save.
+class BlockingUpdates final : public UpdateCheckRepository {
+ public:
+  mutable std::mutex mutex;
+  mutable std::map<std::uint64_t, SavedUpdateCheck> saved;
+  mutable std::atomic<int> saves{0}, loads{0};
+  mutable std::atomic<bool> block_save{false}, save_entered{false}, save_release{false};
+  Result<std::optional<SavedUpdateCheck>> Load(std::uint64_t account) const override {
+    ++loads;
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto found = saved.find(account);
+    return Result<std::optional<SavedUpdateCheck>>::Success(
+        found == saved.end() ? std::optional<SavedUpdateCheck>{} : std::optional<SavedUpdateCheck>{found->second});
+  }
+  Result<void> Save(std::uint64_t account, const SavedUpdateCheck& check) const override {
+    ++saves;
+    save_entered = true;
+    while (block_save && !save_release) std::this_thread::sleep_for(1ms);
+    std::lock_guard<std::mutex> lock(mutex);
+    saved[account] = check;
+    return Result<void>::Success();
+  }
+};
+
+SavedUpdateCheck CheckAt(std::int64_t when) {
+  SavedUpdateCheck check;
+  check.checked_at = when;
+  return check;
+}
+}  // namespace
+
+// Steam's and GOG's update checks go to their own repositories, even for the same account number: a GOG save never
+// replaces a Steam save still waiting, and each event names its store.
+void UpdateChecksPerStore() {
+  TemporaryDirectory directory;
+  Storage storage(directory.path());
+  PreferencesStore preferences(storage);
+  Repository organizations;
+  BlockingUpdates steam, gog;
+  {
+    PersistenceService service(preferences, organizations, &steam);
+    assert(!service.LoadUpdateCheck(Store::kGog, 7) && !service.SaveUpdateCheck(Store::kGog, 7, 1, {}));
+    service.SetUpdateChecks(Store::kGog, &gog);
+    service.SetUpdateChecks(Store::kGog, nullptr);
+    assert(!service.LoadUpdateCheck(Store::kGog, 7) && "a removed repository takes no requests");
+  }
+  PersistenceService service(preferences, organizations, &steam);
+  service.SetUpdateChecks(Store::kGog, &gog);
+  steam.block_save = true;
+  const auto first = service.SaveUpdateCheck(7, 1, CheckAt(1));
+  Wait(steam.save_entered);
+  const auto waiting = service.SaveUpdateCheck(Store::kSteam, 7, 2, CheckAt(2));
+  const auto of_gog = service.SaveUpdateCheck(Store::kGog, 7, 5, CheckAt(5));
+  const auto newer_gog = service.SaveUpdateCheck(Store::kGog, 7, 6, CheckAt(6));
+  assert(first && waiting && of_gog && newer_gog);
+  steam.save_release = true;
+  std::map<PersistenceRequestId, PersistenceEvent> events;
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (events.size() < 3 && std::chrono::steady_clock::now() < deadline) {
+    for (auto& event : service.Pump(8)) events[event.request_id] = std::move(event);
+    std::this_thread::sleep_for(1ms);
+  }
+  assert(events.size() == 3 && events.count(first) && events.count(waiting) && events.count(newer_gog));
+  assert(!events.count(of_gog) && "a GOG save replaces the GOG save still waiting");
+  assert(events[first].store == Store::kSteam && events[waiting].store == Store::kSteam &&
+         events[newer_gog].store == Store::kGog && events[newer_gog].account_id == 7 && events[newer_gog].revision == 6);
+  assert(steam.saves.load() == 2 && gog.saves.load() == 1);
+  {
+    std::lock_guard<std::mutex> lock(steam.mutex);
+    assert(steam.saved[7].checked_at == 2 && "the waiting Steam save was not replaced by GOG's");
+  }
+  {
+    std::lock_guard<std::mutex> lock(gog.mutex);
+    assert(gog.saved[7].checked_at == 6);
+  }
+  // Loads read each store's own repository.
+  const auto loaded = Await(service, PersistenceEventKind::kUpdateCheckLoaded, service.LoadUpdateCheck(Store::kGog, 7));
+  assert(loaded.store == Store::kGog && loaded.update_check && loaded.update_check->checked_at == 6 && gog.loads.load() == 1);
+  const auto steam_loaded = Await(service, PersistenceEventKind::kUpdateCheckLoaded, service.LoadUpdateCheck(7));
+  assert(steam_loaded.store == Store::kSteam && steam_loaded.update_check->checked_at == 2 && steam.loads.load() == 1);
+  service.Shutdown();
+}
+
 int main() {
   PreferencesLoadSaveCoalesceAndShutdown();
   PreferencesStatusesAndFailures();
@@ -431,4 +515,5 @@ int main() {
   TerminalCapacityRejectsWithoutChangingScope();
   WaitIdleDrainsAnAcceptedLoadWithoutStoppingWorker();
   UpdateChecksLoadAndSavePerAccount();
+  UpdateChecksPerStore();
 }

@@ -21,8 +21,15 @@ StorageError PreferenceLoadError(PreferencesLoadStatus status) {
 PersistenceService::PersistenceService(PreferencesStore& preferences,
                                        OrganizationRepository& organizations,
                                        UpdateCheckRepository* updates)
-    : preferences_(preferences), organizations_(organizations), updates_(updates),
-      worker_([this] { Run(); }) {}
+    : preferences_(preferences), organizations_(organizations), worker_([this] { Run(); }) {
+  if (updates) updates_[Store::kSteam] = updates;
+}
+
+void PersistenceService::SetUpdateChecks(Store store, UpdateCheckRepository* updates) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (updates) updates_[store] = updates;
+  else updates_.erase(store);
+}
 
 PersistenceService::~PersistenceService() { Shutdown(); }
 
@@ -83,19 +90,21 @@ PersistenceRequestId PersistenceService::ClearOrganization(
   return Submit(std::move(job));
 }
 
-PersistenceRequestId PersistenceService::LoadUpdateCheck(std::uint64_t account) {
-  if (!updates_ || !account) return 0;
+PersistenceRequestId PersistenceService::LoadUpdateCheck(Store store, std::uint64_t account) {
+  if (!account) return 0;
   Job job;
   job.command = Command::kLoadUpdateCheck;
+  job.store = store;
   job.account = account;
   return Submit(std::move(job));
 }
 
-PersistenceRequestId PersistenceService::SaveUpdateCheck(std::uint64_t account, std::uint64_t revision,
+PersistenceRequestId PersistenceService::SaveUpdateCheck(Store store, std::uint64_t account, std::uint64_t revision,
                                                          SavedUpdateCheck check) {
-  if (!updates_ || !account) return 0;
+  if (!account) return 0;
   Job job;
   job.command = Command::kSaveUpdateCheck;
+  job.store = store;
   job.account = account;
   job.revision = revision;
   job.update_check = std::move(check);
@@ -105,6 +114,12 @@ PersistenceRequestId PersistenceService::SaveUpdateCheck(std::uint64_t account, 
 PersistenceRequestId PersistenceService::Submit(Job job) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (stopping_) return 0;
+  if (job.command == Command::kLoadUpdateCheck || job.command == Command::kSaveUpdateCheck) {
+    // The worker uses the repository the job names, never the map.
+    const auto found = updates_.find(job.store);
+    if (found == updates_.end()) return 0;
+    job.updates = found->second;
+  }
 
   const bool organization = IsOrganization(job.command);
   bool scope_change = false;
@@ -151,7 +166,7 @@ PersistenceRequestId PersistenceService::Submit(Job job) {
 
   if (job.command == Command::kSaveUpdateCheck) {
     const auto found = std::find_if(pending_.rbegin(), pending_.rend(), [&job](const Job& pending) {
-      return pending.command == Command::kSaveUpdateCheck && pending.account == job.account;
+      return pending.command == Command::kSaveUpdateCheck && pending.store == job.store && pending.account == job.account;
     });
     if (found != pending_.rend()) {
       job.request = ++next_request_;
@@ -285,6 +300,7 @@ void PersistenceService::Run() {
       PersistenceEvent event;
       event.request_id = failed.request;
       event.account_id = failed.account;
+      event.store = failed.store;
       event.account_generation = failed.generation;
       event.revision = failed.revision;
       event.error = StorageError::kInvalidData;
@@ -327,6 +343,7 @@ void PersistenceService::Execute(Job job) {
   PersistenceEvent event;
   event.request_id = job.request;
   event.account_id = job.account;
+  event.store = job.store;
   event.account_generation = job.generation;
   event.revision = job.revision;
 
@@ -377,7 +394,7 @@ void PersistenceService::Execute(Job job) {
   }
 
   if (job.command == Command::kLoadUpdateCheck) {
-    const auto loaded = updates_->Load(job.account);
+    const auto loaded = job.updates->Load(job.account);
     event.kind = PersistenceEventKind::kUpdateCheckLoaded;
     event.error = loaded.ok() ? StorageError::kNone : loaded.error();
     if (loaded.ok()) event.update_check = loaded.value();
@@ -387,7 +404,7 @@ void PersistenceService::Execute(Job job) {
     return;
   }
   if (job.command == Command::kSaveUpdateCheck) {
-    const auto saved = updates_->Save(job.account, job.update_check);
+    const auto saved = job.updates->Save(job.account, job.update_check);
     event.kind = PersistenceEventKind::kUpdateCheckSaved;
     event.error = saved.ok() ? StorageError::kNone : saved.error();
     if (!saved.ok()) event.message = saved.message();

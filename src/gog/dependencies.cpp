@@ -16,7 +16,6 @@ namespace playden::gog {
 namespace {
 
 constexpr std::string_view kRedistPrefix = "__redist/";
-constexpr char kRedistListTemporary[] = ".playden-gog/redist.list.tmp";
 
 bool PrintableAscii(std::string_view text) {
   for (const char c : text) {
@@ -127,7 +126,12 @@ const char* RedistSkipName(RedistSkip skip) {
 }
 
 int WriteRedistList(const std::string& root, const std::vector<RedistEntry>& entries) {
-  if (root.empty() || root.front() != '/' || entries.size() > kMaxRedistEntries) return EINVAL;
+  if (root.empty() || root.front() != '/') return EINVAL;
+  return WriteRedistListFile(root + "/" + kRedistListPath, entries);
+}
+
+int WriteRedistListFile(const std::string& list_path, const std::vector<RedistEntry>& entries) {
+  if (list_path.empty() || list_path.front() != '/' || entries.size() > kMaxRedistEntries) return EINVAL;
   std::string text = std::string(kRedistListHeader) + "\n";
   for (const auto& entry : entries) {
     if (!ValidEntry(entry)) return EINVAL;
@@ -135,8 +139,8 @@ int WriteRedistList(const std::string& root, const std::vector<RedistEntry>& ent
   }
   if (text.size() > kMaxRedistListBytes) return EINVAL;
 
-  const std::string temporary = root + "/" + kRedistListTemporary;
-  const std::string path = root + "/" + kRedistListPath;
+  const std::string temporary = list_path + ".tmp";
+  const std::string& path = list_path;
   // A stale temporary (or a link someone left there) goes first: O_NOFOLLOW | O_EXCL never writes through it.
   if (unlink(temporary.c_str()) != 0 && errno != ENOENT) return errno;
   const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);

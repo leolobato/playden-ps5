@@ -4,9 +4,17 @@
 #include "gog/api.h"
 #include "gog/hash.h"
 #include "gog/inflate.h"
+#include "gog/installer.h"
+#include "gog/languages.h"
 #include "gog/manifest_v1.h"
+#include "gog/plan_file.h"
+#include "gog/update_diff.h"
+#include "stores/gog_update.h"
+
+#include <sys/stat.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <string_view>
 #include <utility>
@@ -127,6 +135,16 @@ void GogDetailsSource::Log(const std::string& line) const {
   if (log_) log_(line);
 }
 
+void GogDetailsSource::SetInstalled(InstalledLookup installed) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  installed_ = std::move(installed);
+}
+
+void GogDetailsSource::SetInstallRoot(RootLookup root) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  install_root_ = std::move(root);
+}
+
 void GogDetailsSource::Request(const GameId& id, std::uint64_t generation) { Queue(id, generation, false, false); }
 
 void GogDetailsSource::RequestFirst(const GameId& id, std::uint64_t generation) { Queue(id, generation, true, false); }
@@ -171,7 +189,86 @@ void GogDetailsSource::ResetLocked(std::uint64_t generation) {
   pending_.clear();
   requested_.clear();
   events_.clear();
+  check_ = {};
+  check_pending_.clear();
+  check_waiting_.clear();
+  ++check_serial_;
+  measure_pending_.clear();
+  measure_requested_.clear();
+  measured_.clear();
   if (active_cancel_) active_cancel_->store(true);
+}
+
+bool GogDetailsSource::CheckRoomLocked() const {
+  const auto waiting = std::count_if(events_.begin(), events_.end(), [](const Event& event) { return event.check != 0; });
+  return static_cast<std::size_t>(waiting) < kMaximumEvents;
+}
+
+void GogDetailsSource::PushLocked(GameDetails details, std::uint64_t check) {
+  // kMaximumEvents pages' answers waiting: the oldest goes (its page asks again). A check's answers are never dropped
+  // and never push a page's out: the worker takes no more of the check while kMaximumEvents of them wait.
+  if (check == 0) {
+    const auto pages = std::count_if(events_.begin(), events_.end(), [](const Event& event) { return event.check == 0; });
+    if (static_cast<std::size_t>(pages) >= kMaximumEvents) {
+      const auto page =
+          std::find_if(events_.begin(), events_.end(), [](const Event& event) { return event.check == 0; });
+      requested_.erase(page->details.id);
+      events_.erase(page);
+    }
+  }
+  events_.push_back({std::move(details), check});
+}
+
+bool GogDetailsSource::CheckInstalled(const std::vector<GameId>& ids, std::uint64_t generation) {
+  if (generation == 0) return false;
+  std::deque<GameId> games;
+  std::set<GameId> seen;
+  for (const auto& id : ids)
+    if (id.store == Store::kGog && id.gog_product() && seen.insert(id).second) games.push_back(id);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || !started_ || generation < generation_) return false;
+    if (generation != generation_) ResetLocked(generation);
+    if (check_.total && !check_.done()) return false;
+    if (games.empty()) return false;
+    check_ = {};
+    check_waiting_.clear();
+    ++check_serial_;
+    check_.account_generation = generation;
+    check_.total = games.size();
+    check_pending_ = std::move(games);
+  }
+  wake_.notify_all();
+  return true;
+}
+
+steam::InstalledCheck GogDetailsSource::CheckProgress() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return check_;
+}
+
+bool GogDetailsSource::Measure(const steam::SizeRequest& request, std::uint64_t generation) {
+  if (!request.update || request.id.store != Store::kGog || !request.id.gog_product() || generation == 0) return false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || !started_ || generation < generation_) return false;
+    if (generation != generation_) ResetLocked(generation);
+    if (measure_requested_.count(request)) return true;
+    if (measure_pending_.size() >= kMaximumPending) return false;
+    measure_requested_.insert(request);
+    measure_pending_.push_back(request);
+  }
+  wake_.notify_all();
+  return true;
+}
+
+std::vector<steam::MeasuredSize> GogDetailsSource::PumpMeasured() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<steam::MeasuredSize> result;
+  for (auto& size : measured_)
+    if (size.account_generation == generation_) result.push_back(std::move(size));
+  measured_.clear();
+  return result;
 }
 
 void GogDetailsSource::Invalidate(std::uint64_t generation) {
@@ -180,12 +277,27 @@ void GogDetailsSource::Invalidate(std::uint64_t generation) {
 }
 
 std::vector<GameDetails> GogDetailsSource::Pump(std::size_t maximum) {
-  std::lock_guard<std::mutex> lock(mutex_);
   std::vector<GameDetails> result;
-  while (!events_.empty() && result.size() < maximum) {
-    if (events_.front().account_generation == generation_) result.push_back(std::move(events_.front()));
-    events_.pop_front();
+  bool taken = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    while (!events_.empty() && result.size() < maximum) {
+      auto& event = events_.front();
+      if (event.details.account_generation == generation_) {
+        // The check counts a game once its answer is handed out, so its progress never runs ahead of the answers. An
+        // earlier answer for the same game (a page's) is not the check's.
+        if (event.check != 0 && event.check == check_serial_ && check_waiting_.erase(event.details.id)) {
+          ++check_.answered;
+          if (event.details.failed) ++check_.failed;
+        }
+        result.push_back(std::move(event.details));
+      }
+      events_.pop_front();
+      taken = true;
+    }
   }
+  // Room for the check's next answers.
+  if (taken) wake_.notify_all();
   return result;
 }
 
@@ -194,6 +306,8 @@ void GogDetailsSource::Shutdown() {
     std::lock_guard<std::mutex> lock(mutex_);
     stopping_ = true;
     pending_.clear();
+    check_pending_.clear();
+    measure_pending_.clear();
     if (active_cancel_) active_cancel_->store(true);
     if (!started_ || joined_) return;
     joined_ = true;
@@ -204,17 +318,48 @@ void GogDetailsSource::Shutdown() {
 
 void GogDetailsSource::Run() {
   for (;;) {
+    enum class Job { kPage, kCheck, kMeasure };
+    Job job = Job::kPage;
     GameId id;
-    std::uint64_t generation = 0;
+    steam::SizeRequest size;
+    std::uint64_t generation = 0, check = 0;
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      wake_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
+      wake_.wait(lock, [this] {
+        return stopping_ || !pending_.empty() || (!check_pending_.empty() && CheckRoomLocked()) ||
+               !measure_pending_.empty();
+      });
       if (stopping_) return;
-      id = pending_.front();
-      pending_.pop_front();
+      // Pages first, then the installed check, then updates' sizes.
+      if (!pending_.empty()) {
+        id = pending_.front();
+        pending_.pop_front();
+      } else if (!check_pending_.empty() && CheckRoomLocked()) {
+        job = Job::kCheck;
+        id = check_pending_.front();
+        check_pending_.pop_front();
+        ++check_.asked;
+        check_waiting_.insert(id);
+        requested_.insert(id);
+        check = check_serial_;
+      } else {
+        job = Job::kMeasure;
+        size = measure_pending_.front();
+        measure_pending_.pop_front();
+      }
       generation = generation_;
       active_cancel_ = cancel;
+    }
+    if (job == Job::kMeasure) {
+      auto measured = MeasureUpdate(size, generation, *cancel);
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (active_cancel_ == cancel) active_cancel_.reset();
+      if (stopping_) return;
+      if (cancel->load() || generation != generation_) continue;
+      measure_requested_.erase(size);
+      measured_.push_back(std::move(measured));
+      continue;
     }
     auto details = Fetch(id, generation, *cancel);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -224,11 +369,7 @@ void GogDetailsSource::Run() {
     if (cancel->load() || generation != generation_) continue;
     // Asking again may work: the next visit asks.
     if (details.failed) requested_.erase(id);
-    if (events_.size() >= kMaximumEvents) {
-      requested_.erase(events_.front().id);
-      events_.pop_front();
-    }
-    events_.push_back(std::move(details));
+    PushLocked(std::move(details), check);
   }
 }
 
@@ -237,6 +378,11 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
   details.id = id;
   details.account_generation = generation;
   const auto product = *id.gog_product();
+  // An installed game: whether GOG's default build is still the one it holds.
+  const auto record = installed_ ? installed_(id) : std::nullopt;
+  const auto no_update = [&] {
+    if (record) Log("details update result=none");
+  };
   if (!transport_made_) {
     transport_made_ = true;
     if (make_transport_) transport_ = make_transport_();
@@ -253,6 +399,7 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
     details.windows_installable = false;
     details.reason = "GOG returned unexpected data for this game.";
     Log(std::string("details result=") + kind);
+    no_update();
     return details;
   };
   const auto not_installable = [&](const char* reason, const char* kind) {
@@ -260,6 +407,7 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
     details.windows_installable = false;
     details.reason = reason;
     Log(std::string("details result=") + kind);
+    no_update();
     return details;
   };
   if (!transport_) return failed("network");
@@ -277,6 +425,7 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
     case gog::BuildChoice::Kind::kProtocol: return unusable("protocol");
   }
   const bool gen1 = choice.kind == gog::BuildChoice::Kind::kGen1;
+  latest_builds_[product] = std::to_string(choice.generation) + ":" + choice.build_id;
 
   std::vector<std::string> urls;
   std::vector<std::string> bases;
@@ -346,7 +495,122 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
   std::snprintf(line, sizeof(line), "details result=%s depots=%zu products=%zu dependencies=%zu owned=%s",
                 gen1 ? "gen1" : "gen2", depots, products, folder_dependencies, list ? "list" : "base");
   Log(line);
+  if (record) {
+    // GOG never changes a published build: another build ID, or the same one in another generation, is an update.
+    const char* update = "none";
+    if (record->gog) {
+      update = "current";
+      if (choice.build_id != record->gog->build_id || choice.generation != record->gog->generation) {
+        details.update.newer = true;
+        details.update.target = gog::UpdateTarget(choice.build_id, choice.generation);
+        update = "newer";
+      }
+    }
+    Log(std::string("details update result=") + update);
+  }
   return details;
+}
+
+steam::MeasuredSize GogDetailsSource::MeasureUpdate(const steam::SizeRequest& request, std::uint64_t generation,
+                                                    const std::atomic<bool>& cancel) {
+  using Error = gog::GogInstaller::Outcome::Error;
+  steam::MeasuredSize result;
+  result.request = request;
+  result.account_generation = generation;
+  std::uint64_t changed = 0, removed = 0;
+  const auto answer = [&](const char* kind, const char* why, bool cached = false) {
+    char line[160];
+    std::snprintf(line, sizeof(line), "details size result=%s changed=%llu removed=%llu%s%s%s", kind,
+                  static_cast<unsigned long long>(changed), static_cast<unsigned long long>(removed),
+                  why ? " why=" : "", why ? why : "", cached ? " cached=1" : "");
+    Log(line);
+    return result;
+  };
+  const auto product = *request.id.gog_product();
+  const auto record = installed_ ? installed_(request.id) : std::nullopt;
+  if (!record || !record->gog) return answer("skipped", "no_record");
+  const auto root = install_root_ ? install_root_(request.id) : std::nullopt;
+  if (!root || root->empty() || root->front() != '/') return answer("skipped", "no_root");
+  {
+    // An update under way: its own staging says what changes, and the installed plan may be on its way out.
+    const auto state = *root + "/" + installs::kUpdateDirName + "/" + installs::kUpdateStateName;
+    struct stat info {};
+    if (::lstat(state.c_str(), &info) == 0 || errno != ENOENT) return answer("skipped", "updating");
+  }
+  // The language the game has, as the runner's update keeps it: it selects the depots.
+  std::string language = gog::SteamCodeFor(record->gog->language);
+  if (language.empty()) language = record->language;
+  if (language.empty()) language = "english";
+
+  // Measured before: the folder, the installed build and the one GOG last named for the game decide.
+  if (measured_generation_ != generation) {
+    measured_updates_.clear();
+    measured_generation_ = generation;
+  }
+  const auto installed_build = std::to_string(record->gog->generation) + ":" + record->gog->build_id;
+  const auto key = [&](const std::string& latest) {
+    return *root + "\n" + installed_build + "\n" + latest + "\n" + language;
+  };
+  if (const auto latest = latest_builds_.find(product); latest != latest_builds_.end()) {
+    if (const auto known = measured_updates_.find(key(latest->second)); known != measured_updates_.end()) {
+      result.measured = true;
+      result.download_bytes = known->second.download_bytes;
+      result.staged_bytes = known->second.staged_bytes;
+      result.install_bytes = known->second.install_bytes;
+      result.target = known->second.target;
+      changed = known->second.changed;
+      removed = known->second.removed;
+      return answer("measured", nullptr, true);
+    }
+  }
+
+  // The default build planned beside the install, then compared with it. The measure folder never outlives this.
+  struct Cleanup {
+    const std::string& root;
+    ~Cleanup() { (void)RemoveGogMeasure(root); }
+  } cleanup{*root};
+  (void)RemoveGogMeasure(*root);
+  gog::GogInstaller::Hooks hooks;
+  hooks.make_transport = make_transport_;
+  hooks.token = [this](const std::atomic<bool>& flag) { return session_.Token(flag); };
+  hooks.invalidate = [this](std::uint64_t token_generation, std::string_view token) {
+    session_.InvalidateAccessToken(token_generation, token);
+  };
+  gog::GogInstaller installer(std::move(hooks));
+  gog::GogInstaller::Target target;
+  target.product = product;
+  target.root = *root;
+  target.language = language;
+  target.seed_list = *root + "/" + gog::kFileListName;
+  const auto layout = gog::MeasureLayout(*root);
+  const auto planned = installer.Plan(target, layout, cancel);
+  if (cancel.load() || planned.error == Error::kCanceled) {
+    result.failed = true;
+    return answer("failed", "canceled");
+  }
+  if (planned.error == Error::kNetwork || planned.error == Error::kSignedOut) {
+    result.failed = true;
+    return answer("failed", gog::InstallerErrorName(planned.error));
+  }
+  if (planned.error != Error::kNone) return answer("skipped", gog::InstallerErrorName(planned.error));
+  const auto latest = std::to_string(planned.generation) + ":" + planned.build_id;
+  latest_builds_[product] = latest;
+  const auto diff = gog::DiffPlans(gog::InstallLayout(*root).plan, layout.plan, *root, cancel, {});
+  if (diff.canceled || cancel.load()) {
+    result.failed = true;
+    return answer("failed", "canceled");
+  }
+  if (!diff.readable) return answer("skipped", "damaged");
+  changed = diff.changed_files;
+  removed = diff.removed_files;
+  result.measured = true;
+  result.download_bytes = diff.download_bytes;
+  result.staged_bytes = diff.staged_bytes;
+  result.install_bytes = diff.install_bytes;
+  result.target = gog::UpdateTarget(planned.build_id, planned.generation);
+  measured_updates_[key(latest)] = {result.download_bytes, result.staged_bytes, result.install_bytes, result.target,
+                                    changed, removed};
+  return answer("measured", nullptr);
 }
 
 std::size_t GogDetailsSource::AddDependencies(const std::vector<std::string>& wanted, std::uint64_t* install,

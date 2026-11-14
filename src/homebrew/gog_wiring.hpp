@@ -8,6 +8,8 @@
 #include "gog/http.h"
 #include "gog/session.h"
 #include "gog/session_store.h"
+#include "installs/install_record.h"
+#include "library/store.h"
 #include "library/cache.h"
 #include "platform/storage.h"
 
@@ -47,6 +49,12 @@ struct GogWiringConfig {
   // Settings › Game language as a Steam code, read when a GOG download starts; empty: English.
   std::function<std::string()> content_language;
   std::string install_log_directory;  // install.log (the GOG runner's lines); empty: log_directory
+  // An installed GOG game's record (none: not installed or its drive is away) and folder, for its updates and their
+  // sizes; passed to the details source (GogDetailsSource::SetInstalled, SetInstallRoot). Called on its worker, which
+  // the controller's Shutdown joins before the install service stops; the apps read the install service's snapshot,
+  // which is made after these services. Empty: no GOG game is ever seen as installed, so none shows an update.
+  std::function<std::optional<installs::InstalledRecord>(const GameId&)> installed_record;
+  std::function<std::optional<std::string>(const GameId&)> install_root;
   // Tests: free bytes of the drive holding a folder, for the install runner. Empty: steam::QueryVolumeSpace.
   std::function<std::optional<std::uint64_t>(const std::string&)> free_bytes;
   // Tests: each call makes one transport, the session's first, then the library's, then the details source's (made on

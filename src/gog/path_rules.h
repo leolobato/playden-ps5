@@ -102,6 +102,13 @@ class PathSet {
   // refused; a link too (kLink).
   Added AddRedist(std::string_view placed, PathKind kind, std::size_t index);
 
+  // An installed path's spelling (a placed path, as .playden-files lists it), before the first Add: a file or folder
+  // added later whose key is `path`'s, or one of the folders above it, takes the seeded spelling, so a build that
+  // changes only a name's case keeps the name already on the drive. A seed records a spelling only, never an entry: it
+  // never causes kClash and never sets `replaced`, whatever its kind. A spelling whose byte length differs from the
+  // added one's (a fold that changes length) is not taken. A link is ignored.
+  void Seed(std::string_view path, PathKind kind);
+
   std::size_t entries() const { return entries_.size(); }
 
  private:
@@ -112,6 +119,7 @@ class PathSet {
   Added Merge(std::string path, PathKind kind, std::size_t index);
   std::unordered_map<std::string, Entry> entries_;          // folded path -> the explicit file or folder entry
   std::unordered_map<std::string, std::string> folders_;    // folded folder path -> its first spelling
+  std::unordered_map<std::string, std::string> seeds_;      // folded path -> its installed spelling
 };
 
 }  // namespace playden::gog

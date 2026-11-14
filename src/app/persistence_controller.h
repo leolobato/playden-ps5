@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -19,12 +20,14 @@ class PersistenceController {
 
   // Organization is device-wide (kDeviceOrganization): it loads at
   // construction and is saved whether or not a store account is signed in.
-  // A Steam account arriving loads its own update check.
-  void Activate(std::uint64_t account_id);
+  // A store account arriving loads its own update check from that store's repository. Without a store, Steam.
+  void Activate(Store store, std::uint64_t account_id);
+  void Activate(std::uint64_t account_id) { Activate(Store::kSteam, account_id); }
 
-  // A store account left: saves pending edits; preferences and organization stay, the account's update
-  // check leaves the model.
-  void Reset();
+  // A store account left: saves pending edits; preferences, organization and the other stores' update checks
+  // stay, this store's update check leaves the model. Without a store, Steam.
+  void Reset(Store store);
+  void Reset() { Reset(Store::kSteam); }
   void Tick();
   void Retry();
 
@@ -63,9 +66,13 @@ class PersistenceController {
   homebrew::PersistenceLoadToken organization_load_token_;
   std::uint64_t submitted_preferences_revision_ = 0;
   std::uint64_t submitted_organization_revision_ = 0;
-  std::uint64_t update_account_ = 0;  // the Steam account whose update check the model holds
-  PersistenceRequestId update_load_request_ = 0;
-  std::uint64_t submitted_update_revision_ = 0;
+  // Per store: the account whose update check the model holds, its load, and the revision last submitted.
+  struct UpdateSlot {
+    std::uint64_t account = 0;
+    PersistenceRequestId load_request = 0;
+    std::uint64_t submitted_revision = 0;
+  };
+  std::map<Store, UpdateSlot> update_slots_;
   std::optional<StorageError> clear_result_;
   bool preferences_load_failed_ = false;
   bool organization_load_failed_ = false;

@@ -1,5 +1,7 @@
 #include "homebrew/controller.hpp"
+#include "app/persistence_controller.h"
 #include "app/persistence_service.h"
+#include "library/update_check.h"
 #include "library/cache.h"
 #include <algorithm>
 #include <cassert>
@@ -198,7 +200,48 @@ void EditWhileLoading(const std::filesystem::path& root) {
 }
 
 }
+// Steam's and GOG's update checks go to their own files, for the same account number too, and a restart reads both
+// back. Steam's file never names a GOG game: an older Playden would refuse all of it.
+void UpdateChecksSurviveRestart(const std::filesystem::path& root) {
+  std::filesystem::create_directories(root);
+  Storage storage(root.string());PreferencesStore preferences(storage);Organization organization(storage);
+  UpdateCheckStore steam(storage),gog(storage,"updates-gog-");
+  constexpr std::uint64_t kAccount=123;
+  const auto witcher=GameId::Gog(1207658924);
+  const auto wait=[](app::PersistenceController& controller,const auto& predicate){
+    const auto until=std::chrono::steady_clock::now()+3s;
+    do {controller.Tick();if(predicate())return;std::this_thread::sleep_for(1ms);}while(std::chrono::steady_clock::now()<until);
+    assert(false && "update check deadline");
+  };
+  {
+    Simulation model({}, {},ModelMode::Live);model.SetWallClock(1760000000);
+    app::PersistenceService persistence(preferences,organization,&steam);persistence.SetUpdateChecks(Store::kGog,&gog);
+    app::PersistenceController controller(model,persistence);
+    controller.Activate(kAccount);controller.Activate(Store::kGog,kAccount);
+    wait(controller,[&]{return model.state().update_check.loaded;});
+    model.UpdateAppDetails(SteamId(42),1,1,true,{},{},{},GameUpdate{true,false,5});
+    model.UpdateAppDetails(witcher,1,1,true,{},{},{},GameUpdate{false,true,6});
+    controller.FlushAndShutdown();
+  }
+  const auto text=[&](const std::string& path){const auto read=storage.Read(path,1<<20);assert(read.ok());return std::string(read.value().begin(),read.value().end());};
+  const auto steam_file=text("updates-123.v2"),gog_file=text("updates-gog-123.v2");
+  assert(steam_file.find("\n42 1 ")!=std::string::npos && steam_file.find("gog-")==std::string::npos);
+  assert(gog_file.find("\ngog-1207658924 2 ")!=std::string::npos && gog_file.find("\n42 ")==std::string::npos);
+  {
+    Simulation model({}, {},ModelMode::Live);model.SetWallClock(1760000000);
+    app::PersistenceService persistence(preferences,organization,&steam);persistence.SetUpdateChecks(Store::kGog,&gog);
+    app::PersistenceController controller(model,persistence);
+    controller.Activate(kAccount);controller.Activate(Store::kGog,kAccount);
+    wait(controller,[&]{return model.state().update_check.loaded;});
+    const auto& games=model.state().update_check.games;
+    assert(games.size()==2 && games.at(SteamId(42)).newer && games.at(witcher).new_dlc);
+    // Steam signs out: GOG's update stays.
+    controller.Reset();
+    assert(games.size()==1 && games.count(witcher) && model.state().update_check.loaded);
+    controller.FlushAndShutdown();
+  }
+}
 int main() {
   const auto root=std::filesystem::temp_directory_path()/("playden-persistence-integration-"+std::to_string(getpid()));
-  std::filesystem::create_directories(root);RestartAndSignOut(root);EditWhileLoading(root/"delayed");SortSurvivesRestart(root/"sort");std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);RestartAndSignOut(root);EditWhileLoading(root/"delayed");SortSurvivesRestart(root/"sort");UpdateChecksSurviveRestart(root/"updates");std::filesystem::remove_all(root);
 }

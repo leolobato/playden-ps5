@@ -97,6 +97,40 @@ int main() {
   Check(!store.Load(76561198000000005ull).ok(), "a damaged version 1 file is refused");
 
   Check(!store.Save(0, saved).ok() && !store.Load(0).ok(), "account 0 is refused");
+
+  // GOG's store: its own file name, the account key, and GOG's game keys; Steam's files stay as they were.
+  {
+    char gog_root[] = "/tmp/playden-update-check-gog-XXXXXX";
+    Check(mkdtemp(gog_root), "temporary GOG root");
+    Storage gog_storage(gog_root);
+    UpdateCheckStore gog(gog_storage, "updates-gog-");
+    UpdateCheckStore steam(gog_storage);
+    constexpr std::uint64_t kKey = 0x8000000000000abcull;
+    SavedUpdateCheck of_gog;
+    of_gog.checked_at = 1'800'000'500;
+    of_gog.games[GameId::Gog(1207658924)] = {true, false, 300, 400, 5, true};
+    of_gog.games[GameId::Gog(2000000001)] = {true, false, 0, 0, 0, false};
+    Check(gog.Save(kKey, of_gog).ok(), "save GOG's check");
+    const std::string gog_path = std::string(gog_root) + "/updates-gog-" + std::to_string(kKey) + ".v2";
+    Check(stat(gog_path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600, "GOG's file is updates-gog-<key>.v2, owner-only");
+    Check(stat((std::string(gog_root) + "/updates-" + std::to_string(kKey) + ".v2").c_str(), &info) != 0,
+          "no Steam file for the same number");
+    Check(steam.Load(kKey).ok() && !steam.Load(kKey).value(), "Steam's store doesn't read GOG's file");
+    const auto back = gog.Load(kKey);
+    Check(back.ok() && back.value() && *back.value() == of_gog, "gog-<id> keys survive the round trip");
+    // The default prefix is Steam's, unchanged; the same number names two files.
+    Check(steam.Save(kKey, saved).ok() && *steam.Load(kKey).value() == expected && *gog.Load(kKey).value() == of_gog,
+          "Steam's and GOG's checks of the same number are separate files");
+    Check(stat((std::string(gog_root) + "/updates-" + std::to_string(kKey) + ".v2").c_str(), &info) == 0,
+          "the default prefix writes updates-<n>.v2");
+    // A load keeps every store's valid key: the model takes its own store's.
+    Write(gog_storage, "updates-gog-7.v2", "version=2\nchecked_at=9\ngog-1207658924 1 0 0 0\n440 1 0 0 0\n");
+    const auto both = gog.Load(7);
+    Check(both.ok() && both.value()->games.size() == 2 && both.value()->games.count(GameId::Gog(1207658924)) &&
+              both.value()->games.count(SteamId(440)),
+          "keys of both stores load");
+    std::filesystem::remove_all(gog_root);
+  }
   std::filesystem::remove_all(root);
   std::puts("library_update_check_test passed");
   return 0;

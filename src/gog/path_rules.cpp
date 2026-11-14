@@ -228,6 +228,17 @@ PathSet::Added PathSet::AddRedist(std::string_view placed, PathKind kind, std::s
   return Merge(std::string(placed), kind, index);
 }
 
+void PathSet::Seed(std::string_view path, PathKind kind) {
+  if (kind == PathKind::kLink || path.empty()) return;
+  const std::string spelling(path);
+  const auto key = FoldCase(spelling);
+  // The folders above it, then the path itself; the first seed of a key wins, as Add's first spelling does.
+  if (key.size() == spelling.size())
+    for (auto slash = spelling.find('/'); slash != std::string::npos; slash = spelling.find('/', slash + 1))
+      seeds_.emplace(key.substr(0, slash), spelling.substr(0, slash));
+  seeds_.emplace(key, spelling);
+}
+
 PathSet::Added PathSet::Merge(std::string path, PathKind kind, std::size_t index) {
   Added added;
   const auto key = FoldCase(path);
@@ -259,10 +270,23 @@ PathSet::Added PathSet::Merge(std::string path, PathKind kind, std::size_t index
     }
   }
 
-  // Each folder keeps the first spelling seen; only ASCII letters change case, so the length is the same.
+  // Each folder keeps the first spelling seen, or the installed one when seeded; only ASCII letters change case, so
+  // the length is the same.
   for (const auto end : ends) {
-    const auto found = folders_.emplace(key.substr(0, end), path.substr(0, end)).first;
+    const auto folder_key = key.substr(0, end);
+    auto spelling = path.substr(0, end);
+    if (const auto seeded = seeds_.find(folder_key); seeded != seeds_.end() && seeded->second.size() == end)
+      spelling = seeded->second;
+    const auto found = folders_.emplace(folder_key, std::move(spelling)).first;
     if (path.compare(0, end, found->second) != 0) path.replace(0, end, found->second);
+  }
+  // A file's own name in its installed spelling.
+  if (kind == PathKind::kFile) {
+    const auto seeded = seeds_.find(key);
+    if (seeded != seeds_.end() && seeded->second.size() == path.size()) {
+      const auto name = path.rfind('/') == std::string::npos ? 0 : path.rfind('/') + 1;
+      path.replace(name, std::string::npos, seeded->second, name, std::string::npos);
+    }
   }
   if (own != entries_.end()) {
     added.replaced = own->second.index;
