@@ -12,8 +12,10 @@ The work folder is what tools/build_wine_ps5.sh wrote (prx/sce_module/*.prx and 
 folder holds x86_64-unix/*.prx and <arch>-windows/*, for example <kit inputs>/runtime/wine/lib/wine.
 
 A .prx is compared byte for byte. A kit carries its PE modules stripped (strip -s), and the cross build leaves them
-unstripped, so each PE module is stripped into a temporary copy with the MinGW strip of its architecture first.
-Builds from before prospero-win made its PE output reproducible carry the link time and a work-folder-dependent
+unstripped, so each PE module and the kit's copy are both stripped into temporary copies with the MinGW strip of its
+architecture first. strip writes the current time into a PE file unless SOURCE_DATE_EPOCH is set, so both are stripped
+with the same SOURCE_DATE_EPOCH: otherwise every PE module would differ, even one the build didn't change, and the
+kit's copy carries the time it was stripped. Builds from before prospero-win made its PE output reproducible carry the link time and a work-folder-dependent
 CodeView GUID, so every PE module differs from them; compare with a kit built after that change.
 
 --json prints the result as JSON. The exit status is 0 whether or not modules differ, 2 on a usage error.
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -29,6 +32,14 @@ import tempfile
 from pathlib import Path
 
 ARCHES = {'i386': 'i686-w64-mingw32-strip', 'x86_64': 'x86_64-w64-mingw32-strip'}
+# Any fixed time: both sides are stripped with it, so only their code can differ.
+STRIP_EPOCH = '1'
+
+
+def stripped(source: Path, copy: Path, strip: str) -> bytes:
+    shutil.copyfile(source, copy)
+    subprocess.run([strip, '-s', str(copy)], check=True, env=dict(os.environ, SOURCE_DATE_EPOCH=STRIP_EPOCH))
+    return copy.read_bytes()
 
 
 def compare(work: Path, kit: Path, strip_commands: dict[str, str]) -> dict[str, list[str]]:
@@ -43,13 +54,12 @@ def compare(work: Path, kit: Path, strip_commands: dict[str, str]) -> dict[str, 
             if not shipped.is_file():
                 result['new'].append(name)
                 continue
-            data = built.read_bytes()
-            if arch is not None:
-                copy = Path(directory) / f'{arch}-{built.name}'
-                shutil.copyfile(built, copy)
-                subprocess.run([strip_commands[arch], '-s', str(copy)], check=True)
-                data = copy.read_bytes()
-            result['same' if data == shipped.read_bytes() else 'changed'].append(name)
+            if arch is None:
+                data, kit_data = built.read_bytes(), shipped.read_bytes()
+            else:
+                data = stripped(built, Path(directory) / f'built-{arch}-{built.name}', strip_commands[arch])
+                kit_data = stripped(shipped, Path(directory) / f'kit-{arch}-{built.name}', strip_commands[arch])
+            result['same' if data == kit_data else 'changed'].append(name)
     return result
 
 
