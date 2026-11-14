@@ -177,7 +177,7 @@
     }
   },
   "prospero_win": {
-    "revision": "61d6ae0f600ff2d7a90fabd22111ae270412a3b5",
+    "revision": "1922abe623d277ab7eb749e909ede10b3f3e8691",
     "url": "https://github.com/leolobato/prospero-win.git",
     "default_source": "third_party/prospero-win",
     "published": false,
@@ -185,7 +185,7 @@
     "retained_runtime_artifact_revision": "bceed2d-kit-h-r1",
     "upstream_url": "https://github.com/mpereiraesaa/prospero-win.git",
     "branch": "main",
-    "note": "Up to 993297a (the translator pushes and pops a word from memory, for Need for Speed III): see this file's git history. 8e67a99 adds Wine patch 1020 (a commit the host can't give memory to fails with the commit limit, 1455, as on Windows, and leaves the pages as they were; the direct-memory layer logs the calls it refuses; ntdll.prx), from the next kit too. 61d6ae0 builds the PE modules in one make run with reproducible output, keys each build by its inputs (--print-input-key, so an unchanged build is reused) and compiles through ccache on request (--ccache, development kits only); the .prx modules come out byte for byte the same, and the PE modules differ only in their link time and debug ID."
+    "note": "Up to 993297a (the translator pushes and pops a word from memory, for Need for Speed III): see this file's git history. 8e67a99 adds Wine patch 1020 (a commit the host can't give memory to fails with the commit limit, 1455, as on Windows, and leaves the pages as they were; the direct-memory layer logs the calls it refuses; ntdll.prx), from the next kit too. 61d6ae0 builds the PE modules in one make run with reproducible output, keys each build by its inputs (--print-input-key, so an unchanged build is reused) and compiles through ccache on request (--ccache, development kits only); the .prx modules come out byte for byte the same, and the PE modules differ only in their link time and debug ID. 1922abe adds Wine patch 1021 (files opened for writing and locked files are parked too, and a descriptor lent to the client is given back when it is closed, so a parked file never saves a stale position; ntdll.prx, wineserver.prx, win32u.prx, nsiproxy.prx and ntoskrnl.exe change), from the next kit too."
   },
   "prospero_bottle_preparation": {
     "hl2-fresh-v16": {
