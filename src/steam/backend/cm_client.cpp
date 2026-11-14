@@ -257,6 +257,7 @@ CmError FromTransport(HttpError error) {
     case HttpError::kTimeout: return CmError::kTimeout;
     case HttpError::kProtocolError:
     case HttpError::kResponseTooLarge: return CmError::kProtocol;
+    case HttpError::kSinkFailed: return CmError::kProtocol;  // CM requests never stream; listed for completeness
     default: return CmError::kNetwork;
   }
 }

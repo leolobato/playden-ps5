@@ -2,10 +2,12 @@
 #pragma once
 
 // GOG's library calls: the owned product IDs (embed.gog.com/user/data/games, GOG_PROTOCOL.md §2) and one product's
-// gamesdb entry (gamesdb.gog.com/platforms/gog/external_releases/<id>, §3). Synchronous: call them on a worker.
+// gamesdb entry (gamesdb.gog.com/platforms/gog/external_releases/<id>, §3); and the content system's calls an install
+// makes (builds, secure links, the dependency store, §4 and §6). Synchronous: call them on a worker.
 // Nothing here logs; callers log the endpoint's name and counts, never a URL, a token, an ID or a title.
 
 #include "gog/art_url.h"
+#include "gog/content.h"
 #include "gog/http.h"
 
 #include <atomic>
@@ -102,5 +104,65 @@ ProductInfo ParseProduct(std::string_view body, std::uint64_t id);
 // address Playden fetches (gog/art_url.h): https://images.gog.com/<hex>.jpg?namespace=gamesdb for a cover, with
 // _bg_crop_1920x655 before .jpg for a hero. Anything else gives "".
 std::string ArtUrl(std::string_view url_format, ArtKind kind = ArtKind::kCover);
+
+// The content system's calls. None sends a User-Agent other than kUserAgent, and only FetchSecureLink sends a token.
+inline constexpr std::size_t kMaxContentAnswerBytes = 1024 * 1024;
+
+// A plain answer: whether one came, its status and its body (at most kMaxContentAnswerBytes).
+struct ContentAnswer {
+  bool answered = false;  // false: no answer (network, timeout, cancel); status and body are empty
+  bool canceled = false;
+  long status = 0;
+  std::string body;
+};
+
+// GET https://content-system.gog.com/products/<id>/os/windows/builds?generation=2&_version=2, without Authorization.
+// ChooseBuild reads the body.
+ContentAnswer FetchBuilds(Transport& transport, std::uint64_t product, const std::atomic<bool>& cancel);
+
+// GET https://content-system.gog.com/dependencies/repository?generation=2, unsigned. ParseDependencyRepository reads
+// the body.
+ContentAnswer FetchDependencyRepository(Transport& transport, const std::atomic<bool>& cancel);
+
+struct LinkResult {
+  enum class Kind {
+    kOk,
+    kRejected,   // 401: the access token is no longer good
+    kForbidden,  // 403: the account doesn't own the product, or GOG refused the link
+    kNetwork,    // no answer, 429, 5xx, another 4xx: try again later
+    kProtocol,   // 200 without usable endpoints for generation 2, or another status
+    kCanceled,
+  };
+  Kind kind = Kind::kNetwork;
+  long status = 0;
+  // kOk: the endpoints for generation 2, in the order to try them (OrderEndpoints). A secure link's parameters hold
+  // its signature: never log them, and wipe them with WipeEndpoints when done.
+  std::vector<CdnEndpoint> endpoints;
+  // The earliest `expires_at` (Unix seconds) among the endpoints that state one (fastly); 0 when none does (gcore's
+  // link has no expiry).
+  std::int64_t expires_at = 0;
+
+  LinkResult() = default;
+  LinkResult(const LinkResult&) = default;
+  LinkResult& operator=(const LinkResult&) = default;
+  LinkResult(LinkResult&&) = default;
+  LinkResult& operator=(LinkResult&&) = default;
+  ~LinkResult() { WipeEndpoints(endpoints); }
+
+  static void WipeEndpoints(std::vector<CdnEndpoint>& endpoints);
+};
+
+// Reads a secure link or open link answer ({"urls":[...]}): kOk with the generation 2 endpoints, else kProtocol.
+LinkResult ParseLink(std::string_view body);
+
+// GET https://content-system.gog.com/products/<pid>/secure_link?_version=2&generation=2&path=/ with
+// "Authorization: Bearer <access token>". The request's header, the answer's body and the parsed copy are wiped before
+// it returns: they hold the token and the link's signature.
+LinkResult FetchSecureLink(Transport& transport, std::string_view access_token, std::uint64_t product,
+                           const std::atomic<bool>& cancel);
+
+// GET https://content-system.gog.com/open_link?generation=2&_version=2&path=/dependencies/store/, unsigned: the public
+// dependency store's chunk bases. Their `url` is used as it is (FillUrl), not url_format.
+LinkResult FetchOpenLink(Transport& transport, const std::atomic<bool>& cancel);
 
 }  // namespace playden::gog

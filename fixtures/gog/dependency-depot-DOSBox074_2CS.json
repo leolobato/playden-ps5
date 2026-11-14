@@ -1,0 +1,202 @@
+{
+    "depot": {
+        "items": [
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "0bc5827e4dcb85ebe46358ecb667fc77",
+                        "compressedSize": 2940424,
+                        "md5": "7a38d9cdc32fb45bb9fdfb3c71eca87e",
+                        "size": 2989648
+                    }
+                ],
+                "path": "DOSBOX/GOGDOSConfig.exe",
+                "sha256": "0465cedb523cbaf56c7aa8f144f1ebdddb7e1ade23575ecf0a0ba2c934455c54",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "c8e8cebf986cf938a9f49b12279b8e82",
+                        "compressedSize": 187117,
+                        "md5": "52726f9e11c4f2af64033ee17dae1fce",
+                        "size": 448231
+                    }
+                ],
+                "path": "DOSBOX/SDL.dll",
+                "sha256": "69037ebc43755296c0cc292d57d560028d7f2265f7b86ca84e714835c19bbd58",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "de6e1dcce4d3f7c660c250ba0c369a76",
+                        "compressedSize": 1528543,
+                        "md5": "2318a4462513382c45298be63ec007d8",
+                        "size": 3802624
+                    }
+                ],
+                "path": "DOSBOX/DOSBox.exe",
+                "sha256": "8a7a7fedd222bf985b51191000557f9ee2ffb033be02c6c59594dbbec013cd41",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "4c367c5bba4f842c175755409c9a8513",
+                        "compressedSize": 5348,
+                        "md5": "7db830b9fb29781f86cec2a1bbfe050c",
+                        "size": 13312
+                    }
+                ],
+                "path": "DOSBOX/SDL_net.dll",
+                "sha256": "2f39dc04acbecf47efa45034891602b6ea7bf6fd2f27b5c0a5ca8d7fb155c929",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "909f5f6b1ae6fe115edb795aa25622a5",
+                        "compressedSize": 1331823,
+                        "md5": "0085e58e8ae6b047da445b168dad6d9d",
+                        "size": 1334686
+                    }
+                ],
+                "path": "DOSBOX/dosbox-0.74-2.1.tar.gz",
+                "sha256": "1b6c865340e9d6119529c4ae61e2f12661424a38f07f8818202c5357a6b97ba2",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "397ec53e16ec94280b05d90b95f50881",
+                        "compressedSize": 21188,
+                        "md5": "5cdbb451933a5805fe50097cb87f35fa",
+                        "size": 62740
+                    }
+                ],
+                "path": "DOSBOX/DOSBox 0.74-2 Manual.txt",
+                "sha256": "4a7b09b4a9b114221db38ae8258f30e430a37b6ac96ecb242d9350382beaf6a5",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "201577a88206b80ccaccf208aa6e7509",
+                        "compressedSize": 47421,
+                        "md5": "19cef6175f9fc9c860351836d9409109",
+                        "size": 94208
+                    }
+                ],
+                "path": "DOSBOX/Video Codec/zmbv.dll",
+                "sha256": "be72d291901b4a67741732da3d6dfd87fb3e74c8d03d56d40c58dd4d9744a478",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "4a5ad5425342e88958cf305b7c20326d",
+                        "compressedSize": 840,
+                        "md5": "b0fd2f5230239719fdb5ab7528b62a0b",
+                        "size": 1573
+                    }
+                ],
+                "path": "DOSBOX/Video Codec/Video Instructions.txt",
+                "sha256": "e478355e52d4be075d059441d3de1936bc43241ff17bc6270680e32f0881b5b1",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "6221f30746b178161cef1a07ef6ddeea",
+                        "compressedSize": 878,
+                        "md5": "adc640ab1a46ac9ff8ea770edd5efb30",
+                        "size": 3938
+                    }
+                ],
+                "path": "DOSBOX/Video Codec/zmbv.inf",
+                "sha256": "f343e3b4693ae29cb5440382f3fee06572ae8fc6bce46cb673b6890bc735a026",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "66b4fe2453d9ae9677ec4ba56dcde829",
+                        "compressedSize": 11631,
+                        "md5": "62f93107b6c31e0059299ff51bdbb521",
+                        "size": 31918
+                    }
+                ],
+                "path": "DOSBOX/Documentation/NEWS.txt",
+                "sha256": "1e648756aa6c0d0010c26d3c884b4698f51003bdfea0329dac1d02706b501924",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "9aad5215d6c96fba95f120008cd5b291",
+                        "compressedSize": 6837,
+                        "md5": "94d55d512a9ba36caa9b7df079bae19f",
+                        "size": 17992
+                    }
+                ],
+                "path": "DOSBOX/Documentation/COPYING.txt",
+                "sha256": "32b1062f7da84967e7019d01ab805935caa7ab7321a7ced0e30ebe75e5df1670",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "3f296756b344d71d92e22377b325c042",
+                        "compressedSize": 1679,
+                        "md5": "6edd4ea41d69ba42d4724319f3fe0dc9",
+                        "size": 3833
+                    }
+                ],
+                "path": "DOSBOX/Documentation/INSTALL.txt",
+                "sha256": "c6679b562301614212c4bc0fd81798ed19324be8ccfd2e807856a41b39f7adff",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "397ec53e16ec94280b05d90b95f50881",
+                        "compressedSize": 21188,
+                        "md5": "5cdbb451933a5805fe50097cb87f35fa",
+                        "size": 62740
+                    }
+                ],
+                "path": "DOSBOX/Documentation/README.txt",
+                "sha256": "4a7b09b4a9b114221db38ae8258f30e430a37b6ac96ecb242d9350382beaf6a5",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "ede30538132b194f6a477a932441df95",
+                        "compressedSize": 213,
+                        "md5": "699c1f3f9448f6db90735e1b00f2c954",
+                        "size": 264
+                    }
+                ],
+                "path": "DOSBOX/Documentation/AUTHORS.txt",
+                "sha256": "f6481008f772b0783585a8b583dd5dfa3ee986830aa71e19eed6300d16dc0203",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "8b61e2b588300f2e304449bcac262892",
+                        "compressedSize": 546,
+                        "md5": "91f1f15bdafd59e5ae096fc7685f7a10",
+                        "size": 972
+                    }
+                ],
+                "path": "DOSBOX/Documentation/THANKS.txt",
+                "sha256": "f356d80820412b8c7f956562dad5103e3704506bd15a831078e1a2feee361526",
+                "type": "DepotFile"
+            }
+        ]
+    },
+    "version": 2
+}

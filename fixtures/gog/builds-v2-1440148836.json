@@ -1,0 +1,47 @@
+{
+    "total_count": 3,
+    "count": 1,
+    "items": [
+        {
+            "build_id": "51985043610075177",
+            "product_id": "1440148836",
+            "os": "windows",
+            "branch": null,
+            "version_name": "1.2",
+            "tags": [
+                "csb_10_5_2_w_95"
+            ],
+            "public": true,
+            "date_published": "2019-02-04T10:13:32+0000",
+            "generation": 2,
+            "urls": [
+                {
+                    "endpoint_name": "fastly",
+                    "url": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/fe\/5c\/fe5c3c87a9b7a30f5ce2f4547ab05309",
+                    "url_format": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/fe\/5c\/fe5c3c87a9b7a30f5ce2f4547ab05309",
+                    "parameters": {},
+                    "priority": 10,
+                    "max_fails": 100,
+                    "supports_generation": [
+                        1,
+                        2
+                    ],
+                    "fallback_only": false
+                },
+                {
+                    "endpoint_name": "gcore",
+                    "url": "https:\/\/gog-cdn.gcdn.co\/content-system\/v2\/meta\/fe\/5c\/fe5c3c87a9b7a30f5ce2f4547ab05309",
+                    "url_format": "https:\/\/gog-cdn.gcdn.co\/content-system\/v2\/meta\/fe\/5c\/fe5c3c87a9b7a30f5ce2f4547ab05309",
+                    "parameters": {},
+                    "priority": 1,
+                    "max_fails": 100,
+                    "supports_generation": [
+                        2
+                    ],
+                    "fallback_only": true
+                }
+            ]
+        }
+    ],
+    "has_private_branches": true
+}

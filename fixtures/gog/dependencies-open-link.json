@@ -1,0 +1,29 @@
+{
+    "urls": [
+        {
+            "endpoint_name": "fastly",
+            "url": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/dependencies\/store",
+            "url_format": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/dependencies\/store",
+            "parameters": {},
+            "priority": 10,
+            "max_fails": 100,
+            "supports_generation": [
+                1,
+                2
+            ],
+            "fallback_only": false
+        },
+        {
+            "endpoint_name": "gcore",
+            "url": "https:\/\/gog-cdn.gcdn.co\/content-system\/v2\/dependencies\/store",
+            "url_format": "https:\/\/gog-cdn.gcdn.co\/content-system\/v2\/dependencies\/store",
+            "parameters": {},
+            "priority": 1,
+            "max_fails": 100,
+            "supports_generation": [
+                2
+            ],
+            "fallback_only": true
+        }
+    ]
+}

@@ -8,6 +8,14 @@ import sys
 import threading
 import time
 
+# Streamed bodies: byte i is (i * 31 + 7) & 0xff, so the pattern repeats every 256 bytes.
+PATTERN = bytes((index * 31 + 7) & 0xFF for index in range(256))
+STREAM_BLOCK = 64 * 1024
+
+
+def pattern(length):
+    return (PATTERN * (length // len(PATTERN) + 1))[:length]
+
 
 class Server(http.server.ThreadingHTTPServer):
     accepted_connections = 0
@@ -44,8 +52,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
             pass
 
+    def _stream(self, status, length, blocks):
+        """Sends a Content-Length of `length`, then each (bytes, pause) in `blocks`, flushed one by one."""
+        self.send_response(status)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            for block, pause in blocks:
+                self.wfile.write(block)
+                self.wfile.flush()
+                if pause:
+                    time.sleep(pause)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
+            pass
+
     def do_GET(self):
-        if self.path.startswith("/keep/"):
+        if self.path.startswith("/stream/"):
+            body = pattern(int(self.path[len("/stream/"):]))
+            self._stream(200, len(body), ((body[start:start + STREAM_BLOCK], 0)
+                                          for start in range(0, len(body), STREAM_BLOCK)))
+        elif self.path == "/stream-slow":
+            body = pattern(2 * STREAM_BLOCK)
+            self._stream(200, len(body), ((body[:STREAM_BLOCK], 3.0), (body[STREAM_BLOCK:], 0)))
+        elif self.path == "/stall":
+            body = pattern(2 * STREAM_BLOCK)
+            self._stream(200, len(body), ((body[:STREAM_BLOCK], 3.0), (body[STREAM_BLOCK:], 0)))
+        elif self.path == "/trickle":
+            body = pattern(25 * 4096)
+            self._stream(200, len(body), ((body[start:start + 4096], 0.1) for start in range(0, len(body), 4096)))
+        elif self.path == "/stream-404":
+            body = b'{"error":"not_found"}'
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path.startswith("/keep/"):
             if self.path == "/keep/slow":
                 self._reply(200, b"late", keep=True, marker="slow", slow=True)
             elif self.path == "/keep/large":

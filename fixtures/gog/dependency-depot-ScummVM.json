@@ -1,0 +1,410 @@
+{
+    "depot": {
+        "items": [
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "94e886f4e5a77a3f776e761420ad1702",
+                        "compressedSize": 4056,
+                        "md5": "a9d68c0e349ae1f21d5cee7d0f885666",
+                        "size": 7106
+                    }
+                ],
+                "path": "scummvm/COPYRIGHT.txt",
+                "sha256": "36dd632c4a64c37baf12a447c15c93d2031195119c5d7bd0d0f8d9d14dc11942",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "57fd9da061498e8ec303e4b53ba82a7f",
+                        "compressedSize": 26614,
+                        "md5": "add780b9cdedcb983c54d37315252dd1",
+                        "size": 82842
+                    }
+                ],
+                "path": "scummvm/NEWS.txt",
+                "sha256": "331f53aaa38c87099a2be5a07718132b11a4fa526bde55fc8a8df99e7767b882",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "17a459dc74585ec6a3ebca118e4b56f7",
+                        "compressedSize": 9429,
+                        "md5": "7477accf1d11428874f7be5974e54c66",
+                        "size": 26721
+                    }
+                ],
+                "path": "scummvm/COPYING.LGPL.txt",
+                "sha256": "f2c0f033c76185c3c981ad458ea433ca2787ab9b6f4623cab500fc8024db0e05",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "b49324d3b1b5fb14dc104e0be0b3eaeb",
+                        "compressedSize": 6837,
+                        "md5": "441c28d2cf86e15a37fa47e15a72fbac",
+                        "size": 17992
+                    }
+                ],
+                "path": "scummvm/COPYING.txt",
+                "sha256": "6f04ae8364d0079a192b14635f4b1da294ce18724c034c39a6a41d1b09df6100",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "ce4de09b59ebc6d0e7e8e5fb18683338",
+                        "compressedSize": 472,
+                        "md5": "e2700a1d201bbb5ee41f3016782190fb",
+                        "size": 1243
+                    }
+                ],
+                "path": "scummvm/migration.bat",
+                "sha256": "7e42943c56a4465a39fcc337ae4a3e32c59f3713d5d61d85780335126035ea8a",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "972708a836b5c850146fd844a3257790",
+                        "compressedSize": 10192694,
+                        "md5": "5e84f24a0cd7017d757369faf1faf812",
+                        "size": 10485760
+                    },
+                    {
+                        "compressedMd5": "ec2ab3e952b2e7aadb735f418fada6c4",
+                        "compressedSize": 10329623,
+                        "md5": "4264dccd1850c8f90efb8e69ff7fc6f0",
+                        "size": 10485760
+                    },
+                    {
+                        "compressedMd5": "ac36c74c08505d8b6aa673d294cd382b",
+                        "compressedSize": 16426280,
+                        "md5": "a1fde9d22c19cc19ed9326f675e501de",
+                        "size": 17896501
+                    }
+                ],
+                "md5": "0016bae385fd88923ddfa68768005730",
+                "path": "scummvm/scummvm-2.0.0.zip",
+                "sha256": "9c4bb8eb9e443e1f84f28cf672511114f16f7b63676b9d58cb022454ce26ea34",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "23e9dfa91914288ddc05bcaef26e31a0",
+                        "compressedSize": 37002,
+                        "md5": "6cfd510fa94ac8370723b96172259346",
+                        "size": 121190
+                    }
+                ],
+                "path": "scummvm/README.txt",
+                "sha256": "f3939b3ae12f03ea7a339bc88c90fdc75bb6ab3e5f94d19150f14632eb56d423",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "0cde61e0970d63478a8610e725e4cbf9",
+                        "compressedSize": 7368,
+                        "md5": "454a668baf8fd348e2c8453bc6b87077",
+                        "size": 23504
+                    }
+                ],
+                "path": "scummvm/AUTHORS.txt",
+                "sha256": "144165532890fc8dbe73855f605aaf66780bb88b8ac9692f4a88de7b4b71b3f0",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "87e2a5bf02ed543e7984f3f70a9b6c09",
+                        "compressedSize": 397018,
+                        "md5": "289b51c0e03082a9495f107be7e887a0",
+                        "size": 996864
+                    }
+                ],
+                "path": "scummvm/SDL2.dll",
+                "sha256": "d2540383d341a8225d3366664ab481f1f8c8827d00b2b3434307076d4e5e257d",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "820c11bc93a2898c587d3171eca184c4",
+                        "compressedSize": 217,
+                        "md5": "8184434e7eccabfddde74163dfa2c2e8",
+                        "size": 364
+                    }
+                ],
+                "path": "scummvm/migration.txt",
+                "sha256": "0e97dc2ca8942c412672940c38870d45da17ac1c324adf331bad4b44430d5064",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "20eff7e1afc8b6c568508d96d58ffc07",
+                        "compressedSize": 1672,
+                        "md5": "3d4696e850c62e956b25b87419af1594",
+                        "size": 6300
+                    }
+                ],
+                "path": "scummvm/COPYING.BSD.txt",
+                "sha256": "cf2ca41b6be3f3087167cd7a2300d3bf8dac19b85ec8eec3751f35b613b07896",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "b577294806f10f8eb3d7d45d1d2e64c5",
+                        "compressedSize": 12392,
+                        "md5": "fe5be67ae2f0e79e3211eb3e9cbe0c48",
+                        "size": 35947
+                    }
+                ],
+                "path": "scummvm/COPYING.FREEFONT.txt",
+                "sha256": "496669d6d5bd751acdc7bfaa0720bc5dbd211c791dc1d4e406a32e281a17a701",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "8af6348d4403bf1b7ef9ad31d9526f51",
+                        "compressedSize": 258,
+                        "md5": "1d432e13ccd3ccd6bf0b5c5c6053bada",
+                        "size": 419
+                    }
+                ],
+                "path": "scummvm/README-SDL.txt",
+                "sha256": "1470dea4b03c2ad1395786d1575c208de4fd8f6e3d343678c988dfd48ab05583",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "3076fd10296fc4699083a4186ffe0130",
+                        "compressedSize": 4934328,
+                        "md5": "c79558e2912f2647a4a07a59307ae385",
+                        "size": 10485760
+                    },
+                    {
+                        "compressedMd5": "1e8ade8a06b30625ee87bdb9a6489237",
+                        "compressedSize": 4186807,
+                        "md5": "d6d0e350a5bc2809e74d2f3667776a17",
+                        "size": 10485760
+                    },
+                    {
+                        "compressedMd5": "aa9a8ffffd5dd6743af40e76327b421e",
+                        "compressedSize": 5589440,
+                        "md5": "aabae0754f77da0ea4f72632eaccaf45",
+                        "size": 13926912
+                    }
+                ],
+                "md5": "c939f50fa2eaa92a562815f55bd23fed",
+                "path": "scummvm/scummvm.exe",
+                "sha256": "050b07738eabbc2924f05bd091d2d1fa83c39b435894d75feaebb1618c585799",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "52f4076ec9d4c8c21333078c96446b9c",
+                        "compressedSize": 639319,
+                        "md5": "6caef7845d8fe8edb6f226ff59adf6b9",
+                        "size": 1387008
+                    }
+                ],
+                "path": "scummvm/WinSparkle.dll",
+                "sha256": "d3d0f7acb916e434598070b415c7f4e3532c5cefe1668da5034ffd495980faf6",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "1906f5c8415a6158648443a4a4c4bc84",
+                        "compressedSize": 57409,
+                        "md5": "0632e39ae2233e86250f7cad8291e5ff",
+                        "size": 154542
+                    }
+                ],
+                "path": "scummvm/graphics/left.bmp",
+                "sha256": "0d8d539f75a1c9cff5ef1a16134b9fd84139077818d2b72e5f7ac68ab4d69f79",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "5348acb31520daa97a259921725e108e",
+                        "compressedSize": 67316,
+                        "md5": "e84cc9c7cf7616afcd0a0d7fdea20401",
+                        "size": 77799
+                    }
+                ],
+                "path": "scummvm/graphics/scummvm-install.ico",
+                "sha256": "eaff7bef5975c86d572ce07ed7ea7932e7d7f1dc0029cb1c80bb5df82ae1c3ef",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "ab845009e22f31d9a69675d1d3b64513",
+                        "compressedSize": 3216,
+                        "md5": "03cd01abd2f2db924ded600c99a01cf3",
+                        "size": 7020
+                    }
+                ],
+                "path": "scummvm/doc/QuickStart.txt",
+                "sha256": "f50f7f5e75c076ac45e5a035f91e9f66d8f5df32a2f367bc7d1f014d67d463c1",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "ea663f62b1138062cd060a1be3ba8ca3",
+                        "compressedSize": 3502,
+                        "md5": "3cbba771de7ddecb9a8bb1dee621892c",
+                        "size": 7599
+                    }
+                ],
+                "path": "scummvm/doc/no-nb/HurtigStart.txt",
+                "sha256": "df5bfa555bf04632259274f08522b0a5ff1ad0e33e4b9e8026bc1e0c2ebdc8f1",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "f020ebdcbb5346cb69e3ca8f59b5a6f5",
+                        "compressedSize": 3345,
+                        "md5": "a3d60fb4a87a44d9e9e5ff75121c7ecf",
+                        "size": 7466
+                    }
+                ],
+                "path": "scummvm/doc/es/InicioRapido.txt",
+                "sha256": "d02cdecd721ac7f6f37cf08ff3a8504a0fcb1d3a2e22459988b707a5fb33d286",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "c9a35d0732fe5c3880d8861cf8c6d24d",
+                        "compressedSize": 3673,
+                        "md5": "1d6083c1dc612adf97f275572f806e1f",
+                        "size": 8240
+                    }
+                ],
+                "path": "scummvm/doc/fr/DemarrageRapide.txt",
+                "sha256": "a12d54be557fe0fff872f49b4478c36cd2835f0aac5e7ae11d41fdedd48f5f2b",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "ea663f62b1138062cd060a1be3ba8ca3",
+                        "compressedSize": 3502,
+                        "md5": "3cbba771de7ddecb9a8bb1dee621892c",
+                        "size": 7599
+                    }
+                ],
+                "path": "scummvm/doc/da/HurtigStart.txt",
+                "sha256": "df5bfa555bf04632259274f08522b0a5ff1ad0e33e4b9e8026bc1e0c2ebdc8f1",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "116156736012587e67f7723664239f2d",
+                        "compressedSize": 37560,
+                        "md5": "38891f3f6ecaae142eae7617fabedb04",
+                        "size": 118830
+                    }
+                ],
+                "path": "scummvm/doc/cz/PrectiMe.txt",
+                "sha256": "030a7445b40e539c567209cc04a29b1e3568b9bca707bc294ddb5b6d8bacdbbf",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "8a6913addbf511b82198594a797fed06",
+                        "compressedSize": 43134,
+                        "md5": "6511d7628158cbf5e5bfbd19d30c0b15",
+                        "size": 146032
+                    }
+                ],
+                "path": "scummvm/doc/de/LIESMICH.txt",
+                "sha256": "fa2f3461d8ce3b9d6e1417ce0356b92c0c85fa9cdc0c86c191c261ed1ebf4b25",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "deb4fbf4357c3c091bf39f62a143d8fa",
+                        "compressedSize": 4012,
+                        "md5": "77c34d52ce588572f4393ed999182b30",
+                        "size": 9268
+                    }
+                ],
+                "path": "scummvm/doc/de/Schnellstart.txt",
+                "sha256": "794ccffd60cab426b287e6eafd5a58d95b48a033a1eba33fe814d17a2dd6cbfa",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "678a8b928926d321e9ed0905c8565d17",
+                        "compressedSize": 31873,
+                        "md5": "cf822e74d4483dcb84449e993d7dae74",
+                        "size": 107242
+                    }
+                ],
+                "path": "scummvm/doc/de/NEUES.txt",
+                "sha256": "210336108ac508298181b2197def4be6ee89eb288a66ab18ccb555e3cfd73633",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "279cebbc1e0f25a0ea59d11d0956327a",
+                        "compressedSize": 3406,
+                        "md5": "bebb01d8fa17e478aec30855e6004d5c",
+                        "size": 7405
+                    }
+                ],
+                "path": "scummvm/doc/it/GuidaRapida.txt",
+                "sha256": "51bb4329570d78d954930051fc784b9720cc1db8794ec122a738c09f4185891f",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "b99a32cc5ef639f42244d92d3b742eb0",
+                        "compressedSize": 3427,
+                        "md5": "ed3a1b28c7f4d9b4267367e2b888f9a6",
+                        "size": 7781
+                    }
+                ],
+                "path": "scummvm/doc/se/Snabbstart.txt",
+                "sha256": "dab3992a8e5cb4c1d9c7a0a9f4a139cc13cc1107a6fad63f54a2eaf011043824",
+                "type": "DepotFile"
+            },
+            {
+                "chunks": [
+                    {
+                        "compressedMd5": "cf58d60a70896c39b3126ae05f72b6e9",
+                        "compressedSize": 31273,
+                        "md5": "712e31415b152463084212f9d42f19d4",
+                        "size": 101865
+                    }
+                ],
+                "path": "scummvm/doc/se/LasMig.txt",
+                "sha256": "20ab30f72f23f01f0bff7661602aadfcdcd3835868f0739bbb97436f85a3b15a",
+                "type": "DepotFile"
+            }
+        ]
+    },
+    "version": 2
+}

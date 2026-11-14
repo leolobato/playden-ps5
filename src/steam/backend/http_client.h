@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -28,6 +29,7 @@ enum class HttpError {
   kResponseTooLarge,
   kResponseHeadersTooLarge,
   kProtocolError,
+  kSinkFailed,  // HttpRequest::body_sink returned false
 };
 
 const char* HttpErrorName(HttpError error);
@@ -36,6 +38,10 @@ inline constexpr std::uint32_t kMaxHttpTimeoutMs = 120'000;
 inline constexpr std::size_t kMaxHttpResponseBytes = 16 * 1024 * 1024;
 // Steam depot manifests only (HttpRequest::depot_manifest): a large game's manifest is more than 16 MiB.
 inline constexpr std::size_t kMaxHttpManifestResponseBytes = 64 * 1024 * 1024;
+// A streamed body (HttpRequest::body_sink): its byte cap, the longest stall it may set, and its total deadline cap.
+inline constexpr std::size_t kMaxHttpStreamResponseBytes = 64 * 1024 * 1024;
+inline constexpr std::uint32_t kMaxHttpStallTimeoutMs = 120'000;
+inline constexpr std::uint32_t kMaxHttpStreamTimeoutMs = 30 * 60 * 1000;
 inline constexpr std::size_t kMaxHttpResponseHeaderBytes = 16 * 1024;
 inline constexpr std::size_t kMaxHttpResponseHeaderCount = 64;
 
@@ -53,6 +59,16 @@ struct HttpRequest {
   bool allow_plain_http = false;
   // A Steam depot manifest: max_response_bytes may be up to kMaxHttpManifestResponseBytes, not kMaxHttpResponseBytes.
   bool depot_manifest = false;
+  // GET only. A 2xx body goes to the sink block by block, in order, and is not kept in HttpResponse::body
+  // (timing.body_bytes counts it). Returning false fails the request with kSinkFailed. Any other status keeps its
+  // body (up to 64 KiB) in HttpResponse::body and never reaches the sink. With a sink:
+  // - max_response_bytes may be up to kMaxHttpStreamResponseBytes; depot_manifest is not allowed;
+  // - stall_timeout_ms (1..kMaxHttpStallTimeoutMs) is required: the request fails with kTimeout when no body byte
+  //   arrives for that long, counted from the start of the transfer;
+  // - timeout_ms may be 0, meaning no total deadline, or up to kMaxHttpStreamTimeoutMs;
+  // - connect_timeout_ms 0 means stall_timeout_ms.
+  std::function<bool(const std::uint8_t* data, std::size_t size)> body_sink;
+  std::uint32_t stall_timeout_ms = 0;
 };
 
 struct HttpTiming {

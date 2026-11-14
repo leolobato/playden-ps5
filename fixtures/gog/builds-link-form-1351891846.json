@@ -1,0 +1,115 @@
+{
+    "total_count": 36,
+    "count": 7,
+    "items": [
+        {
+            "build_id": "59737834399613144",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": "JJ2+ Mod",
+            "version_name": "1.24 JJ2+ (6.66d)",
+            "tags": [
+                "receiver_v2",
+                "csb_11_0_0_w_19",
+                "11_0_0_19"
+            ],
+            "public": true,
+            "date_published": "2026-06-01T15:03:51+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/fd\/7b\/fd7bacca3d0dfb0c9a0bb2fc208d79a1"
+        },
+        {
+            "build_id": "58994853441697136",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": "JJ2+ Mod",
+            "version_name": "1.24 JJ2+ (6.3)",
+            "tags": [
+                "receiver_v2",
+                "csb_11_0_0_w_19",
+                "11_0_0_19"
+            ],
+            "public": true,
+            "date_published": "2025-09-18T08:22:51+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/64\/fc\/64fc793eb899565279a21aa161806e10"
+        },
+        {
+            "build_id": "58784005928770634",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": "JJ2+ Mod",
+            "version_name": "1.24 JJ2+ (6.1a)",
+            "tags": [
+                "receiver_v2",
+                "csb_11_0_0_w_19",
+                "11_0_0_19"
+            ],
+            "public": true,
+            "date_published": "2025-07-07T14:54:08+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/77\/29\/77299e5feb64ce792a15050363d9f4ab"
+        },
+        {
+            "build_id": "58728446008975447",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": "JJ2+ Mod",
+            "version_name": "1.24 JJ2+ (6.0b)",
+            "tags": [
+                "receiver_v2",
+                "csb_11_0_0_w_19",
+                "11_0_0_19"
+            ],
+            "public": true,
+            "date_published": "2025-06-18T10:56:11+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/46\/43\/464386b9c5816a0abfd33bac6faf65ca"
+        },
+        {
+            "build_id": "58684624061909169",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": "JJ2+ Mod",
+            "version_name": "1.24 JJ2+ (6.0a)",
+            "tags": [
+                "receiver_v2",
+                "csb_11_0_0_w_19",
+                "11_0_0_19"
+            ],
+            "public": true,
+            "date_published": "2025-06-03T08:09:39+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/d8\/b1\/d8b191bb9bc5e3c50e2890d3f2ddf32f"
+        },
+        {
+            "build_id": "50747586883966799",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": null,
+            "version_name": "1.24HF",
+            "tags": [
+                "csb_10_2_1_w_214"
+            ],
+            "public": true,
+            "date_published": "2017-12-04T14:02:16+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/ba\/b7\/bab75eccd96f44493a4b715dbb9b53c4"
+        },
+        {
+            "build_id": "50730091363390836",
+            "product_id": "1351891846",
+            "os": "windows",
+            "branch": null,
+            "version_name": "1.24",
+            "tags": [
+                "csb_10_2_1_w_214"
+            ],
+            "public": true,
+            "date_published": "2017-11-28T13:09:42+0000",
+            "generation": 2,
+            "link": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v2\/meta\/46\/aa\/46aa6deb1c0e1ba1c513680a79155e43"
+        }
+    ],
+    "has_private_branches": true
+}

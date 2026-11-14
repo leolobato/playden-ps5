@@ -3,6 +3,7 @@
 
 #include "gog/art_url.h"
 #include "gog/client_config.h"
+#include "gog/product_id.h"
 #include "platform/secret.h"
 #include "steam/backend/json.h"
 
@@ -15,20 +16,6 @@ using steam::json::Value;
 
 std::string_view BodyOf(const steam::HttpResponse& response) {
   return {reinterpret_cast<const char*>(response.body.data()), response.body.size()};
-}
-
-// A canonical positive decimal that fits 64 bits: no sign, no leading zero, no fraction or exponent.
-bool CanonicalId(std::string_view text, std::uint64_t* id) {
-  if (text.empty() || text.size() > 20 || text.front() == '0') return false;
-  std::uint64_t value = 0;
-  for (const char c : text) {
-    if (c < '0' || c > '9') return false;
-    const std::uint64_t digit = static_cast<std::uint64_t>(c - '0');
-    if (value > (UINT64_MAX - digit) / 10) return false;
-    value = value * 10 + digit;
-  }
-  *id = value;
-  return true;
 }
 
 // A JSON number or a string holding a canonical ID (gamesdb sends IDs as strings, embed as numbers).
@@ -122,6 +109,48 @@ bool AsciiEqualFold(std::string_view a, std::string_view b) {
     if (x != y) return false;
   }
   return true;
+}
+
+// Overwrites every string of a parsed answer (keys too) before the tree is freed: a secure link's parameters are its
+// signature. The tree is the caller's own, not const; its depth is capped by the parse limits.
+void WipeTree(const Value& value) {
+  platform::ZeroizeSecret(const_cast<std::string&>(value.text()));
+  for (const auto& entry : value.array()) WipeTree(entry);
+  for (const auto& [key, member] : value.object()) {
+    platform::ZeroizeSecret(const_cast<std::string&>(key));
+    WipeTree(member);
+  }
+}
+
+std::string ContentUrl(std::string_view path) {
+  std::string url = "https://";
+  url += kContentSystemHost;
+  url += path;
+  return url;
+}
+
+ContentAnswer FetchContent(Transport& transport, std::string url, const std::atomic<bool>& cancel) {
+  auto request = Get(std::move(url), kMaxContentAnswerBytes);
+  request.headers.emplace_back("User-Agent", kUserAgent);
+  ContentAnswer answer;
+  if (!transport) return answer;
+  auto response = transport(request, cancel);
+  if (!response.ok()) {
+    answer.canceled = response.error == steam::HttpError::kCanceled || cancel.load();
+    return answer;
+  }
+  answer.answered = true;
+  answer.status = response.status_code;
+  answer.body.assign(BodyOf(response));
+  return answer;
+}
+
+LinkResult::Kind LinkStatusKind(long status) {
+  using Kind = LinkResult::Kind;
+  if (status == 401) return Kind::kRejected;
+  if (status == 403) return Kind::kForbidden;
+  if (status == 429 || (status >= 400 && status <= 599)) return Kind::kNetwork;
+  return Kind::kProtocol;
 }
 
 }  // namespace
@@ -268,6 +297,100 @@ ProductInfo ParseProduct(std::string_view body, std::uint64_t id) {
   if (info.hero.empty()) info.hero = Art(game, "horizontal_artwork", ArtKind::kHero);
   info.kind = Kind::kGame;
   return info;
+}
+
+ContentAnswer FetchBuilds(Transport& transport, std::uint64_t product, const std::atomic<bool>& cancel) {
+  if (product == 0) return {};
+  return FetchContent(transport,
+                      ContentUrl("/products/" + std::to_string(product) + "/os/windows/builds?generation=2&_version=2"),
+                      cancel);
+}
+
+ContentAnswer FetchDependencyRepository(Transport& transport, const std::atomic<bool>& cancel) {
+  return FetchContent(transport, ContentUrl("/dependencies/repository?generation=2"), cancel);
+}
+
+void LinkResult::WipeEndpoints(std::vector<CdnEndpoint>& endpoints) {
+  for (auto& endpoint : endpoints) {
+    platform::ZeroizeSecret(endpoint.url_format);
+    platform::ZeroizeSecret(endpoint.url);
+    for (auto& [key, value] : endpoint.parameters) platform::ZeroizeSecret(value);
+    endpoint.parameters.clear();
+  }
+  endpoints.clear();
+}
+
+LinkResult ParseLink(std::string_view body) {
+  LinkResult result;
+  result.kind = LinkResult::Kind::kProtocol;
+  steam::json::Limits limits;
+  limits.max_bytes = kMaxContentAnswerBytes;
+  limits.max_values = 4096;
+  limits.max_depth = 8;
+  auto parsed = steam::json::Parse(body, limits);
+  if (!parsed) return result;
+  const Value* urls = parsed->is_object() ? parsed->Find("urls") : nullptr;
+  if (urls && urls->is_array()) {
+    auto parsed_endpoints = ParseEndpoints(*urls);
+    result.endpoints = OrderEndpoints(parsed_endpoints, 2);
+    LinkResult::WipeEndpoints(parsed_endpoints);
+  }
+  WipeTree(*parsed);
+  if (result.endpoints.empty()) return result;
+  for (const auto& endpoint : result.endpoints) {
+    const auto found = endpoint.parameters.find("expires_at");
+    if (found == endpoint.parameters.end()) continue;
+    const std::string& text = found->second;
+    if (text.empty() || text.size() > 18 || text.find_first_not_of("0123456789") != std::string::npos) continue;
+    std::int64_t value = 0;
+    for (const char c : text) value = value * 10 + (c - '0');
+    if (result.expires_at == 0 || value < result.expires_at) result.expires_at = value;
+  }
+  result.kind = LinkResult::Kind::kOk;
+  return result;
+}
+
+LinkResult FetchSecureLink(Transport& transport, std::string_view access_token, std::uint64_t product,
+                           const std::atomic<bool>& cancel) {
+  LinkResult result;
+  if (product == 0 || !transport) return result;
+  auto request = Get(ContentUrl("/products/" + std::to_string(product) + "/secure_link?_version=2&generation=2&path=/"),
+                     kMaxContentAnswerBytes);
+  std::string bearer;
+  bearer.reserve(7 + access_token.size());
+  bearer += "Bearer ";
+  bearer += access_token;
+  request.headers.reserve(2);
+  request.headers.emplace_back("User-Agent", kUserAgent);
+  request.headers.emplace_back("Authorization", std::string());
+  request.headers.back().second.swap(bearer);
+  auto response = transport(request, cancel);
+  platform::ZeroizeSecret(request.headers.back().second);
+  if (!response.ok()) {
+    result.kind = response.error == steam::HttpError::kCanceled || cancel.load() ? LinkResult::Kind::kCanceled
+                                                                                 : LinkResult::Kind::kNetwork;
+  } else if (response.status_code == 200) {
+    result = ParseLink(BodyOf(response));
+  } else {
+    result.kind = LinkStatusKind(response.status_code);
+  }
+  result.status = response.ok() ? response.status_code : 0;
+  platform::ZeroizeSecret(response.body);
+  return result;
+}
+
+LinkResult FetchOpenLink(Transport& transport, const std::atomic<bool>& cancel) {
+  LinkResult result;
+  auto answer = FetchContent(transport, ContentUrl("/open_link?generation=2&_version=2&path=/dependencies/store/"), cancel);
+  if (!answer.answered) {
+    result.kind = answer.canceled ? LinkResult::Kind::kCanceled : LinkResult::Kind::kNetwork;
+  } else if (answer.status == 200) {
+    result = ParseLink(answer.body);
+  } else {
+    result.kind = LinkStatusKind(answer.status);
+  }
+  result.status = answer.status;
+  return result;
 }
 
 std::string ArtUrl(std::string_view url_format, ArtKind kind) {

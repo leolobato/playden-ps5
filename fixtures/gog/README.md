@@ -30,3 +30,48 @@ test. gamesdb is public: these were recorded without signing in and name no acco
   (`visible_in_library` false): synthetic, made from the 1351891846 answer with made-up product IDs 1900000101-103.
 - `owned.json`: a synthetic `embed.gog.com/user/data/games` answer naming the products above. The real shape is from
   GOG_PROTOCOL.md §2; the spike had no token to record one. Large lists are made by the test.
+
+GOG's content system for the `gog_manifest_v2` test: builds, build metas, depot manifests and the dependency store. All
+are public answers (no sign-in), recorded on 2026-11-13. They are file lists and settings, not game content, and name
+no account.
+
+- Builds (`content-system.gog.com/products/<id>/os/windows/builds?generation=2`, unchanged):
+  - `builds-v2-branches-first-1351891846.json`: Jazz Jackrabbit 2 with `_version=2`. The first five items are
+    `JJ2+ Mod` branch builds; the default one is the sixth (`50747586883966799`).
+  - `builds-link-form-1351891846.json`: the same without `_version=2`, so items carry `link` instead of `urls`.
+  - `builds-v2-1440148836.json`: Fallout, one gen 2 item on the page (`count` 1 of 3).
+  - `builds-v2-gen1-only-1425039730.json`: Monkey Island 2 Special Edition, whose default build is gen 1 only.
+- Build metas (`gog-cdn-fastly.gog.com/content-system/v2/meta/…`, zlib JSON). Each game's `clientId` is replaced with
+  `50000000000000001` and its `clientSecret` with zeros, then the JSON is compressed again:
+  - `meta-v2-1351891846.zlib`: Jazz Jackrabbit 2, depots in the deprecated language code `en`.
+  - `meta-v2-dlc-osbitness-1441974651.zlib`: Prison Architect, `osBitness` `["64"]`, 11 DLC products.
+  - `meta-v2-scummvm-1207658695.zlib`: Beneath a Steel Sky, 21 one-file gog depots across 7 languages, needs ScummVM.
+  - `meta-v2-dosbox-1435828982.zlib`: The Elder Scrolls: Arena, needs `DOSBox074_2CS`.
+- Depot manifests (`…/content-system/v2/meta/…`, zlib JSON, unchanged):
+  - `depot-v2-1351891846.zlib`: Jazz Jackrabbit 2's main depot, 250 files with `/` paths, sfcRef and a small-files
+    container after `items`.
+  - `depot-v2-1351891846-gogdepot.zlib`: its gog depot, `goggame-1351891846.hashdb` and `.info`.
+  - `depot-v2-1435828982.zlib`: Arena's main depot, 323 items with `\` paths, a file with no chunks, a four-chunk file.
+  - `depot-v2-1435828982-gogdepot.zlib`: its `goggame-1435828982.hashdb` depot.
+  Support files (`app\…`, `save\…`) are in other depots of these games; the test makes its own.
+- Dependency store (`content-system.gog.com/dependencies/repository?generation=2` and the CDN, unchanged):
+  - `dependencies-repository.json`: the repository answer.
+  - `dependencies-manifest.zlib`: its manifest, 69 dependencies (the `signature` fields are GOG's own).
+  - `dependency-depot-DOSBox074_2CS.json`, `dependency-depot-ScummVM.json`: two dependency depot manifests, inflated.
+
+Answers for the `gog_download` test (the downloader against a stub CDN). The test makes its own game (random files,
+chunks compressed with miniz, manifests, meta and builds); these files are the answers it can't make:
+
+- `dependencies-open-link.json`: GOG's real `content-system.gog.com/open_link?generation=2&_version=2&path=/dependencies/store/`
+  answer, unchanged: the public dependency store's unsigned chunk bases (fastly, then gcore as `fallback_only`).
+- `dependency-chunk-ede30538132b194f6a477a932441df95.zlib`: one real chunk from that public store (DOSBox's
+  `AUTHORS.txt`, 213 bytes compressed), with `dependency-chunk.expected.json` holding its `compressedMd5`,
+  `compressedSize`, `md5` and `size` (264). No purchased game content.
+- `secure-link-401.json`: GOG's real answer to a `secure_link` request without a good token.
+- `secure-link-200.json`: synthetic. It has the two endpoint shapes a real `secure_link` answer has (recorded on
+  2026-11-13 and redacted, never copied): fastly's `url_format` `{base_url}/token=nva={expires_at}~dirs={dirs}~token={token}{path}`
+  with a numeric `expires_at` (1900000000) and `path` `/content-system/v2/store/<product>`, and gcore's
+  `{base_url}/{path}?wsSecret={token}&wsTime={time}&prefix={prefix}` with no expiry and `path` without its leading `/`.
+  The tokens are made up and `base_url` points at stub hosts (`https://cdn.example.invalid`,
+  `https://gcore.example.invalid`). The product is the made-up `1900000001`; the stub puts another product's ID in its
+  place.
