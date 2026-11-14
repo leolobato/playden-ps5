@@ -280,8 +280,6 @@ int main() {
         const auto& features_root = paths.runtime_data_root.empty() ? user_root : paths.runtime_data_root;
         features = playden::app::ReadExperimentalFeatures(
             features_root + "/" + playden::app::kExperimentalFeaturesFileName, features, &unknown);
-        if (features.community_recipes)
-            playden::app::AppendLogLine(log_root, "launch.log", "experimental feature community-recipes on");
         if (features.online_steam) playden::app::AppendLogLine(log_root, "launch.log", "experimental feature online-steam on");
         for (const auto& name : unknown)
             playden::app::AppendLogLine(log_root, "launch.log", "experimental feature unknown: " + name.substr(0, 64));
@@ -303,9 +301,6 @@ int main() {
             playden::homebrew::ModelMode::Simulation);
 #else
         playden::homebrew::Simulation simulation({}, {}, playden::homebrew::ModelMode::Live);
-#endif
-#if !PLAYDEN_UI_SIMULATION
-        simulation.SetCommunityRecipesEnabled(features.community_recipes);
 #endif
         {
             std::vector<playden::runtime::SettingsPreset> presets;
@@ -689,8 +684,7 @@ int main() {
                 return presets;
             };
             config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
-            // Off (features.txt): only a cache already there is read; its folders are not made.
-            config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects, features.community_recipes);
+            config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects);
             config.title_log = [](const std::string& title, const std::string& text) {
                 const auto path = log_root + "/title-" + title + ".log";
                 if (FILE* file = std::fopen(path.c_str(), "wb")) {
@@ -893,14 +887,12 @@ int main() {
             hui::sys::quit();
             return 0;
         }
-        // Community recipes and sharing (features.txt): off, neither service exists, nothing is fetched or sent and
-        // community.log stays untouched; the runtime and the model read the recipes games already use from the cache.
-        // Each HTTP client is declared first: its service uses it until it stops.
+        // Community recipes and sharing. Each HTTP client is declared first: its service uses it until it stops.
         std::optional<playden::steam::HttpClient> community_http;
         std::unique_ptr<playden::community::CommunityRecipeService> community;
         std::optional<playden::steam::HttpClient> sharing_http;
         std::unique_ptr<playden::homebrew::SharingService> sharing;
-        if (features.community_recipes) {
+        {
             community_http.emplace(paths.trust_store);
             playden::community::RecipeServiceConfig community_config;
             community_config.store_root = community_root;
@@ -1166,17 +1158,11 @@ int main() {
             web_config.files.private_profile_paths.push_back(private_path.generic_string());
         // Browsers paired with "Remember this browser": hashes of their tokens in user data, kept across restarts.
         web_config.files.pairing.store_root = user_root + "/web-access";
-        // Recipe files from a paired browser: kept through the community service when it runs, else in the cache folder.
+        // Recipe files from a paired browser: kept through the community service.
         auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
-        if (community)
-            recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {
-                return service->KeepObject(bytes, error);
-            }, community_keep);
-        else
-            recipe_imports->SetKeeper([store = std::make_shared<playden::community::RecipeStore>(community_root)](
-                                          const std::string& bytes, std::string* error) {
-                return (store->prepared() || store->Prepare(error)) && store->WriteObjects({bytes}, error);
-            });
+        recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {
+            return service->KeepObject(bytes, error);
+        }, community_keep);
         recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
             return feature == "online-steam" && online_steam;
         });
@@ -1194,8 +1180,7 @@ int main() {
         services.SetStoreDetails(&store_details);
         services.SetSelfUpdate(&self_update);
         // Without a runtime here the installed games' recipes are unknown: nothing is collected.
-        if (community) services.SetCommunityRecipes(community.get(), community_keep, /*no_runtime_installs=*/false);
-        else services.SetCommunityRecipeCache(std::make_shared<playden::community::RecipeStore>(community_root));
+        services.SetCommunityRecipes(community.get(), community_keep, /*no_runtime_installs=*/false);
         services.SetSharing(sharing.get());
         // A game bought or added to the library elsewhere: Steam pushes the new license list.
         services.SetLicenseChanges([steam_cm] { return playden::steam::CmLicenseChanges(*steam_cm); });
@@ -1435,14 +1420,10 @@ int main() {
         if (copy_runner) copy_runner->SetChanged({});
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown artwork start");
         artwork.Shutdown();
-        if (community) {
-            playden::app::AppendLogLine(log_root, "launch.log", "shutdown community recipes start");
-            community->Shutdown();
-        }
-        if (sharing) {
-            playden::app::AppendLogLine(log_root, "launch.log", "shutdown sharing start");
-            sharing->Shutdown();
-        }
+        playden::app::AppendLogLine(log_root, "launch.log", "shutdown community recipes start");
+        community->Shutdown();
+        playden::app::AppendLogLine(log_root, "launch.log", "shutdown sharing start");
+        sharing->Shutdown();
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown self-update start");
         self_update.Shutdown();
         playden::app::AppendLogLine(log_root, "launch.log", "shutdown done");

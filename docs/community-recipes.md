@@ -16,14 +16,9 @@ sending one, you agree to that. The recipes Playden ships (`runtime/recipes/`) a
 
 ## Turn them on
 
-Community recipes are on in every build from Playden 0.11.0-beta.4. Earlier release builds need a line
-`community-recipes` in `features.txt` in Playden's data folder (`/data/playden/features.txt` on the console, which FTP
-and the file manager can write; one feature name per line, `#` starts a comment). Playden reads the file when it
-starts. My presets don't need it.
-
-Without it, those builds don't download recipes, ask how a game ran, send votes or test reports, or link an account,
-and the screens for them are hidden. A game that already uses a community recipe keeps it: Playden reads it from the
-copy it saved, and the game can still go back to a preset.
+Community recipes are part of every build from Playden 0.11.0-beta.4: there is nothing to turn on. Earlier release
+builds need a line `community-recipes` in `features.txt` in Playden's data folder (`/data/playden/features.txt` on the
+console). Current builds ignore that line, so a file that still has it keeps working.
 
 ## Share one from Playden
 

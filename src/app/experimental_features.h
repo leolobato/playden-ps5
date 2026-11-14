@@ -16,18 +16,16 @@ inline constexpr const char* kExperimentalFeaturesFileName = "features.txt";
 // The longest file read; the rest is ignored.
 inline constexpr std::size_t kExperimentalFeaturesMaxBytes = 16384;
 
+// A line that names a retired feature (community-recipes, part of every build since 0.11.0-beta.4) is accepted and
+// ignored: it turns nothing on and is not reported as unknown.
 struct ExperimentalFeatures {
-  // Line community-recipes: community recipes, sharing, votes, test reports and the Playden account
-  // (docs/community-recipes.md). My presets is not part of it. On in every build (DefaultExperimentalFeatures); the
-  // line is still accepted.
-  bool community_recipes = false;
   // Line online-steam: Steam features = Online (Steam's client beside the game), Steam sign-in and Steam network
   // (runtime::SetOnlineSteamEnabled). Off in every build unless the file names it.
   bool online_steam = false;
 };
 
-// What a build has on before features.txt: community recipes in every build. all_on (nightlies and local dev builds)
-// turns on no other feature today: Online stays off in every build.
+// What a build has on before features.txt. all_on (nightlies and local dev builds) turns on no feature today: Online
+// stays off in every build.
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on);
 // defaults with the features text names turned on. unknown: each line that names no feature, as written.
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults = {},

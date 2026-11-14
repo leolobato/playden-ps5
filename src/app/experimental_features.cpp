@@ -9,11 +9,9 @@
 namespace playden::app {
 
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
-  // Community recipes are on in every build; Online stays off until features.txt names it.
+  // Online stays off until features.txt names it.
   (void)all_on;
-  ExperimentalFeatures features;
-  features.community_recipes = true;
-  return features;
+  return {};
 }
 
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults,
@@ -26,8 +24,9 @@ ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, Experiment
     while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) line.remove_prefix(1);
     while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.remove_suffix(1);
     if (line.empty() || line.front() == '#') continue;
-    if (line == "community-recipes") features.community_recipes = true;
-    else if (line == "online-steam") features.online_steam = true;
+    // Retired: community recipes are part of every build. Older files still name it.
+    if (line == "community-recipes") continue;
+    if (line == "online-steam") features.online_steam = true;
     else if (unknown) unknown->emplace_back(line);
   }
   return features;

@@ -26,23 +26,32 @@ void Write(const std::filesystem::path& path, const std::string& text) {
 }  // namespace
 
 int main() {
-  // Community recipes are on in every build, releases included.
-  CHECK(DefaultExperimentalFeatures(false).community_recipes);
-  CHECK(DefaultExperimentalFeatures(true).community_recipes);
+  // Online Steam features is off in every build, nightlies and dev builds too, until the file names it.
   CHECK(!DefaultExperimentalFeatures(false).online_steam);
+  CHECK(!DefaultExperimentalFeatures(true).online_steam);
 
   // One name per line, surrounding whitespace and CRLF trimmed, comments and blank lines skipped.
   std::vector<std::string> unknown;
-  auto features = ParseExperimentalFeatures("# mine\n\n  community-recipes \r\nonline-steam\nCommunity-Recipes", {}, &unknown);
-  CHECK(features.community_recipes && features.online_steam);
-  CHECK(unknown == std::vector<std::string>{"Community-Recipes"});
-  // Online Steam features is off in every build until the file names it.
-  CHECK(!DefaultExperimentalFeatures(true).online_steam && !ParseExperimentalFeatures("#online-steam\nonline-steam-2\n").online_steam);
-  CHECK(!ParseExperimentalFeatures("#community-recipes\n").community_recipes);
-  CHECK(!ParseExperimentalFeatures("community-recipes-x").community_recipes);
-  // A line only turns a feature on: a nightly's default stays on with any file.
-  CHECK(ParseExperimentalFeatures("", DefaultExperimentalFeatures(true)).community_recipes);
-  CHECK(ParseExperimentalFeatures("# nothing\n", DefaultExperimentalFeatures(true)).community_recipes);
+  auto features = ParseExperimentalFeatures("# mine\n\n  online-steam \r\nOnline-Steam", {}, &unknown);
+  CHECK(features.online_steam);
+  CHECK(unknown == std::vector<std::string>{"Online-Steam"});
+  CHECK(!ParseExperimentalFeatures("#online-steam\nonline-steam-2\n").online_steam);
+
+  // community-recipes is retired (community recipes are in every build): a file that still has the line keeps
+  // working. The line turns nothing on and isn't reported as unknown; a misspelling of it still is.
+  unknown.clear();
+  features = ParseExperimentalFeatures("community-recipes\n  community-recipes \r\nCommunity-Recipes\ncommunity-recipes-x\n", {}, &unknown);
+  CHECK(!features.online_steam);
+  CHECK((unknown == std::vector<std::string>{"Community-Recipes", "community-recipes-x"}));
+  unknown.clear();
+  features = ParseExperimentalFeatures("community-recipes\nonline-steam\n", {}, &unknown);
+  CHECK(features.online_steam && unknown.empty());
+
+  // A line only turns a feature on: a default that is on stays on with any file.
+  ExperimentalFeatures on;
+  on.online_steam = true;
+  CHECK(ParseExperimentalFeatures("", on).online_steam);
+  CHECK(ParseExperimentalFeatures("# nothing\ncommunity-recipes\n", on).online_steam);
 
   std::string pattern = (std::filesystem::temp_directory_path() / "playden-features-XXXXXX").string();
   const char* made = mkdtemp(pattern.data());
@@ -50,24 +59,28 @@ int main() {
   const std::filesystem::path dir = made;
   const auto file = (dir / kExperimentalFeaturesFileName).string();
   // Missing: the defaults.
-  CHECK(!ReadExperimentalFeatures(file).community_recipes);
-  CHECK(ReadExperimentalFeatures(file, DefaultExperimentalFeatures(true)).community_recipes);
+  CHECK(!ReadExperimentalFeatures(file).online_steam);
+  CHECK(ReadExperimentalFeatures(file, on).online_steam);
   // Empty: the defaults.
   Write(file, "");
-  CHECK(!ReadExperimentalFeatures(file).community_recipes);
-  CHECK(ReadExperimentalFeatures(file, DefaultExperimentalFeatures(true)).community_recipes);
+  CHECK(!ReadExperimentalFeatures(file).online_steam);
+  CHECK(ReadExperimentalFeatures(file, on).online_steam);
+  Write(file, "online-steam\n");
+  CHECK(ReadExperimentalFeatures(file).online_steam);
+  // The retired line read from a file: nothing unknown.
   Write(file, "community-recipes\n");
-  CHECK(ReadExperimentalFeatures(file).community_recipes);
+  unknown.clear();
+  CHECK(!ReadExperimentalFeatures(file, {}, &unknown).online_steam && unknown.empty());
   // Unreadable (a folder at the path): the defaults.
   const auto folder = (dir / "folder").string();
   std::filesystem::create_directory(folder);
-  CHECK(!ReadExperimentalFeatures(folder).community_recipes);
-  CHECK(ReadExperimentalFeatures(folder, DefaultExperimentalFeatures(true)).community_recipes);
+  CHECK(!ReadExperimentalFeatures(folder).online_steam);
+  CHECK(ReadExperimentalFeatures(folder, on).online_steam);
   // Only the first 16 KiB are read: a name past it is not seen.
-  Write(file, std::string(kExperimentalFeaturesMaxBytes, '\n') + "community-recipes\n");
-  CHECK(!ReadExperimentalFeatures(file).community_recipes);
-  Write(file, std::string(kExperimentalFeaturesMaxBytes - 20, '\n') + "community-recipes\n");
-  CHECK(ReadExperimentalFeatures(file).community_recipes);
+  Write(file, std::string(kExperimentalFeaturesMaxBytes, '\n') + "online-steam\n");
+  CHECK(!ReadExperimentalFeatures(file).online_steam);
+  Write(file, std::string(kExperimentalFeaturesMaxBytes - 20, '\n') + "online-steam\n");
+  CHECK(ReadExperimentalFeatures(file).online_steam);
 
   std::filesystem::remove_all(dir);
   std::puts("experimental_features: ok");
