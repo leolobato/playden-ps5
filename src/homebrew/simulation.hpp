@@ -1213,6 +1213,9 @@ public:
     [[nodiscard]] std::vector<GameId> TakeUpdateSizeChecks();
     bool UpdateMeasuredUpdate(GameId id, bool measured, std::uint64_t target, std::uint64_t download_bytes,
                               std::uint64_t staged_bytes);
+    // An in-place branch switch's size: the (game, target branch) pairs measured now, and their result.
+    [[nodiscard]] std::vector<std::pair<GameId, std::string>> TakeSwitchSizeChecks();
+    bool UpdateMeasuredSwitch(GameId id, const std::string& branch, bool measured, std::uint64_t download_bytes);
     // The details service dropped what it was asked (another account, or the language changed): checks
     // still waiting for an answer are asked again.
     void ResetSizeChecks();
@@ -2032,8 +2035,16 @@ private:
     std::map<GameId, std::uint64_t> update_sizes_running_;          // asked, with the target then saved
     std::set<std::pair<GameId, std::uint64_t>> update_sizes_ended_;  // answered without a size: not asked again
     std::set<std::pair<GameId, std::uint64_t>> update_sizes_newer_;  // measured targets Steam was asked about again
+    // An in-place branch switch: the game, the target branch, and the measured download size.
+    std::optional<GameId> switch_game_;
+    std::string switch_target_branch_;
+    std::optional<std::uint64_t> switch_size_;
+    bool switch_size_measuring_ = false;
+    std::set<std::pair<GameId, std::string>> switch_sizes_ended_;  // answered without a size: not asked again
     // An update's size as the screens say it: the download, "Checking size…" while it is measured, else "Size unknown".
     [[nodiscard]] std::string update_size_text(GameId id) const;
+    // A branch switch's size as the screen says it: the download, "Checking size…" while it is measured, else "Size unknown".
+    [[nodiscard]] std::string switch_size_text() const;
 
     // The screen opened (`forced` false: only a day after the last full check) or Check for updates.
     void request_update_check(bool forced);

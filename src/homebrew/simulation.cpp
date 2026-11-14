@@ -4231,6 +4231,8 @@ void Simulation::ResetSizeChecks() {
     size_checks_running_.clear();
     size_checks_failed_.clear();
     update_sizes_running_.clear();
+    switch_size_measuring_ = false;
+    switch_sizes_ended_.clear();
     rebuild_view();
 }
 
@@ -5142,6 +5144,35 @@ bool Simulation::UpdateMeasuredUpdate(GameId id, bool measured, std::uint64_t ta
     }
     rebuild_view();
     return false;
+}
+
+std::vector<std::pair<GameId, std::string>> Simulation::TakeSwitchSizeChecks() {
+    std::vector<std::pair<GameId, std::string>> checks;
+    if (!live() || !switch_game_) return checks;
+    const auto id = switch_game_.value();
+    const auto& branch = switch_target_branch_;
+    if (branch.empty() || !find_installation(state_, id)) return checks;
+    if (switch_size_measuring_ || switch_size_ || switch_sizes_ended_.contains(std::make_pair(id, branch))) return checks;
+    switch_size_measuring_ = true;
+    checks.push_back({id, branch});
+    return checks;
+}
+
+bool Simulation::UpdateMeasuredSwitch(GameId id, const std::string& branch, bool measured,
+                                     std::uint64_t download_bytes) {
+    if (!switch_game_ || switch_game_.value() != id || switch_target_branch_ != branch)
+        return false;
+    switch_size_measuring_ = false;
+    if (measured) switch_size_ = download_bytes;
+    else switch_sizes_ended_.insert({id, branch});
+    rebuild_view();
+    return false;
+}
+
+std::string Simulation::switch_size_text() const {
+    if (switch_size_) return format_bytes(switch_size_.value());
+    if (switch_size_measuring_) return "Checking size…";
+    return "Size unknown";
 }
 
 std::string Simulation::update_size_text(GameId id) const {
@@ -6967,6 +6998,21 @@ void Simulation::rebuild_view() {
         }
         if (modal.id == "install-version")
             view_.subtitle = "For this install only. Steam keeps older versions as branches; Public is the current one.";
+        if (modal.id == "switch-version") {
+            const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+            const auto* installation = find_installation(state_, id);
+            view_.subtitle = "This switches the installed game to a different version and downloads its changed files. " +
+                            (installation ? "It is on " + version_title(installation->branch) + ". " : std::string());
+        }
+        if (modal.id == "switch-confirm") {
+            const auto id = switch_game_.value_or(state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
+            const auto check = update_check(id);
+            view_.subtitle = "Switches the game to " + version_title(switch_target_branch_) + " and downloads its changed files. ";
+            view_.subtitle += "On " + check.volume_label + ". ";
+            if (check.free_bytes) view_.subtitle += format_bytes(*check.free_bytes) + " free. ";
+            view_.subtitle += switch_size_text() + ". ";
+            view_.subtitle += check.allowed ? std::string("You can play until the switch puts its files in place.") : check.reason + ".";
+        }
         // A fixture's sheet of a game with DLC says the same.
         if (modal.id == "install" && !live() && std::count(modal.action_keys.begin(), modal.action_keys.end(), "install-dlc")) {
             const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
@@ -8743,6 +8789,15 @@ void Simulation::rebuild_view() {
             note.value = update_size_text(game->id);
             note.enabled = false;
         };
+        // The in-place branch switch: the game's current branch, and the version picker to choose another.
+        auto switch_version_rows = [&]() {
+            if (!installed || !installation->available || !in_place_reason.empty() || !game ||
+                game->versions.size() < 2 || update_locked(game->id))
+                return;
+            auto& button = row("details-switch-version", RowKind::Action, "Change version…", "switch-version");
+            button.game_id = game->id;
+            button.value = version_title(installation->branch);
+        };
         if (!live()) {
             auto& primary = row(installed ? "details-play" : "details-install", RowKind::Action,
                                 installed ? (installation->runtime_ready ? "Play" : "Open Settings") : "Install",
@@ -8754,6 +8809,7 @@ void Simulation::rebuild_view() {
                 primary.value = held_play_text(state_, game->id);
             }
             update_rows();
+            switch_version_rows();
         }
         if (live() && game) {
             // Real install state: an install job, a finished install, or what Steam allows.
@@ -8860,6 +8916,7 @@ void Simulation::rebuild_view() {
                         }
                     }
                     update_rows();
+                    switch_version_rows();
                     // Steam Cloud saves: sync on demand; a pending choice opens its dialog. Only stores
                     // with Cloud saves have the row.
                     if (Traits(game->id.store).cloud_saves) {
@@ -11688,6 +11745,49 @@ void Simulation::activate() {
         if (!update_check(id).allowed) return;
         if (live()) pending_install_requests_.push_back({InstallRequestKind::Update, id});
         else push_notice({"update-" + ToKey(id), "Update queued", "", false, kLiveNoticeSeconds, false, "Fixture: nothing downloads"});
+        close_modal();
+        state_.navigation.focus_key = "details-play";
+    } else if (action_name == "switch-version") {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        const auto* installation = find_installation(state_, id);
+        if (!game || !installation || game->versions.size() < 2) return;
+        std::vector<std::string> actions;
+        int focus = 0;
+        for (const auto& version : game->versions) {
+            if (version.name == installation->branch) focus = static_cast<int>(actions.size());
+            actions.push_back("switch-version-" + version.name);
+        }
+        open_modal({"switch-version", "Change version", "details-switch-version", std::move(actions), focus, false});
+    } else if (action_name.rfind("switch-version-", 0) == 0) {
+        const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+        const auto* game = find_game(state_, id);
+        const auto* installation = find_installation(state_, id);
+        if (!game || !installation) return;
+        const auto name = action_name.substr(std::string("switch-version-").size());
+        if (std::none_of(game->versions.begin(), game->versions.end(),
+                         [&](const GameVersion& version) { return version.name == name; }))
+            return;
+        if (name == installation->branch) {
+            // The current version: nothing to switch to.
+            close_modal();
+            state_.navigation.focus_key = "details-switch-version";
+            return;
+        }
+        // Selecting a different version measures the changed files in the background (TakeSwitchSizeChecks).
+        switch_game_ = id;
+        switch_target_branch_ = name;
+        open_modal({"switch-confirm", "Change version", "switch-version", {"switch-confirm", "cancel"}, 0, false});
+    } else if (action_name == "switch-confirm") {
+        if (!switch_game_) return;
+        const auto id = switch_game_.value();
+        if (!update_check(id).allowed) return;
+        if (live())
+            pending_install_requests_.push_back({InstallRequestKind::Update, id, {}, false, {}, switch_target_branch_});
+        else
+            push_notice({"switch-" + ToKey(id), "Version change queued", "", false, kLiveNoticeSeconds, false, "Fixture: nothing downloads"});
+        switch_game_.reset();
+        switch_target_branch_.clear();
         close_modal();
         state_.navigation.focus_key = "details-play";
     } else if (live() && action_name == "live-install") {
