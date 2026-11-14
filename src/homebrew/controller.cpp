@@ -2405,9 +2405,12 @@ void Controller::TickInstalls() {
         break;
       }
       case InstallRequestKind::Update: {
-        // The record's branch and language select. Nothing is reserved up front: the details' estimate counts
-        // whole depots, and the update checks the room its changed files need before it downloads them.
-        if (const auto refused = installs_->Update(request.game_id, {}); !refused.empty())
+        // The record's branch and language select, unless the player chose a branch (Change version): the
+        // chosen one replaces the record's. Nothing is reserved up front: the details' estimate counts whole
+        // depots, and the update checks the room its changed files need before it downloads them.
+        steam::InstallOptions options;
+        options.branch = request.branch;
+        if (const auto refused = installs_->Update(request.game_id, options); !refused.empty())
           model_.NotifyUpdateRefused(request.game_id, refused);
         break;
       }
@@ -2568,7 +2571,8 @@ void Controller::TickInstalls() {
   }
   std::vector<LiveInstalledGame> installed;
   for (const auto& game : snapshot.installed) {
-    installed.push_back({game.id, game.install_bytes, game.volume_id, game.available, game.finished_at});
+    installed.push_back({game.id, game.install_bytes, game.volume_id, game.available, game.finished_at,
+                         game.record ? (game.record->branch.empty() ? "public" : game.record->branch) : "public"});
     // What Manage DLC starts from: the DLC whose depots the install holds, and the ones the player turned off.
     if (game.record) {
       auto& live = installed.back();

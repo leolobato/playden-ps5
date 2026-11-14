@@ -52,14 +52,16 @@ std::uint64_t UpdateTarget(const std::vector<DepotInfo>& selected) {
   return hash == 0 ? 1 : hash;
 }
 
-std::vector<DepotInfo> DepotsToUpdate(std::uint32_t id, const std::string& buffer,
+std::vector<DepotInfo> DepotsToUpdate(std::uint32_t id, const std::string& buffer, const std::string& branch_override,
                                       const std::optional<LicensedDepots::Grant>& licensed,
                                       const installs::InstalledRecord& record, const std::vector<AppInfo>& dlc_apps) {
   const auto app = ParseAppInfo(id, buffer);
   if (!app || !licensed) return {};
   DepotSelection selection;
   if (!record.language.empty()) selection.language = record.language;
-  if (!record.branch.empty()) selection.branch = record.branch;
+  // A branch switch measures the target branch's depots; otherwise the record's branch.
+  if (!branch_override.empty()) selection.branch = branch_override;
+  else if (!record.branch.empty()) selection.branch = record.branch;
   selection.excluded_dlc.insert(record.excluded_dlc.begin(), record.excluded_dlc.end());
   std::set<std::uint32_t> apps{id};
   apps.insert(licensed->apps.begin(), licensed->apps.end());
@@ -407,7 +409,8 @@ MeasuredSize CmAppDetailsSource::MeasureUpdate(const StoredSession& session, con
     log("failed", "why=canceled");
     return result;
   }
-  const auto depots = DepotsToUpdate(app, buffer->second, licensed_ ? licensed_->Get(session.steam_id) : std::nullopt,
+  const auto depots = DepotsToUpdate(app, buffer->second, request.branch,
+                                     licensed_ ? licensed_->Get(session.steam_id) : std::nullopt,
                                      *record, dlc_apps);
   depot_count = depots.size();
   if (depots.empty()) {
@@ -426,7 +429,8 @@ MeasuredSize CmAppDetailsSource::MeasureUpdate(const StoredSession& session, con
     log("cached", {});
     return result;
   }
-  const auto branch = record->branch.empty() ? std::string("public") : record->branch;
+  // A branch switch measures against the target branch; otherwise the record's branch.
+  const auto branch = !request.branch.empty() ? request.branch : (record->branch.empty() ? std::string("public") : record->branch);
   // Without the install's tree its record's manifests say what it holds: the recorded depots Steam still selects,
   // asked for as the new ones are.
   std::vector<DepotInfo> installed;
