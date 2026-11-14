@@ -1780,6 +1780,124 @@ void live_family_filter_defaults_on() {
           "turning Family sharing on shows it again");
 }
 
+// The Store filter: listed under Store (Any, then each store with games) while the games come from more than one store,
+// one store at a time with a tick, combined with the rail's scope and the other filters, saved, and cleared by Reset.
+void live_store_filter() {
+    auto model=make_live();
+    model.SetGogStoreEnabled(true);
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    auto demo=game(SteamId(44),"Steam Demo");demo.demo=true;
+    check(model.UpdateLibrary({{game(SteamId(42),"Steam one"),game(SteamId(43),"Steam two"),demo},false,{},false,false,{}}),
+          "Steam's games load");
+    check(model.action("r1") && model.action("triangle"),"live filter modal opens");
+    auto keys=model.state().navigation.modals.back().action_keys;
+    check(std::find(keys.begin(),keys.end(),"heading-store")==keys.end() && find_row(model,"store-filter-any")==nullptr,
+          "Steam's games only: no Store group");
+    model.action("circle");
+
+    playden::homebrew::AccountUpdate gog_account;
+    gog_account.authentication=AuthState::SignedIn;
+    gog_account.id="00000000000000ab";
+    gog_account.display_name="Synthetic GOG";
+    gog_account.store=playden::Store::kGog;
+    model.UpdateAccount(gog_account);
+    LibraryUpdate gog{{game(playden::GameId::Gog(1000000001),"GOG one"),game(playden::GameId::Gog(1000000002),"GOG two")},
+                      false,{},false,false,{}};
+    gog.source=playden::Store::kGog;
+    check(model.UpdateLibrary(gog),"GOG's games load");
+    check(model.action("triangle"),"filter modal opens with two stores");
+    keys=model.state().navigation.modals.back().action_keys;
+    const auto heading=std::find(keys.begin(),keys.end(),"heading-store");
+    check(heading!=keys.end() && std::vector<std::string>(heading,heading+4)==
+              std::vector<std::string>{"heading-store","store-filter-any","store-filter-steam","store-filter-gog"} &&
+              *(heading+4)=="divider",
+          "Store lists Any, Steam and GOG after the filters, before the actions");
+    const auto* any=find_row(model,"store-filter-any");
+    const auto* title=find_row(model,"heading-store");
+    check(title && title->title=="Store" && title->kind==RowKind::Separator && any && any->title=="Any" && any->checked &&
+              !find_row(model,"store-filter-gog")->checked && find_row(model,"store-filter-gog")->title=="GOG",
+          "a Store heading, and Any has the tick");
+    activate(model,"store-filter-gog");
+    auto visible=model.visible_games();
+    check(visible.size()==2 && std::all_of(visible.begin(),visible.end(),[](const auto* item){ return item->id.store==playden::Store::kGog; }),
+          "GOG lists only GOG's games");
+    check(model.ExportOrganization().filters==std::set<std::string>{"store-gog"} &&
+              playden::OrganizationSnapshotIsValid(model.ExportOrganization()),
+          "the Store filter is saved");
+    check(model.action("triangle") && find_row(model,"store-filter-gog")->checked && !find_row(model,"store-filter-any")->checked,
+          "the tick moves to GOG");
+    activate(model,"store-filter-steam");
+    check(model.visible_games().size()==3 && model.ExportOrganization().filters==std::set<std::string>{"store-steam"},
+          "picking Steam replaces GOG");
+    // With the other filters and the rail's scope.
+    check(model.action("triangle"),"filter modal opens again");
+    activate(model,"filter-hide-demos");
+    check(model.visible_games().size()==2 && model.ExportOrganization().filters==std::set<std::string>{"hide-demos","store-steam"},
+          "the Store filter combines with Demos");
+    for(int step=0;step<6 && !model.state().navigation.library_rail_focused;++step) model.action("left");
+    for(int step=0;step<10 && model.state().navigation.focus_key!="rail-gog";++step) model.action("down");
+    check(model.state().navigation.focus_key=="rail-gog","the rail reaches GOG");
+    check(model.action("cross") && model.visible_games().empty() && has_row(model,"library-empty"),
+          "the GOG scope with the Steam filter: nothing, and the empty view offers Reset filters");
+    check(model.action("triangle"),"filter modal opens on the empty view");
+    activate(model,"store-filter-any");
+    check(model.visible_games().size()==2 && model.ExportOrganization().filters==std::set<std::string>{"hide-demos"},
+          "Any lists every store's games again");
+    check(model.action("triangle"),"filter modal opens again");
+    activate(model,"store-filter-gog");
+    check(model.action("triangle"),"filter modal opens before Reset");
+    activate(model,"filters-reset");
+    check(model.ExportOrganization().filters.empty() && model.visible_games().size()==2,"Reset clears the Store filter too");
+
+    // A store picked keeps its row while it is the only one with games, so it can be set back to Any.
+    check(model.action("triangle"),"filter modal opens");
+    activate(model,"store-filter-steam");
+    Simulation restored=make_live();
+    restored.SetGogStoreEnabled(true);
+    restored.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    check(restored.UpdateLibrary({{game(SteamId(42),"Steam one")},false,{},false,false,{}}),"a Steam-only library");
+    auto saved=model.ExportOrganization();
+    saved.scope="all";
+    check(restored.ApplyOrganization(1,restored.BeginOrganizationLoad(1),saved) &&
+              restored.state().library.filters==std::set<std::string>{"store-steam"},
+          "the Store filter is restored");
+    check(restored.action("r1") && restored.action("triangle"),"filter modal opens on one store");
+    keys=restored.state().navigation.modals.back().action_keys;
+    const auto only=std::find(keys.begin(),keys.end(),"heading-store");
+    check(only!=keys.end() && std::vector<std::string>(only,only+3)==
+              std::vector<std::string>{"heading-store","store-filter-any","store-filter-steam"} &&
+              find_row(restored,"store-filter-steam")->checked,
+          "with one store, the group stays while that store is picked");
+    activate(restored,"store-filter-any");
+    check(restored.action("triangle") && find_row(restored,"store-filter-any")==nullptr,"set back to Any, the group goes");
+    restored.action("circle");
+
+    // A store picked while the file loads replaces the file's store; Any picked meanwhile clears it.
+    for (const std::string picked : {"steam","any"}) {
+        Simulation loading=make_live();
+        loading.SetGogStoreEnabled(true);
+        loading.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+        check(loading.UpdateLibrary({{game(SteamId(42),"Steam one")},false,{},false,false,{}}),"Steam's games load");
+        loading.UpdateAccount(gog_account);
+        check(loading.UpdateLibrary(gog),"GOG's games load");
+        playden::OrganizationSnapshot file;
+        file.filters={"hide-demos","store-gog"};
+        check(loading.action("r1"),"the Library opens");
+        // Any is a change only from a store picked before the load began.
+        if (picked=="any") {
+            check(loading.action("triangle"),"filter modal opens");
+            activate(loading,"store-filter-steam");
+        }
+        const auto token=loading.BeginOrganizationLoad(1);
+        check(loading.action("triangle"),"filter modal opens while the file loads");
+        activate(loading,"store-filter-"+picked);
+        check(loading.ApplyOrganization(1,token,file),"the file applies");
+        const auto expected=picked=="any" ? std::set<std::string>{"hide-demos"} : std::set<std::string>{"hide-demos","store-steam"};
+        check(loading.state().library.filters==expected && playden::OrganizationSnapshotIsValid(loading.ExportOrganization()),
+              "the store picked meanwhile wins, and the result saves");
+    }
+}
+
 // Sort and filters offers Refresh library: it asks the controller for Steam's current list and the
 // Library stays on screen. While a refresh runs, the row waits.
 void live_sort_sheet_refreshes_the_library() {
@@ -4966,6 +5084,7 @@ int main() {
     live_demos_filter_defaults_on();
     live_family_shared_projected();
     live_family_filter_defaults_on();
+    live_store_filter();
     live_sort_sheet_refreshes_the_library();
     continue_playing_more_keeps_the_chosen_sort();
     live_empty_filter_keeps_the_signed_in_account();

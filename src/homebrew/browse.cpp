@@ -85,6 +85,24 @@ void append_shelf(std::vector<Shelf>& result, Shelf shelf)
         result.push_back(std::move(shelf));
 }
 
+// The rail's store scopes, in the rail's order: Steam, GOG, then imported games (Store::kLocal).
+constexpr std::pair<std::string_view, Store> kStoreScopes[] = {
+    {"steam", Store::kSteam}, {"gog", Store::kGog}, {"imported", Store::kLocal}};
+
+std::optional<Store> rail_store(std::string_view scope)
+{
+    for (const auto& [name, store] : kStoreScopes)
+        if (scope == name)
+            return store;
+    return std::nullopt;
+}
+
+bool has_store_games(const State& state, Store store)
+{
+    return std::any_of(state.games.begin(), state.games.end(),
+                       [store](const Game& game) { return game.id.store == store; });
+}
+
 std::string rail_key(std::string_view scope)
 {
     return "rail-" + std::string(scope);
@@ -115,6 +133,7 @@ std::vector<const Game*> filtered_games(const State& state)
         return game.folded_title.empty() ? folded_titles.at(game.id) : game.folded_title;
     };
     const Collection* collection = selected_collection(state);
+    const std::optional<Store> store_filter = rail_store(library_store_filter(state));
     for (const Game& game : state.games)
     {
         if (state.library.scope == "installed" && !installed(state, game.id))
@@ -123,9 +142,7 @@ std::vector<const Game*> filtered_games(const State& state)
             continue;
         if (state.library.scope == "hidden" && !state.library.hidden.contains(game.id))
             continue;
-        if (state.library.scope == "imported" && game.id.store != Store::kLocal)
-            continue;
-        if (state.library.scope == "gog" && game.id.store != Store::kGog)
+        if (const auto store = rail_store(state.library.scope); store && game.id.store != *store)
             continue;
         if (collection != nullptr && !collection->members.contains(game.id))
             continue;
@@ -143,6 +160,9 @@ std::vector<const Game*> filtered_games(const State& state)
         if (state.library.filters.contains("hide-demos") && game.demo)
             continue;
         if (state.library.filters.contains("hide-family") && game.family_shared)
+            continue;
+        // The Store filter ("store-steam", "store-gog", "store-imported"); one naming no store this build knows is Any.
+        if (store_filter && game.id.store != *store_filter)
             continue;
         if (state.library.filters.contains("genre-adventure") &&
             std::find(game.genres.begin(), game.genres.end(), "Adventure") == game.genres.end())
@@ -294,27 +314,80 @@ ShelfWindow shelf_window(int item_count, int focused_item, int capacity) noexcep
 
 bool has_imported_games(const State& state)
 {
-    return std::any_of(state.games.begin(), state.games.end(),
-                       [](const Game& game) { return game.id.store == Store::kLocal; });
+    return has_store_games(state, Store::kLocal);
 }
 
 bool has_gog_games(const State& state)
 {
-    return std::any_of(state.games.begin(), state.games.end(),
-                       [](const Game& game) { return game.id.store == Store::kGog; });
+    return has_store_games(state, Store::kGog);
+}
+
+std::vector<std::string> library_store_scopes(const State& state)
+{
+    std::vector<std::string> result;
+    for (const auto& [name, store] : kStoreScopes)
+        if (has_store_games(state, store))
+            result.emplace_back(name);
+    // Games of one store only: its entry would repeat All.
+    if (result.size() < 2)
+        result.clear();
+    return result;
+}
+
+std::string library_store_filter(const State& state)
+{
+    for (const std::string& filter : state.library.filters)
+        if (filter.rfind("store-", 0) == 0)
+            return filter.substr(6);
+    return {};
+}
+
+std::vector<std::string> library_filter_stores(const State& state)
+{
+    std::vector<std::string> result = library_store_scopes(state);
+    // The store picked stays listed while it has no games, or alone, so the filter can be set back to Any.
+    const std::string chosen = library_store_filter(state);
+    if (rail_store(chosen) && std::find(result.begin(), result.end(), chosen) == result.end())
+    {
+        result.clear();
+        for (const auto& [name, store] : kStoreScopes)
+            if (name == chosen || has_store_games(state, store))
+                result.emplace_back(name);
+    }
+    return result;
 }
 
 std::vector<std::string> library_rail_scopes(const State& state)
 {
     std::vector<std::string> result{"installed", "all", "favorites", "hidden"};
-    if (has_imported_games(state))
-        result.push_back("imported");
-    if (has_gog_games(state))
-        result.push_back("gog");
+    const std::vector<std::string> stores = library_store_scopes(state);
+    result.insert(result.end(), stores.begin(), stores.end());
     for (const Collection& collection : state.library.collections)
         result.push_back(collection.id);
     result.push_back("new-collection");
     return result;
+}
+
+std::string library_rail_marked_scope(const State& state)
+{
+    const std::vector<std::string> scopes = library_rail_scopes(state);
+    if (std::find(scopes.begin(), scopes.end(), state.library.scope) != scopes.end())
+        return state.library.scope;
+    // A store scope without its entry because every game is that store's: it lists what All does.
+    if (const auto store = rail_store(state.library.scope);
+        store && has_store_games(state, *store) &&
+        std::all_of(state.games.begin(), state.games.end(), [&](const Game& game) { return game.id.store == *store; }))
+        return "all";
+    return state.library.scope;
+}
+
+std::vector<int> library_rail_dividers(const State& state)
+{
+    const std::size_t stores = library_store_scopes(state).size();
+    if (stores == 0)
+        return {};
+    constexpr int kFirstStore = 4; // after Installed, All, Favorites and Hidden
+    return {kFirstStore, kFirstStore + static_cast<int>(stores)};
 }
 
 bool move_browser(State& state, int delta_x, int delta_y)
@@ -401,7 +474,7 @@ bool move_browser(State& state, int delta_x, int delta_y)
         if (delta_x < 0)
         {
             state.navigation.library_rail_focused = true;
-            const auto scope = std::find(scopes.begin(), scopes.end(), state.library.scope);
+            const auto scope = std::find(scopes.begin(), scopes.end(), library_rail_marked_scope(state));
             const int rail_index = scope == scopes.end() ? (state.simulation_mode ? 1 : 0) : static_cast<int>(std::distance(scopes.begin(), scope));
             state.navigation.selected_index = rail_index;
             state.navigation.focus_key = rail_key(scopes[static_cast<std::size_t>(rail_index)]);
@@ -420,7 +493,7 @@ bool move_browser(State& state, int delta_x, int delta_y)
     {
         state.navigation.library_grid_column = column;
         state.navigation.library_rail_focused = true;
-        const auto scope = std::find(scopes.begin(), scopes.end(), state.library.scope);
+        const auto scope = std::find(scopes.begin(), scopes.end(), library_rail_marked_scope(state));
         const int rail_index = scope == scopes.end() ? (state.simulation_mode ? 1 : 0) : static_cast<int>(std::distance(scopes.begin(), scope));
         state.navigation.selected_index = rail_index;
         state.navigation.focus_key = rail_key(scopes[static_cast<std::size_t>(rail_index)]);

@@ -336,8 +336,8 @@ void live_unicode_query() {
     check(filtered_games(state).size()==6,"clearing live query restores records");
 }
 
-// The rail's "Imported" scope shows only once the library has an imported game, after Hidden, and
-// lists only the imported games.
+// The rail's "Imported" scope shows only once the library has an imported game, in the store section after
+// Steam, and lists only the imported games.
 void imported_scope_lists_local_games(const std::filesystem::path& fixtures)
 {
     State state = fixture_state(fixtures);
@@ -350,9 +350,9 @@ void imported_scope_lists_local_games(const std::filesystem::path& fixtures)
     imported.title = "Night Sky";
     state.games.push_back(imported);
     scopes = library_rail_scopes(state);
-    const auto hidden = std::find(scopes.begin(), scopes.end(), "hidden");
-    check(has_imported_games(state) && hidden != scopes.end() && hidden + 1 != scopes.end() && *(hidden + 1) == "imported",
-          "the Imported scope follows Hidden");
+    check(has_imported_games(state) && std::vector<std::string>(scopes.begin() + 4, scopes.begin() + 6) ==
+                                           std::vector<std::string>{"steam", "imported"},
+          "the Imported scope follows Steam's, after Hidden");
     state.library.scope = "imported";
     const auto games = filtered_games(state);
     check(games.size() == 1 && games.front()->id == imported.id, "the Imported scope lists only imported games");
@@ -432,8 +432,8 @@ void continue_playing_ends_in_more(const std::filesystem::path& fixtures)
           "a shelf of exactly 20 games has no More cell");
 }
 
-// The rail's "GOG" scope shows only once the library has a GOG game, after Imported (or Hidden without imported
-// games), and lists only the GOG games; the rail reaches it.
+// The rail's "GOG" scope shows only once the library has a GOG game, between Steam and Imported, and lists only the
+// GOG games; the rail reaches it.
 void gog_scope_lists_gog_games(const std::filesystem::path& fixtures)
 {
     State state = fixture_state(fixtures);
@@ -446,16 +446,17 @@ void gog_scope_lists_gog_games(const std::filesystem::path& fixtures)
     gog.title = "Synthetic GOG game";
     state.games.push_back(gog);
     scopes = library_rail_scopes(state);
-    const auto hidden = std::find(scopes.begin(), scopes.end(), "hidden");
-    check(has_gog_games(state) && hidden != scopes.end() && hidden + 1 != scopes.end() && *(hidden + 1) == "gog",
-          "without imported games, GOG follows Hidden");
+    check(has_gog_games(state) && std::vector<std::string>(scopes.begin() + 4, scopes.begin() + 6) ==
+                                      std::vector<std::string>{"steam", "gog"},
+          "without imported games, Steam and GOG follow Hidden");
     Game imported;
     imported.id = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
     imported.title = "Night Sky";
     state.games.push_back(imported);
     scopes = library_rail_scopes(state);
-    const auto local = std::find(scopes.begin(), scopes.end(), "imported");
-    check(local != scopes.end() && local + 1 != scopes.end() && *(local + 1) == "gog", "GOG follows Imported");
+    check(std::vector<std::string>(scopes.begin() + 4, scopes.begin() + 7) ==
+              std::vector<std::string>{"steam", "gog", "imported"},
+          "GOG comes between Steam and Imported");
     state.library.scope = "gog";
     const auto games = filtered_games(state);
     check(games.size() == 1 && games.front()->id == gog.id, "the GOG scope lists only GOG games");
@@ -468,6 +469,130 @@ void gog_scope_lists_gog_games(const std::filesystem::path& fixtures)
     move_browser(state, -1, 0);
     for (int step = 0; step < 10 && state.navigation.focus_key != "rail-gog"; ++step) move_browser(state, 0, 1);
     check(state.navigation.library_rail_focused && state.navigation.focus_key == "rail-gog", "the rail reaches GOG");
+}
+
+// The rail's store section: Installed, All, Favorites, Hidden, a divider, Steam, GOG and Imported (each while it has
+// games), a divider, then the collections and New collection. It shows only while the games come from more than one
+// store; the dividers are not entries, so Up and Down step from Hidden straight onto Steam and from the last store onto
+// the first collection.
+void rail_store_section(const std::filesystem::path& fixtures)
+{
+    State state = fixture_state(fixtures);
+    state.navigation.route = Route::Library;
+    state.library.collections = {{"collection-1", "Weekend", false, {}}};
+    check(library_store_scopes(state).empty() && library_rail_dividers(state).empty() &&
+              library_rail_scopes(state) ==
+                  std::vector<std::string>{"installed", "all", "favorites", "hidden", "collection-1", "new-collection"},
+          "Steam's games only: the rail is as before, without a Steam entry or dividers");
+
+    Game gog;
+    gog.id = playden::GameId::Gog(1000000001);
+    gog.title = "Synthetic GOG game";
+    state.games.push_back(gog);
+    Game imported;
+    imported.id = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
+    imported.title = "Night Sky";
+    state.games.push_back(imported);
+    const auto scopes = library_rail_scopes(state);
+    check(scopes == std::vector<std::string>{"installed", "all", "favorites", "hidden", "steam", "gog", "imported",
+                                             "collection-1", "new-collection"},
+          "three stores: Steam, GOG and Imported between the built-in scopes and the collections");
+    check(library_rail_dividers(state) == std::vector<int>{4, 7}, "a divider before Steam and one before the collections");
+
+    // Down from Hidden lands on Steam, and Down from Imported on the collection: the dividers take no step.
+    state.library.scope = "hidden";
+    state.library.filters.insert("empty-fixture");
+    move_browser(state, -1, 0);
+    check(state.navigation.library_rail_focused && state.navigation.focus_key == "rail-hidden" &&
+              state.navigation.selected_index == 3,
+          "the rail opens on Hidden");
+    const std::vector<std::string> expected{"rail-steam", "rail-gog", "rail-imported", "rail-collection-1",
+                                            "rail-new-collection"};
+    for (std::size_t step = 0; step < expected.size(); ++step)
+    {
+        move_browser(state, 0, 1);
+        check(state.navigation.focus_key == expected[step] &&
+                  state.navigation.selected_index == static_cast<int>(step) + 4,
+              "Down steps over the dividers onto the next entry");
+    }
+    for (int step = 0; step < 4; ++step) move_browser(state, 0, -1);
+    check(state.navigation.focus_key == "rail-steam" && state.navigation.selected_index == 4,
+          "Up comes back onto Steam");
+    move_browser(state, 0, -1);
+    check(state.navigation.focus_key == "rail-hidden", "and Up from Steam onto Hidden");
+    state.library.filters.erase("empty-fixture");
+
+    // The Steam scope lists only Steam's games.
+    state.library.scope = "all";
+    const std::size_t every = filtered_games(state).size();
+    state.library.scope = "steam";
+    const auto steam = filtered_games(state);
+    check(!steam.empty() && steam.size() + 2 == every && std::all_of(steam.begin(), steam.end(), [](const Game* game) {
+              return game->id.store == playden::Store::kSteam;
+          }),
+          "the Steam scope lists only Steam's games");
+    check(library_rail_marked_scope(state) == "steam", "the rail marks Steam");
+
+    // Two stores: only theirs show, still between dividers.
+    state.games.pop_back();
+    check(library_rail_scopes(state) == std::vector<std::string>{"installed", "all", "favorites", "hidden", "steam", "gog",
+                                                                 "collection-1", "new-collection"} &&
+              library_rail_dividers(state) == std::vector<int>{4, 6},
+          "Steam and GOG: two store entries");
+
+    // A store scope whose store left keeps its scope (stores load one at a time): its view is empty and the rail marks
+    // nothing. A scope whose store is the only one left lists every game, so the rail marks All.
+    state.library.scope = "imported";
+    check(filtered_games(state).empty() && library_rail_marked_scope(state) == "imported",
+          "Imported without imported games: an empty view, nothing marked");
+    std::erase_if(state.games, [](const Game& game) { return game.id.store == playden::Store::kGog; });
+    state.library.scope = "steam";
+    check(library_store_scopes(state).empty() && library_rail_marked_scope(state) == "all" &&
+              filtered_games(state).size() == state.games.size() - state.library.hidden.size(),
+          "Steam alone: the Steam scope lists every game and the rail marks All");
+    state.navigation.library_rail_focused = false;
+    state.navigation.selected_index = 0;
+    state.navigation.selected_game_id = filtered_games(state).front()->id;
+    move_browser(state, -1, 0);
+    check(state.navigation.focus_key == "rail-all", "left from the grid enters the rail on All");
+}
+
+// The Store filter ("store-<store>") lists one store's games, with the scope and the other filters. The sheet offers the
+// stores the rail's section shows, plus the one picked while it is alone or has no games; a store this build doesn't
+// know is Any.
+void store_filter_narrows_the_library(const std::filesystem::path& fixtures)
+{
+    State state = fixture_state(fixtures);
+    check(library_filter_stores(state).empty() && library_store_filter(state).empty(),
+          "Steam's games only: no Store group, Any");
+    state.library.filters.insert("store-steam");
+    check(library_filter_stores(state) == std::vector<std::string>{"steam"}, "a picked store stays listed alone");
+    state.library.filters.erase("store-steam");
+
+    Game gog;
+    gog.id = playden::GameId::Gog(1000000001);
+    gog.title = "Synthetic GOG game";
+    state.games.push_back(gog);
+    check(library_filter_stores(state) == std::vector<std::string>{"steam", "gog"}, "Steam and GOG");
+    const std::size_t every = filtered_games(state).size();
+
+    state.library.filters.insert("store-gog");
+    check(library_store_filter(state) == "gog" && filtered_games(state).size() == 1 &&
+              filtered_games(state).front()->id == gog.id,
+          "the GOG filter lists only GOG's games");
+    check(library_filter_stores(state) == std::vector<std::string>{"steam", "gog"}, "the list doesn't change");
+    state.library.scope = "steam";
+    check(filtered_games(state).empty(), "it combines with the scope");
+    state.library.scope = "all";
+    state.library.filters = {"store-steam"};
+    check(filtered_games(state).size() + 1 == every, "the Steam filter leaves GOG out");
+    state.library.filters = {"store-imported"};
+    check(filtered_games(state).empty() &&
+              library_filter_stores(state) == std::vector<std::string>{"steam", "gog", "imported"},
+          "Imported without imported games: nothing, and Imported stays listed");
+    state.library.filters = {"store-epic"};
+    check(filtered_games(state).size() == every && library_filter_stores(state) == std::vector<std::string>{"steam", "gog"},
+          "a store this build doesn't know is Any");
 }
 
 int main(int argc, char** argv)
@@ -486,6 +611,8 @@ int main(int argc, char** argv)
     recently_installed_follows_install_times(fixtures);
     imported_scope_lists_local_games(fixtures);
     gog_scope_lists_gog_games(fixtures);
+    rail_store_section(fixtures);
+    store_filter_narrows_the_library(fixtures);
     imported_games_fill_home_signed_out();
     std::cout << "homebrew browse tests passed\n";
     return 0;

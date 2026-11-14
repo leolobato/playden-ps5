@@ -135,6 +135,7 @@ void RejectsInvalidValuesWithoutReplacingGoodData() {
   invalid = expected; invalid.collections.front().id = "../escape"; rejects(invalid, "unsafe collection ID rejected");
   invalid = expected; invalid.collections.front().id = "installed"; rejects(invalid, "simulation rail ID cannot be a collection ID");
   invalid = expected; invalid.collections.front().id = "imported"; rejects(invalid, "Imported rail ID cannot be a collection ID");
+  invalid = expected; invalid.collections.front().id = "steam"; rejects(invalid, "Steam rail ID cannot be a collection ID");
   invalid = expected; invalid.collections.front().id = "new-collection"; rejects(invalid, "collection action ID cannot be a collection ID");
   invalid = expected; invalid.collections.front().name.assign(129, 'n'); rejects(invalid, "oversized collection name rejected");
   invalid = expected; invalid.collections.front().name = "   \t"; rejects(invalid, "whitespace-only collection name rejected");
@@ -162,6 +163,14 @@ void RejectsInvalidValuesWithoutReplacingGoodData() {
     const auto restored = store.Load(kDevice);
     Check(restored.ok() && restored.value() && restored.value()->scope == "imported", "imported scope restored");
     Check(store.Save(kDevice, expected).ok(), "restore the expected organization file after imported scope");
+  }
+  {
+    // And the Steam rail of the store section.
+    auto steam = expected; steam.scope = "steam";
+    Check(store.Save(kDevice, steam).ok(), "steam scope accepted");
+    const auto restored = store.Load(kDevice);
+    Check(restored.ok() && restored.value() && *restored.value() == steam, "steam scope restored");
+    Check(store.Save(kDevice, expected).ok(), "restore the expected organization file after steam scope");
   }
   invalid = expected; invalid.scope = "new-collection"; rejects(invalid, "collection action cannot be restored as scope");
   invalid = expected; invalid.sort = "install-size"; rejects(invalid, "simulation-only metadata sort rejected");
@@ -368,7 +377,29 @@ void V2RoundTripsEveryStore() {
   Check(!store.SaveV1(kFirstAccount, v1_demos).ok(), "version 1 cannot hold hidden demos");
   auto three_filters = expected;
   three_filters.filters.insert("controller-full");
-  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds at most Playable, hidden demos and hidden family games");
+  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds only Playable, hidden demos and family games, and a store");
+  auto every_filter = expected;
+  every_filter.filters.insert("store-imported");
+  Check(store.Save(kDevice, every_filter).ok(), "the Store filter saves with the three others");
+  const auto with_store = store.Load(kDevice);
+  Check(with_store.ok() && with_store.value() && *with_store.value() == every_filter, "and round trips");
+  for (const std::string filter : {"store-steam", "store-gog"}) {
+    auto one = Example();
+    one.filters = {filter};
+    Check(store.Save(kDevice, one).ok(), ("the Store filter saves " + filter).c_str());
+    const auto loaded = store.Load(kDevice);
+    Check(loaded.ok() && loaded.value() && *loaded.value() == one, ("and reads " + filter).c_str());
+  }
+  auto two_stores = expected;
+  two_stores.filters = {"store-steam", "store-gog"};
+  Check(!store.Save(kDevice, two_stores).ok(), "the Store filter picks one store");
+  auto unknown_store = expected;
+  unknown_store.filters = {"store-epic"};
+  Check(!store.Save(kDevice, unknown_store).ok(), "the writer refuses a store it doesn't know");
+  auto v1_store = Example();
+  v1_store.schema_version = 1;
+  v1_store.filters = {"store-steam"};
+  Check(!store.SaveV1(kFirstAccount, v1_store).ok(), "version 1 cannot hold the Store filter");
   auto v1_family = Example();
   v1_family.schema_version = 1;
   v1_family.filters = {"hide-family"};
@@ -838,15 +869,58 @@ void V2UnknownScopeReadsAsAll() {
   auto loaded = LoadFile(storage, EncodeV2(file));
   Check(loaded.ok() && loaded.value() && loaded.value()->scope == "collection-2",
         "a scope naming a collection is kept");
-  for (const std::string scope : {"collection-9", "gog", "epic", "favorites", "hidden", "installed", "imported"}) {
+  for (const std::string scope :
+       {"collection-9", "gog", "steam", "epic", "favorites", "hidden", "installed", "imported", "new-collection"}) {
     file.scope = scope;
     loaded = LoadFile(storage, EncodeV2(file));
     const bool known = scope == "favorites" || scope == "hidden" || scope == "installed" || scope == "imported" ||
-                       scope == "gog";
+                       scope == "gog" || scope == "steam";
     auto expected = Example();
     expected.scope = known ? scope : "all";
     Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
           ("scope " + scope + (known ? " is kept" : " reads as all, nothing else changes")).c_str());
+  }
+}
+
+// Filters a newer Playden writes: a filter this build doesn't know, or the Store filter naming a store it doesn't know, is
+// skipped and the rest of the file kept; so is a Store filter picking several stores. Damage is still refused.
+void V2SkipsUnknownFilters() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  auto file = ExampleRaw();
+  file.filters = {"newer-filter", "compat-playable", "store-epic", "hide-demos", "hide-family", "store-gog", "x"};
+  auto expected = Example();
+  expected.filters = {"compat-playable", "hide-demos", "hide-family", "store-gog"};
+  const auto bytes = EncodeV2(file);
+  auto loaded = LoadFile(storage, bytes);
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
+        "unknown filters and stores are skipped, more than three filters are read, the rest is kept");
+  const auto after = storage.Read(kV2Path);
+  Check(after.ok() && after.value() == bytes, "loading a file with unknown filters does not rewrite it");
+
+  file.filters = {"store-epic"};
+  expected.filters = {};
+  loaded = LoadFile(storage, EncodeV2(file));
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "an unknown store reads as Any");
+
+  file.filters = {"compat-playable", "store-steam", "store-imported"};
+  expected.filters = {"compat-playable"};
+  loaded = LoadFile(storage, EncodeV2(file));
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "several stores read as Any");
+
+  file.filters.assign(64, "");
+  for (std::size_t index = 0; index < file.filters.size(); ++index) file.filters[index] = "newer-" + std::to_string(index);
+  expected.filters = {};
+  loaded = LoadFile(storage, EncodeV2(file));
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "64 filters are read");
+  file.filters.push_back("newer-64");
+  Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "65 filters are damage");
+
+  for (const std::vector<std::string>& filters :
+       std::vector<std::vector<std::string>>{{""}, {"store-epic", "store-epic"}, {"hide-demos", "hide-demos"},
+                                              {std::string("bad-") + static_cast<char>(0xc0)}, {std::string(33, 'f')}}) {
+    file.filters = filters;
+    Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "an empty, repeated, invalid or oversized filter is damage");
   }
 }
 
@@ -867,6 +941,7 @@ int main() {
   V2SkipsUnknownStoreKeys();
   V2StillRefusesDamage();
   V2UnknownScopeReadsAsAll();
+  V2SkipsUnknownFilters();
   RejectsInvalidValuesWithoutReplacingGoodData();
   V1RejectsDamagedAndOversizedFiles();
   V1RejectsSemanticCollectionNamesOnLoad();

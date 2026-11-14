@@ -3844,11 +3844,19 @@ void stores_section() {
     to_route(live, Route::Settings);
     check(rows(live, "Account").empty(), "line on: no Account section");
     check(rows(live, "Stores") == "settings-account|Steam|Stores|Steam connected|Synthetic account|account|1\n"
-                                  "settings-signout|Sign out…|Stores|||signout-confirm|1\n"
                                   "settings-store-gog|GOG|Stores|Sign in||gog-account|1\n",
-          "line on: Stores lists Steam (as before) and GOG");
-    check(keys(live) == std::string("settings-account settings-signout settings-store-gog ") + kSettingsKeys,
+          "line on: Stores lists Steam and GOG, with no Sign out row between them");
+    check(keys(live) == std::string("settings-account settings-store-gog ") + kSettingsKeys,
           "line on: the rest of Settings is as before");
+    {
+        choose(live, "settings-account");
+        const auto& steam_sheet = live.state().navigation.modals.back();
+        check(steam_sheet.id == "account" &&
+                  std::find(steam_sheet.action_keys.begin(), steam_sheet.action_keys.end(), "signout-confirm") !=
+                      steam_sheet.action_keys.end(),
+              "line on: Steam's Sign out is in the Steam row's sheet");
+        live.action("circle");
+    }
     const auto subtitle = [&] { return row(live, "settings-store-gog")->subtitle; };
     const auto sheet = [&] {
         choose(live, "settings-store-gog");
@@ -3890,8 +3898,7 @@ void stores_section() {
     choose(live, "confirm-destructive");
     check(queued(live.TakeServiceActions(), ServiceAction::SignOut, Store::kGog) && subtitle() == "Signing out…",
           "confirmed: GOG signs out");
-    check(row(live, "settings-signout") != nullptr && live.state().account().authentication == AuthState::SignedIn,
-          "Steam keeps its own Sign out and stays signed in");
+    check(live.state().account().authentication == AuthState::SignedIn, "Steam stays signed in");
     live.UpdateAccount(gog(AuthState::Expired, {}, "Your GOG sign-in expired. Sign in again."));
     check(subtitle() == "Your GOG sign-in expired. Sign in again.", "expired: the error");
     live.UpdateAccount(gog(AuthState::Failed, {}, "GOG could not be reached."));
@@ -3929,6 +3936,7 @@ void sign_in_dialog() {
     waiting.challenge_url = kChallenge;
     live.UpdateAccount(waiting);
     const auto* shown = dialog(live);
+    check(live.state().navigation.focus_key == "gog-back", "(c) the QR code: focus on Back, not on Stay signed in");
     check(shown->link == kChallenge && shown->link_caption == "http://192.168.0.2:7031/gog",
           "(c) the QR code is the address with its token; the caption is the address without it");
     check(shown->body.find("Scan with your phone") != std::string::npos && shown->body.find("Sign in to GOG") != std::string::npos &&
@@ -3955,6 +3963,10 @@ void sign_in_dialog() {
     check(body_starts("GOG sign-in is unavailable.") && dialog(live)->link.empty() &&
               dialog(live)->action_keys.front() == "gog-retry",
           "a failure shows in the body, with Try again");
+    check(live.state().navigation.focus_key == "gog-retry", "a failure: focus on Try again");
+    check(live.view().focused_row >= 0 && static_cast<std::size_t>(live.view().focused_row) < live.view().rows.size() &&
+              live.view().rows[static_cast<std::size_t>(live.view().focused_row)].key == "gog-retry",
+          "a failure: the dialog shows Try again focused");
     choose(live, "gog-retry");
     check(queued(live.TakeServiceActions(), ServiceAction::BeginQr, Store::kGog), "Try again starts a new sign-in");
     // Back, by Circle or the button, ends the sign-in.
@@ -4188,8 +4200,9 @@ void gog_scope() {
     local.source = Store::kLocal;
     check(live.UpdateLibrary(local), "an imported game loads");
     const auto with_gog = scopes();
-    const auto imported = std::find(with_gog.begin(), with_gog.end(), "imported");
-    check(imported != with_gog.end() && imported + 1 != with_gog.end() && *(imported + 1) == "gog", "GOG comes after Imported");
+    check(std::vector<std::string>(with_gog.begin() + 4, with_gog.begin() + 7) ==
+              std::vector<std::string>{"steam", "gog", "imported"},
+          "GOG comes between Steam and Imported");
     to_route(live, Route::Library);
     live.action("left");
     for (int step = 0; step < 10 && live.state().navigation.focus_key != "rail-gog"; ++step) live.action("down");
@@ -4202,6 +4215,16 @@ void gog_scope() {
     Simulation restored({}, {}, ModelMode::Live);
     check(restored.ApplyOrganization(1, restored.BeginOrganizationLoad(1), saved) && restored.state().library.scope == "gog",
           "and restored");
+    // The Steam scope, one step up, shows only Steam's games and is saved too.
+    live.action("left");
+    check(live.state().navigation.focus_key == "rail-gog" && live.action("up") &&
+              live.state().navigation.focus_key == "rail-steam" && live.action("cross"),
+          "the rail reaches Steam above GOG");
+    const auto steam = live.visible_games();
+    check(live.state().library.scope == "steam" && steam.size() == 1 && steam.front()->id == GameId::Steam(42),
+          "the Steam scope shows only Steam's games");
+    check(live.ExportOrganization().scope == "steam" && playden::OrganizationSnapshotIsValid(live.ExportOrganization()),
+          "the Steam scope is saved");
 }
 
 // A GOG game's page: no Steam to check, Install disabled with the reason, never "Checking Steam…".
@@ -4551,10 +4574,13 @@ void gog_scenarios(const std::filesystem::path& fixtures) {
     check(simulation.state().games.size() > visible.size(), "gog-library: Steam's games too");
     const auto scopes = library_rail_scopes(simulation.state());
     check(std::find(scopes.begin(), scopes.end(), "gog") != scopes.end(), "gog-library: the GOG scope is in the rail");
+    check(simulation.scenario("library-stores") && simulation.state().library.scope == "all" &&
+              library_store_scopes(simulation.state()) == std::vector<std::string>{"steam", "gog", "imported"},
+          "library-stores: All, with Steam, GOG and Imported in the rail");
     simulation.action("route:settings");
     check(simulation.action("focus:settings-scenarios") && simulation.action("cross"), "the scenario picker opens");
     const auto& picker = simulation.state().navigation.modals.back().action_keys;
-    for (const char* name : {"scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library"})
+    for (const char* name : {"scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores"})
         check(std::find(picker.begin(), picker.end(), name) != picker.end(), "the picker lists the GOG scenarios");
 }
 

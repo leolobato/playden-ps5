@@ -792,7 +792,8 @@ std::string action_label(const std::string& key) {
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
-        {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"},
+        {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"}, {"heading-store", "Store"},
+        {"store-filter-any", "Any"}, {"store-filter-steam", "Steam"}, {"store-filter-gog", "GOG"}, {"store-filter-imported", "Imported"},
         {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
         {"sort-playtime", "Playtime"}, {"sort-install-size", "Install size"}, {"filter-installed", "Installed"},
@@ -947,6 +948,16 @@ void replay_organization_delta(playden::OrganizationSnapshot& base,
     replay_map_delta(base.ratings, before.ratings, after.ratings);
     replay_map_delta(base.notes, before.notes, after.notes);
     replay_set_delta(base.filters, before.filters, after.filters);
+    // The Store filter picks one store: one picked meanwhile replaces the file's, so the two never add up.
+    const auto store_filter = [](const std::set<std::string>& filters) {
+        const auto found = std::find_if(filters.begin(), filters.end(),
+                                        [](const std::string& filter) { return filter.rfind("store-", 0) == 0; });
+        return found == filters.end() ? std::string{} : *found;
+    };
+    if (store_filter(before.filters) != store_filter(after.filters)) {
+        std::erase_if(base.filters, [](const std::string& filter) { return filter.rfind("store-", 0) == 0; });
+        if (const auto chosen = store_filter(after.filters); !chosen.empty()) base.filters.insert(chosen);
+    }
 
     for (const auto& old : before.collections) {
         if (find_collection(after.collections, old.id)) continue;
@@ -6227,16 +6238,17 @@ bool Simulation::scenario(const std::string& name) {
                 break;
             }
         }
-    } else if (name == "gog-signed-out" || name == "gog-sign-in" || name == "gog-library") {
+    } else if (name == "gog-signed-out" || name == "gog-sign-in" || name == "gog-library" || name == "library-stores") {
         // GOG (gog-store): Startup offering its sign-in, the sign-in dialog with its QR code, or both stores signed in
-        // with the GOG scope in the Library.
+        // with the GOG scope in the Library. library-stores adds the imported game and opens All, with the rail's store
+        // section (Steam, GOG, Imported) in view.
         gog_store_enabled_ = true;
         state_.navigation.modals.clear();
         gog_sign_in_open_ = false;
         auto& gog = state_.account(Store::kGog);
         gog = {};
         std::erase_if(state_.games, [](const Game& game) { return game.id.store == Store::kGog; });
-        if (name == "gog-library") {
+        if (name == "gog-library" || name == "library-stores") {
             state_.account().authentication = AuthState::SignedIn;
             gog.authentication = AuthState::SignedIn;
             gog.id = "00000000000000ab";
@@ -6263,7 +6275,8 @@ bool Simulation::scenario(const std::string& name) {
                 added.push_back(std::move(game));
             }
             for (auto& game : added) state_.games.push_back(std::move(game));
-            state_.library.scope = "gog";
+            if (name == "library-stores") add_fixture_imported_game(state_);
+            state_.library.scope = name == "library-stores" ? "all" : "gog";
             state_.navigation.route = Route::Library;
             state_.navigation.library_rail_focused = false;
             reconcile_library_selection(state_);
@@ -7731,6 +7744,13 @@ void Simulation::rebuild_view() {
                 item.kind = RowKind::Toggle;
                 item.selected = state_.library.filters.contains(action_key.substr(7)) != hide;
                 item.value = item.selected ? "On" : "Off";
+            }
+            // So does the store the Store filter picks, or Any.
+            if (modal.id == "filters" && action_key.rfind("store-filter-", 0) == 0) {
+                const auto stores = library_filter_stores(state_);
+                const auto chosen = library_store_filter(state_);
+                const bool known = std::find(stores.begin(), stores.end(), chosen) != stores.end();
+                item.checked = action_key == "store-filter-any" ? !known : known && action_key.substr(13) == chosen;
             }
             // The sort in use gets a tick.
             if (modal.id == "filters" && action_key.rfind("sort-", 0) == 0)
@@ -9776,7 +9796,9 @@ void Simulation::rebuild_view() {
             : state_.account().authentication == AuthState::SignedIn
                 ? (!live() || state_.account().last_sync > 0 ? "Steam connected · Synced" : "Steam connected")
                 : "Connect Steam";
-        if (state_.account().authentication != AuthState::SignedOut)
+        // With GOG listed (gog-store), each store's Sign out is in its own row's sheet, as GOG's is: a separate
+        // row between the stores would not say which store it signs out of.
+        if (!gog_store_enabled_ && state_.account().authentication != AuthState::SignedOut)
             add("settings-signout", RowKind::Action, "Sign out…", "signout-confirm").dangerous = true;
         if (gog_store_enabled_) {
             auto& gog = add("settings-store-gog", RowKind::Action, "GOG", "gog-account");
@@ -12722,6 +12744,12 @@ void Simulation::activate() {
         pending_destructive_action_.clear();
     } else if (action_name.rfind("sort-", 0) == 0) {
         state_.library.sort = action_name.substr(5); state_.library.view_sort.clear(); close_modal(); reconcile_library_selection(state_); save_profile();
+    } else if (action_name.rfind("store-filter-", 0) == 0) {
+        // One store, or Any: the Store filter is at most one "store-<store>" filter.
+        for (auto filter = state_.library.filters.begin(); filter != state_.library.filters.end();)
+            filter = filter->rfind("store-", 0) == 0 ? state_.library.filters.erase(filter) : std::next(filter);
+        if (action_name != "store-filter-any") state_.library.filters.insert("store-" + action_name.substr(13));
+        close_modal(); reconcile_library_selection(state_); save_profile();
     } else if (action_name.rfind("filter-", 0) == 0) {
         const auto filter = action_name.substr(7);
         if (state_.library.filters.contains(filter)) state_.library.filters.erase(filter); else state_.library.filters.insert(filter);
@@ -13513,7 +13541,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});
@@ -13948,7 +13976,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
             // Demos is listed while there are demos, or while they are hidden so they can be shown again.
             const bool demos = state_.library.filters.contains("hide-demos") ||
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.demo; });
-            // Sort, then Filter, then the actions after an untitled divider.
+            // Sort, Filter and Store, then the actions after an untitled divider.
             std::vector<std::string> sorts = live()
                 ? (dated ? std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime"}
                          : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-playtime"})
@@ -13965,6 +13993,12 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
             actions.insert(actions.end(), sorts.begin(), sorts.end());
             actions.push_back("heading-filter");
             actions.insert(actions.end(), filters.begin(), filters.end());
+            // Store: Any, then each store with games (Steam, GOG, Imported), while the games come from more than one
+            // store or a store is picked, so it can be set back to Any.
+            if (const auto stores = library_filter_stores(state_); !stores.empty()) {
+                actions.insert(actions.end(), {"heading-store", "store-filter-any"});
+                for (const auto& store : stores) actions.push_back("store-filter-" + store);
+            }
             actions.insert(actions.end(), {"divider", "filters-reset", "refresh-library", "cancel"});
         open_modal({"filters", "Sort and filters", state_.navigation.focus_key, std::move(actions), 0, false});
         }

@@ -97,8 +97,10 @@ result, for example `gog install game=gog-1351891846 step=plan result=ok languag
 Before you go back to an older build of Playden with GOG games in your data, read this:
 
 - A build older than the first release that reads GOG records (the release with Phase 1 of the GOG plan) does not
-  read the Library organization at all while a GOG game is in it: favorites, hidden games, collections, ratings and
-  notes are lost on that build for every store, Steam and imported games included.
+  read the Library organization at all while a GOG game is in it, or while the Library shows a store section (Steam,
+  GOG or Imported) or a Store filter is set. Favorites, hidden games, collections, ratings and notes are then lost on
+  that build for every store, Steam and imported games included. That build doesn't save over the file, so they come
+  back with a newer build. Choosing All and setting Store to Any before going back avoids the store part.
 - After you install a GOG game, the same older builds (those that can't read GOG records) also break Play for every
   game until the GOG titles are removed: they refuse the whole install records file when one record names GOG. A build
   that reads GOG records but doesn't install GOG games keeps Play working.

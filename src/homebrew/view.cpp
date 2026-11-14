@@ -1639,7 +1639,7 @@ class Render::Impl
         const State &state = simulation.state();
         const ViewData &view = simulation.route_view();
         const auto games = simulation.visible_games();
-        draw_library_rail(view, state);
+        draw_library_rail(canvas, view, state);
 
         if (games.empty())
         {
@@ -1695,7 +1695,7 @@ class Render::Impl
         }
     }
 
-    void draw_library_rail(const ViewData &view, const State &state)
+    void draw_library_rail(ui::Canvas &canvas, const ViewData &view, const State &state)
     {
         struct RailEntry
         {
@@ -1710,27 +1710,40 @@ class Render::Impl
             [&state](const Installation &installation) {
                 return installation.installed_bytes > 0 || !state.simulation_mode;
             }) + state.external_games.size();
-        std::vector<RailEntry> entries = {
-            {"rail-installed", "Installed", std::to_string(installed), state.library.scope == "installed"},
-            {"rail-all", "All", std::to_string(state.games.size()), state.library.scope == "all"},
-            {"rail-favorites", "Favorites", std::to_string(state.library.favorites.size()),
-             state.library.scope == "favorites"},
-            {"rail-hidden", "Hidden", std::to_string(state.library.hidden.size()), state.library.scope == "hidden"}};
-        if (has_imported_games(state))
-            entries.push_back({"rail-imported", "Imported",
-                               std::to_string(std::count_if(state.games.begin(), state.games.end(),
-                                                            [](const Game &game) { return game.id.store == Store::kLocal; })),
-                               state.library.scope == "imported"});
-        if (has_gog_games(state))
-            entries.push_back({"rail-gog", "GOG",
-                               std::to_string(std::count_if(state.games.begin(), state.games.end(),
-                                                            [](const Game &game) { return game.id.store == Store::kGog; })),
-                               state.library.scope == "gog"});
-        for (const Collection &collection : state.library.collections)
-            entries.push_back({"rail-" + collection.id, collection.name,
-                               std::to_string(collection.members.size()),
-                               state.library.scope == collection.id});
-        entries.push_back({"rail-new-collection", "New collection", "+", false});
+        const auto store_count = [&state](Store store) {
+            return std::to_string(std::count_if(state.games.begin(), state.games.end(),
+                                                [store](const Game &game) { return game.id.store == store; }));
+        };
+        // One entry per scope the rail steps through (library_rail_scopes), so selected_index finds its entry;
+        // the dividers around the store section are drawn between entries and never take the focus.
+        const std::string marked = library_rail_marked_scope(state);
+        std::vector<RailEntry> entries;
+        for (const std::string &scope : library_rail_scopes(state))
+        {
+            RailEntry entry{"rail-" + scope, {}, {}, scope == marked};
+            if (scope == "installed")
+                entry.title = "Installed", entry.value = std::to_string(installed);
+            else if (scope == "all")
+                entry.title = "All", entry.value = std::to_string(state.games.size());
+            else if (scope == "favorites")
+                entry.title = "Favorites", entry.value = std::to_string(state.library.favorites.size());
+            else if (scope == "hidden")
+                entry.title = "Hidden", entry.value = std::to_string(state.library.hidden.size());
+            else if (scope == "steam")
+                entry.title = "Steam", entry.value = store_count(Store::kSteam);
+            else if (scope == "gog")
+                entry.title = "GOG", entry.value = store_count(Store::kGog);
+            else if (scope == "imported")
+                entry.title = "Imported", entry.value = store_count(Store::kLocal);
+            else if (scope == "new-collection")
+                entry.title = "New collection", entry.value = "+", entry.selected = false;
+            else
+                for (const Collection &collection : state.library.collections)
+                    if (collection.id == scope)
+                        entry.title = collection.name, entry.value = std::to_string(collection.members.size());
+            entries.push_back(std::move(entry));
+        }
+        const std::vector<int> dividers = library_rail_dividers(state);
         const auto selected_entry = std::find_if(entries.begin(), entries.end(),
                                                  [](const RailEntry &entry) { return entry.selected; });
         const int selected = selected_entry == entries.end() ? -1 :
@@ -1746,11 +1759,26 @@ class Render::Impl
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, state.library.query, 22.0F, 260.0F),
                      118.0F, 177.0F, 22.0F, kText);
         }
-        const ShelfWindow window = shelf_window(static_cast<int>(entries.size()), focus_index, searching ? 11 : 12);
+        // The two dividers take one entry's room, so the rail still ends above the legend.
+        constexpr float kDividerGap = 16.0F;
+        const int capacity = (searching ? 11 : 12) - (dividers.empty() ? 0 : 1);
+        const ShelfWindow window = shelf_window(static_cast<int>(entries.size()), focus_index, capacity);
+        float y = rail_top;
+        float bottom = rail_top;
         for (int visible = 0; visible < window.count; ++visible)
         {
             const int index = window.first + visible;
-            const float y = rail_top + visible * 66.0F;
+            // A divider sets the store section apart; only between two entries the window shows.
+            if (visible > 0 && std::find(dividers.begin(), dividers.end(), index) != dividers.end())
+            {
+                ui::DividerStyle line;
+                line.theme = theme_;
+                line.color = kText.with_alpha(0.12F);
+                // Centred in the room between the entries: the usual 6 px spacing plus the gap.
+                const float middle = y + (kDividerGap - 6.0F) / 2.0F;
+                ui::draw_divider(canvas, line, {108.0F, middle - 9.0F, 276.0F, 18.0F});
+                y += kDividerGap;
+            }
             const bool focused = route_focus_ && state.navigation.library_rail_focused &&
                                  index == state.navigation.selected_index;
             const gfx::Rect entry{96.0F, y, 300.0F, 60.0F};
@@ -1770,8 +1798,10 @@ class Render::Impl
             ui::text(scene_, fonts_.regular, entries[static_cast<std::size_t>(index)].value,
                      374.0F, y + 38.0F, 20.0F, kMuted,
                      gfx::Align::right);
+            bottom = y + 60.0F;
+            y += 66.0F;
         }
-        if (!view.subtitle.empty() && entries.size() <= (searching ? 7U : 8U))
+        if (!view.subtitle.empty() && bottom <= 692.0F)
             ui::paragraph(scene_, fonts_.regular, view.subtitle, 96.0F, 722.0F, 22.0F, 300.0F,
                           30.0F, kSecondary, 4);
     }

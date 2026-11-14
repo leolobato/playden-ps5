@@ -37,10 +37,25 @@ struct ShelfWindow {
 [[nodiscard]] std::vector<Shelf> shelves(const State& state);
 [[nodiscard]] ShelfWindow shelf_window(int item_count, int focused_item,
                                        int capacity = 7) noexcept;
+// The Library rail's focusable entries: Installed, All, Favorites, Hidden, the store scopes, the
+// collections, then "new-collection". `selected_index` counts in this list; dividers are not in it.
 [[nodiscard]] std::vector<std::string> library_rail_scopes(const State& state);
-// The library has games imported from a drive or the drop folder: the rail shows "Imported".
+// The rail's store section: "steam", "gog" and "imported" (Store::kLocal), each while it has games, in
+// that order. Empty while the games come from one store, where an entry would repeat All.
+[[nodiscard]] std::vector<std::string> library_store_scopes(const State& state);
+// The scope the rail marks as chosen: the Library's scope, or "all" for a store scope whose entry is left out
+// because all the games are that store's. A scope with no entry otherwise (a store with no games left) marks none.
+[[nodiscard]] std::string library_rail_marked_scope(const State& state);
+// The Store filter's store ("steam", "gog", "imported", from the filter "store-<store>"), or empty for Any.
+[[nodiscard]] std::string library_store_filter(const State& state);
+// The stores the Sort and filters sheet offers under Store, after Any: as library_store_scopes, plus the store picked
+// while it is not among them. Empty: the sheet has no Store group.
+[[nodiscard]] std::vector<std::string> library_filter_stores(const State& state);
+// Indexes in library_rail_scopes that have a divider drawn above them: around the store section.
+[[nodiscard]] std::vector<int> library_rail_dividers(const State& state);
+// The library has games imported from a drive or the drop folder.
 [[nodiscard]] bool has_imported_games(const State& state);
-// The library has GOG games: the rail shows "GOG", after "Imported".
+// The library has GOG games.
 [[nodiscard]] bool has_gog_games(const State& state);
 
 // Moves only Home and Library browse focus. Returning true means the route

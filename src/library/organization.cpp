@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -28,6 +29,8 @@ constexpr std::size_t kMaximumQueryBytes = 256;
 constexpr std::size_t kMaximumScopeBytes = 128;
 constexpr std::size_t kMaximumSortBytes = 32;
 constexpr std::size_t kMaximumFilterBytes = 32;
+// Filters a version 2 file may list as read; filters a newer Playden wrote are skipped (see DecodeV2).
+constexpr std::uint32_t kMaximumFiltersRead = 64;
 constexpr std::size_t kMaximumKeyBytes = 64;
 
 std::string PathV1(std::uint64_t account_id) {
@@ -103,8 +106,10 @@ bool BuiltInScope(const std::string& value) {
   return value == "all" || value == "favorites" || value == "hidden";
 }
 
-// The Library rails of installed, imported and GOG games: scopes, never collection IDs.
-bool RailScope(const std::string& value) { return value == "installed" || value == "imported" || value == "gog"; }
+// The Library rails of installed games and of each store's games (Steam, GOG, imported): scopes, never collection IDs.
+bool RailScope(const std::string& value) {
+  return value == "installed" || value == "steam" || value == "gog" || value == "imported";
+}
 
 bool ReservedCollectionId(const std::string& value) {
   return BuiltInScope(value) || RailScope(value) || value == "new-collection";
@@ -115,9 +120,16 @@ bool ValidSort(const std::string& value) {
          value == "playtime";
 }
 
-// Version 1 knows only Playable; version 2 also keeps demos and family-shared games hidden (they show by default).
+// The Library's Store filter: one store's games only ("store-imported" for imported ones). Version 2 only.
+bool StoreFilter(const std::string& value) {
+  return value == "store-steam" || value == "store-gog" || value == "store-imported";
+}
+
+// Version 1 knows only Playable; version 2 also keeps demos and family-shared games hidden (they show by default), and
+// the Store filter.
 bool ValidFilter(const std::string& value, std::uint16_t version) {
-  return value == "compat-playable" || (version != kVersion1 && (value == "hide-demos" || value == "hide-family"));
+  return value == "compat-playable" ||
+         (version != kVersion1 && (value == "hide-demos" || value == "hide-family" || StoreFilter(value)));
 }
 
 // Version 1 stores Steam app IDs only; version 2 any valid game.
@@ -178,11 +190,12 @@ bool Validate(const OrganizationSnapshot& snapshot, std::uint16_t version) {
       return false;
     }
   }
-  if (snapshot.filters.size() > (version == kVersion1 ? 1u : 3u)) return false;
+  if (snapshot.filters.size() > (version == kVersion1 ? 1u : 4u)) return false;
   for (const auto& filter : snapshot.filters) {
     if (!ValidText(filter, kMaximumFilterBytes, false) || !ValidFilter(filter, version)) return false;
   }
-  return true;
+  // The Store filter picks one store, or none (Any).
+  return std::count_if(snapshot.filters.begin(), snapshot.filters.end(), StoreFilter) <= 1;
 }
 
 std::uint32_t Checksum(const Bytes& bytes, std::size_t size) {
@@ -526,13 +539,23 @@ Loaded DecodeV2(const Bytes& bytes) {
   if (!reader.String(snapshot.query, kMaximumQueryBytes) ||
       !reader.String(snapshot.scope, kMaximumScopeBytes) ||
       !reader.String(snapshot.sort, kMaximumSortBytes) ||
-      !reader.U32(filter_count) || filter_count > 3) {
+      !reader.U32(filter_count) || filter_count > kMaximumFiltersRead) {
     return InvalidLoad("view state");
   }
+  // A filter this build doesn't know (a newer one, or the Store filter naming a newer store) is skipped. Only the reader
+  // is lenient: Validate, and so the writer, still refuse it. An empty, oversized, invalid or repeated filter is damage.
+  std::set<std::string> read_filters;
   for (std::uint32_t index = 0; index < filter_count; ++index) {
     std::string filter;
-    if (!reader.String(filter, kMaximumFilterBytes) || !snapshot.filters.insert(std::move(filter)).second)
+    if (!reader.String(filter, kMaximumFilterBytes) || !ValidText(filter, kMaximumFilterBytes, false) ||
+        !read_filters.insert(filter).second)
       return InvalidLoad("filter");
+    if (ValidFilter(filter, kVersion2)) snapshot.filters.insert(std::move(filter));
+  }
+  // More than one store (a newer build letting several be picked) reads as Any.
+  if (std::count_if(snapshot.filters.begin(), snapshot.filters.end(), StoreFilter) > 1) {
+    for (auto filter = snapshot.filters.begin(); filter != snapshot.filters.end();)
+      filter = StoreFilter(*filter) ? snapshot.filters.erase(filter) : std::next(filter);
   }
   // A scope this build doesn't know (a newer rail, or a removed collection) reads as "all". Only the
   // reader is lenient: Validate, and so the writer, still refuse it. An empty or invalid scope stays damage.
