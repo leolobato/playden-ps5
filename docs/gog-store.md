@@ -109,3 +109,8 @@ Before you go back to an older build of Playden with GOG games in your data, rea
   signed in" is off, it deletes a GOG session left from an earlier run even with the line off.
 - The client is `src/gog/`, the store is `src/stores/gog*`, and the phone relay is `src/web/gog_relay.*` with the page
   in `src/web/page/`.
+- `playden-gog-dev` (host preset only, not shipped; `tools/gog-dev/main.cpp`) runs GOG's calls through the same
+  client on the Mac: `url`, `sign-in` (reads the address GOG opened after sign-in from stdin), `restore`, `owned`,
+  `product <id>`, `builds <id>`, `install <id> <game folder> [language]`, `update <id> <game folder>` and `sign-out`.
+  The session goes in `<folder>/gog/session` with `--data <folder>`. It never prints a token, the code, the username or
+  the user ID. It installs only the default branch's newest build.

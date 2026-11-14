@@ -53,6 +53,14 @@ if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_gog_store PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# Host tool: GOG's calls through Playden's own client on a real account (tools/gog-dev/main.cpp). Not shipped.
+if(NOT PLAYDEN_PLATFORM_PS5)
+    add_executable(playden-gog-dev "${CMAKE_SOURCE_DIR}/tools/gog-dev/main.cpp")
+    target_compile_definitions(playden-gog-dev PRIVATE PLAYDEN_GOG_DEV_CA_BUNDLE="${playden_staged_ca}")
+    target_link_libraries(playden-gog-dev PRIVATE playden_gog_store)
+    add_dependencies(playden-gog-dev playden_steam_trust)
+endif()
+
 if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(gog_auth_test "${CMAKE_SOURCE_DIR}/tests/gog_auth_test.cpp")
     target_link_libraries(gog_auth_test PRIVATE playden_gog)
