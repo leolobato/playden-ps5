@@ -1,0 +1,17 @@
+
+{
+    "version" : 1,
+    "depot"   : {
+        "name" : "Monkey Island 2 - Special Edition",
+        "files" : [
+            {
+                "offset" : 0,
+                "path"   : "1425039730/galaxy_monkey_island2_se_2.0.0.10.exe",
+                "size"   : 1280640,
+                "support" : true,
+                "hash"    : "4bc0f38e5298ab0ac22e913c52568064",
+                "url"     : "1425039730/main.bin"
+            }
+        ]
+    }
+}

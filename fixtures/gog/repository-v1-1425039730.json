@@ -1,0 +1,83 @@
+{
+    "product": {
+        "timestamp": 32971092, 
+        "depots": [
+            {
+                "languages": [
+                    "Neutral"
+                ], 
+                "size": "1280640", 
+                "gameIDs": [
+                    "1425039730"
+                ], 
+                "systems": [
+                    "Windows"
+                ], 
+                "manifest": "1bf89566-2d44-40e7-81b1-06b0c8e716e4.json"
+            }, 
+            {
+                "languages": [
+                    "English"
+                ], 
+                "size": "1912238511", 
+                "gameIDs": [
+                    "1425039730"
+                ], 
+                "systems": [
+                    "Windows"
+                ], 
+                "manifest": "44877313-0ade-439d-88ae-0538513fb165.json"
+            }, 
+            {
+                "redist": "MSVC2008", 
+                "executable": "__redist/MSVC2008/vcredist_x86.exe", 
+                "argument": "/q", 
+                "size": "0"
+            }, 
+            {
+                "redist": "dotNet35", 
+                "executable": "__redist/dotNet35/dotNetFx35setup.exe", 
+                "argument": "/q /norestart", 
+                "size": "0"
+            }, 
+            {
+                "redist": "DirectX", 
+                "executable": "__redist/DirectX/DXSETUP.exe", 
+                "argument": "/silent", 
+                "size": "0"
+            }, 
+            {
+                "redist": "language_setup", 
+                "size": "0", 
+                "targetDir": "/"
+            }
+        ], 
+        "support_commands": [
+            {
+                "languages": [
+                    "Neutral"
+                ], 
+                "executable": "/galaxy_monkey_island2_se_2.0.0.10.exe", 
+                "gameID": "1425039730", 
+                "argument": "", 
+                "systems": [
+                    "Windows"
+                ]
+            }
+        ], 
+        "installDirectory": "Monkey Island 2 SE", 
+        "rootGameID": "1425039730", 
+        "gameIDs": [
+            {
+                "gameID": "1425039730", 
+                "name": {
+                    "en": "Monkey Island 2 - Special Edition"
+                }, 
+                "dependencies": [], 
+                "standalone": true
+            }
+        ], 
+        "projectName": "Monkey Island 2 - Special Edition"
+    }, 
+    "version": 1
+}

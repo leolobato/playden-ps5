@@ -86,7 +86,6 @@ const char* InstallerFailure(Error error) {
     case Error::kNoSpace: return "Not enough free space.";
     case Error::kStorage: return "Could not write the game files.";
     case Error::kProtocol: return "GOG returned unexpected data.";
-    case Error::kGen1Only: return "Playden can't install this GOG game yet: it uses an older GOG download format.";
     case Error::kNoBuild: return "GOG has no Windows version of this game to install.";
     case Error::kNotOwned: return "GOG says this account doesn't own this game.";
     case Error::kNone:
@@ -333,7 +332,7 @@ installs::InstallRunner::Result GogInstallRunner::Finish(const GameId& id, std::
   // 3. The record, last.
   installs::GogRecord record;
   record.build_id = outcome.build_id;
-  record.generation = 2;
+  record.generation = outcome.generation;
   record.products = outcome.products;
   record.language = outcome.language;
   record.meta_id = outcome.meta_id;

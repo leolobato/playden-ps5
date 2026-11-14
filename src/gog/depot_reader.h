@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// A streaming reader for gen 2 depot manifests ({"depot":{"items":[…]}, "version":2}, inflated). Large games have
-// tens of thousands of items in many MiB, far past steam::json's defaults, so the reader never holds the whole
-// manifest: it scans the bytes for the `depot` object and its `items` array (whatever the key order), copies one
-// element at a time into a bounded buffer, parses that element alone and hands the item out. Its container stack is
-// on the heap and nothing recurses but the per-item parse, whose depth is capped.
+// A streaming reader for depot manifests: gen 2's ({"depot":{"items":[…]}, "version":2}, inflated) and, with another
+// array key and element parser, gen 1's ({"depot":{"files":[…]}, "version":1}, plain JSON; manifest_v1.h). Large games
+// have tens of thousands of items in many MiB, far past steam::json's defaults, so the reader never holds the whole
+// manifest: it scans the bytes for the `depot` object and its array (whatever the key order), copies one element at a
+// time into a bounded buffer, parses that element alone and hands the item out. Its container stack is on the heap and
+// nothing recurses but the per-item parse, whose depth is capped.
 //
 // The small-files container and sfcRef are skipped: every file lists its own chunks. Paths are handed out raw (`\` or
 // `/`); path_rules makes them safe.
@@ -15,6 +16,10 @@
 #include <functional>
 #include <string>
 #include <vector>
+
+namespace playden::steam::json {
+class Value;
+}  // namespace playden::steam::json
 
 namespace playden::gog {
 
@@ -38,13 +43,21 @@ struct DepotItem {
   enum class Type { kFile, kDirectory, kLink, kOther };
   Type type = Type::kOther;
   std::string path;  // raw, as the manifest writes it
-  std::vector<DepotChunk> chunks;
-  std::uint64_t size = 0;  // the sum of the chunks' sizes
+  std::vector<DepotChunk> chunks;  // gen 2; empty for gen 1
+  std::uint64_t size = 0;  // gen 2: the sum of the chunks' sizes; gen 1: the file's size
   std::string md5;         // the whole file's; a single-chunk file without one takes its chunk's
   std::string sha256;      // empty when the manifest has none
-  bool support = false;    // flags: "support"
+  bool support = false;    // flags: "support" (gen 1: `support`)
   bool executable = false; // flags: "executable" (no use on the console)
+  std::uint64_t offset = 0;        // gen 1: where the file starts in its blob (`main.bin`)
+  std::uint64_t blob_product = 0;  // gen 1: the product of `url` ("<product>/main.bin"); 0 without a url
 };
+
+// Turns one element of the manifest's array, parsed on its own, into an item. False refuses the manifest (kMalformed).
+using DepotElementParser = bool (*)(const steam::json::Value& element, DepotItem* item);
+
+// The gen 2 element parser: `type`, `path`, `flags`, `chunks`, `md5` and `sha256`.
+bool ParseDepotItemV2(const steam::json::Value& element, DepotItem* item);
 
 class DepotItemReader {
  public:
@@ -56,7 +69,10 @@ class DepotItemReader {
   };
   using Callback = std::function<bool(const DepotItem&)>;
 
+  // A gen 2 manifest: depot.items, ParseDepotItemV2.
   explicit DepotItemReader(Callback callback);
+  // Another format: the array under `depot` named `array_key` (at most 32 bytes), each element through `parser`.
+  DepotItemReader(Callback callback, std::string array_key, DepotElementParser parser);
 
   // Reads the next bytes of the inflated manifest. After an error, every call returns it.
   Status Feed(const std::uint8_t* data, std::size_t size);
@@ -86,6 +102,8 @@ class DepotItemReader {
   Status Fail(Status status) { return error_ = status; }
 
   Callback callback_;
+  std::string array_key_ = "items";
+  DepotElementParser parser_ = &ParseDepotItemV2;
   Status error_ = Status::kOk;
   std::vector<Frame> stack_;
   Lex lex_ = Lex::kNone;
@@ -95,7 +113,7 @@ class DepotItemReader {
   bool key_plain_ = true;   // no escape and short enough to compare
   std::string last_key_;    // the key the next value belongs to; empty when it is none Playden looks for
   std::string scalar_;
-  std::string item_;        // the element of items[] being copied
+  std::string item_;        // the element of the array being copied
   std::size_t item_depth_ = 0;
   bool item_in_string_ = false;
   bool item_escape_ = false;

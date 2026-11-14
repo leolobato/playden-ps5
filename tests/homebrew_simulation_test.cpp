@@ -4228,7 +4228,7 @@ void gog_game_page(const std::filesystem::path& fixtures) {
 }
 
 // With GOG installs on: "Checking GOG…" until the details answer, then "Install…" with the size, or the reason a game
-// can't be installed here (a gen 1 only build) with no way to install it.
+// can't be installed here (no Windows build) with no way to install it.
 void gog_game_installs() {
     Simulation live({}, {}, ModelMode::Live);
     live.SetWallClock(1700000000);
@@ -4236,7 +4236,7 @@ void gog_game_installs() {
     live.SetStoreInstalls(Store::kGog, true);
     live.UpdateVolumes({{"internal", "Console storage", true, 825'000'000'000ull, 512'000'000'000ull}}, "internal");
     live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
-    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}, {1000000002, "GOG old"}})), "GOG's games load");
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}, {1000000002, "GOG other"}})), "GOG's games load");
     check(live.action("details:" + playden::ToKey(GameId::Gog(1000000001))), "the GOG game's page opens");
     const auto* checking = row(live, "details-checking");
     check(checking && checking->title == "Checking GOG…", "Checking GOG… while its details are asked for");
@@ -4266,14 +4266,13 @@ void gog_game_installs() {
     check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Install &&
               requests[0].game_id == GameId::Gog(1000000001),
           "Install queues the GOG game");
-    // A gen 1 only game: the reason, and Install is not offered.
+    // A game GOG can't install here: the reason, and Install is not offered.
     live.action("circle");
-    check(live.action("details:" + playden::ToKey(GameId::Gog(1000000002))), "the old GOG game's page opens");
+    check(live.action("details:" + playden::ToKey(GameId::Gog(1000000002))), "the other GOG game's page opens");
     live.UpdateAppDetails(GameId::Gog(1000000002), std::nullopt, std::nullopt, false, {}, {}, {}, {}, true,
-                          "Playden can't install this GOG game yet: it uses an older GOG download format.");
+                          "GOG has no Windows version of this game to install.");
     const auto* reason = row(live, "details-unavailable");
-    check(reason && !reason->enabled &&
-              reason->title == "Playden can't install this GOG game yet: it uses an older GOG download format.",
+    check(reason && !reason->enabled && reason->title == "GOG has no Windows version of this game to install.",
           "the page says why");
     const auto* none = row(live, "details-install");
     check(!none || (!none->enabled && none->action.empty()), "Install is absent or disabled");

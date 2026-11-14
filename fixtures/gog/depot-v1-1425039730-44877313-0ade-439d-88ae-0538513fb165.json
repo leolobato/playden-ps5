@@ -1,0 +1,290 @@
+
+{
+    "version" : 1,
+    "depot"   : {
+        "name" : "Monkey Island 2 - Special Edition",
+        "files" : [
+            {
+                "offset" : 1913519129,
+                "path"   : "1425039730/app/lang.ini",
+                "size"   : 22,
+                "support" : true,
+                "hash"    : "be631539c7e5b61bdc2c2cc43dee871c",
+                "url"     : "1425039730/main.bin"
+            },
+            {
+                "offset" : 1280640,
+                "hash"   : "c18fe9aa538bec2159c509875cf610ee",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/language_setup.ini",
+                "size"   : 514
+            },
+            {
+                "offset" : 509672286,
+                "hash"   : "4df66a27a6c425b5c12c160d698debf7",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/goggame-1425039730.info",
+                "size"   : 798
+            },
+            {
+                "offset" : 1281154,
+                "hash"   : "6e380718f2e21fa9892f6dca83fd573e",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/goggame-1425039730.hashdb",
+                "size"   : 1528
+            },
+            {
+                "offset" : 1269742545,
+                "hash"   : "99c1675a40e473216e0538e910992f11",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/CommentaryCues.xsb",
+                "size"   : 1664
+            },
+            {
+                "offset" : 1913513497,
+                "hash"   : "a88a8efb54d503a388e0ad768aa5c5d1",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/PatchCues.xsb",
+                "size"   : 1755
+            },
+            {
+                "offset" : 1913515252,
+                "hash"   : "71e58a2d003d6f2dd12054ea604f4410",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/MI2_MUSIC_IMPLEMENTATION.csv",
+                "size"   : 3877
+            },
+            {
+                "offset" : 1562969989,
+                "hash"   : "58bc82ff7c8e644ff43b61c58eb8abaa",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/MI2SE_Audio_Music.xgs",
+                "size"   : 3993
+            },
+            {
+                "offset" : 892125411,
+                "hash"   : "0612ebd2fc64ae86a473edb7a2db2bb2",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/AmbienceCues.xsb",
+                "size"   : 4846
+            },
+            {
+                "offset" : 892108769,
+                "hash"   : "991127b30d276239d12b0f3be3d9313b",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/SFXCuesOriginal.xsb",
+                "size"   : 6492
+            },
+            {
+                "offset" : 892115261,
+                "hash"   : "e8e2c47097e65ec580dc3619cf9c5718",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/SFXMappings.info",
+                "size"   : 10150
+            },
+            {
+                "offset" : 1468553713,
+                "hash"   : "05de6105a6db8faa8aed23c174e053c8",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/SFXCuesNew.xsb",
+                "size"   : 21244
+            },
+            {
+                "offset" : 1516418285,
+                "hash"   : "efca379f41ae4994f061c1c5190a9675",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/MusicCuesNew.xsb",
+                "size"   : 22726
+            },
+            {
+                "offset" : 1516441011,
+                "hash"   : "fe323d70336094c21881d1f9d8f67427",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/MusicCuesOriginal.xsb",
+                "size"   : 22994
+            },
+            {
+                "offset" : 509737764,
+                "hash"   : "2c56e3da52af932893e86f99da02c76d",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mapmainmenu/it/it_mapmainmenu_bundle_pk_a02.dxt",
+                "size"   : 59675
+            },
+            {
+                "offset" : 509859610,
+                "hash"   : "91cb64c9f79596333674d31f3d365b76",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mapmainmenu/de/de_mapmainmenu_bundle_pk_a02.dxt",
+                "size"   : 59864
+            },
+            {
+                "offset" : 509797439,
+                "hash"   : "2b08e0927b300a44cee63ad5f56945d8",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mapmainmenu/fr/fr_mapmainmenu_bundle_pk_a02.dxt",
+                "size"   : 62171
+            },
+            {
+                "offset" : 509919474,
+                "hash"   : "efa3b3d1904d2eb192e67454bfc9a583",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mapmainmenu/sp/sp_mapmainmenu_bundle_pk_a02.dxt",
+                "size"   : 63032
+            },
+            {
+                "offset" : 509673084,
+                "hash"   : "f1ce002a6c06574c3cf873ddf51dfa0e",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mapmainmenu/en/en_mapmainmenu_bundle_pk_a02.dxt",
+                "size"   : 64680
+            },
+            {
+                "offset" : 1575866,
+                "hash"   : "37b52b3753e13f0fe68c8275b7d22c48",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/language_setup.png",
+                "size"   : 105684
+            },
+            {
+                "offset" : 509536766,
+                "hash"   : "e3e7b4ebb35272ac0f4b48829a972f5f",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/goggame-1425039730.ico",
+                "size"   : 135520
+            },
+            {
+                "offset" : 510270224,
+                "hash"   : "e778adaec57b4accbb189e5f8f9bb7bc",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mappausemenu/fr/fr_mappausemenu_bundle_pk_a00.dxt",
+                "size"   : 139346
+            },
+            {
+                "offset" : 509982506,
+                "hash"   : "98b23679990b4d1628fc0d8940ad0361",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mappausemenu/en/en_mappausemenu_bundle_pk_a00.dxt",
+                "size"   : 143577
+            },
+            {
+                "offset" : 510126083,
+                "hash"   : "32e495aafc38a4bc1d7aa17d902bdb00",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mappausemenu/it/it_mappausemenu_bundle_pk_a00.dxt",
+                "size"   : 144141
+            },
+            {
+                "offset" : 510409570,
+                "hash"   : "cca036cd3e412478816bd6f6d367b36b",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mappausemenu/de/de_mappausemenu_bundle_pk_a00.dxt",
+                "size"   : 145287
+            },
+            {
+                "offset" : 510554857,
+                "hash"   : "d1f1e58fb8de6990bc200cfe61288696",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/ui/mappausemenu/sp/sp_mappausemenu_bundle_pk_a00.dxt",
+                "size"   : 152824
+            },
+            {
+                "offset" : 1282682,
+                "hash"   : "95b2a054e68acde8ba868036ab967054",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/goggame-1425039730.dll",
+                "size"   : 293184
+            },
+            {
+                "offset" : 1562973982,
+                "hash"   : "a88259827aef1cc10046d993960226ed",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/SpeechCues.xsb",
+                "size"   : 376571
+            },
+            {
+                "offset" : 1681550,
+                "hash"   : "86ce1cd085fcdb6ee143b5dc175c6dbe",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/webcache.zip",
+                "size"   : 439858
+            },
+            {
+                "offset" : 2121408,
+                "hash"   : "8327619f8697b7f0524b77dc568c6a53",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/Monkey2.exe",
+                "size"   : 1314304
+            },
+            {
+                "offset" : 1516464005,
+                "hash"   : "c22b2a149d1cf52edc55c5e32e2c2ab7",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/SFXOriginal.xwb",
+                "size"   : 2185216
+            },
+            {
+                "offset" : 510707681,
+                "hash"   : "c316f8cbc83a91a997c546d9806c9352",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/SFXNew.xwb",
+                "size"   : 7553024
+            },
+            {
+                "offset" : 1457379921,
+                "hash"   : "7ca9f2cc9cd62bec79da465fb5bea458",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/speech.info",
+                "size"   : 11173792
+            },
+            {
+                "offset" : 1518649221,
+                "hash"   : "757b6ce68fe2e8ff90e9a4d6b23cd9bc",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/Commentary.xwb",
+                "size"   : 44320768
+            },
+            {
+                "offset" : 1468574957,
+                "hash"   : "8680a26a3b689997e71259eaa479c284",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/Patch.xwb",
+                "size"   : 47843328
+            },
+            {
+                "offset" : 1269744209,
+                "hash"   : "9f393e1b707f6774da0be8cfb1ba4b5b",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/Ambience.xwb",
+                "size"   : 187635712
+            },
+            {
+                "offset" : 1563350553,
+                "hash"   : "9f847efa633beda9cd8372d33a5b74fd",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/Speech.xwb",
+                "size"   : 350162944
+            },
+            {
+                "offset" : 518260705,
+                "hash"   : "533924a926320159247d289fe4e1f0a7",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/MusicNew.xwb",
+                "size"   : 373848064
+            },
+            {
+                "offset" : 892130257,
+                "hash"   : "3bce0bc44e9f3b9b23d2df80095e049e",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/audio/MusicOriginal.xwb",
+                "size"   : 377612288
+            },
+            {
+                "offset" : 3435712,
+                "hash"   : "f3cddedea04512fcaf61468ff0b55274",
+                "url"    : "1425039730/main.bin",
+                "path"   : "/monkey2.pak",
+                "size"   : 506101054
+            }
+        ]
+    }
+}

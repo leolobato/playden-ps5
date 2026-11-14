@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-// A synthetic GOG gen 2 game for the downloader's and the install runner's tests: files with chunks compressed by
-// miniz, its depot manifests, build meta and builds answer, published into the stub CDN (gog_cdn_stub.h). Synthetic
-// data only.
+// A synthetic GOG game for the downloader's and the install runner's tests, published into the stub CDN
+// (gog_cdn_stub.h). Gen 2: files with chunks compressed by miniz, its depot manifests, build meta and builds answer.
+// Gen 1: its files laid out in one main.bin per product, its plain depot manifests, repository.json and a gen 1 builds
+// item. Synthetic data only.
 
 #include "gog/depot_reader.h"
 #include "gog_cdn_stub.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <vector>
@@ -170,6 +172,174 @@ inline Published Publish(CdnStub& stub, const Game& game) {
                     "{\"name\":\"Synthetic DLC\",\"productId\":\"" + std::to_string(kDlc) + "\"}],\"version\":2}";
   published.meta_id = stub.Put(Zlib(meta));
   stub.SetBuilds(kBase, BuildsJson(kBase, game.build_id, published.meta_id));
+  return published;
+}
+
+// ---- A synthetic gen 1 game ---------------------------------------------------------------------------------------
+
+inline constexpr std::uint64_t kTimestampV1 = 31000007;  // the gen 1 secure link fixture's
+
+struct GameFileV1 {
+  std::string path;   // raw, as the manifest writes it
+  std::string bytes;
+  bool support = false;
+  bool directory = false;
+  bool symlink = false;  // a `symlinkType` record
+  std::uint64_t blob = 0;  // the product whose main.bin holds it; 0: the depot's first product
+  bool lie_md5 = false;    // the manifest's hash is wrong
+  bool no_url = false;     // the record has no `url` (the blob is still `blob`'s)
+};
+
+struct GameDepotV1 {
+  std::vector<std::uint64_t> products{kBase};  // gameIDs
+  std::vector<std::string> languages{"Neutral"};
+  std::vector<std::string> systems{"Windows"};
+  std::vector<GameFileV1> files;
+};
+
+struct GameV1 {
+  std::string build_id = "15751";
+  std::uint64_t timestamp = kTimestampV1;
+  std::vector<GameDepotV1> depots;
+  std::vector<std::string> redists;  // redist IDs; "__redist/<id>/setup.exe" for any but language_setup and DOSBox ones
+  std::uint64_t root = kBase;        // rootGameID (another one makes a repository of another product)
+  std::uint64_t repository_timestamp = 0;  // product.timestamp; 0: `timestamp`
+  int support_commands = 1;
+};
+
+struct PublishedV1 {
+  std::string repository_md5;
+  std::string repository;
+  std::map<std::uint64_t, std::string> blobs;  // main.bin per product
+  std::map<std::string, std::uint64_t> offsets;  // by raw path: where the file starts in its blob
+};
+
+inline std::string BuildsJsonV1(std::uint64_t product, const std::string& build_id, std::uint64_t timestamp) {
+  const auto endpoint = [&](const std::string& name, const std::string& base, int priority, bool fallback,
+                            const std::string& generations) {
+    const auto url = base + "/content-system/v1/manifests/" + std::to_string(product) + "/windows/" +
+                     std::to_string(timestamp) + "/repository.json";
+    return "{\"endpoint_name\":" + Json(name) + ",\"url\":" + Json(url) + ",\"url_format\":" + Json(url) +
+           ",\"parameters\":{},\"priority\":" + std::to_string(priority) +
+           ",\"max_fails\":100,\"supports_generation\":" + generations +
+           ",\"fallback_only\":" + (fallback ? "true" : "false") + "}";
+  };
+  return "{\"total_count\":1,\"count\":1,\"items\":[{\"build_id\":\"" + build_id + "\",\"product_id\":\"" +
+         std::to_string(product) + "\",\"os\":\"windows\",\"branch\":null,\"generation\":1,\"urls\":[" +
+         endpoint("fastly", kFastlyBase, 10, false, "[1,2]") + "," + endpoint("gcore", kGcoreBase, 1, true, "[2]") +
+         "],\"legacy_build_id\":" + std::to_string(timestamp) + "}],\"has_private_branches\":false}";
+}
+
+inline std::string StringList(const std::vector<std::string>& values) {
+  std::string out;
+  for (const auto& value : values) out += (out.empty() ? "" : ",") + Json(value);
+  return "[" + out + "]";
+}
+
+// Publishes the game: each file's bytes appended to its blob product's main.bin (after a few bytes of padding, so
+// offsets matter), the manifests and repository.json at their gen 1 paths, the builds answer for the root.
+inline PublishedV1 PublishV1(CdnStub& stub, const GameV1& game) {
+  PublishedV1 published;
+  const std::string folder = "/windows/" + std::to_string(game.timestamp) + "/";
+  std::string depots;
+  std::uint32_t seed = 7000;
+  for (std::size_t index = 0; index < game.depots.size(); ++index) {
+    const auto& depot = game.depots[index];
+    std::string files;
+    std::uint64_t size = 0;
+    for (const auto& file : depot.files) {
+      if (!files.empty()) files += ",";
+      if (file.directory) {
+        files += "{\"path\":" + Json(file.path) + ",\"directory\":true}";
+        continue;
+      }
+      if (file.symlink) {
+        files += "{\"path\":" + Json(file.path) + ",\"symlinkType\":\"file\",\"target\":\"bin/Game.exe\"}";
+        continue;
+      }
+      const auto blob_product = file.blob ? file.blob : depot.products.front();
+      auto& blob = published.blobs[blob_product];
+      blob += RandomBytes(17, ++seed);
+      const auto offset = blob.size();
+      blob += file.bytes;
+      published.offsets[file.path] = offset;
+      size += file.bytes.size();
+      files += "{\"offset\":" + std::to_string(offset) + ",\"path\":" + Json(file.path) +
+               ",\"size\":" + std::to_string(file.bytes.size()) +
+               (file.support ? ",\"support\":true" : "") +
+               ",\"hash\":" + Json(Md5Hex(file.lie_md5 ? file.bytes + "lie" : file.bytes)) +
+               (file.no_url ? std::string() : ",\"url\":" + Json(std::to_string(blob_product) + "/main.bin")) + "}";
+    }
+    char name[64];
+    std::snprintf(name, sizeof(name), "00000000-0000-4000-8000-%012zu.json", index + 1);
+    stub.SetV1File(std::to_string(depot.products.front()) + folder + name,
+                   "{\"version\":1,\"depot\":{\"name\":\"Synthetic Game\",\"files\":[" + files + "]}}");
+    std::string ids;
+    for (const auto product : depot.products) ids += (ids.empty() ? "" : ",") + Json(std::to_string(product));
+    if (!depots.empty()) depots += ",";
+    depots += "{\"languages\":" + StringList(depot.languages) + ",\"size\":" + Json(std::to_string(size)) +
+              ",\"gameIDs\":[" + ids + "],\"systems\":" + StringList(depot.systems) +
+              ",\"manifest\":" + Json(name) + "}";
+  }
+  for (const auto& id : game.redists) {
+    depots += ",{\"redist\":" + Json(id);
+    if (id != "language_setup" && id.rfind("DOSBox", 0) != 0) depots += ",\"executable\":" + Json("__redist/" + id + "/setup.exe");
+    depots += ",\"size\":\"0\"}";
+  }
+  std::string commands;
+  for (int i = 0; i < game.support_commands; ++i)
+    commands += std::string(i ? "," : "") +
+                "{\"languages\":[\"Neutral\"],\"executable\":\"/galaxy_synthetic.exe\",\"gameID\":" +
+                Json(std::to_string(kBase)) + ",\"argument\":\"\",\"systems\":[\"Windows\"]}";
+  const auto timestamp = game.repository_timestamp ? game.repository_timestamp : game.timestamp;
+  published.repository =
+      "{\"product\":{\"timestamp\":" + std::to_string(timestamp) + ",\"depots\":[" + depots +
+      "],\"support_commands\":[" + commands + "],\"installDirectory\":\"Synthetic\",\"rootGameID\":" +
+      Json(std::to_string(game.root)) + ",\"gameIDs\":[{\"gameID\":" + Json(std::to_string(kBase)) +
+      ",\"name\":{\"en\":\"Synthetic Game\"},\"dependencies\":[],\"standalone\":true},{\"gameID\":" +
+      Json(std::to_string(kDlc)) + ",\"name\":{\"en\":\"Synthetic DLC\"},\"dependencies\":[],\"standalone\":false}],"
+      "\"projectName\":\"Synthetic Game\"},\"version\":1}";
+  published.repository_md5 = Md5Hex(published.repository);
+  stub.SetV1File(std::to_string(kBase) + folder + "repository.json", published.repository);
+  for (const auto& blob : published.blobs) stub.SetBlob(blob.first, blob.second);
+  stub.SetBuilds(kBase, BuildsJsonV1(kBase, game.build_id, game.timestamp));
+  return published;
+}
+
+// ---- The public dependency store ----------------------------------------------------------------------------------
+
+// One entry of the dependency repository manifest and its depot. `arguments_json` is the JSON value of
+// executable.arguments as it is written (so a test can give a control character or a number).
+struct StoreDependency {
+  std::string id;
+  std::string exe_path;  // "" for game-folder files
+  std::string arguments_json = "\"\"";
+  std::vector<GameFile> files;
+  std::string depot_json;  // the depot manifest as it is, instead of one made from `files`
+  std::uint64_t size = 0;  // with depot_json: the sizes the repository states
+  std::uint64_t compressed_size = 0;
+};
+
+// The repository answer, its manifest and every dependency's depot manifest and chunks. Returns the chunks by raw path.
+inline Published PublishDependencyStore(CdnStub& stub, const std::vector<StoreDependency>& dependencies) {
+  Published published;
+  std::string entries;
+  for (const auto& dependency : dependencies) {
+    std::uint64_t size = dependency.size, compressed = dependency.compressed_size;
+    const auto depot = dependency.depot_json.empty()
+                           ? DepotManifest(stub, dependency.files, &published, &size, &compressed)
+                           : dependency.depot_json;
+    const auto id = stub.Put(Zlib(depot));
+    if (!entries.empty()) entries += ",";
+    entries += "{\"dependencyId\":" + Json(dependency.id) + ",\"executable\":{\"path\":" + Json(dependency.exe_path) +
+               ",\"arguments\":" + dependency.arguments_json + "},\"languages\":[\"*\"],\"manifest\":" + Json(id) +
+               ",\"size\":" + std::to_string(size) + ",\"compressedSize\":" + std::to_string(compressed) +
+               ",\"signature\":\"x\"}";
+  }
+  const auto repository_id = stub.Put(Zlib("{\"depots\":[" + entries + "]}"));
+  stub.SetRepository("{\"repository_manifest\":" +
+                     Json(kFastlyBase + "/content-system/v2/dependencies/meta/" + Galaxy(repository_id)) +
+                     ",\"build_id\":\"60163282911088704\",\"generation\":2}");
   return published;
 }
 

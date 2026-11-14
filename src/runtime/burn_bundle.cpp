@@ -39,8 +39,8 @@ bool CabinetAt(std::string_view bundle, std::uint64_t offset, std::uint64_t size
          bundle.compare(offset, 8, std::string_view("MSCF\0\0\0\0", 8)) == 0 && U32(bundle, offset + 8) == size;
 }
 
-// The bundle's containers in order: [0] the UX container, then the attached ones.
-std::optional<std::vector<std::string_view>> SectionContainers(std::string_view bundle) {
+// The row of the PE section table named .wixburn, or nullopt (not a PE, or no such section).
+std::optional<std::uint64_t> WixburnRow(std::string_view bundle) {
   if (bundle.size() < 64 || bundle[0] != 'M' || bundle[1] != 'Z') return std::nullopt;
   const auto pe = U32(bundle, 0x3c);
   if (pe > bundle.size() || bundle.size() - pe < 24 || bundle.compare(pe, 4, std::string_view("PE\0\0", 4)) != 0)
@@ -51,35 +51,41 @@ std::optional<std::vector<std::string_view>> SectionContainers(std::string_view 
   if (sections > 96 || table + sections * 40ull > bundle.size()) return std::nullopt;
   for (unsigned index = 0; index < sections; ++index) {
     const auto row = table + index * 40ull;
-    if (bundle.substr(row, 8) != std::string_view(".wixburn", 8)) continue;
-    const std::uint64_t raw = U32(bundle, row + 20), size = U32(bundle, row + 16);
-    if (raw > bundle.size() || size > bundle.size() - raw || size < 48) return std::nullopt;
-    const auto section = bundle.substr(raw, size);
-    if (U32(section, 0) != kBurnMagic || U32(section, 40) != 1) return std::nullopt;  // 1: cabinet containers
-    const std::uint64_t stub = U32(section, 24), signature = U32(section, 32), signature_size = U32(section, 36);
-    const std::uint32_t count = U32(section, 44);
-    if (count == 0 || count > kMaxContainers || 48 + count * 4ull > section.size()) return std::nullopt;
-    std::vector<std::uint64_t> sizes;
-    for (std::uint32_t at = 0; at < count; ++at) sizes.push_back(U32(section, 48 + at * 4));
-    if (!CabinetAt(bundle, stub, sizes[0])) return std::nullopt;
-    std::vector<std::string_view> out{bundle.substr(stub, sizes[0])};
-    if (count == 1) return out;
-    // Attached containers follow the engine: after the original signature when the bundle was signed
-    // before they were attached (Microsoft's are), right after the UX container otherwise.
-    for (const std::uint64_t first : {signature ? signature + signature_size : 0, stub + sizes[0]}) {
-      if (!first) continue;
-      std::vector<std::string_view> attached;
-      std::uint64_t at = first;
-      for (std::uint32_t container = 1; container < count && CabinetAt(bundle, at, sizes[container]); ++container) {
-        attached.push_back(bundle.substr(at, sizes[container]));
-        at += sizes[container];
-      }
-      if (attached.size() == count - 1) {
-        out.insert(out.end(), attached.begin(), attached.end());
-        return out;
-      }
+    if (bundle.substr(row, 8) == std::string_view(".wixburn", 8)) return row;
+  }
+  return std::nullopt;
+}
+
+// The bundle's containers in order: [0] the UX container, then the attached ones.
+std::optional<std::vector<std::string_view>> SectionContainers(std::string_view bundle) {
+  const auto row = WixburnRow(bundle);
+  if (!row) return std::nullopt;
+  const std::uint64_t raw = U32(bundle, *row + 20), size = U32(bundle, *row + 16);
+  if (raw > bundle.size() || size > bundle.size() - raw || size < 48) return std::nullopt;
+  const auto section = bundle.substr(raw, size);
+  if (U32(section, 0) != kBurnMagic || U32(section, 40) != 1) return std::nullopt;  // 1: cabinet containers
+  const std::uint64_t stub = U32(section, 24), signature = U32(section, 32), signature_size = U32(section, 36);
+  const std::uint32_t count = U32(section, 44);
+  if (count == 0 || count > kMaxContainers || 48 + count * 4ull > section.size()) return std::nullopt;
+  std::vector<std::uint64_t> sizes;
+  for (std::uint32_t at = 0; at < count; ++at) sizes.push_back(U32(section, 48 + at * 4));
+  if (!CabinetAt(bundle, stub, sizes[0])) return std::nullopt;
+  std::vector<std::string_view> out{bundle.substr(stub, sizes[0])};
+  if (count == 1) return out;
+  // Attached containers follow the engine: after the original signature when the bundle was signed
+  // before they were attached (Microsoft's are), right after the UX container otherwise.
+  for (const std::uint64_t first : {signature ? signature + signature_size : 0, stub + sizes[0]}) {
+    if (!first) continue;
+    std::vector<std::string_view> attached;
+    std::uint64_t at = first;
+    for (std::uint32_t container = 1; container < count && CabinetAt(bundle, at, sizes[container]); ++container) {
+      attached.push_back(bundle.substr(at, sizes[container]));
+      at += sizes[container];
     }
-    return std::nullopt;
+    if (attached.size() == count - 1) {
+      out.insert(out.end(), attached.begin(), attached.end());
+      return out;
+    }
   }
   return std::nullopt;
 }
@@ -211,17 +217,16 @@ std::string FileName(const std::string& path) {
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-}  // namespace
-
-bool ReadBurnMsiPackage(std::string_view bundle, const std::string& package_id, BurnMsiPackage* package,
-                        std::string* reason) {
-  *package = BurnMsiPackage{};
-  auto containers = SectionContainers(bundle);
-  if (!containers) containers = ScannedContainers(bundle);
-  if (containers->empty()) {
+// The bundle's containers and its manifest's elements; false with a reason when either can't be read.
+bool ReadManifest(std::string_view bundle, std::vector<std::string_view>* containers, std::vector<Element>* elements,
+                  std::string* reason) {
+  auto found = SectionContainers(bundle);
+  if (!found) found = ScannedContainers(bundle);
+  if (found->empty()) {
     *reason = "not a setup bundle Playden can read";
     return false;
   }
+  *containers = std::move(*found);
   std::map<std::string, std::string> ux;
   if (!Members(containers->front(), {"0"}, &ux, reason)) return false;
   std::string_view manifest = ux["0"];
@@ -230,23 +235,64 @@ bool ReadBurnMsiPackage(std::string_view bundle, const std::string& package_id, 
     return false;
   }
   if (manifest.substr(0, 3) == "\xEF\xBB\xBF") manifest.remove_prefix(3);
-  std::vector<Element> elements;
-  if (!Elements(manifest, &elements)) {
+  if (!Elements(manifest, elements)) {
     *reason = "the bundle's manifest could not be read";
     return false;
   }
+  return true;
+}
+
+// The attached containers the manifest lists, by id: their index in the bundle's containers.
+std::map<std::string, std::size_t> AttachedContainers(const std::vector<Element>& elements) {
+  std::map<std::string, std::size_t> attached;
+  for (const auto& element : elements)
+    if (element.name == "Container" && Attribute(element, "Attached") == "yes") {
+      const auto index = std::strtoul(Attribute(element, "AttachedIndex").c_str(), nullptr, 10);
+      if (index > 0) attached[Attribute(element, "Id")] = index;
+    }
+  return attached;
+}
+
+}  // namespace
+
+bool HasBurnSection(std::string_view head) { return WixburnRow(head).has_value(); }
+
+bool ReadBurnMsiPackageIds(std::string_view bundle, std::vector<std::string>* ids, std::string* reason) {
+  ids->clear();
+  std::vector<std::string_view> containers;
+  std::vector<Element> elements;
+  if (!ReadManifest(bundle, &containers, &elements, reason)) return false;
+  // A bundle cut short keeps its manifest (the first container) but not the containers after it.
+  for (const auto& [id, index] : AttachedContainers(elements))
+    if (index >= containers.size()) {
+      *reason = "the bundle's container " + id + " is missing";
+      return false;
+    }
+  std::set<std::string> listed;
+  for (const auto& element : elements)
+    if (element.name == "MsiPackage") {
+      auto id = Attribute(element, "Id");
+      if (!id.empty() && listed.insert(id).second) ids->push_back(std::move(id));
+    }
+  return true;
+}
+
+bool ReadBurnMsiPackage(std::string_view bundle, const std::string& package_id, BurnMsiPackage* package,
+                        std::string* reason) {
+  *package = BurnMsiPackage{};
+  std::vector<std::string_view> found;
+  std::vector<Element> elements;
+  if (!ReadManifest(bundle, &found, &elements, reason)) return false;
+  const auto* containers = &found;
   std::map<std::string, const Element*> payloads;
-  std::map<std::string, std::size_t> attached;  // container id → index in containers
+  const auto attached = AttachedContainers(elements);  // container id → index in containers
   std::vector<std::string> refs;
-  bool found = false, inside = false;
+  bool found_package = false, inside = false;
   for (const auto& element : elements) {
     if (element.name == "Payload") {
       payloads[Attribute(element, "Id")] = &element;
-    } else if (element.name == "Container" && Attribute(element, "Attached") == "yes") {
-      const auto index = std::strtoul(Attribute(element, "AttachedIndex").c_str(), nullptr, 10);
-      if (index > 0) attached[Attribute(element, "Id")] = index;
     } else if (element.name == "MsiPackage" && Attribute(element, "Id") == package_id) {
-      found = true;
+      found_package = true;
       inside = !element.closed;
     } else if (element.name == "/MsiPackage") {
       inside = false;
@@ -254,7 +300,7 @@ bool ReadBurnMsiPackage(std::string_view bundle, const std::string& package_id, 
       refs.push_back(Attribute(element, "Id"));
     }
   }
-  if (!found || refs.empty()) {
+  if (!found_package || refs.empty()) {
     *reason = "the bundle has no package " + package_id;
     return false;
   }

@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
+#include <string_view>
 #include <memory>
 #include <thread>
 
@@ -93,6 +95,131 @@ Failure TryOnce(Transport& transport, const std::string& url, const DepotChunk& 
   return Failure::kNone;
 }
 
+bool AsciiEqualFold(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    char x = a[i], y = b[i];
+    if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
+    if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
+    if (x != y) return false;
+  }
+  return true;
+}
+
+// Whether a Content-Range value is "bytes <first>-<last>/<total or *>" for this range (the unit in any case).
+bool ContentRangeIs(std::string_view value, const std::string& span) {
+  if (value.size() < 6 || !AsciiEqualFold(value.substr(0, 6), "bytes ")) return false;
+  value.remove_prefix(6);
+  if (value.size() <= span.size() || value.compare(0, span.size(), span) != 0 || value[span.size()] != '/')
+    return false;
+  const auto total = value.substr(span.size() + 1);
+  return total == "*" || (!total.empty() && total.find_first_not_of("0123456789") == std::string_view::npos);
+}
+
+Failure TryRange(Transport& transport, const std::string& url, const std::string& span, std::uint64_t length,
+                 std::uint64_t file_offset, const ChunkWrite& write, const std::atomic<bool>& cancel, long* status) {
+  steam::HttpRequest request;
+  request.method = steam::HttpMethod::kGet;
+  request.url = url;
+  request.headers.reserve(2);
+  request.headers.emplace_back("User-Agent", kUserAgent);
+  request.headers.emplace_back("Range", "bytes=" + span);
+  request.timeout_ms = 0;
+  request.connect_timeout_ms = kChunkConnectTimeoutMs;
+  request.stall_timeout_ms = kChunkStallTimeoutMs;
+  // A server that ignores Range answers 200 with the whole blob: the client stops it after `length` bytes.
+  request.max_response_bytes = static_cast<std::size_t>(length);
+  std::uint64_t received = 0;
+  bool overlong = false;
+  bool write_failed = false;
+  int write_errno = 0;
+  request.body_sink = [&](const std::uint8_t* data, std::size_t size) {
+    if (size > length - received) {
+      overlong = true;
+      return false;
+    }
+    errno = 0;
+    if (!write(file_offset + received, data, size)) {
+      write_failed = true;
+      write_errno = errno;
+      return false;
+    }
+    received += size;
+    return true;
+  };
+  auto response = transport ? transport(request, cancel) : steam::HttpResponse{steam::HttpError::kInvalidRequest};
+  platform::ZeroizeSecret(request.url);
+  *status = response.ok() ? response.status_code : 0;
+
+  if (write_failed) return write_errno == ENOSPC ? Failure::kNoSpace : Failure::kStorage;
+  if (cancel.load() || response.error == steam::HttpError::kCanceled) return Failure::kCanceled;
+  if (overlong || response.error == steam::HttpError::kResponseTooLarge) return Failure::kCorrupt;
+  if (response.error == steam::HttpError::kTimeout) return Failure::kStall;
+  if (!response.ok()) return Failure::kNetwork;
+  if (response.status_code == 401 || response.status_code == 403) return Failure::kExpired;
+  if (response.status_code < 200 || response.status_code > 299) return Failure::kNetwork;
+  if (response.status_code != 206 || received != length) return Failure::kCorrupt;
+  for (const auto& [name, value] : response.headers)
+    if (AsciiEqualFold(name, "Content-Range") && !ContentRangeIs(value, span)) return Failure::kCorrupt;
+  return Failure::kNone;
+}
+
+// Tries `urls` in turn (rotating, kChunkAttempts in all, pausing before each retry) until one attempt succeeds or
+// fails for good, and wipes the URLs. `urls` holds (log name, URL) pairs and is not empty.
+template <typename Try>
+ChunkResult Attempts(std::vector<std::pair<std::string, std::string>>& urls, const ChunkPause& pause,
+                     const std::atomic<bool>& cancel, Try try_once) {
+  ChunkResult result;
+  Failure last = Failure::kNetwork;
+  for (int attempt = 0; attempt < kChunkAttempts; ++attempt) {
+    if (cancel.load()) {
+      last = Failure::kCanceled;
+      break;
+    }
+    if (attempt > 0) {
+      if (pause) pause(kChunkRetryPauseMs * static_cast<std::uint32_t>(attempt), cancel);
+      if (cancel.load()) {
+        last = Failure::kCanceled;
+        break;
+      }
+    }
+    const auto& [name, url] = urls[static_cast<std::size_t>(attempt) % urls.size()];
+    result.endpoint = name;
+    ++result.attempts;
+    last = try_once(url, &result.status);
+    if (last == Failure::kNone || last == Failure::kExpired || last == Failure::kCanceled ||
+        last == Failure::kStorage || last == Failure::kNoSpace)
+      break;
+    if (last == Failure::kCorrupt) ++result.corrupt;
+    if (last == Failure::kStall) {
+      ++result.stalls;
+      result.stalled = true;
+    }
+  }
+  for (auto& entry : urls) platform::ZeroizeSecret(entry.second);
+  urls.clear();
+  switch (last) {
+    case Failure::kNone: result.kind = ChunkResult::Kind::kOk; break;
+    case Failure::kCorrupt: result.kind = ChunkResult::Kind::kCorrupt; break;
+    case Failure::kExpired: result.kind = ChunkResult::Kind::kExpired; break;
+    case Failure::kCanceled: result.kind = ChunkResult::Kind::kCanceled; break;
+    case Failure::kStorage: result.kind = ChunkResult::Kind::kStorage; break;
+    case Failure::kNoSpace: result.kind = ChunkResult::Kind::kNoSpace; break;
+    case Failure::kNetwork:
+    case Failure::kStall: result.kind = ChunkResult::Kind::kNetwork; break;
+  }
+  return result;
+}
+
+// The URLs each endpoint gives `append_to_path`; one that can't be filled is left out.
+std::vector<std::pair<std::string, std::string>> Urls(const std::vector<CdnEndpoint>& endpoints,
+                                                      const std::string& append_to_path) {
+  std::vector<std::pair<std::string, std::string>> urls;
+  for (const auto& endpoint : endpoints)
+    if (auto url = FillUrl(endpoint, append_to_path)) urls.emplace_back(EndpointLogName(endpoint.name), std::move(*url));
+  return urls;
+}
+
 }  // namespace
 
 const char* ChunkResultName(ChunkResult::Kind kind) {
@@ -134,56 +261,34 @@ ChunkResult FetchChunk(Transport& transport, const std::vector<CdnEndpoint>& end
     result.kind = ChunkResult::Kind::kCorrupt;
     return result;
   }
-  // The URLs each endpoint gives this chunk; one that can't be filled is left out.
-  std::vector<std::pair<std::string, std::string>> urls;
-  for (const auto& endpoint : endpoints)
-    if (auto url = FillUrl(endpoint, "/" + *galaxy)) urls.emplace_back(EndpointLogName(endpoint.name), std::move(*url));
-  const auto wipe = [&urls] {
-    for (auto& entry : urls) platform::ZeroizeSecret(entry.second);
-    urls.clear();
-  };
+  auto urls = Urls(endpoints, "/" + *galaxy);
   if (urls.empty()) {
     result.kind = ChunkResult::Kind::kNetwork;
     return result;
   }
-  Failure last = Failure::kNetwork;
-  for (int attempt = 0; attempt < kChunkAttempts; ++attempt) {
-    if (cancel.load()) {
-      last = Failure::kCanceled;
-      break;
-    }
-    if (attempt > 0) {
-      if (pause) pause(kChunkRetryPauseMs * static_cast<std::uint32_t>(attempt), cancel);
-      if (cancel.load()) {
-        last = Failure::kCanceled;
-        break;
-      }
-    }
-    const auto& [name, url] = urls[static_cast<std::size_t>(attempt) % urls.size()];
-    result.endpoint = name;
-    ++result.attempts;
-    last = TryOnce(transport, url, chunk, file_offset, write, cancel, &result.status);
-    if (last == Failure::kNone || last == Failure::kExpired || last == Failure::kCanceled ||
-        last == Failure::kStorage || last == Failure::kNoSpace)
-      break;
-    if (last == Failure::kCorrupt) ++result.corrupt;
-    if (last == Failure::kStall) {
-      ++result.stalls;
-      result.stalled = true;
-    }
+  return Attempts(urls, pause, cancel, [&](const std::string& url, long* status) {
+    return TryOnce(transport, url, chunk, file_offset, write, cancel, status);
+  });
+}
+
+ChunkResult FetchRange(Transport& transport, const std::vector<CdnEndpoint>& endpoints, std::uint64_t blob_offset,
+                       std::uint64_t length, std::uint64_t file_offset, const ChunkWrite& write,
+                       const ChunkPause& pause, const std::atomic<bool>& cancel) {
+  ChunkResult result;
+  if (length == 0 || length > kGen1RangeBytes || blob_offset > UINT64_MAX - (length - 1) ||
+      file_offset > UINT64_MAX - length) {
+    result.kind = ChunkResult::Kind::kCorrupt;
+    return result;
   }
-  wipe();
-  switch (last) {
-    case Failure::kNone: result.kind = ChunkResult::Kind::kOk; break;
-    case Failure::kCorrupt: result.kind = ChunkResult::Kind::kCorrupt; break;
-    case Failure::kExpired: result.kind = ChunkResult::Kind::kExpired; break;
-    case Failure::kCanceled: result.kind = ChunkResult::Kind::kCanceled; break;
-    case Failure::kStorage: result.kind = ChunkResult::Kind::kStorage; break;
-    case Failure::kNoSpace: result.kind = ChunkResult::Kind::kNoSpace; break;
-    case Failure::kNetwork:
-    case Failure::kStall: result.kind = ChunkResult::Kind::kNetwork; break;
+  auto urls = Urls(endpoints, "/main.bin");
+  if (urls.empty()) {
+    result.kind = ChunkResult::Kind::kNetwork;
+    return result;
   }
-  return result;
+  const std::string span = std::to_string(blob_offset) + "-" + std::to_string(blob_offset + length - 1);
+  return Attempts(urls, pause, cancel, [&](const std::string& url, long* status) {
+    return TryRange(transport, url, span, length, file_offset, write, cancel, status);
+  });
 }
 
 }  // namespace playden::gog

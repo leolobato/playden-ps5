@@ -74,32 +74,12 @@ bool Substitute(std::string_view text, const std::string& install_dir, std::stri
   return true;
 }
 
-// Wine's text form of a REG_SZ: quoted, with backslashes and quotes escaped.
-std::string RegistryString(std::string_view text) {
-  std::string out = "\"";
-  for (const char value : text) {
-    if (value == '\\' || value == '"') out += '\\';
-    out += value;
-  }
-  return out + "\"";
-}
-
 // The top level is "InstallScript" { ... } (any case), often followed by Steam's "kvsignatures"
 // block; a lone section of another name or a bare section list is read the same way.
 const steam::VdfNode* ScriptSection(const steam::VdfNode& root) {
   if (const auto* script = root.Find("InstallScript"); script && script->is_dict) return script;
   if (root.children.size() == 1 && root.children.front().second.is_dict) return &root.children.front().second;
   return &root;
-}
-
-// Sets value in list, replacing one of the same key and name (any case, named or unnamed): a registry key holds one
-// of each, so the last value set wins.
-void SetValue(std::vector<RegistryValue>* list, RegistryValue value) {
-  list->erase(std::remove_if(list->begin(), list->end(), [&](const RegistryValue& known) {
-    return known.default_value == value.default_value && Lower(known.key) == Lower(value.key) &&
-           Lower(known.name) == Lower(value.name);
-  }), list->end());
-  list->push_back(std::move(value));
 }
 
 bool ReadScript(const std::filesystem::path& path, std::string* text) {
@@ -119,6 +99,32 @@ bool ReadScript(const std::filesystem::path& path, std::string* text) {
 }
 
 }  // namespace
+
+std::vector<std::string> InstallScriptKeys(bool machine, const std::string& subkey) {
+  std::vector<std::string> keys{subkey};
+  // Steam is a 32-bit program, so HKLM\Software lands in the 32-bit view; a 64-bit game
+  // looking in its own view finds it too.
+  if (machine && Lower(subkey).rfind("software\\", 0) == 0 && Lower(subkey).rfind("software\\wow6432node\\", 0) != 0)
+    keys.push_back("Software\\Wow6432Node\\" + subkey.substr(9));
+  return keys;
+}
+
+std::string RegistryString(std::string_view text) {
+  std::string out = "\"";
+  for (const char value : text) {
+    if (value == '\\' || value == '"') out += '\\';
+    out += value;
+  }
+  return out + "\"";
+}
+
+void SetRegistryValue(std::vector<RegistryValue>* list, RegistryValue value) {
+  list->erase(std::remove_if(list->begin(), list->end(), [&](const RegistryValue& known) {
+    return known.default_value == value.default_value && Lower(known.key) == Lower(value.key) &&
+           Lower(known.name) == Lower(value.name);
+  }), list->end());
+  list->push_back(std::move(value));
+}
 
 bool ParseInstallScript(std::string_view text, const std::string& install_dir, const std::string& language,
                         InstallScriptValues* values, std::string* reason) {
@@ -142,11 +148,7 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
     if (!machine && hive != "hkey_current_user" && hive != "hkcu") continue;
     const auto subkey = path.substr(separator + 1);
     if (!Ascii(subkey) || subkey.find('%') != std::string::npos) continue;
-    std::vector<std::string> keys{subkey};
-    // Steam is a 32-bit program, so HKLM\Software lands in the 32-bit view; a 64-bit game
-    // looking in its own view finds it too.
-    if (machine && Lower(subkey).rfind("software\\", 0) == 0 && Lower(subkey).rfind("software\\wow6432node\\", 0) != 0)
-      keys.push_back("Software\\Wow6432Node\\" + subkey.substr(9));
+    const auto keys = InstallScriptKeys(machine, subkey);
     auto& target = machine ? values->machine : values->user;
     for (const auto& [type, entries] : key.children) {
       const auto kind = Lower(type);
@@ -168,7 +170,7 @@ bool ParseInstallScript(std::string_view text, const std::string& install_dir, c
         }
         const bool unnamed = Lower(name) == "(default)";
         // A language's value replaces the plain one of the same name.
-        for (const auto& name_key : keys) SetValue(&target, {name_key, unnamed ? std::string() : name, value, unnamed});
+        for (const auto& name_key : keys) SetRegistryValue(&target, {name_key, unnamed ? std::string() : name, value, unnamed});
       };
       // A subkey holds the values for one language ("dword" { "english" { "Language" "1" } }).
       const steam::VdfNode* localized = nullptr;
@@ -248,8 +250,8 @@ InstallScriptResult ApplyInstallScripts(const std::string& game_root, const std:
       continue;
     }
     // A later script's value replaces an earlier one's, in Playden's own order (file names, sorted byte by byte).
-    for (auto& value : parsed.machine) SetValue(&values.machine, std::move(value));
-    for (auto& value : parsed.user) SetValue(&values.user, std::move(value));
+    for (auto& value : parsed.machine) SetRegistryValue(&values.machine, std::move(value));
+    for (auto& value : parsed.user) SetRegistryValue(&values.user, std::move(value));
   }
   result.values = values.machine.size() + values.user.size();
   for (const auto& [hive, list] : {std::pair<const char*, const std::vector<RegistryValue>*>{"system.reg", &values.machine},

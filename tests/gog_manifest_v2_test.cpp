@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// GOG's gen 2 content system without the network: the build list (the default branch, gen 1 only, the link form),
+// GOG's gen 2 content system without the network: the build list (the default branch, gen 1, the link form),
 // CDN endpoint order and URLs, build metas and the depots an install takes (languages, owned DLC, bitness), the
 // streaming zlib inflate (bombs, truncation, trailing bytes), the streaming depot manifest reader (piece sizes, key
 // order, malformed and truncated input, a manifest far past steam::json's limits) and the public dependency store.
@@ -181,9 +181,40 @@ void TestChooseBuild() {
         std::optional<std::string>(
             "https://gog-cdn-fastly.gog.com/content-system/v2/meta/ba/b7/bab75eccd96f44493a4b715dbb9b53c4"));
 
-  const auto monkey = ChooseBuild(Fixture("builds-v2-gen1-only-1425039730.json"));
-  CHECK(monkey.kind == Kind::kGen1Only);
-  CHECK(monkey.build_id == "15751" && monkey.generation == 1);
+  // Gen 1: the item's own build ID, legacy_build_id as the timestamp, and only fastly (gcore supports gen 2 only).
+  const std::string monkey_body = Fixture("builds-v2-gen1-only-1425039730.json");
+  const auto monkey = ChooseBuild(monkey_body);
+  CHECK(monkey.kind == Kind::kGen1);
+  CHECK(monkey.build_id == "15751" && monkey.generation == 1 && monkey.timestamp == 32971092);
+  CHECK(monkey.meta.empty() && monkey.meta_id.empty());
+  CHECK(monkey.repository.size() == 1 && monkey.repository[0].name == "fastly");
+  CHECK(FillUrl(monkey.repository[0], "") ==
+        std::optional<std::string>("https://gog-cdn-fastly.gog.com/content-system/v1/manifests/1425039730/windows/"
+                                   "32971092/repository.json"));
+  const auto fallout_gen1 = ChooseBuild(Fixture("builds-gen1-1440148836.json"));
+  CHECK(fallout_gen1.kind == Kind::kGen1 && fallout_gen1.build_id == "48338268125133736" &&
+        fallout_gen1.timestamp == 46964530 && fallout_gen1.repository.size() == 1);
+  {
+    // A URL naming another timestamp, another product or another file; no legacy_build_id, a bad one, no product_id;
+    // the link form; no endpoint for gen 1.
+    const auto edited = [&monkey_body](const std::string& from, const std::string& to) {
+      std::string body = monkey_body;
+      CHECK(body.find(from) != std::string::npos);
+      for (auto at = body.find(from); at != std::string::npos; at = body.find(from, at + to.size()))
+        body.replace(at, from.size(), to);
+      return ChooseBuild(body).kind;
+    };
+    CHECK(edited(R"(\/32971092\/)", R"(\/32971093\/)") == Kind::kProtocol);
+    CHECK(edited(R"(\/1425039730\/)", R"(\/1425039731\/)") == Kind::kProtocol);
+    CHECK(edited("repository.json", "repository.jso") == Kind::kProtocol);
+    CHECK(edited(R"(\/content-system\/v1\/)", R"(\/content-system\/v2\/)") == Kind::kProtocol);
+    CHECK(edited("\"legacy_build_id\": 32971092", "\"legacy\": 32971092") == Kind::kProtocol);
+    CHECK(edited("\"legacy_build_id\": 32971092", "\"legacy_build_id\": \"032971092\"") == Kind::kProtocol);
+    CHECK(edited("\"legacy_build_id\": 32971092", "\"legacy_build_id\": \"32971092\"") == Kind::kGen1);
+    CHECK(edited("\"product_id\": \"1425039730\"", "\"product\": \"1425039730\"") == Kind::kProtocol);
+    CHECK(edited("\"urls\"", "\"link\"") == Kind::kProtocol);
+    CHECK(edited("1,\n                        2", "2") == Kind::kProtocol);
+  }
 
   const auto fallout = ChooseBuild(Fixture("builds-v2-1440148836.json"));
   CHECK(fallout.kind == Kind::kGen2);

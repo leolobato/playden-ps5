@@ -1,0 +1,41 @@
+{
+    "product_id": 1900000001,
+    "type": "depot",
+    "urls": [
+        {
+            "endpoint_name": "fastly",
+            "url_format": "{base_url}/token=nva={expires_at}~dirs={dirs}~token={token}{path}",
+            "parameters": {
+                "base_url": "https://cdn.example.invalid",
+                "path": "/content-system/v1/depots/1900000001/windows/31000007",
+                "token": "synthetic-gen1-fastly-signature",
+                "expires_at": 1900000000,
+                "dirs": 6
+            },
+            "priority": 10,
+            "max_fails": 100,
+            "supports_generation": [
+                1,
+                2
+            ],
+            "fallback_only": false
+        },
+        {
+            "endpoint_name": "gcore",
+            "url_format": "{base_url}/{path}?wsSecret={token}&wsTime={time}&prefix={prefix}",
+            "parameters": {
+                "base_url": "https://gcore.example.invalid",
+                "path": "content-system/v1/depots/1900000001/windows/31000007",
+                "token": "synthetic-gen1-gcore-signature",
+                "time": "6af8e0a5",
+                "prefix": "/content-system/v1/depots/1900000001/windows/31000007"
+            },
+            "priority": 1,
+            "max_fails": 100,
+            "supports_generation": [
+                2
+            ],
+            "fallback_only": true
+        }
+    ]
+}

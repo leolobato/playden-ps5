@@ -56,6 +56,23 @@ bool IsReservedName(std::string_view name);
 std::optional<std::string> PlaceFile(std::string_view path, std::uint64_t product, bool support,
                                      PathRefusal* why = nullptr);
 
+// PlaceFile for a gen 1 manifest. Gen 1 support files name their product first ("1425039730/app/lang.ini",
+// "1425039730/galaxy_x.exe"), so a support path whose first component is `product` in decimal, with more after it,
+// loses that component before PlaceFile: `<product>/app/lang.ini` becomes `lang.ini` in the game folder and
+// `<product>/galaxy_x.exe` becomes `.playden-gog/support/<product>/galaxy_x.exe`. Any other path is placed as PlaceFile
+// places it. This rule is an assumption, read from Monkey Island 2's manifests alone; that game on the console is the
+// check.
+std::optional<std::string> PlaceFileV1(std::string_view path, std::uint64_t product, bool support,
+                                       PathRefusal* why = nullptr);
+
+// The folder under a game folder that holds the build's `__redist` installers, one folder per dependency ID
+// (gog/dependencies.h places them).
+inline constexpr char kRedistFolder[] = ".playden-gog/redist/";
+
+// Whether `path` is a placed redist path: kRedistFolder, then a path that NormalizePath gives back unchanged, within
+// kMaxPathBytes in all. Sets *why (kReserved without the prefix, else NormalizePath's reason) when refused.
+bool IsRedistPlacement(std::string_view path, PathRefusal* why = nullptr);
+
 enum class PathKind { kFile, kDirectory, kLink };
 
 // The key exFAT compares names by: ASCII lowercase, and the case pairs of its upcase table in two-byte UTF-8 (Latin-1,
@@ -76,8 +93,14 @@ class PathSet {
   // Normalizes and places `raw` (NormalizePath, PlaceFile), then merges it under the caller's `index`. The same file
   // (or folder) key again replaces the earlier entry: the last depot wins, so DLC wins over base. A file whose key is
   // a folder already, or a path under a file, is refused (kClash) and nothing of it is recorded. A link is refused
-  // (kLink). The caller counts and logs refusals.
-  Added Add(std::string_view raw, PathKind kind, std::uint64_t product, bool support, std::size_t index);
+  // (kLink). The caller counts and logs refusals. `generation` 1 places with PlaceFileV1.
+  Added Add(std::string_view raw, PathKind kind, std::uint64_t product, bool support, std::size_t index,
+            int generation = 2);
+
+  // A redist file or folder already placed (RedistPlace): merged like Add's paths, keyed case-folded with them, and
+  // never refused for Playden's own `.playden` prefix, which Playden built. A path that is not an IsRedistPlacement is
+  // refused; a link too (kLink).
+  Added AddRedist(std::string_view placed, PathKind kind, std::size_t index);
 
   std::size_t entries() const { return entries_.size(); }
 
@@ -86,6 +109,7 @@ class PathSet {
     PathKind kind;
     std::size_t index;
   };
+  Added Merge(std::string path, PathKind kind, std::size_t index);
   std::unordered_map<std::string, Entry> entries_;          // folded path -> the explicit file or folder entry
   std::unordered_map<std::string, std::string> folders_;    // folded folder path -> its first spelling
 };

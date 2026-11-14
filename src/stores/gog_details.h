@@ -24,11 +24,13 @@ namespace playden::stores {
 
 // GOG's game details on their own worker: what installing a GOG game takes on this console. Per game, the
 // default-branch Windows build (gog::ChooseBuild), then for a gen 2 build its meta and the depots an install takes
-// (gog::SelectDepots, in Settings › Game language), as the install runner would choose them:
-// - download_bytes: the depots' compressed size, plus the game-folder dependencies' (DOSBox, ScummVM) from the public
-//   dependency store; install_bytes: their sizes.
+// (gog::SelectDepots, in Settings › Game language), for a gen 1 build its repository.json (unsigned, plain JSON) and
+// gog::SelectDepotsV1, as the install runner would choose them:
+// - download_bytes: the depots' compressed size (gen 1 files are stored whole: their size), plus the dependencies'
+//   from the public dependency store, game-folder ones (DOSBox, ScummVM, language_setup) and __redist installers
+//   (MSVC, DirectX…) alike; install_bytes: their sizes.
 // - The owned DLC are counted (the owned list, read once per GOG sign-in); with no usable token, the base game only.
-// - A gen 1 only game, or one with no Windows build, is answered as not installable here, with the reason.
+// - A game with no Windows build is answered as not installable here, with the reason.
 // - launches stay empty (an installed game's come from its install record), and so do languages, versions and DLC.
 // - No answer from GOG sets `failed`: asking again may work.
 //
@@ -39,8 +41,6 @@ class GogDetailsSource final : public DetailsSource {
  public:
   using LogSink = std::function<void(const std::string&)>;
 
-  static constexpr const char* kGen1Reason =
-      "Playden can't install this GOG game yet: it uses an older GOG download format.";
   static constexpr const char* kNoWindowsReason = "GOG has no Windows version of this game to install.";
   static constexpr std::size_t kMaximumPending = 64;
   static constexpr std::size_t kMaximumEvents = 64;
@@ -73,6 +73,9 @@ class GogDetailsSource final : public DetailsSource {
   // The dependency store's entries, read once per process; nothing when it could not be read.
   enum class Fetched { kOk, kNetwork, kProtocol, kCanceled };
   Fetched Dependencies(const std::vector<std::string>& bases, const std::atomic<bool>& cancel);
+  // The dependencies among `wanted` (by ID, each once) that the store lists, game-folder and __redist alike, added to
+  // the sizes; their count.
+  std::size_t AddDependencies(const std::vector<std::string>& wanted, std::uint64_t* install, std::uint64_t* download) const;
   void Log(const std::string& line) const;
 
   gog::Session& session_;

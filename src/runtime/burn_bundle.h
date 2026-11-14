@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace playden::runtime {
 
@@ -22,5 +23,14 @@ struct BurnMsiPackage {
 // by the manifest's ids (SourcePath), never by position, and each must be the size the manifest lists.
 bool ReadBurnMsiPackage(std::string_view bundle, const std::string& package_id, BurnMsiPackage* package,
                         std::string* reason);
+
+// The Ids of the bundle's MsiPackages, in the manifest's order (none for a bundle of other programs only). false
+// with a reason when the bundle or its manifest can't be read, or an attached container the manifest lists isn't
+// found (a bundle cut short).
+bool ReadBurnMsiPackageIds(std::string_view bundle, std::vector<std::string>* ids, std::string* reason);
+
+// Whether a program's first bytes (its PE headers and section table) name a .wixburn section: what every Burn
+// bundle has, checked before a program is read whole.
+bool HasBurnSection(std::string_view head);
 
 }  // namespace playden::runtime

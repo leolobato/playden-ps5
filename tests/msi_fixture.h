@@ -568,4 +568,77 @@ inline std::string MfcBundle(bool x64, bool signed_form = true, bool with_sectio
   return BurnBundle(manifest, attached, signed_form, with_section);
 }
 
+// A small package like XNA's or a runtime's: files in Program Files\<folder> from its own stored cabinet, and one
+// registry value ("Installed" under HKLM\SOFTWARE\<folder>).
+inline std::string RuntimePackage(const std::string& folder, const std::vector<std::pair<std::string, std::string>>& files) {
+  std::vector<TableSpec> tables;
+  tables.push_back({"Property", {{"Property", 's'}, {"Value", 's'}},
+                    {{"ProductCode", "{22222222-3333-4444-5555-666666666666}"}, {"ProductName", folder},
+                     {"ProductVersion", "1.0.0"}}});
+  tables.push_back({"Directory", {{"Directory", 's'}, {"Directory_Parent", 's'}, {"DefaultDir", 's'}},
+                    {{"TARGETDIR", "", "SourceDir"}, {"ProgramFilesFolder", "TARGETDIR", "."},
+                     {"D_APP", "ProgramFilesFolder", folder}}});
+  tables.push_back({"Feature", {{"Feature", 's'}, {"Feature_Parent", 's'}, {"Level", 'i'}}, {{"F_Main", "", "1"}}});
+  tables.push_back({"Condition", {{"Feature_", 's'}, {"Level", 'i'}, {"Condition", 's'}}, {}});
+  tables.push_back({"Component",
+                    {{"Component", 's'}, {"ComponentId", 's'}, {"Directory_", 's'}, {"Attributes", 'i'}, {"Condition", 's'}, {"KeyPath", 's'}},
+                    {{"C_APP", "{A}", "D_APP", "0", "", ""}}});
+  tables.push_back({"FeatureComponents", {{"Feature_", 's'}, {"Component_", 's'}}, {{"F_Main", "C_APP"}}});
+  std::vector<std::vector<std::string>> rows;
+  std::vector<std::pair<std::string, std::string>> members;
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    const auto member = "f" + std::to_string(index);
+    rows.push_back({member, "C_APP", files[index].first, std::to_string(files[index].second.size()), "", "", "512",
+                    std::to_string(index + 1)});
+    members.emplace_back(member, files[index].second);
+  }
+  tables.push_back({"File",
+                    {{"File", 's'}, {"Component_", 's'}, {"FileName", 's'}, {"FileSize", 'l'}, {"Version", 's'},
+                     {"Language", 's'}, {"Attributes", 'i'}, {"Sequence", 'i'}},
+                    rows});
+  tables.push_back({"Media", {{"DiskId", 'i'}, {"LastSequence", 'i'}, {"DiskPrompt", 's'}, {"Cabinet", 's'}},
+                    {{"1", std::to_string(files.size()), "", "#data.cab"}}});
+  tables.push_back({"Registry",
+                    {{"Registry", 's'}, {"Root", 'i'}, {"Key", 's'}, {"Name", 's'}, {"Value", 's'}, {"Component_", 's'}},
+                    {{"r1", "2", "SOFTWARE\\" + folder, "Installed", "#1", "C_APP"}}});
+  tables.push_back({"Environment", {{"Environment", 's'}, {"Name", 's'}, {"Value", 's'}, {"Component_", 's'}}, {}});
+  tables.push_back({"CustomAction", {{"Action", 's'}, {"Type", 'i'}, {"Source", 's'}, {"Target", 's'}}, {}});
+  return Package(tables, {{"data.cab", StoredCabinet(members)}});
+}
+
+// A Burn bundle like GOG's .NET desktop runtime ones: an MsiPackage for each (id, .msi) in packages, and an ExePackage
+// first when exe_package names one. compressed: the attached container is an LZX one, as real bundles' are, so the
+// packages can't be found in the program's bytes (one package at most); otherwise it is stored.
+inline std::string RuntimeBundle(const std::vector<std::pair<std::string, std::string>>& packages, bool compressed,
+                                 const std::string& exe_package = {}) {
+  const auto payload = [](const std::string& id, const std::string& path, std::size_t size, const std::string& source) {
+    return "<Payload Id=\"" + id + "\" FilePath=\"" + path + "\" FileSize=\"" + std::to_string(size) +
+           "\" Hash=\"00\" Packaging=\"embedded\" SourcePath=\"" + source + "\" Container=\"WixAttachedContainer\" />\r\n";
+  };
+  std::string payloads, chain;
+  std::vector<std::pair<std::string, std::string>> members;
+  if (!exe_package.empty()) {
+    const std::string setup = "MZ-prerequisite-setup";
+    payloads += payload(exe_package, exe_package + ".exe", setup.size(), "a" + std::to_string(members.size()));
+    chain += "<ExePackage Id=\"" + exe_package + "\" InstallCommand=\"/q\"><PayloadRef Id=\"" + exe_package +
+             "\" /></ExePackage>\r\n";
+    members.emplace_back("a" + std::to_string(members.size()), setup);
+  }
+  for (const auto& [id, msi] : packages) {
+    payloads += payload(id, "packages\\" + id + "\\" + id + ".msi", msi.size(), "a" + std::to_string(members.size()));
+    chain += "<MsiPackage Id=\"" + id + "\" Vital=\"yes\"><PayloadRef Id=\"" + id + "\" /></MsiPackage>\r\n";
+    members.emplace_back("a" + std::to_string(members.size()), msi);
+  }
+  const std::string manifest =
+      "\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n"
+      "<BurnManifest xmlns=\"http://schemas.microsoft.com/wix/2008/Burn\">\r\n"
+      "<UX><Payload Id=\"wixstdba\" FilePath=\"wixstdba.dll\" FileSize=\"6\" SourcePath=\"u0\" /></UX>\r\n"
+      "<Container Id=\"WixAttachedContainer\" FileSize=\"1\" Hash=\"00\" FilePath=\"setup.exe\" AttachedIndex=\"1\" "
+      "Attached=\"yes\" Primary=\"yes\" />\r\n" +
+      payloads + "<Chain>\r\n" + chain + "</Chain></BurnManifest>\r\n";
+  const auto attached = compressed && members.size() == 1 ? LzxVerbatimCabinet(members[0].first, members[0].second)
+                                                          : StoredCabinet(members);
+  return BurnBundle(manifest, attached);
+}
+
 }  // namespace playden::test::msi

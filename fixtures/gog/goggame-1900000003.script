@@ -1,0 +1,195 @@
+{
+    "actions": [
+        {
+            "install": {
+                "action": "supportData",
+                "arguments": {
+                    "saveGameData": true,
+                    "target": "{app}/saves",
+                    "type": "folder"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "createFolder"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_LOCAL_MACHINE",
+                    "subkey": "Software\\GOG.com\\Games\\{productID}",
+                    "valueData": "{app}\\DOSBox",
+                    "valueName": "DOSBOXFOLDER",
+                    "valueType": "String"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "DOSBoxConfigLegacy1"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_LOCAL_MACHINE",
+                    "saveGameData": true,
+                    "subkey": "SOFTWARE\\Synthetic Games\\Synthetic",
+                    "valueData": "{app}",
+                    "valueName": "",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey1"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_CURRENT_USER",
+                    "subkey": "Software/Synthetic Games/Synthetic",
+                    "valueData": "0x10",
+                    "valueName": "Volume",
+                    "valueType": "dword"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey2"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_LOCAL_MACHINE",
+                    "subkey": "Software\\Synthetic Games\\Synthetic Editor"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey3"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_CURRENT_USER",
+                    "subkey": "Software\\Synthetic Games\\Synthetic",
+                    "valueData": "00ff",
+                    "valueName": "Blob",
+                    "valueType": "binary"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey4"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_CLASSES_ROOT",
+                    "subkey": "SyntheticFile\\shell\\open",
+                    "valueData": "{app}\\Synthetic.exe",
+                    "valueName": "",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey5"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_CURRENT_USER",
+                    "subkey": "Software\\Synthetic Games\\Synthetic",
+                    "valueData": "Deutsch",
+                    "valueName": "Language",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "de-DE"
+            ],
+            "name": "registryKey6"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_CURRENT_USER",
+                    "subkey": "Software\\Synthetic Games\\Synthetic",
+                    "valueData": "line\u0007bell",
+                    "valueName": "Motd",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey7"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_LOCAL_MACHINE",
+                    "subkey": "Software\\{publisher}\\Synthetic",
+                    "valueData": "1",
+                    "valueName": "Installed",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey8"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_LOCAL_MACHINE",
+                    "saveGameData": true,
+                    "subkey": "SOFTWARE\\GOG.com\\Games\\1900000003",
+                    "valueData": "{userappdata}\\Synthetic Games\\Synthetic",
+                    "valueName": "CONFIGPATH",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey9"
+        },
+        {
+            "install": {
+                "action": "setRegistry",
+                "arguments": {
+                    "root": "HKEY_CURRENT_USER",
+                    "saveGameData": true,
+                    "subkey": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
+                    "valueData": "RUNASADMIN",
+                    "valueName": "{app}\\Setup.exe",
+                    "valueType": "string"
+                }
+            },
+            "languages": [
+                "*"
+            ],
+            "name": "registryKey10"
+        }
+    ],
+    "productId": "1900000003"
+}

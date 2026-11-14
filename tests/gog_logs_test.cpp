@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // gog.log and install.log after a stubbed run of everything GOG does: restore, a sign-in with a code, a library
-// refresh, an install of a synthetic game from the stub CDN (the install runner writing install.log), the library
+// refresh, installs of a synthetic gen 2 game and a synthetic gen 1 game from the stub CDN (the install runner writing
+// install.log), the library
 // cleared and a sign-out, with the session, the account and the library writing to gog.log. Neither file may name the
 // account (username, user ID), hold a token, the code or a secure link's signature, or carry an address. Synthetic
 // tokens, accounts and products only.
@@ -162,6 +163,28 @@ int main(int argc, char** argv) {
       const auto result = runner.Install(GameId::Gog(1900000001), root.string(), {}, no_cancel, {}, {});
       CHECK(result.ok);
     }
+    // A gen 1 install: repository.json, plain manifests, ranges of main.bin behind a gen 1 secure link.
+    {
+      CdnStub cdn;
+      cdn.SetOwned("{\"owned\":[1900000001]}");
+      cdn.SetSecureLinkV1(ReadFile(g_fixtures + "/secure-link-gen1-200.json"));
+      GameV1 game;
+      GameDepotV1 depot;
+      depot.files.push_back({"bin\\Game.exe", RandomBytes(90 * 1024, 32)});
+      depot.files.push_back({"1900000001/app/game.cfg", "[game]\n", true});
+      depot.files.push_back({"goggame-1900000001.info", ReadFile(g_fixtures + "/goggame-1900000001.info")});
+      game.depots.push_back(depot);
+      PublishV1(cdn, game);
+      stores::GogInstallRunner runner(
+          session, [&cdn] { return cdn.Transport(); }, [] { return std::string("english"); },
+          [&](const std::string& line) { Append(install_log, line); },
+          [](const std::string&) { return std::optional<std::uint64_t>(1ull << 40); });
+      const auto root = g_base / "games" / "gog-1900000001-gen1";
+      const std::atomic<bool> no_cancel{false};
+      const auto result = runner.Install(GameId::Gog(1900000001), root.string(), {}, no_cancel, {}, {});
+      CHECK(result.ok);
+      CHECK(cdn.Count(Kind::kRange) == 3);
+    }
 
     // Sign-out: the library is cleared and the session forgotten.
     CHECK(source.Clear(key, 2) != 0);
@@ -177,8 +200,13 @@ int main(int argc, char** argv) {
   const std::string installs = ReadFile(install_log.string());
   std::printf("%s", installs.c_str());
   CHECK(installs.find("gog install game=gog-1900000001 step=record result=ok") != std::string::npos);
+  CHECK(installs.find("gog plan build generation=1") != std::string::npos);
+  CHECK(installs.find("gog secure_link generation=1 status=200 result=ok") != std::string::npos);
   for (const std::string& secret : {kUsername, kUserId, AccessText(1), RefreshText(1), code, std::string("https://"),
                                     std::string("synthetic-fastly-signature"), std::string("synthetic-gcore-signature"),
+                                    std::string("synthetic-gen1-fastly-signature"),
+                                    std::string("synthetic-gen1-gcore-signature"), std::string("main.bin"),
+                                    std::string("content-system"), std::string("repository.json"),
                                     std::string("wsSecret"), std::string("nva="), std::string("token="),
                                     std::string("1900000000"), std::string("6af8e0a5"),
                                     std::string("example.invalid")}) {

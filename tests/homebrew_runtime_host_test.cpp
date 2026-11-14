@@ -1,4 +1,5 @@
 #include "homebrew/runtime_host.hpp"
+#include "gog/dependencies.h"
 #include "installs/install_record.h"
 #include "runtime_host_fixture.h"
 #include "msi_fixture.h"
@@ -9320,6 +9321,317 @@ void GogScriptSetsIniAtEachStart() {
   host.Shutdown();
 }
 
+// A GOG game's setRegistry values go into its bottle as it prepares, with no installscript.vdf: HKLM in system.reg in
+// both registry views with `{app}` as the folder's console path, HKCU in user.reg. A recipe's value for the same key
+// and name wins; a later action's value replaces an earlier one's; a key with no value and a name Wine's file can't
+// hold are skipped and never refuse the start. An unchanged hive is not written again. Back on Playden's own recipe, the
+// script's value replaces the one the community recipe wrote on that same start. After a move to a USB drive the next
+// start names the new folder.
+void GogScriptSetsRegistryAtEachStart() {
+  using playden::GameId;
+  const auto gog = GameId::Gog(1900000001);
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  auto config = MoveConfig(fixture, kit, &uuids, move);
+  RecipeCache cache;
+  cache.Wire(config);
+  const playden::GameRef game_ref{"gog", "1900000001"};
+  CommunityRecipe community;
+  community.recipe.id = CommunityRecipeIdFor(game_ref, "reg");
+  community.recipe.version = 1;
+  community.recipe.name = "Synthetic";
+  community.recipe.launch_entries = {{"game", "Synthetic", "SYNTHETIC.EXE", ""}};
+  community.recipe.architecture = "pe64";
+  community.recipe.graphics = "dxvk";
+  community.recipe.registry = {{"Software\\Synthetic Games\\Synthetic", "Language", "\"Recipe\""}};
+  community.game = game_ref;
+  community.game_name = "Synthetic";
+  community.executable = "SYNTHETIC.EXE";
+  community.title = "Registry";
+  community.status = "works";
+  community.tested_kit = "0.12";
+  community.author = "Ana";
+  const auto revision = cache.Add(SerializeCommunityRecipe(community));
+  GameSettingsRecord saved;
+  saved.revision = 1;
+  ChooseCommunityRecipe(&saved, community.recipe.id, revision, game_ref);
+  config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+  const std::string console_root = "/data/playden-games/gog-1900000001";
+  const auto root = fixture.root / fs::path(console_root).relative_path();
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(root / "SYNTHETIC.EXE", pe, 0644);
+  playden::installs::GogRecord record;
+  record.build_id = "1000000000000000103";
+  record.products = {1900000001};
+  record.language = "en-US";
+  record.meta_id = std::string(32, 'c');
+  Write(root / playden::installs::kInstallRecordName,
+        playden::installs::FormatGogInstallRecord(gog, 4096, 2, "english", record, {{"synthetic.exe", "", "", "Synthetic"}}),
+        0644);
+  // As the DOSBox games' scripts write them, with the HKCU values made up.
+  Write(root / "goggame-1900000001.script", R"({"actions":[
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_LOCAL_MACHINE","subkey":"Software\\GOG.com\\Games\\{productID}","valueData":"{app}\\DOSBox","valueName":"DOSBOXFOLDER","valueType":"String"}},"languages":["*"],"name":"DOSBoxConfigLegacy1"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_LOCAL_MACHINE","subkey":"Software\\GOG.com\\Games\\{productID}","valueData":"first","valueName":"DOSBOXCONF","valueType":"String"}},"languages":["*"],"name":"DOSBoxConfigLegacy2"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_LOCAL_MACHINE","subkey":"SOFTWARE\\GOG.com\\Games\\1900000001","valueData":"dosboxsynthetic","valueName":"dosboxconf","valueType":"string"}},"languages":["*"],"name":"again"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_CURRENT_USER","subkey":"Software\\Synthetic Games\\Synthetic","valueData":"0x10","valueName":"Volume","valueType":"dword"}},"languages":["*"],"name":"volume"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_CURRENT_USER","subkey":"Software\\Synthetic Games\\Synthetic","valueData":"English","valueName":"Language","valueType":"string"}},"languages":["*"],"name":"language"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_CURRENT_USER","subkey":"Software\\Synthetic Games\\Synthetic","valueData":"v","valueName":"a\"b","valueType":"string"}},"languages":["*"],"name":"quote"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_LOCAL_MACHINE","subkey":"Software\\Synthetic Games\\Synthetic Editor"}},"languages":["*"],"name":"keyOnly"}
+],"productId":"1900000001"})", 0644);
+  CHECK(chmod(root.c_str(), 0777) == 0);
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto number = *host.RuntimeNumberFor(gog);
+  const auto app = std::to_string(number);
+  RuntimePrepareRequest request{number, console_root, "internal", "Synthetic GOG game (GOG)"};
+  request.game = gog;
+  request.launches = {{"", "Synthetic", "synthetic.exe", "", ""}};
+  host.Prepare(request);
+  const auto ready = WaitFor(host, [number](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(number).c_str());
+  CHECK(!ready.refusals.count(number) && ready.installs.size() == 1);
+  CHECK(ready.installs[0].recipe_id == community.recipe.id);
+  fs::path prefix;
+  for (const auto& entry : fs::directory_iterator(fixture.root / "data/playden/games"))
+    if (fs::is_regular_file(entry.path() / "library/prefixes/game/system.reg")) prefix = entry.path() / "library/prefixes/game";
+  CHECK(!prefix.empty());
+  const auto count = [](const std::string& text, const std::string& part) {
+    std::size_t found = 0;
+    for (auto at = text.find(part); at != std::string::npos; at = text.find(part, at + 1)) ++found;
+    return found;
+  };
+  // The value under its key's header, in Wine's text form.
+  const auto holds = [](const std::string& text, const std::string& key, const std::string& line) {
+    const auto header = text.find("\n[" + key + "] ");
+    if (header == std::string::npos) return false;
+    const auto end = text.find("\n[", header + 1);
+    const auto at = text.find("\n" + line + "\n", header);
+    return at != std::string::npos && (end == std::string::npos || at < end);
+  };
+  const auto lines = [&](const std::string& part) {
+    std::lock_guard<std::mutex> lock(move.mutex);
+    return static_cast<std::size_t>(std::count_if(move.lines.begin(), move.lines.end(), [&](const std::string& line) {
+      return line.find(part) != std::string::npos;
+    }));
+  };
+  auto system = Read(prefix / "system.reg");
+  auto user = Read(prefix / "user.reg");
+  for (const auto* key : {"Software\\\\GOG.com\\\\Games\\\\1900000001", "Software\\\\Wow6432Node\\\\GOG.com\\\\Games\\\\1900000001"}) {
+    CHECK(holds(system, key, R"("DOSBOXFOLDER"="Z:\\data\\playden-games\\gog-1900000001\\DOSBox")"));
+    CHECK(holds(system, key, R"("dosboxconf"="dosboxsynthetic")"));
+  }
+  CHECK(count(system, "DOSBOXFOLDER") == 2 && count(system, "first") == 0 && count(system, "Synthetic Editor") == 0);
+  CHECK(count(user, "Wow6432Node\\\\Synthetic") == 0);
+  CHECK(holds(user, "Software\\\\Synthetic Games\\\\Synthetic", R"("Volume"=dword:00000010)"));
+  CHECK(holds(user, "Software\\\\Synthetic Games\\\\Synthetic", R"("Language"="Recipe")"));
+  CHECK(count(user, "English") == 0 && count(user, "a\"b") == 0);
+  CHECK(move.Logged("gog registry app=" + app + " values=4 skipped=2 recipe=1"));
+  // The script step counts no setRegistry.
+  CHECK(move.Logged("gog script app=" + app + " ini=0 changed=0 skipped=0"));
+
+  // Prepared again with nothing changed: the hives are left alone.
+  struct stat before {};
+  CHECK(::stat((prefix / "system.reg").c_str(), &before) == 0);
+  struct stat user_before {};
+  CHECK(::stat((prefix / "user.reg").c_str(), &user_before) == 0);
+  const auto runs = lines("gog registry app=" + app + " ");
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  const auto handled = host.Snapshot().maintenance_handled;
+  host.Maintain(number, RuntimeMaintenance::kApplySettings);
+  const auto applied = WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.maintenance_handled > handled; }, 60);
+  if (!applied.maintenance.at(number).ok) std::fprintf(stderr, "apply: %s\n", applied.maintenance.at(number).message.c_str());
+  CHECK(applied.maintenance.at(number).ok);
+  CHECK(lines("gog registry app=" + app + " ") > runs);
+  struct stat after {};
+  CHECK(::stat((prefix / "system.reg").c_str(), &after) == 0);
+  CHECK(after.st_ino == before.st_ino && after.st_mtime == before.st_mtime);
+  // The recipe's value is left to the recipe: user.reg isn't written back and forth either.
+  struct stat user_after {};
+  CHECK(::stat((prefix / "user.reg").c_str(), &user_after) == 0);
+  CHECK(user_after.st_ino == user_before.st_ino && user_after.st_mtime == user_before.st_mtime);
+  CHECK(Read(prefix / "system.reg") == system && Read(prefix / "user.reg") == user);
+
+  // Back to Playden's own recipe, which sets no registry value: the recipe step removes the value the community recipe
+  // wrote, and the script's value is in its place on that same start, not only on the next one.
+  ChoosePreset(&saved, "");
+  ++saved.revision;
+  const auto switched_handled = host.Snapshot().maintenance_handled;
+  host.Maintain(number, RuntimeMaintenance::kApplySettings);
+  const auto switched =
+      WaitFor(host, [switched_handled](const RuntimeSnapshot& s) { return s.maintenance_handled > switched_handled; }, 60);
+  if (!switched.maintenance.at(number).ok) std::fprintf(stderr, "apply: %s\n", switched.maintenance.at(number).message.c_str());
+  CHECK(switched.maintenance.at(number).ok && switched.installs[0].recipe_id == "gog-1900000001-auto");
+  CHECK(lines("recipe registry app=" + app + " recipe=gog-1900000001-auto values=0 removed=1") == 1);
+  user = Read(prefix / "user.reg");
+  CHECK(holds(user, "Software\\\\Synthetic Games\\\\Synthetic", R"("Language"="English")"));
+  CHECK(count(user, "Recipe") == 0 && holds(user, "Software\\\\Synthetic Games\\\\Synthetic", R"("Volume"=dword:00000010)"));
+  CHECK(move.Logged("gog registry app=" + app + " values=5 skipped=2"));
+
+  // Moved to a USB drive: the next start names the new folder.
+  const std::string usb_root = "/mnt/usb0/playden/games/gog-1900000001";
+  const auto usb = fixture.root / fs::path(usb_root).relative_path();
+  for (const auto& folder : {fixture.root / "mnt", fixture.root / "mnt/usb0", fixture.root / "mnt/usb0/playden",
+                             fixture.root / "mnt/usb0/playden/games"}) {
+    fs::create_directories(folder);
+    CHECK(chmod(folder.c_str(), 0755) == 0);
+  }
+  RuntimeRelocation relocation;
+  relocation.runtime_number = number;
+  relocation.to = usb_root;
+  relocation.volume_id = "usb0";
+  relocation.move_files = [&]() -> std::string {
+    std::error_code error;
+    if (!fs::exists(usb)) fs::rename(root, usb, error);
+    return error ? error.message() : std::string();
+  };
+  const auto moved = host.Relocate(std::move(relocation), std::chrono::seconds(60));
+  if (!moved.message.empty()) std::fprintf(stderr, "Relocate: %s\n", moved.message.c_str());
+  CHECK(moved.outcome == RuntimeRelocationResult::Outcome::kDone);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return !s.installs.empty() && !s.installs[0].republish_pending; }, 30);
+  host.Play(number);
+  const auto played = WaitFor(host, [number](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(number); }, 30);
+  if (played.play_refusals.count(number)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(number).c_str());
+  CHECK(played.handoff_ready && host.Handoff());
+  system = Read(prefix / "system.reg");
+  for (const auto* key : {"Software\\\\GOG.com\\\\Games\\\\1900000001", "Software\\\\Wow6432Node\\\\GOG.com\\\\Games\\\\1900000001"})
+    CHECK(holds(system, key, R"("DOSBOXFOLDER"="Z:\\mnt\\usb0\\playden\\games\\gog-1900000001\\DOSBox")"));
+  CHECK(count(system, "playden-games") == 0);
+  CHECK(holds(Read(prefix / "user.reg"), "Software\\\\Synthetic Games\\\\Synthetic", R"("Language"="English")"));
+
+  // No redist.list (no redistributables): the redist step says nothing.
+  CHECK(lines("gog redist app=") == 0);
+  host.Shutdown();
+}
+
+// A GOG game's redistributables install into its bottle as it prepares, from its redist.list and the packages
+// downloaded into .playden-gog/redist/, with no installscript.vdf, no GOG session and no network: a Windows Installer
+// package and a Burn bundle's package install once; DirectX's setup, which Wine provides, is skipped without a log line
+// (Steam's filter); a dependency the list says Play can't run gets one not-run line. Its script's setRegistry values
+// go in on the same start, after the packages, so a package's own value for the same name doesn't stay.
+void GogRedistInstallsAtPlay() {
+  using playden::GameId;
+  namespace msi = playden::test::msi;
+  const auto gog = GameId::Gog(1900000002);
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  const auto config = MoveConfig(fixture, kit, &uuids, move);
+  const std::string console_root = "/data/playden-games/gog-1900000002";
+  const auto root = fixture.root / fs::path(console_root).relative_path();
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(root / "Game.exe", pe, 0644);
+  playden::installs::GogRecord record;
+  record.build_id = "1000000000000000102";
+  record.products = {1900000002};
+  record.language = "en-US";
+  record.meta_id = std::string(32, 'b');
+  Write(root / playden::installs::kInstallRecordName,
+        playden::installs::FormatGogInstallRecord(gog, 4096, 2, "english", record, {{"game.exe", "", "", "Game"}}), 0644);
+  Write(root / ".playden-gog/redist/XNA/xnafx40_redist.msi", msi::RuntimePackage("XNA Runtime", {{"xna.dll", "XNA-DLL"}}), 0644);
+  // Compressed as real bundles are: only the Burn path finds its package.
+  const auto bundle = msi::RuntimeBundle({{"DesktopRuntime", msi::RuntimePackage("dotnet", {{"hostfxr.dll", "FXR"}})}}, true);
+  Write(root / ".playden-gog/redist/DOTNET8/windowsdesktop-runtime-8.0-win-x64.exe", bundle, 0644);
+  Write(root / ".playden-gog/redist/DirectX/DXSETUP.exe", "MZ-not-a-real-setup", 0644);
+  Write(root / "goggame-1900000002.script", R"({"actions":[
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_LOCAL_MACHINE","subkey":"Software\\GOG.com\\Games\\{productID}","valueData":"{app}","valueName":"PATH","valueType":"string"}},"languages":["*"],"name":"path"},
+ {"install":{"action":"setRegistry","arguments":{"root":"HKEY_CURRENT_USER","subkey":"Software\\Redist Games\\Game","valueData":"3","valueName":"Runs","valueType":"dword"}},"languages":["*"],"name":"runs"}
+],"productId":"1900000002"})", 0644);
+  const auto package = [](const char* id, const char* program, const char* arguments) {
+    playden::gog::RedistEntry entry;
+    entry.id = id;
+    entry.package = true;
+    entry.program = program;
+    entry.arguments = arguments;
+    return entry;
+  };
+  playden::gog::RedistEntry physx;
+  physx.id = "PhysX";
+  physx.skip = playden::gog::RedistSkip::kNoProgram;
+  CHECK(playden::gog::WriteRedistList(root.string(),
+                                      {package("XNA40", ".playden-gog/redist/XNA/xnafx40_redist.msi", "/quiet"),
+                                       package("DOTNET8", ".playden-gog/redist/DOTNET8/windowsdesktop-runtime-8.0-win-x64.exe",
+                                               "/install /quiet /norestart"),
+                                       package("DirectX", ".playden-gog/redist/DirectX/DXSETUP.exe", "/silent"), physx}) == 0);
+  CHECK(chmod(root.c_str(), 0777) == 0);
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto number = *host.RuntimeNumberFor(gog);
+  const auto app = std::to_string(number);
+  RuntimePrepareRequest request{number, console_root, "internal", "Redist GOG game (GOG)"};
+  request.game = gog;
+  request.launches = {{"", "Game", "game.exe", "", ""}};
+  host.Prepare(request);
+  const auto ready = WaitFor(host, [number](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(number).c_str());
+  CHECK(!ready.refusals.count(number) && ready.installs.size() == 1);
+  fs::path prefix;
+  for (const auto& entry : fs::directory_iterator(fixture.root / "data/playden/games"))
+    if (fs::is_regular_file(entry.path() / "library/prefixes/game/system.reg")) prefix = entry.path() / "library/prefixes/game";
+  CHECK(!prefix.empty());
+  CHECK(Read(prefix / "drive_c/Program Files (x86)/XNA Runtime/xna.dll") == "XNA-DLL");
+  CHECK(Read(prefix / "drive_c/Program Files (x86)/dotnet/hostfxr.dll") == "FXR");
+  const auto recorded = Read(prefix / ".playden-redist");
+  CHECK(recorded.find(" .playden-gog/redist/XNA/xnafx40_redist.msi\n") != std::string::npos);
+  CHECK(recorded.find(" .playden-gog/redist/DOTNET8/windowsdesktop-runtime-8.0-win-x64.exe\n") != std::string::npos);
+  const auto lines = [&](const std::string& part) {
+    std::lock_guard<std::mutex> lock(move.mutex);
+    return static_cast<std::size_t>(std::count_if(move.lines.begin(), move.lines.end(), [&](const std::string& line) {
+      return line.find(part) != std::string::npos;
+    }));
+  };
+  CHECK(move.Logged("redist app=" + app + " script=gog name=XNA40 result=installed detail=.playden-gog/redist/XNA/xnafx40_redist.msi files=1"));
+  CHECK(move.Logged("redist app=" + app + " script=gog name=DOTNET8 result=installed detail=.playden-gog/redist/DOTNET8/"
+                    "windowsdesktop-runtime-8.0-win-x64.exe (DesktopRuntime) files=1"));
+  CHECK(move.Logged("redist app=" + app + " script=gog name=PhysX result=not-run detail=no_program"));
+  CHECK(lines("name=DirectX") == 0 && lines("DXSETUP") == 0 && lines("result=failed") == 0);
+  CHECK(lines("gog redist app=") == 0);
+  CHECK(lines("result=installed") == 2);
+  const auto skipped = lines("name=PhysX result=not-run");
+  // The script's values, in the same start: both registry views for HKLM, `{app}` as Wine sees the folder.
+  const auto system = Read(prefix / "system.reg");
+  for (const auto* key : {"[Software\\\\GOG.com\\\\Games\\\\1900000002]", "[Software\\\\Wow6432Node\\\\GOG.com\\\\Games\\\\1900000002]"}) {
+    const auto header = system.find(key);
+    CHECK(header != std::string::npos &&
+          system.find(R"("PATH"="Z:\\data\\playden-games\\gog-1900000002")", header) != std::string::npos);
+  }
+  CHECK(Read(prefix / "user.reg").find(R"("Runs"=dword:00000003)") != std::string::npos);
+  CHECK(move.Logged("gog registry app=" + app + " values=2 skipped=0"));
+  {
+    // The packages first, then the script's values.
+    std::lock_guard<std::mutex> lock(move.mutex);
+    const auto at = [&](const std::string& prefix) {
+      return std::find_if(move.lines.begin(), move.lines.end(), [&](const std::string& line) { return line.rfind(prefix, 0) == 0; });
+    };
+    const auto registry = at("gog registry app=" + app + " ");
+    CHECK(registry != move.lines.end() && at("redist app=" + app + " script=gog name=DOTNET8 result=installed") < registry);
+  }
+
+  // The next start installs nothing again.
+  host.Play(number);
+  const auto played = WaitFor(host, [number](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(number); }, 30);
+  if (played.play_refusals.count(number)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(number).c_str());
+  CHECK(played.handoff_ready && host.Handoff());
+  // The step ran again (the list's not-run line once more), and found both packages installed.
+  CHECK(lines("name=PhysX result=not-run") > skipped);
+  CHECK(lines("result=installed") == 2 && Read(prefix / ".playden-redist") == recorded && lines("result=failed") == 0);
+  host.Shutdown();
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
@@ -9355,6 +9667,8 @@ int main(int argc, char** argv) {
   UsbGameNamesNoMount();
   MoveAfterUsbSwap();
   GogScriptSetsIniAtEachStart();
+  GogScriptSetsRegistryAtEachStart();
+  GogRedistInstallsAtPlay();
   OlderTitleKeepsItsMount();
   PreparesGameOnUnownedDrive();
   PrepareFixesRootOwnedHomebrewFolder();

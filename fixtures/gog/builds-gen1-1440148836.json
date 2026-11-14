@@ -1,0 +1,46 @@
+{
+    "total_count": 1,
+    "count": 1,
+    "items": [
+        {
+            "build_id": "48338268125133736",
+            "product_id": "1440148836",
+            "os": "windows",
+            "branch": null,
+            "version_name": "1.2",
+            "tags": [],
+            "public": true,
+            "date_published": "2015-08-26T12:37:30+0000",
+            "generation": 1,
+            "urls": [
+                {
+                    "endpoint_name": "fastly",
+                    "url": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v1\/manifests\/1440148836\/windows\/46964530\/repository.json",
+                    "url_format": "https:\/\/gog-cdn-fastly.gog.com\/content-system\/v1\/manifests\/1440148836\/windows\/46964530\/repository.json",
+                    "parameters": {},
+                    "priority": 10,
+                    "max_fails": 100,
+                    "supports_generation": [
+                        1,
+                        2
+                    ],
+                    "fallback_only": false
+                },
+                {
+                    "endpoint_name": "gcore",
+                    "url": "https:\/\/gog-cdn.gcdn.co\/content-system\/v1\/manifests\/1440148836\/windows\/46964530\/repository.json",
+                    "url_format": "https:\/\/gog-cdn.gcdn.co\/content-system\/v1\/manifests\/1440148836\/windows\/46964530\/repository.json",
+                    "parameters": {},
+                    "priority": 1,
+                    "max_fails": 100,
+                    "supports_generation": [
+                        2
+                    ],
+                    "fallback_only": true
+                }
+            ],
+            "legacy_build_id": 46964530
+        }
+    ],
+    "has_private_branches": false
+}

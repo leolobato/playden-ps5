@@ -291,6 +291,25 @@ void TestBurnBundle() {
   // A cut bundle has no attached container to read.
   const auto whole = MfcBundle(true);
   CHECK(!ReadBurnMsiPackage(whole.substr(0, whole.size() - 200), "vcRuntimeAdditional_x64", &package, &reason));
+  // The MsiPackages of a bundle, in its chain's order; none for one that only runs programs.
+  std::vector<std::string> ids;
+  CHECK(ReadBurnMsiPackageIds(whole, &ids, &reason));
+  CHECK((ids == std::vector<std::string>{"vcRuntimeMinimum_x64", "vcRuntimeAdditional_x64"}));
+  CHECK(ReadBurnMsiPackageIds(RuntimeBundle({{"second", "x"}, {"first", "y"}}, false, "prereq"), &ids, &reason));
+  CHECK((ids == std::vector<std::string>{"second", "first"}));
+  CHECK(ReadBurnMsiPackageIds(RuntimeBundle({}, false, "prereq"), &ids, &reason) && ids.empty());
+  // Without a .wixburn section to say where they are, its containers are searched for.
+  const auto unsectioned = MfcBundle(true, true, false);
+  CHECK(ReadBurnMsiPackageIds(unsectioned, &ids, &reason) && ids.size() == 2);
+  // Cut short, the manifest is still there but its attached container isn't.
+  const auto compressed = RuntimeBundle({{"Only", MfcPackage(true)}}, true);
+  CHECK(ReadBurnMsiPackageIds(compressed, &ids, &reason) && ids.size() == 1);
+  CHECK(!ReadBurnMsiPackageIds(compressed.substr(0, compressed.size() - 100), &ids, &reason) && ids.empty());
+  CHECK(reason == "the bundle's container WixAttachedContainer is missing");
+  // A bundle is told from its first bytes, before it is read whole.
+  CHECK(HasBurnSection(std::string_view(whole).substr(0, 4096)) && HasBurnSection(compressed));
+  CHECK(!HasBurnSection(unsectioned) && !HasBurnSection("MZ not a bundle") && !HasBurnSection(""));
+  CHECK(!ReadBurnMsiPackageIds("MZ not a bundle", &ids, &reason));
 }
 
 void TestPath() {
@@ -703,6 +722,109 @@ void TestEmbeddedPackage() {
   std::filesystem::remove_all(base);
 }
 
+// Entries a caller found itself (a GOG game's redist list): the same packages, setup programs and covered installers as
+// a Steam script's, and with burn_bundles a Burn bundle's MsiPackages. A Steam script's bundle is not looked into.
+void TestRedistEntries() {
+  char pattern[] = "/tmp/playden-redist-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  const auto game = base / "game";
+  const auto prefix = MakeBottle(base / "prefix");
+  const std::string install_dir = "Z:\\games\\gog-7";
+  const auto entry = [&](const std::string& name, const std::string& program, const std::string& command = {}) {
+    auto windows = program;
+    std::replace(windows.begin(), windows.end(), '/', '\\');
+    return RedistEntry{name, install_dir + "\\" + windows, command, ""};
+  };
+  const auto run = [&](const std::vector<RedistEntry>& entries, bool burn_bundles = true) {
+    return InstallRedistEntries(game.string(), install_dir, prefix.string(), 1700000100, entries, "gog", burn_bundles);
+  };
+  const auto recorded = [&] { return ReadText(prefix / ".playden-redist"); };
+
+  // An explicit package installs its files and registry values, once.
+  WriteText(game / ".playden-gog/redist/XNA/xnafx31_redist.msi",
+            RuntimePackage("XNA Runtime", {{"xna.dll", "XNA-DLL"}, {"xna.txt", "XNA"}}));
+  auto result = run({entry("XNA", ".playden-gog/redist/XNA/xnafx31_redist.msi", "/quiet")});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].script == "gog" && result.outcomes[0].name == "XNA");
+  CHECK(result.outcomes[0].result == "installed" && result.outcomes[0].files == 2);
+  CHECK(result.outcomes[0].detail == ".playden-gog/redist/XNA/xnafx31_redist.msi");
+  CHECK(ReadText(prefix / "drive_c/Program Files (x86)/XNA Runtime/xna.dll") == "XNA-DLL");
+  CHECK(ReadText(prefix / "system.reg").find("\"Installed\"=dword:00000001") != std::string::npos);
+  CHECK(recorded().find(" .playden-gog/redist/XNA/xnafx31_redist.msi\n") != std::string::npos);
+  result = run({entry("XNA", ".playden-gog/redist/XNA/xnafx31_redist.msi", "/quiet")});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "already");
+
+  // A setup program carrying an uncompressed package installs it.
+  WriteText(game / ".playden-gog/redist/Embedded/setup.exe",
+            "MZ" + std::string(300, '\x90') + RuntimePackage("Embedded Runtime", {{"e.dll", "EMBEDDED"}}) + std::string(100, '\x7f'));
+  result = run({entry("Embedded", ".playden-gog/redist/Embedded/setup.exe")});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "installed" && result.outcomes[0].files == 1);
+  CHECK(result.outcomes[0].detail == ".playden-gog/redist/Embedded/setup.exe (its package)");
+  CHECK(ReadText(prefix / "drive_c/Program Files (x86)/Embedded Runtime/e.dll") == "EMBEDDED");
+
+  // A Burn bundle with one package, compressed as real ones are: its package isn't in the program's bytes.
+  const auto bundle = RuntimeBundle({{"DesktopRuntime", RuntimePackage("dotnet", {{"hostfxr.dll", "FXR"}, {"shared.dll", "SHARED"}})}},
+                                    true);
+  CHECK(!FindEmbeddedMsi(bundle));
+  WriteText(game / ".playden-gog/redist/DOTNET/windowsdesktop-runtime-8.0-win-x64.exe", bundle);
+  const auto dotnet = entry("DOTNET", ".playden-gog/redist/DOTNET/windowsdesktop-runtime-8.0-win-x64.exe", "/install /quiet");
+  // Without burn_bundles (Steam's way) it is not run.
+  result = run({dotnet}, false);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "not-run" &&
+        result.outcomes[0].detail == "windowsdesktop-runtime-8.0-win-x64.exe");
+  CHECK(!std::filesystem::exists(prefix / "drive_c/Program Files (x86)/dotnet"));
+  result = run({dotnet});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "installed" && result.outcomes[0].files == 2);
+  CHECK(result.outcomes[0].detail == ".playden-gog/redist/DOTNET/windowsdesktop-runtime-8.0-win-x64.exe (DesktopRuntime)");
+  CHECK(ReadText(prefix / "drive_c/Program Files (x86)/dotnet/hostfxr.dll") == "FXR");
+  CHECK(ReadText(prefix / "drive_c/Program Files (x86)/dotnet/shared.dll") == "SHARED");
+  CHECK(recorded().find(" .playden-gog/redist/DOTNET/windowsdesktop-runtime-8.0-win-x64.exe\n") != std::string::npos);
+  result = run({dotnet});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "already");
+
+  // The same bundle named by a Steam install script is still not run.
+  std::filesystem::remove_all(prefix / "drive_c/Program Files (x86)/dotnet");
+  std::filesystem::remove(prefix / ".playden-redist");
+  WriteText(game / "installscript.vdf",
+            "\"InstallScript\" { \"Run Process\" { \"DOTNET\" { "
+            "\"process 1\" \"%INSTALLDIR%\\\\.playden-gog\\\\redist\\\\DOTNET\\\\windowsdesktop-runtime-8.0-win-x64.exe\" } } }");
+  result = InstallRedistributables(game.string(), install_dir, prefix.string(), 1700000100);
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "not-run");
+  CHECK(!std::filesystem::exists(prefix / "drive_c/Program Files (x86)/dotnet"));
+  std::filesystem::remove(game / "installscript.vdf");
+
+  // Two packages, the first broken: the other installs, the broken one is reported, and the bundle isn't recorded.
+  WriteText(game / "redist/two.exe",
+            RuntimeBundle({{"Broken", "not a package"}, {"Good", RuntimePackage("Good Runtime", {{"g.dll", "GOOD"}})}}, false));
+  result = run({entry("Two", "redist/two.exe")});
+  CHECK(result.outcomes.size() == 2);
+  CHECK(result.outcomes[0].result == "failed" && result.outcomes[0].detail.rfind("redist/two.exe (Broken): ", 0) == 0);
+  CHECK(result.outcomes[1].result == "installed" && result.outcomes[1].detail == "redist/two.exe (Good)");
+  CHECK(ReadText(prefix / "drive_c/Program Files (x86)/Good Runtime/g.dll") == "GOOD");
+  CHECK(recorded().find("redist/two.exe") == std::string::npos);
+  // A second entry naming it in the same run fails without another try.
+  result = run({entry("Two", "redist/two.exe"), entry("Two again", "redist/two.exe")});
+  CHECK(result.outcomes.size() == 3 && result.outcomes[2].result == "failed" &&
+        result.outcomes[2].detail.rfind("redist/two.exe: Broken: ", 0) == 0);
+
+  // A bundle of programs only (UE4's prerequisites): not run.
+  WriteText(game / "redist/UE4PrereqSetup_x64.exe", RuntimeBundle({}, false, "prereq"));
+  result = run({entry("UE4", "redist/UE4PrereqSetup_x64.exe")});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "not-run" &&
+        result.outcomes[0].detail == "redist/UE4PrereqSetup_x64.exe: no Windows Installer package");
+
+  // Wine's own: a Visual C++ bundle is covered and never opened (it isn't even there).
+  result = run({entry("MSVC2019", "redist/MSVC2019/VC_redist.x64.exe", "/install /quiet")});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "covered" && result.outcomes[0].detail == "vc_redist.x64.exe");
+  // A package that isn't there fails; a program outside the game folder is not run.
+  result = run({entry("Missing", "redist/missing.msi")});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "failed" &&
+        result.outcomes[0].detail == "redist/missing.msi: the package could not be read");
+  result = run({RedistEntry{"Outside", "C:\\Windows\\setup.exe", "", ""}});
+  CHECK(result.outcomes.size() == 1 && result.outcomes[0].result == "not-run" && result.outcomes[0].detail == "setup.exe");
+  std::filesystem::remove_all(base);
+}
+
 // NVIDIA's PhysX System Software 9.09.0814 setup program (Batman: Arkham Asylum's), when PLAYDEN_TEST_PHYSX_SETUP names a copy.
 void TestPhysxSetupProgram() {
   const char* path = std::getenv("PLAYDEN_TEST_PHYSX_SETUP");
@@ -1007,6 +1129,7 @@ int main() {
   TestScripts();
   TestInstall();
   TestEmbeddedPackage();
+  TestRedistEntries();
   TestFoundPhysx();
   TestPhysxPackage();
   TestPhysxSetupProgram();

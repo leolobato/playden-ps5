@@ -58,6 +58,24 @@ no account.
   - `dependencies-repository.json`: the repository answer.
   - `dependencies-manifest.zlib`: its manifest, 69 dependencies (the `signature` fields are GOG's own).
   - `dependency-depot-DOSBox074_2CS.json`, `dependency-depot-ScummVM.json`: two dependency depot manifests, inflated.
+  - `dependency-depot-XNA.json`: the `__redist` depot manifest of XNA 3.1, inflated and unchanged (recorded on
+    2026-11-14): one file, `__redist/XNA/xnafx31_redist.msi`, the program the repository manifest names. For the
+    `gog_dependencies` test.
+
+GOG's gen 1 content system for the `gog_manifest_v1` test (and the gen 1 builds item for `gog_manifest_v2`). All are
+public answers (no sign-in), recorded on 2026-11-13 and unchanged. They are file lists and settings, not game content,
+and name no account.
+
+- `builds-gen1-1440148836.json`: a builds answer with Fallout's gen 1 build item, `legacy_build_id` 46964530. fastly
+  supports generations 1 and 2, gcore only 2.
+- `repository-v1-1425039730.json`: Monkey Island 2 Special Edition's gen 1 repository
+  (`gog-cdn-fastly.gog.com/content-system/v1/manifests/1425039730/windows/32971092/repository.json`, plain JSON): a
+  Neutral and an English depot with sizes as strings, four redist depots (`language_setup` has no executable) and one
+  support command.
+- `depot-v1-1425039730-1bf89566-2d44-40e7-81b1-06b0c8e716e4.json`: its Neutral depot manifest, one support file
+  (`1425039730/galaxy_monkey_island2_se_2.0.0.10.exe`) at offset 0 of `main.bin`.
+- `depot-v1-1425039730-44877313-0ade-439d-88ae-0538513fb165.json`: its English depot manifest, 40 files with offsets
+  into `1425039730/main.bin`, one of them the support file `1425039730/app/lang.ini`.
 
 Answers for the `gog_download` test (the downloader against a stub CDN). The test makes its own game (random files,
 chunks compressed with miniz, manifests, meta and builds); these files are the answers it can't make:
@@ -75,6 +93,13 @@ chunks compressed with miniz, manifests, meta and builds); these files are the a
   The tokens are made up and `base_url` points at stub hosts (`https://cdn.example.invalid`,
   `https://gcore.example.invalid`). The product is the made-up `1900000001`; the stub puts another product's ID in its
   place.
+- `secure-link-gen1-200.json`: synthetic, for `gog_api` and the `gog_download` byte-range cases. It has the shape of
+  GOG's real answer to `secure_link?_version=2&type=depot&path=/windows/<timestamp>/` for a gen 1 build (recorded on
+  2026-11-14 and redacted, never copied): fastly with `dirs` 6 and `path` `/content-system/v1/depots/<product>/windows/<timestamp>`
+  (no trailing `/`; `main.bin` is that path plus `/main.bin`), and gcore, which lists only generation 2, with `path`
+  and `prefix` the same folder (`path` without its leading `/`). The tokens are made up, `base_url` points at the stub
+  hosts, the product is `1900000001` and the timestamp the made-up `31000007`; the stub puts the requested product and
+  timestamp in their place.
 
 Play tasks and install scripts for the `gog_info_file` and `gog_install_script` tests. All synthetic: the real files
 come from purchased builds and stay out of the repository.
@@ -85,3 +110,10 @@ come from purchased builds and stay out of the repository.
 - `goggame-1900000002.info`: the shape of Jazz Jackrabbit 2's info file as read on 2026-11-13 (a primary `game`
   FileTask named `jazz2.exe` in lower case while the build's file is `Jazz2.exe`, with `compatibilityFlags`; a `tool`
   FileTask `jcs.exe`; a `document` URLTask; no `workingDir`). The IDs, names and link are made up.
+- `goggame-1900000003.script`: `setRegistry` actions in the shape of the 25 in 10 owned games' scripts read on
+  2026-11-14 (the DOSBox games' `DOSBOXFOLDER` under `Software\GOG.com\Games\{productID}` with `valueType`
+  `String`; `string` in lower case, `saveGameData`, a `SOFTWARE\` key in capitals and a `{userappdata}` value as in
+  Monkey Island SE; a value named after a program path under `AppCompatFlags\Layers`; a key with no value, as Jazz
+  Jackrabbit 2's). The
+  `dword`, `binary`, HKEY_CLASSES_ROOT, other-language, control-character and `{publisher}` actions are made up to
+  test what is skipped: no owned game's script had a `dword`. Keys, names and values are made up.

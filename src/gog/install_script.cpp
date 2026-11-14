@@ -449,6 +449,92 @@ class Runner {
   }
 };
 
+constexpr std::size_t kMaxRegistryText = 1024;
+
+bool PrintableAscii(std::string_view text) {
+  for (const char c : text)
+    if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) return false;
+  return true;
+}
+
+// `{productID}` and `{app}` filled in; nothing when another `{token}` is left or the text isn't printable ASCII.
+std::optional<std::string> RegistryText(const std::string& raw, const ScriptContext& context) {
+  std::string text = raw;
+  ReplaceAll(&text, "{productID}", context.product);
+  ReplaceAll(&text, "{app}", context.windows_app);
+  if (text.find('{') != std::string::npos || text.find('}') != std::string::npos || !PrintableAscii(text))
+    return std::nullopt;
+  return text;
+}
+
+// A dword's data, decimal or 0x hex, as decimal text; nothing past 32 bits or for anything else.
+std::optional<std::string> DwordData(const Value* data) {
+  if (!data || (!data->is_string() && !data->is_number())) return std::nullopt;
+  const std::string& text = data->text();
+  const bool hex = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+  const std::size_t start = hex ? 2 : 0;
+  if (text.size() <= start) return std::nullopt;
+  std::uint64_t number = 0;
+  for (std::size_t i = start; i < text.size(); ++i) {
+    const char c = text[i];
+    unsigned digit = 0;
+    if (c >= '0' && c <= '9') digit = static_cast<unsigned>(c - '0');
+    else if (hex && c >= 'a' && c <= 'f') digit = static_cast<unsigned>(c - 'a' + 10);
+    else if (hex && c >= 'A' && c <= 'F') digit = static_cast<unsigned>(c - 'A' + 10);
+    else return std::nullopt;
+    number = number * (hex ? 16 : 10) + digit;
+    if (number > 0xffffffffull) return std::nullopt;
+  }
+  return std::to_string(number);
+}
+
+// One setRegistry action's setting; nothing when it can't be written.
+std::optional<RegistrySetting> RegistryFrom(const Value& arguments, const ScriptContext& context) {
+  const auto* root = StringArgument(arguments, "root");
+  const auto* subkey = StringArgument(arguments, "subkey");
+  if (!root || !subkey) return std::nullopt;
+  RegistrySetting setting;
+  if (SameIgnoringCase(*root, "HKEY_LOCAL_MACHINE")) setting.machine = true;
+  else if (!SameIgnoringCase(*root, "HKEY_CURRENT_USER")) return std::nullopt;
+  auto key = RegistryText(*subkey, context);
+  if (!key) return std::nullopt;
+  std::replace(key->begin(), key->end(), '/', '\\');
+  for (const char c : *key) {
+    if (c == '\\' && (setting.key.empty() || setting.key.back() == '\\')) continue;
+    setting.key += c;
+  }
+  while (!setting.key.empty() && setting.key.back() == '\\') setting.key.pop_back();
+  if (setting.key.empty() || setting.key.size() > kMaxRegistryText) return std::nullopt;
+  const auto* type = StringArgument(arguments, "valueType");
+  const auto* data = arguments.Find("valueData");
+  // Only the key (no type, no data): the bottle's writer sets values, not bare keys.
+  if (!type) return std::nullopt;
+  if (const auto* name = arguments.Find("valueName"); name && !name->is_null()) {
+    if (!name->is_string()) return std::nullopt;
+    auto filled = RegistryText(name->text(), context);
+    if (!filled || filled->size() > kMaxRegistryText || filled->find('\\') != std::string::npos ||
+        filled->find('"') != std::string::npos)
+      return std::nullopt;
+    setting.name = std::move(*filled);
+  }
+  setting.default_value = setting.name.empty();
+  if (SameIgnoringCase(*type, "string")) {
+    setting.type = RegistrySetting::Type::kString;
+    if (data && !data->is_string()) return std::nullopt;
+    auto filled = RegistryText(data ? data->text() : std::string(), context);
+    if (!filled) return std::nullopt;
+    setting.data = std::move(*filled);
+  } else if (SameIgnoringCase(*type, "dword")) {
+    setting.type = RegistrySetting::Type::kDword;
+    auto number = DwordData(data);
+    if (!number) return std::nullopt;
+    setting.data = std::move(*number);
+  } else {
+    return std::nullopt;
+  }
+  return setting;
+}
+
 }  // namespace
 
 std::optional<std::string> FindScriptFile(const std::string& root, std::uint64_t product) {
@@ -584,8 +670,9 @@ std::vector<ScriptStep> PlanScript(const Script& script, const ScriptContext& co
       step.key = *key;
       step.value = std::move(value);
       step.utf8 = FlagArgument(arguments, "utf8");
+    } else if (action.install->action == "setRegistry") {
+      continue;  // PlanRegistry's
     } else {
-      // setRegistry waits for Phase 4; anything else is unknown.
       ++dropped;
       continue;
     }
@@ -593,6 +680,22 @@ std::vector<ScriptStep> PlanScript(const Script& script, const ScriptContext& co
   }
   if (skipped) *skipped = dropped;
   return steps;
+}
+
+std::vector<RegistrySetting> PlanRegistry(const Script& script, const ScriptContext& context, std::size_t* skipped) {
+  std::vector<RegistrySetting> settings;
+  std::size_t dropped = 0;
+  for (const auto& action : script.actions) {
+    if (!action.install || action.install->action != "setRegistry" || !ForLanguage(action, context)) continue;
+    auto setting = RegistryFrom(action.install->arguments, context);
+    if (!setting) {
+      ++dropped;
+      continue;
+    }
+    settings.push_back(std::move(*setting));
+  }
+  if (skipped) *skipped = dropped;
+  return settings;
 }
 
 RunResult RunScript(const std::vector<ScriptStep>& steps) {

@@ -105,7 +105,8 @@ ProductInfo ParseProduct(std::string_view body, std::uint64_t id);
 // _bg_crop_1920x655 before .jpg for a hero. Anything else gives "".
 std::string ArtUrl(std::string_view url_format, ArtKind kind = ArtKind::kCover);
 
-// The content system's calls. None sends a User-Agent other than kUserAgent, and only FetchSecureLink sends a token.
+// The content system's calls. None sends a User-Agent other than kUserAgent, and only FetchSecureLink and
+// FetchSecureLinkV1 send a token.
 inline constexpr std::size_t kMaxContentAnswerBytes = 1024 * 1024;
 
 // A plain answer: whether one came, its status and its body (at most kMaxContentAnswerBytes).
@@ -130,12 +131,12 @@ struct LinkResult {
     kRejected,   // 401: the access token is no longer good
     kForbidden,  // 403: the account doesn't own the product, or GOG refused the link
     kNetwork,    // no answer, 429, 5xx, another 4xx: try again later
-    kProtocol,   // 200 without usable endpoints for generation 2, or another status
+    kProtocol,   // 200 without usable endpoints for the generation, or another status
     kCanceled,
   };
   Kind kind = Kind::kNetwork;
   long status = 0;
-  // kOk: the endpoints for generation 2, in the order to try them (OrderEndpoints). A secure link's parameters hold
+  // kOk: the endpoints for the generation, in the order to try them (OrderEndpoints). A secure link's parameters hold
   // its signature: never log them, and wipe them with WipeEndpoints when done.
   std::vector<CdnEndpoint> endpoints;
   // The earliest `expires_at` (Unix seconds) among the endpoints that state one (fastly); 0 when none does (gcore's
@@ -152,14 +153,22 @@ struct LinkResult {
   static void WipeEndpoints(std::vector<CdnEndpoint>& endpoints);
 };
 
-// Reads a secure link or open link answer ({"urls":[...]}): kOk with the generation 2 endpoints, else kProtocol.
-LinkResult ParseLink(std::string_view body);
+// Reads a secure link or open link answer ({"urls":[...]}): kOk with the endpoints that support `generation`, else
+// kProtocol. For generation 1 that drops gcore, which lists only 2. The endpoints dropped are wiped too.
+LinkResult ParseLink(std::string_view body, int generation = 2);
 
 // GET https://content-system.gog.com/products/<pid>/secure_link?_version=2&generation=2&path=/ with
 // "Authorization: Bearer <access token>". The request's header, the answer's body and the parsed copy are wiped before
 // it returns: they hold the token and the link's signature.
 LinkResult FetchSecureLink(Transport& transport, std::string_view access_token, std::uint64_t product,
                            const std::atomic<bool>& cancel);
+
+// A gen 1 build's link: GET https://content-system.gog.com/products/<pid>/secure_link?_version=2&type=depot&path=
+// /windows/<timestamp>/ (the build's legacy_build_id, BuildChoice::timestamp) with the same Bearer header. Its `path`
+// names the build's folder; main.bin is that path plus "/main.bin" (FetchRange). The endpoints are those for
+// generation 1 (fastly). 401 is kRejected, 403 kForbidden, the rest as FetchSecureLink, and the same buffers are wiped.
+LinkResult FetchSecureLinkV1(Transport& transport, std::string_view access_token, std::uint64_t product,
+                             std::uint64_t timestamp, const std::atomic<bool>& cancel);
 
 // GET https://content-system.gog.com/open_link?generation=2&_version=2&path=/dependencies/store/, unsigned: the public
 // dependency store's chunk bases. Their `url` is used as it is (FillUrl), not url_format.

@@ -858,6 +858,11 @@ class RuntimeHost {
   // HandOverForHome's work, on the worker: only for a game waiting for the PS5 whose title has its saved settings.
   void HomeHandoff(Composition& composition, std::uint32_t runtime_number);
   std::string InstallScriptsStep(const GameFiles& files);                        // and redistributables
+  // A GOG game's setRegistry values (its products' goggame-<id>.script), after RecipeRegistryStep.
+  std::string GogRegistryStep(const GameFiles& files);
+  // A GOG game's redistributables (its .playden-gog/redist.list), at InstallScriptsStep's end; the outcomes go to log.
+  void GogRedistStep(const GameFiles& files, const std::string& install_dir, const runtime::RedistProgress& progress,
+                     const std::function<void(const runtime::RedistInstallResult&)>& log);
   // The Steam app ID the game's emulator uses.
   SteamworksAppView SteamworksAppFor(const GameFiles& files) const;
   // Whether the install's title runs the installed kit's runtime: its owner markers name this kit

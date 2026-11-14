@@ -29,6 +29,18 @@ struct InstallScriptValues {
 bool ParseInstallScript(std::string_view text, const std::string& install_dir, const std::string& language,
                         InstallScriptValues* values, std::string* reason);
 
+// The keys a value under `subkey` goes to. An HKLM Software key (any case) goes to both registry views, as Steam,
+// a 32-bit program, writes it where 32-bit and 64-bit games find it: the key itself and Software\Wow6432Node\<rest>.
+// Any other key, and any HKCU key, is the key alone. Used for Steam's scripts and GOG's alike.
+std::vector<std::string> InstallScriptKeys(bool machine, const std::string& subkey);
+
+// Wine's text form of a REG_SZ: quoted, with backslashes and quotes escaped.
+std::string RegistryString(std::string_view text);
+
+// Adds value to list, replacing one of the same key and name (any case, named or unnamed): a registry key holds one
+// of each, so the last value set wins, and a hive never gets the same value twice.
+void SetRegistryValue(std::vector<RegistryValue>* list, RegistryValue value);
+
 // Applies the Registry sections of the install scripts at the top of game_root (file names
 // starting with "installscript" and ending ".vdf", any case) to the stopped bottle at
 // prefix_dir, backing each hive up first. A later script's value replaces an earlier one's of

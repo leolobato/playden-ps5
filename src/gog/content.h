@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// GOG's content system for gen 2 Windows builds (GOG_PROTOCOL.md §4-5): the build list, CDN endpoints and their URLs,
-// the build meta, which depots an install takes, and the public dependency store. Pure parsing and selection: no
-// network, no files. The downloader and the details source build on it.
+// GOG's content system for Windows builds (GOG_PROTOCOL.md §4-5): the build list, CDN endpoints and their URLs, the gen 2
+// build meta, which depots an install takes, and the public dependency store. Gen 1 repositories are in manifest_v1.h.
+// Pure parsing and selection: no network, no files. The downloader and the details source build on it.
 
 #include "steam/backend/json.h"
 
@@ -62,19 +62,23 @@ std::optional<std::string> GalaxyPath(std::string_view hash);
 struct BuildChoice {
   enum class Kind {
     kGen2,      // a gen 2 build: its meta's endpoints and ID
-    kGen1Only,  // the default build is gen 1 (Phase 4)
+    kGen1,      // a gen 1 build: its repository's endpoints and timestamp
     kNone,      // no default-branch Windows build
-    kProtocol,  // not a builds answer, or a gen 2 item without `urls` (asked without _version=2)
+    kProtocol,  // not a builds answer, or an item without `urls` (asked without _version=2)
   };
   Kind kind = Kind::kProtocol;
   std::string build_id;
   int generation = 0;
   std::vector<CdnEndpoint> meta;  // kGen2: ordered for generation 2
   std::string meta_id;            // kGen2: the meta's MD5, the last segment of its URL
+  std::uint64_t timestamp = 0;    // kGen1: legacy_build_id, the v1 "timestamp" in every gen 1 URL
+  std::vector<CdnEndpoint> repository;  // kGen1: repository.json's endpoints, ordered for generation 1 (no gcore)
 };
 
 // The first item with `branch` null or absent and `os` "windows". Never items[0] as such: Jazz Jackrabbit 2 lists
-// five `JJ2+ Mod` branch builds before its default one.
+// five `JJ2+ Mod` branch builds before its default one. A gen 1 item needs a canonical `product_id` and
+// `legacy_build_id`, and every endpoint that supports generation 1 must fill to
+// `…/content-system/v1/manifests/<product>/windows/<timestamp>/repository.json`; otherwise the answer is kProtocol.
 BuildChoice ChooseBuild(std::string_view body);
 
 struct MetaDepot {
@@ -131,20 +135,29 @@ struct DependencyRepository {
 };
 std::optional<DependencyRepository> ParseDependencyRepository(std::string_view body);
 
+// A dependency's arguments as Playden keeps them: at most this many bytes of printable ASCII.
+inline constexpr std::size_t kMaxDependencyArgumentsBytes = 1024;
+
 struct Dependency {
   std::string id;        // dependencyId
   std::string exe_path;  // executable.path: "__redist/…" for an installer, empty for game-folder files
+  // executable.arguments, verbatim (MSVC2005's nested quotes included). Cleared, with usable_arguments false, when
+  // they are not a string, are longer than kMaxDependencyArgumentsBytes, or hold anything but printable ASCII (a
+  // control character, a tab, a non-ASCII byte).
+  std::string arguments;
+  bool usable_arguments = true;
+  std::vector<std::string> bitness;  // osBitness ("64"); empty when absent or malformed
   std::string manifest;  // the depot manifest's MD5
   std::uint64_t size = 0;
   std::uint64_t compressed_size = 0;
 };
 
 // The repository manifest's depots[]. An entry without a usable ID, manifest or size is skipped; the signature is
-// ignored.
+// ignored. Unusable arguments or bitness never drop an entry.
 std::optional<std::vector<Dependency>> ParseDependencyManifest(std::string_view inflated);
 
 // Whether a dependency's files go into the game folder (DOSBox, ScummVM, nGlide…): its executable.path does not start
-// with `__redist`. `__redist` installers wait for Phase 4.
+// with `__redist`. The others are installers, kept under .playden-gog/redist/ (gog/dependencies.h).
 bool GameFolderDependency(const Dependency& dependency);
 
 // A dependency ID as the meta and repository write it: 1-64 of [A-Za-z0-9_.-].

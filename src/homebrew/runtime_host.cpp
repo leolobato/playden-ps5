@@ -4,6 +4,7 @@
 #include "homebrew/runtime_host.hpp"
 
 #include "homebrew/gog_icon.hpp"
+#include "gog/dependencies.h"
 #include "gog/install_script.h"
 #include "gog/installer.h"
 #include "pw_app_profile.h"
@@ -1479,20 +1480,23 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
   // A package being installed shows on the game's page as the rest of its setup does: words and a percentage.
   const auto number = record.runtime_number;
   bool shown = false;
-  const auto redist = rt::InstallRedistributables(
-      files.root.string(), *install_dir, files.prefix, config_.unix_time(), uses_physx,
-      [&](const std::string& name, std::size_t done, std::size_t total) {
-        if (!shown) {
-          shown = true;
-          const bool physx = rt::RedistIsPhysx(name);
-          Publish([&](RuntimeSnapshot& s) { s.play_progress[number] = physx ? kPlayInstallingPhysx : kPlayInstallingComponent; });
-        }
-        ReportWork(done, total);
-      });
-  if (shown) {
+  const auto progress = [&](const std::string& name, std::size_t done, std::size_t total) {
+    if (!shown) {
+      shown = true;
+      const bool physx = rt::RedistIsPhysx(name);
+      Publish([&](RuntimeSnapshot& s) { s.play_progress[number] = physx ? kPlayInstallingPhysx : kPlayInstallingComponent; });
+    }
+    ReportWork(done, total);
+  };
+  const auto progress_done = [&] {
+    if (!shown) return;
+    shown = false;
     ClearWork();
     Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(number); });
-  }
+  };
+  const auto redist = rt::InstallRedistributables(files.root.string(), *install_dir, files.prefix, config_.unix_time(),
+                                                  uses_physx, progress);
+  progress_done();
   if (redist.physx_missing) Log("redist app=" + std::to_string(record.runtime_number) + " physx needed, no package in the game folder");
   // Still without the engine the game was built for, and a package added to its folder would be found: say which.
   std::optional<std::string> physx_needed;
@@ -1514,12 +1518,134 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
       if (static_cast<unsigned char>(value) < 0x20 || value == 0x7f) value = '?';
     return text;
   };
-  for (const auto& outcome : redist.outcomes)
-    if (outcome.result != "already" && outcome.result != "covered")
-      Log("redist app=" + std::to_string(record.runtime_number) + " script=" + field(outcome.script) + " name=" +
-          field(outcome.name) + " result=" + outcome.result + " detail=" + field(outcome.detail) +
-          (outcome.files ? " files=" + std::to_string(outcome.files) : std::string()));
+  const auto log_outcomes = [&](const rt::RedistInstallResult& installed) {
+    for (const auto& outcome : installed.outcomes)
+      if (outcome.result != "already" && outcome.result != "covered")
+        Log("redist app=" + std::to_string(record.runtime_number) + " script=" + field(outcome.script) + " name=" +
+            field(outcome.name) + " result=" + outcome.result + " detail=" + field(outcome.detail) +
+            (outcome.files ? " files=" + std::to_string(outcome.files) : std::string()));
+  };
+  log_outcomes(redist);
+  if (GameOf(record).store == Store::kGog) GogRedistStep(files, *install_dir, progress, log_outcomes);
+  progress_done();
   return {};
+}
+
+// GOG step: the setRegistry values of each installed product's goggame-<id>.script, written into the bottle before
+// every start, as Galaxy writes them at install: `{app}` is the game folder as Wine sees it, so a move is followed.
+// HKLM Software keys go to both registry views, as for Steam's scripts. It runs after RecipeRegistryStep: a value the
+// recipe sets (user.reg) is the recipe's and is left alone, and a value an earlier recipe set and RecipeRegistryStep
+// just removed gets the script's again in the same start. An unchanged hive is not written, and a hive the bottle
+// doesn't have yet gets its values on the next start. A hive that can't be written refuses the start, as for Steam's
+// scripts.
+std::string RuntimeHost::GogRegistryStep(const GameFiles& files) {
+  const auto& record = files.record;
+  if (GameOf(record).store != Store::kGog) return {};
+  const auto windows_app = rt::ProsperoWindowsPath(record.install_path);
+  if (!windows_app) return {};
+  const auto& install_dir = *windows_app;
+  const auto installed = installs::ReadInstallRecord((files.root / installs::kInstallRecordName).string());
+  if (!installed || !installed->gog) return {};  // GogScriptStep says so
+  const auto root = files.root.string();
+  std::vector<rt::RegistryValue> machine, user;
+  std::size_t scripts = 0, values = 0, skipped = 0, recipe = 0;
+  for (const auto product : installed->gog->products) {
+    const auto path = gog::FindScriptFile(root, product);
+    const auto script = path ? gog::ReadScript(*path) : std::nullopt;  // an unreadable one: GogScriptStep says so
+    if (!script) continue;
+    gog::ScriptContext context;
+    context.game_root = root;
+    context.product = std::to_string(product);
+    context.gog_language = installed->gog->language;
+    context.windows_app = install_dir;
+    std::size_t left_out = 0;
+    const auto settings = gog::PlanRegistry(*script, context, &left_out);
+    if (settings.empty() && left_out == 0) continue;
+    ++scripts;
+    skipped += left_out;
+    // Registry names match ignoring ASCII case.
+    const auto same = [](const std::string& a, const std::string& b) {
+      const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
+      return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [&](char x, char y) { return lower(x) == lower(y); });
+    };
+    for (const auto& setting : settings) {
+      const auto owned_by_recipe = [&](const std::string& key) {
+        if (setting.machine || !files.recipe) return false;
+        return std::any_of(files.recipe->registry.begin(), files.recipe->registry.end(), [&](const rt::RegistryValue& value) {
+          return value.default_value == setting.default_value && same(value.key, key) && same(value.name, setting.name);
+        });
+      };
+      std::string data;
+      if (setting.type == gog::RegistrySetting::Type::kDword) {
+        char text[16];
+        std::snprintf(text, sizeof(text), "dword:%08lx", std::strtoul(setting.data.c_str(), nullptr, 10));
+        data = text;
+      } else {
+        data = rt::RegistryString(setting.data);
+      }
+      bool counted = false;
+      for (const auto& key : rt::InstallScriptKeys(setting.machine, setting.key)) {
+        if (owned_by_recipe(key)) {
+          if (!counted) ++recipe;
+          counted = true;
+          continue;
+        }
+        // A later action's value replaces an earlier one's, across products too.
+        rt::SetRegistryValue(setting.machine ? &machine : &user, {key, setting.name, data, setting.default_value});
+      }
+      if (!counted) ++values;
+    }
+  }
+  if (scripts == 0) return {};
+  std::string failure;
+  for (const auto& [hive, list] : {std::pair<const char*, const std::vector<rt::RegistryValue>*>{"system.reg", &machine},
+                                   std::pair<const char*, const std::vector<rt::RegistryValue>*>{"user.reg", &user}}) {
+    struct stat info {};
+    if (list->empty() || ::lstat((files.prefix + "/" + hive).c_str(), &info) != 0) continue;
+    std::string reason;
+    if (!rt::ApplyBottleRegistryValues(*list, files.prefix, config_.unix_time(), hive, &reason)) {
+      failure = reason;
+      break;
+    }
+  }
+  Log("gog registry app=" + std::to_string(record.runtime_number) + " values=" + std::to_string(values) +
+      " skipped=" + std::to_string(skipped) + (recipe ? " recipe=" + std::to_string(recipe) : std::string()) +
+      (failure.empty() ? std::string() : " failed=" + failure));
+  if (!failure.empty()) return "The game's install script could not be applied: " + failure + ".";
+  return {};
+}
+
+// GOG step: the redistributables a GOG build names, downloaded into .playden-gog/redist/ with the game (its
+// redist.list says which program runs each, with which arguments). Installed into the bottle as a Steam script's are,
+// and a Burn bundle's Windows Installer packages too (.NET desktop runtimes); what Wine provides is skipped. Only the
+// game folder is read, so it works signed out and offline. A package that fails is logged and the game still starts.
+void RuntimeHost::GogRedistStep(const GameFiles& files, const std::string& install_dir, const rt::RedistProgress& progress,
+                                const std::function<void(const rt::RedistInstallResult&)>& log) {
+  const auto list = gog::ReadRedistList(files.root.string());
+  // No list is an install with no redistributables (or one from before Playden downloaded them): nothing to say.
+  if (list.status == gog::RedistList::Status::kMissing) return;
+  if (list.status != gog::RedistList::Status::kOk) {
+    Log("gog redist app=" + std::to_string(files.record.runtime_number) + " list=refused");
+    return;
+  }
+  auto base = install_dir;
+  while (!base.empty() && base.back() == '\\') base.pop_back();
+  // What the list says Play can't run (no package, no program, unusable arguments) is logged as not run.
+  rt::RedistInstallResult skipped;
+  std::vector<rt::RedistEntry> entries;
+  for (const auto& entry : list.entries) {
+    if (!entry.package) {
+      skipped.outcomes.push_back({"gog", entry.id, "not-run", gog::RedistSkipName(entry.skip), 0});
+      continue;
+    }
+    auto program = entry.program;
+    std::replace(program.begin(), program.end(), '/', '\\');
+    entries.push_back(rt::RedistEntry{entry.id, base + "\\" + program, entry.arguments, ""});
+  }
+  if (!entries.empty())
+    log(rt::InstallRedistEntries(files.root.string(), install_dir, files.prefix, config_.unix_time(), entries, "gog",
+                                 /*burn_bundles=*/true, progress));
+  log(skipped);
 }
 
 // Sets what MfcStep may do for the work in its scope (RedistWork), and puts the default back after it.
@@ -1942,7 +2068,7 @@ std::string RuntimeHost::DotnetHeapStep(const GameFiles& files) {
 
 // The steps run in this order for every game, whatever its store: generic ones (media, EULA, Direct3D 12, Wine
 // Mono, the bottle's Environment, MFC, the Visual C++ runtime key, the recipe's registry and INI values and files, the
-// .NET heap), GOG's install script INI values, and Steam-file ones, which act only on the Steam files a game has
+// .NET heap), GOG's install script registry and INI values, and Steam-file ones, which act only on the Steam files a game has
 // (SteamStub, Steamworks and steam.dll, install scripts and redistributables, Cloud save folders).
 std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::RuntimeInstall& record, bool steam_account_known) {
   MediaStep(c, record);
@@ -2006,6 +2132,7 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   // After the redistributables (install scripts, MFC): one that writes an older runtime key doesn't stay.
   VcRuntimeStep(files);
   if (auto refused = RecipeRegistryStep(c, files); !refused.empty()) return refused;
+  if (auto refused = GogRegistryStep(files); !refused.empty()) return refused;
   if (auto refused = RecipeIniStep(files); !refused.empty()) return refused;
   GogScriptStep(files);
   if (auto refused = RecipeFilesStep(files); !refused.empty()) return refused;

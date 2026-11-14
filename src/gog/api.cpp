@@ -7,6 +7,7 @@
 #include "platform/secret.h"
 #include "steam/backend/json.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace playden::gog {
@@ -151,6 +152,37 @@ LinkResult::Kind LinkStatusKind(long status) {
   if (status == 403) return Kind::kForbidden;
   if (status == 429 || (status >= 400 && status <= 599)) return Kind::kNetwork;
   return Kind::kProtocol;
+}
+
+// A secure link: GET <content system><path> with "Authorization: Bearer <access token>", read for `generation`. The
+// request's header, the answer's body and the parsed copy are wiped before it returns: they hold the token and the
+// link's signature.
+LinkResult FetchLink(Transport& transport, std::string_view access_token, const std::string& path, int generation,
+                     const std::atomic<bool>& cancel) {
+  LinkResult result;
+  if (!transport) return result;
+  auto request = Get(ContentUrl(path), kMaxContentAnswerBytes);
+  std::string bearer;
+  bearer.reserve(7 + access_token.size());
+  bearer += "Bearer ";
+  bearer += access_token;
+  request.headers.reserve(2);
+  request.headers.emplace_back("User-Agent", kUserAgent);
+  request.headers.emplace_back("Authorization", std::string());
+  request.headers.back().second.swap(bearer);
+  auto response = transport(request, cancel);
+  platform::ZeroizeSecret(request.headers.back().second);
+  if (!response.ok()) {
+    result.kind = response.error == steam::HttpError::kCanceled || cancel.load() ? LinkResult::Kind::kCanceled
+                                                                                 : LinkResult::Kind::kNetwork;
+  } else if (response.status_code == 200) {
+    result = ParseLink(BodyOf(response), generation);
+  } else {
+    result.kind = LinkStatusKind(response.status_code);
+  }
+  result.status = response.ok() ? response.status_code : 0;
+  platform::ZeroizeSecret(response.body);
+  return result;
 }
 
 }  // namespace
@@ -320,7 +352,7 @@ void LinkResult::WipeEndpoints(std::vector<CdnEndpoint>& endpoints) {
   endpoints.clear();
 }
 
-LinkResult ParseLink(std::string_view body) {
+LinkResult ParseLink(std::string_view body, int generation) {
   LinkResult result;
   result.kind = LinkResult::Kind::kProtocol;
   steam::json::Limits limits;
@@ -332,7 +364,17 @@ LinkResult ParseLink(std::string_view body) {
   const Value* urls = parsed->is_object() ? parsed->Find("urls") : nullptr;
   if (urls && urls->is_array()) {
     auto parsed_endpoints = ParseEndpoints(*urls);
-    result.endpoints = OrderEndpoints(parsed_endpoints, 2);
+    // OrderEndpoints erases the endpoints it drops from its own copy without wiping them: wipe those here first.
+    for (auto& endpoint : parsed_endpoints) {
+      if (std::find(endpoint.generations.begin(), endpoint.generations.end(), generation) != endpoint.generations.end())
+        continue;
+      std::vector<CdnEndpoint> dropped(1);
+      dropped[0].url_format.swap(endpoint.url_format);
+      dropped[0].url.swap(endpoint.url);
+      dropped[0].parameters.swap(endpoint.parameters);
+      LinkResult::WipeEndpoints(dropped);
+    }
+    result.endpoints = OrderEndpoints(parsed_endpoints, generation);
     LinkResult::WipeEndpoints(parsed_endpoints);
   }
   WipeTree(*parsed);
@@ -352,31 +394,18 @@ LinkResult ParseLink(std::string_view body) {
 
 LinkResult FetchSecureLink(Transport& transport, std::string_view access_token, std::uint64_t product,
                            const std::atomic<bool>& cancel) {
-  LinkResult result;
-  if (product == 0 || !transport) return result;
-  auto request = Get(ContentUrl("/products/" + std::to_string(product) + "/secure_link?_version=2&generation=2&path=/"),
-                     kMaxContentAnswerBytes);
-  std::string bearer;
-  bearer.reserve(7 + access_token.size());
-  bearer += "Bearer ";
-  bearer += access_token;
-  request.headers.reserve(2);
-  request.headers.emplace_back("User-Agent", kUserAgent);
-  request.headers.emplace_back("Authorization", std::string());
-  request.headers.back().second.swap(bearer);
-  auto response = transport(request, cancel);
-  platform::ZeroizeSecret(request.headers.back().second);
-  if (!response.ok()) {
-    result.kind = response.error == steam::HttpError::kCanceled || cancel.load() ? LinkResult::Kind::kCanceled
-                                                                                 : LinkResult::Kind::kNetwork;
-  } else if (response.status_code == 200) {
-    result = ParseLink(BodyOf(response));
-  } else {
-    result.kind = LinkStatusKind(response.status_code);
-  }
-  result.status = response.ok() ? response.status_code : 0;
-  platform::ZeroizeSecret(response.body);
-  return result;
+  if (product == 0) return {};
+  return FetchLink(transport, access_token,
+                   "/products/" + std::to_string(product) + "/secure_link?_version=2&generation=2&path=/", 2, cancel);
+}
+
+LinkResult FetchSecureLinkV1(Transport& transport, std::string_view access_token, std::uint64_t product,
+                             std::uint64_t timestamp, const std::atomic<bool>& cancel) {
+  if (product == 0 || timestamp == 0) return {};
+  return FetchLink(transport, access_token,
+                   "/products/" + std::to_string(product) + "/secure_link?_version=2&type=depot&path=/windows/" +
+                       std::to_string(timestamp) + "/",
+                   1, cancel);
 }
 
 LinkResult FetchOpenLink(Transport& transport, const std::atomic<bool>& cancel) {

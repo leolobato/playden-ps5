@@ -84,6 +84,17 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
                                             const std::string& prefix_dir, std::int64_t unix_time, bool find_physx = false,
                                             const RedistProgress& progress = {});
 
+// Installs entries a caller found itself (a GOG game's redist list, gog/dependencies.h) the way
+// InstallRedistributables installs its scripts' entries: ClassifyRedist, the package or the one a setup program
+// carries, each known by its SHA-256 in .playden-redist; script_label names them in the outcomes. With burn_bundles, a
+// setup program in the game folder that reads as a WiX Burn bundle (runtime/burn_bundle.h) has each of its
+// MsiPackages installed with all of its files, and the bundle is recorded once every one has; a bundle with none is
+// not run. Programs ClassifyRedist calls covered (Visual C++, DirectX, .NET Framework) are never opened.
+RedistInstallResult InstallRedistEntries(const std::string& game_root, const std::string& install_dir,
+                                         const std::string& prefix_dir, std::int64_t unix_time,
+                                         const std::vector<RedistEntry>& entries, const std::string& script_label,
+                                         bool burn_bundles, const RedistProgress& progress = {});
+
 // Microsoft's MFC library, which Wine doesn't provide, for the games that import it (runtime/game_probe.h
 // FindMfcImports): Playden downloads Microsoft's Visual C++ 2015-2022 redistributable once per console, keeps the
 // verified setup program, and installs only the MFC files of its "Additional" package into a game's bottle.

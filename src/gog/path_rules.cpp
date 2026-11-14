@@ -172,8 +172,39 @@ std::optional<std::string> PlaceFile(std::string_view path, std::uint64_t produc
   return placed;
 }
 
+std::optional<std::string> PlaceFileV1(std::string_view path, std::uint64_t product, bool support, PathRefusal* why) {
+  if (support) {
+    const std::string prefix = std::to_string(product) + "/";
+    if (path.size() > prefix.size() && path.compare(0, prefix.size(), prefix) == 0)
+      return PlaceFile(path.substr(prefix.size()), product, support, why);
+  }
+  return PlaceFile(path, product, support, why);
+}
+
+bool IsRedistPlacement(std::string_view path, PathRefusal* why) {
+  if (why) *why = PathRefusal::kNone;
+  constexpr std::string_view kPrefix = kRedistFolder;
+  if (path.size() <= kPrefix.size() || path.compare(0, kPrefix.size(), kPrefix) != 0) {
+    if (why) *why = PathRefusal::kReserved;
+    return false;
+  }
+  if (path.size() > kMaxPathBytes) {
+    if (why) *why = PathRefusal::kTooLong;
+    return false;
+  }
+  const auto rest = path.substr(kPrefix.size());
+  const auto normalized = NormalizePath(rest, why);
+  if (!normalized) return false;
+  if (*normalized != rest) {
+    // A leading separator NormalizePath would drop: not a canonical placement.
+    if (why) *why = PathRefusal::kAbsolute;
+    return false;
+  }
+  return true;
+}
+
 PathSet::Added PathSet::Add(std::string_view raw, PathKind kind, std::uint64_t product, bool support,
-                            std::size_t index) {
+                            std::size_t index, int generation) {
   Added added;
   if (kind == PathKind::kLink) {
     added.refusal = PathRefusal::kLink;
@@ -181,9 +212,24 @@ PathSet::Added PathSet::Add(std::string_view raw, PathKind kind, std::uint64_t p
   }
   auto normalized = NormalizePath(raw, &added.refusal);
   if (!normalized) return added;
-  auto placed = PlaceFile(*normalized, product, support, &added.refusal);
+  auto placed = generation == 1 ? PlaceFileV1(*normalized, product, support, &added.refusal)
+                                 : PlaceFile(*normalized, product, support, &added.refusal);
   if (!placed) return added;
-  std::string path = std::move(*placed);
+  return Merge(std::move(*placed), kind, index);
+}
+
+PathSet::Added PathSet::AddRedist(std::string_view placed, PathKind kind, std::size_t index) {
+  Added added;
+  if (kind == PathKind::kLink) {
+    added.refusal = PathRefusal::kLink;
+    return added;
+  }
+  if (!IsRedistPlacement(placed, &added.refusal)) return added;
+  return Merge(std::string(placed), kind, index);
+}
+
+PathSet::Added PathSet::Merge(std::string path, PathKind kind, std::size_t index) {
+  Added added;
   const auto key = FoldCase(path);
 
   // Check everything before recording anything: a refused path leaves no folder spelling behind.

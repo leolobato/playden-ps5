@@ -75,6 +75,15 @@ bool PlainUrlCharacters(std::string_view url) {
   return true;
 }
 
+bool PrintableArguments(std::string_view text) {
+  if (text.size() > kMaxDependencyArgumentsBytes) return false;
+  for (const char c : text) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 || byte > 0x7e) return false;
+  }
+  return true;
+}
+
 bool HttpsUrl(std::string_view url) { return url.rfind("https://", 0) == 0 && url.size() > 8 && PlainUrlCharacters(url); }
 
 // The last path segment of a URL, without a query.
@@ -222,13 +231,28 @@ BuildChoice ChooseBuild(std::string_view body) {
   if (!Id(item->Find("build_id"), &build) || !SmallInt(item->Find("generation"), &choice.generation))
     return choice;
   choice.build_id = item->Find("build_id")->text();
-  if (choice.generation == 1) {
-    choice.kind = BuildChoice::Kind::kGen1Only;
-    return choice;
-  }
-  if (choice.generation != 2) return choice;
+  if (choice.generation != 1 && choice.generation != 2) return choice;
   const Value* urls = item->Find("urls");
   if (!urls || !urls->is_array()) return choice;  // the `link` form: asked without _version=2
+  if (choice.generation == 1) {
+    std::uint64_t product = 0;
+    if (!Id(item->Find("product_id"), &product) || !Id(item->Find("legacy_build_id"), &choice.timestamp))
+      return choice;
+    auto endpoints = OrderEndpoints(ParseEndpoints(*urls), 1);
+    if (endpoints.empty()) return choice;
+    // Unlike a gen 2 meta, every endpoint must name this product's repository at this timestamp: one that names
+    // another is not a mirror of it.
+    const std::string suffix = "/content-system/v1/manifests/" + std::to_string(product) + "/windows/" +
+                               std::to_string(choice.timestamp) + "/repository.json";
+    for (const auto& endpoint : endpoints) {
+      const auto url = FillUrl(endpoint, "");
+      if (!url || url->size() <= suffix.size() || url->compare(url->size() - suffix.size(), suffix.size(), suffix) != 0)
+        return choice;
+    }
+    choice.repository = std::move(endpoints);
+    choice.kind = BuildChoice::Kind::kGen1;
+    return choice;
+  }
   auto endpoints = OrderEndpoints(ParseEndpoints(*urls), 2);
   if (endpoints.empty()) return choice;
   const auto& first = endpoints.front();
@@ -430,7 +454,15 @@ std::optional<std::vector<Dependency>> ParseDependencyManifest(std::string_view 
         if (!path->is_string()) continue;
         dependency.exe_path = path->text();
       }
+      if (const Value* arguments = executable->Find("arguments")) {
+        if (arguments->is_string() && PrintableArguments(arguments->text())) {
+          dependency.arguments = arguments->text();
+        } else {
+          dependency.usable_arguments = false;
+        }
+      }
     }
+    if (!StringList(entry.Find("osBitness"), 8, &dependency.bitness)) dependency.bitness.clear();
     dependencies.push_back(std::move(dependency));
   }
   return dependencies;

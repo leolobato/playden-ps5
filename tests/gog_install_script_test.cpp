@@ -27,7 +27,9 @@ extern "C" int renameat(int, const char*, int, const char*) { errno = EINVAL; re
 
 using namespace playden;
 using playden::gog::ParseScript;
+using playden::gog::PlanRegistry;
 using playden::gog::PlanScript;
+using playden::gog::RegistrySetting;
 using playden::gog::RunScript;
 using playden::gog::ScriptContext;
 using playden::gog::ScriptLocation;
@@ -132,8 +134,8 @@ void PlansForTheLanguage(const std::string& scratch) {
   CHECK(script && script->actions.size() == 7);
   std::size_t skipped = 99;
   const auto steps = PlanScript(*script, fixture.context, false, &skipped);
-  // setRegistry and the escape are skipped and counted; the de-DE action is not for this install.
-  CHECK(skipped == 2);
+  // The escape is skipped and counted; setRegistry is PlanRegistry's; the de-DE action is not for this install.
+  CHECK(skipped == 1);
   CHECK(steps.size() == 4);
   CHECK(steps[0].kind == ScriptStep::Kind::kCreateFolder && steps[0].target == Game(fixture, "saves") &&
         steps[0].name == "createFolder");
@@ -384,6 +386,82 @@ void RunsTheFixtureScript(const std::string& scratch, const std::string& fixture
   CHECK(PlanScript(*script, context, true).empty());
 }
 
+// The registry values of the synthetic fixture (setRegistry in the shape of owned games' scripts) for the install's
+// language, and what is skipped and counted.
+void PlansRegistryValues(const std::string& scratch, const std::string& fixtures) {
+  const auto fixture = Fresh(scratch);
+  const auto script = gog::ReadScript(fixtures + "/goggame-1900000003.script");
+  CHECK(script && script->actions.size() == 12);
+  auto context = fixture.context;
+  context.product = "1900000003";
+  context.windows_app = "Z:\\data\\playden-games\\gog-1900000003";
+  std::size_t skipped = 99;
+  const auto settings = PlanRegistry(*script, context, &skipped);
+  // A key with no value, binary, HKEY_CLASSES_ROOT, a control character, {publisher}, {userappdata} and a name with
+  // a backslash are skipped and counted; the de-DE action is not for this install and not counted (PlanScript's rule).
+  CHECK(skipped == 7);
+  CHECK(settings.size() == 3);
+  // HKLM, `String`: {productID} in the key, {app} in the data.
+  CHECK(settings[0].machine && settings[0].key == "Software\\GOG.com\\Games\\1900000003" &&
+        settings[0].name == "DOSBOXFOLDER" && !settings[0].default_value &&
+        settings[0].type == RegistrySetting::Type::kString &&
+        settings[0].data == "Z:\\data\\playden-games\\gog-1900000003\\DOSBox");
+  // An empty name is the key's default value; `string` in lower case; the key keeps its capitals.
+  CHECK(settings[1].machine && settings[1].key == "SOFTWARE\\Synthetic Games\\Synthetic" && settings[1].name.empty() &&
+        settings[1].default_value && settings[1].type == RegistrySetting::Type::kString &&
+        settings[1].data == "Z:\\data\\playden-games\\gog-1900000003");
+  // HKCU dword 0x10, with `/` in the key.
+  CHECK(!settings[2].machine && settings[2].key == "Software\\Synthetic Games\\Synthetic" && settings[2].name == "Volume" &&
+        settings[2].type == RegistrySetting::Type::kDword && settings[2].data == "16");
+  // The German install gets the German value too.
+  auto german = context;
+  german.gog_language = "de-DE";
+  const auto german_settings = PlanRegistry(*script, german, &skipped);
+  CHECK(german_settings.size() == 4 && skipped == 7 && german_settings[3].name == "Language" &&
+        german_settings[3].data == "Deutsch");
+  // PlanScript no longer counts setRegistry: only the folder.
+  const auto steps = PlanScript(*script, context, false, &skipped);
+  CHECK(steps.size() == 1 && skipped == 0 && steps[0].kind == ScriptStep::Kind::kCreateFolder);
+
+  const auto one = [&](const std::string& arguments, std::size_t* count) {
+    const auto parsed = ParseScript(R"({"actions":[{"install":{"action":"setRegistry","arguments":)" + arguments + "}}]}");
+    CHECK(parsed);
+    return PlanRegistry(*parsed, context, count);
+  };
+  std::size_t count = 99;
+  // Roots and types ignore case; a missing name is the default value; a dword may be decimal or a JSON number.
+  auto planned = one(R"({"root":"hkey_current_user","subkey":"\\\\Software\\\\\\\\A\\\\","valueData":"4294967295","valueType":"DWORD"})", &count);
+  CHECK(count == 0 && planned.size() == 1 && !planned[0].machine && planned[0].key == "Software\\A" &&
+        planned[0].default_value && planned[0].data == "4294967295");
+  planned = one(R"({"root":"HKEY_LOCAL_MACHINE","subkey":"Software\\A","valueName":"N","valueData":7,"valueType":"dword"})", &count);
+  CHECK(count == 0 && planned.size() == 1 && planned[0].data == "7");
+  // {app} and {productID} in a name; a string with no data is empty.
+  planned = one(R"({"root":"HKEY_LOCAL_MACHINE","subkey":"Software\\A","valueName":"id {productID}","valueType":"string"})", &count);
+  CHECK(count == 0 && planned.size() == 1 && planned[0].name == "id 1900000003" && planned[0].data.empty());
+  // Skipped: a dword past 32 bits, not a number, signed, octal-looking hex, empty; a quote in the name; a key that is
+  // only separators or too long; non-ASCII data; a name that isn't a string.
+  for (const auto& arguments : {
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"4294967296","valueType":"dword"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"0x100000000","valueType":"dword"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"ten","valueType":"dword"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"-1","valueType":"dword"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"0x","valueType":"dword"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"","valueType":"dword"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueName":"a\"b","valueData":"v","valueType":"string"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"\\\\/","valueData":"v","valueType":"string"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":")") + std::string(1025, 'k') + R"(","valueData":"v","valueType":"string"})",
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueData":"caf\u00e9","valueType":"string"})"),
+           std::string(R"({"root":"HKEY_CURRENT_USER","subkey":"A","valueName":1,"valueData":"v","valueType":"string"})"),
+           std::string(R"({"root":"HKEY_USERS","subkey":"A","valueData":"v","valueType":"string"})"),
+           std::string(R"({"subkey":"A","valueData":"v","valueType":"string"})")}) {
+    count = 0;
+    CHECK(one(arguments, &count).empty() && count == 1);
+  }
+  // Exactly 1024 bytes of key is taken.
+  CHECK(one(R"({"root":"HKEY_CURRENT_USER","subkey":")" + std::string(1024, 'k') + R"(","valueData":"v","valueType":"string"})",
+            &count).size() == 1);
+}
+
 void Parsing() {
   CHECK(ParseScript("\xEF\xBB\xBF{\"actions\":[]}"));
   CHECK(!ParseScript("{\"actions\":["));
@@ -412,6 +490,7 @@ int main(int argc, char** argv) {
   RefusesLinks(scratch);
   SetsIniValues(scratch);
   RunsTheFixtureScript(scratch, fixtures);
+  PlansRegistryValues(scratch, fixtures);
   RemoveTree(scratch);
   return 0;
 }

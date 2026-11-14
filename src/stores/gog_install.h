@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// GOG's install runner: the install service's runner for Store::kGog. It downloads a Windows gen 2 build with
-// gog::GogInstaller, then, on the same worker and before the game counts as installed:
+// GOG's install runner: the install service's runner for Store::kGog. It downloads a Windows build (gen 2 or gen 1)
+// with gog::GogInstaller, then, on the same worker and before the game counts as installed:
 // 1. reads the base product's goggame-<id>.info into the launch options the record keeps (none when it is missing or
 //    unreadable: Prepare then asks for the program);
 // 2. runs each installed product's goggame-<id>.script once, copies included (supportData and setIni); a script that
 //    fails is logged and the install goes on;
-// 3. writes .playden-install.json (FormatGogInstallRecord) through a synced temporary file, last;
+// 3. writes .playden-install.json (FormatGogInstallRecord, with the plan's generation, the builds item's build ID
+//    and the meta: the build meta's MD5, or for gen 1 repository.json's) through a synced temporary file, last;
 // 4. deletes .playden-download.
 //
 // No GOG session (signed out, or GOG refused it, also mid-download) makes the job wait with kWaitingForSignIn: it

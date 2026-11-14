@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -203,6 +204,78 @@ void TestFetch() {
   CHECK(gog::FetchProduct(transport, 5, "", cancel).kind == gog::ProductResult::Kind::kFailed);
 }
 
+void TestSecureLinks() {
+  // Gen 1 and gen 2 secure links: the query each sends, the Bearer header, the endpoints kept and the status mapping.
+  const std::string gen1 = Fixture("secure-link-gen1-200.json");
+  const std::string gen2 = Fixture("secure-link-200.json");
+  struct Seen {
+    int calls = 0;
+    std::string url, authorization, user_agent;
+  } seen;
+  HttpResponse next = Answer(200, gen1);
+  gog::Transport transport = [&](const HttpRequest& request, const std::atomic<bool>&) {
+    ++seen.calls;
+    seen.url = request.url;
+    seen.authorization.clear();
+    for (const auto& header : request.headers) {
+      if (header.first == "Authorization") seen.authorization = header.second;
+      if (header.first == "User-Agent") seen.user_agent = header.second;
+    }
+    return next;
+  };
+  const std::atomic<bool> cancel{false};
+
+  auto link = gog::FetchSecureLinkV1(transport, "synthetic-access-gen1", 1900000001, 31000007, cancel);
+  CHECK(seen.url ==
+        "https://content-system.gog.com/products/1900000001/secure_link?_version=2&type=depot&path=/windows/31000007/");
+  CHECK(seen.authorization == "Bearer synthetic-access-gen1" && seen.user_agent == "Playden");
+  CHECK(link.kind == gog::LinkResult::Kind::kOk && link.status == 200);
+  CHECK(link.endpoints.size() == 1 && link.endpoints[0].name == "fastly");  // gcore lists only generation 2
+  CHECK(link.endpoints[0].parameters.at("path") == "/content-system/v1/depots/1900000001/windows/31000007");
+  CHECK(link.expires_at == 1900000000);
+  CHECK(gog::FillUrl(link.endpoints[0], "/main.bin") ==
+        std::optional<std::string>("https://cdn.example.invalid/token=nva=1900000000~dirs=6~token=synthetic-gen1-fastly-"
+                                   "signature/content-system/v1/depots/1900000001/windows/31000007/main.bin"));
+  next = Answer(401, Fixture("secure-link-401.json"));
+  link = gog::FetchSecureLinkV1(transport, "x", 1900000001, 31000007, cancel);
+  CHECK(link.kind == gog::LinkResult::Kind::kRejected && link.status == 401 && link.endpoints.empty());
+  next = Answer(403, "");
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 1900000001, 31000007, cancel).kind == gog::LinkResult::Kind::kForbidden);
+  next = Answer(503, "");
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 1900000001, 31000007, cancel).kind == gog::LinkResult::Kind::kNetwork);
+  next = Answer(200, "{\"urls\":[]}");
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 1900000001, 31000007, cancel).kind == gog::LinkResult::Kind::kProtocol);
+  next = Failure(HttpError::kTimeout);
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 1900000001, 31000007, cancel).kind == gog::LinkResult::Kind::kNetwork);
+  next = Failure(HttpError::kCanceled);
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 1900000001, 31000007, cancel).kind == gog::LinkResult::Kind::kCanceled);
+  // No product or no timestamp: nothing is asked.
+  const int calls = seen.calls;
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 0, 31000007, cancel).kind == gog::LinkResult::Kind::kNetwork);
+  CHECK(gog::FetchSecureLinkV1(transport, "x", 1900000001, 0, cancel).kind == gog::LinkResult::Kind::kNetwork);
+  CHECK(seen.calls == calls);
+
+  // Gen 2 keeps its own query and both endpoints.
+  next = Answer(200, gen2);
+  link = gog::FetchSecureLink(transport, "synthetic-access-gen2", 1900000001, cancel);
+  CHECK(seen.url == "https://content-system.gog.com/products/1900000001/secure_link?_version=2&generation=2&path=/");
+  CHECK(seen.authorization == "Bearer synthetic-access-gen2");
+  CHECK(link.kind == gog::LinkResult::Kind::kOk && link.endpoints.size() == 2);
+
+  // ParseLink reads for the generation asked: gen 1 drops gcore, from either answer.
+  const auto gen2_as_gen1 = gog::ParseLink(gen2, 1);
+  CHECK(gen2_as_gen1.kind == gog::LinkResult::Kind::kOk && gen2_as_gen1.endpoints.size() == 1);
+  CHECK(gen2_as_gen1.endpoints[0].name == "fastly" && gen2_as_gen1.expires_at == 1900000000);
+  CHECK(gog::ParseLink(gen2).endpoints.size() == 2);
+  CHECK(gog::ParseLink(gen1, 2).endpoints.size() == 2);
+  // A link with only gen 2 endpoints has nothing for gen 1.
+  const std::string gcore_only = R"({"urls":[{"endpoint_name":"gcore","url_format":"https://g.example.invalid/{path}",)"
+                                 R"("parameters":{"path":"x"},"priority":1,"supports_generation":[2],)"
+                                 R"("fallback_only":true}]})";
+  CHECK(gog::ParseLink(gcore_only, 1).kind == gog::LinkResult::Kind::kProtocol);
+  CHECK(gog::ParseLink(gcore_only, 2).kind == gog::LinkResult::Kind::kOk);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -215,5 +288,6 @@ int main(int argc, char** argv) {
   TestOwned();
   TestArtUrl();
   TestFetch();
+  TestSecureLinks();
   return 0;
 }

@@ -49,7 +49,9 @@ bool Hash(const Value* value, bool (*valid)(std::string_view), std::string* out)
   return true;
 }
 
-bool ToItem(const Value& value, DepotItem* item) {
+}  // namespace
+
+bool ParseDepotItemV2(const Value& value, DepotItem* item) {
   if (!value.is_object()) return false;
   const Value* type = value.Find("type");
   if (!type || !type->is_string()) return false;
@@ -92,9 +94,13 @@ bool ToItem(const Value& value, DepotItem* item) {
   return true;
 }
 
-}  // namespace
-
 DepotItemReader::DepotItemReader(Callback callback) : callback_(std::move(callback)) {}
+
+DepotItemReader::DepotItemReader(Callback callback, std::string array_key, DepotElementParser parser)
+    : callback_(std::move(callback)), array_key_(std::move(array_key)), parser_(parser) {
+  // A key past kMaxKeyBytes is never seen whole, and no parser means no element is ever good.
+  if (array_key_.empty() || array_key_.size() > kMaxKeyBytes || !parser_) error_ = Status::kMalformed;
+}
 
 DepotItemReader::Status DepotItemReader::Feed(const std::uint8_t* data, std::size_t size) {
   if (error_ != Status::kOk) return error_;
@@ -206,7 +212,7 @@ DepotItemReader::Status DepotItemReader::Structural(char c) {
           if (seen_depot_ || c != '{') return Status::kMalformed;
           seen_depot_ = true;
           role = Role::kDepot;
-        } else if (frame.role == Role::kDepot && last_key_ == "items") {
+        } else if (frame.role == Role::kDepot && last_key_ == array_key_) {
           if (seen_items_ || c != '[') return Status::kMalformed;
           seen_items_ = true;
           role = Role::kItems;
@@ -232,7 +238,7 @@ DepotItemReader::Status DepotItemReader::Structural(char c) {
     case Expect::kValue:
       frame.expect = Expect::kCommaOrEnd;
       if (frame.role == Role::kItems) {
-        if (c != '{') return Status::kMalformed;  // every element of items[] is an object
+        if (c != '{') return Status::kMalformed;  // every element of the array is an object
         lex_ = Lex::kCapture;
         item_.assign(1, c);
         item_depth_ = 1;
@@ -301,7 +307,7 @@ DepotItemReader::Status DepotItemReader::EmitItem() {
   DepotItem item;
   {
     const auto value = steam::json::Parse(item_, limits);
-    if (!value || !ToItem(*value, &item)) return Status::kMalformed;
+    if (!value || !parser_(*value, &item)) return Status::kMalformed;
   }
   ++items_;
   item_.clear();

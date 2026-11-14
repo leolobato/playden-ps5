@@ -7,8 +7,9 @@
 //   so, or create a folder (no `source`);
 // - `setIni`: set one key in an INI file, such as ScummVM's game `path`. `{app}` in a value is the game folder as Wine
 //   sees it, so these steps run again before each Play (without the copies), which keeps them right after a move.
-// `setRegistry` (Phase 4) and anything else are skipped and counted. Every path must stay in the game folder or the
-// product's support folder; a link anywhere under them refuses the step.
+// - `setRegistry`: set one value in the game's bottle (PlanRegistry), again before each Play for the same reason.
+// Anything else is skipped and counted. Every path must stay in the game folder or the product's support folder; a
+// link anywhere under them refuses the step.
 
 #include <cstddef>
 #include <cstdint>
@@ -91,7 +92,7 @@ struct ScriptStep {
 // and the rest must pass NormalizePath (no `..`, no empty component, no drive; nothing Playden keeps at the game
 // folder's top). Any other location (an unknown token, `C:\`, `{supportDir}/../../x`) drops the step. A section, key
 // or value with a control character drops it too. `skipped`, when given, gets the number of actions for the language
-// that give no step: setRegistry, unknown actions and dropped ones.
+// that give no step: unknown actions and dropped ones. setRegistry is PlanRegistry's and is not counted here.
 std::vector<ScriptStep> PlanScript(const Script& script, const ScriptContext& context, bool skip_copies,
                                    std::size_t* skipped = nullptr);
 
@@ -114,6 +115,35 @@ struct RunResult {
 //   end. Sections and keys match ignoring ASCII case; every other byte and the file's line ending stay (a new file
 //   uses CRLF). The file is written through a synced temporary file with the original's mode, only when it changed.
 RunResult RunScript(const std::vector<ScriptStep>& steps);
+
+// One value a `setRegistry` action sets, in Wine's terms but before any hive is chosen.
+struct RegistrySetting {
+  bool machine = false;        // HKEY_LOCAL_MACHINE (system.reg); otherwise HKEY_CURRENT_USER (user.reg)
+  std::string key;             // under the root, `\` separated ("Software\GOG.com\Games\1207658690")
+  std::string name;            // empty for the key's default value
+  bool default_value = false;
+  enum class Type { kString, kDword };
+  Type type = Type::kString;
+  std::string data;            // kString: the text, tokens filled in; kDword: the number in decimal ("16")
+};
+
+// The registry values of the actions for the install's language (PlanScript's filter), in script order. What GOG
+// writes (`arguments`: `root`, `subkey`, `valueName`, `valueData`, `valueType`; 25 actions in 10 of the 19 owned
+// games' scripts read on 2026-11-14):
+// - `root` HKEY_LOCAL_MACHINE or HKEY_CURRENT_USER, ignoring case; any other root is skipped;
+// - `subkey`: `{productID}` and `{app}` (context.windows_app) are replaced, `/` becomes `\`, repeated and outer `\`
+//   go; at most 1024 bytes;
+// - `valueName`: the same tokens; empty or missing is the key's default value. A name with `\` or `"` is skipped:
+//   the bottle's writer keeps names as they are (Monkey Island SE names a program path, for a Windows-only flag);
+// - `valueType` `string` (GOG writes `String` and `string`) or `dword`, ignoring case; `valueData` of a string takes
+//   the same tokens, a dword's is decimal or 0x hex (a JSON number too) up to 32 bits. Other types are skipped;
+// - an action with no `valueType` and no `valueData` only makes the key (Jazz Jackrabbit 2's): skipped, as the
+//   bottle's writer sets values, and a game makes its own key when it writes one.
+// Any other `{token}` (`{userappdata}`), a control character or a byte outside printable ASCII in the key, name or
+// data skips the action. `skipped`, when given, gets the number of setRegistry actions for the language that give no
+// setting. Two actions for the same value both stay; the later one wins when they are written.
+std::vector<RegistrySetting> PlanRegistry(const Script& script, const ScriptContext& context,
+                                          std::size_t* skipped = nullptr);
 
 // SetIni's text change on its own: `text` with `key=value` set in `section`. Exposed for tests.
 std::string SettingIni(const std::string& text, const std::string& section, const std::string& key,

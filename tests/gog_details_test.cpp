@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // GOG's details source (stores/gog_details) against the stub CDN (gog_cdn_stub.h): what installing a game takes. The
 // Elder Scrolls: Arena's recorded public meta with DOSBox from the recorded public dependency store, a synthetic game
-// with a DLC owned or not, a gen 1 only build, no Windows build, the network failing, and Invalidate dropping an
-// answer that comes late.
+// naming __redist installers from the same store, a synthetic game with a DLC owned or not, Monkey Island 2's recorded
+// gen 1 build and repository with its redists and language_setup from the same store, no Windows build, the network
+// failing, and Invalidate dropping an answer that comes late.
 // Usage: gog_details_test <fixtures/gog> <scratch folder>.
 
 #include "gog/session.h"
@@ -164,6 +165,28 @@ void Gen2SizesCountTheDependencies() {
   world.CheckLogs();
 }
 
+// A meta naming __redist installers (XNA, DirectX, XNA again) and one the store doesn't list: the installers count
+// once each, as the installer downloads them into .playden-gog/redist/.
+void Gen2SizesCountTheRedists() {
+  World world(true);
+  world.cdn.SetOwned("{\"owned\":[1900000001]}");
+  PublishArena(world.cdn);  // the dependency store
+  Game game;
+  GameDepot main;
+  main.files.push_back({"DepotFile", "bin\\Game.exe", RandomBytes(40 * 1024, 33)});
+  game.depots.push_back(main);
+  game.dependencies = {"XNA", "DirectX", "XNA", "NotInTheStore"};
+  Publish(world.cdn, game);
+  const auto details = world.Ask(kBase);
+  CHECK(details.available && details.windows_installable && !details.failed);
+  // XNA (dependencies-manifest): 7671808, compressed 6908843; DirectX: 102930955, compressed 100641555.
+  CHECK(details.install_bytes == std::optional<std::uint64_t>(40 * 1024 + 7671808ull + 102930955ull));
+  CHECK(details.download_bytes && *details.download_bytes > 6908843ull + 100641555ull &&
+        *details.download_bytes < 6908843ull + 100641555ull + 40 * 1024 + 1024);
+  CHECK(world.Logged("details result=gen2 depots=1 products=1 dependencies=2 owned=list"));
+  world.CheckLogs();
+}
+
 // A synthetic game with a DLC: the DLC's depot counts only when the account owns it. With no session, only the game.
 void OwnedDlcCountsOnlyWhenOwned() {
   Game game;
@@ -192,20 +215,44 @@ void OwnedDlcCountsOnlyWhenOwned() {
   CHECK(sizes("{\"owned\":[1900000001,1900000002]}", false) == base);
 }
 
-// Monkey Island 2's default build is gen 1 only; a game with no builds has no Windows version. Both installable=false
-// with the reason, answered (not failed).
-void GamesThisBuildCannotInstall() {
+// Monkey Island 2's default build is gen 1 only: installable, its sizes from its recorded repository (the Neutral and
+// English depots) plus its redists from the dependency store: language_setup (game-folder files) and the MSVC2008,
+// dotNet35 and DirectX installers. A game with no builds has no Windows version: installable=false with the reason,
+// answered (not failed).
+void Gen1AndNoBuild() {
   World world(true);
+  world.cdn.SetOwned("{\"owned\":[1425039730]}");
+  PublishArena(world.cdn);  // the dependency store
   world.cdn.SetBuilds(kMonkeyIsland2, ReadFile(g_fixtures + "/builds-v2-gen1-only-1425039730.json"));
+  world.cdn.SetV1File("1425039730/windows/32971092/repository.json",
+                      ReadFile(g_fixtures + "/repository-v1-1425039730.json"));
   const auto gen1 = world.Ask(kMonkeyIsland2);
-  CHECK(gen1.available && !gen1.windows_installable && !gen1.failed);
-  CHECK(gen1.reason == "Playden can't install this GOG game yet: it uses an older GOG download format.");
-  CHECK(!gen1.download_bytes && !gen1.install_bytes);
+  CHECK(gen1.available && gen1.windows_installable && !gen1.failed && gen1.reason.empty());
+  // Depots: 1280640 + 1912238511 (stored whole). From dependencies-manifest: MSVC2008 4216840 (compressed 4194895),
+  // dotNet35 245612656 (245524799), DirectX 102930955 (100641555), language_setup 6216288 (6133610).
+  constexpr std::uint64_t kRedists = 4216840ull + 245612656ull + 102930955ull + 6216288ull;
+  constexpr std::uint64_t kRedistsCompressed = 4194895ull + 245524799ull + 100641555ull + 6133610ull;
+  CHECK(gen1.install_bytes == std::optional<std::uint64_t>(1280640ull + 1912238511ull + kRedists));
+  CHECK(gen1.download_bytes == std::optional<std::uint64_t>(1280640ull + 1912238511ull + kRedistsCompressed));
+  CHECK(world.Logged("details result=gen1 depots=2 products=1 dependencies=4 owned=list"));
+  // The repository from fastly, unsigned; never a build meta, a depot manifest or gcore.
+  CHECK(world.cdn.Count(Kind::kRepositoryV1) == 1 && world.cdn.Count(Kind::kManifestV1) == 0);
+  CHECK(world.cdn.Count(Kind::kMeta) == 0 && world.cdn.Count(Kind::kOwned) == 1);
+  for (const auto& request : world.cdn.requests()) {
+    CHECK(request.host != "gog-cdn.gcdn.co");
+    CHECK(request.authorization.empty() == (request.kind != Kind::kOwned));
+  }
+  // A repository of another build: known, not installable, and why.
+  world.cdn.SetV1File("1425039730/windows/32971092/repository.json",
+                      std::string(ReadFile(g_fixtures + "/repository-v1-1425039730.json")).replace(
+                          ReadFile(g_fixtures + "/repository-v1-1425039730.json").find("32971092"), 8, "32971093"));
+  world.source->Refresh(GameId::Gog(kMonkeyIsland2), 1, true);
+  const auto other = world.Next();
+  CHECK(other.available && !other.windows_installable && other.reason == "GOG returned unexpected data for this game.");
   const auto none = world.Ask(kBase);  // nothing set: 404
   CHECK(none.available && !none.windows_installable && !none.failed);
   CHECK(none.reason == "GOG has no Windows version of this game to install.");
-  CHECK(world.cdn.Count(Kind::kMeta) == 0 && world.cdn.Count(Kind::kOwned) == 0);
-  CHECK(world.Logged("details result=gen1") && world.Logged("details result=no_build"));
+  CHECK(world.Logged("details result=no_build"));
   world.CheckLogs();
   // Other stores' games are not asked for.
   world.source->Request(GameId::Steam(220), 1);
@@ -313,8 +360,9 @@ int main(int argc, char** argv) {
   fs::remove_all(g_scratch);
   fs::create_directories(g_scratch);
   Gen2SizesCountTheDependencies();
+  Gen2SizesCountTheRedists();
   OwnedDlcCountsOnlyWhenOwned();
-  GamesThisBuildCannotInstall();
+  Gen1AndNoBuild();
   NetworkFailureFails();
   UnexpectedAnswersSayWhy();
   InvalidateDropsALateAnswer();

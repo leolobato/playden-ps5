@@ -4,6 +4,7 @@
 #include "gog/api.h"
 #include "gog/hash.h"
 #include "gog/inflate.h"
+#include "gog/manifest_v1.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -60,12 +61,32 @@ Got FetchZlib(gog::Transport& transport, const std::vector<std::string>& urls, c
   return last;
 }
 
-// The CDN base of a build meta URL: everything before /content-system/v2/meta/.
-std::optional<std::string> CdnBase(const std::string& meta_url) {
-  static constexpr std::string_view kMarker = "/content-system/v2/meta/";
-  const auto at = meta_url.find(kMarker);
+// A plain file with no hash to check (a gen 1 repository.json), from the first address that answers 200.
+Got FetchPlain(gog::Transport& transport, const std::vector<std::string>& urls, std::size_t max_bytes,
+               std::string* body, const std::atomic<bool>& cancel) {
+  for (const auto& url : urls) {
+    if (cancel.load()) return Got::kCanceled;
+    steam::HttpRequest request;
+    request.url = url;
+    request.timeout_ms = gog::kApiTimeoutMs;
+    request.connect_timeout_ms = gog::kApiConnectTimeoutMs;
+    request.max_response_bytes = max_bytes;
+    request.headers.emplace_back("User-Agent", gog::kUserAgent);
+    auto response = transport(request, cancel);
+    if (cancel.load() || response.error == steam::HttpError::kCanceled) return Got::kCanceled;
+    if (!response.ok() || response.status_code != 200) continue;
+    body->assign(reinterpret_cast<const char*>(response.body.data()), response.body.size());
+    return Got::kOk;
+  }
+  return Got::kNetwork;
+}
+
+// The CDN base of a URL: everything before `marker` (/content-system/v2/meta/ for a build meta,
+// /content-system/v1/manifests/ for a gen 1 repository).
+std::optional<std::string> CdnBase(const std::string& url, std::string_view marker = "/content-system/v2/meta/") {
+  const auto at = url.find(marker);
   if (at == std::string::npos || at < 9) return std::nullopt;
-  return meta_url.substr(0, at);
+  return url.substr(0, at);
 }
 
 std::string LastSegment(const std::string& url) {
@@ -250,26 +271,40 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
   if (builds.status != 200) return unusable("protocol");
   const auto choice = gog::ChooseBuild(builds.body);
   switch (choice.kind) {
-    case gog::BuildChoice::Kind::kGen2: break;
-    case gog::BuildChoice::Kind::kGen1Only: return not_installable(kGen1Reason, "gen1");
+    case gog::BuildChoice::Kind::kGen2:
+    case gog::BuildChoice::Kind::kGen1: break;
     case gog::BuildChoice::Kind::kNone: return not_installable(kNoWindowsReason, "no_build");
     case gog::BuildChoice::Kind::kProtocol: return unusable("protocol");
   }
+  const bool gen1 = choice.kind == gog::BuildChoice::Kind::kGen1;
 
   std::vector<std::string> urls;
   std::vector<std::string> bases;
-  for (const auto& endpoint : choice.meta)
+  for (const auto& endpoint : gen1 ? choice.repository : choice.meta)
     if (auto url = gog::FillUrl(endpoint, "")) {
-      if (auto base = CdnBase(*url)) bases.push_back(std::move(*base));
+      if (auto base = gen1 ? CdnBase(*url, "/content-system/v1/manifests/") : CdnBase(*url))
+        bases.push_back(std::move(*base));
       urls.push_back(std::move(*url));
     }
-  std::string inflated;
-  const auto got =
-      FetchZlib(transport_, urls, choice.meta_id, gog::kMaxMetaBytes, kMaxCompressedMetaBytes, &inflated, cancel);
-  if (got == Got::kCanceled) return details;
-  if (got != Got::kOk) return failed(got == Got::kCorrupt ? "corrupt" : "network");
-  const auto meta = gog::ParseMeta(inflated);
-  if (!meta || meta->base_product != product) return unusable("protocol");
+  std::optional<gog::Meta> meta;
+  std::optional<gog::RepositoryV1> repository;
+  if (gen1) {
+    std::string body;
+    const auto got = FetchPlain(transport_, urls, gog::kMaxRepositoryV1Bytes, &body, cancel);
+    if (got == Got::kCanceled) return details;
+    if (got != Got::kOk) return failed("network");
+    repository = gog::ParseRepositoryV1(body);
+    if (!repository || repository->root_product != product || repository->timestamp != choice.timestamp)
+      return unusable("protocol");
+  } else {
+    std::string inflated;
+    const auto got =
+        FetchZlib(transport_, urls, choice.meta_id, gog::kMaxMetaBytes, kMaxCompressedMetaBytes, &inflated, cancel);
+    if (got == Got::kCanceled) return details;
+    if (got != Got::kOk) return failed(got == Got::kCorrupt ? "corrupt" : "network");
+    meta = gog::ParseMeta(inflated);
+    if (!meta || meta->base_product != product) return unusable("protocol");
+  }
 
   // Every owned DLC is installed with the game; without the owned list, only the game is counted.
   std::set<std::uint64_t> owned{product};
@@ -277,34 +312,61 @@ GameDetails GogDetailsSource::Fetch(const GameId& id, std::uint64_t generation, 
   if (cancel.load()) return details;
   if (list) owned.insert(list->begin(), list->end());
   const auto language = content_language_ ? content_language_() : std::string();
-  const auto selection = gog::SelectDepots(*meta, owned, language);
-  std::uint64_t download = selection.compressed_size;
-  std::uint64_t install = selection.size;
+  std::uint64_t download = 0, install = 0;
+  std::size_t depots = 0, products = 0;
+  std::vector<std::string> wanted;
+  if (gen1) {
+    const auto selection = gog::SelectDepotsV1(*repository, owned, language);
+    download = selection.compressed_size;
+    install = selection.size;
+    depots = selection.depots.size();
+    products = selection.products.size();
+    wanted = selection.dependencies;
+  } else {
+    const auto selection = gog::SelectDepots(*meta, owned, language);
+    download = selection.compressed_size;
+    install = selection.size;
+    depots = selection.depots.size();
+    products = selection.products.size();
+    wanted = meta->dependencies;
+  }
   std::size_t folder_dependencies = 0;
-  if (!meta->dependencies.empty()) {
+  if (!wanted.empty()) {
     const auto read = Dependencies(bases, cancel);
     if (read == Fetched::kCanceled) return details;
     if (read == Fetched::kNetwork) return failed("network");
     if (read == Fetched::kProtocol) return unusable("protocol");
-    for (const auto& wanted : meta->dependencies) {
-      const auto found = std::find_if(dependencies_->begin(), dependencies_->end(),
-                                      [&wanted](const gog::Dependency& dependency) { return dependency.id == wanted; });
-      // __redist installers wait for Phase 4: the install runner leaves them out too.
-      if (found == dependencies_->end() || !gog::GameFolderDependency(*found)) continue;
-      download += found->compressed_size;
-      install += found->size;
-      ++folder_dependencies;
-    }
+    folder_dependencies = AddDependencies(wanted, &install, &download);
   }
   details.available = true;
   details.windows_installable = true;
   details.download_bytes = download;
   details.install_bytes = install;
   char line[160];
-  std::snprintf(line, sizeof(line), "details result=gen2 depots=%zu products=%zu dependencies=%zu owned=%s",
-                selection.depots.size(), selection.products.size(), folder_dependencies, list ? "list" : "base");
+  std::snprintf(line, sizeof(line), "details result=%s depots=%zu products=%zu dependencies=%zu owned=%s",
+                gen1 ? "gen1" : "gen2", depots, products, folder_dependencies, list ? "list" : "base");
   Log(line);
   return details;
+}
+
+std::size_t GogDetailsSource::AddDependencies(const std::vector<std::string>& wanted, std::uint64_t* install,
+                                              std::uint64_t* download) const {
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < wanted.size(); ++index) {
+    const auto& id = wanted[index];
+    // Named twice, installed once (the installer drops repeats too).
+    if (std::find(wanted.begin(), wanted.begin() + static_cast<std::ptrdiff_t>(index), id) !=
+        wanted.begin() + static_cast<std::ptrdiff_t>(index))
+      continue;
+    const auto found = std::find_if(dependencies_->begin(), dependencies_->end(),
+                                    [&id](const gog::Dependency& dependency) { return dependency.id == id; });
+    // Game-folder files and __redist installers alike: the installer downloads both.
+    if (found == dependencies_->end()) continue;
+    *download += found->compressed_size;
+    *install += found->size;
+    ++count;
+  }
+  return count;
 }
 
 std::optional<std::set<std::uint64_t>> GogDetailsSource::Owned(const std::atomic<bool>& cancel) {

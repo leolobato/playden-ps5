@@ -4,9 +4,11 @@
 #include "gog/api.h"
 #include "gog/chunk_fetch.h"
 #include "gog/content.h"
+#include "gog/dependencies.h"
 #include "gog/depot_reader.h"
 #include "gog/hash.h"
 #include "gog/inflate.h"
+#include "gog/manifest_v1.h"
 #include "gog/path_rules.h"
 #include "gog/product_id.h"
 #include "platform/secret.h"
@@ -290,12 +292,33 @@ std::string Md5OrDash(const std::string& hash) { return hash.empty() ? "-" : has
 // ---- The plan -----------------------------------------------------------------------------------------------------
 
 struct PlanHeader {
+  int generation = 2;
   std::string build_id;
   std::string meta_id;
   std::string language;
   std::vector<std::uint64_t> products;
   std::uint64_t total_size = 0;
-  std::uint64_t total_compressed = 0;
+  std::uint64_t total_compressed = 0;  // the download: compressed chunks, and gen 1 ranges by their length
+  std::uint64_t timestamp = 0;         // gen 1 only
+};
+
+// A byte range of a gen 1 main.bin.
+struct Range {
+  std::uint64_t offset = 0;  // in the blob
+  std::uint64_t length = 0;
+};
+
+// A file's units: chunks (gen 2) or ranges (gen 1), never both.
+struct Units {
+  std::vector<DepotChunk> chunks;
+  std::vector<Range> ranges;
+  std::size_t count() const { return chunks.empty() ? ranges.size() : chunks.size(); }
+  // The bytes a unit writes into the file.
+  std::uint64_t size(std::size_t unit) const { return chunks.empty() ? ranges[unit].length : chunks[unit].size; }
+  // The bytes a unit downloads.
+  std::uint64_t download(std::size_t unit) const {
+    return chunks.empty() ? ranges[unit].length : chunks[unit].compressed_size;
+  }
 };
 
 struct PlanEntry {
@@ -305,52 +328,78 @@ struct PlanEntry {
   std::uint64_t size = 0;
   std::string md5;
   std::string sha256;
-  std::vector<DepotChunk> chunks;
-  std::uint64_t compressed() const {
+  Units units;
+  std::uint64_t download() const {
     std::uint64_t total = 0;
-    for (const auto& chunk : chunks) total += chunk.compressed_size;
+    for (std::size_t unit = 0; unit < units.count(); ++unit) total += units.download(unit);
     return total;
   }
 };
 
 std::string HeaderLine(const PlanHeader& header) {
-  std::string line = "v1\t" + header.build_id + "\t" + header.meta_id + "\t" + header.language + "\t";
+  std::string line = "v2\t" + std::to_string(header.generation) + "\t" + header.build_id + "\t" + header.meta_id +
+                     "\t" + header.language + "\t";
   for (std::size_t i = 0; i < header.products.size(); ++i) {
     if (i) line += ',';
     line += std::to_string(header.products[i]);
   }
-  line += "\t" + std::to_string(header.total_size) + "\t" + std::to_string(header.total_compressed);
+  line += "\t" + std::to_string(header.total_size) + "\t" + std::to_string(header.total_compressed) + "\t" +
+          (header.generation == 1 ? std::to_string(header.timestamp) : std::string("-"));
   return line;
 }
 
+// "v2\t<generation>\t…\t<timestamp or ->", or a Phase 3 "v1\t…" header (generation 2, no timestamp).
 bool ParseHeader(const std::string& line, PlanHeader* header) {
-  const auto fields = Split(line, '\t');
-  if (fields.size() != 7 || fields[0] != "v1") return false;
+  auto fields = Split(line, '\t');
   std::uint64_t number = 0;
-  if (!CanonicalId(fields[1], &number) || !IsMd5Hex(fields[2]) || !PlainLanguageCode(fields[3])) return false;
-  header->build_id = std::string(fields[1]);
-  header->meta_id = std::string(fields[2]);
-  header->language = std::string(fields[3]);
+  if (fields.size() == 7 && fields[0] == "v1") {
+    header->generation = 2;
+    header->timestamp = 0;
+    fields.erase(fields.begin());
+  } else if (fields.size() == 9 && fields[0] == "v2") {
+    if (fields[1] == "1") {
+      if (!CanonicalId(fields[8], &header->timestamp)) return false;
+      header->generation = 1;
+    } else if (fields[1] == "2") {
+      if (fields[8] != "-") return false;
+      header->generation = 2;
+      header->timestamp = 0;
+    } else {
+      return false;
+    }
+    fields.erase(fields.begin(), fields.begin() + 2);
+    fields.pop_back();
+  } else {
+    return false;
+  }
+  // fields: build, meta, language, products, total size, total download.
+  if (!CanonicalId(fields[0], &number) || !IsMd5Hex(fields[1]) || !PlainLanguageCode(fields[2])) return false;
+  header->build_id = std::string(fields[0]);
+  header->meta_id = std::string(fields[1]);
+  header->language = std::string(fields[2]);
   header->products.clear();
-  for (const auto product : Split(fields[4], ',')) {
+  for (const auto product : Split(fields[3], ',')) {
     if (!CanonicalId(product, &number)) return false;
     header->products.push_back(number);
   }
-  return ParseU64(fields[5], &header->total_size) && ParseU64(fields[6], &header->total_compressed);
+  return ParseU64(fields[4], &header->total_size) && ParseU64(fields[5], &header->total_compressed);
 }
 
-bool ValidSource(std::string_view source) {
-  std::uint64_t id = 0;
-  if (CanonicalId(source, &id)) return true;
+bool DependencySource(std::string_view source) {
   const std::string_view prefix = kDependencySourcePrefix;
   return source.size() > prefix.size() && source.substr(0, prefix.size()) == prefix &&
          ValidDependencyId(source.substr(prefix.size()));
 }
 
+bool ValidSource(std::string_view source) {
+  std::uint64_t id = 0;
+  return CanonicalId(source, &id) || DependencySource(source);
+}
+
 std::string EntryLine(const PlanEntry& entry) {
   if (entry.directory) return "D\t" + entry.path;
   return "F\t" + entry.path + "\t" + entry.source + "\t" + std::to_string(entry.size) + "\t" + Md5OrDash(entry.md5) +
-         "\t" + Md5OrDash(entry.sha256) + "\t" + std::to_string(entry.chunks.size());
+         "\t" + Md5OrDash(entry.sha256) + "\t" + std::to_string(entry.units.count());
 }
 
 std::string ChunkLine(const DepotChunk& chunk) {
@@ -358,7 +407,20 @@ std::string ChunkLine(const DepotChunk& chunk) {
          std::to_string(chunk.size);
 }
 
-// Reads the entries of a plan (or of items.tmp, which has the same entry lines).
+std::string RangeLine(const Range& range) {
+  return "R\t" + std::to_string(range.offset) + "\t" + std::to_string(range.length);
+}
+
+// The entry line and its unit lines, each ending in a newline.
+std::string EntryText(const PlanEntry& entry) {
+  std::string text = EntryLine(entry) + '\n';
+  for (const auto& chunk : entry.units.chunks) text += ChunkLine(chunk) + '\n';
+  for (const auto& range : entry.units.ranges) text += RangeLine(range) + '\n';
+  return text;
+}
+
+// Reads the entries of a plan (or of items.tmp, which has the same entry lines). After Header, the units must fit the
+// plan's generation: gen 2 files have chunks only; in gen 1, a product's file has ranges and a dependency's chunks.
 class EntryReader {
  public:
   explicit EntryReader(const std::string& path) : lines_(path) {}
@@ -366,7 +428,9 @@ class EntryReader {
   bool Header(PlanHeader* header) {
     std::string line;
     bool complete = false;
-    return lines_.Next(&line, &complete) && complete && ParseHeader(line, header);
+    if (!(lines_.Next(&line, &complete) && complete && ParseHeader(line, header))) return false;
+    generation_ = header->generation;
+    return true;
   }
   enum class Next { kEntry, kEnd, kBad };
   Next Read(PlanEntry* entry) {
@@ -401,22 +465,36 @@ class EntryReader {
     for (std::uint64_t i = 0; i < count; ++i) {
       if (!lines_.Next(&line, &complete) || !complete) return Next::kBad;
       const auto parts = Split(line, '\t');
+      if (parts.size() == 3 && parts[0] == "R") {
+        Range range;
+        if (!entry->units.chunks.empty() || !ParseU64(parts[1], &range.offset) || !ParseU64(parts[2], &range.length) ||
+            range.length == 0 || range.length > kGen1RangeBytes || range.offset > UINT64_MAX - range.length)
+          return Next::kBad;
+        sum += range.length;
+        entry->units.ranges.push_back(range);
+        continue;
+      }
       DepotChunk chunk;
-      if (parts.size() != 5 || parts[0] != "C" || !IsMd5Hex(parts[1]) || !IsMd5Hex(parts[3]) ||
-          !ParseU64(parts[2], &chunk.compressed_size) || !ParseU64(parts[4], &chunk.size) ||
+      if (!entry->units.ranges.empty() || parts.size() != 5 || parts[0] != "C" || !IsMd5Hex(parts[1]) ||
+          !IsMd5Hex(parts[3]) || !ParseU64(parts[2], &chunk.compressed_size) || !ParseU64(parts[4], &chunk.size) ||
           chunk.compressed_size == 0 || chunk.compressed_size > kMaxChunkBytes || chunk.size > kMaxChunkBytes)
         return Next::kBad;
       chunk.compressed_md5 = std::string(parts[1]);
       chunk.md5 = std::string(parts[3]);
       sum += chunk.size;
-      entry->chunks.push_back(std::move(chunk));
+      entry->units.chunks.push_back(std::move(chunk));
     }
     if (sum != entry->size) return Next::kBad;
+    // Ranges come from a product's main.bin, never from the dependency store; chunks in a gen 1 plan only from it.
+    const bool dependency = DependencySource(entry->source);
+    if (!entry->units.ranges.empty() && (dependency || generation_ == 2)) return Next::kBad;
+    if (!entry->units.chunks.empty() && generation_ == 1 && !dependency) return Next::kBad;
     return Next::kEntry;
   }
 
  private:
   LineReader lines_;
+  int generation_ = 0;  // 0 before Header (items.tmp): either generation's units
 };
 
 // ---- Streamed CDN files (metas and manifests) ---------------------------------------------------------------------
@@ -440,15 +518,13 @@ Error FromFetch(FetchKind kind) {
   return Error::kNetwork;
 }
 
-// Saves the zlib file GOG names by its MD5 at `dest`, from the first source that serves it whole. A file already
-// there with that MD5 is kept. kChunkAttempts in all, rotating through the sources.
-FetchKind FetchToFile(Transport& transport, const std::vector<Source>& sources, const std::string& md5,
-                      const std::string& dest, const ChunkPause& pause, const std::atomic<bool>& cancel,
-                      const Logger& log, const char* what) {
-  std::string existing;
-  if (Exists(dest) && FileMd5(dest, &existing) && existing == md5) return FetchKind::kOk;
+// Streams the body of the first source that serves it whole into `temporary` (at most `cap` bytes), kChunkAttempts in
+// all, rotating through the sources. With `expected`, the body's MD5 must be that one, else the next try; without
+// one, any 200 is taken. *md5 gets the body's MD5. Nothing is left at `temporary` unless the result is kOk.
+FetchKind FetchBody(Transport& transport, const std::vector<Source>& sources, const std::string& expected,
+                    std::size_t cap, const std::string& temporary, std::string* md5, const ChunkPause& pause,
+                    const std::atomic<bool>& cancel, const Logger& log, const char* what) {
   if (sources.empty()) return FetchKind::kNetwork;
-  const auto temporary = dest + ".tmp";
   FetchKind last = FetchKind::kNetwork;
   for (int attempt = 0; attempt < kChunkAttempts; ++attempt) {
     if (cancel.load()) return FetchKind::kCanceled;
@@ -466,7 +542,7 @@ FetchKind FetchToFile(Transport& transport, const std::vector<Source>& sources, 
     request.timeout_ms = 0;
     request.connect_timeout_ms = kChunkConnectTimeoutMs;
     request.stall_timeout_ms = kChunkStallTimeoutMs;
-    request.max_response_bytes = kMaxCompressedMetaBytes;
+    request.max_response_bytes = cap;
     request.headers.emplace_back("User-Agent", kUserAgent);
     request.body_sink = [&](const std::uint8_t* data, std::size_t size) {
       hash.Update(data, size);
@@ -490,10 +566,8 @@ FetchKind FetchToFile(Transport& transport, const std::vector<Source>& sources, 
       return FetchKind::kCanceled;
     }
     if (response.ok() && status == 200) {
-      if (hash.FinalHex() == md5) {
-        if (std::rename(temporary.c_str(), dest.c_str()) != 0) return FetchKind::kStorage;
-        return FetchKind::kOk;
-      }
+      *md5 = hash.FinalHex();
+      if (expected.empty() || *md5 == expected) return FetchKind::kOk;
       last = FetchKind::kCorrupt;
       log("gog plan %s retry endpoint=%s reason=hash", what, source.name.c_str());
     } else {
@@ -504,6 +578,41 @@ FetchKind FetchToFile(Transport& transport, const std::vector<Source>& sources, 
     std::remove(temporary.c_str());
   }
   return last;
+}
+
+// Saves the zlib file GOG names by its MD5 at `dest`, from the first source that serves it whole. A file already
+// there with that MD5 is kept.
+FetchKind FetchToFile(Transport& transport, const std::vector<Source>& sources, const std::string& md5,
+                      const std::string& dest, const ChunkPause& pause, const std::atomic<bool>& cancel,
+                      const Logger& log, const char* what) {
+  std::string existing;
+  if (Exists(dest) && FileMd5(dest, &existing) && existing == md5) return FetchKind::kOk;
+  const auto temporary = dest + ".tmp";
+  std::string got;
+  const auto kind = FetchBody(transport, sources, md5, kMaxCompressedMetaBytes, temporary, &got, pause, cancel, log, what);
+  if (kind != FetchKind::kOk) return kind;
+  if (std::rename(temporary.c_str(), dest.c_str()) != 0) {
+    std::remove(temporary.c_str());
+    return FetchKind::kStorage;
+  }
+  return FetchKind::kOk;
+}
+
+// Saves a file GOG gives no hash for (gen 1): streamed to `<folder>/<temporary name>.tmp`, then renamed to
+// `<folder>/<final name>`, where the final name is `name` or, when `name` is empty, the body's MD5 (*md5).
+FetchKind FetchUnhashedToFile(Transport& transport, const std::vector<Source>& sources, std::size_t cap,
+                              const std::string& folder, const std::string& temporary_name, const std::string& name,
+                              std::string* md5, const ChunkPause& pause, const std::atomic<bool>& cancel,
+                              const Logger& log, const char* what) {
+  const auto temporary = folder + "/" + temporary_name + ".tmp";
+  const auto kind = FetchBody(transport, sources, std::string(), cap, temporary, md5, pause, cancel, log, what);
+  if (kind != FetchKind::kOk) return kind;
+  const auto dest = folder + "/" + (name.empty() ? *md5 : name);
+  if (std::rename(temporary.c_str(), dest.c_str()) != 0) {
+    std::remove(temporary.c_str());
+    return FetchKind::kStorage;
+  }
+  return FetchKind::kOk;
 }
 
 enum class InflateKind { kOk, kStorage, kCorrupt, kTooLarge, kRefused };
@@ -531,6 +640,14 @@ std::optional<std::string> CdnBase(const std::string& meta_url) {
   const auto at = meta_url.find(kMarker);
   if (at == std::string::npos || at < 9) return std::nullopt;
   return meta_url.substr(0, at);
+}
+
+// The CDN base of a gen 1 repository URL: everything before /content-system/v1/manifests/.
+std::optional<std::string> CdnBaseV1(const std::string& repository_url) {
+  static constexpr std::string_view kMarker = "/content-system/v1/manifests/";
+  const auto at = repository_url.find(kMarker);
+  if (at == std::string::npos || at < 9) return std::nullopt;
+  return repository_url.substr(0, at);
 }
 
 std::string LastSegment(const std::string& url) {
@@ -567,6 +684,33 @@ class Planner {
 
     BuildChoice choice;
     if (const auto error = Builds(&choice); error != Error::kNone) return error;
+    PlanHeader header;
+    header.build_id = choice.build_id;
+    const auto items_path = Join(target_.root, kItemsPath);
+    Error error = choice.kind == BuildChoice::Kind::kGen1 ? PlanV1(choice, &header) : PlanV2(choice, &header);
+    if (items_) {
+      if (std::fclose(items_) != 0 && error == Error::kNone) error = WriteFailure();
+      items_ = nullptr;
+    }
+    if (error == Error::kNone) error = items_error_;
+    if (error == Error::kNone) {
+      log_("gog plan entries=%zu links_skipped=%zu clashes=%zu refused=%zu other=%zu", next_, links_, clashes_,
+           refused_, other_);
+      if (header.language.empty()) header.language = "en-US";
+      error = WritePlan(&header);
+    }
+    std::remove(items_path.c_str());
+    return error;
+  }
+
+ private:
+  Error OpenItems() {
+    items_ = std::fopen(Join(target_.root, kItemsPath).c_str(), "wb");
+    return items_ ? Error::kNone : WriteFailure();
+  }
+
+  // A gen 2 build: its meta, then each depot's manifest and the game-folder dependencies.
+  Error PlanV2(const BuildChoice& choice, PlanHeader* header) {
     Meta meta;
     if (const auto error = LoadMeta(choice, &meta); error != Error::kNone) return error;
     std::set<std::uint64_t> owned;
@@ -584,34 +728,115 @@ class Planner {
     if (cdns_.empty()) return Error::kProtocol;
     log_("gog plan build generation=2 depots=%zu products=%zu size=%llu", selection.depots.size(),
          selection.products.size(), static_cast<unsigned long long>(selection.size));
+    header->generation = 2;
+    header->meta_id = choice.meta_id;
+    header->language = selection.language;
+    header->products = selection.products;
 
-    const auto items_path = Join(target_.root, kItemsPath);
-    items_ = std::fopen(items_path.c_str(), "wb");
-    if (!items_) return WriteFailure();
-    Error error = Error::kNone;
+    if (const auto error = OpenItems(); error != Error::kNone) return error;
     for (const auto& depot : selection.depots) {
-      error = Depot("/content-system/v2/meta/", depot.manifest, depot.product, std::to_string(depot.product));
-      if (error != Error::kNone) break;
+      const auto error =
+          Depot("/content-system/v2/meta/", depot.manifest, depot.product, std::to_string(depot.product));
+      if (error != Error::kNone) return error;
     }
-    if (error == Error::kNone && !meta.dependencies.empty()) error = Dependencies(meta);
-    if (std::fclose(items_) != 0 && error == Error::kNone) error = WriteFailure();
-    items_ = nullptr;
-    if (error == Error::kNone) error = items_error_;
-    if (error == Error::kNone) {
-      log_("gog plan entries=%zu links_skipped=%zu clashes=%zu refused=%zu other=%zu", next_, links_, clashes_,
-           refused_, other_);
-      PlanHeader header;
-      header.build_id = choice.build_id;
-      header.meta_id = choice.meta_id;
-      header.language = selection.language.empty() ? "en-US" : selection.language;
-      header.products = selection.products;
-      error = WritePlan(&header);
-    }
-    std::remove(items_path.c_str());
-    return error;
+    if (!meta.dependencies.empty()) return Dependencies(meta.dependencies);
+    return Error::kNone;
   }
 
- private:
+  // A gen 1 build: repository.json (saved by its MD5, the plan's meta), then each depot's plain manifest, its files
+  // as ranges of their product's main.bin, then the game-folder dependencies from the gen 2 dependency store.
+  Error PlanV1(const BuildChoice& choice, PlanHeader* header) {
+    std::vector<Source> sources;
+    for (const auto& endpoint : choice.repository) {
+      auto url = FillUrl(endpoint, "");
+      if (!url) continue;
+      if (auto base = CdnBaseV1(*url)) cdns_.push_back({EndpointLogName(endpoint.name), std::move(*base)});
+      sources.push_back({EndpointLogName(endpoint.name), std::move(*url)});
+    }
+    if (cdns_.empty()) return Error::kProtocol;
+    const auto meta_dir = Join(target_.root, kMetaDir);
+    std::string md5;
+    const auto fetched = FetchUnhashedToFile(transport_, sources, kMaxRepositoryV1Bytes, meta_dir, "repository.json",
+                                             std::string(), &md5, pause_, cancel_, log_, "repository");
+    if (fetched != FetchKind::kOk) return FromFetch(fetched);
+    std::string body;
+    if (!ReadFile(meta_dir + "/" + md5, [&body](const std::uint8_t* data, std::size_t size) {
+          if (body.size() + size > kMaxRepositoryV1Bytes) return false;
+          body.append(reinterpret_cast<const char*>(data), size);
+          return true;
+        }))
+      return Error::kStorage;
+    const auto repository = ParseRepositoryV1(body);
+    if (!repository || repository->root_product != target_.product || repository->timestamp != choice.timestamp) {
+      log_("gog plan repository result=%s", repository ? "other_build" : "unreadable");
+      return Error::kProtocol;
+    }
+    std::set<std::uint64_t> owned;
+    if (const auto error = Owned(&owned); error != Error::kNone) return error;
+    if (!owned.count(target_.product)) {
+      log_("gog plan owned result=not_owned");
+      return Error::kNotOwned;
+    }
+    const auto selection = SelectDepotsV1(*repository, owned, target_.language);
+    // Base first, then each DLC in product order, as gen 2 does: a later depot's file wins (PathSet), so a DLC's file
+    // replaces the base game's. The repository may list a DLC depot before a base one.
+    std::vector<const RepositoryDepotV1*> depots;
+    for (const auto product : selection.products)
+      for (const auto& depot : selection.depots)
+        if (depot.selected_product == product) depots.push_back(&depot);
+    log_("gog plan build generation=1 depots=%zu products=%zu size=%llu", depots.size(), selection.products.size(),
+         static_cast<unsigned long long>(selection.size));
+    log_("gog plan support_commands=%zu skipped", repository->support_commands);
+    header->generation = 1;
+    header->meta_id = md5;
+    header->timestamp = choice.timestamp;
+    header->language = selection.language;
+    header->products = selection.products;
+
+    if (const auto error = OpenItems(); error != Error::kNone) return error;
+    for (const auto* depot : depots) {
+      const auto error = DepotV1(*depot, choice.timestamp);
+      if (error != Error::kNone) return error;
+    }
+    if (!selection.dependencies.empty()) return Dependencies(selection.dependencies);
+    return Error::kNone;
+  }
+
+  // One gen 1 depot manifest: saved as v1-<name>, then read item by item. Its URL names the depot's first gameIDs
+  // entry; its files belong to the product it was selected for (an unowned DLC listed first is not that one).
+  Error DepotV1(const RepositoryDepotV1& depot, std::uint64_t timestamp) {
+    const auto product = depot.selected_product;
+    const auto path = "/content-system/v1/manifests/" + std::to_string(depot.products.front()) + "/windows/" +
+                      std::to_string(timestamp) + "/" + depot.manifest;
+    std::vector<Source> sources;
+    for (const auto& cdn : cdns_) sources.push_back({cdn.name, cdn.url + path});
+    const auto folder = Join(target_.root, kManifestDir);
+    const auto name = "v1-" + depot.manifest;
+    std::string md5;
+    // Within the streaming client's cap; the reader checks kMaxDepotManifestBytes too.
+    constexpr std::size_t kCap = static_cast<std::size_t>(
+        std::min<std::uint64_t>(kMaxDepotManifestBytes, steam::kMaxHttpStreamResponseBytes));
+    const auto fetched =
+        FetchUnhashedToFile(transport_, sources, kCap, folder, name, name, &md5, pause_, cancel_, log_, "manifest");
+    if (fetched != FetchKind::kOk) return FromFetch(fetched);
+    auto reader = DepotItemReaderV1([&](const DepotItem& item) {
+      return Item(item, product, item.blob_product ? std::to_string(item.blob_product) : std::to_string(product), 1);
+    });
+    DepotItemReader::Status status = DepotItemReader::Status::kOk;
+    const bool read = ReadFile(folder + "/" + name, [&](const std::uint8_t* data, std::size_t size) {
+      status = reader.Feed(data, size);
+      return status == DepotItemReader::Status::kOk;
+    });
+    if (items_error_ != Error::kNone) return items_error_;
+    if (!read && status == DepotItemReader::Status::kOk) return Error::kStorage;
+    if (status == DepotItemReader::Status::kOk) status = reader.Finish();
+    if (status != DepotItemReader::Status::kOk) {
+      log_("gog plan manifest result=%s", DepotReaderStatusName(status));
+      return Error::kProtocol;
+    }
+    return Error::kNone;
+  }
+
   Error Builds(BuildChoice* choice) {
     const auto answer = FetchBuilds(transport_, target_.product, cancel_);
     if (!answer.answered) return answer.canceled || cancel_.load() ? Error::kCanceled : Error::kNetwork;
@@ -621,8 +846,8 @@ class Planner {
     if (answer.status != 200) return Error::kProtocol;
     *choice = ChooseBuild(answer.body);
     switch (choice->kind) {
-      case BuildChoice::Kind::kGen2: return Error::kNone;
-      case BuildChoice::Kind::kGen1Only: log_("gog plan build generation=1"); return Error::kGen1Only;
+      case BuildChoice::Kind::kGen2:
+      case BuildChoice::Kind::kGen1: return Error::kNone;
       case BuildChoice::Kind::kNone: log_("gog plan build none"); return Error::kNoBuild;
       case BuildChoice::Kind::kProtocol: return Error::kProtocol;
     }
@@ -679,12 +904,14 @@ class Planner {
     return sources;
   }
 
-  // One depot manifest: saved, then read item by item into the path set and items.tmp.
-  Error Depot(const std::string& folder, const std::string& hash, std::uint64_t product, const std::string& source) {
+  // One depot manifest: saved, then read item by item into the path set and items.tmp. A `redist` depot's paths go
+  // under .playden-gog/redist/ (RedistPlace).
+  Error Depot(const std::string& folder, const std::string& hash, std::uint64_t product, const std::string& source,
+              bool redist = false) {
     const auto path = Join(target_.root, std::string(kManifestDir) + "/" + hash);
     const auto fetched = FetchToFile(transport_, Sources(folder, hash), hash, path, pause_, cancel_, log_, "manifest");
     if (fetched != FetchKind::kOk) return FromFetch(fetched);
-    DepotItemReader reader([&](const DepotItem& item) { return Item(item, product, source); });
+    DepotItemReader reader([&](const DepotItem& item) { return Item(item, product, source, 2, redist); });
     DepotItemReader::Status status = DepotItemReader::Status::kOk;
     const auto kind = InflateFile(path, kMaxDepotManifestBytes, [&](const std::uint8_t* data, std::size_t size) {
       status = reader.Feed(data, size);
@@ -701,7 +928,11 @@ class Planner {
     return Error::kNone;
   }
 
-  bool Item(const DepotItem& item, std::uint64_t product, const std::string& source) {
+  // One manifest item into the path set and items.tmp. `generation` is the manifest's: a gen 1 file becomes ranges
+  // of its source's main.bin, at most kGen1RangeBytes each, the last one shorter; an empty file has none. A `redist`
+  // item is placed by RedistPlace; the one at program_key_ is the package's program.
+  bool Item(const DepotItem& item, std::uint64_t product, const std::string& source, int generation,
+            bool redist = false) {
     PathKind kind = PathKind::kFile;
     switch (item.type) {
       case DepotItem::Type::kFile: kind = PathKind::kFile; break;
@@ -709,7 +940,16 @@ class Planner {
       case DepotItem::Type::kLink: kind = PathKind::kLink; break;
       case DepotItem::Type::kOther: ++other_; return true;
     }
-    const auto added = paths_.Add(item.path, kind, product, item.support, next_);
+    PathSet::Added added;
+    if (!redist) {
+      added = paths_.Add(item.path, kind, product, item.support, next_, generation);
+    } else if (kind == PathKind::kLink) {
+      added.refusal = PathRefusal::kLink;
+    } else if (const auto placed = RedistPlace(item.path)) {
+      added = paths_.AddRedist(*placed, kind, next_);
+    } else {
+      added.refusal = PathRefusal::kReserved;
+    }
     if (!added.ok()) {
       if (added.refusal == PathRefusal::kLink) ++links_;
       else if (added.refusal == PathRefusal::kClash) ++clashes_;
@@ -717,6 +957,8 @@ class Planner {
       return true;
     }
     if (added.replaced && *added.replaced < dropped_.size()) dropped_[*added.replaced] = true;
+    if (redist && kind == PathKind::kFile && !program_key_.empty() && FoldCase(added.path) == program_key_)
+      program_path_ = added.path;
     dropped_.push_back(false);
     ++next_;
     PlanEntry entry;
@@ -726,10 +968,13 @@ class Planner {
     entry.size = item.size;
     entry.md5 = item.md5;
     entry.sha256 = item.sha256;
-    entry.chunks = item.chunks;
-    std::string text = EntryLine(entry);
-    text += '\n';
-    for (const auto& chunk : entry.chunks) text += ChunkLine(chunk) + '\n';
+    if (generation == 1 && !entry.directory) {
+      for (std::uint64_t at = 0; at < item.size; at += kGen1RangeBytes)
+        entry.units.ranges.push_back({item.offset + at, std::min(kGen1RangeBytes, item.size - at)});
+    } else {
+      entry.units.chunks = item.chunks;
+    }
+    const std::string text = EntryText(entry);
     if (std::fwrite(text.data(), 1, text.size(), items_) != text.size()) {
       items_error_ = WriteFailure();
       return false;
@@ -737,7 +982,13 @@ class Planner {
     return true;
   }
 
-  Error Dependencies(const Meta& meta) {
+  // The build's dependencies by ID, from the public dependency store (gen 2 manifests and chunks, for a gen 1 build
+  // too): game-folder ones into the game folder, __redist installers under .playden-gog/redist/, each with its line
+  // in the redist list. IDs the store doesn't list are counted and listed as missing.
+  Error Dependencies(const std::vector<std::string>& named_ids) {
+    std::vector<std::string> wanted_ids;
+    for (const auto& id : named_ids)
+      if (std::find(wanted_ids.begin(), wanted_ids.end(), id) == wanted_ids.end()) wanted_ids.push_back(id);
     const auto answer = FetchDependencyRepository(transport_, cancel_);
     if (!answer.answered) return answer.canceled || cancel_.load() ? Error::kCanceled : Error::kNetwork;
     log_("gog plan dependencies status=%ld", answer.status);
@@ -768,24 +1019,52 @@ class Planner {
     const auto dependencies = ParseDependencyManifest(inflated);
     if (!dependencies) return Error::kProtocol;
     std::size_t game_folder = 0, redist = 0, missing = 0;
-    for (const auto& wanted : meta.dependencies) {
+    for (const auto& wanted : wanted_ids) {
       const auto found = std::find_if(dependencies->begin(), dependencies->end(),
                                       [&wanted](const Dependency& dependency) { return dependency.id == wanted; });
       if (found == dependencies->end()) {
         ++missing;
+        if (ValidDependencyId(wanted)) redist_.push_back(Skipped(wanted, RedistSkip::kMissing));
         continue;
       }
-      if (!GameFolderDependency(*found)) {
-        ++redist;  // __redist installers wait for Phase 4
+      if (!RedistDependency(*found)) {
+        ++game_folder;
+        const auto error = Depot("/content-system/v2/dependencies/meta/", found->manifest, target_.product,
+                                 kDependencySourcePrefix + found->id);
+        if (error != Error::kNone) return error;
         continue;
       }
-      ++game_folder;
+      // Every __redist installer is downloaded, those Wine provides too: Play decides which to run.
+      ++redist;
+      const auto program = RedistPlace(found->exe_path);
+      program_key_ = program ? FoldCase(*program) : std::string();
+      program_path_.clear();
       const auto error = Depot("/content-system/v2/dependencies/meta/", found->manifest, target_.product,
-                               kDependencySourcePrefix + found->id);
+                               kDependencySourcePrefix + found->id, true);
+      program_key_.clear();
       if (error != Error::kNone) return error;
+      if (!program || !found->usable_arguments) {
+        redist_.push_back(Skipped(found->id, RedistSkip::kRefused));
+      } else if (program_path_.empty()) {
+        redist_.push_back(Skipped(found->id, RedistSkip::kNoProgram));
+      } else {
+        RedistEntry entry;
+        entry.id = found->id;
+        entry.package = true;
+        entry.program = program_path_;
+        entry.arguments = found->arguments;
+        redist_.push_back(std::move(entry));
+      }
     }
-    log_("gog plan dependencies game_folder=%zu redist_skipped=%zu missing=%zu", game_folder, redist, missing);
+    log_("gog plan dependencies game_folder=%zu redist=%zu missing=%zu", game_folder, redist, missing);
     return Error::kNone;
+  }
+
+  static RedistEntry Skipped(const std::string& id, RedistSkip skip) {
+    RedistEntry entry;
+    entry.id = id;
+    entry.skip = skip;
+    return entry;
   }
 
   // items.tmp, without the entries a later depot replaced, becomes the plan and .playden-files.
@@ -803,11 +1082,17 @@ class Planner {
         if (dropped_[index] || entry.directory) continue;
         ++files;
         header->total_size += entry.size;
-        header->total_compressed += entry.compressed();
+        header->total_compressed += entry.download();
       }
     }
     // The old journal's indexes belong to another plan.
     if (std::remove(Join(target_.root, kJournalPath).c_str()) != 0 && errno != ENOENT) return Error::kStorage;
+    // The redist list before the file list and the plan: a saved plan always has its own (header only without
+    // __redist dependencies), and planning again replaces the old one.
+    if (const int failure = WriteRedistList(target_.root, redist_); failure != 0) {
+      log_("gog plan redist list result=%s", failure == EINVAL ? "refused" : "failed");
+      return failure == EINVAL ? Error::kProtocol : failure == ENOSPC ? Error::kNoSpace : Error::kStorage;
+    }
     DurableFile plan(Join(target_.root, kPlanPath));
     DurableFile list(Join(target_.root, kFileListName));
     plan.Line(HeaderLine(*header));
@@ -820,13 +1105,14 @@ class Planner {
       if (next == EntryReader::Next::kBad) return Error::kStorage;
       if (dropped_[index]) continue;
       plan.Line(EntryLine(entry));
-      for (const auto& chunk : entry.chunks) plan.Line(ChunkLine(chunk));
+      for (const auto& chunk : entry.units.chunks) plan.Line(ChunkLine(chunk));
+      for (const auto& range : entry.units.ranges) plan.Line(RangeLine(range));
       list.Line((entry.directory ? "d\t" : "f\t") + entry.path);
     }
     // The file list first: once the plan exists, everything it may place is listed.
     if (const auto error = list.Commit(); error != Error::kNone) return error;
     if (const auto error = plan.Commit(); error != Error::kNone) return error;
-    log_("gog plan saved files=%zu size=%llu compressed=%llu", files,
+    log_("gog plan saved files=%zu size=%llu download=%llu", files,
          static_cast<unsigned long long>(header->total_size),
          static_cast<unsigned long long>(header->total_compressed));
     return Error::kNone;
@@ -845,6 +1131,9 @@ class Planner {
   FILE* items_ = nullptr;
   Error items_error_ = Error::kNone;
   std::size_t links_ = 0, clashes_ = 0, refused_ = 0, other_ = 0;
+  std::vector<RedistEntry> redist_;  // the redist list, in the build's dependency order
+  std::string program_key_;          // the folded placed program of the redist depot being read
+  std::string program_path_;         // its planned path, once an item matched
 };
 
 // ---- The journal --------------------------------------------------------------------------------------------------
@@ -937,11 +1226,14 @@ Endpoints Share(std::vector<CdnEndpoint> endpoints) {
   });
 }
 
-// The chunk bases of each source: a secure link per product, one open link for the dependency store. One fetch at a
-// time per source; a worker that saw an old version waits for the fetch in progress instead of starting another.
+// The chunk and range bases of each source: a secure link per product (a gen 1 plan's for its build's main.bin), one
+// open link for the dependency store. One fetch at a time per source; a worker that saw an old version waits for the
+// fetch in progress instead of starting another.
 class Links {
  public:
-  Links(const Hooks& hooks, const Logger& log, const std::atomic<bool>& cancel) : hooks_(hooks), log_(log), cancel_(cancel) {}
+  Links(const Hooks& hooks, const Logger& log, const std::atomic<bool>& cancel, int generation,
+        std::uint64_t timestamp)
+      : hooks_(hooks), log_(log), cancel_(cancel), generation_(generation), timestamp_(timestamp) {}
 
   static std::string Key(const std::string& source) {
     return source.rfind(kDependencySourcePrefix, 0) == 0 ? std::string(kDependencySourcePrefix) : source;
@@ -1015,8 +1307,9 @@ class Links {
       if (!hooks_.token) return Error::kSignedOut;
       auto token = hooks_.token(cancel_);
       if (token.status != AccessToken::Status::kOk) return FromToken(token.status);
-      *out = FetchSecureLink(transport, token.token, product, cancel_);
-      log_("gog secure_link status=%ld result=%s", out->status, LinkName(out->kind));
+      *out = generation_ == 1 ? FetchSecureLinkV1(transport, token.token, product, timestamp_, cancel_)
+                              : FetchSecureLink(transport, token.token, product, cancel_);
+      log_("gog secure_link generation=%d status=%ld result=%s", generation_, out->status, LinkName(out->kind));
       if (out->kind != LinkResult::Kind::kRejected) return LinkError(out->kind);
       if (round == 0 && hooks_.invalidate) hooks_.invalidate(token.generation, token.token);
     }
@@ -1050,6 +1343,8 @@ class Links {
   const Hooks& hooks_;
   const Logger& log_;
   const std::atomic<bool>& cancel_;
+  const int generation_;
+  const std::uint64_t timestamp_;
   mutable std::mutex mutex_;
   std::condition_variable changed_;
   std::map<std::string, Entry> entries_;
@@ -1065,8 +1360,9 @@ struct FileWork {
   std::uint64_t size = 0;
   std::string md5;
   std::string sha256;
-  std::vector<DepotChunk> chunks;
-  std::vector<std::uint64_t> offsets;
+  Units units;
+  bool whole_md5 = false;  // a gen 1 product file: its MD5 is checked however many ranges it has, even none
+  std::vector<std::uint64_t> offsets;  // where each unit starts in the file: the running sums
   std::vector<bool> done;
   std::size_t remaining = 0;
   bool redone = false;
@@ -1074,7 +1370,7 @@ struct FileWork {
 
 struct Task {
   std::shared_ptr<FileWork> file;
-  std::size_t chunk = 0;
+  std::size_t unit = 0;
 };
 
 Error FromChunk(ChunkResult::Kind kind) {
@@ -1180,8 +1476,8 @@ class Download {
     }
     if (stop_) return false;
     ++active_files_;
-    for (std::size_t chunk = 0; chunk < file->chunks.size(); ++chunk)
-      if (!file->done[chunk]) queue_.push_back({file, chunk});
+    for (std::size_t unit = 0; unit < file->units.count(); ++unit)
+      if (!file->done[unit]) queue_.push_back({file, unit});
     changed_.notify_all();
     return true;
   }
@@ -1199,7 +1495,8 @@ class Download {
     }
   }
 
-  // A file whose chunks are all written: its size set and its whole-file hashes checked. On a mismatch it is
+  // A file whose units are all written: its size set and its whole-file hashes checked (a gen 2 file's MD5 only when it
+  // has more than one chunk, each chunk having its own; a gen 1 file's always). On a mismatch it is
   // fetched once more, then the download fails with kCorrupt. Called by the worker that wrote its last chunk, or by
   // the feeder for a file the journal already had whole.
   void Finish(const std::shared_ptr<FileWork>& file, bool admitted) {
@@ -1212,10 +1509,10 @@ class Download {
       if (close(fd) != 0 && error == Error::kNone) error = WriteFailure();
     }
     bool matches = true;
-    if (error == Error::kNone && ((!file->md5.empty() && file->chunks.size() > 1) || !file->sha256.empty())) {
+    const bool want_md5 = !file->md5.empty() && (file->whole_md5 || file->units.count() > 1);
+    if (error == Error::kNone && (want_md5 || !file->sha256.empty())) {
       Md5 md5;
       Sha256 sha;
-      const bool want_md5 = !file->md5.empty() && file->chunks.size() > 1;
       const bool want_sha = !file->sha256.empty();
       if (!ReadFile(file->path, [&](const std::uint8_t* data, std::size_t size) {
             if (want_md5) md5.Update(data, size);
@@ -1235,21 +1532,21 @@ class Download {
         Stop(Error::kCorrupt);
         return;
       }
-      if (file->chunks.empty()) {
+      if (file->units.count() == 0) {
         // An empty file the manifest gives another hash: nothing to fetch again.
-        log_("gog file check failed chunks=0");
+        log_("gog file check failed units=0");
         lock.unlock();
         Stop(Error::kCorrupt);
         return;
       }
       file->redone = true;
       ++stats_.redone_files;
-      log_("gog file check failed chunks=%zu: fetching it again", file->chunks.size());
+      log_("gog file check failed units=%zu: fetching it again", file->units.count());
       std::fill(file->done.begin(), file->done.end(), false);
-      file->remaining = file->chunks.size();
-      for (std::size_t chunk = 0; chunk < file->chunks.size(); ++chunk) {
-        done_ -= std::min(done_, file->chunks[chunk].compressed_size);
-        queue_.push_back({file, chunk});
+      file->remaining = file->units.count();
+      for (std::size_t unit = 0; unit < file->units.count(); ++unit) {
+        done_ -= std::min(done_, file->units.download(unit));
+        queue_.push_back({file, unit});
       }
       if (!admitted) ++active_files_;
       changed_.notify_all();
@@ -1331,10 +1628,10 @@ class Download {
       if (error == Error::kNone) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& file = *task.file;
-        if (!file.done[task.chunk]) {
-          file.done[task.chunk] = true;
+        if (!file.done[task.unit]) {
+          file.done[task.unit] = true;
           --file.remaining;
-          done_ += file.chunks[task.chunk].compressed_size;
+          done_ += file.units.download(task.unit);
         }
         last = file.remaining == 0;
       }
@@ -1353,10 +1650,9 @@ class Download {
     changed_.notify_all();
   }
 
-  // One chunk, with fresh links when the CDN refuses the one in use.
+  // One chunk or range, with fresh links when the CDN refuses the one in use.
   Error Fetch(Transport& transport, const Task& task) {
     const auto& file = *task.file;
-    const auto& chunk = file.chunks[task.chunk];
     std::optional<std::uint64_t> stale;
     for (int refresh = 0;; ++refresh) {
       Endpoints endpoints;
@@ -1364,31 +1660,37 @@ class Download {
       if (const auto error = links_.Get(transport, file.source, stale, &endpoints, &version); error != Error::kNone)
         return error;
       ChunkFile out(file.path);
-      const auto result = FetchChunk(
-          transport, *endpoints, chunk, file.offsets[task.chunk],
-          [&out](std::uint64_t offset, const std::uint8_t* data, std::size_t size) { return out.Write(offset, data, size); },
-          pause_, cancel_);
+      const ChunkWrite write = [&out](std::uint64_t offset, const std::uint8_t* data, std::size_t size) {
+        return out.Write(offset, data, size);
+      };
+      const auto result =
+          file.units.chunks.empty()
+              ? FetchRange(transport, *endpoints, file.units.ranges[task.unit].offset,
+                           file.units.ranges[task.unit].length, file.offsets[task.unit], write, pause_, cancel_)
+              : FetchChunk(transport, *endpoints, file.units.chunks[task.unit], file.offsets[task.unit], write, pause_,
+                           cancel_);
       endpoints.reset();
       const int close_error = out.Close();
       Account(result);
+      const char* what = file.units.chunks.empty() ? "range" : "chunk";
       if (result.kind == ChunkResult::Kind::kExpired) {
-        log_("gog chunk refused status=%ld endpoint=%s: fetching the link again", result.status,
+        log_("gog %s refused status=%ld endpoint=%s: fetching the link again", what, result.status,
              result.endpoint.c_str());
         if (refresh >= kMaxLinkRefreshesPerChunk) return Error::kNetwork;
         stale = version;
         continue;
       }
       if (result.kind != ChunkResult::Kind::kOk) {
-        log_("gog chunk failed result=%s attempts=%d status=%ld endpoint=%s", ChunkResultName(result.kind),
+        log_("gog %s failed result=%s attempts=%d status=%ld endpoint=%s", what, ChunkResultName(result.kind),
              result.attempts, result.status, result.endpoint.c_str());
         return FromChunk(result.kind);
       }
       if (close_error != 0) return close_error == ENOSPC ? Error::kNoSpace : Error::kStorage;
       if (result.attempts > 1)
-        log_("gog chunk ok attempts=%d corrupt=%d stalls=%d endpoint=%s", result.attempts, result.corrupt,
+        log_("gog %s ok attempts=%d corrupt=%d stalls=%d endpoint=%s", what, result.attempts, result.corrupt,
              result.stalls, result.endpoint.c_str());
       if (hooks_.endpoint) hooks_.endpoint(result.endpoint.c_str());
-      return journal_.Chunk(file.index, task.chunk);
+      return journal_.Chunk(file.index, task.unit);
     }
   }
 
@@ -1442,7 +1744,6 @@ const char* InstallerErrorName(Error error) {
     case Error::kNoSpace: return "no_space";
     case Error::kStorage: return "storage";
     case Error::kProtocol: return "protocol";
-    case Error::kGen1Only: return "gen1_only";
     case Error::kNoBuild: return "no_build";
     case Error::kNotOwned: return "not_owned";
   }
@@ -1495,8 +1796,10 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
     EntryReader reader(plan_path);
     if (!reader.open() || !reader.Header(&header)) return finish(Error::kStorage);
   }
+  outcome.generation = header.generation;
   outcome.build_id = header.build_id;
   outcome.meta_id = header.meta_id;
+  outcome.timestamp = header.timestamp;
   outcome.language = header.language;
   outcome.products = header.products;
   outcome.install_bytes = header.total_size;
@@ -1530,21 +1833,21 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
       if (marked && present && static_cast<std::uint64_t>(info.st_size) == entry.size) {
         finished.insert(index);
         held += entry.size;
-        done += entry.compressed();
+        done += entry.download();
         continue;
       }
       ++unfinished;
       // A finished file that is gone or has another size is fetched whole again; so is a file in progress that is
       // gone.
       const bool redo = marked || !present;
-      for (std::size_t chunk = 0; chunk < entry.chunks.size(); ++chunk) {
-        const auto key = ChunkKey(index, chunk);
+      for (std::size_t unit = 0; unit < entry.units.count(); ++unit) {
+        const auto key = ChunkKey(index, unit);
         if (!redo && state.chunks.count(key)) {
-          held += entry.chunks[chunk].size;
-          done += entry.chunks[chunk].compressed_size;
+          held += entry.units.size(unit);
+          done += entry.units.download(unit);
         } else {
           state.chunks.erase(key);
-          missing += entry.chunks[chunk].size;
+          missing += entry.units.size(unit);
           ++pending_chunks;
           sources.insert(Links::Key(entry.source));
         }
@@ -1552,7 +1855,7 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
     }
   }
   const auto free = hooks_.free_bytes(target.root);
-  log("gog download files=%zu finished=%zu chunks_left=%llu", outcome.files, finished.size(),
+  log("gog download files=%zu finished=%zu units_left=%llu", outcome.files, finished.size(),
       static_cast<unsigned long long>(pending_chunks));
   if (missing > UINT64_MAX - kGogSpaceMargin || missing + kGogSpaceMargin > free) {
     log("gog download space short need=%llu free=%llu", static_cast<unsigned long long>(missing),
@@ -1564,7 +1867,7 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
 
   Journal journal;
   if (const auto error = journal.Open(journal_path); error != Error::kNone) return finish(error);
-  Links links(hooks_, log, cancel);
+  Links links(hooks_, log, cancel, header.generation, header.timestamp);
 
   // 8. The links each source needs, before any chunk.
   const int parallel = std::max(1, std::min(kMaxParallel, hooks_.parallel));
@@ -1648,17 +1951,18 @@ GogInstaller::Outcome GogInstaller::Run(const Target& target, const std::atomic<
       file->size = entry.size;
       file->md5 = entry.md5;
       file->sha256 = entry.sha256;
-      file->chunks = std::move(entry.chunks);
-      file->done.assign(file->chunks.size(), false);
+      file->whole_md5 = header.generation == 1 && !DependencySource(entry.source);
+      file->units = std::move(entry.units);
+      file->done.assign(file->units.count(), false);
       std::uint64_t offset = 0;
-      for (std::size_t chunk = 0; chunk < file->chunks.size(); ++chunk) {
+      for (std::size_t unit = 0; unit < file->units.count(); ++unit) {
         file->offsets.push_back(offset);
-        offset += file->chunks[chunk].size;
-        if (state.chunks.count(ChunkKey(index, chunk))) file->done[chunk] = true;
+        offset += file->units.size(unit);
+        if (state.chunks.count(ChunkKey(index, unit))) file->done[unit] = true;
         else ++file->remaining;
       }
       if (file->remaining == 0) {
-        // No chunks (an empty file), or every chunk already written: only its size and check are left.
+        // No units (an empty file), or every unit already written: only its size and check are left.
         download.Finish(file, false);
         continue;
       }

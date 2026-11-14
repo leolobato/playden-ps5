@@ -2,10 +2,12 @@
 // GOG's install runner (stores/gog_install) in a real install service, on two folders standing for console storage
 // and a USB drive: a synthetic gen 2 game from the stub CDN (gog_cdn_stub.h, gog_synthetic_game.h) with its
 // goggame-<id>.info and .script, a GOG session on the scripted auth stub (gog_stub_transport.h). Install to the end,
-// pause and resume, a restart, cancel, signed out and revoked sessions, uninstall, a move to the USB drive, free space
-// and a gen 1 only game. Built twice: with the host's walks, and with the console's walk by path.
+// pause and resume, a restart, cancel, signed out and revoked sessions, uninstall, a move to the USB drive, free space,
+// a synthetic gen 1 game (ranges of a main.bin) to the end, moved and uninstalled, and a game with __redist installers
+// installed, moved and uninstalled. Built twice: with the host's walks, and with the console's walk by path.
 // Usage: gog_install_runner_test <fixtures/gog> <scratch folder>.
 
+#include "gog/dependencies.h"
 #include "gog/info_file.h"
 #include "gog/session.h"
 #include "gog/session_store.h"
@@ -159,6 +161,7 @@ struct World {
     session = std::make_unique<gog::Session>(*store, auth.Transport(), [this] { return clock.load(); });
     cdn.SetOwned("{\"owned\":[1900000001,1900000002]}");
     cdn.SetSecureLink(ReadFile(g_fixtures + "/secure-link-200.json"));
+    cdn.SetSecureLinkV1(ReadFile(g_fixtures + "/secure-link-gen1-200.json"));
     cdn.SetFault([this](const Request& request) -> std::optional<Fault> {
       if ((builds_down.load() && request.kind == Kind::kBuilds) || (chunks_down.load() && request.kind == Kind::kChunk)) {
         Fault fault;
@@ -345,7 +348,7 @@ struct World {
   }
 
   // A complete install at `root`: files, record, launches, the script's work, and no journal.
-  void CheckInstalledAt(const fs::path& root) {
+  void CheckInstalledAt(const fs::path& root, std::uint64_t redist_bytes = 0) {
     CHECK(Text(root / "bin/Game.exe") == kExe && Text(root / "data/level.dat") == kData &&
           Text(root / "Music/theme.ogg") == kMusic);
     CHECK(Exists(root / ".playden-files") && Exists(root / ".playden-gog/files"));
@@ -356,7 +359,8 @@ struct World {
     const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
     CHECK(record && record->gog);
     const std::uint64_t size = kExe.size() + kData.size() + kMusic.size() + kDefaults.size() +
-                               ReadFile(g_fixtures + "/goggame-1900000001.info").size() + kScript.size();
+                               ReadFile(g_fixtures + "/goggame-1900000001.info").size() + kScript.size() +
+                               redist_bytes;
     CHECK(record->install_bytes == size);
     CHECK(record->gog->build_id == "1000000000000000101" && record->gog->generation == 2);
     // The meta's owned DLC counts as installed with the game, even without depots of its own.
@@ -648,21 +652,155 @@ void FreeSpaceShort() {
   std::printf("free space short ok\n");
 }
 
-// A game whose default build is gen 1 only fails with the older-format sentence.
-void Gen1OnlyFails() {
+// A game whose default build is gen 1, through the queue to the end: its record names generation 1, the builds item's
+// ID and repository.json's MD5, and its launches come from its goggame-<id>.info; .playden-files lists every placed
+// path. A move to the USB drive keeps it playable, and uninstall removes everything.
+void Gen1Installs() {
   World world;
+  GameV1 game;
+  GameDepotV1 main;
+  main.files.push_back({"bin\\Game.exe", kExe});
+  main.files.push_back({"data\\level.dat", kData});
+  main.files.push_back({"Music/theme.ogg", kMusic});
+  main.files.push_back({"1900000001/app/defaults.cfg", kDefaults, true});  // <product>/app/ support: the game folder
+  GameFileV1 logs{"logs"};
+  logs.directory = true;
+  main.files.push_back(logs);
+  game.depots.push_back(main);
+  GameDepotV1 english;
+  english.languages = {"English"};
+  english.files.push_back({"goggame-1900000001.info", ReadFile(g_fixtures + "/goggame-1900000001.info")});
+  game.depots.push_back(english);
+  const auto published = PublishV1(world.cdn, game);
   world.SignIn();
-  constexpr std::uint64_t kOld = 1425039730;
-  world.cdn.SetBuilds(kOld, ReadFile(g_fixtures + "/builds-v2-gen1-only-1425039730.json"));
   world.Start();
-  world.service->Install(GameId::Gog(kOld));
+  world.service->Install(kGame);
+  world.WaitInstalled();
+
+  const auto check = [&](const fs::path& root) {
+    CHECK(Text(root / "bin/Game.exe") == kExe && Text(root / "data/level.dat") == kData &&
+          Text(root / "Music/theme.ogg") == kMusic && Text(root / "defaults.cfg") == kDefaults);
+    CHECK(fs::is_directory(root / "logs") && !Exists(root / ".playden-download"));
+    const auto record = installs::ReadInstallRecord((root / installs::kInstallRecordName).string());
+    CHECK(record && record->gog);
+    CHECK(record->gog->generation == 1 && record->gog->build_id == "15751");
+    CHECK(record->gog->meta_id == published.repository_md5);
+    CHECK((record->gog->products == std::vector<std::uint64_t>{kBase, kDlc}));
+    CHECK(record->gog->language == "en-US" && record->language == "english");
+    CHECK(record->install_bytes == kExe.size() + kData.size() + kMusic.size() + kDefaults.size() +
+                                       ReadFile(g_fixtures + "/goggame-1900000001.info").size());
+    const auto info = gog::ParseInfo(ReadFile(g_fixtures + "/goggame-1900000001.info"));
+    CHECK(info);
+    const auto expected = gog::LaunchesFromInfo(*info);
+    CHECK(!expected.empty() && record->launches.size() == expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index)
+      CHECK(record->launches[index].executable == expected[index].executable &&
+            record->launches[index].working_directory == expected[index].working_directory);
+    const auto listed = Text(root / ".playden-files");
+    std::vector<std::string> lines;
+    for (std::size_t at = 0; at < listed.size();) {
+      const auto end = listed.find('\n', at);
+      lines.push_back(listed.substr(at, end - at));
+      at = end == std::string::npos ? listed.size() : end + 1;
+    }
+    std::sort(lines.begin(), lines.end());
+    CHECK((lines == std::vector<std::string>{"d\tlogs", "f\tMusic/theme.ogg", "f\tbin/Game.exe", "f\tdata/level.dat",
+                                            "f\tdefaults.cfg", "f\tgoggame-1900000001.info"}));
+  };
+  check(world.Root());
+  const auto installed = world.Installed();
+  CHECK(installed && installed->record && installed->record->gog && installed->record->gog->generation == 1);
+  CHECK(world.Logged("gog install game=gog-1900000001 step=download result=ok files=5"));
+  CHECK(world.Logged("gog install game=gog-1900000001 step=record result=ok"));
+  CHECK(world.cdn.Count(Kind::kChunk) == 0 && world.cdn.Count(Kind::kRange) == 5);
+  for (const auto& request : world.cdn.requests())
+    CHECK(request.kind != Kind::kSecureLink || (request.generation == 1 && request.timestamp == kTimestampV1));
+  world.CheckLogs();
+
+  CHECK(world.service->Move(kGame, "usb0").empty());
   WaitFor([&] {
-    for (const auto& job : world.service->Snapshot().jobs)
-      if (job.id == GameId::Gog(kOld) && job.state == InstallJobState::kFailed)
-        return job.failure == "Playden can't install this GOG game yet: it uses an older GOG download format.";
-    return false;
-  }, "the gen 1 failure");
-  std::printf("gen 1 only fails ok\n");
+    const auto game = world.Installed();
+    return game && game->volume_id == "usb0" && !world.Job(world.service->Snapshot()) && !Exists(world.Root());
+  }, "the move");
+  const auto moved = world.usb / "gog-1900000001";
+  check(moved);
+  CHECK(Exists(moved / ".playden-gog/meta" / published.repository_md5));
+  const auto game_after = world.Installed();
+  CHECK(game_after && game_after->root == moved.string() && game_after->record && !game_after->record->launches.empty());
+
+  world.service->Uninstall(kGame);
+  WaitFor([&] {
+    const auto snapshot = world.service->Snapshot();
+    return !world.Installed() && snapshot.uninstalling.empty();
+  }, "the uninstall");
+  CHECK(!Exists(moved) && !Exists(world.Root()));
+  std::printf("gen 1 installs ok\n");
+}
+
+// A game naming two __redist installers (XNA, DirectX) from the public dependency store: after the install their
+// files and redist.list sit in .playden-gog, the record counts them, a move to the USB drive carries them, and
+// uninstall removes them with the game.
+void RedistInstallsMovesAndUninstalls() {
+  World world;
+  world.cdn.SetOpenLink(ReadFile(g_fixtures + "/dependencies-open-link.json"));
+  const std::string msi = RandomBytes(48 * 1024, 61);
+  const std::string setup = RandomBytes(16 * 1024, 62);
+  const std::string cab = RandomBytes(24 * 1024, 63);
+  StoreDependency xna;
+  xna.id = "XNA";
+  xna.exe_path = "__redist/XNA/xnafx31_redist.msi";
+  xna.arguments_json = "\"/qn\"";
+  xna.files.push_back({"DepotFile", "__redist/XNA/xnafx31_redist.msi", msi});
+  StoreDependency directx;
+  directx.id = "DirectX";
+  directx.exe_path = "__redist/DirectX/DXSETUP.exe";
+  directx.arguments_json = "\"/silent\"";
+  directx.files.push_back({"DepotFile", "__redist\\DirectX\\DXSETUP.exe", setup});
+  directx.files.push_back({"DepotFile", "__redist\\DirectX\\Feb2010_XAudio_x86.cab", cab});
+  PublishDependencyStore(world.cdn, {xna, directx});
+  auto game = SyntheticGame();
+  game.dependencies = {"XNA", "DirectX"};
+  world.published = Publish(world.cdn, game);
+  world.SignIn();
+  world.Start();
+  world.service->Install(kGame);
+  world.WaitInstalled();
+
+  const std::string list = "gog-redist\tv1\n"
+                           "P\tXNA\t.playden-gog/redist/XNA/xnafx31_redist.msi\t/qn\n"
+                           "P\tDirectX\t.playden-gog/redist/DirectX/DXSETUP.exe\t/silent\n";
+  const auto check = [&](const fs::path& root) {
+    world.CheckInstalledAt(root, msi.size() + setup.size() + cab.size());
+    CHECK(Text(root / ".playden-gog/redist/XNA/xnafx31_redist.msi") == msi);
+    CHECK(Text(root / ".playden-gog/redist/DirectX/DXSETUP.exe") == setup);
+    CHECK(Text(root / ".playden-gog/redist/DirectX/Feb2010_XAudio_x86.cab") == cab);
+    CHECK(Text(root / ".playden-gog/redist.list") == list);
+    const auto read = gog::ReadRedistList(root.string());
+    CHECK(read.status == gog::RedistList::Status::kOk && read.entries.size() == 2 && read.entries[0].package);
+    const auto listed = Text(root / ".playden-files");
+    CHECK(listed.find("f\t.playden-gog/redist/XNA/xnafx31_redist.msi\n") != std::string::npos);
+    CHECK(listed.find("f\t.playden-gog/redist/DirectX/Feb2010_XAudio_x86.cab\n") != std::string::npos);
+  };
+  check(world.Root());
+  CHECK(world.Logged("gog plan dependencies game_folder=0 redist=2 missing=0"));
+  CHECK(world.Logged("gog install game=gog-1900000001 step=download result=ok files=9"));
+  world.CheckLogs();
+
+  CHECK(world.service->Move(kGame, "usb0").empty());
+  WaitFor([&] {
+    const auto moved = world.Installed();
+    return moved && moved->volume_id == "usb0" && !world.Job(world.service->Snapshot()) && !Exists(world.Root());
+  }, "the move");
+  const auto moved = world.usb / "gog-1900000001";
+  check(moved);
+
+  world.service->Uninstall(kGame);
+  WaitFor([&] {
+    const auto snapshot = world.service->Snapshot();
+    return !world.Installed() && snapshot.uninstalling.empty();
+  }, "the uninstall");
+  CHECK(!Exists(moved) && !Exists(world.Root()));
+  std::printf("redist installs, moves and uninstalls ok\n");
 }
 
 // The runner on its own: another store's game, and the server name before any chunk.
@@ -697,7 +835,8 @@ int main(int argc, char** argv) {
   UninstallRemovesEverything();
   MovesToUsb();
   FreeSpaceShort();
-  Gen1OnlyFails();
+  Gen1Installs();
+  RedistInstallsMovesAndUninstalls();
   fs::remove_all(g_scratch);
   std::printf("gog install runner ok\n");
   return 0;
