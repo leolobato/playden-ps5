@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.27, installed as playden-kit. Kit 0.26 with ntdll.prx, wineserver.prx, win32u.prx and nsiproxy.prx of prospero-win 1922abe (Wine patch 1021: files opened for writing and locked files are parked under the open-file budget too, and a descriptor lent to the client is never parked until it is given back; the new server request changes every unix module that calls the server). The template, DXVK and Mono are 0.26's, so bottles need no Recreate.",
-    "manifest_sha256": "894cf9026405b9a27780f86d60c26008d396865d11d877b600c2014926f9553c",
-    "files_sha256": "f776bb8eb51a65a87b66c432f625d6d066a47e75e5136545023df7a8d2d7066e",
+    "status": "Kit 0.28, installed as playden-kit. Kit 0.27 with ntdll.prx, wineserver.prx, win32u.prx and nsiproxy.prx of prospero-win bd2da43 (Wine patch 1021 adds its server request last, so every earlier request keeps its number and the PE modules kept from earlier kits, ntoskrnl.exe and conhost.exe, fit again; kit 0.27 crashed every game at start, #894). The template, DXVK and Mono are 0.27's, so bottles need no Recreate.",
+    "manifest_sha256": "38626b6020f5ba6f24d4138fd8f1b17dc3c1bca8393b3dcba8dd641510e20223",
+    "files_sha256": "ef2ae590473f3447bc19dd305bd2e4cdb2486c105de0e9485ace2ec4f69fa700",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -266,8 +266,8 @@
       "wow64_i386"
     ],
     "wrapper_revision": "2ddfbbff2d91a73949c58b58b0af232168861949",
-    "runtime_artifact_revision": "1922abe-kit-0.27",
-    "runtime_inventory_source": "Kit 0.27: staged by kits/kit-0.27/stage.py in the kit archive: kit 0.26 with the four .prx modules that differ in a fresh release cross build of 1922abe (scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-027-1), identical to kit 0.26 in every other .prx module. Earlier kits: see this file's git history.",
+    "runtime_artifact_revision": "bd2da43-kit-0.28",
+    "runtime_inventory_source": "Kit 0.28: staged by kits/kit-0.28/stage.py in the kit archive: kit 0.27 with the four .prx modules that differ in a fresh release cross build of bd2da43 (scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-028-1), identical to kit 0.27 in every other module. The recipe checks that stock Wine's server requests keep their numbers. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
