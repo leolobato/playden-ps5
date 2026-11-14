@@ -82,6 +82,20 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     target_compile_features(community_game_ref_test PRIVATE cxx_std_20)
     add_test(NAME community_game_ref COMMAND community_game_ref_test)
 
+    # Exported recipes: their folder beside the logs, file names with the game's name, the move out of the logs.
+    add_executable(recipe_exports_test "${CMAKE_SOURCE_DIR}/tests/recipe_exports_test.cpp")
+    target_link_libraries(recipe_exports_test PRIVATE playden_library)
+    add_test(NAME recipe_exports COMMAND recipe_exports_test)
+    # The console's file rules: no *at calls (they fail here), absolute paths only.
+    add_executable(recipe_exports_native_policy_test
+        "${CMAKE_SOURCE_DIR}/tests/recipe_exports_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/library/recipe_exports.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp"
+        "${CMAKE_SOURCE_DIR}/tests/directory_gateway_host.cpp")
+    target_compile_definitions(recipe_exports_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1 PLAYDEN_TEST_AT_UNAVAILABLE=1)
+    target_link_libraries(recipe_exports_native_policy_test PRIVATE playden_library ${CMAKE_DL_LIBS})
+    add_test(NAME recipe_exports_native_policy COMMAND recipe_exports_native_policy_test)
+
     add_executable(community_share_decision_test "${CMAKE_SOURCE_DIR}/tests/community_share_decision_test.cpp")
     target_link_libraries(community_share_decision_test PRIVATE playden_community)
     add_test(NAME community_share_decision COMMAND community_share_decision_test)

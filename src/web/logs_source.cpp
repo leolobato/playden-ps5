@@ -2,6 +2,7 @@
 #include "web/logs_source.h"
 
 #include "app/diagnostic_log.h"
+#include "library/recipe_exports.h"
 #include "platform/directory_walk.h"
 #include "steam/backend/json.h"
 #include "web/zip.h"
@@ -472,6 +473,8 @@ LogsIndex LogsSource::Index() const {
   const auto entries = ListDirectory(paths_.logs);
   for (const auto& entry : entries) {
     if (entry.directory || entry.name.size() >= 4 && entry.name.compare(entry.name.size() - 4, 4, ".ppm") == 0) continue;
+    // An exported recipe an older version left here (one that couldn't move to its own folder) is the player's, not a log.
+    if (IsLogsFolderRecipe(entry.name)) continue;
     if (const auto title = TitleLogId(entry.name)) {
       GameLog game;
       game.title = *title;

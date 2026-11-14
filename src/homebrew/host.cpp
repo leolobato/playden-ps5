@@ -34,6 +34,7 @@
 #include "steam/backend/library_client.h"
 #include "steam/local_session_repository.h"
 #include "library/cache.h"
+#include "library/recipe_exports.h"
 #include "app/experimental_features.h"
 
 #include "core/input.hpp"
@@ -756,7 +757,11 @@ int main(int argc, char** argv) {
         cloud_sessions = std::make_unique<playden::LocalSessionRepository>(options->data_directory.string(), playden::LocalSessionRepository::DiagnosticReport{}, session_vault.get());
         cloud = std::make_unique<playden::steam::CloudService>(*cloud_runner, *cloud_sessions);
         simulation.SetLogDirectory(options->data_directory / "logs");
-        simulation.SetRecipeExportTarget(options->data_directory / "logs", "");
+        // Exported recipes beside the logs, never in them; older versions' exports in the logs folder move once.
+        const auto exported_recipes = options->data_directory / playden::kExportedRecipesFolder;
+        for (const auto& line : playden::MoveLogsFolderRecipes(options->data_directory / "logs", exported_recipes))
+            playden::app::AppendLogLine(log_directory, "launch.log", line);
+        simulation.SetRecipeExportTarget(exported_recipes, "");
         const auto auth_log = [log_directory](const std::string& line) {
             playden::app::AppendLogLine(log_directory, "auth.log", "sign-in " + line);
         };
@@ -818,6 +823,8 @@ int main(int argc, char** argv) {
                 web_config.files.private_profile_paths.push_back(private_path.generic_string());
             // Browsers paired with "Remember this browser": hashes of their tokens, kept across restarts.
             web_config.files.pairing.store_root = (options->data_directory / "web-access").lexically_normal().string();
+            // A game's page offers its exported recipe for download.
+            web_config.files.exported_recipes = (options->data_directory / playden::kExportedRecipesFolder).lexically_normal().string();
             web_config.files.import_recipe = [recipe_imports](const std::string& game, std::string file) {
                 return recipe_imports->Import(game, std::move(file));
             };

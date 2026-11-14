@@ -98,6 +98,10 @@ int main() {
     return {200, "Darkwood now uses this recipe.", "steam-274520"};
   };
   fs::create_directories(base / "logs");
+  // Exported recipes, in their own folder beside the logs: Darkwood has one, after a rename.
+  config.files.exported_recipes = (base / "exported-recipes").string();
+  Put(base / "exported-recipes/recipe-darkwood-steam-274520.json", "{\"recipe_id\": \"community-steam-274520\"}\n");
+  Put(base / "exported-recipes/recipe-other-steam-2745200.json", "other");
   // Browsers paired with "Remember this browser" are kept here, as user data's web-access folder on the console.
   config.files.pairing.store_root = (base / "web-access").string();
   const auto restart_config = config;
@@ -157,7 +161,8 @@ int main() {
   // Unpaired: nothing about a game, nothing changes.
   CHECK(Body(get("/api/pair/status")).find("\"paired\":false") != std::string::npos);
   for (const std::string& target : std::vector<std::string>{"/api/files/games", "/api/files/game?game=steam-12210", "/api/files/list?" + game + "user", "/api/files/download?" + game + "game&path=game.exe",
-                                   "/api/files/zip?" + game + "game", "/api/files/text?" + game + "game&path=game.exe"})
+                                   "/api/files/zip?" + game + "game", "/api/files/text?" + game + "game&path=game.exe",
+                                   "/api/files/recipe/export?game=steam-274520"})
     CHECK(Status(get(target)) == 401);
   for (const std::string& target : std::vector<std::string>{"/api/files/upload?" + game + "game&path=x", "/api/files/mkdir?" + game + "game&path=x", "/api/files/delete?" + game + "game&path=game.exe", "/api/files/restore?" + game + "game&path=x", "/api/files/recipe?game=steam-12210",
                                    "/api/files/move?" + game + "game&path=game.exe&name=moved.exe"}) {
@@ -213,6 +218,15 @@ int main() {
   answer = get("/api/files/list?game=local-gone&root=game", cookie);
   CHECK(Status(answer) == 404 && Body(answer).find("Connect this game's drive") != std::string::npos);
   CHECK(Body(get("/api/files/game?game=local-gone", cookie)).find("\"id\":\"game\"") == std::string::npos);
+  // The game's exported recipe: named on its page, downloaded by the game's id alone.
+  CHECK(Body(get("/api/files/game?game=steam-274520", cookie)).find("\"exported_recipe\":\"recipe-darkwood-steam-274520.json\"") != std::string::npos);
+  CHECK(Body(get("/api/files/game?game=steam-12210", cookie)).find("\"exported_recipe\":\"\"") != std::string::npos);
+  answer = get("/api/files/recipe/export?game=steam-274520", cookie);
+  CHECK(Status(answer) == 200 && Body(answer) == "{\"recipe_id\": \"community-steam-274520\"}\n");
+  CHECK(answer.find("Content-Disposition: attachment; filename*=UTF-8''recipe-darkwood-steam-274520.json") != std::string::npos);
+  answer = get("/api/files/recipe/export?game=steam-12210", cookie);
+  CHECK(Status(answer) == 404 && Body(answer).find("no exported recipe") != std::string::npos);
+  CHECK(Status(get("/api/files/recipe/export?game=nope", cookie)) == 404);
 
   // Lists and paths.
   body = Body(get("/api/files/list?" + game + "user&path=" + Encode("Documents/Rockstar Games/GTA IV/Profiles/ABC"), cookie));

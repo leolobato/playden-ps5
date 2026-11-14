@@ -1206,20 +1206,23 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     check(!overrides().count("graphics") && !overrides().count("unlock.graphics"), "T52 reset locks the row again");
 
     // Export as recipe: a community recipe file that reads back.
-    const auto directory = std::filesystem::temp_directory_path() / ("playden-t52-" + std::to_string(::getpid()));
+    const auto directory = std::filesystem::canonical(std::filesystem::temp_directory_path()) / ("playden-t52-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
     simulation.SetRecipeExportTarget(directory, "13.60");
     playden::homebrew::LiveKitInfo kit_info;
     kit_info.kit_id = "hl2-fw1360-dev1";
     kit_info.version = "0.12-dev.20261022.1";
     simulation.SetKitInfo(kit_info);
+    check(find_row(simulation, "export-recipe") && find_row(simulation, "export-recipe")->subtitle.find("logs") == std::string::npos,
+          "T52 the export row no longer points at the logs folder");
     activate(simulation, "export-recipe");
     check(simulation.state().navigation.modals.back().title == "Recipe exported", "T52 export says where it went");
     check(simulation.state().navigation.modals.back().body.find("playden-ps5-recipes") != std::string::npos,
           "T52 export points at the recipes repository");
     rt::CommunityRecipe community;
     std::string reason;
-    const auto exported_text = read_text(directory / "recipe-900001.json");
+    // Named for the game (its NameKey, cut to 48 bytes) and its install ID.
+    const auto exported_text = read_text(directory / "recipe-a-very-long-journey-beyond-the-last-observatory-steam-900001.json");
     check(rt::ParseCommunityRecipe(exported_text, &community, &reason) &&
               community.tested_firmware == "13.60" && community.executable == "hl2.exe" &&
               community.recipe.dll_overrides == "d3d9=n" && community.recipe.locked.empty(),
@@ -1246,7 +1249,7 @@ void t52_recipe_values_in_game_settings(const std::filesystem::path& fixtures, c
     simulation.SetKitInfo(kit_info);
     activate(simulation, "alert-ok");
     activate(simulation, "export-recipe");
-    check(rt::ParseCommunityRecipe(read_text(directory / "recipe-900001.json"), &community, &reason) &&
+    check(rt::ParseCommunityRecipe(read_text(directory / "recipe-a-very-long-journey-beyond-the-last-observatory-steam-900001.json"), &community, &reason) &&
               community.tested_kit.empty(),
           "T52 an older kit leaves tested_kit empty");
     std::filesystem::remove_all(directory);
@@ -2305,7 +2308,7 @@ void community_recipes_imported(const std::filesystem::path& fixtures, const std
     const auto top = [](playden::homebrew::Simulation& simulation) -> const playden::homebrew::ModalEntry& {
         return simulation.state().navigation.modals.back();
     };
-    const auto directory = std::filesystem::temp_directory_path() / ("playden-imported-recipes-" + std::to_string(::getpid()));
+    const auto directory = std::filesystem::canonical(std::filesystem::temp_directory_path()) / ("playden-imported-recipes-" + std::to_string(::getpid()));
     std::filesystem::remove_all(directory);
     const auto exported = [&](playden::homebrew::Simulation& simulation) {
         while (!simulation.state().navigation.modals.empty() && top(simulation).id != "game-settings") simulation.action("circle");
@@ -2313,7 +2316,7 @@ void community_recipes_imported(const std::filesystem::path& fixtures, const std
         activate(simulation, "export-recipe");
         rt::CommunityRecipe community;
         std::string reason;
-        const auto text = read_text(directory / ("recipe-" + playden::ToKey(night_sky) + ".json"));
+        const auto text = read_text(directory / ("recipe-night-sky-" + playden::ToInstallId(night_sky) + ".json"));
         check(rt::ParseCommunityRecipe(text, &community, &reason), "the imported game's export reads back");
         return community;
     };
@@ -2643,11 +2646,11 @@ void community_recipes_updates_and_fallback(const std::filesystem::path& fixture
               simulation.state().game_settings.at(SteamId(900002)).overrides.count("volume") && !has_row(simulation, "recipe-update"),
           "Use it chooses the new revision and keeps the player's changes");
     // Export remembers the recipe it is based on, and the kit the title runs.
-    const auto directory = std::filesystem::temp_directory_path() / ("playden-recipe-export-" + std::to_string(getpid()));
+    const auto directory = std::filesystem::canonical(std::filesystem::temp_directory_path()) / ("playden-recipe-export-" + std::to_string(getpid()));
     std::filesystem::remove_all(directory);
     simulation.SetRecipeExportTarget(directory, "10.01");
     simulation.export_recipe(SteamId(900002));
-    const auto exported = read_text(directory / "recipe-900002.json");
+    const auto exported = read_text(directory / "recipe-creme-brulee-clockwork-deja-vu-steam-900002.json");
     check(exported.find("\"tested_kit\": \"0.12\"") != std::string::npos || exported.find("\"tested_kit\":\"0.12\"") != std::string::npos,
           "the export names the kit the title runs");
     check(simulation.ExportedRecipeBase(SteamId(900002)) && simulation.ExportedRecipeBase(SteamId(900002))->revision == rev('1'),

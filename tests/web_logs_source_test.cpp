@@ -131,6 +131,10 @@ int main() {
   Put(logs / "title-FAKE78002.ppm", "P6");
   Put(logs / "title-FAKE78003.log", "no report yet\n");
   Put(logs / "screen.ppm", "P6");
+  // Exports an older version wrote here: the player's recipes, never in the list or a report.
+  Put(logs / "recipe-526870.json", "{\"recipe_id\": \"community-steam-526870\"}\n");
+  Put(logs / "recipe-local-2bb7b7fa-e2f3-4b55-a118-7d33aaba5a8f.json", "{}\n");
+  Put(logs / "recipe-440.json.tmp", "{");
   fs::create_directories(logs / "folder");
   Put(root / "playden/user/session.v1", "secret token");
   fs::create_symlink(root / "playden/user/session.v1", logs / "session-link.log");
@@ -164,6 +168,8 @@ int main() {
         index.playden[2].name == "runtime.log.1" && index.playden[3].name == "steam.log");
   CHECK(index.playden[1].size == fs::file_size(logs / "runtime.log") && index.playden[1].changed > 0);
   CHECK(!index.HasFile("session-link.log") && !index.HasFile("screen.ppm") && index.HasFile("title-FAKE78002.registry.txt"));
+  CHECK(!index.HasFile("recipe-526870.json") && !index.HasFile("recipe-local-2bb7b7fa-e2f3-4b55-a118-7d33aaba5a8f.json") &&
+        !index.HasFile("recipe-440.json.tmp"));
   const auto json = source.IndexJson(index);
   CHECK(json.find("{\"title\":\"FAKE78002\",\"app\":40800,\"name\":null,\"last_run\":300,") != std::string::npos);
   CHECK(json.find("\"name\":\"Half-Life 2\"") != std::string::npos && json.find("\"app\":null") != std::string::npos);

@@ -63,6 +63,9 @@ struct FilesConfig {
   // Uses a recipe file for a game (its FileGame id, or empty: the game the recipe is for), on the calling server worker;
   // the controller answers. Empty: the route answers 503.
   std::function<RecipeImportAnswer(const std::string& game, std::string file)> import_recipe;
+  // Where Export as file writes (library/recipe_exports.h): a game's page names its export and GET
+  // /api/files/recipe/export downloads it. Empty: games have none.
+  std::string exported_recipes;
   // How long POST /api/files/move waits for a move across roots before it answers 202 and the move goes on alone.
   int move_wait_ms = 1000;
 };
@@ -114,6 +117,8 @@ class FilesApi {
   std::optional<FileGame> Game(const std::string& id) const;
   bool SettingUp() const;
   std::vector<std::pair<std::string, FileRoot>> Roots(const FileGame& game) const;
+  // The file name of the game's exported recipe, when it has one.
+  std::optional<std::string> ExportedRecipe(const FileGame& game) const;
 
   FilesConfig config_;
   mutable Pairing pairing_;

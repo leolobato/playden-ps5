@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "web/files_api.h"
 
+#include "library/recipe_exports.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -284,6 +286,13 @@ std::vector<std::pair<std::string, FileRoot>> FilesApi::Roots(const FileGame& ga
   return roots;
 }
 
+std::optional<std::string> FilesApi::ExportedRecipe(const FileGame& game) const {
+  if (config_.exported_recipes.empty()) return std::nullopt;
+  const auto id = ParseInstallId(game.id);
+  if (!id) return std::nullopt;
+  return FindExportedRecipe(config_.exported_recipes, *id);
+}
+
 bool FilesApi::Find(const Request& request, Response& response, FileGame* game, FileRoot* root) {
   const auto id = QueryValue(request.query, "game");
   const auto named = QueryValue(request.query, "root");
@@ -392,7 +401,8 @@ void FilesApi::Register(Router& router) {
       for (std::size_t j = 0; j < folder.sample.size(); ++j) body += (j ? "," : "") + Quoted(folder.sample[j]);
       body += "]}";
     }
-    SendJson(response, 200, body + "]," + Field("redist_busy", redist_busy) + "," + Field("all_setting_up", setting_up) + "}");
+    SendJson(response, 200, body + "]," + Field("redist_busy", redist_busy) + "," + Field("all_setting_up", setting_up) + "," +
+                                Field("exported_recipe", ExportedRecipe(*game).value_or(std::string())) + "}");
   });
   router.Exact("/api/files/list", [this](const Request& request, const std::string&, Response& response) {
     if (!RequirePaired(request, response)) return;
@@ -511,6 +521,22 @@ void FilesApi::Register(Router& router) {
     const auto answer = config_.import_recipe(game ? game->id : std::string(), std::move(file));
     if (answer.status != 200) return SendError(response, answer.status, answer.message);
     SendJson(response, 200, "{" + Field("message", answer.message) + "," + Field("game", answer.game) + "}");
+  });
+  // The game's exported recipe, from Export as file in its Game settings. The request names the game only.
+  router.Exact("/api/files/recipe/export", [this](const Request& request, const std::string&, Response& response) {
+    if (!RequirePaired(request, response)) return;
+    const auto id = QueryValue(request.query, "game");
+    const auto game = id ? Game(*id) : std::nullopt;
+    if (!game) return SendError(response, 404, "No such game.");
+    auto name = ExportedRecipe(*game);
+    auto text = name ? ReadExportedRecipe(config_.exported_recipes, *name) : std::nullopt;
+    // An export on the PS5 between finding and reading it replaces the file, under a new name after a rename: once more.
+    if (name && !text) {
+      name = ExportedRecipe(*game);
+      text = name ? ReadExportedRecipe(config_.exported_recipes, *name) : std::nullopt;
+    }
+    if (!text) return SendError(response, 404, "This game has no exported recipe. Export it from Game settings on the PS5.");
+    response.Send(200, "application/json", *text, DownloadHeaders(*name));
   });
   const auto action = [this](FileError (FileStore::*work)(const FileRoot&, const std::string&)) {
     return [this, work](const Request& request, const std::string&, Response& response) {

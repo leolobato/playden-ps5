@@ -55,6 +55,7 @@
 #include "steam/local_session_repository.h"
 #include "steam/secret.h"
 #include "library/cache.h"
+#include "library/recipe_exports.h"
 #include "platform/ps5/display_egl.hpp"
 #include "platform/ps5/pad.hpp"
 #include "platform/ps5/system.hpp"
@@ -545,8 +546,12 @@ int main() {
                                     "self-update: Playden " + playden::update::CurrentVersion().ToString() + " started");
         self_update.Start();
         self_update.Check(false);
-        // "Export as recipe" writes next to the logs, which are read over FTP already.
-        simulation.SetRecipeExportTarget(log_root, playden::ps5::ConsoleFirmwareVersion().value_or(""));
+        // "Export as file" writes into its own folder beside the logs (/data/playden/exported-recipes), readable over
+        // FTP but never in a log report. Older versions wrote into the logs folder: those move once.
+        const auto exported_recipes = std::filesystem::path(log_root).parent_path() / playden::kExportedRecipesFolder;
+        for (const auto& line : playden::MoveLogsFolderRecipes(log_root, exported_recipes))
+            playden::app::AppendLogLine(log_root, "launch.log", line);
+        simulation.SetRecipeExportTarget(exported_recipes, playden::ps5::ConsoleFirmwareVersion().value_or(""));
         // Community recipes, kept by content in the user data (community/recipe_store.h). The runtime
         // reads the objects games use through a second store on the same folder; the service that
         // fetches them starts once the runtime is up (after the root grant and the settings storage).
@@ -1158,6 +1163,8 @@ int main() {
             web_config.files.private_profile_paths.push_back(private_path.generic_string());
         // Browsers paired with "Remember this browser": hashes of their tokens in user data, kept across restarts.
         web_config.files.pairing.store_root = user_root + "/web-access";
+        // A game's page offers its exported recipe for download.
+        web_config.files.exported_recipes = (std::filesystem::path(log_root).parent_path() / playden::kExportedRecipesFolder).string();
         // Recipe files from a paired browser: kept through the community service.
         auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
         recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {

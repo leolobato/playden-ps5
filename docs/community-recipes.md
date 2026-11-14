@@ -44,8 +44,13 @@ and a star by the name of an author the maintainers trust.
    overrides, other rows).
 2. Set the game's rating and note under **Compatibility and note**.
 3. In **Game settings > Advanced**, choose **Export as recipe**. Playden writes
-   `recipe-<game>.json` (`recipe-274520.json`, `recipe-local-<uuid>.json`) next to its logs (`/data/playden/logs` on the console, `logs/`
-   in the data folder on a Mac). `tools/collect_logs.py` puts it in the zip for a test report.
+   `recipe-<game name>-<game ID>.json` (`recipe-half-life-2-steam-220.json`, `recipe-night-sky-local-<uuid>.json`) into
+   its own folder: `/data/playden/exported-recipes` on the console, `exported-recipes/` in the data folder on a Mac. The
+   name is the game's name in lowercase ASCII letters, digits and `-` (at most 48 bytes), left out when nothing of it is
+   left; the ID keeps the names unique. A new export of the game replaces its earlier one. Get the file over FTP, or
+   from web access: the game's page in **Game files** has **Download exported recipe**. Exports are not logs: the Logs
+   tab, its report and `tools/collect_logs.py` leave them out. Older versions wrote `recipe-<game>.json` into the logs
+   folder; Playden moves those to the new folder when it starts.
 4. Fill in what the export leaves for you:
    - a slug, added to `recipe_id`: `community-<store>-<key>` becomes `community-<store>-<key>-<slug>`;
    - `community.title`, the name players see when they choose a recipe (optional);

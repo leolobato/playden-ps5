@@ -1441,7 +1441,8 @@ public:
     void SetGameSetups(std::map<GameId, LiveGameSetup> setups);
     // Live: games whose folder the Program picker needs scanned.
     [[nodiscard]] std::vector<GameId> TakeProgramScanRequests();
-    // Where "Export as recipe" writes recipe-<app id>.json, and the console's firmware for its metadata.
+    // The folder "Export as file" writes into (exported-recipes, beside the logs; library/recipe_exports.h), and the
+    // console's firmware for its metadata.
     void SetRecipeExportTarget(std::filesystem::path directory, std::string firmware);
     [[nodiscard]] const playden::runtime::GameRecipe& RecipeFor(GameId id) const;
     [[nodiscard]] bool EffectiveSettingsFor(GameId id, playden::runtime::EffectiveSettings* settings) const;
@@ -1461,7 +1462,7 @@ public:
     void open_setting(const std::string& id);
     // The actions of a row whose value the recipe starts (edit, reset, library override entries).
     [[nodiscard]] std::vector<std::string> setting_value_actions(const std::string& id) const;
-    // "Export as recipe": the game's effective settings as recipe-<app id>.json for a pull request.
+    // "Export as file": the game's effective settings as recipe-<game name>-<install id>.json for a pull request.
     void export_recipe(GameId id);
 
     // Community recipes (docs/community-recipes.md). The catalog the service has (no IO here), and

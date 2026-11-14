@@ -700,7 +700,9 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
     return element("div", {},
       element("div", { class: "sub", text: "Recipe" }),
       element("p", { class: "note", text: "Import a recipe file, such as one from Export as recipe or the recipes repository. The game uses it on the PS5 right away, and keeps your changes that still apply." }),
-      element("div", { class: "bar" }, recipe.button, recipe.picker),
+      element("div", { class: "bar" }, recipe.button, recipe.picker,
+        game.exported_recipe ? anchor("Download exported recipe", `/api/files/recipe/export?${q({ game: game.id })}`) : ""),
+      game.exported_recipe ? element("p", { class: "note", text: `${game.exported_recipe}, from Export as file in the game's settings on the PS5.` }) : "",
       recipe.status);
   };
 

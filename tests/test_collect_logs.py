@@ -137,19 +137,18 @@ class CollectLogsTests(unittest.TestCase):
         finally:
             collect_logs.folders, collect_logs.fetch = folders, fetch
 
-    def test_exported_recipes_go_in_the_bundle(self):
-        self.assertTrue(collect_logs.is_recipe('recipe-274520.json'))
-        for other in ('recipe-274520.json.tmp', 'recipe-.json', 'recipe-abc.json', 'runtime.log', 'title-FAKE78001.log',
-                      'xrecipe-1.json'):
+    def test_exported_recipes_stay_out_of_the_bundle(self):
+        for name in ('recipe-274520.json', 'recipe-274520.json.tmp', 'recipe-gog-1207658924.json',
+                     'recipe-local-2bb7b7fa-e2f3-4b55-a118-7d33aaba5a8f.json'):
+            self.assertTrue(collect_logs.is_recipe(name), name)
+        for other in ('recipe-.json', 'recipe-abc.json', 'recipe-0.json', 'runtime.log', 'title-FAKE78001.log',
+                      'xrecipe-1.json', 'recipe-local-nope.json'):
             self.assertFalse(collect_logs.is_recipe(other), other)
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / 'bundle.zip'
-            collect_logs.write_bundle(out, '| Field | Value |\n', {'runtime.log': 'started\n'},
-                                      {'recipe-274520.json': '{"recipe_id": "community-steam-274520"}\n'})
+            collect_logs.write_bundle(out, '| Field | Value |\n', {'runtime.log': 'started\n'})
             with zipfile.ZipFile(out) as archive:
-                self.assertEqual(sorted(archive.namelist()),
-                                 ['logs/runtime.log', 'recipes/recipe-274520.json', 'summary.md'])
-                self.assertIn('community-steam-274520', archive.read('recipes/recipe-274520.json').decode())
+                self.assertEqual(sorted(archive.namelist()), ['logs/runtime.log', 'summary.md'])
 
 
 class StubPlayden(http.server.BaseHTTPRequestHandler):

@@ -1,4 +1,5 @@
 #include "library/query.h"
+#include "library/recipe_exports.h"
 // simulation.cpp - Deterministic state transitions for the Playden UI comparison.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
@@ -7998,7 +7999,7 @@ void Simulation::rebuild_view() {
             } else if (settings_ready && action_key == "export-recipe") {
                 item.kind = RowKind::Action;
                 item.title = "Export as file";
-                item.subtitle = "Saves these settings as recipe-<app id>.json in Playden's logs folder, for FTP.";
+                item.subtitle = "Saves these settings as a recipe file named for the game, for FTP or web access.";
                 item.enabled = settings_values.launch != nullptr;
             } else if (settings_ready && !modal.setting_id.empty() && action_key.rfind("program-", 0) == 0 && action_key != "program-scan") {
                 // A program from the game folder, in the Program picker.
@@ -15748,33 +15749,17 @@ void Simulation::export_recipe(GameId id) {
         push_notice({"recipe-exported", "Recipe exported", "", false, kLiveNoticeSeconds, false, "Simulated"});
         return;
     }
-    const auto path = recipe_export_directory_ / ("recipe-" + ToKey(id) + ".json");
-    const auto temporary = recipe_export_directory_ / ("recipe-" + ToKey(id) + ".json.tmp");
-    std::error_code error;
-    std::filesystem::create_directories(recipe_export_directory_, error);
-    // POSIX calls, not iostreams: the console's C library lacks the locale functions they need.
-    bool written = false;
-    const int file = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
-    if (file >= 0) {
-        std::size_t done = 0;
-        while (done < text.size()) {
-            const auto count = ::write(file, text.data() + done, text.size() - done);
-            if (count < 0 && errno == EINTR) continue;
-            if (count <= 0) break;
-            done += static_cast<std::size_t>(count);
-        }
-        written = done == text.size() && ::fsync(file) == 0;
-        written = ::close(file) == 0 && written;
-    }
-    if (written) std::filesystem::rename(temporary, path, error);
-    if (!written || error) {
-        std::filesystem::remove(temporary, error);
-        push_notice({"recipe-exported", "The recipe could not be saved", "", false, kLiveNoticeSeconds, true, path.string()});
+    // Its own folder beside the logs, named for the game: never in the logs folder, so never in a log report.
+    const auto path = WriteExportedRecipe(recipe_export_directory_, id, community.game_name, text);
+    if (!path) {
+        push_notice({"recipe-exported", "The recipe could not be saved", "", false, kLiveNoticeSeconds, true,
+                     recipe_export_directory_.string()});
         return;
     }
     ModalEntry done{"confirmation", "Recipe exported", "export-recipe", {"alert-ok"}, 0, false};
-    done.body = "Saved to " + path.string() + ". Give it a title, a slug and your name as author, then send it as a "
-                "pull request to github.com/leolobato/playden-ps5-recipes.";
+    done.body = "Saved to " + path->string() + ". Web access has it on the game's page, under Game files. Give it a "
+                "title, a slug and your name as author, then send it as a pull request to "
+                "github.com/leolobato/playden-ps5-recipes.";
     open_modal(std::move(done));
 }
 
