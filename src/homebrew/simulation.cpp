@@ -999,6 +999,19 @@ std::string import_volume_name(const std::string& volume) {
     return volume;
 }
 
+// A folder without a program, and why the search may have missed one (the bounds are scanner.h's).
+static_assert(playden::stores::local::kMaxScanEntries == 1000000 && playden::stores::local::kMaxScanDepth == 16);
+std::string import_no_program_text(ImportScanGap gap) {
+    switch (gap) {
+    case ImportScanGap::None: break;
+    case ImportScanGap::Failed: return "Playden could not read this folder";
+    case ImportScanGap::TooManyFiles: return "No Windows program found · The search stopped after 1,000,000 files and folders";
+    case ImportScanGap::TooDeep: return "No Windows program found · Folders more than 15 levels deep were not searched";
+    case ImportScanGap::Unreadable: return "No Windows program found · Some files or folders could not be read";
+    }
+    return "No Windows program found";
+}
+
 std::string import_candidate_key(const LiveImportCandidate& candidate) {
     return "import-candidate-" + candidate.volume_id + ":" + candidate.folder;
 }
@@ -1007,27 +1020,25 @@ std::string import_candidate_key(const LiveImportCandidate& candidate) {
 // one copy only, one without a program).
 std::vector<LiveImportCandidate> fixture_import_candidates() {
     std::vector<LiveImportCandidate> candidates;
-    const auto add = [&](std::string volume, std::string folder, std::string path, std::string title,
-                         std::uint64_t bytes, bool ascii_ok, std::vector<LiveImportProgram> programs,
-                         std::uint64_t files = 0) {
+    const auto add = [&](std::string volume, std::string folder, std::string path, std::string title, bool ascii_ok,
+                         std::vector<LiveImportProgram> programs) {
         LiveImportCandidate candidate;
         candidate.volume_id = std::move(volume); candidate.folder = std::move(folder); candidate.path = std::move(path);
-        candidate.title = std::move(title); candidate.total_bytes = bytes; candidate.ascii_ok = ascii_ok;
-        candidate.programs = std::move(programs); candidate.file_count = files;
+        candidate.title = std::move(title); candidate.ascii_ok = ascii_ok; candidate.programs = std::move(programs);
         candidates.push_back(std::move(candidate));
     };
-    add("usb0", "playden/import/Night Sky", "/mnt/usb0/playden/import/Night Sky", "Night Sky", 412'000'000, true,
-        {{"NightSky.exe", 18'000'000, false}}, 120);
-    add("usb0", "playden/import/Old School Rally", "/mnt/usb0/playden/import/Old School Rally", "Old School Rally",
-        938'000'000, true, {{"OldSchoolRally.exe", 640'000'000, false}, {"Benchmark/RallyBench.exe", 12'000'000, false},
-         {"UnityCrashHandler64.exe", 1'400'000, true}}, 2400);
-    add("usb0", "playden/import/Café Étoile", "/mnt/usb0/playden/import/Café Étoile", "Café Étoile", 1'250'000'000,
-        false, {{"CafeEtoile.exe", 96'000'000, false}, {"redist/vcredist_x64.exe", 14'000'000, true}}, 300);
-    add("m2", "playden/import/Delores", "/mnt/ext1/playden/import/Delores", "Delores", 230'000'000, true,
-        {{"Delores.exe", 9'000'000, false}}, 80);
-    add("internal", "playden-import/Hollow Knight", "/data/playden-import/Hollow Knight", "Hollow Knight",
-        8'900'000'000, true, {{"hollow_knight.exe", 650'000, false}}, 1500);
-    add("internal", "playden-import/Tools", "/data/playden-import/Tools", "Tools", 3'000'000, true, {});
+    add("usb0", "playden/import/Night Sky", "/mnt/usb0/playden/import/Night Sky", "Night Sky", true,
+        {{"NightSky.exe", 18'000'000, false}});
+    add("usb0", "playden/import/Old School Rally", "/mnt/usb0/playden/import/Old School Rally", "Old School Rally", true,
+        {{"OldSchoolRally.exe", 640'000'000, false}, {"Benchmark/RallyBench.exe", 12'000'000, false},
+         {"UnityCrashHandler64.exe", 1'400'000, true}});
+    add("usb0", "playden/import/Café Étoile", "/mnt/usb0/playden/import/Café Étoile", "Café Étoile", false,
+        {{"CafeEtoile.exe", 96'000'000, false}, {"redist/vcredist_x64.exe", 14'000'000, true}});
+    add("m2", "playden/import/Delores", "/mnt/ext1/playden/import/Delores", "Delores", true,
+        {{"Delores.exe", 9'000'000, false}});
+    add("internal", "playden-import/Hollow Knight", "/data/playden-import/Hollow Knight", "Hollow Knight", true,
+        {{"hollow_knight.exe", 650'000, false}});
+    add("internal", "playden-import/Tools", "/data/playden-import/Tools", "Tools", true, {});
     return candidates;
 }
 
@@ -1483,15 +1494,12 @@ Simulation::ImportSubject Simulation::import_subject() const {
     if (import_choice_game_.valid()) {
         const auto* game = find_game(state_, import_choice_game_);
         if (game) subject.title = game->title;
+        // The import scan doesn't measure folders: an in-place game's size is known once a copy plan measures it.
         if (game && game->install_bytes) subject.bytes = *game->install_bytes;
-        // An in-place game's size comes from the import scan when the library has none.
-        for (const auto& candidate : state_.import_candidates)
-            if (candidate.imported == import_choice_game_ && !subject.bytes) subject.bytes = candidate.total_bytes;
         if (const auto* external = external_game(import_choice_game_)) subject.volume = external->volume_id;
     } else if ((subject.candidate = import_candidate(import_programs_key_))) {
         subject.title = subject.candidate->title;
         subject.volume = subject.candidate->volume_id;
-        subject.bytes = subject.candidate->total_bytes;
         subject.ascii_ok = subject.candidate->ascii_ok;
     }
     return subject;
@@ -1568,9 +1576,11 @@ void Simulation::start_import_transfer(GameId id, ImportRequestKind kind, const 
         import_transfers_starting_[id] = kind;
         return;
     }
-    // Fixture mode: a copy is a job in Queue (its drive, or the default); a move is instant.
+    // Fixture mode: a copy is a job in Queue (its drive, or the default); a move is instant. The scan has no size: the
+    // fixture stands in for the copy plan, which measures the folder.
+    constexpr std::uint64_t kFixtureMeasuredBytes = 2'000'000'000;
     const auto* game = find_game(state_, id);
-    const auto bytes = game && game->install_bytes ? *game->install_bytes : std::uint64_t{0};
+    const auto bytes = game && game->install_bytes ? *game->install_bytes : kFixtureMeasuredBytes;
     if (kind == ImportRequestKind::CopyIntoPlayden) {
         if (import_copy_job(id)) return;
         state_.jobs.push_back({next_job_id(), id, "install", next_queue_order(state_), JobStage::Download, JobState::Queued, 0,
@@ -1634,7 +1644,6 @@ void Simulation::add_import_candidate(const std::string& key, std::optional<Impo
         game.id = GameId::Local(uuid);
         game.title = candidate->title;
         game.source = "Imported";
-        game.install_bytes = candidate->total_bytes;
         if (!find_game(state_, game.id)) state_.games.push_back(game);
         if (!external_game(game.id)) state_.external_games.push_back({game.id, candidate->volume_id, true, ""});
         for (auto& entry : state_.import_candidates)
@@ -8186,10 +8195,10 @@ void Simulation::rebuild_view() {
             else if (modal.id == "import-games" && action_key.rfind("import-candidate-", 0) == 0) {
                 if (const auto* candidate = import_candidate(action_key)) {
                     item.title = candidate->title;
-                    item.value = candidate->imported.valid() ? std::string("Added") : format_bytes(candidate->total_bytes);
+                    item.value = candidate->imported.valid() ? std::string("Added") : std::string();
                     item.subtitle = candidate->path;
                     if (candidate->imported.valid()) item.game_id = candidate->imported;
-                    else if (candidate->programs.empty()) { item.subtitle = "No Windows program found"; item.enabled = false; }
+                    else if (candidate->programs.empty()) { item.subtitle = import_no_program_text(candidate->gap); item.enabled = false; }
                     else if (!candidate->ascii_ok) item.subtitle += " · Copy only";
                     // An add on its way, or why the last one was refused.
                     if (!candidate->imported.valid() && pending_imports_.count(action_key)) {

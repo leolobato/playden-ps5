@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace playden::stores::local {
@@ -585,14 +586,18 @@ void LocalLibrarySource::Scan() {
       candidate.volume = volume.volume;
       candidate.folder = Join(volume.folder, name);
       candidate.path = Join(root, name);
+      const auto started = std::chrono::steady_clock::now();
       const auto scan = ScanGameFolder(HostPath(candidate.path));
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
       candidate.status = scan.status;
       candidate.title = scan.title.empty() ? TitleForFolder(candidate.path) : scan.title;
       candidate.programs = scan.programs;
-      candidate.total_bytes = scan.total_bytes;
-      candidate.file_count = scan.file_count;
       candidate.ascii_ok = IsPlayableInPlace(candidate.path);
-      candidate.partial = scan.limit_reached || scan.deeper_folders;
+      candidate.gap = GapOf(scan);
+      Log("import scan folder=" + candidate.path + " status=" + std::to_string(static_cast<int>(scan.status)) +
+          " entries=" + std::to_string(scan.entries) + " programs=" + std::to_string(scan.programs.size()) +
+          " unreadable=" + std::to_string(scan.unreadable) + " gap=" + std::to_string(static_cast<int>(candidate.gap)) +
+          " ms=" + std::to_string(elapsed.count()));
       if (const auto known = store_.FindByFolder(candidate.volume, candidate.folder)) candidate.imported_id = known->id;
       candidates.push_back(std::move(candidate));
     }

@@ -66,8 +66,7 @@ struct Frame {
   DIR* listing = nullptr;
   std::string relative;  // empty for the game folder itself
   int level = 0;         // its children are level + 1 components deep
-  // Its subfolders (name, listed inode), walked once its own entries are done, so a folder's programs are found
-  // before the entry limit is spent below it.
+  // Its subfolders (name, listed inode), walked once its own entries are done: one listing open per level.
   std::vector<std::pair<std::string, std::uint64_t>> folders;
   std::size_t next_folder = 0;
 };
@@ -177,7 +176,7 @@ void RankPrograms(std::vector<Program>& programs, const std::string& title) {
   });
 }
 
-FolderScan ScanGameFolder(const std::string& folder_path) {
+FolderScan ScanGameFolder(const std::string& folder_path, const ScanLimits& limits) {
   FolderScan scan;
   const auto folder = Trimmed(folder_path);
   scan.title = TitleForFolder(folder);
@@ -188,9 +187,9 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     scan.status = StatusForOpen(scan.error);
     return scan;
   }
-  // The walk keeps one frame per level (at most kMaxProgramDepth): bounded descriptors and stack.
+  // The walk keeps one frame per level (at most limits.max_depth): bounded descriptors (scanner.h).
   std::vector<Frame> stack;
-  stack.reserve(kMaxProgramDepth + 1);
+  stack.reserve(static_cast<std::size_t>(std::max(limits.max_depth, 1)));
   Frame first;
   if (!OpenFrame(root, {}, 0, &first)) {
     scan.error = errno;
@@ -198,9 +197,14 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     return scan;
   }
   stack.push_back(std::move(first));
-  std::size_t entries = 0;
+  const std::size_t max_programs = std::max<std::size_t>(limits.max_programs, 1);
+  // Past twice the cap the list is ranked and the best kept, so the game is kept wherever the walk meets it.
+  const auto trim_programs = [&] {
+    RankPrograms(scan.programs, scan.title);
+    if (scan.programs.size() > max_programs) scan.programs.resize(max_programs);
+  };
   ScanStatus status = ScanStatus::kOk;
-  while (!stack.empty() && status == ScanStatus::kOk && !scan.limit_reached) {
+  while (!stack.empty() && status == ScanStatus::kOk) {
     Frame& frame = stack.back();
     errno = 0;
     const auto* entry = ::readdir(frame.listing);
@@ -208,13 +212,8 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
       if (errno != 0) { scan.error = errno; status = ScanStatus::kFailed; break; }
       if (frame.next_folder < frame.folders.size()) {
         const auto& [name, listed] = frame.folders[frame.next_folder++];
-        const int child = platform::OpenWalkChildUnprivileged(frame.fd, name.c_str(), kOpenAny, listed);
-        struct stat info{};
-        if (child < 0 || ::fstat(child, &info) != 0 || !S_ISDIR(info.st_mode)) {
-          if (child >= 0) ::close(child);
-          ++scan.unreadable;
-          continue;
-        }
+        const int child = platform::OpenWalkChildUnprivileged(frame.fd, name.c_str(), kOpenFolder, listed);
+        if (child < 0) { ++scan.unreadable; continue; }  // gone, or swapped for a link or a file
         Frame next;
         const auto relative = frame.relative.empty() ? name : frame.relative + "/" + name;
         if (!OpenFrame(child, relative, frame.level + 1, &next)) { ++scan.unreadable; continue; }
@@ -227,10 +226,36 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     }
     const std::string name = entry->d_name;
     if (name == "." || name == "..") continue;
-    if (++entries > kMaxScanEntries) { scan.limit_reached = true; break; }
+    if (++scan.entries > limits.max_entries) { --scan.entries; scan.limit_reached = true; break; }
     if (name.front() == '.') continue;
-    if (entry->d_type == DT_LNK) continue;
+    const auto type = limits.ignore_listed_types ? DT_UNKNOWN : entry->d_type;
+    if (type == DT_LNK) continue;
+    const bool program_name = EndsWithExe(name);
+    // Only folders and programs are opened: a listed file of another kind costs the readdir alone.
+    if (type != DT_DIR && type != DT_UNKNOWN && !program_name) continue;
     const auto listed = static_cast<std::uint64_t>(entry->d_fileno);
+    // A folder below the deepest level: its entries would be deeper than programs are looked for.
+    const bool too_deep = frame.level + 1 >= limits.max_depth;
+    if (type == DT_DIR) {
+      if (too_deep) scan.deeper_folders = true;
+      else frame.folders.emplace_back(name, listed);
+      continue;
+    }
+    if (!program_name) {
+      // No type in the listing (exFAT may give none): opening it as a folder tells, as ScanImportRoot does. A file
+      // fails with ENOTDIR before anything is read; a link fails with ELOOP/EMLINK and is never followed.
+      const int child = platform::OpenWalkChildUnprivileged(frame.fd, name.c_str(), kOpenFolder, listed);
+      if (child < 0) {
+        const int error = errno;
+        if (Unsupported(error)) { scan.error = error; status = ScanStatus::kUnsupported; break; }
+        if (error != ENOTDIR && error != ELOOP && error != EMLINK) ++scan.unreadable;
+        continue;
+      }
+      ::close(child);
+      if (too_deep) scan.deeper_folders = true;
+      else frame.folders.emplace_back(name, listed);
+      continue;
+    }
     const int child = platform::OpenWalkChildUnprivileged(frame.fd, name.c_str(), kOpenAny, listed);
     if (child < 0) {
       const int error = errno;
@@ -240,23 +265,19 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
       continue;
     }
     struct stat info{};
-    if (::fstat(child, &info) != 0) { ::close(child); ++scan.unreadable; continue; }
-    const auto relative = frame.relative.empty() ? name : frame.relative + "/" + name;
-    if (S_ISDIR(info.st_mode)) {
-      ::close(child);
-      // Its entries would be deeper than programs are looked for.
-      if (frame.level + 1 >= kMaxProgramDepth) scan.deeper_folders = true;
+    const bool stated = ::fstat(child, &info) == 0;
+    ::close(child);
+    if (!stated) { ++scan.unreadable; continue; }
+    if (S_ISDIR(info.st_mode)) {  // a folder named like a program
+      if (too_deep) scan.deeper_folders = true;
       else frame.folders.emplace_back(name, listed);
       continue;
     }
-    ::close(child);
     if (!S_ISREG(info.st_mode)) continue;
+    const auto relative = frame.relative.empty() ? name : frame.relative + "/" + name;
     const auto bytes = info.st_size > 0 ? static_cast<std::uint64_t>(info.st_size) : 0;
-    scan.total_bytes += bytes;
-    ++scan.file_count;
-    if (!EndsWithExe(name)) continue;
-    if (scan.programs.size() >= kMaxScanPrograms) { scan.limit_reached = true; break; }
     scan.programs.push_back(Program{relative, bytes, IsLikelyHelper(relative), IsPlayableInPlace(relative)});
+    if (scan.programs.size() >= 2 * max_programs) trim_programs();
   }
   for (auto& frame : stack) Close(frame);
   scan.status = status;
@@ -264,8 +285,16 @@ FolderScan ScanGameFolder(const std::string& folder_path) {
     scan.programs.clear();
     return scan;
   }
-  RankPrograms(scan.programs, scan.title);
+  trim_programs();
   return scan;
+}
+
+ScanGap GapOf(const FolderScan& scan) {
+  if (scan.status != ScanStatus::kOk) return ScanGap::kFailed;
+  if (scan.limit_reached) return ScanGap::kTooManyEntries;
+  if (scan.deeper_folders) return ScanGap::kTooDeep;
+  if (scan.unreadable) return ScanGap::kUnreadable;
+  return ScanGap::kNone;
 }
 
 ProgramCheck CheckProgram(const std::string& folder, const std::string& program) {
@@ -341,7 +370,7 @@ CandidateScan ScanImportRoot(const std::string& root_path) {
     }
     const std::string name = entry->d_name;
     if (name == "." || name == "..") continue;
-    if (++entries > kMaxScanEntries) { scan.limit_reached = true; break; }
+    if (++entries > kMaxImportRootEntries) { scan.limit_reached = true; break; }
     if (name.front() == '.' || entry->d_type == DT_LNK) continue;
     if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) continue;
     const int child = platform::OpenWalkChild(frame.fd, name.c_str(), kOpenFolder,

@@ -486,17 +486,17 @@ struct LiveImportProgram {
     bool helper = false;  // an installer or tool, ranked last
     bool operator==(const LiveImportProgram&) const = default;
 };
+// Why a folder's program list may be incomplete (stores/local ScanGap), the most serious first.
+enum class ImportScanGap { None, Failed, TooManyFiles, TooDeep, Unreadable };
 struct LiveImportCandidate {
     std::string volume_id;
     std::string folder;  // relative to the volume's mount
     std::string path;    // console path
     std::string title;
     std::vector<LiveImportProgram> programs;  // ranked: the likely game first
-    std::uint64_t total_bytes = 0;  // estimate
     bool ascii_ok = false;  // can play in place
-    bool partial = false;   // the scan stopped at a limit or depth
+    ImportScanGap gap = ImportScanGap::None;
     GameId imported;        // already in the library as this game; invalid when not
-    std::uint64_t file_count = 0;  // files in the folder (0 when unknown)
     bool operator==(const LiveImportCandidate&) const = default;
 };
 // Requests for the Local store: look for games, add a candidate (in place), remove an imported game.

@@ -1475,13 +1475,13 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
               row("settings-import")->value == "6 found",
           "T17 Settings › Library counts the folders found");
 
-    // Candidates: sizes, Added, copy only, no program.
+    // Candidates: Added, copy only, no program (no size: the scan doesn't measure folders).
     check(simulation.scenario("import-candidates"), "T17 import-candidates scenario");
     check(simulation.state().navigation.focus_key == "import-candidate-usb0:playden/import/Old School Rally",
           "T17 the focus starts on the first game not added");
     check(row("import-candidate-usb0:playden/import/Night Sky")->value == "Added", "T17 an added folder says Added");
     const auto* rally = row("import-candidate-usb0:playden/import/Old School Rally");
-    check(rally->value == "938 MB" && rally->subtitle == "/mnt/usb0/playden/import/Old School Rally", "T17 size and path");
+    check(rally->value.empty() && rally->subtitle == "/mnt/usb0/playden/import/Old School Rally", "T17 path, no size");
     check(row("import-candidate-usb0:playden/import/Café Étoile")->subtitle.find(" · Copy only") != std::string::npos,
           "T17 a non-ASCII path can only be copied");
     const auto* tools = row("import-candidate-internal:playden-import/Tools");
@@ -1515,7 +1515,7 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
               simulation.view().subtitle == "You can import it into Playden later from the game's page." &&
               row("import-play-in-place")->title == "Play from the USB drive" &&
               row("import-play-in-place")->subtitle == "Nothing is copied. Keep the drive plugged in." &&
-              row("import-copy")->title == "Copy to storage…" && row("import-copy")->value == "938 MB" &&
+              row("import-copy")->title == "Copy to storage…" && row("import-copy")->value.empty() &&
               row("import-copy")->subtitle == "Copies the game. You pick the storage next." &&
               simulation.state().navigation.focus_key == "import-copy",
           "T17 choosing the program asks where the game files live, Import focused");
@@ -1603,12 +1603,12 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     press("import-candidate-internal:playden-import/Hollow Knight");
     check(row("import-play-in-place")->title == "Play from the drop folder" &&
               row("import-play-in-place")->subtitle == "Nothing moves. The files stay in /data/playden-import." &&
-              row("import-copy")->title == "Move to storage…" && row("import-copy")->value == "8.9 GB" &&
+              row("import-copy")->title == "Move to storage…" && row("import-copy")->value.empty() &&
               row("import-copy")->subtitle == "Takes the game out of the drop folder. You pick the storage next." &&
               !row("import-move") && !row("storage-picker"),
           "T18 a drop-folder game plays from there or is imported");
     press("import-copy");
-    check(simulation.view().surface == "import-storage" && simulation.view().subtitle == "8.9 GB. The game leaves the drop folder." &&
+    check(simulation.view().surface == "import-storage" && simulation.view().subtitle == "The game leaves the drop folder." &&
               row("volume-internal")->subtitle == "Instant · moves the folder" && row("volume-internal")->enabled &&
               row("volume-external")->subtitle == "Copies, then frees the drop folder",
           "T18 the drop folder's drive choice says what each drive does");

@@ -2057,8 +2057,19 @@ void Controller::TickImports() {
   local_revision_ = snapshot->revision;
   std::vector<LiveImportCandidate> candidates;
   for (const auto& candidate : snapshot->candidates) {
-    LiveImportCandidate live{candidate.volume, candidate.folder, candidate.path, candidate.title, {},
-                             candidate.total_bytes, candidate.ascii_ok, candidate.partial, {}, candidate.file_count};
+    LiveImportCandidate live;
+    live.volume_id = candidate.volume;
+    live.folder = candidate.folder;
+    live.path = candidate.path;
+    live.title = candidate.title;
+    live.ascii_ok = candidate.ascii_ok;
+    switch (candidate.gap) {
+      case stores::local::ScanGap::kNone: live.gap = ImportScanGap::None; break;
+      case stores::local::ScanGap::kFailed: live.gap = ImportScanGap::Failed; break;
+      case stores::local::ScanGap::kTooManyEntries: live.gap = ImportScanGap::TooManyFiles; break;
+      case stores::local::ScanGap::kTooDeep: live.gap = ImportScanGap::TooDeep; break;
+      case stores::local::ScanGap::kUnreadable: live.gap = ImportScanGap::Unreadable; break;
+    }
     for (const auto& program : candidate.programs) live.programs.push_back({program.path, program.bytes, program.helper});
     if (!candidate.imported_id.empty()) live.imported = GameId::Local(candidate.imported_id);
     candidates.push_back(std::move(live));

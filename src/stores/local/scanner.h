@@ -11,12 +11,19 @@
 
 namespace playden::stores::local {
 
-// Programs are looked for this many components deep: "a/b/c/game.exe" is the deepest.
-inline constexpr int kMaxProgramDepth = 4;
-// Entries listed (any kind, hidden ones included) and programs found before a scan stops.
-inline constexpr std::size_t kMaxScanEntries = 20000;
+// Programs are looked for this many components deep: 16 means "a/b/.../o/game.exe" (15 folders) is the deepest. The
+// walk keeps one open folder per level, two descriptors each (its own and its listing's), and a PS5 title can hold
+// only about 256 open files at once, all workers together: 16 levels stay at 32. Windows games mostly keep their
+// paths under MAX_PATH (260 characters), so a game's program is rarely this deep.
+inline constexpr int kMaxScanDepth = 16;
+// Entries a game folder scan lists (any kind, hidden ones included) before it stops: a safety bound against a
+// pathological tree, far above any game (the report that raised it had 46 311 files). Listing an entry costs only
+// the readdir; a folder, a name ending in .exe and an entry whose listing gives no type are opened.
+inline constexpr std::size_t kMaxScanEntries = 1000000;
+// Programs a scan keeps: the best ranked (RankPrograms), wherever in the folder they are.
 inline constexpr std::size_t kMaxScanPrograms = 512;
-// Folders an import root lists before its scan stops.
+// Entries an import root lists, and folders it offers, before its scan stops.
+inline constexpr std::size_t kMaxImportRootEntries = 20000;
 inline constexpr std::size_t kMaxImportCandidates = 512;
 
 enum class ScanStatus {
@@ -41,20 +48,32 @@ struct FolderScan {
   int error = 0;  // errno of the failure
   std::string title;
   std::vector<Program> programs;  // ranked: the likely game first
-  // Regular files the walk saw (hidden files and links left out). Display estimates only: they
-  // cover the first kMaxProgramDepth levels and stop at the limits; the copy plan has the real totals.
-  std::uint64_t total_bytes = 0;
-  std::uint64_t file_count = 0;
-  bool deeper_folders = false;  // folders below kMaxProgramDepth were not walked
+  // The scan does not add up the folder's size: that would open every file. The copy plan measures it.
+  std::size_t entries = 0;  // entries listed
+  bool deeper_folders = false;  // folders below kMaxScanDepth were not walked
   // The folder's console path passes IsPlayableInPlace: only then can it play in place (the
   // descriptor rule and Wine's path); otherwise it can only be copied or moved into Playden.
   bool printable_path = false;
-  bool limit_reached = false;  // kMaxScanEntries or kMaxScanPrograms: the lists are partial
+  bool limit_reached = false;  // kMaxScanEntries: the walk stopped, the list may miss programs
   std::size_t unreadable = 0;  // entries that could not be opened and were skipped
 };
 
+// The bounds of a scan; tests make them small. `ignore_listed_types` classifies every entry as if its listing gave
+// no type (DT_UNKNOWN, as exFAT may), so the host can run the path the console's drives take.
+struct ScanLimits {
+  std::size_t max_entries = kMaxScanEntries;
+  int max_depth = kMaxScanDepth;
+  std::size_t max_programs = kMaxScanPrograms;
+  bool ignore_listed_types = false;
+};
+
+// Why a scan may have missed programs, the most serious first: the folder could not be scanned, the walk stopped at
+// kMaxScanEntries, folders were deeper than kMaxScanDepth, or some entries could not be opened.
+enum class ScanGap { kNone, kFailed, kTooManyEntries, kTooDeep, kUnreadable };
+ScanGap GapOf(const FolderScan& scan);
+
 // Scans an absolute console path such as /mnt/usb0/playden/import/Delores.
-FolderScan ScanGameFolder(const std::string& folder);
+FolderScan ScanGameFolder(const std::string& folder, const ScanLimits& limits = {});
 
 // The folder's name, or its parent's when the name is generic ("game", "bin", "x64", ...), unless
 // the parent is an import root (playden/import, playden-import) or the file system root.

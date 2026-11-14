@@ -74,7 +74,7 @@ void ExecutablesListTheGameFirstAndHelpersLast() {
          std::set<std::string>{"unins000.exe", "_Redist/dxsetup.exe", "_Redist/vcredist_x86.exe", "UnityCrashHandler64.exe"}));
   CHECK(std::all_of(scan.programs.begin() + 2, scan.programs.end(), [](const Program& p) { return p.helper; }));
   CHECK(!scan.programs[0].helper && !scan.programs[1].helper);
-  CHECK(scan.file_count == 6 && scan.total_bytes == 900 + 100 + 2000 + 2000 + 5000 + 3000);
+  CHECK(scan.entries == 8 && scan.unreadable == 0);
   CHECK(!scan.limit_reached && !scan.deeper_folders && scan.printable_path);
 }
 
@@ -109,7 +109,8 @@ void ProgramChecks() {
   CHECK(IsSafeRelativePath("a b/c.exe") && !IsSafeRelativePath(std::string("a\0b", 3)));
 }
 
-void LinksAreNeverFollowed() {
+// `untyped`: as if every listing entry had no type (DT_UNKNOWN), as exFAT may give.
+void LinksAreNeverFollowed(bool untyped) {
   TemporaryDirectory root;
   File(root.path / "outside/Secret.exe", 10'000);
   File(root.path / "outside/dir/Other.exe", 10'000);
@@ -118,10 +119,12 @@ void LinksAreNeverFollowed() {
   fs::create_directory_symlink(root.path / "outside/dir", root.path / "Game/linked-dir");
   fs::create_symlink("../outside/Secret.exe", root.path / "Game/Relative.exe");
   const auto game = (root.path / "Game").string();
-  const auto scan = ScanGameFolder(game);
+  ScanLimits limits;
+  limits.ignore_listed_types = untyped;
+  const auto scan = ScanGameFolder(game, limits);
   CHECK(scan.status == ScanStatus::kOk);
   CHECK(Paths(scan) == std::vector<std::string>{"Game.exe"});
-  CHECK(scan.file_count == 1 && scan.total_bytes == 10);
+  CHECK(scan.programs[0].bytes == 10 && scan.unreadable == 0 && GapOf(scan) == ScanGap::kNone);
   // The program check doesn't follow them either, wherever they point.
   CHECK(CheckProgram(game, "Linked.exe") == ProgramCheck::kNotRegularFile);
   CHECK(CheckProgram(game, "Relative.exe") == ProgramCheck::kNotRegularFile);
@@ -133,7 +136,7 @@ void LinksAreNeverFollowed() {
   CHECK(CheckProgram((root.path / "Alias").string(), "Game.exe") != ProgramCheck::kOk);
 }
 
-void HiddenEntriesAreSkippedAndExtensionsIgnoreCase() {
+void HiddenEntriesAreSkippedAndExtensionsIgnoreCase(bool untyped) {
   TemporaryDirectory root;
   File(root.path / "Game/.hidden/Game.exe");
   File(root.path / "Game/.Sneaky.exe");
@@ -142,10 +145,13 @@ void HiddenEntriesAreSkippedAndExtensionsIgnoreCase() {
   File(root.path / "Game/notes.exe.txt");
   File(root.path / "Game/.exe");
   fs::create_directories(root.path / "Game/folder.exe");
-  const auto scan = ScanGameFolder((root.path / "Game").string());
+  File(root.path / "Game/folder.exe/Inside.exe");
+  ScanLimits limits;
+  limits.ignore_listed_types = untyped;
+  const auto scan = ScanGameFolder((root.path / "Game").string(), limits);
   CHECK(scan.status == ScanStatus::kOk);
-  CHECK(Paths(scan) == (std::vector<std::string>{"GAME.EXE", "Launcher.Exe"}));
-  CHECK(scan.file_count == 3);  // the hidden ones aren't counted
+  CHECK(Paths(scan) == (std::vector<std::string>{"GAME.EXE", "Launcher.Exe", "folder.exe/Inside.exe"}));
+  CHECK(scan.entries == 8);  // hidden ones are listed, never walked
 }
 
 void DepthIsLimited() {
@@ -153,49 +159,98 @@ void DepthIsLimited() {
   File(root.path / "Game/a/b/c/Deep.exe", 1);
   File(root.path / "Game/a/b/c/d/Deeper.exe", 1'000'000);
   File(root.path / "Game/a/b/c/d/e/Deepest.exe", 1);
+  {
+    ScanLimits limits;
+    limits.max_depth = 4;
+    const auto scan = ScanGameFolder((root.path / "Game").string(), limits);
+    CHECK(scan.status == ScanStatus::kOk);
+    CHECK(Paths(scan) == std::vector<std::string>{"a/b/c/Deep.exe"});
+    CHECK(scan.deeper_folders && !scan.limit_reached && GapOf(scan) == ScanGap::kTooDeep);
+  }
+  // The default bound finds them all, and stops below kMaxScanDepth components.
+  std::string folders;
+  for (int level = 1; level < kMaxScanDepth; ++level) folders += "l" + std::to_string(level) + "/";
+  File(root.path / "Game" / (folders + "Deepest16.exe"), 1);
+  File(root.path / "Game" / (folders + "l16/TooDeep.exe"), 1);
   const auto scan = ScanGameFolder((root.path / "Game").string());
   CHECK(scan.status == ScanStatus::kOk);
-  CHECK(Paths(scan) == std::vector<std::string>{"a/b/c/Deep.exe"});
-  CHECK(scan.deeper_folders && !scan.limit_reached);
-  CHECK(scan.file_count == 1);
+  CHECK(scan.programs.size() == 4 && Has(scan, "a/b/c/d/e/Deepest.exe") && Has(scan, folders + "Deepest16.exe"));
+  CHECK(!Has(scan, folders + "l16/TooDeep.exe") && scan.deeper_folders && !scan.limit_reached);
+}
+
+void EmptyFiles(const fs::path& folder, std::size_t count, const char* extension = ".dat") {
+  fs::create_directories(folder);
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto path = folder / ("f" + std::to_string(i) + extension);
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT, 0644);
+    CHECK(fd >= 0);
+    ::close(fd);
+  }
 }
 
 void LimitsStopTheScanAndSaySo() {
-  {
+  {  // The program cap keeps the best ranked, wherever the walk meets them: the game is never dropped.
     TemporaryDirectory root;
-    for (std::size_t i = 0; i < kMaxScanPrograms + 1; ++i) File(root.path / "Game" / ("p" + std::to_string(i) + ".exe"), 1);
-    const auto scan = ScanGameFolder((root.path / "Game").string());
-    CHECK(scan.status == ScanStatus::kOk && scan.limit_reached);
-    CHECK(scan.programs.size() == kMaxScanPrograms);
+    for (std::size_t i = 0; i < kMaxScanPrograms + 1; ++i) File(root.path / "Rally" / ("p" + std::to_string(i) + ".exe"), 1);
+    File(root.path / "Rally/zz/bin/Rally.exe", 1);
+    const auto scan = ScanGameFolder((root.path / "Rally").string());
+    CHECK(scan.status == ScanStatus::kOk && !scan.limit_reached);
+    CHECK(scan.programs.size() == kMaxScanPrograms && Paths(scan).front() == "zz/bin/Rally.exe");
+  }
+  {  // With a small cap the list is trimmed during the walk, before the game is met in a subfolder.
+    TemporaryDirectory root;
+    for (std::size_t i = 0; i < 20; ++i) File(root.path / "Rally" / ("p" + std::to_string(i) + ".exe"), 1);
+    File(root.path / "Rally/sub/Rally.exe", 1);
+    ScanLimits limits;
+    limits.max_programs = 4;
+    const auto scan = ScanGameFolder((root.path / "Rally").string(), limits);
+    CHECK(scan.status == ScanStatus::kOk && !scan.limit_reached);
+    // The game, then the rest by path (same depth and size): exactly the best four, not the first four listed.
+    CHECK((Paths(scan) == std::vector<std::string>{"sub/Rally.exe", "p0.exe", "p1.exe", "p10.exe"}));
   }
   {
     TemporaryDirectory root;
-    for (std::size_t i = 0; i < kMaxScanEntries + 1; ++i) {
-      const auto path = root.path / "Game" / ("f" + std::to_string(i) + ".dat");
-      if (i == 0) fs::create_directories(path.parent_path());
-      const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT, 0644);
-      CHECK(fd >= 0);
-      ::close(fd);
-    }
-    const auto scan = ScanGameFolder((root.path / "Game").string());
-    CHECK(scan.status == ScanStatus::kOk && scan.limit_reached);
-    CHECK(scan.file_count == kMaxScanEntries);
+    EmptyFiles(root.path / "Game", 150);
+    ScanLimits limits;
+    limits.max_entries = 100;
+    const auto scan = ScanGameFolder((root.path / "Game").string(), limits);
+    CHECK(scan.status == ScanStatus::kOk && scan.limit_reached && GapOf(scan) == ScanGap::kTooManyEntries);
+    CHECK(scan.entries == 100);
   }
-  {  // A folder's own programs are found before the limit is spent in its subfolders, whatever the listing order.
+  {  // A folder's own programs are found before the bound is spent in its subfolders, whatever the listing order.
     TemporaryDirectory root;
-    for (const char* folder : {"a", "m", "z"})
-      for (std::size_t i = 0; i < kMaxScanEntries / 2; ++i) {
-        const auto path = root.path / "Game" / folder / ("f" + std::to_string(i) + ".dat");
-        if (i == 0) fs::create_directories(path.parent_path());
-        const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT, 0644);
-        CHECK(fd >= 0);
-        ::close(fd);
-      }
+    for (const char* folder : {"a", "m", "z"}) EmptyFiles(root.path / "Game" / folder, 60);
     File(root.path / "Game/Wanted.exe", 1);
-    const auto scan = ScanGameFolder((root.path / "Game").string());
+    ScanLimits limits;
+    limits.max_entries = 100;
+    const auto scan = ScanGameFolder((root.path / "Game").string(), limits);
     CHECK(scan.status == ScanStatus::kOk && scan.limit_reached);
     CHECK(scan.programs.size() == 1 && scan.programs.front().path == "Wanted.exe");
   }
+}
+
+// The report that raised the bounds: a PC recompilation's folder, 46 311 files, with the player build beside huge
+// folders of generated sources and prepared game files. The build folder lists 25 000 files of its own before its
+// bin folder, and a second build sits six levels deep: the old 20 000-entry, 4-level scan found no program at all.
+void LargeFolderFindsItsPrograms(bool untyped) {
+  TemporaryDirectory root;
+  const auto game = root.path / "mkw-recomp";
+  EmptyFiles(game / "build", 25'000, ".o");
+  File(game / "build/bin/mkw.exe", 4'000'000);
+  File(game / "build/bin/mkwgame.dll", 1);
+  EmptyFiles(game / "src/generated/part0", 8'000, ".c");
+  EmptyFiles(game / "src/generated/part1", 8'000, ".c");
+  EmptyFiles(game / "game/files", 5'300, ".bin");
+  File(game / "out/build/x64/Release/bin/mkw.exe", 4'000'000);
+  File(game / "_CommonRedist/vc_redist.x64.exe", 1);
+  ScanLimits limits;
+  limits.ignore_listed_types = untyped;
+  const auto scan = ScanGameFolder(game.string(), limits);
+  CHECK(scan.status == ScanStatus::kOk && GapOf(scan) == ScanGap::kNone);
+  CHECK(scan.entries > 46'000);
+  CHECK((Paths(scan) == std::vector<std::string>{"build/bin/mkw.exe", "out/build/x64/Release/bin/mkw.exe",
+                                                  "_CommonRedist/vc_redist.x64.exe"}));
+  CHECK(!scan.programs[0].helper && scan.programs[0].bytes == 4'000'000 && scan.programs[2].helper);
 }
 
 void NonAsciiPathsAreFlagged() {
@@ -248,7 +303,6 @@ void SpikeGamesRankTheirProgramFirst() {
   CHECK(candidates.folders == (std::vector<std::string>{"Delores", "Night Sky", "Old School Rally"}));
   const auto delores = ScanGameFolder((import / "Delores").string());
   CHECK(delores.title == "Delores" && Paths(delores).front() == "Delores.exe" && delores.programs.back().helper);
-  CHECK(delores.file_count == 4);
   const auto night = ScanGameFolder((import / "Night Sky").string());
   CHECK(night.title == "Night Sky" && Paths(night).front() == "NightSky.exe");
   CHECK(std::all_of(night.programs.begin() + 1, night.programs.end(), [](const Program& p) { return p.helper; }));
@@ -256,7 +310,6 @@ void SpikeGamesRankTheirProgramFirst() {
   CHECK(rally.status == ScanStatus::kOk && rally.printable_path);
   CHECK(Paths(rally) == (std::vector<std::string>{"Old School Rally.exe", "UnityCrashHandler64.exe"}));
   CHECK(!rally.programs[0].helper && rally.programs[1].helper);
-  CHECK(rally.file_count == 5);
   CHECK(CheckProgram((import / "Old School Rally").string(), "Old School Rally.exe") == ProgramCheck::kOk);
 }
 
@@ -330,8 +383,11 @@ int main() {
   ExecutablesListTheGameFirstAndHelpersLast();
   GenericFolderNamesUseTheParentAsTitle();
   ProgramChecks();
-  LinksAreNeverFollowed();
-  HiddenEntriesAreSkippedAndExtensionsIgnoreCase();
+  for (const bool untyped : {false, true}) {
+    LinksAreNeverFollowed(untyped);
+    HiddenEntriesAreSkippedAndExtensionsIgnoreCase(untyped);
+    LargeFolderFindsItsPrograms(untyped);
+  }
   DepthIsLimited();
   LimitsStopTheScanAndSaySo();
   NonAsciiPathsAreFlagged();

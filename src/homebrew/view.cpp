@@ -3772,17 +3772,12 @@ class Render::Impl
                                                 Compatibility::Untested : rating->second;
         const bool installed = installation != nullptr && installation->installed_bytes > 0;
         // One size for a game: what it takes on the drive (installed, or the install estimate).
-        std::optional<std::uint64_t> scanned_bytes;  // an imported game playing in place: its folder's size
-        for (const auto &candidate : state.import_candidates)
-            if (candidate.imported == game->id && candidate.total_bytes > 0)
-                scanned_bytes = candidate.total_bytes;
         // Not installed: as the Install button says it, what the install sheet will say.
         const auto install_row = std::find_if(view.rows.begin(), view.rows.end(), [](const ViewRow &row) { return row.key == "details-install"; });
         const auto bare_bytes = uninstalled_size(*game, state.jobs);
         const std::string size = installed ? short_size(installation->installed_bytes) :
             install_row != view.rows.end() && !install_row->value.empty() && install_row->value != "Size unknown" ? install_row->value :
-            bare_bytes ? short_size(*bare_bytes) :
-            scanned_bytes ? short_size(*scanned_bytes) : std::string("Unknown");
+            bare_bytes ? short_size(*bare_bytes) : std::string("Unknown");
         const std::string playtime = game->playtime_minutes && *game->playtime_minutes > 0 ?
             playtime_label(game->playtime_minutes) : std::string("Never played");
         // The player's own rating, apart from how the community's list has the game.

@@ -544,7 +544,7 @@ void ImportedGamePlaysInPlace() {
   pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
   pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
   const auto usb = fixture.root / "mnt/usb0/playden/import";
-  Write(usb / "Rally/Bin/Rally.exe", pe + std::string(4096, 'x'), 0644);
+  Write(usb / "Rally/Bin/x64/Shipping/Win64/Release/Rally.exe", pe + std::string(4096, 'x'), 0644);
   Write(usb / "Rally/Redist/vcredist_x64.exe", pe, 0644);
   Write(usb / "Rally/data.pak", "data", 0644);
   Write(usb / "Caf\xc3\xa9/Game.exe", pe, 0644);
@@ -657,8 +657,8 @@ void ImportedGamePlaysInPlace() {
     const auto rally = std::find_if(candidates.begin(), candidates.end(), [](const hb::LiveImportCandidate& c) { return c.title == "Rally"; });
     CHECK(rally != candidates.end() && rally->volume_id == "usb0" && rally->folder == "playden/import/Rally");
     CHECK(rally->ascii_ok && !rally->imported.valid() && rally->programs.size() == 2);
-    CHECK(rally->programs[0].path == "Bin/Rally.exe" && !rally->programs[0].helper && rally->programs[1].helper);
-    CHECK(rally->total_bytes > 4096);
+    CHECK(rally->programs[0].path == "Bin/x64/Shipping/Win64/Release/Rally.exe" && !rally->programs[0].helper && rally->programs[1].helper);
+    CHECK(rally->gap == hb::ImportScanGap::None);
     const auto cafe = std::find_if(candidates.begin(), candidates.end(),
                                    [](const hb::LiveImportCandidate& c) { return c.folder == "playden/import/Caf\xc3\xa9"; });
     CHECK(cafe != candidates.end() && !cafe->ascii_ok);
@@ -667,8 +667,8 @@ void ImportedGamePlaysInPlace() {
                                      [](const hb::LiveImportCandidate& c) { return c.folder == "playden/import/Space: Marine"; });
     CHECK(marine != candidates.end() && !marine->ascii_ok);
 
-    // Add: the game is in the library with its folder's name, and plays in place.
-    model.RequestImport({hb::ImportRequestKind::Add, {}, "usb0", "Rally", "Bin/Rally.exe"});
+    // Add: the game is in the library with its folder's name, and plays in place. Its program is six levels deep.
+    model.RequestImport({hb::ImportRequestKind::Add, {}, "usb0", "Rally", "Bin/x64/Shipping/Win64/Release/Rally.exe"});
     tick_until([&] {
       const auto snapshot = source.Snapshot();
       if (snapshot->games.empty()) return false;
@@ -683,8 +683,8 @@ void ImportedGamePlaysInPlace() {
     // Never one of Playden's installs.
     CHECK(model.state().installations.empty());
     // A bad program or an unknown drive is refused, and nothing is added.
-    const auto refused = source.Add("usb0", "Rally", "Bin/Missing.exe");
-    const auto unknown = source.Add("usb9", "Rally", "Bin/Rally.exe");
+    const auto refused = source.Add("usb0", "Rally", "Bin/x64/Shipping/Win64/Release/Missing.exe");
+    const auto unknown = source.Add("usb9", "Rally", "Bin/x64/Shipping/Win64/Release/Rally.exe");
     tick_until([&] {
       const auto snapshot = source.Snapshot();
       const auto outcome = [&](std::uint64_t request) {
@@ -711,10 +711,10 @@ void ImportedGamePlaysInPlace() {
       CHECK(number >= 0xF0000000u && !snapshot.refusals.count(number));
       const auto view = std::find_if(snapshot.installs.begin(), snapshot.installs.end(), [&](const RuntimeInstallView& v) { return v.game == game; });
       CHECK(view->install_path == console_root);
-      CHECK(model.state().game_settings.at(game).overrides.at("program") == "Bin/Rally.exe");
+      CHECK(model.state().game_settings.at(game).overrides.at("program") == "Bin/x64/Shipping/Win64/Release/Rally.exe");
       std::map<GameId, GameSettingsRecord> saved;
       std::string reason;
-      CHECK(LoadGameSettingsFile(settings_file.string(), &saved, &reason) && saved.at(game).overrides.at("program") == "Bin/Rally.exe");
+      CHECK(LoadGameSettingsFile(settings_file.string(), &saved, &reason) && saved.at(game).overrides.at("program") == "Bin/x64/Shipping/Win64/Release/Rally.exe");
     }
   });
 
@@ -765,14 +765,14 @@ void ImportedGamePlaysInPlace() {
       return !game_of(model, game) && source.Snapshot()->games.empty() &&
              std::any_of(snapshot.kept_bottles.begin(), snapshot.kept_bottles.end(), [&](const auto& kept) { return kept.game == game; });
     });
-    CHECK(fs::is_regular_file(usb / "Rally/Bin/Rally.exe") && fs::is_regular_file(usb / "Rally/data.pak"));
+    CHECK(fs::is_regular_file(usb / "Rally/Bin/x64/Shipping/Win64/Release/Rally.exe") && fs::is_regular_file(usb / "Rally/data.pak"));
     CHECK(model.state().external_games.empty());
 
     // Added again: the same ID, its settings and the program chosen before.
-    model.RequestImport({hb::ImportRequestKind::Add, {}, "usb0", "Rally", "Bin/Rally.exe"});
+    model.RequestImport({hb::ImportRequestKind::Add, {}, "usb0", "Rally", "Bin/x64/Shipping/Win64/Release/Rally.exe"});
     tick_until([&] { return game_of(model, game) && external_of(model, game) && external_of(model, game)->available; });
     CHECK(source.Snapshot()->games.front().id == id);
-    CHECK(model.state().game_settings.at(game).overrides.at("program") == "Bin/Rally.exe");
+    CHECK(model.state().game_settings.at(game).overrides.at("program") == "Bin/x64/Shipping/Win64/Release/Rally.exe");
   });
 
   // Signed in to Steam, after a restart: the imported game is listed from imports.json and Details offers Play.

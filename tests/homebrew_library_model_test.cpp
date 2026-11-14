@@ -3994,16 +3994,35 @@ void live_import_sheet_sends_requests() {
     check(model.TakeImportRequests().empty(), "no second scan while one runs");
     LiveImportCandidate delores;
     delores.volume_id = "usb0"; delores.folder = "playden/import/Delores"; delores.path = "/mnt/usb0/playden/import/Delores";
-    delores.title = "Delores"; delores.total_bytes = 230'000'000; delores.ascii_ok = true;
+    delores.title = "Delores"; delores.ascii_ok = true;
     delores.programs = {{"Delores.exe", 9'000'000, false}, {"setup.exe", 1'000'000, true}};
     LiveImportCandidate drop = delores;
     drop.volume_id = "internal"; drop.folder = "playden-import/Delores"; drop.path = "/data/playden-import/Delores";
-    model.UpdateImportCandidates({delores, drop}, false);
+    // Folders without a program say why the search may have missed one.
+    LiveImportCandidate empty = delores;
+    empty.folder = "playden/import/Empty"; empty.path = "/mnt/usb0/playden/import/Empty"; empty.programs.clear();
+    LiveImportCandidate huge = empty, deep = empty, unreadable = empty, failed = empty;
+    huge.folder = "playden/import/Huge"; huge.gap = playden::homebrew::ImportScanGap::TooManyFiles;
+    deep.folder = "playden/import/Deep"; deep.gap = playden::homebrew::ImportScanGap::TooDeep;
+    unreadable.folder = "playden/import/Locked"; unreadable.gap = playden::homebrew::ImportScanGap::Unreadable;
+    failed.folder = "playden/import/Failed"; failed.gap = playden::homebrew::ImportScanGap::Failed;
+    model.UpdateImportCandidates({delores, drop, empty, huge, deep, unreadable, failed}, false);
     check(model.state().navigation.focus_key == "import-look" && find_row(model, "import-look")->enabled,
           "the focus stays on Look for games when the scan ends");
     check(has_row(model, "import-group-usb0") && has_row(model, "import-group-internal") &&
-              find_row(model, "import-candidate-usb0:playden/import/Delores")->value == "230 MB",
-          "candidates are listed by drive");
+              find_row(model, "import-candidate-usb0:playden/import/Delores")->value.empty(),
+          "candidates are listed by drive, without a size (the scan doesn't measure folders)");
+    const auto gap_text = [&](const char* folder) {
+        const auto* row = find_row(model, std::string("import-candidate-usb0:playden/import/") + folder);
+        return row && !row->enabled ? row->subtitle : std::string("enabled");
+    };
+    check(gap_text("Empty") == "No Windows program found" &&
+              gap_text("Huge") == "No Windows program found · The search stopped after 1,000,000 files and folders" &&
+              gap_text("Deep") == "No Windows program found · Folders more than 15 levels deep were not searched" &&
+              gap_text("Locked") == "No Windows program found · Some files or folders could not be read" &&
+              gap_text("Failed") == "Playden could not read this folder",
+          "a folder without a program can't be added, and says why the search may have missed one");
+    model.UpdateImportCandidates({delores, drop}, false);
     activate(model, "import-candidate-internal:playden-import/Delores");
     check(model.view().surface == "import-choice" &&
               model.view().subtitle.rfind("Starts with Delores.exe, which you can change in Game settings.", 0) == 0,
@@ -4044,7 +4063,7 @@ void live_import_choice_and_details() {
                          {"tiny", "Tiny drive", true, 16'000'000'000, 8'000'000'000}}, "internal");
     LiveImportCandidate rally;
     rally.volume_id = "usb0"; rally.folder = "playden/import/Rally"; rally.path = "/mnt/usb0/playden/import/Rally";
-    rally.title = "Rally"; rally.total_bytes = 8'900'000'000; rally.ascii_ok = true; rally.file_count = 5000;
+    rally.title = "Rally"; rally.ascii_ok = true;
     rally.programs = {{"Rally.exe", 9'000'000, false}};
     LiveImportCandidate cafe = rally;
     cafe.folder = "playden/import/Café"; cafe.path = "/mnt/usb0/playden/import/Café"; cafe.title = "Café"; cafe.ascii_ok = false;
@@ -4073,23 +4092,23 @@ void live_import_choice_and_details() {
     check(model.view().surface == "import-choice" && model.TakeImportRequests().empty(), "its Play from the drive does nothing");
     model.action("circle");
 
-    // A drive folder: play in place, or Copy to storage with its size (no estimate), then the drive.
+    // A drive folder: play in place, or Copy to storage, then the drive. The scan doesn't measure the folder: no size
+    // yet, and free space is checked when the copy plan has measured it (the install service refuses it then).
     activate(model, "import-candidate-usb0:playden/import/Rally");
     check(find_row(model, "import-play-in-place")->title == "Play from the USB drive" &&
               find_row(model, "import-play-in-place")->value.empty() &&
-              find_row(model, "import-copy")->value == "8.9 GB" && !has_row(model, "import-move") && !has_row(model, "storage-picker"),
-          "a drive folder plays from there or is imported, with its size");
+              find_row(model, "import-copy")->value.empty() && !has_row(model, "import-move") && !has_row(model, "storage-picker"),
+          "a drive folder plays from there or is imported");
     activate(model, "import-copy");
-    check(model.view().surface == "import-storage" && model.view().subtitle == "8.9 GB will be copied there." &&
+    check(model.view().surface == "import-storage" && model.view().subtitle == "The game will be copied there." &&
               find_row(model, "volume-internal")->subtitle == "Default · Available" &&
               find_row(model, "volume-usb1")->subtitle == "Available" &&
               find_row(model, "volume-usb0")->subtitle == "The game is on this drive" && !find_row(model, "volume-usb0")->enabled &&
               find_row(model, "volume-usb0")->tone.empty() &&
-              find_row(model, "volume-tiny")->subtitle == "Not enough space" && !find_row(model, "volume-tiny")->enabled &&
-              find_row(model, "volume-tiny")->tone == "warn" && model.state().navigation.focus_key == "volume-internal",
-          "step 2 lists the drives: the default, the game's own drive and one too small disabled");
+              find_row(model, "volume-tiny")->subtitle == "Available" && find_row(model, "volume-tiny")->enabled &&
+              model.state().navigation.focus_key == "volume-internal",
+          "step 2 lists the drives: the default, and the game's own drive disabled");
     activate(model, "volume-usb0");
-    activate(model, "volume-tiny");
     check(model.view().surface == "import-storage" && model.TakeImportRequests().empty(), "a disabled drive does nothing");
     model.action("circle");
     check(model.view().surface == "import-choice", "Back returns to step 1");
@@ -4177,11 +4196,11 @@ void live_import_choice_and_details() {
         check(find_row(model, "details-copy")->title == "Move to storage…", "a game in the drop folder moves");
         model.UpdateExternalGames({{id, "usb0", true, ""}});
     }
-    // The page's Copy to storage opens step 2 with the folder's size (from the scan, the game has none).
+    // The page's Copy to storage opens step 2 (the game has no size until a copy plan measures it).
     activate(model, "details-copy");
-    check(model.view().surface == "import-storage" && model.view().subtitle == "8.9 GB will be copied there." &&
+    check(model.view().surface == "import-storage" && model.view().subtitle == "The game will be copied there." &&
               !find_row(model, "volume-usb0")->enabled && model.view().eyebrow == "Import games · Rally",
-          "the page's Copy to storage opens the drive choice with the folder's size");
+          "the page's Copy to storage opens the drive choice");
     model.action("circle");
     check(model.state().navigation.modals.empty(), "Back closes the page's drive choice");
     // A folder the PS5 can't play from (its name) still offers the copy.
@@ -4251,7 +4270,7 @@ void live_import_choice_and_details() {
     activate(model, "import-copy");
     check(find_row(model, "volume-internal")->subtitle == "Instant · moves the folder" && find_row(model, "volume-internal")->enabled &&
               find_row(model, "volume-usb0")->subtitle == "Copies, then frees the drop folder" &&
-              find_row(model, "volume-tiny")->subtitle == "Not enough space",
+              find_row(model, "volume-tiny")->subtitle == "Copies, then frees the drop folder",
           "the drop folder's step 2: console storage moves, other drives copy");
     activate(model, "volume-internal");
     requests = model.TakeImportRequests();

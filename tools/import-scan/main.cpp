@@ -1,12 +1,12 @@
 // import-scan: what Playden's import scanner sees in a Windows game folder, on the host.
 //
 //   import-scan <game folder>      the folder's title, its programs ranked (helpers flagged), its
-//                                  size and whether it could play in place (printable-ASCII path)
+//                                  entries listed, how long the scan took, and whether it could play in
+//                                  place (printable-ASCII path)
 //   import-scan --root <folder>    the same for every folder inside an import folder
-//
-// Sizes are the scanner's display estimates (scanner.h): the first levels only, up to its limits.
 #include "stores/local/scanner.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -34,16 +34,18 @@ std::string Bytes(std::uint64_t bytes) {
 }
 
 int Report(const std::string& folder) {
+  const auto started = std::chrono::steady_clock::now();
   const auto scan = ScanGameFolder(folder);
+  const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
   std::printf("%s\n", folder.c_str());
   if (scan.status != ScanStatus::kOk) {
     std::printf("  status: %s (%s)\n", StatusName(scan.status), std::strerror(scan.error));
     return 1;
   }
   std::printf("  title: %s\n", scan.title.c_str());
-  std::printf("  size: %s in %llu files%s\n", Bytes(scan.total_bytes).c_str(),
-              static_cast<unsigned long long>(scan.file_count),
-              scan.limit_reached || scan.deeper_folders ? " (estimate: the scan stopped early)" : "");
+  std::printf("  entries: %zu in %.1f ms%s%s\n", scan.entries, elapsed,
+              scan.limit_reached ? " (stopped at the entry limit)" : "",
+              scan.deeper_folders ? " (deeper folders not searched)" : "");
   std::printf("  ascii_ok: %s\n", scan.printable_path ? "yes (can play in place)" : "no (copy or move only)");
   if (scan.unreadable) std::printf("  unreadable entries: %zu\n", scan.unreadable);
   std::printf("  programs: %zu\n", scan.programs.size());
