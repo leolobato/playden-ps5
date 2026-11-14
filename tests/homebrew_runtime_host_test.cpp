@@ -9321,6 +9321,64 @@ void GogScriptSetsIniAtEachStart() {
   host.Shutdown();
 }
 
+// Pause all in Queue (#880) holds a GOG game too: a finished GOG install asked to prepare while paused waits in the
+// queue without running a GOG step (its goggame-<id>.script's setIni) or writing a record, and Resume all prepares it
+// to Ready from its install record's programs.
+void PausedQueueHoldsGogPreparation() {
+  using playden::GameId;
+  const auto gog = GameId::Gog(1900000003);
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  const auto config = MoveConfig(fixture, kit, &uuids, move);
+  const std::string console_root = "/data/playden-games/gog-1900000003";
+  const auto root = fixture.root / fs::path(console_root).relative_path();
+  std::string pe(0x80 + 26, '\0');
+  pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+  pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+  Write(root / "game.exe", pe, 0644);
+  playden::installs::GogRecord record;
+  record.build_id = "1000000000000000301";
+  record.products = {1900000003};
+  record.language = "en-US";
+  record.meta_id = std::string(32, 'c');
+  Write(root / playden::installs::kInstallRecordName,
+        playden::installs::FormatGogInstallRecord(gog, 4096, 2, "english", record, {{"game.exe", "", "", "Game"}}), 0644);
+  Write(root / "goggame-1900000003.script", R"({"actions":[
+ {"install":{"action":"setIni","arguments":{"filename":"{app}\\game.cfg","keyName":"path","keyType":"string","keyValue":"{app}","section":"system","utf8":false}},"languages":["*"],"name":"ini"}
+],"productId":"1900000003"})", 0644);
+  Write(root / "game.cfg", "[system]\r\npath=C:\\GOG Games\\Game\r\n", 0644);
+  CHECK(chmod(root.c_str(), 0777) == 0);
+
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  const auto number = *host.RuntimeNumberFor(gog);
+  host.PausePreparations(true);
+  RuntimePrepareRequest request{number, console_root, "internal", "Paused GOG game (GOG)"};
+  request.game = gog;
+  request.launches = {{"", "Game", "game.exe", "", ""}};
+  host.Prepare(request);
+  usleep(300000);
+  const auto paused = host.Snapshot();
+  CHECK(paused.prepares_handled == 0 && !paused.preparing_app && paused.installs.empty());
+  CHECK((paused.queued_prepares == std::vector<std::uint32_t>{number}));
+  CHECK(!move.Logged("gog script app="));
+  CHECK(Read(root / "game.cfg") == "[system]\r\npath=C:\\GOG Games\\Game\r\n");
+
+  host.PausePreparations(false);
+  const auto ready = WaitFor(host, [number](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(number)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(number).c_str());
+  CHECK(!ready.refusals.count(number) && ready.installs.size() == 1 && ready.queued_prepares.empty());
+  CHECK(ready.installs[0].recipe_id == "gog-1900000003-auto" && ready.installs[0].launch_path == "game.exe");
+  CHECK(move.Logged("gog script app=" + std::to_string(number) + " ini=1 changed=1"));
+  CHECK(Read(root / "game.cfg") == "[system]\r\npath=Z:\\data\\playden-games\\gog-1900000003\r\n");
+  host.Shutdown();
+}
+
 // A GOG game's setRegistry values go into its bottle as it prepares, with no installscript.vdf: HKLM in system.reg in
 // both registry views with `{app}` as the folder's console path, HKCU in user.reg. A recipe's value for the same key
 // and name wins; a later action's value replaces an earlier one's; a key with no value and a name Wine's file can't
@@ -9667,6 +9725,7 @@ int main(int argc, char** argv) {
   UsbGameNamesNoMount();
   MoveAfterUsbSwap();
   GogScriptSetsIniAtEachStart();
+  PausedQueueHoldsGogPreparation();
   GogScriptSetsRegistryAtEachStart();
   GogRedistInstallsAtPlay();
   OlderTitleKeepsItsMount();

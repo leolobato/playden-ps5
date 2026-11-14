@@ -3661,6 +3661,76 @@ void live_queue_pause_preparations(const std::filesystem::path& base) {
     check(model.state().quit_requested && !model.state().quit_waiting, "quit: a paused queue lets Playden quit at once");
 }
 
+// A GOG game that finishes installing while Preparation is paused (#880) waits like a Steam game, with only GOG signed
+// in: its row and its game page say Paused and how to go on, and Resume all lets it start.
+void live_queue_pause_gog_preparation(const std::filesystem::path& base) {
+    using playden::GameId;
+    using playden::Store;
+    using playden::homebrew::LiveRuntimeGame;
+    using playden::homebrew::TitleActivity;
+    constexpr std::int64_t kNow = 1'800'000'000;
+    constexpr std::uint64_t gb = 1'000'000'000;
+    const auto witcher = GameId::Gog(1207658924), gwent = GameId::Gog(1207658925);
+    const auto witcher_key = playden::ToKey(witcher), gwent_key = playden::ToKey(gwent);
+    auto model = make_live(base);
+    model.SetWallClock(kNow);
+    model.SetGogStoreEnabled(true);
+    model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
+    AccountUpdate gog;
+    gog.store = Store::kGog;
+    gog.authentication = AuthState::SignedIn;
+    gog.id = "8000000000000abc";
+    gog.display_name = "Synthetic GOG";
+    model.UpdateAccount(gog);
+    playden::homebrew::LibraryUpdate library;
+    library.games = {playden::GameSummary{witcher, "Witcher", {}, {}, {}}, playden::GameSummary{gwent, "Gwent", {}, {}, {}}};
+    library.source = Store::kGog;
+    library.retrieved_at = kNow;
+    check(model.UpdateLibrary(library), "gog pause: GOG's library delivered");
+    model.UpdateInstalls({}, {{witcher, 10 * gb, "internal"}, {gwent, 2 * gb, "internal"}});
+    const auto waiting = [](GameId id) {
+        LiveRuntimeGame runtime;
+        runtime.game_id = id;
+        runtime.status = "Not prepared";
+        runtime.can_prepare = runtime.queued = true;
+        runtime.activity = TitleActivity::Stopped;
+        return runtime;
+    };
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {waiting(witcher), waiting(gwent)});
+    model.UpdatePreparationQueue({std::nullopt, {witcher}, {}, {}});
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Downloads; ++i) model.action("r1");
+    check(model.state().navigation.route == Route::Downloads, "gog pause: R1 reaches the Queue");
+
+    activate(model, "prep-" + witcher_key);
+    activate(model, "prep-pause-all");
+    check(model.state().preparation_paused, "gog pause: Pause all from a GOG game pauses the queue");
+    // Gwent finishes installing and joins the queue behind Witcher; both wait.
+    model.UpdatePreparationQueue({std::nullopt, {witcher, gwent}, {}, {}});
+    check(find_row(model, "prep-paused") && find_row(model, "prep-paused")->subtitle == "The waiting games start when you resume",
+          "gog pause: the paused row shows");
+    check(find_row(model, "prep-" + witcher_key) && find_row(model, "prep-" + witcher_key)->value == "Paused" &&
+              find_row(model, "prep-" + gwent_key) && find_row(model, "prep-" + gwent_key)->value == "Paused",
+          "gog pause: both GOG games say Paused");
+
+    activate(model, "prep-" + gwent_key);
+    activate(model, "prep-open-" + gwent_key);
+    check(model.state().navigation.route == Route::Details, "gog pause: Game details opens the GOG game's page");
+    check(find_row(model, "details-setup") && find_row(model, "details-setup")->value == "Paused",
+          "gog pause: the page's Setup says Paused");
+    check(find_row(model, "details-hint") &&
+              find_row(model, "details-hint")->title.find("Preparation is paused. Resume all in Queue sets it up.") != std::string::npos,
+          "gog pause: and says how to resume");
+    model.action("circle");
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Downloads; ++i) model.action("r1");
+
+    activate(model, "prep-paused");
+    activate(model, "prep-resume-all");
+    check(!model.state().preparation_paused, "gog resume: Resume all ends the pause");
+    check(!find_row(model, "prep-paused") && find_row(model, "prep-" + witcher_key) &&
+              find_row(model, "prep-" + witcher_key)->value == "Up next",
+          "gog resume: the first GOG game is up next");
+}
+
 // The runtime kit prompt: once per kit, only when a kit update is due, and never over What's new or another dialog.
 void live_runtime_prompt(const std::filesystem::path& base) {
     using playden::homebrew::LiveRuntimeGame;
@@ -4203,6 +4273,7 @@ int main() {
     live_manage_runtimes(base / "manage-runtimes");
     live_queue_cancel_preparations(base / "queue-cancel-preparations");
     live_queue_pause_preparations(base / "queue-pause-preparations");
+    live_queue_pause_gog_preparation(base / "queue-pause-gog-preparation");
     live_runtime_prompt(base / "runtime-prompt");
     live_runtime_prompt_survives_library(base / "runtime-prompt");
     live_manage_move(base / "manage-move");
