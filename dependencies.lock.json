@@ -177,7 +177,7 @@
     }
   },
   "prospero_win": {
-    "revision": "bd2da4318bcd7d9d5c55e26aca73ad4ef532ce52",
+    "revision": "d9c00befa0056e7231db29ecc1bd5651303ac4b6",
     "url": "https://github.com/leolobato/prospero-win.git",
     "default_source": "third_party/prospero-win",
     "published": false,
@@ -185,7 +185,7 @@
     "retained_runtime_artifact_revision": "bceed2d-kit-h-r1",
     "upstream_url": "https://github.com/mpereiraesaa/prospero-win.git",
     "branch": "main",
-    "note": "Up to 993297a (the translator pushes and pops a word from memory, for Need for Speed III): see this file's git history. 8e67a99 adds Wine patch 1020 (a commit the host can't give memory to fails with the commit limit, 1455, as on Windows, and leaves the pages as they were; the direct-memory layer logs the calls it refuses; ntdll.prx), from the next kit too. 61d6ae0 builds the PE modules in one make run with reproducible output, keys each build by its inputs (--print-input-key, so an unchanged build is reused) and compiles through ccache on request (--ccache, development kits only); the .prx modules come out byte for byte the same, and the PE modules differ only in their link time and debug ID. 1922abe adds Wine patch 1021 (files opened for writing and locked files are parked too, and a descriptor lent to the client is given back when it is closed, so a parked file never saves a stale position; ntdll.prx, wineserver.prx, win32u.prx, nsiproxy.prx and ntoskrnl.exe change), from the next kit too. bd2da43 makes its new request the last one, so every earlier request keeps its number and PE modules from earlier builds (ntoskrnl.exe, conhost.exe) still fit; kit 0.27 kept them and crashed every game at start (#894)."
+    "note": "Up to 993297a (the translator pushes and pops a word from memory, for Need for Speed III): see this file's git history. 8e67a99 adds Wine patch 1020 (a commit the host can't give memory to fails with the commit limit, 1455, as on Windows, and leaves the pages as they were; the direct-memory layer logs the calls it refuses; ntdll.prx), from the next kit too. 61d6ae0 builds the PE modules in one make run with reproducible output, keys each build by its inputs (--print-input-key, so an unchanged build is reused) and compiles through ccache on request (--ccache, development kits only); the .prx modules come out byte for byte the same, and the PE modules differ only in their link time and debug ID. 1922abe adds Wine patch 1021 (files opened for writing and locked files are parked too, and a descriptor lent to the client is given back when it is closed, so a parked file never saves a stale position; ntdll.prx, wineserver.prx, win32u.prx, nsiproxy.prx and ntoskrnl.exe change), from the next kit too. bd2da43 makes its new request the last one, so every earlier request keeps its number and PE modules from earlier builds (ntoskrnl.exe, conhost.exe) still fit; kit 0.27 kept them and crashed every game at start (#894). d9c00be stops the Wine build when the patches change a stock request, member or shared type (tools/check_server_protocol.py); build tooling only, the kit's modules are the same."
   },
   "prospero_bottle_preparation": {
     "hl2-fresh-v16": {
