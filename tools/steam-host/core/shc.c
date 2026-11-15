@@ -277,6 +277,13 @@ int ShcParseAchievementStored(const void* data, size_t size, ShcAchievement* ach
   return n != 0;
 }
 
+uint64_t ShcStatsReceivedUser(const void* data, size_t size) {
+  uint64_t user = 0;
+  if (!data || size < 20) return 0;
+  memcpy(&user, (const uint8_t*)data + (size >= 24 ? 16 : 12), 8);
+  return user;
+}
+
 int ShcAchievementFirst(ShcAchievementsShown* shown, const char* name) {
   uint64_t hash = 14695981039346656037ULL; /* FNV-1a 64 */
   for (const char* s = name ? name : ""; *s; ++s) hash = (hash ^ (uint8_t)*s) * 1099511628211ULL;

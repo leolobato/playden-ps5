@@ -114,6 +114,11 @@ typedef struct {
 /* 1 when the message is long enough and names an achievement. */
 int ShcParseAchievementStored(const void* data, size_t size, ShcAchievement* achievement);
 
+/* UserStatsReceived_t (k_iSteamUserStatsCallbacks + 1 = 1101): uint64 game ID, EResult at 8, then the user's CSteamID.
+ * The SDK's 8-byte packing puts the user at 16 (24 bytes); Valve's client sends it packed to 4 bytes, the user at 12
+ * (20 bytes), as for ValidateAuthTicketResponse_t. The user, by the message's size; 0 when it is shorter than 20. */
+uint64_t ShcStatsReceivedUser(const void* data, size_t size);
+
 /* The achievements already shown in this session, by name: Valve's client may post the same unlock more than once (a
  * game that stores its stats again). ShcAchievementFirst returns 1 the first time it sees a name, and 1 for every name
  * once it has seen SHC_ACHIEVEMENTS_TRACKED of them (a duplicate notification is better than a missing one). */

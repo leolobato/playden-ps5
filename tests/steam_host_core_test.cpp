@@ -321,6 +321,26 @@ void TestAchievements() {
   assert(std::string(out) == "Achievement unlocked: \xc3\xa9\xe6\x97\xa5");
 }
 
+void TestStatsReceivedUser() {
+  const std::uint64_t game = 2475490, user = 76561197960287930ULL;
+  const std::uint32_t ok = 1;
+  // Packed to 4 bytes, as Valve's client sends it: 20 bytes, the user at 12.
+  std::string packed(20, '\0');
+  std::memcpy(&packed[0], &game, 8);
+  std::memcpy(&packed[0] + 8, &ok, 4);
+  std::memcpy(&packed[0] + 12, &user, 8);
+  assert(ShcStatsReceivedUser(packed.data(), packed.size()) == user);
+  // The SDK's 8-byte packing: 24 bytes, the user at 16.
+  std::string padded(24, '\0');
+  std::memcpy(&padded[0], &game, 8);
+  std::memcpy(&padded[0] + 8, &ok, 4);
+  std::memcpy(&padded[0] + 16, &user, 8);
+  assert(ShcStatsReceivedUser(padded.data(), padded.size()) == user);
+  // Too short, or nothing: no user.
+  assert(ShcStatsReceivedUser(packed.data(), 19) == 0);
+  assert(ShcStatsReceivedUser(nullptr, 24) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -332,5 +352,6 @@ int main() {
   TestChangeStatusMessage();
   TestLobbyWatch();
   TestAchievements();
+  TestStatsReceivedUser();
   return 0;
 }

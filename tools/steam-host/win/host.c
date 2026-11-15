@@ -441,7 +441,7 @@ enum {
   kLobbyDataUpdate = 505,        /* uint64 lobby, uint64 member (the lobby itself for the lobby's data), bool success */
   kLobbyChatUpdate = 506,        /* uint64 lobby, uint64 changed, uint64 making the change, uint32 state at 24 */
   kLobbyCreated = 513,           /* uint32 result (1: OK), uint64 lobby at 8 */
-  kUserStatsReceived = 1101,     /* uint64 game ID, EResult at 8 (1: OK), CSteamID user at 16 */
+  kUserStatsReceived = 1101,     /* uint64 game ID, EResult at 8 (1: OK), CSteamID user (shc.h ShcStatsReceivedUser) */
   kUserAchievementStored = SHC_ACHIEVEMENT_STORED, /* 1103: an achievement saved on Steam, or its progress (shc.h) */
 };
 
@@ -881,9 +881,13 @@ static void StatsReceived(const CallbackMessage* message) {
   Put(&line, "achievements: stats received for ");
   Put(&line, app == g_session.app_id ? "the game" : "another app=");
   if (app != g_session.app_id) PutNumber(&line, app);
-  Put(&line, Field64(message, 16) == g_session.steam_id ? " (the account)" : " (another user)");
+  Put(&line, ShcStatsReceivedUser(message->data, message->size > 0 ? (size_t)message->size : 0) == g_session.steam_id
+                 ? " (the account)"
+                 : " (another user)");
   Put(&line, " result=");
   PutNumber(&line, Field32(message, 8));
+  Put(&line, " size=");
+  PutNumber(&line, (uint64_t)(unsigned)message->size);
   Put(&line, " at ms=");
   PutNumber(&line, GetTickCount64() - g_started);
   Emit(&line);

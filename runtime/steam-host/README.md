@@ -20,4 +20,4 @@ the package against the manifest's SHA-256, leaves out Valve's crash reporter (`
 
 | File | SHA-256 |
 | --- | --- |
-| `steam.exe` | `f7cdb560d20426e1361bd56e28f95dc61e2c0aa98debae38d13d878e0d4910f1` |
+| `steam.exe` | `b3b145346e3079fe9edf1fcd03bcd6e217bc80154829c2aedb6f5bae92ee3287` |

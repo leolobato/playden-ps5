@@ -184,9 +184,9 @@ older version of the runtime kit keeps Online for its update.
   server dropped such a call instead; when the host's client later closed that socket, the title's Wine server asserted
   (`release_object` from `free_async_queue`) and the game ended (Deep Rock Galactic on its way into the Space Rig, Team
   Fortress 2 at its menu within 90 seconds). Online needs a runtime kit built with patch 1015.
-- **Achievement notifications have not run on a console.** That the client posts `UserAchievementStored_t` to the
-  host's connection as well as the game's is what its app-wide lobby callbacks suggest, not something seen. An unlock
-  the game saves just before it quits may not reach Steam: the host ends with the title.
+- **An unlock the game saves just before it quits may not reach Steam**: the host ends with the title. Not tried on a
+  console. (The notification itself ran on the console on 2026-11-15: Mouthwashing's StoryStart reached the host's
+  connection about 45 s after its start and showed with its display name.)
 - **Peer-to-peer across the internet** (NAT traversal, Valve's relays) has not run on a console since the host lists
   the adapters; only a connection on the local network has.
 - **`GetAdaptersAddresses` still fails** with ERROR_NOT_SUPPORTED wherever nsiproxy is hosted: Wine patch 1004 makes
