@@ -163,6 +163,9 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // Unknown/active state never reaches this filesystem component.
   FilesystemPackageInstaller(VerifiedKitView kit, PackageInstallPaths paths,
                              PackageInstallerOperations operations);
+  // How many times a pass over the kit's whole file list ran (thousands of files in a real kit). The status questions every
+  // start asks of every title (TitleCurrent, QuickAdmission, TitleIconSource, SetupFromOtherKit) don't add to it.
+  std::size_t KitListPasses() const { return kit_list_passes_; }
 
   // The recipes Playden ships (runtime/recipes) besides the kit's own. A record
   // prepared with one of them resolves whatever recipe the kit carries.
@@ -227,6 +230,7 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   bool RecipeAccepted(const RuntimeInstall& record) const;
   const KitTitleVariant* Variant(const RuntimeInstall& record) const;
   bool ValidView() const;
+  bool ViewConsistent();
   // Owner marker, exact file contents and modes, and published (0755) folders.
   bool TitleMatches(const RuntimeInstall& record, const ResolvedPaths& paths) const;
   // Owner marker only: the files and folders it names are not walked.
@@ -270,6 +274,9 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   std::vector<std::string> shipped_recipe_ids_;
   std::function<bool(const RuntimeInstall&)> accept_recipe_;
   bool profile_shared_ = false;
+  // Full passes over the kit's file list (KitListPasses).
+  mutable std::size_t kit_list_passes_ = 0;
+  bool view_consistent_ = false;
 };
 
 }  // namespace playden::runtime

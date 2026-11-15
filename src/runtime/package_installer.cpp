@@ -501,14 +501,24 @@ FilesystemPackageInstaller::FilesystemPackageInstaller(
     VerifiedKitView kit, PackageInstallPaths paths,
     PackageInstallerOperations operations)
     : kit_(std::move(kit)), paths_(std::move(paths)),
-      operations_(std::move(operations)) {}
+      operations_(std::move(operations)), view_consistent_(ViewConsistent()) {}
 
 const KitTitleVariant* FilesystemPackageInstaller::Variant(
     const RuntimeInstall& record) const {
   return KitVariantFor(kit_, record.title_id);
 }
 
+// The kit view and paths never change after construction: their checks (a pass over every kit file) run once, and
+// each call checks only the kit folder on disk. Resolve runs for every status query of every title.
 bool FilesystemPackageInstaller::ValidView() const {
+  if (!view_consistent_) return false;
+  std::error_code root_error;
+  const auto root_status = fs::symlink_status(kit_.root, root_error);
+  return !root_error && fs::is_directory(root_status) && !fs::is_symlink(root_status);
+}
+
+bool FilesystemPackageInstaller::ViewConsistent() {
+  ++kit_list_passes_;
   if (paths_.console_data_root != "/data" || paths_.host_data_root.empty() ||
       kit_.root.empty() || kit_.kit_id.empty() || !IsHexDigest(kit_.files_sha256) ||
       kit_.runtime.bundle_id.empty() || kit_.runtime.artifact_revision.empty() ||
@@ -521,9 +531,6 @@ bool FilesystemPackageInstaller::ValidView() const {
       !operations_.validate_bottle || !paths_.host_data_root.is_absolute() ||
       paths_.host_data_root != paths_.host_data_root.lexically_normal() || paths_.host_data_root.filename() != "data")
     return false;
-  std::error_code root_error;
-  const auto root_status = fs::symlink_status(kit_.root, root_error);
-  if (root_error || !fs::is_directory(root_status) || fs::is_symlink(root_status)) return false;
   std::set<std::string> files;
   for (const auto& file : kit_.files) {
     if (!IsSafeRelative(file.path) || !IsHexDigest(file.sha256) || file.mode > 07777 ||
@@ -629,6 +636,7 @@ FilesystemPackageInstaller::TitleMappings(const RuntimeInstall& record) const {
   std::vector<Mapping> mappings;
   const auto* variant = Variant(record);
   if (!variant) return mappings;
+  ++kit_list_passes_;
   std::set<std::string> destinations;
   for (const auto& file : kit_.files) {
     std::string relative;
@@ -741,6 +749,7 @@ PackageActionResult FilesystemPackageInstaller::WriteTitleMetadata(const Runtime
 std::vector<FilesystemPackageInstaller::Mapping>
 FilesystemPackageInstaller::TemplateMappings() const {
   std::vector<Mapping> mappings;
+  ++kit_list_passes_;
   for (const auto& file : kit_.files) {
     std::string relative;
     if (HasPrefix(file.path, kit_.template_path, &relative) && IsSafeRelative(relative))

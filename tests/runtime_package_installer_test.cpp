@@ -1576,7 +1576,47 @@ void RecipeRequirementsNameWhatTheKitLacks() {
 
 }  // namespace
 
+// Every start asks each installed title's status (TitleCurrent, QuickAdmission, the icon's source) several times. A real kit
+// lists thousands of files: checking that list again for each question made a start with 93 games take 18 s on a PS5.
+// The list is checked once, when the installer is made; each question still checks the kit folder on disk.
+void StatusQueriesDoNotRecheckTheKitList() {
+  Fixture fixture;
+  for (int i = 0; i < 4000; ++i)
+    fixture.view.files.push_back({"extras/file-" + std::to_string(i), 1, std::string(64, 'b'), 0644});
+  auto installer = fixture.Installer();
+  CHECK(installer.KitListPasses() == 1);
+  auto staged = Record();
+  staged.artifacts = {{"runtime", "rev", fixture.view.artifacts[0].sha256},
+                      {"recipe", "steam-220-hl2-v1-1", fixture.view.artifacts[1].sha256}};
+  CHECK(installer.StageTitle(staged).state == PackageActionState::kComplete);
+  CHECK(installer.CopyTemplate(staged).state == PackageActionState::kComplete);
+  Write(fixture.host_data / "playden/games/install-hl2/library/prefixes/game/user.reg", "WINE REGISTRY Version 2\n", 0600);
+  const auto passes = installer.KitListPasses();
+  std::vector<RuntimeInstall> records{staged};
+  for (int i = 0; i < 100; ++i) {
+    auto record = Record();
+    record.install_id = "install-" + std::to_string(i);
+    record.data_root = "/data/playden/games/" + record.install_id;
+    records.push_back(record);
+  }
+  for (int round = 0; round < 3; ++round)
+    for (const auto& record : records) {
+      CHECK(installer.TitleCurrent(record) == (record.install_id == staged.install_id));
+      CHECK(installer.QuickAdmission(record) == (record.install_id == staged.install_id ? "ok" : "stage 7: user.reg is missing"));
+      CHECK(!installer.TitleIconSource(record));
+      CHECK(!installer.SetupFromOtherKit(record));
+    }
+  CHECK(installer.KitListPasses() == passes);
+  // The kit folder itself is still checked on every question: a kit folder replaced by a link resolves nothing.
+  const auto moved = fixture.temporary.path / "kit-moved";
+  std::filesystem::rename(fixture.kit, moved);
+  std::filesystem::create_directory_symlink(moved, fixture.kit);
+  CHECK(!installer.TitleCurrent(staged));
+  CHECK(installer.QuickAdmission(staged) == "kit or record is invalid");
+}
+
 int main() {
+  StatusQueriesDoNotRecheckTheKitList();
   CloudSaveFoldersAreMadeInTheProfile();
   TemplateCopyReportsProgress();
   ShippedRecipeResolvesWithAnyKit();
