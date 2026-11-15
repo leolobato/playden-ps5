@@ -819,6 +819,23 @@ void live_settings_follow_the_prepared_title(const std::filesystem::path& base) 
     runtime.activity = TitleActivity::Stopped;
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     check(find_row(model, "setting-windows_version")->enabled, "game-closed rows open once the game is stopped");
+    {
+        // A first setup holds the runtime's answer until it ends (Mouthwashing's Steam features, 2026-11-15): the
+        // runtime found the game closed before it started, so the rows don't wait for the answer.
+        auto preparing = runtime;
+        preparing.status = "Preparing";
+        preparing.ready = preparing.prepared = preparing.can_play = false;
+        preparing.activity = TitleActivity::Unknown;
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {preparing});
+        const auto* row = find_row(model, "setting-windows_version");
+        check(row && row->enabled && row->subtitle.find("Checking whether") == std::string::npos,
+              "game-closed rows can change while the game is being set up");
+        const auto depth = model.state().navigation.modals.size();
+        activate(model, "setting-windows_version");
+        check(model.state().navigation.modals.size() == depth + 1, "and open their choices");
+        activate(model, "cancel");
+        model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
+    }
     check(find_row(model, "setting-locale") && !find_row(model, "setting-locale")->enabled,
           "unbuilt rows stay listed and disabled");
     check(model.action("focus:setting-frame_limit") &&

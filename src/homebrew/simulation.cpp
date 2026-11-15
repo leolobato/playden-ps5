@@ -2884,6 +2884,12 @@ void Simulation::UpdatePreparationQueue(PreparationQueue queue) {
     for (const auto& [id, kind] : runtime_batch_)
         if (std::find(queue.waiting.begin(), queue.waiting.end(), id) == queue.waiting.end() && queue.active != id)
             queue.waiting.push_back(id);
+    // A game waiting for the PS5 is set up already: a pass queued for it only asks the console again (it can't be
+    // confirmed before Playden quits). Queue lists it as waiting for the PS5, not "Up next" behind other work.
+    std::erase_if(queue.waiting, [this](GameId id) {
+        const auto found = state_.runtime_games.find(id);
+        return found != state_.runtime_games.end() && found->second.awaiting_registration;
+    });
     // A cancel the runtime has not carried out yet keeps the game off the list; once the runtime's list no
     // longer has it waiting, it is done.
     std::erase_if(prepare_cancel_asked_, [&queue](GameId id) {
@@ -3300,7 +3306,12 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
     if (!live()) return;
     state_.runtime = runtime;
     std::map<GameId, LiveRuntimeGame> next;
-    for (const auto& game : games) next[game.game_id] = game;
+    for (const auto& game : games) {
+        auto& value = next[game.game_id] = game;
+        // A game waiting for the PS5 is set up: a pass queued for it only asks the console again, so it stays ready
+        // to play from Home rather than "Queued" behind other work (see UpdatePreparationQueue).
+        if (value.awaiting_registration) value.queued = false;
+    }
     for (const auto& [id, game] : next) {
         if (game.status != "Not prepared") rechosen_after_refusal_.erase(id);
         const auto before = state_.runtime_games.find(id);
@@ -6918,7 +6929,7 @@ void Simulation::rebuild_view() {
                 view_.subtitle += settings_custom || inherited.source != rt::ValueSource::kPlayden
                     ? std::string(" ") + source_label(inherited.source) + ": " + (modal.setting_id == "launch_option" ? launch_label(settings_game, inherited.value) : choice_label(*definition, rt::ChosenValue(inherited))) + "."
                     : "";
-                const auto closed = !game_closed(settings_game) && definition->apply == rt::ApplyMode::kGameClosed;
+                const auto closed = !settings_closed(settings_game) && definition->apply == rt::ApplyMode::kGameClosed;
                 // A game that was never prepared gets its bottle from these values on the next Play.
                 const auto runtime_game = state_.runtime_games.find(settings_game);
                 const bool prepared = runtime_game != state_.runtime_games.end() && runtime_game->second.prepared;
@@ -7831,7 +7842,7 @@ void Simulation::rebuild_view() {
                     if (!problem.empty()) item.subtitle = problem;
                 }
                 std::string closed_reason;
-                if (item.enabled && definition->apply == rt::ApplyMode::kGameClosed && !game_closed(settings_game, &closed_reason)) {
+                if (item.enabled && definition->apply == rt::ApplyMode::kGameClosed && !settings_closed(settings_game, &closed_reason)) {
                     item.enabled = false;
                     item.subtitle = closed_reason;
                 }
@@ -13493,7 +13504,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
         const auto* definition = id.empty() ? nullptr : rt::FindSetting(id);
         // The program type follows the program; Triangle on the Program row resets both.
         const bool closed_needed = (definition && definition->apply == rt::ApplyMode::kGameClosed &&
-                                    !game_closed(state_.navigation.selected_game_id)) || id == "architecture";
+                                    !settings_closed(state_.navigation.selected_game_id)) || id == "architecture";
         // With it go the keys that belong to the row: a "Change anyway", the picked program and its
         // architecture, and library overrides an earlier build kept as additions.
         std::vector<std::string> keys = {id, rt::kUnlockPrefix + id};
@@ -15551,6 +15562,20 @@ bool Simulation::game_closed(GameId id, std::string* reason) const {
     return true;
 }
 
+bool Simulation::settings_closed(GameId id, std::string* reason) const {
+    // Being set up: the runtime checks that the game is closed before a setup goes on, and answers the sheet's question
+    // only once the setup (and the Queue work ahead of the answer) is done. The setup reads the settings when it
+    // writes the game's profile; one changed after that reaches a Ready title when the setup ends, and a title still
+    // waiting for the PS5 at the next Play from Playden (a first start from Home keeps the older profile).
+    if (live()) {
+        const auto found = state_.runtime_games.find(id);
+        if (found != state_.runtime_games.end() && found->second.status == "Preparing" &&
+            found->second.activity == TitleActivity::Unknown)
+            return true;
+    }
+    return game_closed(id, reason);
+}
+
 void Simulation::request_maintenance(GameId id, MaintenanceKind kind) {
     if (!live()) {
         // Fixture mode only describes what the real action does.
@@ -15644,7 +15669,7 @@ void Simulation::open_setting(const std::string& id) {
     if (!definition || !EffectiveSettingsFor(state_.navigation.selected_game_id, &values)) return;
     const auto& value = values.values.at(id);
     if ((!value.available && !value.waits_for_update) || id == "architecture" ||
-        (definition->apply == rt::ApplyMode::kGameClosed && !game_closed(state_.navigation.selected_game_id))) {
+        (definition->apply == rt::ApplyMode::kGameClosed && !settings_closed(state_.navigation.selected_game_id))) {
         // Disabled rows stay focusable so their reason can be read; Cross does nothing.
     } else if (value.locked && !value.unlocked) {
         ModalEntry confirmation{"confirmation", "Change anyway?", action_name, {"cancel", "unlock-setting"}, 0, false, "", id};

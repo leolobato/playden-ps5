@@ -3472,6 +3472,40 @@ void live_queue_counts_copies() {
           "Downloads counts the copy as copying");
 }
 
+// A game waiting for the PS5 is set up. A pass the runtime queued for it behind other work (an uninstall here) only asks
+// the console again: its page keeps Finish setup and Queue keeps it under Waiting for the PS5, not "Up next" (Mouthwashing
+// with uninstalls queued, 2026-11-15).
+void live_waiting_for_ps5_stays_ready_with_a_queued_check() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(model.UpdateLibrary({{game(SteamId(10), "Mouthwashing"), game(SteamId(11), "Bullet Witch")}, false, {}, false, false, {}}),
+          "library loaded");
+    model.UpdateInstalls({}, {{SteamId(10), 1, "internal", true}, {SteamId(11), 1, "internal", true}}, {});
+    LiveRuntimeGame waiting; waiting.game_id = SteamId(10); waiting.status = "Waiting for the PS5";
+    waiting.awaiting_registration = true; waiting.can_prepare = true; waiting.has_title = true;
+    waiting.queued = true;  // the runtime has a pass for it queued
+    LiveRuntimeGame removing; removing.game_id = SteamId(11); removing.status = "Ready"; removing.has_title = true;
+    model.UpdateRuntime(RuntimeState::Ready, {waiting, removing});
+    PreparationQueue queue;
+    queue.waiting = {SteamId(10)};
+    queue.uninstalls = {{SteamId(11), "Removing PS5 title…"}};
+    model.UpdatePreparationQueue(queue);
+    check(model.state().preparation_queue.waiting.empty(), "the check doesn't wait in line");
+    model.action("r1");
+    model.action("r1");
+    check(model.state().navigation.route == Route::Downloads, "the Queue tab opens");
+    check(queue_row(model, "prep-10") == nullptr && queue_row(model, "prep-attn-10") &&
+              queue_row(model, "prep-attn-10")->value == "Waiting for the PS5",
+          "Queue lists the game as waiting for the PS5, not up next");
+    check(model.action("details:10"), "the game page opens");
+    const auto* play = find_row(model, "details-play");
+    check(play && play->title == "Finish setup" && play->enabled && play->value == "Quits to Home",
+          "Finish setup still quits to Home");
+    const auto* setup = find_row(model, "details-setup");
+    check(setup && setup->value == "Waiting for the PS5", "Setup says it waits for the PS5, not Queued");
+}
+
 // Queue: both workflows, one section expanded at a time. A collapsed section keeps its card and counts.
 // Waiting preparations are numbered in the runtime's order, completed ones follow them in the same list,
 // and Prepare next moves a waiting game first without touching the one being prepared.
@@ -4841,6 +4875,7 @@ int main() {
     live_details_keep_personal_edits_and_block_fixture_operations();
     refresh_actions_preserve_authentication_and_wall_clock_is_external();
     live_queue_shows_downloads_and_preparations();
+    live_waiting_for_ps5_stays_ready_with_a_queued_check();
     live_queue_counts_copies();
     live_queue_history_and_empty_states();
     live_queue_lists_preparations_needing_attention();

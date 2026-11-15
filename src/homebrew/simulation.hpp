@@ -2258,6 +2258,8 @@ private:
     // Whether a setting or action that needs the game closed can run: false while the game
     // runs or the console has not said; reason says why.
     [[nodiscard]] bool game_closed(GameId id, std::string* reason = nullptr) const;
+    // Whether Game settings' "Game must be closed" rows can change: game_closed, or the game is being set up.
+    [[nodiscard]] bool settings_closed(GameId id, std::string* reason = nullptr) const;
     [[nodiscard]] std::vector<std::string> maintenance_actions() const;
     // The game page's More menu: Game settings and Maintenance first for a prepared game.
     [[nodiscard]] std::vector<std::string> details_context_actions() const;
