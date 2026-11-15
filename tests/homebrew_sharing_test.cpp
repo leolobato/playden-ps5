@@ -15,6 +15,7 @@
 #include "homebrew/simulation.hpp"
 #include "homebrew/web_recipe_imports.hpp"
 #include "library/store.h"
+#include "runtime/game_probe.h"
 #include "runtime/game_settings.h"
 
 #include <strings.h>
@@ -1760,6 +1761,174 @@ void web_import_without_app_id(const std::filesystem::path& base) {
     check(model.ImportRecipe(kGame, own_revision).first == 422, "Darkwood refuses the imported game's recipe");
 }
 
+// A report and a share list Library overrides only when the overrides the player or the recipe set change: the DXVK
+// entries that follow the Graphics row and vkd3d-proton's that follow Direct3D 12 are Playden's, and those rows are
+// listed on their own.
+namespace overrides_text {
+void set_up_model(Simulation& model, const std::filesystem::path& base, bool with_catalog, const std::string& graphics) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    set_up(model, base, with_catalog);
+    model.SetKitCapabilities(rt::KitCapabilitiesFromManifest({"dxvk", "display-120hz", "vkd3d-proton"}, true));
+    // Playden's own recipe for the game, whose DXVK overrides follow the Graphics row.
+    rt::GameRecipe own;
+    own.id = rt::GeneratedRecipeId(274520);
+    own.version = 1;
+    own.app_id = 274520;
+    own.name = "Darkwood";
+    own.launch_entries = {{"game", "Darkwood", "Darkwood.exe", ""}};
+    own.architecture = "pe64";
+    own.graphics = graphics;
+    model.SetGeneratedRecipes({own});
+}
+
+// What a test report sends as the settings the player changed.
+std::string report_settings(Simulation& model) {
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    (void)model.TakeSharingRequests();
+    check(model.action("details:274520"), "Darkwood's page opens for a report");
+    activate(model, "details-more");
+    activate(model, "share-feedback");
+    activate(model, "feedback-good");
+    activate(model, "feedback-send");
+    if (model.state().navigation.modals.back().title == "Before you send") activate(model, "feedback-send-confirm");
+    const auto sent = model.TakeSharingRequests();
+    const auto report = std::find_if(sent.begin(), sent.end(), [](const SharingRequest& r) { return r.kind == SharingRequestKind::Report; });
+    check(report != sent.end(), "the report is sent");
+    while (!model.state().navigation.modals.empty()) model.action("circle");
+    return report == sent.end() ? std::string() : report->report.settings;
+}
+
+// The Share sheet's What is sent: what is sent, then "Your changes" from the recipe the settings start from.
+std::string share_what(Simulation& model) {
+    open_share(model);
+    const auto* row = find_row(model, "share-what");
+    check(row != nullptr, "the Share sheet says what is sent");
+    std::string text = row ? row->subtitle : std::string();
+    if (row)
+        for (const auto& line : row->lines) text += "\n" + line;
+    return text;
+}
+
+// Opens a setting, with its section first when that is collapsed.
+void change(Simulation& model, const std::string& key) {
+    open_game_settings(model);
+    for (const char* section : {"section-compatibility", "section-advanced"})
+        if (!find_row(model, key) && find_row(model, section)) activate(model, section);
+    activate(model, key);
+    // A row the recipe locks asks first.
+    if (find_row(model, "unlock-setting")) activate(model, "unlock-setting");
+}
+}  // namespace overrides_text
+
+void report_library_overrides(const std::filesystem::path& base) {
+    using namespace overrides_text;
+    {
+        // Graphics from Automatic to DXVK: Playden adds DXVK's overrides (Silent Hill: Homecoming's report).
+        Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+        set_up_model(model, base / "to-dxvk", false, "auto");
+        change(model, "setting-graphics");
+        activate(model, "choice-2");
+        const auto settings = report_settings(model);
+        check(contains(settings, "Graphics DXVK") && !contains(settings, "Library overrides"),
+              "a report for Graphics DXVK doesn't list DXVK's overrides as the player's change");
+        check(!contains(share_what(model), "Library overrides"), "nor does the Share sheet");
+    }
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up_model(model, base / "from-dxvk", false, "dxvk");
+    // Graphics from DXVK to OpenGL: Playden drops DXVK's overrides, which were never the player's (Hedon Bloodrite's).
+    change(model, "setting-graphics");
+    activate(model, "choice-3");
+    auto settings = report_settings(model);
+    check(contains(settings, "Graphics OpenGL") && !contains(settings, "Library overrides"),
+          "a report for Graphics OpenGL doesn't list DXVK's overrides as the player's change");
+    check(!contains(share_what(model), "Library overrides"), "nor does the Share sheet");
+    // Direct3D 12 (on DXVK again) to vkd3d-proton brings its own entries and DXVK's dxgi: also Playden's.
+    change(model, "setting-graphics");
+    activate(model, "choice-2");
+    change(model, "setting-d3d12");
+    activate(model, "choice-1");
+    settings = report_settings(model);
+    check(contains(settings, "Direct3D 12 vkd3d-proton") && !contains(settings, "Library overrides"),
+          "a report for vkd3d-proton doesn't list its overrides as the player's");
+    // An override the player adds is theirs: listed, without Playden's entries.
+    change(model, "setting-dll_overrides");
+    activate(model, "override-add");
+    model.SubmitEditorText("xinput1_3=n");
+    settings = report_settings(model);
+    check(contains(settings, "Library overrides xinput1_3=n") && !contains(settings, "d3d11") && !contains(settings, "d3d12"),
+          "an override the player added is listed, without Playden's own entries");
+    check(contains(share_what(model), "Library overrides xinput1_3=n"), "and so does the Share sheet");
+    // Direct3D 12 back to Wine (Everwind's report): only the player's override is left to list.
+    change(model, "setting-d3d12");
+    activate(model, "choice-0");
+    settings = report_settings(model);
+    check(!contains(settings, "Direct3D 12") && contains(settings, "Library overrides xinput1_3=n"),
+          "Direct3D 12 back to Wine leaves the player's override");
+}
+
+// A community recipe that names DXVK's overrides itself keeps them whatever Graphics is: the same list as before is
+// no change, so a player who only changes Graphics doesn't get a Library overrides item.
+void report_recipe_dxvk_overrides(const std::filesystem::path& base) {
+    using namespace overrides_text;
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up_model(model, base, true, "dxvk");
+    model.SetCommunityRecipeLoader([](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
+        if (revision != kRevision) return std::nullopt;
+        auto community = community_recipe(revision);
+        community.recipe.dll_overrides = rt::kDxvkOverrides;
+        return community;
+    });
+    open_game_settings(model);
+    activate(model, "preset-picker");
+    activate(model, "recipe-" + kRevision);
+    if (model.state().navigation.modals.back().id == "confirmation") activate(model, "recipe-switch-confirm");
+    check(model.RecipeBaseFor(kGame) && model.RecipeBaseFor(kGame)->revision == kRevision, "Darkwood uses the community recipe");
+    change(model, "setting-graphics");
+    activate(model, "choice-3");
+    const auto settings = report_settings(model);
+    check(contains(settings, "Graphics OpenGL") && !contains(settings, "Library overrides"),
+          "the recipe's own DXVK overrides aren't listed when only Graphics changed");
+    const auto what = share_what(model);
+    check(contains(what, "Your changes: Graphics OpenGL") && !contains(what, "Library overrides"),
+          "nor does the Share sheet, against Playden's recipe or the community one");
+    // Back on DXVK, the player removes the recipe's DXVK overrides: a change of theirs, listed.
+    change(model, "setting-graphics");
+    activate(model, "choice-2");
+    change(model, "setting-dll_overrides");
+    check(find_row(model, "override-remove-0") && find_row(model, "override-remove-0")->title == rt::kDxvkOverrides &&
+              !find_row(model, "override-remove-1"),
+          "the recipe's DXVK overrides are its list");
+    activate(model, "override-remove-0");
+    const auto removed = report_settings(model);
+    check(contains(removed, "Library overrides none") && !contains(removed, "Graphics") && !contains(removed, "Direct3D 12"),
+          "removing the recipe's DXVK overrides is listed");
+    check(contains(share_what(model), "Your changes: Library overrides none"), "and so does the Share sheet");
+    // A recipe on OpenGL that names DXVK's overrides: the player chooses DXVK and vkd3d-proton. Only Direct3D 12's
+    // entries are new, and the recipe's own are the same list.
+    Simulation opengl("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up_model(opengl, base / "opengl", true, "dxvk");
+    opengl.SetCommunityRecipeLoader([](const std::string& revision) -> std::optional<rt::CommunityRecipe> {
+        if (revision != kRevision) return std::nullopt;
+        auto community = community_recipe(revision);
+        community.recipe.graphics = "opengl";
+        community.recipe.dll_overrides = rt::kDxvkOverrides;
+        return community;
+    });
+    open_game_settings(opengl);
+    activate(opengl, "preset-picker");
+    activate(opengl, "recipe-" + kRevision);
+    if (opengl.state().navigation.modals.back().id == "confirmation") activate(opengl, "recipe-switch-confirm");
+    change(opengl, "setting-graphics");
+    activate(opengl, "choice-2");
+    change(opengl, "setting-d3d12");
+    activate(opengl, "choice-1");
+    const auto on_vkd3d = share_what(opengl);
+    check(contains(on_vkd3d, "Your changes: Graphics DXVK") && contains(on_vkd3d, "Direct3D 12 vkd3d-proton") &&
+              !contains(on_vkd3d, "Library overrides"),
+          "Direct3D 12's entries don't make the recipe's own DXVK overrides a change");
+}
+
 int main() {
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                       ("playden-sharing-test-" + std::to_string(getpid()));
@@ -1768,6 +1937,8 @@ int main() {
     share_and_vote(base);
     community_keep(base / "keep");
     report_with_logs(base / "report");
+    report_library_overrides(base / "report-overrides");
+    report_recipe_dxvk_overrides(base / "report-recipe-overrides");
     account_link(base / "account");
     feedback_prompt_waits_for_library(base / "prompt");
     start_failed(base / "start-failed");

@@ -499,6 +499,34 @@ std::string change_item(const rt::SettingDefinition& definition, const rt::Effec
     return definition.label + " " + label;
 }
 
+// The library overrides without vkd3d-proton's entries (with or without DXVK's dxgi): they only ever follow the
+// Direct3D 12 row, which is listed on its own. With without_dxvk, DXVK's entry goes too when graphics is DXVK: it
+// follows the Graphics row there (a recipe that names it itself gets the same), and *dxvk_missing says graphics is
+// DXVK without it, which is a change of its own.
+std::string own_dll_overrides(const rt::EffectiveSettings& values, bool without_dxvk, bool* dxvk_missing = nullptr) {
+    std::string list;
+    bool dxvk = false;
+    for (const auto& entry : rt::SplitDllOverrides(values.dll_overrides)) {
+        if (entry == rt::kVkd3dProtonOverrides || entry == rt::kVkd3dProtonDxgiOverrides) continue;
+        if (entry == rt::kDxvkOverrides) dxvk = true;
+        if (without_dxvk && values.graphics == "dxvk" && entry == rt::kDxvkOverrides) continue;
+        list += (list.empty() ? "" : ";") + entry;
+    }
+    if (dxvk_missing) *dxvk_missing = values.graphics == "dxvk" && !dxvk;
+    return list;
+}
+
+// Whether the library overrides the player or the recipe set differ, and the list to show for after. Playden's entries
+// for Graphics and Direct3D 12 are no change: those rows are listed on their own.
+bool own_dll_overrides_differ(const rt::EffectiveSettings& before, const rt::EffectiveSettings& after, std::string* shown) {
+    // The same list on both sides but for vkd3d-proton's entries is no change, whatever Graphics is: a recipe that names
+    // DXVK's entries itself keeps them on any graphics.
+    if (own_dll_overrides(before, false) == own_dll_overrides(after, false)) return false;
+    bool missing_before = false, missing_after = false;
+    *shown = own_dll_overrides(after, true, &missing_after);
+    return *shown != own_dll_overrides(before, true, &missing_before) || missing_before != missing_after;
+}
+
 // Current → after for the chooser's side panel; the number of settings that change.
 int fill_comparison(const rt::EffectiveSettings& current, const rt::EffectiveSettings& after, ViewData::Comparison* comparison) {
     const auto label = [&](const rt::SettingDefinition& definition, const rt::EffectiveSettings& values) {
@@ -16500,8 +16528,11 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
         items.push_back("Program " + file_name(program(after)));
         *program_or_graphics = true;
     }
-    if (before.dll_overrides != after.dll_overrides)
-        items.push_back("Library overrides " + (after.dll_overrides.empty() ? std::string("none") : after.dll_overrides));
+    // Library overrides as the player or the recipe set them, without the entries that follow Graphics and Direct3D 12.
+    // Whether anything differs still counts the whole list.
+    const bool overrides_differ = before.dll_overrides != after.dll_overrides;
+    if (std::string own; own_dll_overrides_differ(before, after, &own))
+        items.push_back("Library overrides " + (own.empty() ? std::string("none") : own));
     // The program row and the library overrides are listed above; the command line follows the rows
     // (Resolution changes it too), so only the rows that set its arguments count as the program's.
     static const std::set<std::string> covered = {"launch_option", "program", "dll_overrides", "library_overrides", "architecture"};
@@ -16517,7 +16548,7 @@ std::string Simulation::share_changes(GameId id, const std::optional<cm::RecipeR
         items.push_back(change_item(definition, value));
         if (program_rows.count(definition.id)) *program_or_graphics = true;
     }
-    *differs = !items.empty();
+    *differs = !items.empty() || overrides_differ;
     return join_text(items, " · ");
 }
 
