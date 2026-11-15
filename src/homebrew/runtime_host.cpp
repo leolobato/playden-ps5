@@ -6037,6 +6037,21 @@ std::string RuntimeHost::DeleteKept(Composition& c, std::uint32_t app) {
   return {};
 }
 
+void RuntimeHost::CopyTitleLogs(const Composition& c) {
+  for (const auto& record : c.repository.Snapshot()) {
+    if (Stopping()) return;
+    const auto root = config_.host_namespace_prefix.empty()
+        ? std::filesystem::path(record.data_root)
+        : config_.host_namespace_prefix / std::filesystem::path(record.data_root).relative_path();
+    const auto install = config_.host_namespace_prefix.empty()
+        ? std::filesystem::path(record.install_path)
+        : config_.host_namespace_prefix / std::filesystem::path(record.install_path).relative_path();
+    const auto program = record.install_path.empty() || record.launch_path.empty()
+        ? std::filesystem::path() : install / record.launch_path;
+    if (const auto text = NewestSessionLog(root, program)) config_.title_log(record.title_id, *text);
+  }
+}
+
 void RuntimeHost::Run() {
   while (RunServices()) Log("kit reload: starting the runtime services again");
 }
@@ -6115,6 +6130,14 @@ bool RuntimeHost::RunServices() {
         [this] { return Stopping(); },
         [this, &c](const rt::RuntimeInstall& record) { return DrivePublication(c, record); });
     Log("startup loading records");
+    // Each startup step's time, for a report of a slow start: the first frame waits for all of them.
+    auto step_began = std::chrono::steady_clock::now();
+    const auto step = [&](const char* name) {
+      const auto now = std::chrono::steady_clock::now();
+      Log(std::string("startup step=") + name + " ms=" +
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - step_began).count()));
+      step_began = now;
+    };
     const auto loaded = c.repository.Load();
     std::string move_error;
     if (!loaded.ok() || !MoveGames(c, &move_error)) {
@@ -6133,11 +6156,14 @@ bool RuntimeHost::RunServices() {
       FollowUsbDrives(c);
       LoadGeneratedRecipes(c);
       Log("startup generated recipes loaded");
+      step("records");
       PublishInstalls(c);
       Log("startup installs published");
+      step("publish");
       SyncOnlineSessions(c, true);
       ResumeLeftoverDeletes(c);
       PublishLeftoverTitles(c);
+      step("leftovers");
       KeepUnrecordedBottles(c);
       // Retired title folders left by an earlier removal are outside the scan
       // root already; deleting them is only housekeeping.
@@ -6154,7 +6180,9 @@ bool RuntimeHost::RunServices() {
         }
       }
       Log("startup trash emptied");
+      step("trash");
       if (const auto listed = SyncTitleAllowList(c); !listed.empty()) Log("startup allow-list: " + listed);
+      step("allow-list");
       if (c.kit)
         for (const auto& record : c.repository.Snapshot())
           if (record.state == rt::PreparationState::kReady) {
@@ -6165,6 +6193,7 @@ bool RuntimeHost::RunServices() {
             Log("admission check title=" + record.title_id + " result=" + c.admission[record.install_id]);
           }
       PublishInstalls(c);
+      step("admission+publish");
       // A title's last run ended before this start (a game's start closes Playden).
       {
         std::map<std::uint32_t, std::string> hints;
@@ -6186,18 +6215,7 @@ bool RuntimeHost::RunServices() {
         }
         if (!physx.empty()) Publish([&](RuntimeSnapshot& s) { s.physx_needed = std::move(physx); });
       }
-      if (config_.title_log)
-        for (const auto& record : c.repository.Snapshot()) {
-          const auto root = config_.host_namespace_prefix.empty()
-              ? std::filesystem::path(record.data_root)
-              : config_.host_namespace_prefix / std::filesystem::path(record.data_root).relative_path();
-          const auto install = config_.host_namespace_prefix.empty()
-              ? std::filesystem::path(record.install_path)
-              : config_.host_namespace_prefix / std::filesystem::path(record.install_path).relative_path();
-          const auto program = record.install_path.empty() || record.launch_path.empty()
-              ? std::filesystem::path() : install / record.launch_path;
-          if (const auto text = NewestSessionLog(root, program)) config_.title_log(record.title_id, *text);
-        }
+      step("hints");
       // Play: the launch journal sits beside the install records. A session
       // pending from before a restart is polled, never handed off again.
       c.launch_journal = std::make_unique<rt::StorageLaunchSessionJournal>(c.storage);
@@ -6228,6 +6246,7 @@ bool RuntimeHost::RunServices() {
         std::lock_guard<std::mutex> lock(mutex_);
         launch_poll_ = true;
       }
+      step("launch");
       // A recipe switch cut off between its commit and its markers (RebindRecipeMarkers) finishes
       // before anything reads the markers: the bottle's modes, the republish passes, the installs view.
       if (c.kit) {
@@ -6241,6 +6260,7 @@ bool RuntimeHost::RunServices() {
         }
         if (changed) PublishInstalls(c);
       }
+      step("rebind");
       // Games started from Home (and Playden's, which close Playden) left Wine's 0600 saves: with
       // bottle-profile-shared they are opened to FTP again once their title is stopped.
       if (c.kit && rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared) {
@@ -6257,6 +6277,7 @@ bool RuntimeHost::RunServices() {
         for (const auto& record : c.repository.Snapshot())
           if (record.state == rt::PreparationState::kReady && MaintenanceRefusal(c, record).empty())
             KitMonoStep(c, record, "startup");
+      step("mono");
       // An unowned upgrade's request cut off before its publication began (a crash, a capture
       // refused on an earlier start) is dropped first: the game plays under its owned publication,
       // and the pass below tries the upgrade again. Moved games and newer settings keep theirs.
@@ -6264,6 +6285,7 @@ bool RuntimeHost::RunServices() {
         if (record.state == rt::PreparationState::kReady && record.journal && record.moved_from.empty() &&
             record.journal->operation == "settings-request" && record.journal->step == "capture-update")
           DropUpgradeRequest(c, record.install_id, "left by an earlier start");
+      step("drop-requests");
       // Games whose folder moved with the games root (0.6) start from Home only once their
       // publication names the new folder: republished now, busy titles wait for Play.
       // So are games published owned while the kit admits unowned folders (folders opened for
@@ -6284,6 +6306,7 @@ bool RuntimeHost::RunServices() {
                                  : (busy.empty() ? "failed: " : "waits: ") + refused));
       }
       FinishGamesMove(c);
+      step("republish");
       // Settings saved while Playden was closed, or before a title was stopped, are published
       // now, so a start from the PS5 Home screen uses them too. Busy titles wait for Play.
       if (c.kit)
@@ -6302,6 +6325,7 @@ bool RuntimeHost::RunServices() {
             Log("startup settings app=" + std::to_string(record.runtime_number) + " " + (refused.empty() ? "applied" : refused));
         }
       RemoveFinishedRequests(c);
+      step("settings");
       const bool kit_available = c.kit.has_value();
       Log("runtime ready installs=" + std::to_string(c.repository.Snapshot().size()) + " kit=" +
           (kit_available ? c.kit->view.kit_id : "none (" + kit_reason + ")") +
@@ -6335,6 +6359,12 @@ bool RuntimeHost::RunServices() {
     PublishPrepared(composition.get());
   }
   startup_hold.reset();
+  // Each title's newest session reports, copied to the logs folder for a report: reading every bottle's logs takes a
+  // while with many games, and nothing at start needs them, so the first frame doesn't wait for them.
+  if (composition && composition->repository.Loaded() && config_.title_log) {
+    const auto logs_hold = hold();
+    CopyTitleLogs(*composition);
+  }
   bool reload = false;
   for (;;) {
     std::vector<PlayRequest> plays;

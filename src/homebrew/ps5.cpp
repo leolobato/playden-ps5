@@ -691,10 +691,15 @@ int main() {
             config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
             config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects);
             config.title_log = [](const std::string& title, const std::string& text) {
+                // Copied after the first frame (RuntimeHost::CopyTitleLogs), while a report may read the folder: written
+                // beside its name and moved over it, so a reader sees the old copy or the new one. The partial file's
+                // name is no title's log or extra (logs_source.cpp, collect_logs.py).
                 const auto path = log_root + "/title-" + title + ".log";
-                if (FILE* file = std::fopen(path.c_str(), "wb")) {
-                    std::fwrite(text.data(), 1, text.size(), file);
-                    std::fclose(file);
+                const auto partial = log_root + "/title-copy-" + title + ".log";
+                if (FILE* file = std::fopen(partial.c_str(), "wb")) {
+                    const bool written = std::fwrite(text.data(), 1, text.size(), file) == text.size();
+                    if (std::fclose(file) == 0 && written) std::rename(partial.c_str(), path.c_str());
+                    else std::remove(partial.c_str());
                 }
             };
             // The game's PS5 title icon, from its Steam cover; without one, the game's own icon

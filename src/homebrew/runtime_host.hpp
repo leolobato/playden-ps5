@@ -844,6 +844,7 @@ class RuntimeHost {
   // with no account every one goes. A Steam sign-in goes with its handoff: the token Valve's client saved in the bottle,
   // and its account list in the client folder once no game keeps its sign-in.
   void SyncOnlineSessions(Composition& composition, bool startup);
+  void CopyTitleLogs(const Composition& composition);
   void DropOnlineSession(const std::filesystem::path& bottle);  // before a bottle is kept without its game
   // At Play, after OnlineSessionStep: no earlier Play's one-launch file, and this Play's when the session was handed
   // over (handed) and it asks something.

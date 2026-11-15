@@ -1750,8 +1750,24 @@ void PreparesGameWithoutShippedRecipe() {
     launches.emplace_back(title, arguments);
     return TitleResult{true, 0, "launch"};
   };
+  // Copied after the start is published (CopyTitleLogs): read under the lock, waiting for the copy.
+  std::mutex title_logs_mutex;
   std::map<std::string, std::string> title_logs;
-  config.title_log = [&title_logs](const std::string& title, const std::string& text) { title_logs[title] = text; };
+  config.title_log = [&](const std::string& title, const std::string& text) {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs[title] = text;
+  };
+  const auto title_log_of = [&](const std::string& title) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for (;;) {
+      {
+        std::lock_guard<std::mutex> lock(title_logs_mutex);
+        if (const auto found = title_logs.find(title); found != title_logs.end()) return found->second;
+      }
+      CHECK(std::chrono::steady_clock::now() < deadline);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  };
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/4242";
   // A 64-bit PE header is all the generator reads.
   std::string pe(0x80 + 26, '\0');
@@ -2194,8 +2210,7 @@ void PreparesGameWithoutShippedRecipe() {
   CHECK(restarted.Start());
   const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
   CHECK(reloaded.generated_recipes[0].id == "steam-4242-auto");
-  CHECK(title_logs.count("FAKE78001"));
-  const auto& title_log = title_logs.at("FAKE78001");
+  const auto title_log = title_log_of("FAKE78001");
   CHECK(title_log.find("== session-0.log\nPW_REPORT/1 stopped") != std::string::npos);
   CHECK(title_log.find("AppData/LocalLow/Studio/Game/Player.log\nNullReferenceException at Boot") != std::string::npos);
   // No Steam host ran: neither of its logs is there.
@@ -2204,17 +2219,43 @@ void PreparesGameWithoutShippedRecipe() {
   const auto prepared = WaitFor(restarted, [](const RuntimeSnapshot& s) { return s.refusals.count(4242) != 0; });
   CHECK(prepared.refusals.at(4242) == "This game is already prepared.");
   restarted.Shutdown();
+  // The start doesn't wait for the copies: with the copy held, the runtime is ready all the same (the first frame waits
+  // for ready). Released, the copy is made.
+  {
+    std::mutex gate_mutex;
+    std::condition_variable gate_changed;
+    bool gate_open = false, copying = false;
+    auto held = config;
+    held.title_log = [&](const std::string&, const std::string&) {
+      std::unique_lock<std::mutex> lock(gate_mutex);
+      copying = true;
+      gate_changed.notify_all();
+      gate_changed.wait(lock, [&] { return gate_open; });
+    };
+    RuntimeHost waiting(held);
+    CHECK(waiting.Start());
+    CHECK(WaitFor(waiting, Started).status == RuntimeHostStatus::kReady);
+    {
+      std::unique_lock<std::mutex> lock(gate_mutex);
+      CHECK(gate_changed.wait_for(lock, std::chrono::seconds(30), [&] { return copying; }));
+      gate_open = true;
+    }
+    gate_changed.notify_all();
+    waiting.Shutdown();
+  }
 
   // Unity 5 writes output_log.txt beside the program instead; the newer log is the one shown.
   Write(game / "Bin/Game_Data/output_log.txt", "Initialize engine version: 5.3.6p5\n", 0600);
   std::filesystem::last_write_time(game / "Bin/Game_Data/output_log.txt",
                                    std::filesystem::file_time_type::clock::now() + std::chrono::seconds(10));
-  title_logs.clear();
+  {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs.clear();
+  }
   RuntimeHost legacy(config);
   CHECK(legacy.Start());
   WaitFor(legacy, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
-  CHECK(title_logs.count("FAKE78001"));
-  CHECK(title_logs.at("FAKE78001").find("== Game_Data/output_log.txt\nInitialize engine version: 5.3.6p5") !=
+  CHECK(title_log_of("FAKE78001").find("== Game_Data/output_log.txt\nInitialize engine version: 5.3.6p5") !=
         std::string::npos);
   legacy.Prepare({4242, "/data/homebrew/FAKE77031/games/4242", "internal", "Example Game"});
   const auto again = WaitFor(legacy, [](const RuntimeSnapshot& s) { return s.refusals.count(4242) != 0; });
@@ -2256,25 +2297,30 @@ void PreparesGameWithoutShippedRecipe() {
   // A game that ran the Steam host (Steam features = Online): its log and the Wine log of its process follow.
   Write(data / "library/prefixes/game/drive_c/playden/steam-host.log", "client: pinned\nlogon: ok\n", 0600);
   Write(data / "library/helper-wine.log", "0024:err:module:import_dll Library x not found\n", 0600);
-  title_logs.clear();
+  {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs.clear();
+  }
   RuntimeHost hosted(config);
   CHECK(hosted.Start());
   WaitFor(hosted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
-  CHECK(title_logs.count("FAKE78001"));
-  CHECK(title_logs.at("FAKE78001").find("== steam-host.log\nclient: pinned\nlogon: ok") != std::string::npos);
-  CHECK(title_logs.at("FAKE78001").find("== helper-wine.log\n0024:err:module:import_dll") != std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("== steam-host.log\nclient: pinned\nlogon: ok") != std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("== helper-wine.log\n0024:err:module:import_dll") != std::string::npos);
   hosted.Shutdown();
   // A long Wine log keeps its start, where the host's libraries load, and its end.
   Write(data / "library/helper-wine.log",
         "0024:trace:loaddll:build_module Loaded vulkan-1.dll\n" + std::string(200 * 1024, '.') + "\nlast line\n", 0600);
-  title_logs.clear();
+  {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs.clear();
+  }
   RuntimeHost long_log(config);
   CHECK(long_log.Start());
   WaitFor(long_log, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
-  CHECK(title_logs.at("FAKE78001").find("== helper-wine.log\n0024:trace:loaddll:build_module Loaded vulkan-1.dll") !=
+  CHECK(title_log_of("FAKE78001").find("== helper-wine.log\n0024:trace:loaddll:build_module Loaded vulkan-1.dll") !=
         std::string::npos);
-  CHECK(title_logs.at("FAKE78001").find("bytes left out") != std::string::npos);
-  CHECK(title_logs.at("FAKE78001").find("\nlast line\n") != std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("bytes left out") != std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("\nlast line\n") != std::string::npos);
   long_log.Shutdown();
 
   // The game closed, the player started it again and opened Playden a few seconds later: the run that closed is the
@@ -2293,11 +2339,14 @@ void PreparesGameWithoutShippedRecipe() {
   std::filesystem::last_write_time(scs / "game.log.txt", now + std::chrono::seconds(20));
   Write(scs / "game.crash.txt", "Crash: Access violation at eurotrucks2.exe\n", 0600);
   std::filesystem::last_write_time(scs / "game.crash.txt", now - std::chrono::seconds(61));
-  title_logs.clear();
+  {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs.clear();
+  }
   RuntimeHost reopened(config);
   CHECK(reopened.Start());
   WaitFor(reopened, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
-  const auto& reopened_log = title_logs.at("FAKE78001");
+  const auto reopened_log = title_log_of("FAKE78001");
   CHECK(reopened_log.find("== session-0.log\nPW_REPORT/1 short run") != std::string::npos);
   CHECK(reopened_log.find("== session-7.log (start and end)\nPW_REPORT/1 closed run") != std::string::npos);
   CHECK(reopened_log.find("\nREC fault at the end\n") != std::string::npos);
@@ -2309,20 +2358,26 @@ void PreparesGameWithoutShippedRecipe() {
   // that closed is still session-7, and the crash file from it still shows.
   Write(data / "library/logs/session-0.previous.log", "PW_REPORT/1 short run, older chunk\n", 0600);
   std::filesystem::last_write_time(data / "library/logs/session-0.previous.log", now - std::chrono::seconds(30));
-  title_logs.clear();
+  {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs.clear();
+  }
   RuntimeHost rotated(config);
   CHECK(rotated.Start());
   WaitFor(rotated, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
-  CHECK(title_logs.at("FAKE78001").find("== session-7.log (start and end)") != std::string::npos);
-  CHECK(title_logs.at("FAKE78001").find("game.crash.txt\nCrash: Access violation") != std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("== session-7.log (start and end)") != std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("game.crash.txt\nCrash: Access violation") != std::string::npos);
   rotated.Shutdown();
   CHECK(std::filesystem::remove(data / "library/logs/session-0.previous.log"));
   std::filesystem::last_write_time(scs / "game.crash.txt", now - std::chrono::seconds(900));
-  title_logs.clear();
+  {
+    std::lock_guard<std::mutex> lock(title_logs_mutex);
+    title_logs.clear();
+  }
   RuntimeHost stale_crash(config);
   CHECK(stale_crash.Start());
   WaitFor(stale_crash, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
-  CHECK(title_logs.at("FAKE78001").find("game.crash.txt") == std::string::npos);
+  CHECK(title_log_of("FAKE78001").find("game.crash.txt") == std::string::npos);
   stale_crash.Shutdown();
 }
 
