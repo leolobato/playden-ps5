@@ -447,8 +447,7 @@ class Controller {
   bool SessionActive(GameId id) const;
   std::chrono::steady_clock::time_point volume_refreshed_at_{};
   std::optional<std::chrono::steady_clock::time_point> licenses_notice_at_;  // when a license check starts showing
-  std::optional<GameId> requested_detail_;
-  std::map<GameId, DetailsAsked> details_asked_;  // what each visited page's details were last asked with
+  DetailsPageAsks details_pages_;
   std::uint64_t requested_generation_ = 0;
   bool update_check_running_ = false;  // an installed-games update check the details service runs
   std::vector<GameId> update_check_ids_;  // its games, to start it again after a language change

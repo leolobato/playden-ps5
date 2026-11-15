@@ -2605,8 +2605,7 @@ void Controller::TickAppDetails() {
     app_details_->Invalidate(generation);
     model_.ResetSizeChecks();
     requested_generation_ = generation;
-    requested_detail_.reset();
-    details_asked_.clear();
+    details_pages_.Clear();
     launch_options_.clear();
     launch_options_reason_.clear();
     launches_any_branch_.clear();
@@ -2624,7 +2623,7 @@ void Controller::TickAppDetails() {
     requested_language_ = state.content_language;
     app_details_->Invalidate(generation);
     model_.ResetSizeChecks();
-    requested_detail_.reset();
+    details_pages_.Leave();
     reissue_after_language_ = true;
     return;
   } else if (reissue_after_language_) {
@@ -2679,16 +2678,12 @@ void Controller::TickAppDetails() {
   // Fetch Steam app info when the player opens a game's details while signed in, ahead of anything queued. An
   // installed game is asked again at each visit: Steam may have a newer version since.
   // Away from a game's page (or its session), the next visit asks again.
-  if (state.navigation.route != Route::Details && state.navigation.route != Route::Session) requested_detail_.reset();
-  if (state.account().authentication == AuthState::SignedIn && state.navigation.detail_id) {
+  const bool page_open = state.navigation.route == Route::Details || state.navigation.route == Route::Session;
+  if (!page_open) details_pages_.Leave();
+  if (state.account().authentication == AuthState::SignedIn && page_open && state.navigation.detail_id) {
     const auto id = *state.navigation.detail_id;
-    const DetailsAsked now{licenses_read_, game_roots_.count(id) > 0};
-    const auto asked = details_asked_.find(id);
-    const auto ask = NextDetailsAsk(asked == details_asked_.end() ? std::nullopt : std::optional<DetailsAsked>(asked->second), now,
-                                    state.navigation.detail_id != requested_detail_);
+    const auto ask = details_pages_.Tick(id, {licenses_read_, game_roots_.count(id) > 0});
     if (ask != DetailsAsk::kNothing) {
-      requested_detail_ = id;
-      details_asked_[id] = now;
       if (auto* details = Details(id.store); details && details == app_details_) {
         if (ask == DetailsAsk::kAgain) details->Refresh(id, generation, true);
         else details->RequestFirst(id, generation);

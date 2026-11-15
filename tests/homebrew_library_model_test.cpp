@@ -978,6 +978,25 @@ void details_ask_follows_licenses_and_install_state() {
     check(NextDetailsAsk(DetailsAsked{1, true}, {1, true}, false) == DetailsAsk::kNothing, "but not all the time");
 }
 
+// Leaving a game page for another screen keeps its game for Back. Nothing is asked for it until the page opens again
+// (MK11 was asked for over 5000 times in two days, Mouthwashing every second after its download).
+void details_page_asks_only_while_open() {
+    using playden::homebrew::DetailsAsk;
+    using playden::homebrew::DetailsPageAsks;
+    DetailsPageAsks asks;
+    const auto id = SteamId(976310);
+    check(asks.Tick(id, {0, true}) == DetailsAsk::kAgain, "an installed game's page asks when it opens");
+    check(asks.Tick(id, {0, true}) == DetailsAsk::kNothing, "and waits while it stays open");
+    for (int tick = 0; tick < 5; ++tick)
+        check(asks.Tick(std::nullopt, {0, true}) == DetailsAsk::kNothing, "another screen asks for nothing, tick after tick");
+    check(asks.Tick(id, {0, true}) == DetailsAsk::kAgain, "back on the page: a new visit asks again");
+    check(asks.Tick(id, {0, true}) == DetailsAsk::kNothing, "once");
+    asks.Leave();
+    check(asks.Tick(id, {0, true}) == DetailsAsk::kAgain, "a page that left the screen asks on its next opening");
+    check(asks.Tick(SteamId(42), {0, false}) == DetailsAsk::kAgain, "another game's page asks for its own");
+    check(asks.Tick(SteamId(42), {0, false}) == DetailsAsk::kNothing, "an open page with its answer waits");
+}
+
 // A game in several languages: the install sheet's Language row chooses one for this install only.
 void live_install_language_row() {
     using playden::homebrew::InstallRequestKind;
@@ -4771,6 +4790,7 @@ int main() {
     live_manage_dlc();
     live_install_optional_dlc();
     details_ask_follows_licenses_and_install_state();
+    details_page_asks_only_while_open();
     live_page_matches_install_sheet();
     leftover_titles_require_confirmation_and_follow_the_queue();
     live_download_server_picker();
