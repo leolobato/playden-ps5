@@ -100,6 +100,34 @@ typedef struct {
 } ShcLobbyWatch;
 int ShcLobbySeen(ShcLobbyWatch* watch, uint64_t lobby);
 
+/* UserAchievementStored_t (k_iSteamUserStatsCallbacks + 3 = 1103), as Valve's client posts it to a pipe of the game's
+ * app once the game's StoreStats has saved an achievement on Steam, or for IndicateAchievementProgress. The SDK packs
+ * callbacks to 8 bytes on Windows: uint64 game ID at 0, bool group achievement at 8, char name[128] at 9, uint32 current
+ * progress at 140, uint32 maximum at 144, 152 bytes in all. A progress of 0 out of 0 is an unlock. */
+enum { SHC_ACHIEVEMENT_STORED = 1103, SHC_ACHIEVEMENT_NAME_MAX = 128 };
+typedef struct {
+  uint32_t app_id;                        /* the game ID's app (its low 24 bits) */
+  char name[SHC_ACHIEVEMENT_NAME_MAX + 1]; /* the achievement's API name, always ended */
+  uint32_t progress, max_progress;
+  int unlocked; /* progress and max_progress both 0 */
+} ShcAchievement;
+/* 1 when the message is long enough and names an achievement. */
+int ShcParseAchievementStored(const void* data, size_t size, ShcAchievement* achievement);
+
+/* The achievements already shown in this session, by name: Valve's client may post the same unlock more than once (a
+ * game that stores its stats again). ShcAchievementFirst returns 1 the first time it sees a name, and 1 for every name
+ * once it has seen SHC_ACHIEVEMENTS_TRACKED of them (a duplicate notification is better than a missing one). */
+enum { SHC_ACHIEVEMENTS_TRACKED = 256 };
+typedef struct {
+  uint64_t hashes[SHC_ACHIEVEMENTS_TRACKED];
+  int count;
+} ShcAchievementsShown;
+int ShcAchievementFirst(ShcAchievementsShown* shown, const char* name);
+
+/* "Achievement unlocked: <name>" (the achievement's display name, UTF-8, control characters as spaces), or
+ * "Achievement unlocked." without one, at most cap - 1 bytes, never ending inside a UTF-8 character. */
+void ShcAchievementText(const char* name, char* out, size_t cap);
+
 typedef struct {
   uint32_t state[8];
   uint64_t bytes;

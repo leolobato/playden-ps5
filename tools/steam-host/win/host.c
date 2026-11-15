@@ -425,6 +425,11 @@ enum {
   kGetFriendPersonaName = 7,       /* SteamFriends017: GetFriendPersonaName(CSteamID) -> UTF-8 name */
   kInviteUserToLobby = 16,         /* SteamMatchMaking009: InviteUserToLobby(CSteamID lobby, CSteamID friend) -> bool */
   kGetNumLobbyMembers = 17,        /* GetNumLobbyMembers(CSteamID lobby) -> int: 0 for a lobby the account isn't in */
+  kClientGetUserStats = 13,        /* ISteamClient: GetISteamUserStats(user, pipe, version) */
+  /* STEAMUSERSTATS_INTERFACE_VERSION012, the last with RequestCurrentStats (MSVC puts the two GetStat and the two
+   * SetStat overloads next to each other, so the positions after them are the header's). */
+  kRequestCurrentStats = 0,             /* RequestCurrentStats() -> bool */
+  kGetAchievementDisplayAttribute = 12, /* GetAchievementDisplayAttribute(name, "name"/"desc"/"hidden") -> UTF-8 */
 };
 
 /* Callbacks the host looks at, from the SDK's headers (k_iSteamFriendsCallbacks 300, k_iSteamMatchmakingCallbacks 500). */
@@ -436,6 +441,8 @@ enum {
   kLobbyDataUpdate = 505,        /* uint64 lobby, uint64 member (the lobby itself for the lobby's data), bool success */
   kLobbyChatUpdate = 506,        /* uint64 lobby, uint64 changed, uint64 making the change, uint32 state at 24 */
   kLobbyCreated = 513,           /* uint32 result (1: OK), uint64 lobby at 8 */
+  kUserStatsReceived = 1101,     /* uint64 game ID, EResult at 8 (1: OK), CSteamID user at 16 */
+  kUserAchievementStored = SHC_ACHIEVEMENT_STORED, /* 1103: an achievement saved on Steam, or its progress (shc.h) */
 };
 
 static void* Slot(void* object, int slot) { return (*(void***)object)[slot]; }
@@ -449,6 +456,7 @@ static void* g_user;
 static void* g_friends;        /* the client's own IClientFriends */
 static void* g_public_friends; /* ISteamFriends, SteamFriends017 */
 static void* g_matchmaking;    /* ISteamMatchmaking, SteamMatchMaking009 */
+static void* g_user_stats;     /* ISteamUserStats, STEAMUSERSTATS_INTERFACE_VERSION012 */
 static int g_pipe;
 static BOOL (*g_get_callback)(int, CallbackMessage*, int*);
 static void (*g_free_callback)(int);
@@ -601,14 +609,18 @@ static int TitleHas(const WCHAR* path) {
   return 1;
 }
 
-/* A message the title shows as a notification. The text (a friend's name, say) never goes into the log. */
-static void Say(const char* text) {
-  DWORD written = 0;
+/* A message the title shows as a notification. The text (a friend's name, say) never goes into the log. 1 when the
+ * whole line was written. */
+static int Say(const char* text) {
+  DWORD written = 0, end = 0;
+  const DWORD n = (DWORD)Length(text);
+  int ok;
   HANDLE file = CreateFileW(kTitleSay, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
-  if (file == INVALID_HANDLE) return;
-  WriteFile(file, text, (DWORD)Length(text), &written, 0);
-  WriteFile(file, "\n", 1, &written, 0);
+  if (file == INVALID_HANDLE) return 0;
+  ok = WriteFile(file, text, n, &written, 0) && written == n;
+  ok = ok && WriteFile(file, "\n", 1, &end, 0) && end == 1;
   CloseHandle(file);
+  return ok;
 }
 
 /* The open question: a friend's invite for Game invites = Ask, until the title answers or the time is up. */
@@ -764,6 +776,119 @@ static void CheckAnswer(uint64_t now) {
   }
 }
 
+/* ---- Achievements while the game runs ---------------------------------------------------------- */
+
+static ShcAchievementsShown g_achievements_shown;
+
+/* Unlocks wait here for the title: it shows at most 4 messages in any 10 s and drops the rest (prospero-win's
+ * src/pw_helper_channel.h), and one StoreStats can save several achievements at once. One goes out every
+ * kAchievementPaceMs, with its display name looked up then (Valve's client may get the game's stats after the unlock). */
+enum { kAchievementQueue = 16, kAchievementPaceMs = 3000, kAchievementTries = 3 };
+static struct {
+  char name[SHC_ACHIEVEMENT_NAME_MAX + 1];
+} g_achievement_queue[kAchievementQueue];
+static int g_achievement_first, g_achievement_count, g_achievement_tries;
+static uint64_t g_achievement_due;
+
+static void LogAchievement(const char* what, const char* name, const char* how) {
+  Line line = {{0}, 0};
+  Put(&line, "achievement: ");
+  Put(&line, what);
+  Put(&line, " name=");
+  Put(&line, name);
+  Put(&line, how);
+  Put(&line, " at ms=");
+  PutNumber(&line, GetTickCount64() - g_started);
+  Emit(&line);
+}
+
+/* The game saved an achievement on Steam (its StoreStats, through Valve's client), or reported progress towards one.
+ * Valve's client posts it to the pipes of the game's app, the host's included (OpenPublicInterfaces). An unlock is
+ * queued for the title, once per name. The log has the API name (the game's own identifier), never the account. */
+static void AchievementStored(const CallbackMessage* message) {
+  ShcAchievement achievement;
+  Line line = {{0}, 0};
+  if (!ShcParseAchievementStored(message->data, message->size > 0 ? (size_t)message->size : 0, &achievement)) {
+    LogValue("achievement: a stored achievement the host can't read, size=", (uint64_t)(unsigned)message->size);
+    return;
+  }
+  if (achievement.app_id != g_session.app_id) {
+    Put(&line, "achievement: for another app=");
+    PutNumber(&line, achievement.app_id);
+    Put(&line, ", not shown");
+    Emit(&line);
+    return;
+  }
+  if (!achievement.unlocked) {
+    Put(&line, " ");
+    PutNumber(&line, achievement.progress);
+    Put(&line, "/");
+    PutNumber(&line, achievement.max_progress);
+    Put(&line, ", not shown");
+    line.text[line.n] = 0;
+    LogAchievement("progress", achievement.name, line.text);
+    return;
+  }
+  if (!TitleHas(kTitleSay)) {
+    LogAchievement("unlocked", achievement.name, ", not shown: the title shows no messages");
+    return;
+  }
+  if (g_achievement_count == kAchievementQueue) {
+    LogAchievement("unlocked", achievement.name, ", not shown: too many waiting");
+    return;
+  }
+  if (!ShcAchievementFirst(&g_achievements_shown, achievement.name)) {
+    LogAchievement("unlocked", achievement.name, ", shown or waiting already");
+    return;
+  }
+  memcpy(g_achievement_queue[(g_achievement_first + g_achievement_count) % kAchievementQueue].name, achievement.name,
+         sizeof achievement.name);
+  ++g_achievement_count;
+  LogValue("achievement: queued for the title, waiting=", (uint64_t)g_achievement_count);
+  LogAchievement("unlocked", achievement.name, ", queued");
+}
+
+/* The next waiting unlock, when its turn has come. A line the title's file didn't take is tried again at the next turn,
+ * kAchievementTries times in all. */
+static void ShowAchievements(uint64_t now) {
+  char text[256];
+  const char* name;
+  const char* display = 0;
+  if (!g_achievement_count || now < g_achievement_due) return;
+  g_achievement_due = now + kAchievementPaceMs;
+  name = g_achievement_queue[g_achievement_first].name;
+  if (g_user_stats) display = (const char*)CALL2(g_user_stats, kGetAchievementDisplayAttribute, name, "name");
+  ShcAchievementText(display, text, sizeof text);
+  if (Say(text)) {
+    LogAchievement("shown", name, display && display[0] ? " with its display name" : " without a display name");
+  } else if (++g_achievement_tries < kAchievementTries) {
+    LogAchievement("not written to the title's messages", name, ", trying again");
+    return;
+  } else {
+    LogAchievement("not written to the title's messages", name, ", given up");
+  }
+  g_achievement_tries = 0;
+  memset(g_achievement_queue[g_achievement_first].name, 0, sizeof g_achievement_queue[0].name);
+  g_achievement_first = (g_achievement_first + 1) % kAchievementQueue;
+  --g_achievement_count;
+}
+
+/* The answer to the host's RequestCurrentStats: Valve's client has the game's achievements, so their display names can
+ * be looked up when one is unlocked. */
+static void StatsReceived(const CallbackMessage* message) {
+  Line line = {{0}, 0};
+  const uint32_t app = GameApp(Field64(message, 0));
+  Put(&line, "achievements: stats received for ");
+  Put(&line, app == g_session.app_id ? "the game" : "another app=");
+  if (app != g_session.app_id) PutNumber(&line, app);
+  Put(&line, Field64(message, 16) == g_session.steam_id ? " (the account)" : " (another user)");
+  Put(&line, " result=");
+  PutNumber(&line, Field32(message, 8));
+  Put(&line, " at ms=");
+  PutNumber(&line, GetTickCount64() - g_started);
+  Emit(&line);
+}
+
 static void HandleCallback(const CallbackMessage* message) {
   NoteCallback(message->id);
   switch (message->id) {
@@ -792,36 +917,48 @@ static void HandleCallback(const CallbackMessage* message) {
     case kLobbyChatUpdate:
       if (Field64(message, 8) == g_session.steam_id && (Field32(message, 24) & 1)) InLobby(Field64(message, 0), "a member update");
       break;
+    case kUserStatsReceived:
+      StatsReceived(message);
+      break;
+    case kUserAchievementStored:
+      AchievementStored(message);
+      break;
     default:
       break;
   }
 }
 
-/* Valve's public interfaces on the host's own user and pipe: friends (names) and matchmaking (invites). Only for a Play
- * that asked for a join or invites, or a game whose Game invites isn't Off, and friends alone for the online notice
- * (notice=1): otherwise a start calls nothing more than sign-in and the ownership check. */
+/* Valve's public interfaces on the host's own user and pipe: friends (names), matchmaking (invites) and user stats
+ * (achievements' display names). Matchmaking only for a Play that asked for a join or invites, or a game whose Game
+ * invites isn't Off; friends also for the online notice (notice=1); user stats for every game. */
 static void OpenPublicInterfaces(CreateInterface create, void* engine, int user_handle) {
   static const char* const kVersions[] = {"SteamClient023", "SteamClient021", "SteamClient020", "SteamClient017"};
   void* client = 0;
   void* utils;
   int error = 0;
   const int lobbies = g_launch.connect_lobby || g_launch.invite_count || g_session.invites != SHC_INVITES_OFF;
-  if (!lobbies && !g_session.notice) return;
+  if (!g_session.app_id) return;
   /* The host's pipe is the game's app too (not tracked as its process): the client then tells it when the account's
-   * lobbies change (LobbyDataUpdate), which it doesn't for a pipe without an app. */
-  utils = lobbies ? CALL1(engine, kEngineGetUtils, (intptr_t)g_pipe) : 0;
-  if (utils && g_session.app_id) {
+   * lobbies change (LobbyDataUpdate) and when the game saves an achievement (UserAchievementStored), which it doesn't
+   * for a pipe without an app. */
+  utils = CALL1(engine, kEngineGetUtils, (intptr_t)g_pipe);
+  if (utils) {
     CALL2(utils, kUtilsSetAppIDForCurrentPipe, (uintptr_t)g_session.app_id, (uintptr_t)0);
-    LogValue("lobbies: the host's pipe is for app=", (uint64_t)(uint32_t)(uintptr_t)CALL0(utils, kUtilsGetAppID));
+    LogValue("pipe: the host's pipe is for app=", (uint64_t)(uint32_t)(uintptr_t)CALL0(utils, kUtilsGetAppID));
+  } else {
+    Log("pipe: Valve's client has no utils interface; lobbies and achievements won't reach the host");
   }
   for (unsigned i = 0; i < sizeof kVersions / sizeof kVersions[0] && !client; ++i) client = create(kVersions[i], &error);
   if (!client) {
-    Log("lobbies: Valve's client has no public client interface");
+    Log("interfaces: Valve's client has no public client interface");
     return;
   }
-  g_public_friends = CALL3(client, kClientGetFriends, (intptr_t)user_handle, (intptr_t)g_pipe, "SteamFriends017");
+  if (lobbies || g_session.notice)
+    g_public_friends = CALL3(client, kClientGetFriends, (intptr_t)user_handle, (intptr_t)g_pipe, "SteamFriends017");
   if (lobbies)
     g_matchmaking = CALL3(client, kClientGetMatchmaking, (intptr_t)user_handle, (intptr_t)g_pipe, "SteamMatchMaking009");
+  g_user_stats = CALL3(client, kClientGetUserStats, (intptr_t)user_handle, (intptr_t)g_pipe,
+                       "STEAMUSERSTATS_INTERFACE_VERSION012");
   {
     Line line = {{0}, 0};
     Put(&line, "lobbies: friends interface=");
@@ -832,6 +969,12 @@ static void OpenPublicInterfaces(CreateInterface create, void* engine, int user_
     Put(&line, InvitesName(g_session.invites));
     Emit(&line);
   }
+  if (!g_user_stats) {
+    Log("achievements: Valve's client has no user stats interface; unlocks are shown without their names");
+    return;
+  }
+  LogValue("achievements: user stats interface=1, asked for the game's stats, sent=",
+           (uint64_t)(uint8_t)(uintptr_t)CALL0(g_user_stats, kRequestCurrentStats));
 }
 
 /* Valve's client does a game's peer-to-peer (ISteamNetworking: Portal 2's co-op) itself, here, and it finds no way to
@@ -1020,6 +1163,7 @@ void WINAPI Entry(void) {
         g_join_due = 0;
         JoinLobby(g_launch.connect_lobby, 0, "Playden's Join");
       }
+      ShowAchievements(now);
       if (now >= next_answer) {
         CheckAnswer(now);
         next_answer = now + 500;

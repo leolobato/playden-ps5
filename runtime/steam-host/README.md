@@ -5,7 +5,7 @@ Playden's Steam host, built from `tools/steam-host` (no C runtime; imports only 
 Wine server, from the folder that holds Valve's Steam client files. It loads Valve's unmodified `steamclient64.dll`, signs in
 with the session Playden hands over at Play, and writes the registry values that tell the game's own Steam library where Steam
 is. While the game runs it asks Valve's client to pass lobby joins to the game (Playden's Join, a friend's invite) and
-invites the friends picked before Play. It also tells Steam the account is online, as the Steam window's Friends list does
+invites the friends picked before Play. It shows each achievement the game unlocks as a notification (there is no Steam overlay). It also tells Steam the account is online, as the Steam window's Friends list does
 on a PC, so the game sees which friends are online. Before the client loads it hosts Wine's nsiproxy driver through the
 runtime kit's hosted mode, so the client can list the console's network adapters for peer-to-peer (not for a game set to
 Network adapters = Off). See `docs/online-play.md`.
@@ -20,4 +20,4 @@ the package against the manifest's SHA-256, leaves out Valve's crash reporter (`
 
 | File | SHA-256 |
 | --- | --- |
-| `steam.exe` | `54ba650685764d24baf6035d35e1928e85e417420775447d659f6710d40426f0` |
+| `steam.exe` | `f7cdb560d20426e1361bd56e28f95dc61e2c0aa98debae38d13d878e0d4910f1` |

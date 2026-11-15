@@ -258,6 +258,58 @@ int ShcLobbySeen(ShcLobbyWatch* watch, uint64_t lobby) {
   return 1;
 }
 
+/* ---- Achievements ------------------------------------------------------------------------------ */
+
+int ShcParseAchievementStored(const void* data, size_t size, ShcAchievement* achievement) {
+  const uint8_t* bytes = (const uint8_t*)data;
+  uint64_t game_id = 0;
+  size_t n = 0;
+  memset(achievement, 0, sizeof *achievement);
+  if (!data || size < 148) return 0;
+  memcpy(&game_id, bytes, 8);
+  achievement->app_id = (uint32_t)(game_id & 0xffffffu);
+  while (n < SHC_ACHIEVEMENT_NAME_MAX && bytes[9 + n]) ++n;
+  memcpy(achievement->name, bytes + 9, n);
+  achievement->name[n] = 0;
+  memcpy(&achievement->progress, bytes + 140, 4);
+  memcpy(&achievement->max_progress, bytes + 144, 4);
+  achievement->unlocked = !achievement->progress && !achievement->max_progress;
+  return n != 0;
+}
+
+int ShcAchievementFirst(ShcAchievementsShown* shown, const char* name) {
+  uint64_t hash = 14695981039346656037ULL; /* FNV-1a 64 */
+  for (const char* s = name ? name : ""; *s; ++s) hash = (hash ^ (uint8_t)*s) * 1099511628211ULL;
+  for (int i = 0; i < shown->count; ++i)
+    if (shown->hashes[i] == hash) return 0;
+  if (shown->count < SHC_ACHIEVEMENTS_TRACKED) shown->hashes[shown->count++] = hash;
+  return 1;
+}
+
+void ShcAchievementText(const char* name, char* out, size_t cap) {
+  Text text = {out, cap, 0};
+  int visible = 0;
+  if (!cap) return;
+  out[0] = 0;
+  for (const char* s = name ? name : ""; *s; ++s) visible |= (uint8_t)*s > ' ' && *s != 0x7f;
+  if (!visible) {
+    Add(&text, "Achievement unlocked.");
+    return;
+  }
+  Add(&text, "Achievement unlocked: ");
+  Add(&text, name);
+  /* A cut name must not end inside a UTF-8 character: drop the lead byte and continuation bytes of an unfinished one. */
+  {
+    size_t end = text.n, start = end;
+    while (start > 0 && ((uint8_t)out[start - 1] & 0xc0) == 0x80) --start;
+    if (start > 0 && (uint8_t)out[start - 1] >= 0xc0) {
+      const uint8_t lead = (uint8_t)out[start - 1];
+      const size_t need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : 2;
+      if (end - (start - 1) < need) out[start - 1] = 0;
+    }
+  }
+}
+
 /* ---- SHA-256 (FIPS 180-4) ---------------------------------------------------------------------- */
 
 static const uint32_t kRound[64] = {

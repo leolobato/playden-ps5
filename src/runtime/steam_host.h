@@ -12,7 +12,7 @@ namespace playden::runtime {
 // the client by position, as in builds 1788652215 and 1792618285: a build that moved a call shows up as a failed
 // sign-in (the game starts without Steam) or a crash of the host.
 // Playden's steam.exe (tools/steam-host/build.sh prints it).
-inline constexpr const char* kSteamHostSha256 = "f7a42328af962e44e2a31a4d5e112b32eac70908b1269555ea9ee7d02182d167";
+inline constexpr const char* kSteamHostSha256 = "f7cdb560d20426e1361bd56e28f95dc61e2c0aa98debae38d13d878e0d4910f1";
 
 // Where the client's files and the host live on the console's internal storage, one copy for every game, and the same
 // folder as a game's Wine sees it (drive Z: is the console's root).

@@ -142,6 +142,17 @@ older version of the runtime kit keeps Online for its update.
   runs. The name is the one Valve's client has for the account (`ISteamFriends::GetPersonaName`, the friends interface
   opened for this alone when Game invites is Off), else the session's account name; it never goes into the host's log.
   A title without the messages file shows nothing.
+- **Achievements.** The game's achievements are Valve's: its own Steam library saves them on Steam through the client,
+  as on a PC. There is no Steam overlay, so the host shows each unlock instead. It makes its connection one for the
+  game's app for every Online game (as for lobbies above), opens `ISteamUserStats` (`STEAMUSERSTATS_INTERFACE_VERSION012`)
+  and asks for the game's stats once, so the client has the achievements' display names. When the game saves an
+  achievement, the client posts `UserAchievementStored_t` (1103) to the host's connection too; for an unlock (progress 0
+  out of 0) the host queues "Achievement unlocked: <display name>" for the title's messages file, once per achievement
+  in a session, and writes one every 3 s (the title shows at most 4 messages in any 10 s and drops the rest), with the
+  display name looked up as it is written. Progress towards an achievement (`IndicateAchievementProgress`) and another app's achievements are only
+  logged. A title without the messages file shows nothing. The host's log has a line for each one, with the
+  achievement's API name (`achievement: unlocked name=…`), and the answer to its stats request
+  (`achievements: stats received …`).
 - **Peer-to-peer through the client.** A game's `ISteamNetworking` peer-to-peer (Portal 2's co-op: it accepts with
   `AcceptP2PSessionWithUser` on its user's interface) runs in Valve's client, not in the game: on a Mac a process that
   uses only that interface opens no UDP socket while it connects. Valve's client needs the console's network adapters
@@ -173,6 +184,9 @@ older version of the runtime kit keeps Online for its update.
   server dropped such a call instead; when the host's client later closed that socket, the title's Wine server asserted
   (`release_object` from `free_async_queue`) and the game ended (Deep Rock Galactic on its way into the Space Rig, Team
   Fortress 2 at its menu within 90 seconds). Online needs a runtime kit built with patch 1015.
+- **Achievement notifications have not run on a console.** That the client posts `UserAchievementStored_t` to the
+  host's connection as well as the game's is what its app-wide lobby callbacks suggest, not something seen. An unlock
+  the game saves just before it quits may not reach Steam: the host ends with the title.
 - **Peer-to-peer across the internet** (NAT traversal, Valve's relays) has not run on a console since the host lists
   the adapters; only a connection on the local network has.
 - **`GetAdaptersAddresses` still fails** with ERROR_NOT_SUPPORTED wherever nsiproxy is hosted: Wine patch 1004 makes

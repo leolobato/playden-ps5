@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 
 namespace {
@@ -253,6 +254,73 @@ void TestLobbyWatch() {
   assert(!ShcLobbySeen(&watch, 0) && watch.last == 12);
 }
 
+// UserAchievementStored_t as the SDK lays it out on Windows (pack 8): 152 bytes.
+std::string AchievementMessage(std::uint64_t game_id, const std::string& name, std::uint32_t progress, std::uint32_t max) {
+  std::string message(152, '\0');
+  std::memcpy(&message[0], &game_id, 8);
+  message[8] = 1;  // a group achievement: not looked at
+  std::memcpy(&message[0] + 9, name.data(), std::min<std::size_t>(name.size(), 128));
+  std::memcpy(&message[0] + 140, &progress, 4);
+  std::memcpy(&message[0] + 144, &max, 4);
+  return message;
+}
+
+void TestAchievements() {
+  ShcAchievement achievement;
+  // An unlock: 0 out of 0. The game ID's app is its low 24 bits.
+  auto message = AchievementMessage((std::uint64_t{0x0100} << 32) | 548430, "ACH_FIRST_DIVE", 0, 0);
+  assert(ShcParseAchievementStored(message.data(), message.size(), &achievement));
+  assert(achievement.app_id == 548430 && std::string(achievement.name) == "ACH_FIRST_DIVE");
+  assert(achievement.unlocked && achievement.progress == 0 && achievement.max_progress == 0);
+  // Progress (IndicateAchievementProgress) is not an unlock.
+  message = AchievementMessage(620, "ACH_COLLECT", 3, 10);
+  assert(ShcParseAchievementStored(message.data(), message.size(), &achievement));
+  assert(!achievement.unlocked && achievement.progress == 3 && achievement.max_progress == 10);
+  // A name that fills all 128 bytes, with no end, stays within them.
+  message = AchievementMessage(620, std::string(128, 'x'), 0, 0);
+  message[137] = 'y';  // the padding before the progress
+  assert(ShcParseAchievementStored(message.data(), message.size(), &achievement));
+  assert(std::string(achievement.name) == std::string(128, 'x'));
+  // Too short, or no name: nothing.
+  message = AchievementMessage(620, "ACH", 0, 0);
+  assert(!ShcParseAchievementStored(message.data(), 147, &achievement) && achievement.name[0] == 0);
+  assert(!ShcParseAchievementStored(nullptr, 152, &achievement));
+  message = AchievementMessage(620, "", 0, 0);
+  assert(!ShcParseAchievementStored(message.data(), message.size(), &achievement));
+
+  // Each name is shown once; past the table's size every name counts as new.
+  auto shown = std::make_unique<ShcAchievementsShown>();
+  *shown = {};
+  assert(ShcAchievementFirst(shown.get(), "ACH_A"));
+  assert(!ShcAchievementFirst(shown.get(), "ACH_A"));
+  assert(ShcAchievementFirst(shown.get(), "ACH_B"));
+  for (int i = 2; i < SHC_ACHIEVEMENTS_TRACKED; ++i) assert(ShcAchievementFirst(shown.get(), ("ACH_" + std::to_string(i)).c_str()));
+  assert(shown->count == SHC_ACHIEVEMENTS_TRACKED);
+  assert(ShcAchievementFirst(shown.get(), "ACH_FULL") && ShcAchievementFirst(shown.get(), "ACH_FULL"));
+  assert(!ShcAchievementFirst(shown.get(), "ACH_A"));
+
+  char out[64];
+  ShcAchievementText("Dig Deep", out, sizeof out);
+  assert(std::string(out) == "Achievement unlocked: Dig Deep");
+  for (const char* none : {static_cast<const char*>(nullptr), "", " \t"}) {
+    ShcAchievementText(none, out, sizeof out);
+    assert(std::string(out) == "Achievement unlocked.");
+  }
+  ShcAchievementText("Dig\nDeep", out, sizeof out);
+  assert(std::string(out) == "Achievement unlocked: Dig Deep");
+  ShcAchievementText("Dig Deep", out, 12);
+  assert(std::string(out) == "Achievement");
+  // A cut never splits a UTF-8 character: "Achievement unlocked: " is 22 bytes, then "é" (2) and "日" (3).
+  ShcAchievementText("\xc3\xa9\xe6\x97\xa5", out, 24);
+  assert(std::string(out) == "Achievement unlocked: ");
+  ShcAchievementText("\xc3\xa9\xe6\x97\xa5", out, 25);
+  assert(std::string(out) == "Achievement unlocked: \xc3\xa9");
+  ShcAchievementText("\xc3\xa9\xe6\x97\xa5", out, 27);
+  assert(std::string(out) == "Achievement unlocked: \xc3\xa9");
+  ShcAchievementText("\xc3\xa9\xe6\x97\xa5", out, 28);
+  assert(std::string(out) == "Achievement unlocked: \xc3\xa9\xe6\x97\xa5");
+}
+
 }  // namespace
 
 int main() {
@@ -263,5 +331,6 @@ int main() {
   TestTitleTexts();
   TestChangeStatusMessage();
   TestLobbyWatch();
+  TestAchievements();
   return 0;
 }
