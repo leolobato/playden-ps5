@@ -719,6 +719,9 @@ int main(int argc, char** argv) {
         };
         game_mover = std::make_unique<playden::installs::GameMover>(std::move(move_options));
         installs->SetMoveRunner(game_mover.get());
+        installs->SetLog([log_directory](const std::string& line) {
+            playden::app::AppendLogLine(log_directory, "install.log", line);
+        });
         servers_cm = std::make_unique<playden::steam::CmClient>(PLAYDEN_HOMEBREW_CA_BUNDLE, *library_storage);
         servers_cm->SetOwner("servers");
         servers_cm->SetSharedSession(steam_cm);

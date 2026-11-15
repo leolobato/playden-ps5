@@ -227,6 +227,16 @@ Result<void> Storage::WriteAtomicImpl(const std::string& relative_path,
         StorageError::kWriteFailed,
         WriteErrorMessage("could not flush", relative_path, flush_error, private_file));
   }
+  // On disk before the rename: a crash or power loss after it must find the old file or the new one,
+  // never an empty or zero-filled one under the real name.
+  if (::fsync(fileno(file)) != 0) {
+    const int sync_error = errno;
+    std::fclose(file);
+    std::remove(temporary_path.c_str());
+    return Result<void>::Failure(
+        StorageError::kSyncFailed,
+        WriteErrorMessage("could not sync", relative_path, sync_error, private_file));
+  }
   if (private_file) {
     struct stat status{};
     const bool inspected = ::fstat(fileno(file), &status) == 0;
@@ -252,6 +262,15 @@ Result<void> Storage::WriteAtomicImpl(const std::string& relative_path,
     return Result<void>::Failure(
         StorageError::kRenameFailed,
         WriteErrorMessage("could not replace", relative_path, rename_error, private_file));
+  }
+  // The rename itself reaches the disk with the folder. The new contents are already in place, so a failed
+  // folder sync doesn't fail the save. Opened by path: a title's openat takes no real folder descriptor.
+  const auto slash = resolved.value().rfind('/');
+  const std::string folder = slash == std::string::npos ? std::string(".") : resolved.value().substr(0, slash);
+  if (const int directory = ::open(folder.empty() ? "/" : folder.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+      directory >= 0) {
+    ::fsync(directory);
+    ::close(directory);
   }
   return Result<void>::Success();
 }

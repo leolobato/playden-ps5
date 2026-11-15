@@ -436,7 +436,8 @@ void CommunityPreferencesPersistAndVersionSixStillLoads() {
 void CorruptPreferencesRestoreDefaultsWithVisibleDiagnostic() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
-  const playden::Bytes corrupt{'n', 'o', 't', ' ', 'v', 'a', 'l', 'i', 'd'};
+  const std::string text = "version=99\nnot valid\n";
+  const playden::Bytes corrupt(text.begin(), text.end());
   Check(storage.WriteAtomic("preferences.conf", corrupt).ok(),
         "corrupt fixture is written");
   playden::PreferencesStore store(storage);
@@ -450,6 +451,33 @@ void CorruptPreferencesRestoreDefaultsWithVisibleDiagnostic() {
   Check(!loaded.diagnostic.empty(), "corruption produces a visible diagnostic");
   Check(loaded.diagnostic.find("corrupt") != std::string::npos,
         "diagnostic explains that preferences are corrupt");
+  const auto still = storage.Read("preferences.conf");
+  Check(still.ok() && still.value() == corrupt, "a file that may be a newer Playden's stays as it is");
+}
+
+// A torn save (#907): empty or zero-filled. It is set aside, defaults are in use, and saving works.
+void TornPreferencesAreSetAside() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::PreferencesStore store(storage);
+  const playden::Bytes torn[] = {playden::Bytes{}, playden::Bytes(512, 0), playden::Bytes{'v', 'e', 'r'}};
+  for (const auto& bytes : torn) {
+    Check(storage.WriteAtomic("preferences.conf", bytes).ok(), "torn preference fixture is written");
+    const auto loaded = store.Load();
+    Check(loaded.status == playden::PreferencesLoadStatus::kDefaultDamaged && !loaded.preferences.reduce_motion,
+          "a torn preference file restores defaults as damaged");
+    Check(loaded.diagnostic.find("preferences.conf.damaged") != std::string::npos,
+          "the diagnostic says where the damaged file is kept");
+    Check(!storage.Read("preferences.conf").ok(), "the torn file is gone");
+    const auto kept = storage.Read("preferences.conf.damaged");
+    Check(kept.ok() && kept.value() == bytes, "its bytes are kept as preferences.conf.damaged");
+    playden::Preferences saved;
+    saved.reduce_motion = true;
+    Check(store.Save(saved).ok(), "saving works after a torn file");
+    const auto again = store.Load();
+    Check(again.status == playden::PreferencesLoadStatus::kLoaded && again.preferences.reduce_motion,
+          "the save after a torn file loads back");
+  }
 }
 
 void VersionEightLoadsDownloadServerWithoutResettingOtherFields() {
@@ -642,7 +670,10 @@ void VersionEightRejectsTruncatedOrMalformedFiles() {
     Check(storage.WriteAtomic("preferences.conf", playden::Bytes(truncated.begin(), truncated.end())).ok(),
           "truncated preference fixture is written");
     const auto loaded = store.Load();
-    Check(loaded.status == playden::PreferencesLoadStatus::kDefaultCorrupt && !loaded.preferences.reduce_motion,
+    // Cut before its "version=" ends, it reads as a torn save and is set aside.
+    const auto expected = length < 8 ? playden::PreferencesLoadStatus::kDefaultDamaged
+                                     : playden::PreferencesLoadStatus::kDefaultCorrupt;
+    Check(loaded.status == expected && !loaded.preferences.reduce_motion,
           "every truncated version 8 file restores defaults as corrupt");
   }
   std::string invalid_flag = serialized;
@@ -739,6 +770,7 @@ int main() {
   MissingPreferencesUseDefaultsWithoutAnError();
   PreferencesPersistAcrossStoreInstances();
   CorruptPreferencesRestoreDefaultsWithVisibleDiagnostic();
+  TornPreferencesAreSetAside();
   TitleStoreSuffixPersistsAndVersionOneStillLoads();
   SignInMethodPersistsAndVersionThreeOpensQr();
   StaySignedInDefaultsOnAndPersistsOff();

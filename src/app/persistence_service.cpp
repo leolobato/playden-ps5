@@ -354,8 +354,12 @@ void PersistenceService::Execute(Job job) {
     const auto loaded = organizations_.Load(job.account);
     event.kind = PersistenceEventKind::kOrganizationLoaded;
     event.error = loaded.ok() ? StorageError::kNone : loaded.error();
-    if (loaded.ok()) event.organization = loaded.value();
-    else event.message = loaded.message();
+    if (loaded.ok()) {
+      event.organization = loaded.value();
+      event.message = organizations_.TakeLoadNote();
+    } else {
+      event.message = loaded.message();
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     if (!stopping_ && job.account == organization_account_ &&
         job.generation == organization_generation_) PushEvent(std::move(event));

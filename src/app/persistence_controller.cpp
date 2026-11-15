@@ -140,6 +140,8 @@ void PersistenceController::Apply(PersistenceEvent event) {
     preferences_load_request_ = 0;
     const auto loaded = PreferenceResult(event);
     preferences_load_failed_ = PreferencesLoadFailed(loaded.status);
+    // Defaults in place of a damaged file, which the store set aside: the load worked.
+    if (!preferences_load_failed_ && !event.message.empty() && log_) log_("preferences load: " + event.message);
     Report(kPreferencesLoad, preferences_load_failed_ ? Failure(event.error, event.message) : std::string());
     model_.ApplyPreferences(preferences_load_token_, loaded);
     return;
@@ -170,6 +172,7 @@ void PersistenceController::Apply(PersistenceEvent event) {
     if (event.request_id != organization_load_request_) return;
     organization_load_request_ = 0;
     if (event.error == StorageError::kNone) {
+      if (!event.message.empty() && log_) log_("organization load: " + event.message);
       organization_load_failed_ = !model_.ApplyOrganization(
           kDeviceOrganization, organization_load_token_, std::move(event.organization));
       // Read fine, but holds more than the Library can show.

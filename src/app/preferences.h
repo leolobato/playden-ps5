@@ -77,6 +77,8 @@ struct Preferences {
 enum class PreferencesLoadStatus {
   kLoaded,
   kDefaultMissing,
+  // The file was damaged (empty, zero-filled) and set aside: defaults, saved from now on.
+  kDefaultDamaged,
   kDefaultCorrupt,
   kDefaultReadError,
 };

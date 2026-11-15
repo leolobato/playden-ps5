@@ -805,6 +805,83 @@ void InstallRecordsParse(const std::filesystem::path& root) {
   std::filesystem::remove_all(root);
 }
 
+// A registry a crash left zero-filled names no game (#907): the log says so, and each game whose PS5 title starts
+// it from its Playden folder comes back with Recover, which saves the registry again.
+void DamagedRegistryRecoversFromTitles(const std::filesystem::path& root) {
+  std::filesystem::remove_all(root);
+  InstalledGameFolder(root / "310");
+  InstalledGameFolder(root / "320");
+  std::filesystem::create_directories(root / "330");  // a download that never finished: no install record
+  InstalledGameFolder(root / "340");
+  Runner::WriteState((root / "340").string(), "replacing");  // an update putting its files in place
+  { std::ofstream(root / ".playden-games") << std::string(512, '\0'); }
+  Sessions sessions;
+  Runner runner(sessions);
+  std::vector<std::string> lines;
+  std::mutex lines_mutex;
+  const auto log = [&](const std::string& line) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    lines.push_back(line);
+  };
+  const auto logged = [&](const std::string& text) {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    return std::any_of(lines.begin(), lines.end(), [&](const std::string& line) { return line == text; });
+  };
+  {
+    InstallService service(runner, root.string());
+    service.SetLog(log);
+    CHECK(logged("registry games=0 skipped=1"));
+    CHECK(service.Snapshot().installed.empty());
+    // 320's title starts it from another folder, 330 has no install record, and an invalid game or an empty
+    // folder names nothing: only 310 is listed, with one registry save.
+    runner.apply_block = true;
+    CHECK(service.Recover({{SteamId(310), (root / "310").string()},
+                           {SteamId(320), (root / "elsewhere" / "320").string()},
+                           {SteamId(330), (root / "330").string()},
+                           {GameId{}, (root / "310").string()},
+                           {SteamId(320), ""}}) == 1);
+    CHECK(logged("registry recovered game=310 volume=internal"));
+    // An update on disk comes back with its game, locked as at a normal start: the game can't run until it ends.
+    CHECK(service.Recover({{SteamId(340), (root / "340").string()}}) == 1);
+    CHECK(logged("registry recovered game=340 volume=internal update=1"));
+    CHECK(service.Locked(SteamId(340)));
+    {
+      const auto recovered = service.Snapshot();
+      const auto* job = JobOf(recovered, SteamId(340));
+      CHECK(Installed(recovered, SteamId(340)) && job && job->kind == InstallJobKind::kUpdate && job->locked);
+    }
+    runner.apply_block = false;
+    AwaitAt(__LINE__, service, [](const InstallSnapshot& s) { return s.jobs.empty(); });
+    auto snapshot = service.Snapshot();
+    CHECK(Installed(snapshot, SteamId(310)) && snapshot.installed.front().install_bytes == 4096 &&
+          snapshot.installed.front().record);
+    CHECK(service.Recover({{SteamId(310), (root / "310").string()}}) == 0);  // already listed
+    CHECK(!Installed(service.Snapshot(), SteamId(320)) && !Installed(service.Snapshot(), SteamId(330)));
+    service.Shutdown();
+  }
+  {
+    std::lock_guard<std::mutex> lock(lines_mutex);
+    lines.clear();
+  }
+  {
+    // Saved: the next start lists it from the registry.
+    InstallService service(runner, root.string());
+    service.SetLog(log);
+    CHECK(logged("registry games=2 skipped=0"));
+    CHECK(Installed(service.Snapshot(), SteamId(310)) && Installed(service.Snapshot(), SteamId(340)) &&
+          !Installed(service.Snapshot(), SteamId(320)));
+    service.Shutdown();
+  }
+  std::filesystem::remove(root / ".playden-games");
+  {
+    InstallService service(runner, root.string());
+    service.SetLog(log);
+    CHECK(logged("registry missing"));
+    service.Shutdown();
+  }
+  std::filesystem::remove_all(root);
+}
+
 // The install sheet's choices reach the runner, and a job keeps them in the registry across a restart.
 void InstallOptionsReachTheRunner(const std::filesystem::path& root) {
   std::filesystem::remove_all(root);
@@ -1323,6 +1400,8 @@ void UsbDrivesChangePlaces(const std::filesystem::path& base) {
 }
 
 int main() {
+  DamagedRegistryRecoversFromTitles(std::filesystem::temp_directory_path() /
+                                    ("playden-registry-recover-" + std::to_string(::getpid())));
   UsbDrivesChangePlaces(std::filesystem::temp_directory_path() / ("playden-usb-swap-" + std::to_string(::getpid())));
   UpdateWaitsLongerWhenTheConsoleDoesNotSay(std::filesystem::temp_directory_path() /
                                             ("playden-update-unknown-" + std::to_string(::getpid())));

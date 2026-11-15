@@ -325,6 +325,15 @@ class InstallService {
   // (or was already); false when the game has a job or files being deleted, its store no runner, or
   // the record is missing.
   bool Adopt(GameId id, const std::string& volume_id, std::uint64_t install_bytes);
+  // Lists again complete installs that the registry lost (it was damaged by a crash or power loss), each named by
+  // its game and the folder its PS5 title starts it from. A game is listed only when that folder is its folder on
+  // an available volume (`<games root>/<key>`) and holds its install record, and it isn't listed already, has no
+  // job and no files being deleted. An update found on disk comes back as Scan brings it back (locked while it puts
+  // its files in place). The registry is saved once. Returns how many were listed.
+  std::size_t Recover(const std::vector<std::pair<GameId, std::string>>& titles);
+  // Receives one line about the registry the service started from (how many games it named, or that it was
+  // missing), at once, and one per game Recover lists again.
+  void SetLog(std::function<void(const std::string&)> log);
   // Chooses the volume for installs queued from now on; ignored unless it names an available volume.
   void SetDefaultVolume(const std::string& volume_id);
   // Takes a finished download, or every one, off the Completed list in Downloads.
@@ -391,8 +400,11 @@ class InstallService {
   void QueueRemoval(Removal removal);
   Job* Find(GameId id);
   void Publish();
-  // False when it wasn't saved. sync: the file and its folder are on the storage before it returns.
-  bool SaveRegistry(bool sync = false);
+  // False when it wasn't saved. The file and its folder are on the storage before it returns: a crash or power
+  // loss leaves the old registry or the new one, never an empty file (that would forget every installed game).
+  bool SaveRegistry();
+  // Under the lock: lists a complete install from its folder on an available volume (Adopt, Recover).
+  bool AdoptLocked(GameId id, const std::string& volume_id, std::uint64_t install_bytes, bool publish);
   void SaveDefaultVolume();
   void SaveDismissed();
   void Dismiss(GameId id);
@@ -429,6 +441,8 @@ class InstallService {
   std::atomic<bool> active_cancel_{false};
   std::uint64_t revision_ = 0;
   bool stopping_ = false;
+  std::string scan_summary_;  // what Scan found in the registry, for SetLog
+  std::function<void(const std::string&)> log_;  // guarded by mutex_
   std::thread worker_;
 };
 

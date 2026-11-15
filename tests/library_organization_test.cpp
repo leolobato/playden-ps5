@@ -391,6 +391,59 @@ void V2RoundTripsEveryStore() {
 }
 
 // Corrupt organization.v2 fails the load like a corrupt .v1 did; it never falls back to the merge.
+// A torn save (#907): the file is set aside, the organization starts again empty (no .v1 merge, then or
+// later), and saving works.
+void V2TornIsSetAsideWithoutMerging() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  Check(store.SaveV1(kFirstAccount, Example()).ok(), "torn: legacy fixture saves");
+  playden::OrganizationSnapshot device;
+  device.favorites.insert(kLocalGame);
+  Check(store.Save(kDevice, device).ok(), "torn: device fixture saves");
+  const auto stored = storage.Read(kV2Path);
+  Check(stored.ok(), "torn: device fixture reads");
+  if (!stored.ok()) return;
+  auto truncated = stored.value();
+  truncated.resize(9);
+  const playden::Bytes torn[] = {playden::Bytes{}, playden::Bytes(512, 0), truncated};
+  for (const auto& bytes : torn) {
+    Check(storage.WriteAtomicPrivate(kV2Path, bytes).ok(), "torn: fixture writes");
+    auto loaded = store.Load(kDevice);
+    Check(loaded.ok() && !loaded.value(), "torn: an empty, zero-filled or cut-short file loads as no organization");
+    const auto note = store.TakeLoadNote();
+    Check(note.find("damaged") != std::string::npos && note.find("organization.v2.damaged") != std::string::npos,
+          "torn: the load says it set the file aside");
+    Check(store.TakeLoadNote().empty(), "torn: the note is taken once");
+    Check(!storage.Read(kV2Path).ok(), "torn: organization.v2 is gone");
+    const auto kept = storage.Read("organization.v2.damaged");
+    Check(kept.ok() && kept.value() == bytes, "torn: its bytes are kept as organization.v2.damaged");
+    loaded = store.Load(kDevice);
+    Check(loaded.ok() && !loaded.value() && store.TakeLoadNote().empty(),
+          "torn: the next load doesn't merge the .v1 files either");
+    Check(store.Save(kDevice, device).ok(), "torn: saving works again");
+    loaded = store.Load(kDevice);
+    Check(loaded.ok() && loaded.value() && loaded.value()->favorites == device.favorites, "torn: the save loads back");
+  }
+  Check(store.Clear(kDevice).ok() && !storage.Read("organization.v2.damaged").ok(),
+        "torn: Clear also removes the damaged file, so the next load merges again");
+  const auto merged = store.Load(kDevice);
+  Check(merged.ok() && merged.value() && merged.value()->favorites == Example().favorites, "torn: merge after Clear");
+
+  // The damaged copy can't be written (here a folder is in its way): the file stays, and the load fails as before,
+  // so the .v1 files can't come back at a later start.
+  const std::string blocker = directory.path() + "/organization.v2.damaged";
+  Check(mkdir(blocker.c_str(), 0700) == 0, "torn: blocker folder");
+  const playden::Bytes zeros(64, 0);
+  Check(storage.WriteAtomicPrivate(kV2Path, zeros).ok(), "torn: fixture writes again");
+  const auto refused = store.Load(kDevice);
+  Check(!refused.ok() && refused.error() == playden::StorageError::kInvalidData,
+        "torn: a file that can't be set aside fails the load");
+  const auto still = storage.Read(kV2Path);
+  Check(still.ok() && still.value() == zeros, "torn: and stays as it is");
+  rmdir(blocker.c_str());
+}
+
 void V2DamagedFailsWithoutMerging() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
@@ -408,23 +461,22 @@ void V2DamagedFailsWithoutMerging() {
   corrupt[corrupt.size() / 2] ^= 0x5a;
   Check(storage.WriteAtomicPrivate(kV2Path, corrupt).ok(), "corrupt file writes");
   auto loaded = store.Load(kDevice);
-  Check(!loaded.ok() && loaded.error() == playden::StorageError::kInvalidData,
-        "checksum corruption is reported, not replaced by the merge");
-  const auto still = storage.Read(kV2Path);
-  Check(still.ok() && still.value() == corrupt, "a damaged organization.v2 is left as it is");
+  Check(loaded.ok() && !loaded.value(), "checksum corruption is set aside, not replaced by the merge");
+  const auto kept = storage.Read("organization.v2.damaged");
+  Check(!storage.Read(kV2Path).ok() && kept.ok() && kept.value() == corrupt,
+        "a damaged organization.v2 is kept as organization.v2.damaged");
+  (void)store.TakeLoadNote();
 
-  auto truncated = stored.value();
-  truncated.resize(9);
-  Check(storage.WriteAtomicPrivate(kV2Path, truncated).ok(), "truncated file writes");
-  loaded = store.Load(kDevice);
-  Check(!loaded.ok() && loaded.error() == playden::StorageError::kInvalidData, "truncated organization.v2 is rejected");
-
+  // A frame that checks out but holds what this build can't read stays as it is: a newer Playden may have
+  // written it.
   auto future = stored.value();
   future[8] = 3;
   RewriteChecksum(future);
   Check(storage.WriteAtomicPrivate(kV2Path, future).ok(), "future-version fixture writes");
   loaded = store.Load(kDevice);
   Check(!loaded.ok() && loaded.error() == playden::StorageError::kInvalidData, "future version is rejected");
+  const auto future_still = storage.Read(kV2Path);
+  Check(future_still.ok() && future_still.value() == future, "a future version is left as it is");
 
   auto bad_key = stored.value();
   Check(ReplaceBytes(bad_key, "local-", "steam-") && storage.WriteAtomicPrivate(kV2Path, bad_key).ok(),
@@ -773,7 +825,8 @@ void V2StillRefusesDamage() {
   file.favorites.push_back(kEpicKey);
   auto corrupt = EncodeV2(file);
   corrupt[corrupt.size() - 1] ^= 0x5a;
-  Check(FailsAsDamage(LoadFile(storage, corrupt)), "a bad checksum is damage");
+  const auto torn = LoadFile(storage, corrupt);
+  Check(torn.ok() && !torn.value(), "a bad checksum is set aside as a torn save");
   file = ExampleRaw();
   file.scope = "";
   Check(FailsAsDamage(LoadFile(storage, EncodeV2(file))), "an empty scope is damage");
@@ -807,6 +860,7 @@ int main() {
   SharedValidationMatchesEncodedBoundary();
   V1RoundTripAndIsolation();
   V2RoundTripsEveryStore();
+  V2TornIsSetAsideWithoutMerging();
   V2DamagedFailsWithoutMerging();
   MergesEveryAccount();
   MergeWithoutLegacyFilesIsMissing();

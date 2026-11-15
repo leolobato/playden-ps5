@@ -15,6 +15,9 @@ constexpr std::array<std::uint8_t, 8> kMagic{{'P', 'L', 'D', 'O', 'R', 'G', 0, 0
 constexpr std::uint16_t kVersion1 = 1;
 constexpr std::uint16_t kVersion2 = 2;
 constexpr char kPathV2[] = "organization.v2";
+constexpr char kDamagedPathV2[] = "organization.v2.damaged";
+// Version 2's magic, version, selection length and checksum: the smallest file.
+constexpr std::size_t kFixedBytesV2 = kMagic.size() + 2 + 4 + 4;
 constexpr std::size_t kMaximumSnapshotBytes = 1024 * 1024;
 constexpr std::size_t kMaximumGameIds = 10000;
 constexpr std::size_t kMaximumCollections = 256;
@@ -455,7 +458,7 @@ std::size_t EncodedBytesV2(const OrganizationSnapshot& snapshot) {
 }
 
 Loaded DecodeV2(const Bytes& bytes) {
-  constexpr std::size_t kFixedBytes = kMagic.size() + 2 + 4 + 4;
+  constexpr std::size_t kFixedBytes = kFixedBytesV2;
   if (bytes.size() < kFixedBytes || !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
     return InvalidLoad("header");
   if (!CheckFrame(bytes, kFixedBytes)) return InvalidLoad("checksum");
@@ -664,9 +667,29 @@ Result<std::optional<OrganizationSnapshot>> OrganizationStore::Load(std::uint64_
   if (scope != kDeviceOrganization) return InvalidLoad("organization scope");
   const auto ready = storage_.EnsureRootDirectory();
   if (!ready.ok()) return Loaded::Failure(ready.error(), ready.message());
+  load_note_.clear();
   const auto loaded = storage_.Read(kPathV2, kMaximumSnapshotBytes);
-  if (loaded.ok()) return DecodeV2(loaded.value());
+  if (loaded.ok()) {
+    // Its frame (magic, size, checksum) is the same in every version: one that fails it is a torn save, not a
+    // newer format. Its bytes are kept for a look; the organization starts again as if there were no file.
+    if (CheckFrame(loaded.value(), kFixedBytesV2)) return DecodeV2(loaded.value());
+    // Kept first: its copy is also what stops the .v1 merge later. Without it the file stays, and the load fails.
+    const auto kept = storage_.WriteAtomicPrivate(kDamagedPathV2, loaded.value());
+    if (!kept.ok())
+      return Loaded::Failure(StorageError::kInvalidData,
+                             "organization data is damaged and could not be set aside: " + kept.message());
+    const auto removed = storage_.Remove(kPathV2);
+    if (!removed.ok()) return Loaded::Failure(removed.error(), removed.message());
+    load_note_ = "organization.v2 was damaged (" + std::to_string(loaded.value().size()) + " bytes), kept as " +
+                 kDamagedPathV2 + "; started again";
+    // Not the .v1 merge: their organization is older than the one lost.
+    return Loaded::Success(std::nullopt);
+  }
   if (loaded.error() != StorageError::kNotFound) return Loaded::Failure(loaded.error(), loaded.message());
+  // A damaged file was set aside and nothing saved since: the .v1 files were merged long ago.
+  const auto damaged = storage_.Read(kDamagedPathV2, kMaximumSnapshotBytes);
+  if (damaged.ok()) return Loaded::Success(std::nullopt);
+  if (damaged.error() != StorageError::kNotFound) return Loaded::Failure(damaged.error(), damaged.message());
 
   // First load on this device: unite every account's version 1 file.
   const auto listed = storage_.ListFiles();
@@ -704,12 +727,16 @@ Result<std::optional<OrganizationSnapshot>> OrganizationStore::Load(std::uint64_
   return Loaded::Success(std::move(merged));
 }
 
+std::string OrganizationStore::TakeLoadNote() const { return std::exchange(load_note_, std::string()); }
+
 Result<void> OrganizationStore::Clear(std::uint64_t scope) const {
   if (scope != kDeviceOrganization) return Invalid("organization scope");
   const auto final_result = storage_.Remove(kPathV2);
   const auto temporary_result = storage_.Remove(std::string(kPathV2) + ".tmp");
+  const auto damaged_result = storage_.Remove(kDamagedPathV2);
   if (!final_result.ok()) return final_result;
   if (!temporary_result.ok()) return temporary_result;
+  if (!damaged_result.ok()) return damaged_result;
   return Result<void>::Success();
 }
 

@@ -97,8 +97,9 @@ class Storage {
   Result<Bytes> Read(const std::string& relative_path,
                      std::size_t max_bytes = kMaxReadBytes) const;
 
-  // A single app writer is assumed. Rename makes replacement atomic for
-  // readers, but this does not promise persistence across sudden power loss.
+  // A single app writer is assumed. The temporary file is synced before the
+  // rename and the folder after it (best effort), so a crash or power loss
+  // leaves the old contents or the new ones, not an empty file.
   Result<void> WriteAtomic(const std::string& relative_path,
                            const Bytes& bytes) const;
 

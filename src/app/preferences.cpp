@@ -13,6 +13,7 @@ namespace playden {
 namespace {
 
 constexpr char kPreferencesPath[] = "preferences.conf";
+constexpr char kDamagedPreferencesPath[] = "preferences.conf.damaged";
 
 std::string ToString(const Bytes& bytes) {
   return std::string(bytes.begin(), bytes.end());
@@ -137,6 +138,19 @@ PreferencesLoadResult PreferencesStore::Load() const {
   }
 
   std::string serialized = ToString(read.value());
+  // Every version starts so. A file that doesn't (empty, zero-filled: a save a crash or power loss stopped
+  // before it reached the disk) is set aside, and the defaults are saved from now on. Other unreadable files
+  // (kDefaultCorrupt) stay as they are: one may be what a newer Playden wrote.
+  if (serialized.rfind("version=", 0) != 0) {
+    const bool kept = storage_.WriteAtomicPrivate(kDamagedPreferencesPath, read.value()).ok();
+    const auto removed = storage_.Remove(kPreferencesPath);
+    if (!removed.ok())
+      return {Preferences{}, PreferencesLoadStatus::kDefaultReadError,
+              "Preferences are damaged and could not be set aside: " + removed.message()};
+    return {Preferences{}, PreferencesLoadStatus::kDefaultDamaged,
+            "preferences.conf was damaged (" + std::to_string(read.value().size()) + " bytes)" +
+                (kept ? std::string(", kept as ") + kDamagedPreferencesPath : std::string()) + "; defaults restored"};
+  }
   Preferences keyed;
   if (ParseKeyed(serialized, 16, &keyed) || ParseKeyed(serialized, 15, &keyed) || ParseKeyed(serialized, 14, &keyed) || ParseKeyed(serialized, 14, &keyed, 1) || ParseKeyed(serialized, 14, &keyed, 2) || ParseKeyed(serialized, 13, &keyed) || ParseKeyed(serialized, 12, &keyed) || ParseKeyed(serialized, 11, &keyed) || ParseKeyed(serialized, 10, &keyed) || ParseKeyed(serialized, 9, &keyed) || ParseKeyed(serialized, 8, &keyed))
     return PreferencesLoadResult{std::move(keyed), PreferencesLoadStatus::kLoaded, std::string()};

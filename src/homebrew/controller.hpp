@@ -226,6 +226,8 @@ class Controller {
   stores::Registry& stores_;
   stores::DetailsSource* app_details_ = nullptr;  // Steam's
   steam::InstallService* installs_ = nullptr;
+  // The install registry was checked against the PS5 titles' records once this session (InstallService::Recover).
+  bool registry_reconciled_ = false;
   std::uint64_t install_revision_ = 0;
   std::uint64_t install_generation_ = 0;
   steam::CloudService* cloud_ = nullptr;

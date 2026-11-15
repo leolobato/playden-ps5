@@ -2436,6 +2436,17 @@ void Controller::TickInstalls() {
     uninstalls_.Abandon(failure.id);
     StopUninstall(failure.id, failure.reason + " Uninstall the game again to try again.");
   }
+  // A registry a crash left empty or cut short forgets installed games that still have their folder and PS5 title:
+  // once the titles' records are read, each game a title starts from its Playden folder is listed again.
+  if (runtime_ && !registry_reconciled_)
+    if (const auto runtime = runtime_->Shared();
+        runtime->status == RuntimeHostStatus::kReady && runtime->installs_known) {
+      registry_reconciled_ = true;
+      std::vector<std::pair<GameId, std::string>> titles;
+      for (const auto& view : runtime->installs)
+        if (!view.moving) titles.emplace_back(view.game, view.install_path);
+      installs_->Recover(titles);
+    }
   const auto snapshot = installs_->Snapshot();
   files_deleting_ = snapshot.uninstalling;
   drives_present_.clear();

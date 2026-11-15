@@ -394,6 +394,51 @@ void LogsSaveFailuresOnceAndRecovery() {
   assert(lines[1] == "organization save works again");
 }
 
+// Organization and preferences files a crash left empty or zero-filled (#907) don't keep "Saved UI data is
+// unavailable" up for good: they are set aside, the log says so once, and edits are saved again.
+void TornFilesAreSetAsideAndSavingResumes() {
+  TemporaryDirectory directory;
+  const auto write = [&](const char* name, const std::string& bytes) {
+    std::FILE* file = std::fopen((directory.path() + "/" + name).c_str(), "wb");
+    assert(file);
+    assert(std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size());
+    std::fclose(file);
+  };
+  write("organization.v2", std::string(512, '\0'));
+  write("preferences.conf", "");
+  Storage storage(directory.path());
+  PreferencesStore preferences(storage);
+  OrganizationStore organizations(storage);
+  PersistenceService service(preferences, organizations);
+  Simulation model({}, {}, ModelMode::Live);
+  PersistenceController controller(model, service);
+  std::vector<std::string> lines;
+  controller.SetLog([&lines](const std::string& line) { lines.push_back(line); });
+  service.WaitIdle();
+  controller.Tick();
+  assert(model.state().persistence_available);
+  assert(std::none_of(model.state().notices.begin(), model.state().notices.end(),
+                      [](const Notice& notice) { return notice.id == "persistence"; }));
+  assert(std::count(lines.begin(), lines.end(),
+                    "organization load: organization.v2 was damaged (512 bytes), kept as organization.v2.damaged; "
+                    "started again") == 1);
+  assert(std::count(lines.begin(), lines.end(),
+                    "preferences load: preferences.conf was damaged (0 bytes), kept as preferences.conf.damaged; "
+                    "defaults restored") == 1);
+  const GameId local = GameId::Local("0b8f6c1e-4d2a-4f3b-9a1c-2e5d7f8a9b0c");
+  model.UpdateLibrary({{{local, "Imported game", {}, {}, {}, {}, {}}}, false, {}, false, false, {}, Store::kLocal});
+  assert(model.action("select:" + ToKey(local)));
+  assert(model.action("square"));
+  OpenSettings(model);
+  Choose(model, "toggle-motion");
+  controller.FlushAndShutdown();
+  const auto saved = organizations.Load(kDeviceOrganization);
+  assert(saved.ok() && saved.value() && saved.value()->favorites.count(local) == 1);
+  assert(preferences.Load().preferences.reduce_motion);
+  for (const char* name : {"organization.v2", "organization.v2.damaged", "preferences.conf.damaged"})
+    std::remove((directory.path() + "/" + name).c_str());
+}
+
 namespace {
 class UpdateRepository final : public UpdateCheckRepository {
  public:
@@ -453,5 +498,6 @@ int main() {
   InvalidMergedLoadStaysUnsavedUntilEditAndRetryResolveIt();
   InitialPreferencesFailureRetriesWithoutOverwritingUnknownData();
   LogsSaveFailuresOnceAndRecovery();
+  TornFilesAreSetAsideAndSavingResumes();
   UpdateCheckSaveRetries();
 }

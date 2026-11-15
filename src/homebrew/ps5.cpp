@@ -1040,6 +1040,7 @@ int main() {
         if (copy_runner) install_runners[playden::Store::kLocal] = copy_runner.get();
         playden::steam::InstallService installs(std::move(install_runners), std::move(install_volumes));
         installs.SetMoveRunner(&game_mover);
+        installs.SetLog([](const std::string& line) { playden::app::AppendLogLine(log_root, "install.log", line); });
         // Installed games' records, for their updates. Set before the controller asks for details; its
         // Shutdown joins the details worker before the install service stops.
         details_source.SetInstalled([&installs](std::uint32_t app) -> std::optional<playden::installs::InstalledRecord> {

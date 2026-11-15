@@ -62,13 +62,18 @@ class OrganizationRepository {
   virtual Result<void> Save(std::uint64_t account_id,
                             const OrganizationSnapshot& snapshot) const = 0;
   virtual Result<void> Clear(std::uint64_t account_id) const = 0;
+  // After a Load that worked: what it had to recover from first (a damaged file it set aside), else empty.
+  virtual std::string TakeLoadNote() const { return {}; }
 };
 
 // `organization.v2` in the storage root. Without it, Load merges every `organization-<id>.v1`
 // (favorites, hidden and collections by name united; ratings and notes per game from the most
 // recently modified file that has one; selection and view from the newest file), writes the
 // result to `organization.v2` and returns it. `.v1` files are never modified or removed.
-// A damaged `organization.v2` fails the load (kInvalidData); it never falls back to the merge.
+// An `organization.v2` that is cut short or fails its checksum (a save a crash or power loss stopped before
+// it reached the disk: empty, zero-filled) is set aside as `organization.v2.damaged`, and Load returns no
+// organization (TakeLoadNote says so); it doesn't merge the older `.v1` files, then or later. Other damage
+// fails the load (kInvalidData), as it may be what a newer Playden wrote.
 // What a newer Playden wrote is not damage: entries naming a game of a store this build doesn't know
 // (IsUnknownStoreKey) are skipped, including the selected game, and a scope it doesn't know (a newer
 // rail, a collection not in the file) reads as "all". Load never rewrites the file; the next Save
@@ -78,8 +83,9 @@ class OrganizationStore final : public OrganizationRepository {
   explicit OrganizationStore(Storage& storage) : storage_(storage) {}
   Result<std::optional<OrganizationSnapshot>> Load(std::uint64_t scope) const override;
   Result<void> Save(std::uint64_t scope, const OrganizationSnapshot& snapshot) const override;
-  // Removes `organization.v2` only; the next load merges the `.v1` files again.
+  // Removes `organization.v2` (and a damaged one set aside); the next load merges the `.v1` files again.
   Result<void> Clear(std::uint64_t scope) const override;
+  std::string TakeLoadNote() const override;
 
   // Version 1, one Steam account's file. Playden only reads it (the merge); the writer exists
   // for tests and fixtures.
@@ -88,6 +94,7 @@ class OrganizationStore final : public OrganizationRepository {
 
  private:
   Storage& storage_;
+  mutable std::string load_note_;  // the persistence worker's only
 };
 
 }  // namespace playden
