@@ -2285,6 +2285,98 @@ void live_self_update(const std::filesystem::path& base) {
 }
 
 // Without the root grant only "Root access is missing" shows; its one action quits to Home.
+// A start with a saved account or imported games: while Steam restores and the other stores' libraries
+// have not answered, Startup is a loading state, not the welcome. Only a player with nothing gets the welcome.
+void live_startup_waits_before_the_welcome() {
+    using playden::homebrew::LibraryUpdate;
+    const auto row_of = [](const Simulation& model, const std::string& key) {
+        const auto& rows = model.view().rows;
+        return std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.key == key; }) != rows.end();
+    };
+    const auto loading = [&](const Simulation& model) {
+        return model.state().navigation.route == Route::Startup && row_of(model, "startup-loading") &&
+               model.view().title.empty() && model.view().subtitle.empty() && !row_of(model, "startup-connect") &&
+               !row_of(model, "startup-import") && !row_of(model, "startup-skip");
+    };
+    const auto welcome = [&](const Simulation& model) {
+        const auto& view = model.view();
+        return model.state().navigation.route == Route::Startup && view.title == "Welcome to Playden" &&
+               !row_of(model, "startup-loading") && view.focused_row >= 0 &&
+               view.rows[static_cast<std::size_t>(view.focused_row)].key == "startup-connect";
+    };
+    const auto local_loading = [] { LibraryUpdate update{{}, true}; update.source = playden::Store::kLocal; return update; };
+    const auto local_answer = [](std::vector<playden::GameSummary> games) {
+        LibraryUpdate update{std::move(games), false, {}, false, true, 100};
+        update.source = playden::Store::kLocal;
+        return update;
+    };
+
+    // As the controller starts: Steam restores, the imported games' library loads.
+    {
+        Simulation model({}, {}, ModelMode::Live);
+        model.UpdateAccount({AuthState::Restoring, {}, {}, {}, {}, true});
+        check(model.UpdateLibrary(local_loading()), "startup: the local library starts loading");
+        check(loading(model), "startup: no welcome while Steam's saved sign-in restores");
+        check(model.view().legends.empty(), "startup: the loading state offers nothing to select");
+        model.UpdateAccount({AuthState::SignedIn, "76561198000000001", "Tester", {}, {}, false});
+        check(model.state().navigation.route == Route::Home, "startup: a restored account opens Home");
+    }
+    // Steam has no saved sign-in, and the imported games answer later.
+    {
+        Simulation model({}, {}, ModelMode::Live);
+        model.UpdateAccount({AuthState::Restoring, {}, {}, {}, {}, true});
+        check(model.UpdateLibrary(local_loading()), "startup: the local library starts loading");
+        model.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        check(loading(model), "startup: no welcome while the imported games are still loading");
+        playden::GameSummary game;
+        game.id = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+        game.title = "Night Sky";
+        check(model.UpdateLibrary(local_answer({game})), "startup: the imported games arrive");
+        check(model.state().navigation.route == Route::Home, "startup: imported games open Home, without the welcome");
+    }
+    // Nothing connected and nothing imported: the welcome, and a later refresh leaves it there.
+    {
+        Simulation model({}, {}, ModelMode::Live);
+        model.UpdateAccount({AuthState::Restoring, {}, {}, {}, {}, true});
+        check(model.UpdateLibrary(local_loading()), "startup: the local library starts loading");
+        check(model.UpdateLibrary(local_answer({})), "startup: no imported games");
+        check(loading(model), "startup: still loading while Steam restores");
+        model.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        check(welcome(model), "startup: a player with nothing gets the welcome, on Connect Steam");
+        check(model.UpdateLibrary(local_loading()), "startup: a later refresh of the imported games");
+        check(welcome(model), "startup: a refresh after the first answer keeps the welcome");
+    }
+    // The runtime kit offer waits for the loading to end, then shows on the welcome.
+    {
+        using playden::homebrew::LiveSelfUpdate;
+        Simulation model({}, {}, ModelMode::Live);
+        model.UpdateAccount({AuthState::Restoring, {}, {}, {}, {}, true});
+        LiveSelfUpdate update;
+        update.current = "0.6.0";
+        update.kit_phase = "checking";
+        model.UpdateSelfUpdate(update);
+        update.kit_phase = "available";
+        model.UpdateSelfUpdate(update);
+        check(model.state().navigation.modals.empty() && loading(model), "startup: no runtime kit offer over the loading state");
+        model.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        model.UpdateSelfUpdate(update);  // the controller's next tick
+        check(!model.state().navigation.modals.empty() &&
+                  model.state().navigation.modals.back().title == "Download the runtime kit?",
+              "startup: the runtime kit offer shows once the welcome does");
+    }
+    // A store whose first load fails ends the wait too.
+    {
+        Simulation model({}, {}, ModelMode::Live);
+        model.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
+        check(model.UpdateLibrary(local_loading()), "startup: the local library starts loading");
+        check(loading(model), "startup: waits for the imported games without Steam");
+        LibraryUpdate failed{{}, false, "Library is busy. Retry to refresh."};
+        failed.source = playden::Store::kLocal;
+        check(model.UpdateLibrary(failed), "startup: the local library fails");
+        check(welcome(model), "startup: a failed first load gives the welcome");
+    }
+}
+
 void live_root_access_missing() {
     Simulation model({}, {}, ModelMode::Live);
     const std::string error = "native data grant failed (code 2); helper stage=request status=unavailable error=2";
@@ -4236,6 +4328,7 @@ void live_manage_queue_full(const std::filesystem::path& base) {
 
 int main() {
     live_root_access_missing();
+    live_startup_waits_before_the_welcome();
     live_download_telemetry();
     const auto base = std::filesystem::canonical(std::filesystem::temp_directory_path())
         / ("playden-homebrew-live-model-test-" + std::to_string(getpid()));

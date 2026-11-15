@@ -1221,7 +1221,7 @@ class Render::Impl
         return y;
     }
 
-    void draw_startup(ui::Canvas &, const ViewData &view, const State &state)
+    void draw_startup(ui::Canvas &canvas, const ViewData &view, const State &state)
     {
         section_label("Playden", 96.0F, 78.0F);
         if (state.root_access_missing)
@@ -1238,24 +1238,25 @@ class Render::Impl
             draw_actions(view, 96.0F, y, 560.0F);
             return;
         }
-        draw_title(view, 96.0F, 292.0F, 720.0F);
-        if (state.startup_loading)
+        // Accounts and libraries still loading (the model's "startup-loading" row): a spinner and what it
+        // waits for, without the welcome or the hero card, since a player with games is about to see them.
+        const auto loading = std::find_if(view.rows.begin(), view.rows.end(),
+                                          [](const ViewRow &row) { return row.key == "startup-loading"; });
+        if (loading != view.rows.end())
         {
-            const gfx::Rect loading{96.0F, 520.0F, 560.0F, 112.0F};
-            scene_.rounded_rect(loading, 10.0F, kPanel);
-            scene_.circle(130.0F, 558.0F, 7.0F, kAccent);
-            ui::text(scene_, fonts_.semibold,
-                     state.simulation_mode ? "Loading saved fixture state…" :
-                                             "Restoring your accounts…",
-                     154.0F, 566.0F,
-                     24.0F, kText);
-            scene_.rounded_rect({128.0F, 594.0F, 496.0F, 6.0F}, 3.0F,
-                                kText.with_alpha(0.14F));
-            const float pulse = 0.18F + 0.22F * (0.5F + 0.5F * std::sin(clock_ * 5.0F));
-            scene_.rounded_rect({128.0F, 594.0F, 496.0F * pulse, 6.0F}, 3.0F, kAccent);
+            startup_spinner_.style.theme = theme_;
+            startup_spinner_.style.reduced_motion = state.reduced_motion;
+            startup_spinner_.style.size = 64.0F;
+            startup_spinner_.set_bounds({928.0F, 436.0F, 64.0F, 64.0F});
+            startup_spinner_.update(frame_dt_);
+            startup_spinner_.draw(canvas);
+            ui::text(scene_, fonts_.semibold, loading->title, 960.0F, 566.0F, 28.0F, kSecondary, gfx::Align::center);
+            // The fixture's own controls (Advance fixture clock); Live has none.
+            draw_actions(view, 680.0F, 640.0F, 560.0F);
+            return;
         }
-        else
-            draw_actions(view, 96.0F, 520.0F, 560.0F);
+        draw_title(view, 96.0F, 292.0F, 720.0F);
+        draw_actions(view, 96.0F, 520.0F, 560.0F);
 
         scene_.rounded_rect({988.0F, 194.0F, 724.0F, 680.0F}, 14.0F, kPanel);
         scene_.glow({1050.0F, 268.0F, 600.0F, 360.0F}, 12.0F, 42.0F, kAccent.with_alpha(0.08F));
@@ -1267,11 +1268,8 @@ class Render::Impl
                                  kAccent.with_alpha(0.25F), kPanel);
         ui::text(scene_, fonts_.display, "YOUR GAMES", 1100.0F, 704.0F, 48.0F, kText);
         ui::text(scene_, fonts_.regular,
-                 state.startup_loading ?
-                     (state.simulation_mode ? "Restoring local fixture…" : "Connecting securely…") :
                  state.persistence_available ? "Ready when you are." : "Browsing can continue without saving.",
-                 1100.0F, 752.0F, 25.0F,
-                 state.persistence_available || state.startup_loading ? kSecondary : kAmber);
+                 1100.0F, 752.0F, 25.0F, state.persistence_available ? kSecondary : kAmber);
     }
 
     void clear_qr_cache()
@@ -4026,6 +4024,10 @@ class Render::Impl
             draw_hint_row(scene_, hints, 96.0F);
             return;
         }
+        // Startup while accounts and libraries load: nothing to select, no sections to reach.
+        if (current_state_ && current_state_->navigation.route == Route::Startup && !current_state_->simulation_mode &&
+            std::any_of(view.rows.begin(), view.rows.end(), [](const ViewRow &row) { return row.key == "startup-loading"; }))
+            return;
         std::string shoulder;
         draw_hint_row(scene_, legend_hints(view, shoulder, true), 96.0F);
         if (view.show_simulation_label)
@@ -5218,6 +5220,7 @@ class Render::Impl
     std::map<std::string, Scroll> home_rows_;
     float frame_dt_ = 1.0F / 60.0F;
     ui::TabBar tabs_;
+    ui::Spinner startup_spinner_;  // Startup while accounts and libraries load
     ui::GridView grid_;
     ui::ListView list_;
     ui::Keyboard keyboard_;

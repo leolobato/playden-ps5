@@ -1942,6 +1942,7 @@ private:
     // The sign-in screen shows because Steam's saved sign-in failed to restore, not for a sign-in the player started.
     bool restore_failed_sign_in_ = false;
     std::set<Store> loading_sources_;  // stores whose library is loading now
+    std::set<Store> answered_sources_;  // stores whose library answered at least once (loaded or failed)
     // Live install events become notifications; the first snapshot is restored history, not an event.
     bool live_installs_seen_ = false;
     std::map<GameId, JobState> live_job_states_;
@@ -2364,6 +2365,9 @@ private:
     // After a Steam update cleared its games on a Home or Library the player stays on: the cursor follows the game
     // still selected, as a library update does.
     void resync_browse_focus();
+    // Startup can't yet tell a player with accounts or games from a first run: Steam's saved sign-in is
+    // restoring, or another store's library has not answered once.
+    [[nodiscard]] bool startup_undecided() const;
     // Steam's sign-in ended without an account: Home when another store has games, else Startup.
     void leave_steam_sign_in();
     // GOG: the Settings row's text, the account sheet and the sign-in dialog (kept current while it is open).

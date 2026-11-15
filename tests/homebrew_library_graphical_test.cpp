@@ -46,6 +46,19 @@ struct Cache final : LibraryRepository {
 };
 }
 
+// Whether two pixels of a capture have the same colour (to within a little).
+static bool same_colour(const std::filesystem::path& png, int ax, int ay, int bx, int by) {
+  int width = 0, height = 0, channels = 0;
+  unsigned char* pixels = stbi_load(png.string().c_str(), &width, &height, &channels, 3);
+  assert(pixels != nullptr && ax < width && bx < width && ay < height && by < height);
+  const unsigned char* a = pixels + (static_cast<std::size_t>(ay) * width + ax) * 3;
+  const unsigned char* b = pixels + (static_cast<std::size_t>(by) * width + bx) * 3;
+  bool same = true;
+  for (int c = 0; c < 3; ++c) same = same && std::abs(int(a[c]) - int(b[c])) <= 2;
+  stbi_image_free(pixels);
+  return same;
+}
+
 // Rows of a capture whose pixel at column x is the focus ring's orange, top to bottom.
 static std::vector<int> ring_rows(const std::filesystem::path& png, int x, int from, int to) {
   int width = 0, height = 0, channels = 0;
@@ -121,6 +134,21 @@ int main(int argc,char** argv) {
       for(int i=0;i<16;++i) renderer.draw(missing,1920,1080);
       assert(renderer.capture_png(output/"root-access-missing.png",1920,1080));
       assert(renderer.diagnostics().focused_control_key=="root-quit");
+    }
+    {
+      // A start with a saved account: Steam restores, and the screen says it is loading, not Welcome.
+      Simulation starting({}, {}, ModelMode::Live);
+      starting.UpdateAccount({AuthState::Restoring,{},{},{},{},true});
+      for(int i=0;i<16;++i) renderer.draw(starting,1920,1080);
+      assert(renderer.capture_png(output/"startup-restoring.png",1920,1080));
+      // No "Your games" card: below its text, the card's place is the page's background.
+      assert(same_colour(output/"startup-restoring.png",1350,840,1850,840));
+      // Nothing connected and nothing imported: the welcome, with its card and Connect Steam focused.
+      starting.UpdateAccount({AuthState::SignedOut,{},{},{},{},true});
+      for(int i=0;i<16;++i) renderer.draw(starting,1920,1080);
+      assert(renderer.capture_png(output/"startup-welcome.png",1920,1080));
+      assert(!same_colour(output/"startup-welcome.png",1350,840,1850,840));
+      assert(renderer.diagnostics().focused_control_key=="startup-connect");
     }
     assert(model.action("r1") && model.state().navigation.route==Route::Library);
     capture("library.png");

@@ -2303,6 +2303,19 @@ void account_update_by_store() {
         check(live.state().navigation.route == Route::Home && live.state().account().authentication == AuthState::Restoring,
               "GOG's restore signs in on Home while Steam still restores");
     }
+    {
+        // Steam has no saved sign-in, GOG's restores: Startup is loading, not the welcome, until GOG answers.
+        Simulation live({}, {}, ModelMode::Live);
+        live.SetGogStoreEnabled(true);
+        live.UpdateAccount({AuthState::SignedOut});
+        live.UpdateAccount(gog(AuthState::Restoring));
+        check(live.state().navigation.route == Route::Startup && live.view().title.empty() &&
+                  live.view().rows.size() == 1 && live.view().rows.front().key == "startup-loading",
+              "GOG restoring: Startup is loading, without the welcome");
+        live.UpdateAccount(gog(AuthState::SignedOut));
+        check(live.state().navigation.route == Route::Startup && live.view().title == "Welcome to Playden",
+              "GOG signed out too: the welcome");
+    }
 }
 
 // Game settings, a game's page and Maintenance follow what its store does, not whether it is Steam: a GOG game has the
@@ -3788,7 +3801,7 @@ constexpr const char* kStartupSignedOut =
     "startup-connect|Connect Steam||||connect|1\n"
     "startup-import|Import games||||import-manage|1\n"
     "startup-skip|Skip for now||||skip|1\n";
-constexpr const char* kStartupRestoring = "startup-loading|Restoring your accounts…|||||0\n";
+constexpr const char* kStartupRestoring = "startup-loading|Loading your library…|||||0\n";
 constexpr const char* kAccountSignedIn =
     "settings-account|Account|Account|Steam connected|Synthetic account|account|1\n"
     "settings-signout|Sign out…|Account|||signout-confirm|1\n";

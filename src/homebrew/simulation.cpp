@@ -3215,7 +3215,7 @@ void Simulation::show_update_prompt() {
     // The kit's offer shows before sign-in too (Connect Steam and the sign-in screens, not while the
     // saved account loads): it downloads while the player signs in.
     const bool kit = pending_update_prompt_ == "kit";
-    const bool before_sign_in = (route == Route::Startup && !state_.startup_loading) || route == Route::SignIn;
+    const bool before_sign_in = (route == Route::Startup && !startup_undecided()) || route == Route::SignIn;
     if (pending_update_prompt_.empty() || !state_.navigation.modals.empty() || state_.editor.active ||
         route == Route::Session || (route == Route::Startup && !(kit && before_sign_in)) ||
         (route == Route::SignIn && !kit))
@@ -3927,6 +3927,16 @@ void Simulation::resync_browse_focus() {
         return;
     }
     state_.navigation.focus_key = state_.games.empty() ? "home-library" : game_key(state_.games.front().id);
+}
+
+bool Simulation::startup_undecided() const {
+    if (state_.startup_loading || state_.account().authentication == AuthState::Restoring) return true;
+    // With GOG, its saved sign-in restores before Startup offers to sign in.
+    if (gog_store_enabled_ && state_.account(Store::kGog).authentication == AuthState::Restoring) return true;
+    // Only a store's first answer counts: a later refresh (an import from the welcome) leaves the welcome up.
+    return std::any_of(loading_sources_.begin(), loading_sources_.end(), [this](Store store) {
+        return store != Store::kSteam && !answered_sources_.count(store);
+    });
 }
 
 void Simulation::steam_restore_notice() {
@@ -4759,7 +4769,10 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
     }
 
     if (update.loading) loading_sources_.insert(update.source);
-    else loading_sources_.erase(update.source);
+    else {
+        loading_sources_.erase(update.source);
+        answered_sources_.insert(update.source);
+    }
     state_.library_loading = !loading_sources_.empty();
     state_.library_syncing = state_.library_loading;
     if (update.source == Store::kSteam) state_.library_offline = update.stale;
@@ -8953,16 +8966,14 @@ void Simulation::rebuild_view() {
             row("root-detail", RowKind::Status, "Startup error: " + state_.root_access_detail, "").enabled = false;
         row("root-quit", RowKind::Action, "Quit to Home", "root-quit");
         view_.legends = {"Cross Quit to Home"};
+    } else if (state_.navigation.route == Route::Startup && startup_undecided()) {
+        // Accounts and libraries are still loading: no welcome yet, it may be a player with games.
+        row("startup-loading", RowKind::Status, live() ? "Loading your library…" : "Loading saved fixture state…", "").enabled = false;
+        if (!live()) row("startup-advance", RowKind::Action, "Advance fixture clock", "advance-clock");
     } else if (state_.navigation.route == Route::Startup) {
         view_.title = "Welcome to Playden";
         view_.subtitle = live() ? "Connect a store or import games to fill your library." : "Browse the local UI fixture or connect a simulated Steam account.";
-        // With GOG, its saved sign-in restores before Startup offers to sign in.
-        if (state_.startup_loading || state_.account().authentication == AuthState::Restoring ||
-            (gog_store_enabled_ && state_.account(Store::kGog).authentication == AuthState::Restoring)) {
-            row("startup-loading", RowKind::Status, live() ? "Restoring your accounts…" : "Loading saved fixture state…", "").enabled = false;
-            if (!live()) row("startup-advance", RowKind::Action, "Advance fixture clock", "advance-clock");
-        }
-        else if (!state_.persistence_available) {
+        if (!state_.persistence_available) {
             row("startup-retry-save", RowKind::Action, "Retry saved state", "retry-save");
             row("startup-continue", RowKind::Action, "Continue without saving", "continue-without-saving");
         } else {
