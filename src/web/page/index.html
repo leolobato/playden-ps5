@@ -113,6 +113,9 @@ td.entry-name span.badge { display: inline-block; font-size: 12px; font-weight: 
 td.entry-name .folder::before { content: ""; display: inline-block; width: 9px; height: 7px; margin-right: 8px; border: 1.5px solid var(--accent); border-radius: 1px; }
 td.acts { text-align: right; white-space: nowrap; }
 td.acts > * { margin-left: 6px; }
+th.pick .all { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; color: var(--ink); font-size: 15px; }
+th.pick .all span { display: none; }
+th.pick input:disabled { cursor: not-allowed; }
 td.status { color: var(--accent); font-weight: 600; font-size: 14px; white-space: nowrap; }
 .drop-hint { border: 1px dashed #4a4338; border-radius: 6px; padding: 32px 16px; text-align: center; color: var(--soft); margin-top: 8px; }
 .drop-hint strong { display: block; color: var(--ink); font-weight: 600; margin-bottom: 4px; }
@@ -172,6 +175,12 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   .panel { width: 100%; }
   table.files, table.files tbody { display: block; }
   table.files thead { display: none; }
+  /* A folder keeps one line of its head: Select all. */
+  table.folder thead, table.folder thead tr { display: block; }
+  table.folder thead tr { padding: 0 2px 10px; }
+  table.folder thead th { display: none; }
+  table.folder thead th.pick { display: block; padding: 0; }
+  table.folder th.pick .all span { display: inline; }
   table.files tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 10px 2px; border-top: 1px solid var(--line); }
   table.files tbody tr:last-child { border-bottom: 1px solid var(--line); }
   table.files td { border: 0; padding: 0; background: none !important; white-space: normal; }
@@ -729,6 +738,25 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
   };
   const isText = (entry) => entry.size <= 1024 * 1024 && /\.(ini|cfg|txt|json|xml|conf|config|lua|yaml|yml|toml|csv|log|vdf)$/i.test(entry.name);
   const editableRow = (entry) => !entry.read_only && !entry.recoverable;
+  // Read-only entries can't be ticked, one by one or all at once.
+  const selectable = (entry) => !entry.read_only;
+  // Ticks every entry of this folder, or none when all are ticked already. Subfolders' contents aren't ticked.
+  const selectAll = (entries) => {
+    const names = entries.filter(selectable).map((entry) => entry.name);
+    const ticked = names.filter((name) => files.selected.has(name)).length;
+    const box = element("input", { type: "checkbox", "aria-label": "Select all" });
+    box.checked = !!names.length && ticked === names.length;
+    box.indeterminate = ticked > 0 && !box.checked;
+    box.disabled = !names.length;
+    box.title = box.checked ? "Clear the selection" : "Select everything in this folder";
+    box.addEventListener("change", () => {
+      files.selected = box.checked ? new Set(names) : new Set();
+      paintFolder();
+      const again = document.querySelector("th.pick input");
+      if (again) again.focus();
+    });
+    return element("label", { class: "all" }, box, element("span", { text: "Select all" }));
+  };
   const paintFolder = () => {
     const { game, root, path, listing } = files;
     const ctx = { game: game.id, root };
@@ -766,7 +794,7 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
       const pending = !entry.directory && queued.find((item) => item.name.toLowerCase() === entry.name.toLowerCase());
       const check = element("input", { type: "checkbox", "aria-label": `Select ${entry.name}` });
       check.checked = files.selected.has(entry.name);
-      check.disabled = !!entry.read_only;
+      check.disabled = !selectable(entry);
       check.addEventListener("change", () => {
         if (check.checked) files.selected.add(entry.name); else files.selected.delete(entry.name);
         paintFolder();
@@ -808,8 +836,8 @@ main.dragging { outline: 2px dashed var(--accent); outline-offset: 8px; }
           element("td", { class: "status", text: item.state === "active" ? `Uploading ${Math.round(item.fraction * 100)}%` : item.state === "waiting" ? "Waiting to upload" : "Upload failed" }),
           element("td", { class: "num soft size", text: longSize(itemSize(item)) }), element("td", { class: "acts" })));
     if (rows.length) {
-      pane.append(element("table", { class: "files" },
-        element("thead", {}, element("tr", {}, element("th", {}), ...[["Name", "name", false], ["Changed", "modified", true], ["Size", "size", true, "num"]].map(([label, key, down, kind]) =>
+      pane.append(element("table", { class: "files folder" },
+        element("thead", {}, element("tr", {}, element("th", { class: "pick" }, selectAll(listing.entries)), ...[["Name", "name", false], ["Changed", "modified", true], ["Size", "size", true, "num"]].map(([label, key, down, kind]) =>
           sortHead(label, key, files.sortFolder, down, (sort) => { files.sortFolder = sort; paintFolder(); }, kind)), element("th", {}))),
         element("tbody", {}, ...rows)));
     } else {
