@@ -210,6 +210,11 @@ void t03_circle_leaves_an_applied_search(const std::filesystem::path& fixtures,
     check(simulation.state().library.query.empty() && simulation.visible_games().size() > 1
               && simulation.state().navigation.route == playden::homebrew::Route::Library,
           "T03 Circle clears the search and stays in the Library");
+    simulation.action("search");
+    simulation.text("  ");
+    simulation.action("done");
+    check(simulation.state().library.query.empty() && !has_legend("Circle Clear search"),
+          "T03 a search of only spaces applies no search");
     simulation.action("circle");
     check(simulation.state().navigation.route == playden::homebrew::Route::Home,
           "T03 Circle without a search goes back Home");
@@ -226,8 +231,10 @@ void t03_search_filters_and_focus_reconciliation(const std::filesystem::path& fi
     simulation.action("circle");
     check(simulation.state().library.query.empty(), "T03 cancelling search restores the original query");
     simulation.action("search");
-    simulation.text("Night Orchard");
+    simulation.text(" Night Orchard\xC2\xA0");
+    check(simulation.visible_games().size() == 1, "T03 the live preview ignores spaces around the search");
     simulation.action("done");
+    check(simulation.state().library.query == "Night Orchard", "T03 the committed search keeps no spaces around it");
     check(simulation.visible_games().size() == 1 && simulation.visible_games().front()->id == SteamId(900010),
           "T03 committed search updates results and count");
     check(simulation.state().navigation.selected_game_id == SteamId(900010) && simulation.state().navigation.focus_key == "game-900010",

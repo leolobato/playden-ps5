@@ -4964,7 +4964,7 @@ void Simulation::apply_organization_snapshot(const playden::OrganizationSnapshot
     const auto prior_selected_id = state_.navigation.selected_game_id;
     state_.library.favorites = snapshot.favorites;
     state_.library.hidden = snapshot.hidden;
-    state_.library.query = snapshot.query;
+    state_.library.query = TrimLibraryQuery(snapshot.query);
     state_.library.scope = snapshot.scope;
     state_.library.sort = snapshot.sort;
     state_.library.filters = snapshot.filters;
@@ -5717,7 +5717,7 @@ void Simulation::load_fixtures() {
                 ++next_collection_serial_;
             }
         }
-        state_.library.query = string_value(organization->get("query"));
+        state_.library.query = TrimLibraryQuery(string_value(organization->get("query")));
         state_.library.scope = string_value(organization->get("scope"), "all");
         state_.library.sort = string_value(organization->get("sort"), "name");
     }
@@ -5822,7 +5822,7 @@ void Simulation::load_profile() {
         state_.account().authentication = restored_auth; state_.account().cache_available = restored_auth == AuthState::SignedIn || restored_auth == AuthState::Offline;
     }
     state_.account().last_sync = static_cast<std::int64_t>(uint_value(root->get("account_last_sync"), static_cast<std::uint64_t>(state_.account().last_sync)));
-    state_.library.query = string_value(root->get("query"), state_.library.query);
+    state_.library.query = TrimLibraryQuery(string_value(root->get("query"), state_.library.query));
     state_.library.scope = string_value(root->get("scope"), state_.library.scope);
     if (const auto* favorites = root->get("favorites"); favorites && favorites->array()) {
         state_.library.favorites.clear();
@@ -10678,7 +10678,7 @@ void Simulation::commit_editor() {
         return;
     }
     if (state_.editor.purpose == "Preset name") { commit_my_preset_name(); return; }
-    if (state_.editor.purpose == "Search") { state_.library.query = state_.editor.value; reconcile_library_selection(state_); }
+    if (state_.editor.purpose == "Search") { state_.library.query = TrimLibraryQuery(state_.editor.value); reconcile_library_selection(state_); }
     else if (state_.editor.purpose == "Search recipes") {
         // The chooser lists the games whose name matches; the first is focused.
         state_.editor.active = false;

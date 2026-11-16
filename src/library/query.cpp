@@ -15,6 +15,27 @@ std::string FoldLibraryText(const std::string& value) {
     std::free(mapped);
     return result;
 }
+std::string TrimLibraryQuery(std::string_view value) {
+    const auto* bytes = reinterpret_cast<const utf8proc_uint8_t*>(value.data());
+    const auto size = static_cast<utf8proc_ssize_t>(value.size());
+    std::size_t first = value.size();
+    std::size_t end = 0;
+    for (utf8proc_ssize_t offset = 0; offset < size;) {
+        utf8proc_int32_t code_point = -1;
+        auto used = utf8proc_iterate(bytes + offset, size - offset, &code_point);
+        if (used <= 0) used = 1;  // a malformed byte is text
+        const auto category = code_point < 0 ? UTF8PROC_CATEGORY_CN : utf8proc_category(code_point);
+        const bool space = code_point == '\t' || code_point == '\n' || code_point == '\v' || code_point == '\f' ||
+                           code_point == '\r' || code_point == 0x85 || category == UTF8PROC_CATEGORY_ZS ||
+                           category == UTF8PROC_CATEGORY_ZL || category == UTF8PROC_CATEGORY_ZP;
+        if (!space) {
+            first = std::min(first, static_cast<std::size_t>(offset));
+            end = static_cast<std::size_t>(offset + used);
+        }
+        offset += used;
+    }
+    return first < end ? std::string(value.substr(first, end - first)) : std::string();
+}
 namespace {
 struct Match { GameId id; std::string title; };
 }

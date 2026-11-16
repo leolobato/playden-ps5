@@ -123,8 +123,9 @@ std::vector<const Game*> filtered_games(const State& state)
     if (!catalog_available(state) || state.library.filters.contains("empty-fixture"))
         return result;
 
-    const std::string query = state.simulation_mode ? ascii_lower(state.library.query)
-                                                   : FoldLibraryText(state.library.query);
+    // "portal " still finds Portal.
+    const std::string search = TrimLibraryQuery(state.library.query);
+    const std::string query = state.simulation_mode ? ascii_lower(search) : FoldLibraryText(search);
     std::map<GameId,std::string> folded_titles;
     if(!state.simulation_mode)
         for(const auto& game:state.games)

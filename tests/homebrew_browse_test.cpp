@@ -61,6 +61,11 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
     state.library.query = "night orchard";
     check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900010),
           "query matching is case insensitive");
+    state.library.query = "  night orchard \t";
+    check(filtered_games(state).size() == 1 && filtered_games(state).front()->id == SteamId(900010),
+          "query matching ignores spaces around the query");
+    state.library.query = "   ";
+    check(filtered_games(state).size() == 23, "a blank query matches every game");
     state.library.query.clear();
     state.library.filters = {"installed"};
     check(filtered_games(state).size() == 5, "installed filter composes with All");
@@ -330,6 +335,12 @@ void live_unicode_query() {
     check(filtered_games(state).size()==1,"live exact CJK substring");
     state.library.query=std::string("bad\xff",4);
     check(filtered_games(state).size()==1,"malformed input matches byte-exactly");
+    state.library.query=" strasse  ";
+    check(filtered_games(state).size()==2,"live query ignores spaces around it");
+    state.library.query="\xC2\xA0strasse\xE3\x80\x80";
+    check(filtered_games(state).size()==2,"live query ignores Unicode spaces around it");
+    state.library.query="  ";
+    check(filtered_games(state).size()==6,"live blank query matches every record");
     state.library.query="no match";
     check(filtered_games(state).empty(),"live empty result");
     state.library.query.clear();
