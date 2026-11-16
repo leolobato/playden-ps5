@@ -20,6 +20,9 @@
 #include "runtime/playden_removal.h"
 #include "runtime/recipe_choice.h"
 #include "runtime/prospero_profile.h"
+#include "runtime/publisher_detect.h"
+#include "runtime/publisher_runtime.h"
+#include "runtime/publisher_stage.h"
 #include "runtime/settings_publication_journal.h"
 #include "runtime/dotnet_heap.h"
 #include "runtime/recipe_files.h"
@@ -45,6 +48,7 @@
 #include "steam/backend/cloud_mapping.h"
 #include "steam/backend/json.h"
 #include "steam/backend/workshop_items.h"
+#include "steam/secret.h"
 #include "stores/local/scanner.h"
 
 #include <algorithm>
@@ -130,6 +134,18 @@ std::string SteamLibraryFolder(const rt::KitCapabilities& kit, const rt::Runtime
   if (!kit.steam_library_path || GameOf(record).store != Store::kSteam || !record.runtime_number) return {};
   return record.steam_install_dir.empty() ? std::to_string(record.runtime_number) : record.steam_install_dir;
 }
+
+// Publishers whose games Playden stages from the pack's stage manifest. EA's and Ubisoft's games
+// are left as they are.
+constexpr rt::Publisher kStagedPublishers[] = {rt::Publisher::kRockstar};
+bool Staged(rt::Publisher publisher) {
+  return std::find(std::begin(kStagedPublishers), std::end(kStagedPublishers), publisher) != std::end(kStagedPublishers);
+}
+// The publisher's name for the player (before its manifest, which names its account, is read).
+std::string PublisherDisplayName(rt::Publisher publisher) {
+  return publisher == rt::Publisher::kRockstar ? "Rockstar Games" : rt::PublisherName(publisher);
+}
+
 // Why the kit cannot run a recipe Playden ships (its requirements), for the player; empty when it
 // can. The kit's own recipe is skipped: the kit's packager checked its template against it.
 std::string KitLacksForRecipe(const rt::GameRecipe& recipe, const rt::VerifiedKitView& kit) {
@@ -372,6 +388,23 @@ std::optional<std::string> NewestSessionLog(const std::filesystem::path& data_ro
 
 std::optional<std::string> RandomUuid() { return playden::RandomUuid(); }
 
+// A game whose publisher's files Playden places: the publisher and its title folder (host path), found
+// in the game folder the record named then (install_path).
+struct RuntimeHost::InstallPublisher {
+  rt::Publisher publisher = rt::Publisher::kRockstar;
+  std::string title_folder;
+  std::string install_path;
+};
+
+// A publisher account request for the worker. The credential is wiped when the request goes.
+struct RuntimeHost::PublisherRequest {
+  enum class Kind { kSignIn, kSignOut, kRefresh } kind = Kind::kRefresh;
+  rt::Publisher publisher = rt::Publisher::kRockstar;
+  std::string credential;
+  std::uint64_t serial = 0;
+  ~PublisherRequest() { playden::steam::ZeroizeSecret(credential); }
+};
+
 // Construction order resolves the ownership cycle:
 //   repository -> records -> installer -> registry -> coordinator -> owner -> service.
 // The repository's availability query consults the coordinator, which is built
@@ -429,6 +462,16 @@ struct RuntimeHost::Composition {
   std::map<std::string, std::pair<rt::LaunchPreflight, std::int64_t>> preflights;
   // The old and new games root while the 0.6 games move is unfinished.
   std::optional<std::pair<std::string, std::string>> games_move;
+  // Publisher games: the pack check, kept while it passes (it hashes every archive); each
+  // publisher's unpacked release and manifest, or why not; the publisher found per install.
+  struct LoadedPublisher {
+    std::string directory;
+    rt::PublisherStageManifest manifest;
+  };
+  std::optional<rt::PublisherPackStatus> publisher_pack;
+  std::map<rt::Publisher, LoadedPublisher> publishers;
+  std::map<rt::Publisher, std::string> publisher_failures;
+  std::map<std::string, std::optional<InstallPublisher>> install_publishers;
 };
 
 RuntimeHost::RuntimeHost(RuntimeHostConfig config) : config_(std::move(config)) {
@@ -521,6 +564,16 @@ void RuntimeHost::LogSteamStubPrograms(std::uint32_t app, const std::vector<rt::
 
 void RuntimeHost::Log(const std::string& line) const {
   if (config_.log) config_.log(line);
+}
+
+void RuntimeHost::Notify(const std::string& text) const {
+  Log("system notification: " + text);
+  if (config_.system_notification) config_.system_notification(text);
+}
+
+void RuntimeHost::ReportHomeStartsAtQuit(std::uint32_t app_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  report_home_start_ = app_id;
 }
 
 bool RuntimeHost::Stopping() const {
@@ -829,6 +882,80 @@ void RuntimeHost::SetSteamAccount(std::string account_name, std::uint64_t steam_
     steam_account_name_ = std::move(account_name);
     steam_id_ = steam_id;
     steam_account_changed_ = true;
+  }
+  wake_.notify_all();
+}
+
+std::uint64_t RuntimeHost::SubmitPublisherSignIn(rt::Publisher publisher, std::string credential) {
+  auto request = std::make_unique<PublisherRequest>();
+  request->kind = PublisherRequest::Kind::kSignIn;
+  request->publisher = publisher;
+  request->credential = std::move(credential);
+  playden::steam::ZeroizeSecret(credential);  // what a move may leave behind
+  std::uint64_t serial = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return 0;
+    serial = request->serial = ++publisher_serial_;
+    publisher_requests_.push_back(std::move(request));
+  }
+  wake_.notify_all();
+  return serial;
+}
+
+RuntimePublisherSignIn RuntimeHost::SubmitPublisherSignInNow(rt::Publisher publisher, std::string credential,
+                                                             std::chrono::milliseconds timeout) {
+  RuntimePublisherSignIn outcome;
+  outcome.publisher = publisher;
+  outcome.serial = SubmitPublisherSignIn(publisher, std::move(credential));
+  if (outcome.serial == 0) {
+    outcome.message = "Playden is closing.";
+    return outcome;
+  }
+  std::unique_lock<std::mutex> lock(mutex_);
+  const auto answered = [&] { return snapshot_.publisher_sign_in && snapshot_.publisher_sign_in->serial >= outcome.serial; };
+  if (!published_.wait_for(lock, timeout, [&] { return stopping_ || answered(); }) && !answered()) {
+    const auto queued = std::find_if(publisher_requests_.begin(), publisher_requests_.end(),
+                                     [&](const auto& request) { return request->serial == outcome.serial; });
+    if (queued != publisher_requests_.end()) {
+      // Not taken yet: it leaves the queue, and its credential with it.
+      playden::steam::ZeroizeSecret((*queued)->credential);
+      publisher_requests_.erase(queued);
+    } else if (keeping_sign_in_ == outcome.serial) {
+      // Being kept right now (a quick write): the answer says how that went.
+      published_.wait(lock, [&] { return stopping_ || answered(); });
+    } else {
+      withdrawn_sign_ins_.insert(outcome.serial);
+    }
+  }
+  if (!answered() || snapshot_.publisher_sign_in->serial != outcome.serial) {
+    outcome.message = stopping_ ? "Playden is closing." : "Playden is busy. Try again in a moment.";
+    return outcome;
+  }
+  return *snapshot_.publisher_sign_in;
+}
+
+void RuntimeHost::SignOutPublisher(rt::Publisher publisher) {
+  auto request = std::make_unique<PublisherRequest>();
+  request->kind = PublisherRequest::Kind::kSignOut;
+  request->publisher = publisher;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    publisher_requests_.push_back(std::move(request));
+  }
+  wake_.notify_all();
+}
+
+void RuntimeHost::RefreshPublishers() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    for (const auto publisher : kStagedPublishers) {
+      auto request = std::make_unique<PublisherRequest>();
+      request->publisher = publisher;
+      publisher_requests_.push_back(std::move(request));
+    }
   }
   wake_.notify_all();
 }
@@ -1609,7 +1736,7 @@ std::string RuntimeHost::BottleEnvironmentStep(const GameFiles& files) {
 
 // Steam-file step: registry keys Steam's install script writes on a game's first start (Fallout: New Vegas's
 // launcher wants its install path there), and the redistributables those scripts run.
-std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
+std::string RuntimeHost::InstallScriptsStep(Composition& c, const GameFiles& files) {
   const auto& record = files.record;
   const auto install_dir = rt::ProsperoWindowsPath(record.install_path);
   if (!install_dir) return {};
@@ -1636,6 +1763,16 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
   const auto uses_physx = std::any_of(files.programs.begin(), files.programs.end(), [&files](const std::string& program) {
     return rt::ProgramUsesPhysx(files.root.string(), program);
   });
+  // The installers of a staged publisher are its pack's job.
+  std::vector<std::string> publisher_installers;
+  if (const auto* game = PublisherOf(c, record))
+    if (const auto loaded = c.publishers.find(game->publisher);
+        loaded != c.publishers.end() && loaded->second.manifest.titles.count(std::to_string(record.runtime_number))) {
+      const auto& manifest = loaded->second.manifest;
+      if (manifest.runtime) publisher_installers = manifest.runtime->installers;
+      publisher_installers.insert(publisher_installers.end(), manifest.covered_installers.begin(),
+                                  manifest.covered_installers.end());
+    }
   // A package being installed shows on the game's page as the rest of its setup does: words and a percentage.
   const auto number = record.runtime_number;
   bool shown = false;
@@ -1654,7 +1791,7 @@ std::string RuntimeHost::InstallScriptsStep(const GameFiles& files) {
     Publish([&](RuntimeSnapshot& s) { s.play_progress.erase(number); });
   };
   const auto redist = rt::InstallRedistributables(files.root.string(), *install_dir, files.prefix, config_.unix_time(),
-                                                  uses_physx, progress);
+                                                  uses_physx, progress, publisher_installers);
   progress_done();
   if (redist.physx_missing) Log("redist app=" + std::to_string(record.runtime_number) + " physx needed, no package in the game folder");
   // Still without the engine the game was built for, and a package added to its folder would be found: say which.
@@ -2286,11 +2423,14 @@ std::string RuntimeHost::ApplyPreparationSteps(Composition& c, const rt::Runtime
   } else if (removed) {
     Log("online session app=" + std::to_string(record.runtime_number) + " removed: no longer kept");
   }
+  // A publisher's games get its files in their folder (runtime/publisher_stage.h); other games
+  // are left as they are.
+  if (const auto publisher = StagePublisher(c, record); !publisher.empty()) return publisher;
   if (auto refused = Ue3EulaStep(files); !refused.empty()) return refused;
   if (auto refused = Direct3D12Step(c, files); !refused.empty()) return refused;
   KitMonoStep(c, record, "prepare");
   if (auto refused = BottleEnvironmentStep(files); !refused.empty()) return refused;
-  if (auto refused = InstallScriptsStep(files); !refused.empty()) return refused;
+  if (auto refused = InstallScriptsStep(c, files); !refused.empty()) return refused;
   MfcStep(files);
   SteamClientStep(files);
   SaveFoldersStep(c, files);
@@ -2631,6 +2771,9 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
     view.launch_in_install_root = record.launch_in_install_root;
     view.recipe_id = record.recipe_id;
     view.recipe_version = record.recipe_version;
+    if (const auto found = composition.install_publishers.find(record.install_id);
+        found != composition.install_publishers.end() && found->second)
+      view.publisher = found->second->publisher;
     std::error_code error;
     for (std::filesystem::directory_iterator it(SaveBackupRoot(record.install_id), error), end; !error && it != end;
          it.increment(error)) {
@@ -2772,6 +2915,7 @@ rt::PackageActionResult RuntimeHost::DrivePublication(Composition& c, const rt::
   input.kit = TitleKit(c, record);
   input.target = {record.default_profile_id, record.install_path, UsbSearchRoot(c, record),
                   SteamLibraryFolder(input.kit, record)};
+  PublisherHelperTarget(c, record, &input.target);
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
@@ -3093,6 +3237,8 @@ std::string RuntimeHost::RepublishSettings(Composition& c, const rt::RuntimeInst
       if (const auto lacks = KitLacksForRecipe(*recipe, c.kit->view); !lacks.empty()) return lacks;
     }
   }
+  // A publisher's program the recipe doesn't list yet becomes its default before anything else.
+  if (const auto refused = AdoptPublisherProgram(c, record); !refused.empty()) return refused;
   // Only the unowned upgrade of a game that did not move, with no newer settings: the game
   // played under its owned publication, which stays when the upgrade fails. A forced publication
   // (another runtime) reports its refusal instead.
@@ -3306,6 +3452,7 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   input.preset = preset;
   input.kit = kit;
   input.target = {next.default_profile_id, next.install_path, UsbSearchRoot(c, next), SteamLibraryFolder(input.kit, next)};
+  PublisherHelperTarget(c, next, &input.target);
   input.runtime_dir = config_.runtime_dir;
   rt::SettingsLaunchPlan plan;
   std::string reason;
@@ -3900,6 +4047,7 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
     if (candidate.runtime_number == app_id) record = candidate;
   rt::LaunchResult result;
   rt::LaunchSnapshot snapshot;
+  std::string refusal_code;
   {
     std::lock_guard<std::mutex> lock(launch_mutex_);
     if (!c.launch) {
@@ -3929,6 +4077,9 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
       // A bottle opened over FTP is given its modes back before the settings below read it (#568): the
       // launch preflight heals it too, but only after them.
       if (idle) HealBottle(c, record->data_root, record->title_id);
+      // A publisher game: the status its last session left first (an expired sign-in asks for a
+      // new one), then its files, then the credential, the last of them.
+      if (idle) ApplyPublisherStatus(c, *record);
       std::string settings;
       if (!setup_program.empty()) {
         // Another program for one run: its profile is published now, so nothing of the game may be running.
@@ -3965,6 +4116,8 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
           settings = current ? RepublishSettings(c, *current) : std::string("The game's install record is missing.");
         }
       }
+      bool placed = false;
+      if (idle && settings.empty()) settings = PlacePublisherCredential(c, *record, &refusal_code, &placed);
       // Saves the game wrote and FTP edits made since, once nothing of the bottle is held and
       // only when Play goes ahead: a refused Play changes no modes.
       std::optional<rt::RuntimeInstall> current;
@@ -3988,6 +4141,9 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
         Log("online session app=" + std::to_string(app_id) + " could not be removed after a refused Play");
       else if (removed)
         Log("online session app=" + std::to_string(app_id) + " removed: the Play was refused");
+      if (!refusal_code.empty() && !result.accepted) result.code = refusal_code;
+      // A refused request hands nothing to the game: its credential leaves the folder again.
+      if (placed && !result.accepted) RemovePublisherCredentialFor(c, *record);
     }
     if (result.accepted) {
       snapshot = c.launch->Snapshot();
@@ -4003,6 +4159,8 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
     // What it went ahead without (Microsoft's MFC), until a Play gets it.
     if (result.accepted && !redist_work_.notice.empty()) s.play_notices[app_id] = redist_work_.notice;
     else if (result.accepted) s.play_notices.erase(app_id);
+    if (result.accepted || refusal_code.empty()) s.play_refusal_codes.erase(app_id);
+    else s.play_refusal_codes[app_id] = refusal_code;
   });
   Log("play request app=" + std::to_string(app_id) + " accepted=" + std::to_string(result.accepted) +
       " session=" + result.session_id + " code=" + result.code + " message=" + result.message);
@@ -4072,6 +4230,8 @@ bool RuntimeHost::PollLaunch(Composition& c) {
         const auto refused = RepublishSettings(c, *record, nullptr, false);
         if (!refused.empty()) Log("setup program app=" + std::to_string(record->runtime_number) + " kept: " + refused);
       }
+    // A publisher game leaves a status file when its sign-in was refused.
+    if (const auto record = c.records.Find(snapshot.install_id)) ApplyPublisherStatus(c, *record);
     PublishLaunch(c, snapshot, played_seconds);
     return !finished.accepted;
   }
@@ -4591,6 +4751,24 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
       choices.program = *steam::RelativeGamePath(request.added_program);
   }
   const auto kit = c.kit ? rt::KitCapabilitiesFromManifest(c.kit->capabilities, true) : rt::KitCapabilities{};
+  // A publisher's pack may name the program that starts the game: Steam's entry would be a
+  // launcher that starts the game as another process, which the console can't do. It becomes the
+  // default; Steam's entries stay choices. The pack lists its games by Steam app ID.
+  if (GameOf(request).store == Store::kSteam) {
+    std::vector<std::string> targets;
+    for (const auto& launch : request.launches) targets.push_back(launch.executable);
+    const auto detected = rt::DetectPublisher(root.string(), targets);
+    if (detected.found && Staged(detected.publisher))
+      if (auto program = PublisherProgram(c, request.runtime_number, detected.publisher); !program.empty()) {
+        Log("publisher program app=" + std::to_string(request.runtime_number) + " program=" + program);
+        if (rt::GameProgramArchitecture(root.string(), program).empty()) {
+          *reason = "The " + PublisherDisplayName(detected.publisher) + " game program " + program +
+                    " is missing or not a Windows program; verify the download.";
+          return nullptr;
+        }
+        choices.publisher_program = std::move(program);
+      }
+  }
   // Steam's options all for other branches: the program the player chose goes first, and with no
   // choice yet, the options whose program is in the folder decide (the import rules: one clear
   // program starts the game, two or more are the player's choice).
@@ -4609,7 +4787,7 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
   std::vector<SteamLaunchChoice> steam_choices;
   if (saved && !saved->steam_launch.empty()) {
     put_first(saved->steam_launch);
-  } else if (request.launches_any_branch && choices.program.empty()) {
+  } else if (request.launches_any_branch && choices.program.empty() && choices.publisher_program.empty()) {
     for (const auto& launch : launches) {
       const auto path = steam::RelativeGamePath(launch.executable);
       if (!path || rt::GameProgramArchitecture(root.string(), *path).empty()) continue;
@@ -4636,9 +4814,19 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
   rt::GameRecipe generated;
   bool soft = true;
   rt::GameRecipeDiagnostics diagnostics;
-  const bool made = (!launches.empty() || !choices.program.empty()) &&
+  bool made = (!launches.empty() || !choices.program.empty() || !choices.publisher_program.empty()) &&
       rt::GenerateGameRecipe(GameOf(request), request.runtime_number, request.title_name, launches, root.string(),
                              &generated, reason, kit, choices, &soft, &diagnostics);
+  // The publisher's program must be the default (a program the player chose may come first).
+  if (made && !choices.publisher_program.empty() && choices.program.empty()) {
+    const auto first = std::find_if(generated.launch_entries.begin(), generated.launch_entries.end(),
+                                    [](const rt::LaunchEntry& entry) { return entry.id != rt::kProgramEntryId; });
+    if (first == generated.launch_entries.end() || first->id != rt::kPublisherEntryId) {
+      *reason = "The game program " + choices.publisher_program + " can't be started on this console.";
+      soft = true;
+      made = false;
+    }
+  }
   // The same line an unpack writes, so a refused SteamStub program is found the same way.
   // A recipe made from another of Steam's programs says which one it skipped and why (The Saboteur, #320).
   if (!diagnostics.steam_stub_program.empty())
@@ -4650,7 +4838,7 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
     Log("steam default skipped app=" + std::to_string(request.runtime_number) + " default=" + diagnostics.steam_default +
         " why=" + diagnostics.steam_default_skipped_because + " instead=" +
         (diagnostics.game_instead.empty() ? "-" : diagnostics.game_instead));
-  if (!made && launches.empty() && choices.program.empty())
+  if (!made && launches.empty() && choices.program.empty() && choices.publisher_program.empty())
     *reason = request.launch_reason.empty() ? "Steam lists no Windows program this console can start for this game."
                                             : request.launch_reason;
   // A refused game gets the folder's programs and a draft for Game settings to start from; a
@@ -4902,6 +5090,8 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
     named.steam_install_dir = steam_install_dir;
     if (c.records.Update(named).ok) existing = named;
   }
+  // The game's files may have changed (an update): its publisher is looked for again.
+  c.install_publishers.erase(existing ? existing->install_id : ToInstallId(GameOf(request)));
   rt::InstallServiceResult started = rt::InstallServiceResult::Success();
   bool game_root_owned = true;
   const auto tighten_working = [&](const std::string& working) -> std::string {
@@ -5746,6 +5936,15 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
     }
     case RuntimeMaintenance::kRegisterAgain:
       return RegisterTitleAgain(c, *record, ok);
+    case RuntimeMaintenance::kRepairPublisher: {
+      const auto* game = PublisherOf(c, *record);
+      if (!game) return "This game has no publisher files.";
+      const auto name = PublisherDisplayName(game->publisher);
+      if (auto failed = RestorePublisher(c, *record); !failed.empty()) return failed;
+      if (auto refused = RepublishSettings(c, *record); !refused.empty()) return refused;
+      *ok = true;
+      return "The " + name + " files are in place again.";
+    }
     case RuntimeMaintenance::kBackupSaves: {
       const auto users = HostPath(record->data_root) / "library/prefixes/game/drive_c/users";
       struct stat info{};
@@ -6470,6 +6669,10 @@ std::string RuntimeHost::RunRemove(Composition& c, std::uint32_t app, bool delet
     if (!delete_saves)
       if (const auto adopted = c.installer->AdoptCustomTitleArt(record); adopted.state != rt::PackageActionState::kComplete)
         Log("remove keeps no title art install=" + record.install_id + ": " + adopted.message);
+    // The game's files stay (Steam removes them, or the game is prepared again): its publisher's
+    // files leave with the title. A failure is logged; it doesn't hold the removal back.
+    if (const auto restored = RestorePublisher(c, record, true); !restored.empty())
+      Log("remove publisher files install=" + record.install_id + " kept: " + restored);
     if (const auto failed = RetireTitle(c, record.title_id, record.journal->operation_id))
       return fail(failed->code, failed->message);
     if (auto failed = advance("unregister"); !failed.empty()) return failed;
@@ -6539,6 +6742,7 @@ std::string RuntimeHost::RunRemove(Composition& c, std::uint32_t app, bool delet
     if (c.recipes.size() != before) PublishRecipes(c);
   }
   c.admission.erase(record.install_id);
+  c.install_publishers.erase(record.install_id);
   Publish([&](RuntimeSnapshot& s) {
     s.recipe_fallbacks.erase(record.runtime_number);
     s.recipe_switch_failures.erase(record.runtime_number);
@@ -6641,6 +6845,557 @@ void RuntimeHost::CopyTitleLogs(const Composition& c) {
         ? std::filesystem::path() : install / record.launch_path;
     if (const auto text = NewestSessionLog(root, program)) config_.title_log(record.title_id, *text);
   }
+}
+
+namespace {
+// One extraction per runtime folder at a time, whichever host or thread asks.
+std::shared_ptr<std::mutex> RuntimeRootLock(const std::string& root) {
+  static std::mutex mutex;
+  static std::map<std::string, std::weak_ptr<std::mutex>> locks;
+  std::lock_guard<std::mutex> guard(mutex);
+  auto lock = locks[root].lock();
+  if (!lock) locks[root] = lock = std::make_shared<std::mutex>();
+  return lock;
+}
+
+std::string Joined(const std::vector<std::string>& paths) {
+  std::string out;
+  for (const auto& path : paths) out += (out.empty() ? "" : ",") + path;
+  return out.empty() ? "-" : out;
+}
+}  // namespace
+
+std::filesystem::path RuntimeHost::PublisherAccountRoot() const {
+  return config_.publisher_account_root.empty() ? config_.state_root : config_.publisher_account_root;
+}
+
+std::string RuntimeHost::GameName(const rt::RuntimeInstall& record) const {
+  std::string name;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (const auto found = title_names_.find(record.runtime_number); found != title_names_.end()) name = found->second;
+  }
+  if (name.empty()) name = InstalledTitleName(record).value_or(std::string{});
+  name = WithoutStoreSuffix(std::move(name));
+  return name.empty() ? "This game" : name;
+}
+
+const RuntimeHost::InstallPublisher* RuntimeHost::PublisherOf(Composition& c, const rt::RuntimeInstall& record) {
+  // A game whose folder moved since (its USB drive changed places, the 0.6 games move) is looked at again.
+  if (const auto found = c.install_publishers.find(record.install_id);
+      found != c.install_publishers.end() && (!found->second || found->second->install_path == record.install_path))
+    return found->second ? &*found->second : nullptr;
+  std::optional<InstallPublisher> result;
+  // The pack lists its games by Steam app ID: a game from another store is left as it is.
+  if (!record.install_path.empty() && GameOf(record).store == Store::kSteam) {
+    std::vector<std::string> targets;
+    if (const auto* recipe = RecipeOf(c, record))
+      for (const auto& entry : recipe->launch_entries) targets.push_back(entry.executable);
+    if (!record.launch_path.empty()) targets.push_back(record.launch_path);
+    const auto root = HostPath(record.install_path);
+    const auto detected = rt::DetectPublisher(root.string(), targets);
+    if (detected.found && Staged(detected.publisher)) {
+      result = InstallPublisher{detected.publisher,
+                                (detected.title_directory.empty() ? root : root / detected.title_directory).string(),
+                                record.install_path};
+      Log("publisher app=" + std::to_string(record.runtime_number) + " publisher=" + rt::PublisherSlug(detected.publisher) +
+          " folder=" + (detected.title_directory.empty() ? "." : detected.title_directory) +
+          " evidence=" + detected.evidence);
+    }
+  }
+  auto& slot = c.install_publishers[record.install_id];
+  slot = std::move(result);
+  return slot ? &*slot : nullptr;
+}
+
+std::string RuntimeHost::LoadPublisher(Composition& c, rt::Publisher publisher) {
+  if (c.publishers.count(publisher)) return {};
+  const auto name = PublisherDisplayName(publisher);
+  PublisherReleaseResult release;
+  if (config_.publisher_release) {
+    release = config_.publisher_release(publisher);
+  } else {
+    const auto root = HostPath(config_.publisher_root).string();
+    // The check hashes every archive of the pack: once while it passes. A pack that is missing
+    // costs nothing to look for again (the player may upload it while Playden runs).
+    if (!c.publisher_pack || !rt::PublisherSupported(*c.publisher_pack, publisher)) {
+      auto status = rt::CheckPublisherPack(root);
+      Log("publisher pack " + status.message);
+      if (!status.present)
+        release.message = name + " games need the publisher pack. Upload it from a computer (see the docs).";
+      else if (!rt::PublisherSupported(status, publisher))
+        release.message = status.message;
+      else
+        c.publisher_pack = std::move(status);
+    }
+    if (release.message.empty()) {
+      const rt::PublisherRelease* pinned = nullptr;
+      for (const auto& candidate : rt::PinnedPublisherReleases())
+        if (candidate.publisher == publisher) pinned = &candidate;
+      const auto cache = HostPath(config_.publisher_cache_root.empty() ? config_.publisher_work_root + "/cache"
+                                                                       : config_.publisher_cache_root);
+      std::string directory, reason;
+      if (!pinned) {
+        release.message = "This Playden has no publisher pack for " + name + " games.";
+      } else if (rt::PreparePublisherRelease(root, cache.string(), *pinned, &directory, &reason)) {
+        release.ok = true;
+        release.directory = directory;
+      } else {
+        Log("publisher release " + std::string(rt::PublisherSlug(publisher)) + " unavailable: " + reason);
+        release.message = "The publisher pack could not be unpacked: " + reason;
+      }
+    }
+  }
+  if (!release.ok) {
+    c.publisher_failures[publisher] = release.message.empty() ? name + " games can't be started yet." : release.message;
+    return c.publisher_failures[publisher];
+  }
+  rt::PublisherStageManifest manifest;
+  std::string reason;
+  if (!rt::LoadPublisherStageManifest(release.directory, &manifest, &reason)) {
+    Log("publisher manifest " + std::string(rt::PublisherSlug(publisher)) + " unavailable: " + reason);
+    c.publisher_failures[publisher] = "The publisher pack can't start " + name + " games. Upload a newer pack.";
+    return c.publisher_failures[publisher];
+  }
+  Log("publisher " + std::string(rt::PublisherSlug(publisher)) + " ready titles=" + std::to_string(manifest.titles.size()) +
+      " files=" + std::to_string(manifest.files.size()));
+  c.publisher_failures.erase(publisher);
+  c.publishers[publisher] = {release.directory, std::move(manifest)};
+  return {};
+}
+
+PublisherRuntimeResult RuntimeHost::EnsurePublisherRuntime(const rt::PublisherRuntimeSpec& spec,
+                                                           const std::string& install_root, rt::Publisher publisher) {
+  PublisherRuntimeResult result;
+  const bool present = std::any_of(spec.installers.begin(), spec.installers.end(), [&](const std::string& path) {
+    struct stat info{};
+    return rt::PublisherRuntimePathAllowed(path) &&
+           lstat((std::filesystem::path(install_root) / path).c_str(), &info) == 0 && S_ISREG(info.st_mode);
+  });
+  if (!present) {
+    result.reason = "The game's " + spec.label + " installer is missing. Verify the game's files.";
+    return result;
+  }
+  const auto root = (HostPath(config_.publisher_work_root) / "runtime" / rt::PublisherSlug(publisher)).string();
+  const auto lock = RuntimeRootLock(root);
+  std::lock_guard<std::mutex> held(*lock);
+  const auto made = rt::EnsurePublisherRuntime(
+      spec, install_root, root, [this](std::uint64_t done, std::uint64_t total) { ReportWork(done, total); },
+      [this] { return Stopping(); });
+  Log("publisher runtime " + std::string(rt::PublisherSlug(publisher)) + " version=" +
+      (made.version.empty() ? "-" : made.version) + " extracted=" + std::to_string(made.extracted) +
+      " ok=" + std::to_string(made.ok) + (made.ok ? std::string() : " reason=" + made.reason));
+  result.ok = made.ok;
+  result.version_dir = made.version_dir;
+  // The extractor's own sentences stand alone; its short reasons get the runtime's name.
+  if (!made.ok)
+    result.reason = Stopping() ? "Preparation was interrupted."
+                    : !made.reason.empty() && std::isupper(static_cast<unsigned char>(made.reason[0]))
+                        ? made.reason
+                        : spec.label + " could not be prepared: " + made.reason + ".";
+  return result;
+}
+
+std::string RuntimeHost::StagePublisher(Composition& c, const rt::RuntimeInstall& record) {
+  const auto* game = PublisherOf(c, record);
+  if (!game) return {};
+  const auto app = std::to_string(record.runtime_number);
+  const auto slug = std::string(rt::PublisherSlug(game->publisher));
+  if (auto failed = LoadPublisher(c, game->publisher); !failed.empty()) {
+    PublishPublishers(c);
+    Log("publisher stage app=" + app + " publisher=" + slug + " failed=" + failed);
+    return failed;
+  }
+  PublishPublishers(c);
+  const auto& loaded = c.publishers.at(game->publisher);
+  // A game the pack doesn't list is left as it is; Play says it isn't supported yet.
+  if (!loaded.manifest.titles.count(app)) {
+    Log("publisher stage app=" + app + " publisher=" + slug + " skipped: not in the pack");
+    return {};
+  }
+  std::string runtime_path;
+  if (const auto& runtime = loaded.manifest.runtime) {
+    // A step of its own on the game page, with the extraction's progress.
+    const auto words = "Preparing " + runtime->label;
+    Publish([&](RuntimeSnapshot& s) { s.work_app = record.runtime_number; s.work_step = words; });
+    const auto install_root = HostPath(record.install_path).string();
+    const auto made = config_.ensure_publisher_runtime
+        ? config_.ensure_publisher_runtime(*runtime, install_root, game->publisher)
+        : EnsurePublisherRuntime(*runtime, install_root, game->publisher);
+    ClearWork();
+    Publish([](RuntimeSnapshot& s) { s.work_app.reset(); s.work_step.clear(); });
+    if (!made.ok) {
+      Log("publisher runtime app=" + app + " publisher=" + slug + " failed=" + made.reason);
+      return made.reason.empty() ? runtime->label + " is not ready yet." : made.reason;
+    }
+    // The game sees console paths: the host test namespace is left out.
+    auto console = std::filesystem::path(made.version_dir);
+    if (!config_.host_namespace_prefix.empty()) {
+      const auto relative = console.lexically_relative(config_.host_namespace_prefix);
+      if (!relative.empty() && *relative.begin() != "..") console = "/" / relative;
+    }
+    const auto windows = rt::ProsperoWindowsPath(console.string());
+    if (!windows) return runtime->label + " can't be reached from the game.";
+    runtime_path = *windows;
+  }
+  const auto staged = rt::ApplyPublisherStage(loaded.manifest, loaded.directory, game->title_folder, app, runtime_path);
+  Log("publisher stage app=" + app + " publisher=" + slug + " changed=" + Joined(staged.changed) +
+      (staged.ok ? std::string() : " failed=" + staged.message));
+  if (!staged.ok)
+    return "The " + PublisherDisplayName(game->publisher) + " files could not be placed in the game's folder: " +
+           staged.message + ".";
+  return {};
+}
+
+std::string RuntimeHost::PublisherProgram(Composition& c, std::uint32_t app_id, rt::Publisher publisher) {
+  const auto failed = LoadPublisher(c, publisher);
+  PublishPublishers(c);
+  if (!failed.empty()) return {};
+  const auto& titles = c.publishers.at(publisher).manifest.titles;
+  const auto title = titles.find(std::to_string(app_id));
+  return title == titles.end() ? std::string() : title->second.program;
+}
+
+void RuntimeHost::PublisherHelperTarget(Composition& c, const rt::RuntimeInstall& record, rt::ProfileTarget* target) {
+  const auto* game = PublisherOf(c, record);
+  if (!game || !LoadPublisher(c, game->publisher).empty()) return;
+  const auto& helper = c.publishers.at(game->publisher).manifest.helper;
+  if (!helper) return;
+  // The pack's path is relative to the title folder, the profile's to the install root.
+  auto folder = std::filesystem::path(game->title_folder).lexically_relative(HostPath(record.install_path)).generic_string();
+  if (folder.empty() || folder == ".") folder.clear();
+  else if (folder.rfind("..", 0) == 0) return;
+  target->helper_program = folder.empty() ? helper->program : folder + "/" + helper->program;
+  target->helper_ready = helper->ready;
+  target->helper_wait = helper->wait;
+  target->helper_identity = helper->identity;
+  Log("publisher helper app=" + std::to_string(record.runtime_number) + " program=" + target->helper_program);
+}
+
+std::string RuntimeHost::AdoptPublisherProgram(Composition& c, const rt::RuntimeInstall& record) {
+  if (!rt::IsGeneratedRecipeId(record.recipe_id)) return {};  // a shipped recipe names its own programs
+  rt::GameRecipe* recipe = nullptr;
+  for (auto& candidate : c.recipes)
+    if (rt::RecipeMatchesInstall(candidate, record)) recipe = &candidate;
+  if (!recipe) return {};  // publication reports the missing recipe
+  const auto* game = PublisherOf(c, record);
+  if (!game) return {};
+  const auto program = PublisherProgram(c, record.runtime_number, game->publisher);
+  if (program.empty()) return {};
+  const auto lower = [](std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    std::transform(path.begin(), path.end(), path.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return path;
+  };
+  for (const auto& entry : recipe->launch_entries)
+    if (entry.id == rt::kPublisherEntryId && lower(entry.executable) == lower(program)) return {};
+  // A program the player chose wins; the publisher's is only the default.
+  const auto saved = config_.settings_record ? config_.settings_record(GameOf(record)) : std::nullopt;
+  const bool chosen = saved && (saved->overrides.count("launch_option") || saved->overrides.count("program"));
+  const auto name = PublisherDisplayName(game->publisher);
+  const auto architecture = rt::GameProgramArchitecture(HostPath(record.install_path).string(), program);
+  if (architecture.empty()) {
+    Log("publisher program app=" + std::to_string(record.runtime_number) + " program=" + program + " missing");
+    return chosen ? std::string()
+                  : "The " + name + " game program " + program + " is missing or not a Windows program; verify the download.";
+  }
+  if (architecture != recipe->architecture) {
+    Log("publisher program app=" + std::to_string(record.runtime_number) + " program=" + program + " architecture=" +
+        architecture + " recipe=" + recipe->architecture);
+    return chosen ? std::string()
+                  : "The " + name + " game program " + program + " is " + (architecture == "pe64" ? "64-bit" : "32-bit") +
+                        " but this game's PS5 title was made for another program. Remove the PS5 title and prepare the "
+                        "game again.";
+  }
+  auto amended = *recipe;
+  auto& entries = amended.launch_entries;
+  entries.erase(std::remove_if(entries.begin(), entries.end(),
+                               [](const rt::LaunchEntry& entry) { return entry.id == rt::kPublisherEntryId; }),
+                entries.end());
+  const auto slash = program.rfind('/');
+  rt::LaunchEntry entry{rt::kPublisherEntryId, slash == std::string::npos ? program : program.substr(slash + 1), program,
+                        "", ""};
+  // Before Steam's entries, after a program the player chose: the default launch entry.
+  entries.insert(std::find_if(entries.begin(), entries.end(),
+                              [](const rt::LaunchEntry& listed) { return listed.id != rt::kProgramEntryId; }),
+                 std::move(entry));
+  rt::GameRecipe checked;
+  std::string why;
+  if (!rt::ParseGameRecipe(rt::SerializeGameRecipe(amended), &checked, &why))
+    return "Playden could not add the " + name + " game program to this game's setup: " + why;
+  const auto text = rt::SerializeGameRecipe(checked);
+  const auto written = c.storage.WriteAtomicPrivate(GeneratedRecipeFile(checked.id), Bytes(text.begin(), text.end()));
+  if (!written.ok()) {
+    Log("generated recipe write failed app=" + std::to_string(record.runtime_number) + " message=" + written.message());
+    return "Playden could not save how to start this game.";
+  }
+  *recipe = std::move(checked);
+  PublishRecipes(c);
+  Log("publisher program app=" + std::to_string(record.runtime_number) + " program=" + program + " added to recipe=" +
+      record.recipe_id + (chosen ? " (the player's program stays)" : ""));
+  return {};
+}
+
+std::string RuntimeHost::PlacePublisherCredential(Composition& c, const rt::RuntimeInstall& record, std::string* code,
+                                                  bool* placed, std::string* failure) {
+  *placed = false;
+  const auto* game = PublisherOf(c, record);
+  if (!game) return {};
+  if (auto failed = LoadPublisher(c, game->publisher); !failed.empty()) {
+    if (failure) *failure = failed;
+    return failed;
+  }
+  const auto& loaded = c.publishers.at(game->publisher);
+  const auto app = std::to_string(record.runtime_number);
+  if (!loaded.manifest.titles.count(app)) {
+    *code = kPlayRefusalPublisherUnsupported;
+    return "This game isn't supported yet.";
+  }
+  const auto name = PublisherDisplayName(game->publisher);
+  const auto root = PublisherAccountRoot().string();
+  const auto account = rt::LoadPublisherAccount(root, game->publisher);
+  if (account.state != rt::PublisherAccountState::kSignedIn) {
+    *code = kPlayRefusalPublisherSignIn;
+    // A credential an earlier Play left is of no use any more.
+    RemovePublisherCredentialFor(c, record);
+    PublishPublishers(c);
+    return GameName(record) + " needs a " + name + " account.";
+  }
+  std::string value, reason;
+  if (!rt::PublisherStageValue(root, game->publisher, loaded.manifest.account, &value, &reason)) {
+    playden::steam::ZeroizeSecret(value);
+    *code = kPlayRefusalPublisherSignIn;
+    if (failure) *failure = reason;
+    return reason;
+  }
+  if (!rt::WritePublisherCredential(loaded.manifest, game->title_folder, value, &reason)) {
+    Log("publisher credential app=" + app + " failed=" + reason);
+    if (failure) *failure = reason;
+    return "The " + name + " sign-in could not be placed in the game's folder: " + reason + ".";
+  }
+  *placed = true;
+  Log("publisher credential app=" + app + " placed");
+  return {};
+}
+
+void RuntimeHost::PlacePublisherCredentialForHome(Composition& c, const rt::RuntimeInstall& record) {
+  if (!PublisherOf(c, record)) return;
+  std::string code;
+  bool placed = false;
+  const auto refusal = PlacePublisherCredential(c, record, &code, &placed);
+  if (!placed)
+    Log("publisher credential app=" + std::to_string(record.runtime_number) + " not placed for a start from Home: " +
+        (refusal.empty() ? std::string("no publisher files to place") : refusal));
+}
+
+void RuntimeHost::RemovePublisherCredentialFor(Composition& c, const rt::RuntimeInstall& record) {
+  const auto* game = PublisherOf(c, record);
+  const auto loaded = game ? c.publishers.find(game->publisher) : c.publishers.end();
+  if (loaded == c.publishers.end()) return;
+  std::string reason;
+  const bool removed = rt::RemovePublisherCredential(loaded->second.manifest, game->title_folder, &reason);
+  Log("publisher credential app=" + std::to_string(record.runtime_number) + (removed ? " removed" : " not removed: " + reason));
+}
+
+void RuntimeHost::RemovePublisherCredentialsOf(Composition& c, rt::Publisher publisher) {
+  for (const auto& record : c.repository.Snapshot()) {
+    const auto* game = PublisherOf(c, record);
+    if (game && game->publisher == publisher) RemovePublisherCredentialFor(c, record);
+  }
+}
+
+void RuntimeHost::ApplyPublisherStatus(Composition& c, const rt::RuntimeInstall& record, bool from_home) {
+  const auto* game = PublisherOf(c, record);
+  if (!game || !LoadPublisher(c, game->publisher).empty()) return;
+  const auto& manifest = c.publishers.at(game->publisher).manifest;
+  if (!manifest.status) return;
+  bool expired = false, missing = false;
+  std::string reason;
+  const bool ok = rt::ApplyPublisherSessionStatus(PublisherAccountRoot().string(), game->publisher, game->title_folder,
+                                                  *manifest.status, &expired, &reason, &missing);
+  // An expired sign-in must not stay in any game's folder.
+  if (expired) RemovePublisherCredentialsOf(c, game->publisher);
+  if (expired || missing || !ok)
+    Log("publisher status app=" + std::to_string(record.runtime_number) + " expired=" + std::to_string(expired) +
+        " missing=" + std::to_string(missing) + (from_home ? " from Home" : "") +
+        (ok ? std::string() : " failed=" + reason));
+  if (expired) PublishPublishers(c);
+  // Playden's own sessions end in Playden, which shows the account; a start from Home is told about.
+  if (!from_home) return;
+  const auto name = PublisherDisplayName(game->publisher);
+  // A status file that could not be removed is read again next time; say it once it is gone.
+  if (expired && ok)
+    Notify(GameName(record) + ": your " + name +
+           " sign-in expired during the last start. Sign in again in Playden \u203a Settings \u203a Account.");
+  else if (missing)
+    Notify(GameName(record) + " started without your " + name + " sign-in. Start it from Playden once to sign in.");
+}
+
+void RuntimeHost::ApplyHomeStatuses(Composition& c, rt::Publisher publisher) {
+  if (!c.launch_journal || !c.coordinator || !LoadPublisher(c, publisher).empty()) return;
+  const auto& manifest = c.publishers.at(publisher).manifest;
+  if (!manifest.status) return;
+  // A session Playden started is read when it ends (PollLaunch); an unreadable journal waits for Play.
+  const auto pending = c.launch_journal->LoadPending();
+  if (!pending.ok) return;
+  for (const auto& record : c.repository.Snapshot()) {
+    const auto* game = PublisherOf(c, record);
+    if (!game || game->publisher != publisher || record.title_id.empty()) continue;
+    if (pending.session && pending.session->install_id == record.install_id) continue;
+    struct stat info {};
+    if (::lstat((game->title_folder + "/" + manifest.status->file).c_str(), &info) != 0) continue;
+    // A game still running from Home may not be done with its sign-in yet.
+    if (c.coordinator->Activity(record.title_id) != rt::NativeActivity::kStopped) continue;
+    ApplyPublisherStatus(c, record, true);
+  }
+}
+
+void RuntimeHost::ReportHomeStarts(Composition& c, std::uint32_t app_id) {
+  // Only the game the player chose Play on starts from Home next; others waiting stay unmentioned.
+  const auto records = c.repository.Snapshot();
+  const auto found = std::find_if(records.begin(), records.end(), [app_id](const rt::RuntimeInstall& candidate) {
+    return candidate.runtime_number == app_id && AwaitingRegistration(candidate);
+  });
+  if (found == records.end()) return;
+  const auto& record = *found;
+  const auto* game = PublisherOf(c, record);
+  if (!game) return;
+  const auto publisher = game->publisher;
+  // Placed again now: a sign-in since the game was prepared counts.
+  std::string code, failure;
+  bool placed = false;
+  const auto refusal = PlacePublisherCredential(c, record, &code, &placed, &failure);
+  if (placed || refusal.empty()) return;
+  if (code == kPlayRefusalPublisherUnsupported) {
+    Log("publisher credential app=" + std::to_string(record.runtime_number) + " not placed at quit: " + refusal);
+    return;
+  }
+  const auto name = PublisherDisplayName(publisher);
+  const auto account = rt::LoadPublisherAccount(PublisherAccountRoot().string(), publisher).state;
+  if (code == kPlayRefusalPublisherSignIn && account == rt::PublisherAccountState::kSignedOut) {
+    Notify(GameName(record) + ": not signed in to " + name + ". The game starts without your " + name +
+           " account. Sign in from Playden \u203a Settings \u203a Account.");
+  } else if (code == kPlayRefusalPublisherSignIn && account == rt::PublisherAccountState::kExpired) {
+    Notify(GameName(record) + ": your " + name + " sign-in has expired. Sign in again in Playden first.");
+  } else {
+    auto why = failure.empty() ? refusal : failure;
+    while (!why.empty() && (why.back() == '.' || why.back() == ' ')) why.pop_back();
+    Notify(GameName(record) + ": Playden could not prepare the " + name + " sign-in (" + why + ").");
+  }
+}
+
+std::string RuntimeHost::RestorePublisher(Composition& c, const rt::RuntimeInstall& record, bool removing) {
+  const auto* game = PublisherOf(c, record);
+  if (!game) return {};
+  if (auto failed = LoadPublisher(c, game->publisher); !failed.empty()) {
+    if (!removing) return failed;
+    // Without the pack the record in the folder still says what Playden placed.
+    const auto recorded = rt::RestorePublisherRecord(game->title_folder);
+    Log("publisher restore app=" + std::to_string(record.runtime_number) + " from record (" + failed + ") changed=" +
+        Joined(recorded.changed) + (recorded.ok ? std::string() : " failed=" + recorded.message));
+    return recorded.ok ? std::string() : recorded.message;
+  }
+  const auto& loaded = c.publishers.at(game->publisher);
+  const auto restored =
+      rt::RestorePublisherStage(loaded.manifest, loaded.directory, game->title_folder, std::to_string(record.runtime_number));
+  Log("publisher restore app=" + std::to_string(record.runtime_number) + " changed=" + Joined(restored.changed) +
+      (restored.ok ? std::string() : " failed=" + restored.message));
+  if (!restored.ok)
+    return "The " + PublisherDisplayName(game->publisher) + " files could not be taken out of the game's folder: " +
+           restored.message + ".";
+  return {};
+}
+
+void RuntimeHost::PublishPublishers(Composition& c) {
+  std::map<rt::Publisher, RuntimePublisherView> views;
+  for (const auto publisher : kStagedPublishers) {
+    RuntimePublisherView view;
+    view.publisher = publisher;
+    view.name = PublisherDisplayName(publisher);
+    const auto account = rt::LoadPublisherAccount(PublisherAccountRoot().string(), publisher);
+    view.account = account.state;
+    view.display = account.display;
+    view.obtained_at = account.obtained_at;
+    if (const auto loaded = c.publishers.find(publisher); loaded != c.publishers.end()) {
+      const auto& manifest = loaded->second.manifest;
+      view.pack_checked = view.pack_ready = true;
+      if (!manifest.signin_page.empty()) view.signin_page = loaded->second.directory + "/" + manifest.signin_page;
+      if (manifest.runtime) view.runtime_label = manifest.runtime->label;
+    } else if (const auto failed = c.publisher_failures.find(publisher); failed != c.publisher_failures.end()) {
+      view.pack_checked = true;
+      view.pack_message = failed->second;
+    }
+    views[publisher] = std::move(view);
+  }
+  Publish([&](RuntimeSnapshot& s) { s.publishers = std::move(views); });
+}
+
+void RuntimeHost::RunPublisherRequest(Composition* c, PublisherRequest& request) {
+  const auto slug = std::string(rt::PublisherSlug(request.publisher));
+  if (request.kind == PublisherRequest::Kind::kRefresh) {
+    if (!c) return;
+    // The pack is looked for and checked again; accounts are read again.
+    c->publisher_pack.reset();
+    c->publishers.erase(request.publisher);
+    c->publisher_failures.erase(request.publisher);
+    if (Staged(request.publisher)) LoadPublisher(*c, request.publisher);
+    PublishPublishers(*c);
+    // Starts from the PS5 Home screen since Playden last ran left their statuses.
+    if (Staged(request.publisher)) ApplyHomeStatuses(*c, request.publisher);
+    return;
+  }
+  if (request.kind == PublisherRequest::Kind::kSignOut) {
+    std::string reason;
+    const bool ok = !c || rt::SignOutPublisherAccount(PublisherAccountRoot().string(), request.publisher, &reason);
+    Log("publisher sign-out publisher=" + slug + " ok=" + std::to_string(ok) + (ok ? std::string() : " " + reason));
+    if (c && ok) RemovePublisherCredentialsOf(*c, request.publisher);
+    if (c) PublishPublishers(*c);
+    return;
+  }
+  RuntimePublisherSignIn outcome;
+  outcome.serial = request.serial;
+  outcome.publisher = request.publisher;
+  if (!c) {
+    outcome.message = "The runtime services are unavailable.";
+  } else if (!Staged(request.publisher)) {
+    outcome.message = "Playden doesn't keep " + PublisherDisplayName(request.publisher) + " accounts.";
+  } else if (auto failed = LoadPublisher(*c, request.publisher); !failed.empty()) {
+    outcome.message = failed;
+  } else if ([&] {
+               // A sign-in its waiter gave up on (it answered busy) is never kept.
+               std::lock_guard<std::mutex> lock(mutex_);
+               if (withdrawn_sign_ins_.erase(request.serial)) return true;
+               keeping_sign_in_ = request.serial;
+               return false;
+             }()) {
+    playden::steam::ZeroizeSecret(request.credential);
+    Log("publisher sign-in publisher=" + slug + " withdrawn: the sign-in page was told Playden is busy");
+    return;
+  } else {
+    // The credential is never logged: only whether it was taken.
+    std::string reason;
+    outcome.ok = rt::AcceptPublisherCredential(PublisherAccountRoot().string(), request.publisher, request.credential,
+                                               c->publishers.at(request.publisher).manifest.account,
+                                               static_cast<std::uint64_t>(config_.unix_time()), &outcome.display,
+                                               &reason);
+    outcome.message = reason;
+  }
+  playden::steam::ZeroizeSecret(request.credential);
+  Log("publisher sign-in publisher=" + slug + " ok=" + std::to_string(outcome.ok) +
+      (outcome.ok ? std::string() : " " + outcome.message));
+  if (c) PublishPublishers(*c);
+  // A game that waits for the PS5 to register it starts from Home: it gets this account now.
+  if (c && outcome.ok)
+    for (const auto& record : c->repository.Snapshot()) {
+      const auto* game = PublisherOf(*c, record);
+      if (game && game->publisher == request.publisher && AwaitingRegistration(record))
+        PlacePublisherCredentialForHome(*c, record);
+    }
+  Publish([&](RuntimeSnapshot& s) { s.publisher_sign_in = outcome; });
+  // Answered: a waiter that gave up on it meanwhile has nothing left to withdraw.
+  std::lock_guard<std::mutex> lock(mutex_);
+  withdrawn_sign_ins_.erase(request.serial);
 }
 
 void RuntimeHost::Run() {
@@ -6750,6 +7505,10 @@ bool RuntimeHost::RunServices() {
       LoadGeneratedRecipes(c);
       Log("startup generated recipes loaded");
       step("records");
+      // Which games are a staged publisher's (a look at their folders); the pack is checked after
+      // startup, and the accounts are read now.
+      for (const auto& record : c.repository.Snapshot()) PublisherOf(c, record);
+      PublishPublishers(c);
       PublishInstalls(c);
       Log("startup installs published");
       step("publish");
@@ -6919,6 +7678,7 @@ bool RuntimeHost::RunServices() {
         }
       RemoveFinishedRequests(c);
       step("settings");
+      RefreshPublishers();  // hashes the pack: after startup, on the worker's first pass
       const bool kit_available = c.kit.has_value();
       Log("runtime ready installs=" + std::to_string(c.repository.Snapshot().size()) + " kit=" +
           (kit_available ? c.kit->view.kit_id : "none (" + kit_reason + ")") +
@@ -6974,6 +7734,7 @@ bool RuntimeHost::RunServices() {
     bool cleanup = false;
     bool measure = false;
     std::vector<std::uint32_t> checks;
+    std::vector<std::unique_ptr<PublisherRequest>> publisher_requests;
     bool names_changed = false;
     bool account_changed = false;
     bool prepare_pending = false;
@@ -6996,6 +7757,7 @@ bool RuntimeHost::RunServices() {
                (playden_removal_request_ && !snapshot_.handoff_ready) ||
                !scan_requests_.empty() || !prepared_dismissals_.empty() || prepared_clear_requested_ ||
                (!maintenance_requests_.empty() && !snapshot_.handoff_ready) ||
+               (!publisher_requests_.empty() && !snapshot_.handoff_ready) ||
                (!home_handoff_requests_.empty() && !snapshot_.handoff_ready) ||
                (!relocation_requests_.empty() && !snapshot_.handoff_ready) ||
                (kit_reload_requested_ && !snapshot_.handoff_ready && !launch_poll_) ||
@@ -7043,6 +7805,8 @@ bool RuntimeHost::RunServices() {
       if (!snapshot_.handoff_ready) home_handoffs.swap(home_handoff_requests_);
       // A relocation rewrites the install record, like maintenance.
       if (!snapshot_.handoff_ready) relocations.swap(relocation_requests_);
+      // A pack check hashes for a while: it waits for a pending handoff too.
+      if (!snapshot_.handoff_ready) publisher_requests.swap(publisher_requests_);
       poll = launch_poll_;
       cleanup = cleanup_requested_;
       cleanup_requested_ = false;
@@ -7084,6 +7848,8 @@ bool RuntimeHost::RunServices() {
     }
     if (names_changed && composition) PublishInstalls(*composition);
     if (account_changed && composition) SyncOnlineSessions(*composition, false);
+    for (auto& request : publisher_requests) RunPublisherRequest(composition.get(), *request);
+    publisher_requests.clear();
     for (const auto& [app, install_path] : scans) {
       const auto kit = composition && composition->kit
           ? rt::KitCapabilitiesFromManifest(composition->kit->capabilities, true) : rt::KitCapabilities{};
@@ -7313,6 +8079,10 @@ bool RuntimeHost::RunServices() {
         refusal = RunPrepare(*composition, request, &awaiting);
         // A resumed publication of a moved game may have been the last the 0.6 move waited for.
         FinishGamesMove(*composition);
+        // The first start of a publisher game is from Home, outside Play: it needs the credential too.
+        if (refusal.empty() && awaiting)
+          for (const auto& record : composition->repository.Snapshot())
+            if (record.runtime_number == request.runtime_number) PlacePublisherCredentialForHome(*composition, record);
         // A game prepared again gets back the saves it kept when it was uninstalled,
         // before it can first be started (from Home, while it waits for registration).
         if (refusal.empty()) refusal = RestoreKeptSaves(*composition, request.runtime_number);
@@ -7350,6 +8120,15 @@ bool RuntimeHost::RunServices() {
         if (composition) s.prepared = std::move(prepared);
       });
     }
+  }
+  // Playden quits for a start from Home: what that start will lack is said before the app goes.
+  if (const auto report_app = [this] {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return report_home_start_;
+      }();
+      composition && report_app != 0) {
+    const auto report_hold = hold();
+    ReportHomeStarts(*composition, report_app);
   }
   {
     std::lock_guard<std::mutex> lock(launch_mutex_);

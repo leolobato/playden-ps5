@@ -1880,6 +1880,17 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   if (helper_section)
     text += std::string("\n[helper]\nprogram = ") + kSteamHostProgram + "\nready = " + kSteamHostReady +
             "\nwait = " + std::to_string(kSteamHostWaitSeconds) + "\n";
+  // A publisher's launcher, when no Steam host runs: the title starts it beside the game and holds the game until
+  // it is ready. Left out when its path would be too long for the runtime.
+  bool launcher_helper = false;
+  if (!helper_section && settings.helper_process && !target.helper_program.empty()) {
+    const auto program = *root + "\\" + Backslashes(target.helper_program);
+    launcher_helper = program.size() <= kProsperoMaxPathBytes;
+    if (launcher_helper)
+      text += "\n[helper]\nprogram = " + program + "\nready = " + target.helper_ready +
+              "\nwait = " + std::to_string(target.helper_wait) + "\n" +
+              (target.helper_identity == "launcher" ? "identity = launcher\n" : "");
+  }
 
   // A Steam game is shown to Wine in steamapps\common, where some games look for themselves before they use Steam
   // (The Talos Principle), when its Steam library folder row says Steam's folder. The profile keeps the real paths;
@@ -1914,7 +1925,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.long_arguments = settings.long_profile || settings.arguments.size() > kProsperoMaxArgumentBytes;
   features.launcher_section = launcher_section || touchpad_section;
   features.launcher_chain_off = touchpad_section;
-  features.helper_section = helper_section;
+  features.helper_section = helper_section || launcher_helper;
   features.steam_section = steam_section;
   if (!CheckProsperoProfile(text, &why, features)) return fail("generated profile is invalid: " + why);
   *profile = {target.id, std::move(text)};
@@ -2926,11 +2937,18 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
   // The player's program comes first; Steam's launch options follow as suggestions.
   std::vector<std::pair<LaunchEntry, bool>> candidates;
   if (!choices.program.empty()) candidates.push_back({LaunchEntry{"", "", choices.program, "", ""}, true});
-  for (const auto& launch : launches) candidates.push_back({launch, false});
+  // A publisher's program (marked by its id) comes before Steam's and is started as named.
+  if (!choices.publisher_program.empty())
+    candidates.push_back({LaunchEntry{kPublisherEntryId, "", choices.publisher_program, "", ""}, false});
+  for (const auto& launch : launches) {
+    auto steam = launch;
+    if (steam.id == kPublisherEntryId) steam.id.clear();
+    candidates.push_back({std::move(steam), false});
+  }
   // Steam's default only starts the game: the game's own program goes first, the launcher stays an
   // option with its Steam number.
   std::string game_program;
-  if (choices.program.empty() && !launches.empty()) {
+  if (choices.program.empty() && choices.publisher_program.empty() && !launches.empty()) {
     const auto relative = steam::RelativeGamePath(launches.front().executable);
     const auto on_disk = relative ? ResolveGameFile(install_root, *relative) : std::nullopt;
     const auto why = on_disk && LowerAscii(on_disk->substr(on_disk->size() - std::min<std::size_t>(4, on_disk->size()))) == ".exe"
@@ -2955,6 +2973,7 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
   const auto first_steam = candidates.size() - launches.size();
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     const auto& [launch, chosen] = candidates[index];
+    const bool publisher = launch.id == kPublisherEntryId;
     const auto relative = steam::RelativeGamePath(launch.executable);
     if (!relative || relative->size() < 4 || LowerAscii(relative->substr(relative->size() - 4)) != ".exe") continue;
     if (HasControl(launch.arguments) || launch.arguments.size() > kProsperoMaxArgumentBytes / 2 ||
@@ -2980,8 +2999,8 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
     auto probe = ProbeGame(install_root, *on_disk);
     // A Unity bootstrap beside the player only starts the player as a child process, which the console cannot do: the
     // player starts instead, and its own files decide the defaults and any refusal. A program the player chose starts
-    // as chosen.
-    if (!probe.unity_program.empty() && !chosen) {
+    // as chosen, and a publisher's as named.
+    if (!probe.unity_program.empty() && !chosen && !publisher) {
       on_disk = probe.unity_program;
       const auto folder = on_disk->rfind('/');
       working = folder == std::string::npos ? std::string() : on_disk->substr(0, folder);
@@ -3004,7 +3023,7 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
     }
     // An Unreal root program only starts the real one as a child process, which the console cannot do.
     // A program the player chose is started as chosen.
-    if (!probe.unreal_program.empty() && !chosen) {
+    if (!probe.unreal_program.empty() && !chosen && !publisher) {
       on_disk = probe.unreal_program;
       const auto folder = on_disk->rfind('/');
       working = folder == std::string::npos ? std::string() : on_disk->substr(0, folder);
@@ -3030,6 +3049,7 @@ bool GenerateGameRecipe(const GameId& game, std::uint32_t runtime_number, const 
     }
     LaunchEntry entry;
     entry.id = chosen ? std::string(kProgramEntryId)
+               : publisher ? std::string(kPublisherEntryId)
                       : out.launch_entries.empty() && !game_program.empty() && launch.executable == game_program
                       ? std::string("game")
                       : "launch-" + std::to_string(++steam_entries);

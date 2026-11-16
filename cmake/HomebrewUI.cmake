@@ -135,10 +135,8 @@ target_compile_features(playden_runtime_settings_storage PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_settings_storage PUBLIC playden_steam_cm_codec playden_runtime_private_directories)
 
 set(PLAYDEN_ZSTD_DIR "${CMAKE_SOURCE_DIR}/third_party/zstd")
-add_library(playden_depot_codec STATIC
-    "${CMAKE_SOURCE_DIR}/src/steam/backend/depot_chunk.cpp"
-    "${CMAKE_SOURCE_DIR}/src/steam/backend/depot_manifest.cpp"
-    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/LzmaDec.c"
+# zstd decompression only: depot chunks and the publisher pack's .tzst archives.
+add_library(playden_zstd STATIC
     "${PLAYDEN_ZSTD_DIR}/common/debug.c"
     "${PLAYDEN_ZSTD_DIR}/common/entropy_common.c"
     "${PLAYDEN_ZSTD_DIR}/common/error_private.c"
@@ -149,6 +147,14 @@ add_library(playden_depot_codec STATIC
     "${PLAYDEN_ZSTD_DIR}/decompress/zstd_ddict.c"
     "${PLAYDEN_ZSTD_DIR}/decompress/zstd_decompress.c"
     "${PLAYDEN_ZSTD_DIR}/decompress/zstd_decompress_block.c")
+target_include_directories(playden_zstd PUBLIC "${PLAYDEN_ZSTD_DIR}" PRIVATE "${PLAYDEN_ZSTD_DIR}/common")
+target_compile_definitions(playden_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0 ZSTD_TRACE=0)
+# The LZMA decoder: depot chunks and the 7z archives of publisher runtimes share it.
+add_library(playden_lzma_dec STATIC "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/LzmaDec.c")
+target_include_directories(playden_lzma_dec PUBLIC "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk")
+add_library(playden_depot_codec STATIC
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/depot_chunk.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/depot_manifest.cpp")
 target_include_directories(playden_depot_codec PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_include_directories(playden_depot_codec PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk"
@@ -156,10 +162,47 @@ target_include_directories(playden_depot_codec PRIVATE
     "${PLAYDEN_ZSTD_DIR}/common"
     "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
 target_compile_definitions(playden_depot_codec PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0 ZSTD_TRACE=0)
+target_link_libraries(playden_depot_codec PUBLIC playden_zstd playden_lzma_dec)
 target_compile_features(playden_depot_codec PUBLIC cxx_std_17)
 target_link_libraries(playden_depot_codec PUBLIC playden_curl_8_22 playden_steam_protocol)
 if(PLAYDEN_PLATFORM_PS5)
     target_compile_options(playden_depot_codec PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+endif()
+# The publisher pack: .tzst archives of the closed EA/Rockstar/Ubisoft helpers (runtime/publisher_*).
+add_library(playden_runtime_publisher STATIC "${CMAKE_SOURCE_DIR}/src/runtime/tzst_archive.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/publisher_pack.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/publisher_detect.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/publisher_manifest.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/publisher_account.cpp"
+    "${CMAKE_SOURCE_DIR}/src/runtime/publisher_stage.cpp")
+target_include_directories(playden_runtime_publisher PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_features(playden_runtime_publisher PUBLIC cxx_std_17)
+target_link_libraries(playden_runtime_publisher PUBLIC playden_zstd playden_runtime_artifact_hash playden_steam_protocol
+    playden_storage)
+# Publisher runtimes extracted from the 7z archive inside a game's installer (runtime/publisher_runtime):
+# LZMA and BCJ2 only, the other 7z methods and filters are compiled out.
+add_library(playden_publisher_runtime STATIC "${CMAKE_SOURCE_DIR}/src/runtime/publisher_runtime.cpp"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zArcIn.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zDec.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zStream.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zBuf.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zCrc.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/7zCrcOpt.c"
+    "${CMAKE_SOURCE_DIR}/third_party/lzma-sdk/Bcj2.c")
+target_include_directories(playden_publisher_runtime PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_definitions(playden_publisher_runtime PRIVATE Z7_NO_METHODS_FILTERS Z7_NO_METHOD_LZMA2)
+target_compile_features(playden_publisher_runtime PUBLIC cxx_std_17)
+target_link_libraries(playden_publisher_runtime PUBLIC playden_lzma_dec)
+if(PLAYDEN_PLATFORM_PS5)
+    target_compile_options(playden_publisher_runtime PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+endif()
+# The one-time page a phone signs in to a publisher through (runtime/phone_relay).
+add_library(playden_phone_relay STATIC "${CMAKE_SOURCE_DIR}/src/runtime/phone_relay.cpp")
+target_include_directories(playden_phone_relay PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_features(playden_phone_relay PUBLIC cxx_std_17)
+if(NOT PLAYDEN_PLATFORM_PS5)
+    find_package(Threads REQUIRED)
+    target_link_libraries(playden_phone_relay PUBLIC Threads::Threads)
 endif()
 foreach(font_file
         fixtures/ui-comparison/assets/fonts/Barlow-Regular.ttf
@@ -257,12 +300,13 @@ target_link_libraries(playden_persistence_controller PUBLIC playden_homebrew_mod
 add_library(playden_homebrew_controller STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/controller.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/uninstall_flow.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/sharing_service.cpp" "${CMAKE_SOURCE_DIR}/src/homebrew/web_recipe_imports.cpp"
-    "${CMAKE_SOURCE_DIR}/src/homebrew/gog_wiring.cpp")
+    "${CMAKE_SOURCE_DIR}/src/homebrew/gog_wiring.cpp"
+    "${CMAKE_SOURCE_DIR}/src/homebrew/publisher_accounts.cpp")
 target_compile_features(playden_homebrew_controller PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_controller PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(playden_homebrew_controller PUBLIC
     playden_homebrew_model playden_steam_core playden_auth_diagnostics playden_library_controller playden_persistence_controller playden_runtime_settings_storage
-    playden_homebrew_runtime_host playden_self_update playden_local_store playden_web playden_community playden_gog_store)
+    playden_homebrew_runtime_host playden_self_update playden_local_store playden_web playden_community playden_gog_store playden_phone_relay)
 
 # Worker-owned per-game runtime composition (OWNER records, native inventory, kit layer).
 add_library(playden_homebrew_runtime_host STATIC "${CMAKE_SOURCE_DIR}/src/homebrew/runtime_host.cpp"
@@ -274,7 +318,7 @@ target_link_libraries(playden_homebrew_runtime_host PUBLIC playden_native_coordi
     playden_runtime_installs playden_runtime_install_service playden_runtime_package_installer
     playden_runtime_private_directories playden_runtime_launch_service playden_runtime_session_reconciler
     playden_storage playden_steam_cm_codec playden_runtime_steamworks playden_runtime_layout_migration playden_local_store
-    playden_self_update playden_steam_core playden_gog playden_steam_cm)
+    playden_self_update playden_steam_core playden_gog playden_steam_cm playden_runtime_publisher playden_publisher_runtime)
 
 add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
@@ -713,6 +757,34 @@ if(BUILD_TESTING)
     target_link_libraries(runtime_steam_stub_test PRIVATE playden_runtime_steamworks playden_curl_8_22)
     add_test(NAME runtime_steam_stub COMMAND runtime_steam_stub_test)
     target_link_libraries(game_probe_test PRIVATE playden_curl_8_22)
+    add_executable(runtime_tzst_archive_test tests/runtime_tzst_archive_test.cpp)
+    target_link_libraries(runtime_tzst_archive_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_tzst_archive COMMAND runtime_tzst_archive_test)
+    add_executable(runtime_publisher_pack_test tests/runtime_publisher_pack_test.cpp)
+    target_link_libraries(runtime_publisher_pack_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_publisher_pack COMMAND runtime_publisher_pack_test "${CMAKE_SOURCE_DIR}/dependencies.lock.json")
+    add_executable(runtime_publisher_detect_test tests/runtime_publisher_detect_test.cpp)
+    target_link_libraries(runtime_publisher_detect_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_publisher_detect COMMAND runtime_publisher_detect_test)
+    add_executable(runtime_publisher_manifest_test tests/runtime_publisher_manifest_test.cpp)
+    target_link_libraries(runtime_publisher_manifest_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_publisher_manifest COMMAND runtime_publisher_manifest_test)
+    add_executable(runtime_publisher_account_test tests/runtime_publisher_account_test.cpp)
+    target_link_libraries(runtime_publisher_account_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_publisher_account COMMAND runtime_publisher_account_test)
+    add_executable(runtime_publisher_stage_test tests/runtime_publisher_stage_test.cpp)
+    target_link_libraries(runtime_publisher_stage_test PRIVATE playden_runtime_publisher)
+    add_test(NAME runtime_publisher_stage COMMAND runtime_publisher_stage_test)
+    add_executable(runtime_publisher_runtime_test tests/runtime_publisher_runtime_test.cpp)
+    target_link_libraries(runtime_publisher_runtime_test PRIVATE playden_publisher_runtime)
+    add_test(NAME runtime_publisher_runtime COMMAND runtime_publisher_runtime_test
+        "${CMAKE_SOURCE_DIR}/tests/fixtures/publisher-runtime")
+    add_executable(runtime_phone_relay_test tests/runtime_phone_relay_test.cpp)
+    target_link_libraries(runtime_phone_relay_test PRIVATE playden_phone_relay)
+    add_test(NAME runtime_phone_relay COMMAND runtime_phone_relay_test)
+    add_executable(homebrew_publisher_accounts_test tests/homebrew_publisher_accounts_test.cpp)
+    target_link_libraries(homebrew_publisher_accounts_test PRIVATE playden_homebrew_controller)
+    add_test(NAME homebrew_publisher_accounts COMMAND homebrew_publisher_accounts_test)
     add_executable(runtime_dotnet_heap_test tests/runtime_dotnet_heap_test.cpp)
     target_link_libraries(runtime_dotnet_heap_test PRIVATE playden_runtime_steamworks)
     add_test(NAME runtime_dotnet_heap COMMAND runtime_dotnet_heap_test)

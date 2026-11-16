@@ -44,6 +44,16 @@ int main() {
   CHECK(EncodeSettingsPublicationRequest(*request_recovered, &reason) == request_bytes);
   CHECK(request_recovered->plan.profile_bytes == request.plan.profile_bytes);
   CHECK(request_recovered->install.launch_arguments == request.install.launch_arguments);
+  {
+    // A game whose title starts a launcher helper carries [helper] identity = launcher. The request
+    // validator parses the profile with prospero-win's pw_game_profile_parse, which must accept the
+    // same [helper] keys Playden's writer emits. A profile parser without the identity key fails the
+    // whole settings publish with publication-request-owner (the encode returns no bytes), so guard
+    // that the profile Playden renders survives the validator the publication path uses.
+    auto helper = request;
+    helper.plan.profile_bytes += "[helper]\nprogram = C:\\launcher.exe\nidentity = launcher\n";
+    CHECK(EncodeSettingsPublicationRequest(helper, &reason));
+  }
   for (std::size_t i = 0; i < request_bytes->size(); ++i) {
     auto cut = *request_bytes; cut.resize(i); CHECK(!DecodeSettingsPublicationRequest(cut, &reason));
     auto altered = *request_bytes; altered[i] ^= 1; CHECK(!DecodeSettingsPublicationRequest(altered, &reason));

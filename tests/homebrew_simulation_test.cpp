@@ -1426,6 +1426,69 @@ void t13_settings_sections_rail(const std::filesystem::path& fixtures, const std
     check(section() != "Quit Playden", "T13 moving down the rows never lands on the Quit Playden entry");
 }
 
+// Fixture scenarios for publisher accounts: every state of the Settings row, the sign-in screen
+// and the game's sign-in prompt, and the fixture's own clock expiring and finishing a sign-in.
+void publisher_sign_in_scenarios(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using namespace playden::homebrew;
+    Simulation simulation(fixtures, profile);
+    const auto row = [&](const std::string& key) -> const ViewRow* {
+        for (const auto& item : simulation.view().rows) if (item.key == key) return &item;
+        return nullptr;
+    };
+    check(simulation.scenario("default") && !row("settings-publisher-rockstar"), "publisher: the default fixture has no publisher");
+    check(simulation.scenario("publisher-account") && simulation.state().navigation.route == Route::Settings &&
+              row("settings-publisher-rockstar") && row("settings-publisher-rockstar")->value == "Not signed in",
+          "publisher: signed out");
+    {
+        // Accounts section order: Steam's account, then the publisher accounts, before any other row.
+        std::vector<std::string> keys;
+        for (const auto& item : simulation.view().rows)
+            if (item.section == "Accounts" && item.kind != playden::homebrew::RowKind::Heading) keys.push_back(item.key);
+        check(keys.size() >= 2 && keys[0] == "settings-account" && keys[1] == "settings-publisher-rockstar",
+              "publisher: its row follows Steam's account");
+    }
+    check(simulation.scenario("publisher-account-signed-in") &&
+              row("settings-publisher-rockstar")->value == "Signed in as FixturePlayer" &&
+              row("settings-publisher-rockstar")->subtitle.rfind("Since ", 0) == 0,
+          "publisher: signed in");
+    check(simulation.scenario("publisher-account-expired") && row("settings-publisher-rockstar")->value == "Sign-in expired",
+          "publisher: expired");
+    const std::pair<const char*, const char*> screens[] = {
+        {"publisher-sign-in", "Waiting for your phone"}, {"publisher-sign-in-connected", "Phone connected"},
+        {"publisher-sign-in-checking", "Checking your Rockstar Games account"},
+        {"publisher-sign-in-signed-in", "Signed in as FixturePlayer"},
+        {"publisher-sign-in-refused", "That sign-in has expired. Sign in on your phone again."},
+        {"publisher-sign-in-expired", "The code expired"}, {"publisher-sign-in-no-network", "No network connection"},
+        {"publisher-sign-in-failed", "The sign-in page didn't open"}};
+    for (const auto& [scenario, status] : screens) {
+        check(simulation.scenario(scenario) && simulation.state().navigation.route == Route::PublisherSignIn &&
+                  simulation.view().title == "Sign in to Rockstar Games" && row("publisher-status") &&
+                  row("publisher-status")->title == status,
+              scenario);
+    }
+    check(simulation.scenario("publisher-sign-in") && row("publisher-status")->value == "Code expires in 10:00" &&
+              !simulation.state().publishers.sign_in.address.empty(),
+          "publisher: the fixture code has an address and ten minutes");
+    simulation.tick(600);
+    check(row("publisher-status")->title == "The code expired" && simulation.state().navigation.focus_key == "publisher-retry",
+          "publisher: the fixture code expires after ten minutes");
+    simulation.action("cross");
+    check(row("publisher-status")->title == "Waiting for your phone", "publisher: New code starts again");
+    simulation.action("circle");
+    check(simulation.state().navigation.route == Route::Settings &&
+              simulation.state().navigation.focus_key == "settings-publisher-rockstar",
+          "publisher: Circle returns to Settings");
+    check(simulation.scenario("publisher-sign-in-signed-in"), "publisher: signed-in screen");
+    simulation.tick(3);
+    check(simulation.state().navigation.route == Route::Settings, "publisher: a finished sign-in closes by itself");
+    check(simulation.scenario("publisher-play") && simulation.state().navigation.route == Route::Details &&
+              !simulation.state().navigation.modals.empty() &&
+              simulation.state().navigation.modals.back().title.find("needs a Rockstar Games account") != std::string::npos,
+          "publisher: Play's sign-in prompt");
+    simulation.action("cross");
+    check(simulation.state().navigation.route == Route::PublisherSignIn, "publisher: the prompt's Sign in opens the screen");
+}
+
 } // namespace
 
 void t14_tab_bar_from_the_top_of_a_page(const std::filesystem::path& fixtures,
@@ -5276,6 +5339,8 @@ int main(int argc, char** argv) {
     gog_view::gog_manage_dlc();
     clean();
     gog_view::gog_scenarios(fixtures);
+    clean();
+    publisher_sign_in_scenarios(fixtures, profile);
     clean();
     t02_focus_and_nested_modal_restoration(fixtures, profile);
     clean();

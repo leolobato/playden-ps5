@@ -77,6 +77,11 @@ inline const std::vector<std::string>& SecretFileNames() {
       "sharing-id",       // community recipes install secret (user/community-recipes/)
       "account-token",    // community recipes account (user/community-recipes/)
       "session",          // GOG sign-in (user/gog/)
+      // Publisher sign-ins (user/state/), runtime::PublisherAccountFileName
+      "publisher-account-steamhost.v1",
+      "publisher-account-ea.v1",
+      "publisher-account-rockstar.v1",
+      "publisher-account-ubisoft.v1",
   };
   return names;
 }

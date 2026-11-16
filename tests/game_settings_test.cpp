@@ -423,12 +423,39 @@ int main(int argc, char** argv) {
     CHECK(!CheckProsperoProfile(base + "\n[helper]\n" + program, &why, {}));
     CHECK(CheckProsperoProfile(base + "\n[helper]\n" + program, &why, helper_features));
     CHECK(CheckProsperoProfile(base + "\n[helper]\n" + program + "ready = a/b.ready\nwait = 120\n", &why, helper_features));
+    CHECK(CheckProsperoProfile(base + "\n[helper]\n" + program + "identity = launcher\n", &why, helper_features));
     for (const char* bad : {"", "program = tools\\a.exe\n", "program = C:/a.exe\n", "program = C:\\a\"b.exe\n",
                             "program = C:\\a.exe\nready = ../b\n", "program = C:\\a.exe\nready = /b\n",
                             "program = C:\\a.exe\nready = a//b\n", "program = C:\\a.exe\nready = a\\b\n",
                             "program = C:\\a.exe\nwait = 0\n", "program = C:\\a.exe\nwait = 121\n",
-                            "program = C:\\a.exe\nother = 1\n", "program = C:\\a.exe\nprogram = C:\\b.exe\n"})
+                            "program = C:\\a.exe\nother = 1\n", "program = C:\\a.exe\nprogram = C:\\b.exe\n",
+                            "program = C:\\a.exe\nidentity = steam\n"})
       CHECK(!CheckProsperoProfile(base + "\n[helper]\n" + bad, &why, helper_features));
+  }
+  // A publisher's launcher: the target names it, the profile starts it beside the game unless the Steam host has the
+  // title's one helper, and nothing is written without a runtime that runs a helper.
+  {
+    const auto helper_kit = KitCapabilitiesFromManifest({kKitHelperProcess}, false);
+    auto launcher_target = target;
+    launcher_target.helper_program = "Game/.launcher/Launcher.exe";
+    launcher_target.helper_ready = "playden/launcher.ready";
+    launcher_target.helper_wait = 90;
+    launcher_target.helper_identity = "launcher";
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, helper_kit, &settings, &error) && settings.helper_process);
+    CHECK(RenderProsperoProfile(hl2, settings, launcher_target, &profile, &reason));
+    CHECK(profile.text.find("\n[helper]\nprogram = Z:\\data\\homebrew\\FAKE77031\\games\\220\\Game\\.launcher\\Launcher.exe\n"
+                            "ready = playden/launcher.ready\nwait = 90\nidentity = launcher\n") != std::string::npos);
+    ProsperoProfileFeatures launcher_features;
+    launcher_features.helper_section = true;
+    std::string launcher_why;
+    CHECK(CheckProsperoProfile(profile.text, &launcher_why, launcher_features));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"unlock.steam_features", "on"}, {"steam_features", "online"}}, helper_kit,
+                                 &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, launcher_target, &profile, &reason));
+    CHECK(profile.text.find("steam.exe") != std::string::npos && profile.text.find("Launcher.exe") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, KitCapabilities{}, &settings, &error) && !settings.helper_process);
+    CHECK(RenderProsperoProfile(hl2, settings, launcher_target, &profile, &reason));
+    CHECK(profile.text.find("[helper]") == std::string::npos);
   }
   // A Steam game shown in steamapps\common: the target names its folder only for a title whose runtime reads [steam]
   // (the host decides, SteamLibraryFolder); the profile keeps the real paths and adds the section. The section is

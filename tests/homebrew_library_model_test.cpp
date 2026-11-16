@@ -3008,7 +3008,8 @@ void live_ready_to_play_quits_to_home() {
     check(!model.state().quit_requested, "another game's answer does not count");
     model.UpdateCloud({{SteamId(42), CloudStatus::Synced, "1 save downloaded"}});
     model.NotifyCloudAnswered(SteamId(42), CloudStatus::Synced);
-    check(model.state().quit_requested && model.state().navigation.modals.empty(), "Play quits to Home once saves are in step");
+    check(model.state().quit_requested && model.state().quit_to_home && model.state().quit_to_home_game == SteamId(42) &&
+              model.state().navigation.modals.empty(), "Play quits to Home once saves are in step");
     // The game starts from Home next: Playden hands it what Play would first, as it quits.
     check(model.FinishSetupGame() == SteamId(42), "the quit is Finish setup's, for this game");
     // A choice or a failure lets the player play without syncing.
@@ -3026,7 +3027,8 @@ void live_ready_to_play_quits_to_home() {
               has_row(choosing, "saves-quit-anyway"),
           "a conflict asks before quitting");
     activate(choosing, "saves-quit-anyway");
-    check(choosing.state().quit_requested, "Play without syncing quits");
+    check(choosing.state().quit_requested && choosing.state().quit_to_home && choosing.state().quit_to_home_game == SteamId(42),
+          "Play without syncing quits, for the game it was syncing");
     // The console refusing the sync (the title may run) does not leave Play waiting.
     auto refused = make_live();
     sync_automatically(refused);
@@ -3059,7 +3061,8 @@ void live_ready_to_play_quits_to_home() {
     local.UpdateCloud({{SteamId(42), CloudStatus::Unsupported, "This game does not use Steam Cloud."}});
     check(local.action("details:42"), "details open");
     activate(local, "details-play");
-    check(local.state().quit_requested && local.state().navigation.modals.empty(), "Play quits to Home without a dialog");
+    check(local.state().quit_requested && local.state().quit_to_home && local.state().quit_to_home_game == SteamId(42) &&
+              local.state().navigation.modals.empty(), "Play quits to Home without a dialog");
 
     // The prompt: shown when nothing else is open, once per game, Play quits, Later closes.
     auto prompted = make_live();
@@ -3094,7 +3097,8 @@ void live_ready_to_play_quits_to_home() {
     requests = prompted.TakeCloudRequests();
     check(requests.size() == 1 && requests[0].game_id == SteamId(43), "Play in the prompt syncs the announced game");
     prompted.NotifyCloudAnswered(SteamId(43), CloudStatus::Synced);
-    check(prompted.state().quit_requested, "Play in the prompt quits to Home");
+    check(prompted.state().quit_requested && prompted.state().quit_to_home && prompted.state().quit_to_home_game == SteamId(43),
+          "Play in the prompt quits to Home for the announced game");
     check(prompted.FinishSetupGame() == SteamId(43), "the prompt's Play is Finish setup for the announced game");
     // Quitting would cut off another game's preparation: the quit waits for it in a dialog.
     auto busy = make_live();
@@ -3218,6 +3222,32 @@ void live_queued_setup_names_the_game_ahead() {
     check(setup && setup->value == "Waiting for Ahead" && setup->tone == "busy", "setup names the game ahead");
     const auto* hint = find_row(model, "details-hint");
     check(hint && hint->title == "Setup starts when Ahead is ready." && hint->tone == "busy", "hint says when it starts");
+}
+
+// Quitting Playden from Settings or for a self-update restart is not Play: no game starts from Home.
+void live_other_quits_are_not_to_home() {
+    auto quitting = make_live();
+    quitting.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(quitting.UpdateLibrary({{game(SteamId(42), "Synthetic")}, false, {}, false, false, {}}), "library loaded");
+    quitting.action("l1");
+    activate(quitting, "settings-quit");
+    activate(quitting, "confirm-destructive");
+    check(quitting.state().quit_requested && !quitting.state().quit_to_home && !quitting.state().quit_to_home_game.valid(),
+          "Quit Playden is not a quit to Home");
+
+    auto updating = make_live();
+    updating.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    check(updating.UpdateLibrary({{game(SteamId(42), "Synthetic")}, false, {}, false, false, {}}), "library loaded");
+    playden::homebrew::LiveSelfUpdate update;
+    update.current = "0.2.0";
+    update.available = "0.3.0";
+    update.phase = "staged";
+    updating.UpdateSelfUpdate(update);
+    check(!updating.state().navigation.modals.empty() && updating.action("cross") && updating.state().quit_requested &&
+              updating.TakeSelfUpdateRequests() == std::vector<std::string>{"restart"},
+          "a staged update restarts Playden");
+    check(!updating.state().quit_to_home && !updating.state().quit_to_home_game.valid(),
+          "the self-update restart is not a quit to Home");
 }
 
 void live_play_does_the_next_useful_thing() {
@@ -5657,6 +5687,7 @@ int main() {
     live_store_details_fill_the_description();
     live_ready_to_play_quits_to_home();
     live_ready_prompt_matches_the_open_game();
+    live_other_quits_are_not_to_home();
     live_details_focus_moves_to_play_once_enabled();
     live_settings_focus_stays_near_a_removed_row();
     live_sign_in_on_full_storage_offers_uninstall();

@@ -1417,6 +1417,31 @@ void TestMicrosoftVcRedist() {
   }
 }
 
+// Installers a staged publisher stands in for are covered; the same installer is not-run otherwise.
+void TestPublisherInstallers() {
+  char pattern[] = "/tmp/playden-redist-XXXXXX";
+  CHECK(::mkdtemp(pattern));
+  const auto base = std::filesystem::canonical(pattern);
+  const auto game = base / "game", prefix = base / "prefix";
+  WriteText(game / "installscript.vdf",
+            "\"InstallScript\" { \"Run Process\" { "
+            "\"Runtime\" { \"process 1\" \"%INSTALLDIR%\\\\Redist\\\\Example-Setup.exe\" } "
+            "\"Launcher\" { \"process 1\" \"%INSTALLDIR%\\\\Setup\\\\Example-Launcher.exe\" } "
+            "\"Other\" { \"process 1\" \"%INSTALLDIR%\\\\Setup\\\\Other-Setup.exe\" } } }");
+  std::filesystem::create_directories(prefix);
+  const auto plain = InstallRedistributables(game.string(), "Z:\\games\\42", prefix.string(), 1700000100);
+  CHECK(plain.outcomes.size() == 3);
+  for (const auto& outcome : plain.outcomes) CHECK(outcome.result == "not-run");
+  const auto staged = InstallRedistributables(game.string(), "Z:\\games\\42", prefix.string(), 1700000100, false, {},
+                                              {"redist/example-setup.exe", "Setup/Example-Launcher.exe"});
+  CHECK(staged.outcomes.size() == 3);
+  CHECK(staged.outcomes[0].name == "Runtime" && staged.outcomes[0].result == "covered" &&
+        staged.outcomes[0].detail == "publisher: Redist/Example-Setup.exe");
+  CHECK(staged.outcomes[1].result == "covered" && staged.outcomes[1].detail == "publisher: Setup/Example-Launcher.exe");
+  CHECK(staged.outcomes[2].name == "Other" && staged.outcomes[2].result == "not-run");
+  std::filesystem::remove_all(base);
+}
+
 // NVIDIA's legacy PhysX package (Bullet Witch's), when PLAYDEN_TEST_PHYSX_MSI names a copy.
 void TestPhysxPackage() {
   const char* path = std::getenv("PLAYDEN_TEST_PHYSX_MSI");
@@ -1467,6 +1492,7 @@ int main() {
   TestBurnBundle();
   TestScripts();
   TestInstall();
+  TestPublisherInstallers();
   TestEmbeddedPackage();
   TestRedistEntries();
   TestFoundPhysx();

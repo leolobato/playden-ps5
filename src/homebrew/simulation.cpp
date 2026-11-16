@@ -211,6 +211,7 @@ std::string route_name(Route route) {
     switch (route) {
     case Route::Startup: return "startup";
     case Route::SignIn: return "qr";
+    case Route::PublisherSignIn: return "publisher-qr";
     case Route::Home: return "home";
     case Route::Library: return "library";
     case Route::Downloads: return "downloads";
@@ -965,7 +966,8 @@ std::string action_label(const std::string& key) {
              {"job-open-", "Open game"}, {"job-dismiss-", "Dismiss"}, {"prep-next-", "Prepare next"},
              {"prep-open-", "Game details"}, {"prep-retry-", "Try again"}, {"prep-recreate-", "Recreate bottle…"},
              {"prep-dismiss-", "Dismiss"}, {"prep-cancel-", "Cancel"},
-             {"uninstall-dismiss-", "Dismiss"}})
+             {"uninstall-dismiss-", "Dismiss"},
+             {"publisher-sign-in:", "Sign in again"}, {"publisher-sign-out:", "Sign out…"}, {"publisher-sign-in-play:", "Sign in"}})
         if (key.rfind(prefix, 0) == 0) return label;
     std::string title = key;
     std::replace(title.begin(), title.end(), '-', ' ');
@@ -1384,6 +1386,7 @@ void Simulation::SetWallClock(std::int64_t unix_seconds) {
     const auto elapsed = state_.clock_ticks == 0 ? 0 : std::clamp<std::int64_t>(unix_seconds - state_.clock_ticks, 0, 60);
     state_.clock_ticks = unix_seconds;
     account_link_tick();
+    settle_publisher_sign_in();
     if (elapsed > 0 && live_notices_visible()) {
         for (auto& notice : state_.notices)
             if (!notice.persistent) notice.remaining_ticks -= static_cast<int>(elapsed);
@@ -1423,7 +1426,8 @@ void Simulation::show_setting_validation(std::string message, std::string detail
 
 bool Simulation::live_notices_visible() const noexcept {
     return state_.navigation.modals.empty() && !state_.editor.active &&
-           state_.navigation.route != Route::Startup && state_.navigation.route != Route::SignIn;
+           state_.navigation.route != Route::Startup && state_.navigation.route != Route::SignIn &&
+           state_.navigation.route != Route::PublisherSignIn;
 }
 
 std::string mask_secret(std::string_view value) {
@@ -3235,6 +3239,127 @@ void Simulation::SetKitInfo(LiveKitInfo kit) {
     rebuild_view();
 }
 
+const LivePublisher* Simulation::find_publisher(const std::string& slug) const {
+    for (const auto& publisher : state_.publishers.publishers)
+        if (publisher.slug == slug) return &publisher;
+    return nullptr;
+}
+
+const LivePublisher* Simulation::publisher_of(GameId id) const {
+    const auto game = state_.publishers.games.find(id);
+    return game == state_.publishers.games.end() ? nullptr : find_publisher(game->second);
+}
+
+void Simulation::SetPublishers(LivePublishers publishers) {
+    // The controller projects every frame; only a change rebuilds the screen.
+    if (publishers == state_.publishers) return;
+    const auto before = state_.publishers.sign_in.state;
+    state_.publishers = std::move(publishers);
+    // The sign-in screen's focus follows what it offers now.
+    using SignIn = PublisherSignInState;
+    const auto now = state_.publishers.sign_in.state;
+    if (state_.navigation.route == Route::PublisherSignIn && state_.navigation.modals.empty() && now != before)
+        state_.navigation.focus_key = now == SignIn::SignedIn ? "publisher-done"
+            : now == SignIn::Refused || now == SignIn::Expired || now == SignIn::NoNetwork || now == SignIn::Failed
+                ? "publisher-retry" : "publisher-cancel";
+    settle_publisher_sign_in();
+    rebuild_view();
+}
+
+std::vector<PublisherRequest> Simulation::TakePublisherRequests() {
+    auto requests = std::move(pending_publisher_requests_);
+    pending_publisher_requests_.clear();
+    return requests;
+}
+
+void Simulation::NotifyPublisherSignInNeeded(GameId id) {
+    const auto* game = find_game(state_, id);
+    const auto* publisher = publisher_of(id);
+    const std::string title = game ? game->title : "This game";
+    if (!publisher) {
+        push_notice({"play-" + ToKey(id), "Can't play", "", false, kLiveNoticeSeconds * 2, true,
+                     title + " · Sign in to its publisher first."});
+        rebuild_view();
+        return;
+    }
+    if (state_.navigation.route == Route::PublisherSignIn) return;
+    publisher_play_game_ = id;
+    ModalEntry ask{"confirmation", title + " needs a " + publisher->name + " account", state_.navigation.focus_key,
+                   {"publisher-sign-in-play:" + publisher->slug, "cancel"}, 0, false};
+    ask.body = "Sign in to " + publisher->name + " with your phone. The game starts once you are signed in.";
+    open_modal(std::move(ask));
+    rebuild_view();
+}
+
+void Simulation::begin_publisher_sign_in(const std::string& slug, GameId play_game) {
+    if (!find_publisher(slug)) return;
+    while (!state_.navigation.modals.empty()) close_modal();
+    // Try again keeps where the screen was opened from.
+    if (state_.navigation.route != Route::PublisherSignIn) {
+        publisher_return_route_ = state_.navigation.route;
+        publisher_return_focus_ = state_.navigation.focus_key;
+    }
+    publisher_play_game_ = play_game;
+    publisher_signed_in_at_ = -1;
+    if (live()) {
+        pending_publisher_requests_.push_back({PublisherRequestKind::SignIn, slug});
+        state_.publishers.sign_in = {slug, PublisherSignInState::Starting, {}, 0, {}, {}};
+    } else {
+        // Fixture mode only shows the screen: the address is not a working page.
+        state_.publishers.sign_in = {slug, PublisherSignInState::Waiting,
+                                     "http://192.168.1.20:8099/s/5f0c2a9e41d7b3c86e0a1f4d92b7c35e",
+                                     state_.clock_ticks + 600, {}, {}};
+    }
+    state_.navigation.route = Route::PublisherSignIn;
+    state_.navigation.focus_key = "publisher-cancel";
+}
+
+void Simulation::leave_publisher_sign_in(bool signed_in) {
+    const auto sign_in = state_.publishers.sign_in;
+    const auto game = publisher_play_game_;
+    // The page on the network closes whichever way the screen is left.
+    if (live()) pending_publisher_requests_.push_back({PublisherRequestKind::Cancel, sign_in.slug});
+    publisher_play_game_ = {};
+    publisher_signed_in_at_ = -1;
+    state_.publishers.sign_in = {};
+    state_.navigation.route = publisher_return_route_;
+    state_.navigation.focus_key = publisher_return_focus_;
+    if (signed_in && game.valid()) {
+        // The Play the sign-in was for goes on.
+        if (live()) pending_runtime_play_requests_.push_back(game);
+        else if (const auto* known = find_game(state_, game))
+            push_notice({"publisher-play", known->title + " starts", "", false, kLiveNoticeSeconds, false, "Simulated"});
+    }
+    show_ready_prompt();
+    show_update_ready_prompt();
+    show_alert_prompt();
+    show_update_prompt();
+    show_runtime_prompt();
+    show_feedback_prompt();
+}
+
+void Simulation::settle_publisher_sign_in() {
+    auto& sign_in = state_.publishers.sign_in;
+    if (state_.navigation.route != Route::PublisherSignIn) {
+        publisher_signed_in_at_ = -1;
+        return;
+    }
+    using SignIn = PublisherSignInState;
+    // Fixture mode runs the code's clock itself; live, the page closes on its own and says so.
+    if (!live() && (sign_in.state == SignIn::Waiting || sign_in.state == SignIn::Connected) && sign_in.expires_at > 0 &&
+        state_.clock_ticks >= sign_in.expires_at) {
+        sign_in.state = SignIn::Expired;
+        state_.navigation.focus_key = "publisher-retry";
+    }
+    if (sign_in.state != SignIn::SignedIn) {
+        publisher_signed_in_at_ = -1;
+        return;
+    }
+    // "Signed in as …" stays two seconds, then the screen closes.
+    if (publisher_signed_in_at_ < 0) publisher_signed_in_at_ = state_.clock_ticks;
+    else if (state_.clock_ticks - publisher_signed_in_at_ >= 2) leave_publisher_sign_in(true);
+}
+
 void Simulation::UpdateRuntimeProblem(const std::string& raw) {
     if (!live()) return;
     std::string words;
@@ -3414,7 +3539,7 @@ void Simulation::show_update_prompt() {
     const bool before_sign_in = (route == Route::Startup && !startup_undecided()) || route == Route::SignIn;
     if (pending_update_prompt_.empty() || !state_.navigation.modals.empty() || state_.editor.active ||
         route == Route::Session || (route == Route::Startup && !(kit && before_sign_in)) ||
-        (route == Route::SignIn && !kit))
+        (route == Route::SignIn && !kit) || route == Route::PublisherSignIn)
         return;
     const auto& update = state_.self_update;
     if (kit && update.kit_phase == "available") {
@@ -3617,6 +3742,8 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
             state_.quit_waiting = false;
             state_.navigation.modals.clear();
             state_.quit_requested = true;
+            state_.quit_to_home = finish_setup_game_.valid();
+            state_.quit_to_home_game = finish_setup_game_;
         }
     }
     for (auto& installation : state_.installations) {
@@ -3688,7 +3815,7 @@ void Simulation::NotifyRuntimeUpdated(GameId id) {
 void Simulation::show_update_ready_prompt() {
     if (!live() || update_ready_prompts_.empty() || !state_.navigation.modals.empty() || state_.editor.active) return;
     const auto route = state_.navigation.route;
-    if (route == Route::Session || route == Route::Startup || route == Route::SignIn) return;
+    if (route == Route::Session || route == Route::Startup || route == Route::SignIn || route == Route::PublisherSignIn) return;
     const auto id = update_ready_prompts_.front();
     update_ready_prompts_.erase(update_ready_prompts_.begin());
     const auto* game = find_game(state_, id);
@@ -3711,7 +3838,8 @@ void Simulation::show_runtime_prompt() {
         return;
     const auto route = state_.navigation.route;
     if (!state_.navigation.modals.empty() || state_.editor.active || !pending_update_prompt_.empty() || route == Route::Session ||
-        route == Route::Startup || route == Route::SignIn || !runtime_batch_.empty() || runtime_batch_current_)
+        route == Route::Startup || route == Route::SignIn || route == Route::PublisherSignIn || !runtime_batch_.empty() ||
+        runtime_batch_current_)
         return;
     std::size_t updates = 0, repairs = 0;
     for (const auto id : manage_list(ManageTab::Runtimes)) {
@@ -3785,7 +3913,7 @@ void Simulation::show_alert_prompt() {
     }
     const auto route = state_.navigation.route;
     if (alert_prompts_.empty() || !state_.navigation.modals.empty() || state_.editor.active ||
-        route == Route::Startup || route == Route::SignIn || route == Route::Session)
+        route == Route::Startup || route == Route::SignIn || route == Route::Session || route == Route::PublisherSignIn)
         return;
     // "Couldn't start" names the game: it waits while the game's store hasn't delivered its library yet, without holding
     // up the alerts behind it, and is dropped once that library came without the game.
@@ -7683,6 +7811,50 @@ bool Simulation::scenario(const std::string& name) {
             found->art_pending = false;
             found->art_failed = false;
         }
+    } else if (name.rfind("publisher-", 0) == 0) {
+        // A publisher account (Rockstar Games) and its phone sign-in, with made-up fixture values.
+        using SignIn = PublisherSignInState;
+        state_.account().authentication = AuthState::SignedIn;
+        state_.navigation.modals.clear();
+        LivePublisher rockstar{"rockstar", "Rockstar Games", "Rockstar", PublisherAccountState::SignedOut, {}, 0, true};
+        if (name == "publisher-account-signed-in" || name == "publisher-account-expired") {
+            rockstar.account = name == "publisher-account-expired" ? PublisherAccountState::Expired : PublisherAccountState::SignedIn;
+            rockstar.display = "FixturePlayer";
+            rockstar.obtained_at = 1'792'200'000;
+        }
+        state_.publishers = {};
+        state_.publishers.publishers.push_back(rockstar);
+        const GameId game = state_.games.empty() ? GameId{} : state_.games.front().id;
+        if (game.valid()) state_.publishers.games[game] = "rockstar";
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-publisher-rockstar";
+        if (name == "publisher-account" || name == "publisher-account-signed-in" || name == "publisher-account-expired") {
+        } else if (name == "publisher-play") {
+            state_.navigation.route = Route::Details;
+            state_.navigation.detail_id = game;
+            state_.navigation.selected_game_id = game;
+            state_.navigation.focus_key = "details-play";
+            NotifyPublisherSignInNeeded(game);
+        } else if (name.rfind("publisher-sign-in", 0) == 0) {
+            begin_publisher_sign_in("rockstar", {});
+            auto& sign_in = state_.publishers.sign_in;
+            const auto step = name.substr(std::min<std::size_t>(name.size(), 18));
+            sign_in.state = step == "connected" ? SignIn::Connected : step == "checking" ? SignIn::Checking
+                : step == "signed-in" ? SignIn::SignedIn : step == "refused" ? SignIn::Refused
+                : step == "expired" ? SignIn::Expired : step == "no-network" ? SignIn::NoNetwork
+                : step == "failed" ? SignIn::Failed : SignIn::Waiting;
+            if (sign_in.state == SignIn::SignedIn) sign_in.display = "FixturePlayer";
+            if (sign_in.state == SignIn::Refused) sign_in.message = "That sign-in has expired. Sign in on your phone again.";
+            if (sign_in.state == SignIn::Failed) sign_in.message = "Playden couldn't open the sign-in page (no free port).";
+            if (sign_in.state == SignIn::Expired || sign_in.state == SignIn::NoNetwork) sign_in.address.clear();
+            if (sign_in.state != SignIn::Waiting && sign_in.state != SignIn::Connected && sign_in.state != SignIn::Checking &&
+                sign_in.state != SignIn::SignedIn)
+                state_.navigation.focus_key = "publisher-retry";
+            if (sign_in.state == SignIn::SignedIn) state_.navigation.focus_key = "publisher-done";
+        } else {
+            last_error_ = "Unknown scenario: " + name;
+            return false;
+        }
     } else if (name == "sync-complete") {
         state_.library_syncing = false;
         state_.account().authentication = AuthState::SignedIn;
@@ -9299,7 +9471,9 @@ void Simulation::rebuild_view() {
                                 : action_key == "maintenance-recreate" ? MaintenanceKind::RecreateBottle
                                 : action_key == "maintenance-update" ? MaintenanceKind::UpdateRuntime
                                 : action_key == "maintenance-register" ? MaintenanceKind::RegisterAgain
+                                : action_key == "maintenance-publisher" ? MaintenanceKind::RepairPublisher
                                                                        : MaintenanceKind::ApplySettings;
+                const auto* publisher = publisher_of(settings_game);
                 std::string closed_reason;
                 const bool closed = game_closed(settings_game, &closed_reason);
                 const bool busy = runtime && runtime->maintenance_running;
@@ -9329,12 +9503,18 @@ void Simulation::rebuild_view() {
                     item.title = kind == MaintenanceKind::Repair ? "Repair…"
                                : kind == MaintenanceKind::ClearShaderCache ? "Clear shader cache…"
                                : kind == MaintenanceKind::BackupSaves ? "Back up saves…"
-                               : kind == MaintenanceKind::RegisterAgain ? "Register PS5 title again…" : "Recreate bottle…";
+                               : kind == MaintenanceKind::RegisterAgain ? "Register PS5 title again…"
+                               : kind == MaintenanceKind::RepairPublisher
+                                   ? "Repair " + (publisher ? publisher->short_name : std::string("publisher")) + " files…"
+                                   : "Recreate bottle…";
                     item.subtitle = kind == MaintenanceKind::Repair ? "Fixes the files the game needs to start and writes its settings again."
                                   : kind == MaintenanceKind::ClearShaderCache ? "Shaders compile again on the next start."
                                   : kind == MaintenanceKind::BackupSaves ? "Copies the Windows user folders aside."
                                   : kind == MaintenanceKind::RegisterAgain
                                       ? "Frees the 337 MB download area older titles keep. The PS5 play time starts again."
+                                  : kind == MaintenanceKind::RepairPublisher
+                                      ? "Takes the " + (publisher ? publisher->name : std::string("publisher's")) +
+                                            " files out of the game's folder and places them again."
                                       : "Makes the Windows environment again, keeping saves and settings.";
                     item.badge = kind == MaintenanceKind::RecreateBottle ? "Prepares bottle" : "Game must be closed";
                     item.enabled = closed && !busy;
@@ -9399,6 +9579,7 @@ void Simulation::rebuild_view() {
                 }
             }
             else if (action_key == "quit-to-home") item.dangerous = true;  // the dialog's primary action
+            else if (action_key.rfind("publisher-sign-out:", 0) == 0) item.dangerous = true;
             else if (action_key == "saves-delete-confirm" || action_key == "saves-leftover-confirm") item.dangerous = true;
             else if (action_key == "refresh-library") item.enabled = !state_.library_loading && !state_.library_syncing;
             else if (modal.id == "import-games" && action_key == "import-look") {
@@ -9895,6 +10076,67 @@ void Simulation::rebuild_view() {
             row("signin-stay", RowKind::Toggle, "Stay signed in", "signin-stay").selected = state_.stay_signed_in;
         }
         if (!live() && state_.account().authentication != AuthState::Syncing) row("qr-fixture-controls", RowKind::Action, "QR fixture controls", "qr-fixture-controls");
+    } else if (state_.navigation.route == Route::PublisherSignIn) {
+        // Sign in to a publisher with the phone: the QR code opens a one-time page on this network.
+        using SignIn = PublisherSignInState;
+        const auto& sign_in = state_.publishers.sign_in;
+        const auto* publisher = find_publisher(sign_in.slug);
+        const std::string name = publisher ? publisher->name : "the publisher";
+        view_.title = "Sign in to " + name;
+        const bool open = sign_in.state == SignIn::Starting || sign_in.state == SignIn::Waiting ||
+                          sign_in.state == SignIn::Connected || sign_in.state == SignIn::Checking ||
+                          sign_in.state == SignIn::Refused;
+        view_.subtitle = sign_in.state == SignIn::NoNetwork
+            ? "Playden can't find this PS5 on a network. Connect it to Wi-Fi or a network cable, then try again."
+            : sign_in.state == SignIn::Expired ? "Codes work for ten minutes. Get a new one to sign in."
+            : sign_in.state == SignIn::Failed ? (sign_in.message.empty() ? "Playden couldn't open the sign-in page." : sign_in.message)
+            : "Your phone needs to be on the same network as this PS5.";
+        if (open || sign_in.state == SignIn::SignedIn) {
+            const char* steps[] = {"Scan the code with your phone", "Follow the steps on your phone to sign in",
+                                   "Playden continues here"};
+            for (int index = 0; index < 3; ++index) {
+                auto& step = row("publisher-step-" + std::to_string(index + 1), RowKind::Status, steps[index], "");
+                step.value = std::to_string(index + 1);
+                step.enabled = false;
+            }
+        }
+        auto& status = row("publisher-status", RowKind::Status, "", "");
+        status.enabled = false;
+        status.tone = "busy";
+        switch (sign_in.state) {
+        case SignIn::Idle:
+        case SignIn::Starting: status.title = "Opening the sign-in page…"; break;
+        case SignIn::Waiting: status.title = "Waiting for your phone"; break;
+        case SignIn::Connected: status.title = "Phone connected"; break;
+        case SignIn::Checking: status.title = "Checking your " + name + " account"; break;
+        case SignIn::SignedIn:
+            status.title = sign_in.display.empty() ? "Signed in" : "Signed in as " + sign_in.display;
+            status.tone = "good";
+            break;
+        case SignIn::Refused:
+            status.title = sign_in.message.empty() ? "Your phone sent a sign-in Playden can't use" : sign_in.message;
+            status.tone = "problem";
+            break;
+        case SignIn::Expired: status.title = "The code expired"; status.tone = "attention"; break;
+        case SignIn::NoNetwork: status.title = "No network connection"; status.tone = "problem"; break;
+        case SignIn::Failed: status.title = "The sign-in page didn't open"; status.tone = "problem"; break;
+        }
+        // How long the code still works, while the page is open.
+        if (open && sign_in.state != SignIn::Starting && sign_in.expires_at > state_.clock_ticks) {
+            const auto left = sign_in.expires_at - state_.clock_ticks;
+            status.value = "Code expires in " + std::to_string(left / 60) + ":" + (left % 60 < 10 ? "0" : "") +
+                           std::to_string(left % 60);
+        }
+        if (sign_in.state == SignIn::SignedIn) {
+            row("publisher-done", RowKind::Action, "Continue", "publisher-done");
+        } else {
+            if (sign_in.state == SignIn::Refused || sign_in.state == SignIn::Failed || sign_in.state == SignIn::NoNetwork)
+                row("publisher-retry", RowKind::Action, "Try again", "publisher-retry");
+            else if (sign_in.state == SignIn::Expired)
+                row("publisher-retry", RowKind::Action, "New code", "publisher-retry");
+            row("publisher-cancel", RowKind::Action, "Cancel", "publisher-cancel");
+        }
+        view_.legends = {"Cross Select", "Circle Cancel"};
     } else if (state_.navigation.route == Route::Home) {
         view_.title = "Home";
         view_.subtitle = state_.account().authentication == AuthState::SignedIn
@@ -10191,6 +10433,13 @@ void Simulation::rebuild_view() {
                                                                               : "Synced";
                         if (cloud != state_.cloud.end()) saves.subtitle = cloud->second.message;
                         saves.enabled = !busy && !uninstalling;
+                    }
+                    // A game that starts through its publisher needs the player's account there.
+                    if (const auto* publisher = publisher_of(game->id)) {
+                        auto& account = row("details-publisher", RowKind::Status, publisher->name + " account", "");
+                        account.value = publisher->account == PublisherAccountState::SignedIn
+                            ? (publisher->display.empty() ? "Signed in" : publisher->display) : "Sign in required";
+                        account.enabled = false;
                     }
                 }
             } else if (job) {
@@ -10713,8 +10962,25 @@ void Simulation::rebuild_view() {
             : state_.account().authentication == AuthState::SignedIn
                 ? (!live() || state_.account().last_sync > 0 ? "Steam connected · Synced" : "Steam connected")
                 : "Connect Steam";
+        // Publisher accounts (Rockstar Games), signed in with the phone, for games that start through them.
+        for (const auto& publisher : state_.publishers.publishers) {
+            if (!publisher.shown) continue;
+            auto& item = add("settings-publisher-" + publisher.slug, RowKind::Action, publisher.name,
+                             "publisher-account:" + publisher.slug);
+            if (publisher.account == PublisherAccountState::SignedIn) {
+                item.value = publisher.display.empty() ? "Signed in" : "Signed in as " + publisher.display;
+                if (publisher.obtained_at > 0)
+                    item.subtitle = "Since " + playden::app::FormatLogTimestamp(publisher.obtained_at).substr(0, 10);
+            } else if (publisher.account == PublisherAccountState::Expired) {
+                item.value = "Sign-in expired";
+                item.subtitle = "Sign in again with your phone to play its games";
+            } else {
+                item.value = "Not signed in";
+                item.subtitle = "Sign in with your phone to play its games";
+            }
+        }
         // With GOG listed (gog-store), each store's Sign out is in its own row's sheet, as GOG's is: a separate
-        // row between the stores would not say which store it signs out of.
+        // row between the stores would not say which store it signs out of. Steam's sign-out stays last here.
         if (!gog_store_enabled_ && state_.account().authentication != AuthState::SignedOut)
             add("settings-signout", RowKind::Action, "Sign out…", "signout-confirm").dangerous = true;
         if (gog_store_enabled_) {
@@ -11809,6 +12075,10 @@ void Simulation::cancel() {
         }
         return;
     }
+    if (state_.navigation.route == Route::PublisherSignIn) {
+        leave_publisher_sign_in(state_.publishers.sign_in.state == PublisherSignInState::SignedIn);
+        return;
+    }
     if (state_.navigation.route == Route::SignIn) {
         if (live()) queue_service_action(ServiceAction::CancelQr);
         clear_sign_in_secrets();
@@ -12043,6 +12313,8 @@ void Simulation::change_route(int delta) {
     if (state_.editor.active || !state_.navigation.modals.empty()) return;
     // The password form and its Steam Guard steps are left with Cancel, which stops the sign-in and wipes them.
     if (state_.navigation.route == Route::SignIn && state_.sign_in.step != SignInStep::Qr) return;
+    // A publisher sign-in is left with Cancel, which closes its page on the network.
+    if (state_.navigation.route == Route::PublisherSignIn) return;
     const auto routes = TabRoutes();
     const int count = static_cast<int>(routes.size());
     auto found = std::find(routes.begin(), routes.end(), state_.navigation.route);
@@ -12180,6 +12452,8 @@ void Simulation::quit_to_home() {
     const auto& waiting = state_.preparation_queue.waiting;
     if (preparing == state_.runtime_games.end() && (waiting.empty() || state_.preparation_paused)) {
         state_.quit_requested = true;
+        state_.quit_to_home = finish_setup_game_.valid();
+        state_.quit_to_home_game = finish_setup_game_;
         return;
     }
     const auto* game = find_game(state_, preparing != state_.runtime_games.end() ? preparing->first : waiting.front());
@@ -13621,6 +13895,18 @@ void Simulation::activate() {
         confirmation.body = "The saves and settings kept from " + (name.empty() ? std::string("this game") : name) +
                             " are deleted from this console. Saves in Steam Cloud stay in Steam Cloud.";
         open_modal(std::move(confirmation));
+    } else if (action_name == "confirm-destructive" && pending_destructive_action_.rfind("publisher-sign-out:", 0) == 0) {
+        const auto slug = pending_destructive_action_.substr(19);
+        pending_destructive_action_.clear();
+        while (!state_.navigation.modals.empty()) close_modal();
+        if (live()) {
+            pending_publisher_requests_.push_back({PublisherRequestKind::SignOut, slug});
+        } else {
+            for (auto& publisher : state_.publishers.publishers)
+                if (publisher.slug == slug) { publisher.account = PublisherAccountState::SignedOut; publisher.display.clear(); }
+        }
+        if (const auto* publisher = find_publisher(slug))
+            push_notice({"publisher-signed-out", "Signed out of " + publisher->name, "", false, kLiveNoticeSeconds, false, ""});
     } else if (action_name == "confirm-destructive" && pending_destructive_action_.rfind("maintenance-", 0) == 0) {
         const auto chosen = pending_destructive_action_;
         pending_destructive_action_.clear();
@@ -13631,6 +13917,7 @@ void Simulation::activate() {
                         : chosen == "maintenance-recreate" ? MaintenanceKind::RecreateBottle
                         : chosen == "maintenance-update" ? MaintenanceKind::UpdateRuntime
                         : chosen == "maintenance-register" ? MaintenanceKind::RegisterAgain
+                        : chosen == "maintenance-publisher" ? MaintenanceKind::RepairPublisher
                                                            : MaintenanceKind::ApplySettings;
         if (chosen == "maintenance-reset") {
             auto& record = state_.game_settings[state_.navigation.selected_game_id];
@@ -13944,6 +14231,11 @@ void Simulation::activate() {
         } else if (action_name == "maintenance-backup") {
             heading = "Back up saves?";
             body = "The Windows user folders of " + title + " are copied aside on this console. Playden keeps the newest 3 backups. Saves the game keeps in its own folder are not included.";
+        } else if (action_name == "maintenance-publisher" && publisher_of(game)) {
+            const auto& name = publisher_of(game)->name;
+            heading = "Repair the " + name + " files?";
+            body = "Playden takes the " + name + " files out of " + title + "'s folder and places them again. "
+                   "The game's own files and saves are not touched.";
         } else if (action_name == "maintenance-recreate") {
             pending_destructive_action_ = action_name;
             open_modal(recreate_confirmation(title, action_name));
@@ -14737,6 +15029,35 @@ void Simulation::activate() {
         actions.push_back("cancel");
         open_modal({"account", state_.account().display_name.empty() ? "Account" : state_.account().display_name, state_.navigation.focus_key, std::move(actions), 0, false});
     }
+    else if (action_name.rfind("publisher-account:", 0) == 0) {
+        const auto slug = action_name.substr(18);
+        if (const auto* publisher = find_publisher(slug); publisher && publisher->account == PublisherAccountState::SignedIn) {
+            ModalEntry account{"confirmation", publisher->name, state_.navigation.focus_key,
+                               {"publisher-sign-in:" + slug, "publisher-sign-out:" + slug, "cancel"}, 0, false};
+            account.body = (publisher->display.empty() ? std::string("Signed in") : "Signed in as " + publisher->display) +
+                           (publisher->obtained_at > 0
+                                ? " since " + playden::app::FormatLogTimestamp(publisher->obtained_at).substr(0, 10) : std::string()) +
+                           ". Playden keeps the sign-in on this PS5 only.";
+            open_modal(std::move(account));
+        } else {
+            begin_publisher_sign_in(slug, {});
+        }
+    }
+    else if (action_name.rfind("publisher-sign-in:", 0) == 0) begin_publisher_sign_in(action_name.substr(18), {});
+    else if (action_name.rfind("publisher-sign-in-play:", 0) == 0) begin_publisher_sign_in(action_name.substr(23), publisher_play_game_);
+    else if (action_name == "publisher-retry") begin_publisher_sign_in(state_.publishers.sign_in.slug, publisher_play_game_);
+    else if (action_name == "publisher-cancel") leave_publisher_sign_in(false);
+    else if (action_name == "publisher-done") leave_publisher_sign_in(true);
+    else if (action_name.rfind("publisher-sign-out:", 0) == 0) {
+        const auto* publisher = find_publisher(action_name.substr(19));
+        if (!publisher) return;
+        pending_destructive_action_ = action_name;
+        ModalEntry confirmation{"confirmation", "Sign out of " + publisher->name + "?", state_.navigation.focus_key,
+                                {"cancel", "confirm-destructive"}, 0, true};
+        confirmation.body = "Playden forgets the " + publisher->name + " sign-in on this PS5. Its games ask you to sign in "
+                            "again before they start.";
+        open_modal(std::move(confirmation));
+    }
     else if (action_name == "account-sync") {
         close_modal();
         if (!live()) state_.account().authentication = AuthState::Syncing;
@@ -15390,6 +15711,7 @@ void Simulation::tick(int ticks) {
                 refresh_import_sheet();
             }
             if (state_.log_state == LogState::Loading) finish_logs();
+            settle_publisher_sign_in();
             state_.startup_loading = false;
             state_.library_loading = false;
             for (auto& game : state_.games) if (game.art_pending) game.art_pending = false;
@@ -17371,9 +17693,13 @@ void Simulation::open_setup_programs() {
 
 std::vector<std::string> Simulation::maintenance_actions() const {
     // Manage DLC… and Move to… are on Game actions.
-    return {"heading-fix", "maintenance-repair", "maintenance-update", "maintenance-recreate", "maintenance-shader",
-            "maintenance-register",
-            "heading-settings-saves", "maintenance-reset", "maintenance-backup", "divider", "cancel"};
+    std::vector<std::string> actions{"heading-fix", "maintenance-repair", "maintenance-update", "maintenance-recreate",
+                                     "maintenance-shader", "maintenance-register", "heading-settings-saves",
+                                     "maintenance-reset", "maintenance-backup", "divider", "cancel"};
+    // A game that starts through its publisher also has the publisher's files in its folder: after Repair.
+    if (publisher_of(state_.navigation.selected_game_id))
+        actions.insert(std::find(actions.begin(), actions.end(), "maintenance-repair") + 1, "maintenance-publisher");
+    return actions;
 }
 
 bool Simulation::game_prepared(GameId id) const {
@@ -17426,7 +17752,8 @@ void Simulation::request_maintenance(GameId id, MaintenanceKind kind) {
                           : kind == MaintenanceKind::BackupSaves ? "Saves backed up"
                           : kind == MaintenanceKind::RecreateBottle ? "Bottle recreated"
                           : kind == MaintenanceKind::UpdateRuntime ? "Runtime kit updated"
-                          : kind == MaintenanceKind::RegisterAgain ? "PS5 title registered again" : "Settings applied";
+                          : kind == MaintenanceKind::RegisterAgain ? "PS5 title registered again"
+                          : kind == MaintenanceKind::RepairPublisher ? "Publisher files placed again" : "Settings applied";
         push_notice({"maintenance-" + ToKey(id), words, "", false, kLiveNoticeSeconds, false, "Simulated"});
         return;
     }
@@ -18853,7 +19180,7 @@ void Simulation::show_feedback_prompt() {
     if (feedback_prompts_.empty() || (live() && !state_.vote_memory_loaded)) return;
     const auto route = state_.navigation.route;
     if (!state_.navigation.modals.empty() || state_.editor.active || route == Route::Startup || route == Route::SignIn ||
-        route == Route::Session)
+        route == Route::Session || route == Route::PublisherSignIn)
         return;
     while (!feedback_prompts_.empty()) {
         const auto prompt = feedback_prompts_.front();

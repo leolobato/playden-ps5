@@ -12,6 +12,7 @@
 #include "installs/installed_location.h"
 #include "steam/cloud_service.h"
 #include "homebrew/runtime_host.hpp"
+#include "homebrew/publisher_accounts.hpp"
 #include "stores/registry.h"
 #include "stores/steam.h"
 #include "stores/local/library_source.h"
@@ -96,6 +97,8 @@ class Controller {
   // kept here for the UI; no credentials are in it.
   void SetFriends(steam::FriendsService* friends) { friends_ = friends; }
   const steam::FriendsSnapshot& friends() const { return friends_snapshot_; }
+  // The phone sign-in of publisher accounts (Rockstar Games); without it the sign-in screen can't open a page.
+  void SetPublisherAccounts(PublisherAccounts* accounts) { publisher_accounts_ = accounts; }
   // Playden's own update: the controller passes the player's requests on and shows its state.
   void SetSelfUpdate(update::UpdateService* self_update) { self_update_ = self_update; }
   // Settings › Web access turns it on and off (once the saved preferences are read); the signed-in account's
@@ -288,6 +291,10 @@ class Controller {
   std::chrono::steady_clock::time_point community_refresh_at_{};
   std::string kit_view_manifest_;  // the kit whose view the model has
   bool kit_view_sent_ = false;
+  // Publisher accounts: the player's sign-in and sign-out requests, and the accounts, publisher games
+  // and sign-in page projected for Settings, the game page and the sign-in screen.
+  void TickPublishers();
+  PublisherAccounts* publisher_accounts_ = nullptr;
   Simulation& model_;
   std::unique_ptr<stores::Registry> owned_stores_;
   stores::Registry& stores_;

@@ -216,7 +216,12 @@ void Controller::Shutdown() {
   // calls into the Local store, which the caller destroys after this (host.cpp, ps5.cpp).
   if(installs_) step("installs", [&] { installs_->Shutdown(); });
   if(cloud_) step("cloud", [&] { cloud_->Shutdown(); });
-  if(runtime_) step("runtime", [&] { runtime_->Shutdown(); });
+  if(runtime_) step("runtime", [&] {
+    // Play on a game waiting for the PS5 quits to Home: the game's start there may lack its sign-in.
+    if(model_.state().quit_to_home)
+      runtime_->ReportHomeStartsAtQuit(NumberIn(*runtime_->Shared(), model_.state().quit_to_home_game));
+    runtime_->Shutdown();
+  });
   persistence_.reset();
   library_.reset();
   if (!service_) return;
@@ -467,6 +472,8 @@ void Controller::Tick() {
   TickGate();
   TickCloud();
   lap(6);
+  // Before the runtime: a Play refused for a missing account asks about a game the model knows is the publisher's.
+  TickPublishers();
   TickRuntime();
   TickCommunity();
   TickSharing();
@@ -1031,6 +1038,53 @@ void Controller::TickCloud() {
   model_.UpdateCloud(games);
   for (const auto& [id, status] : answered) model_.NotifyCloudAnswered(id, status);
 }
+void Controller::TickPublishers() {
+  if (!runtime_) return;
+  const auto snapshot_shared = runtime_->Shared();
+  const auto& snapshot = *snapshot_shared;
+  const auto find = [&](const std::string& slug) -> const RuntimePublisherView* {
+    for (const auto& [publisher, view] : snapshot.publishers)
+      if (slug == runtime::PublisherSlug(publisher)) return &view;
+    return nullptr;
+  };
+  for (const auto& request : model_.TakePublisherRequests()) {
+    const auto* publisher = find(request.slug);
+    if (!publisher) continue;
+    switch (request.kind) {
+      case PublisherRequestKind::SignIn:
+        if (publisher_accounts_) publisher_accounts_->Begin(publisher->publisher, publisher->name, publisher->signin_page);
+        break;
+      case PublisherRequestKind::Cancel:
+        if (publisher_accounts_) publisher_accounts_->Cancel();
+        break;
+      case PublisherRequestKind::SignOut: runtime_->SignOutPublisher(publisher->publisher); break;
+    }
+  }
+  LivePublishers live;
+  for (const auto& [publisher, view] : snapshot.publishers) {
+    LivePublisher item;
+    item.slug = runtime::PublisherSlug(publisher);
+    item.name = view.name;
+    item.short_name = runtime::PublisherName(publisher);
+    item.account = view.account == runtime::PublisherAccountState::kSignedIn ? PublisherAccountState::SignedIn
+                 : view.account == runtime::PublisherAccountState::kExpired ? PublisherAccountState::Expired
+                                                                             : PublisherAccountState::SignedOut;
+    item.display = view.display;
+    item.obtained_at = static_cast<std::int64_t>(view.obtained_at);
+    // Listed once it matters: the pack can start the publisher's games, a prepared game is the
+    // publisher's, or an account is kept (so it can be signed out of).
+    item.shown = view.pack_ready || view.account != runtime::PublisherAccountState::kSignedOut;
+    for (const auto& install : snapshot.installs)
+      if (install.publisher == publisher) {
+        item.shown = true;
+        live.games[install.game] = item.slug;
+      }
+    live.publishers.push_back(std::move(item));
+  }
+  if (publisher_accounts_) live.sign_in = publisher_accounts_->Current();
+  model_.SetPublishers(std::move(live));
+}
+
 // Per-game runtime: queue Prepare with the Steam install's location, queue Play,
 // and project the runtime host's state for installed games. The worker checks a
 // Play request; this thread, the application thread, then starts the title.
@@ -1159,6 +1213,7 @@ void Controller::TickRuntime() {
                            : kind == MaintenanceKind::Repair ? RuntimeMaintenance::kRepair
                            : kind == MaintenanceKind::BackupSaves ? RuntimeMaintenance::kBackupSaves
                            : kind == MaintenanceKind::RegisterAgain ? RuntimeMaintenance::kRegisterAgain
+                           : kind == MaintenanceKind::RepairPublisher ? RuntimeMaintenance::kRepairPublisher
                                                                   : RuntimeMaintenance::kApplySettings);
     });
   // Uninstall Playden (#868): asked for in Settings, or a removal the worker resumed at its start (uninstall.json).
@@ -1546,7 +1601,14 @@ void Controller::TickRuntime() {
   const auto& snapshot = *snapshot_shared;
   // Queued Plays are settled once the worker has handled every request; their
   // sessions or refusals are then visible.
-  if (snapshot.plays_handled >= plays_requested_) play_queued_.clear();
+  if (snapshot.plays_handled >= plays_requested_) {
+    // A Play refused because the game's publisher needs the player's account asks to sign in, once.
+    for (const auto id : play_queued_)
+      if (const auto code = snapshot.play_refusal_codes.find(NumberIn(snapshot, id));
+          code != snapshot.play_refusal_codes.end() && code->second == kPlayRefusalPublisherSignIn)
+        model_.NotifyPublisherSignInNeeded(id);
+    play_queued_.clear();
+  }
   if (snapshot.launch) {
     const std::pair<GameId, runtime::LaunchState> current{snapshot.launch->game, snapshot.launch->state};
     // A launch that failed after the handoff: Playden says it couldn't start and offers what to do, instead of asking
@@ -1655,7 +1717,10 @@ void Controller::TickRuntime() {
       game.detail = record->failure.empty() ? "Retry finishes removing the PS5 title, then uninstalls the game."
                                             : record->failure;
     } else if (IsNumber(snapshot, snapshot.preparing_app, id)) {
-      game.status = "Preparing"; game.detail = PreparationProgressWords(record != nullptr, record ? record->step : std::string{});
+      game.status = "Preparing";
+      game.detail = IsNumber(snapshot, snapshot.work_app, id) && !snapshot.work_step.empty()
+          ? snapshot.work_step
+          : PreparationProgressWords(record != nullptr, record ? record->step : std::string{});
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
                !record->title_current) {
       game.status = "Runtime kit update available"; game.can_prepare = usable;
@@ -1766,8 +1831,12 @@ void Controller::TickRuntime() {
     // A retry is in flight: do not republish its previous refusal as a new outcome.
     if (play_queued_.count(id) || sync_before_play_.count(id)) game.play_detail.clear();
     if (game.ready && cloud_busy_.count(id) && game.play_detail.empty()) game.play_detail = "Waiting for Cloud saves to finish.";
+    // Preparation and Play may extract a publisher's runtime first: its step and progress show on
+    // the Play button.
+    if (IsNumber(snapshot, snapshot.work_app, id) && !snapshot.work_step.empty() && game.uninstall_status.empty())
+      game.play_status = snapshot.work_step;
     if (snapshot.work_progress && (IsNumber(snapshot, snapshot.preparing_app, id) || IsNumber(snapshot, snapshot.removing_app, id) ||
-                                   !game.play_work.empty()))
+                                   !game.play_work.empty() || IsNumber(snapshot, snapshot.work_app, id)))
       game.progress = snapshot.work_progress;
     // Game settings and maintenance: the prepared title's state, the console's answer on
     // whether it runs, and the newest maintenance outcome.
@@ -1800,6 +1869,7 @@ void Controller::TickRuntime() {
                        : action == RuntimeMaintenance::kRepair ? MaintenanceKind::Repair
                        : action == RuntimeMaintenance::kBackupSaves ? MaintenanceKind::BackupSaves
                        : action == RuntimeMaintenance::kRegisterAgain ? MaintenanceKind::RegisterAgain
+                       : action == RuntimeMaintenance::kRepairPublisher ? MaintenanceKind::RepairPublisher
                                                                     : MaintenanceKind::ApplySettings;
       game.maintenance_running = found->second.running;
       game.maintenance_ok = found->second.ok;

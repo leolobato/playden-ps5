@@ -25,11 +25,14 @@
 #include "homebrew/program_icon.hpp"
 #include "homebrew/sharing_service.hpp"
 #include "homebrew/folder_art.hpp"
+#include "homebrew/publisher_accounts.hpp"
+#include "steam/secret.h"
 #include "homebrew/title_icon.hpp"
 #include "platform/ps5/title_allow_list.h"
 #include "runtime/playden_removal.h"
 #include "platform/ps5/console_address.h"
 #include "platform/ps5/console_services.h"
+#include "platform/ps5/system_notification.h"
 #include "platform/ps5/system_keyboard.h"
 #include "runtime/artifact_hash.h"
 #include "runtime/kit_admission.h"
@@ -73,6 +76,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -664,6 +668,8 @@ int main() {
                 return true;
             };
             config.runtime_dir = paths.title_root + "/runtime";
+            // Publisher accounts sit beside the Steam session, in the user data root.
+            config.publisher_account_root = user_root;
             // A game set to Steam features = Online signs in with the account's refresh token and Playden's device
             // fields, under a login ID of its own so neither session replaces the other.
             config.online_session = [&online_sessions, &online_storage,
@@ -739,6 +745,10 @@ int main() {
             };
             config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
             config.community_recipe_bytes = playden::homebrew::CommunityRecipeBytes(community_objects);
+            config.system_notification = [](const std::string& text) {
+                if (!playden::ps5::PostSystemNotification(text))
+                    playden::app::AppendLogLine(log_root, "runtime.log", "system notification not shown");
+            };
             config.title_log = [](const std::string& title, const std::string& text) {
                 // Copied after the first frame (RuntimeHost::CopyTitleLogs), while a report may read the folder: written
                 // beside its name and moved over it, so a reader sees the old copy or the new one. The partial file's
@@ -1318,7 +1328,29 @@ int main() {
         };
         if (gog) gog->ConfigureWeb(web_config);
         playden::web::Service web(std::move(web_config));
+        // Publisher accounts (Rockstar Games), signed in from the phone: the one-time page on the local
+        // network (the default route's address, port 8099 or one of the next nine) hands the credential
+        // to the runtime host, which keeps it. Declared before the controller, after the runtime host:
+        // the pages close, and a check still running ends, before the host goes away.
+        playden::homebrew::PublisherAccounts::Config publisher_config;
+        publisher_config.now_unix = [] { return static_cast<std::int64_t>(std::time(nullptr)); };
+        publisher_config.submit = [host = runtime_host.get()](playden::runtime::Publisher publisher, std::string credential) {
+            playden::runtime::PhoneRelayAnswer answer;
+            if (!host) {
+                playden::steam::ZeroizeSecret(credential);
+                answer.message = "The runtime services are unavailable.";
+                return answer;
+            }
+            const auto outcome = host->SubmitPublisherSignInNow(publisher, std::move(credential), std::chrono::seconds(30));
+            answer.ok = outcome.ok;
+            answer.display = outcome.display;
+            answer.message = outcome.message;
+            return answer;
+        };
+        publisher_config.log = [](const std::string& line) { playden::app::AppendLogLine(log_root, "runtime.log", line); };
+        playden::homebrew::PublisherAccounts publisher_accounts(std::move(publisher_config));
         playden::homebrew::Controller services(simulation, stores, &persistence, &installs, &cloud, runtime_host.get(), auth_log);
+        services.SetPublisherAccounts(&publisher_accounts);
         services.SetDownloadServers(&servers);
         services.SetWorkshopListing(&workshop_listing);
         services.SetFriends(friends.get());

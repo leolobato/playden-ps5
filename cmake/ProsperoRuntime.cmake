@@ -99,6 +99,8 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
         -s "${CMAKE_SOURCE_DIR}/tests" -p test_prospero_source.py)
     add_test(NAME prospero_bottle_preparation_evidence COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_SOURCE_DIR}/tests" -p test_bottle_preparation_evidence.py)
+    add_test(NAME console_publisher_upload COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_SOURCE_DIR}/tests" -p test_console_publisher_upload.py)
     foreach(contract title_launch title_publication title_session app_profile game_profile profile_catalog)
         set(contract_sources
             "${PLAYDEN_PROSPERO_SOURCE_DIR}/tests/test_pw_${contract}.c"

@@ -36,7 +36,7 @@ namespace playden::homebrew {
 
 using GameId = playden::GameId;
 
-enum class Route { Startup, SignIn, Home, Library, Downloads, Settings, Details, Session, Saves, SaveDetails, ManageGames, Friends };
+enum class Route { Startup, SignIn, Home, Library, Downloads, Settings, Details, Session, Saves, SaveDetails, ManageGames, Friends, PublisherSignIn };
 // The tab bar's routes, left to right: Home, Library, Queue, Saves, then Friends with online-steam
 // (runtime::OnlineSteamEnabled), then Settings.
 std::vector<Route> TabRoutes();
@@ -119,8 +119,9 @@ struct InstallRequest {
     // saved for Offline emulation stays as it is (workshop_off is not sent).
     bool workshop_all = false;
 };
-// Game maintenance the details page offers (simulated in fixture mode).
-enum class MaintenanceKind { ApplySettings, ClearShaderCache, Repair, BackupSaves, RecreateBottle, UpdateRuntime, RegisterAgain };
+// Game maintenance the details page offers (simulated in fixture mode). RepairPublisher takes a
+// publisher's files out of the game folder and places them again (publisher games only).
+enum class MaintenanceKind { ApplySettings, ClearShaderCache, Repair, BackupSaves, RecreateBottle, UpdateRuntime, RegisterAgain, RepairPublisher };
 // Whether a game's PS5 title runs now, as the console last answered.
 enum class TitleActivity { Unknown, Stopped, Running };
 // Live install state projected from the real install service.
@@ -252,6 +253,45 @@ struct LiveSelfUpdate {
     std::uint64_t kit_done = 0;
     std::uint64_t kit_total = 0;
     std::string kit_error;
+};
+// Live: publisher accounts (Rockstar Games) for games that start through their publisher, projected
+// from the runtime host. The credential itself never reaches the UI.
+enum class PublisherAccountState { SignedOut, SignedIn, Expired };
+struct LivePublisher {
+    std::string slug;        // "rockstar": its row and action keys
+    std::string name;        // "Rockstar Games"
+    std::string short_name;  // "Rockstar": "Repair Rockstar files"
+    PublisherAccountState account = PublisherAccountState::SignedOut;
+    std::string display;           // the account's name, when signed in or expired
+    std::int64_t obtained_at = 0;  // Unix time of the sign-in
+    // Settings lists it: the publisher pack can start its games, a prepared game is its, or an
+    // account is kept on the console.
+    bool shown = false;
+    bool operator==(const LivePublisher&) const = default;
+};
+// The phone sign-in screen, from its one-time page (runtime/phone_relay.h).
+enum class PublisherSignInState { Idle, Starting, Waiting, Connected, Checking, SignedIn, Refused, Expired, NoNetwork, Failed };
+struct LivePublisherSignIn {
+    std::string slug;
+    PublisherSignInState state = PublisherSignInState::Idle;
+    std::string address;          // the page, shown as a QR code and typed from the screen
+    std::int64_t expires_at = 0;  // Unix time the code stops working
+    std::string display;          // SignedIn: the account's name
+    std::string message;          // Refused and Failed: why
+    bool operator==(const LivePublisherSignIn&) const = default;
+};
+struct LivePublishers {
+    std::vector<LivePublisher> publishers;
+    std::map<GameId, std::string> games;  // prepared games that start through their publisher: its slug
+    LivePublisherSignIn sign_in;
+    bool operator==(const LivePublishers&) const = default;
+};
+// What the player asked of a publisher account: open the sign-in page, close it, or sign out.
+enum class PublisherRequestKind { SignIn, Cancel, SignOut };
+struct PublisherRequest {
+    PublisherRequestKind kind = PublisherRequestKind::SignIn;
+    std::string slug;
+    bool operator==(const PublisherRequest&) const = default;
 };
 // Live: what Game settings needs to choose a game's program, projected from the runtime host.
 // A program a Steam launch option names, as a path in the game folder.
@@ -1093,6 +1133,7 @@ struct State {
     LiveSelfUpdate self_update;                         // live: Playden's own update
     std::vector<LiveLeftoverTitle> leftover_titles;
     std::vector<LiveLeftoverDelete> leftover_deletions;
+    LivePublishers publishers;                          // publisher accounts and their phone sign-in
     std::vector<LiveKeptBottle> kept_bottles;           // live: saves kept from uninstalled games
     std::vector<LiveExternalGame> external_games;       // live: games playing in place (imported)
     std::map<GameId, std::string> also_on_drives;       // live: a game's folder is on this USB volume too
@@ -1193,6 +1234,9 @@ struct State {
     // Queue › Preparation's Pause all: the one being prepared finishes, the waiting ones stay queued and don't start,
     // nor does a game that joins meanwhile, until Resume all. Not saved: Playden starts unpaused.
     bool preparation_paused = false;
+    // The quit is Play on a game waiting for the PS5: the player starts it from Home next.
+    bool quit_to_home = false;
+    GameId quit_to_home_game;  // that game; invalid for any other quit
     bool simulation_mode = true;
     std::int64_t clock_ticks = 0;
 };
@@ -1433,6 +1477,12 @@ public:
     void NotifyReadyToPlay(GameId id);
     void SetRuntimeLeftovers(std::size_t count);
     void SetKitInfo(LiveKitInfo kit);
+    // Publisher accounts and the phone sign-in screen's progress; a finished sign-in closes the
+    // screen two seconds later (and starts the game it was for). Requests are the player's.
+    void SetPublishers(LivePublishers publishers);
+    [[nodiscard]] std::vector<PublisherRequest> TakePublisherRequests();
+    // Play was refused because the game's publisher needs the player to sign in: ask to.
+    void NotifyPublisherSignInNeeded(GameId id);
     void UpdateRuntime(RuntimeState runtime, const std::vector<LiveRuntimeGame>& games);
     // Live mode: the preparation queue for Queue, and what the player asked of it there: games to
     // prepare next, waiting games canceled, finished preparations dismissed, and Clear completed.
@@ -2132,6 +2182,18 @@ private:
     std::vector<GameId> pending_activity_requests_;
     // Games whose Game actions asked the console whether they run, for Move to…; cleared by the game's next runtime update.
     std::set<GameId> move_activity_asked_;
+    std::vector<PublisherRequest> pending_publisher_requests_;
+    // The publisher sign-in screen: where Cancel returns to, the game it starts once signed in,
+    // and when it saw the sign-in succeed (it closes two seconds later).
+    Route publisher_return_route_ = Route::Settings;
+    std::string publisher_return_focus_;
+    GameId publisher_play_game_;  // invalid: none
+    std::int64_t publisher_signed_in_at_ = -1;
+    [[nodiscard]] const LivePublisher* find_publisher(const std::string& slug) const;
+    [[nodiscard]] const LivePublisher* publisher_of(GameId id) const;
+    void begin_publisher_sign_in(const std::string& slug, GameId play_game);
+    void leave_publisher_sign_in(bool signed_in);
+    void settle_publisher_sign_in();
     bool uninstall_delete_saves_ = false;  // the uninstall dialog's choice
     std::optional<bool> playden_removal_request_;  // Uninstall Playden asked for: keep_saves
     bool remove_playden_delete_saves_ = false;  // its dialog's "Delete saves too"

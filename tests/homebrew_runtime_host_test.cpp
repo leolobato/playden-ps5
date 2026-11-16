@@ -13,6 +13,7 @@
 #include "runtime/artifact_hash.h"
 #include "runtime/steam_host.h"
 #include "runtime/steam_stub.h"
+#include "runtime/publisher_account.h"
 
 #include <algorithm>
 #include <chrono>
@@ -10429,6 +10430,794 @@ void GogRedistInstallsAtPlay() {
   host.Shutdown();
 }
 
+namespace {
+// A made-up publisher pack release for a game detected as Rockstar's: its stage manifest lists
+// the HL2 fixture's app id (or not), with a helper, a proxy that keeps the game's original, an
+// ini using the runtime and a status file.
+std::string PublisherManifest(const std::string& app) {
+  return R"({
+  "version": 1,
+  "account": {
+    "name": "Example Publisher",
+    "display_fields": ["name"],
+    "stage_fields": ["token"],
+    "stage_pattern": { "charset": "base64", "min": 8, "max": 64 },
+    "max_bytes": 4096
+  },
+  "signin": { "page": "page/index.html" },
+  "runtime": {
+    "label": "Example Runtime",
+    "installers": ["Redist/Example-Setup.exe"],
+    "version_file": "x86/runtime.dll",
+    "folders": { "x86": "x86" }
+  },
+  "titles": { ")" + app + R"(": { "arch": "x86", "args": "-example" } },
+  "files": [
+    { "source": "proxy32.dll", "target": "proxy.dll", "keep_original": "proxy_real.dll", "arch": "x86" },
+    { "source": "helper.dll", "target": "helper.dll" }
+  ],
+  "ini": { "target": "helper.ini", "lines": ["args=${title.args}", "root=${runtime}\\x86"] },
+  "credential_file": "credential.txt",
+  "status": { "file": ".examplepub/status", "expired": "state=stale", "missing": "state=none" }
+})";
+}
+
+struct PublisherFixture {
+  Fixture fixture;
+  RuntimeHostConfig config;
+  RuntimeKit kit;
+  fs::path pack, title, accounts;
+  std::shared_ptr<std::vector<std::string>> log = std::make_shared<std::vector<std::string>>();
+  std::shared_ptr<std::mutex> log_mutex = std::make_shared<std::mutex>();
+  std::shared_ptr<std::vector<std::string>> notices = std::make_shared<std::vector<std::string>>();
+  std::shared_ptr<int> releases = std::make_shared<int>(0);
+  std::vector<std::pair<std::string, std::vector<std::string>>> launches;
+  unsigned uuids = 0;
+  RuntimeHost* host = nullptr;  // set once the test made it, for the runtime hook
+  std::string seen_step;
+
+  explicit PublisherFixture(const std::string& listed_app = "220", bool rockstar = true) {
+    config = fixture.Config();
+    config.host_namespace_prefix = fixture.root;
+    config.session_data_root = fixture.root / "data";
+    config.package_paths.console_data_root = "/data";
+    config.package_paths.host_data_root = fixture.root / "data";
+    config.package_operations.hash_file = HashArtifactFile;
+    config.package_operations.hash_bytes = HashArtifactBytes;
+    config.package_operations.free_space_unverifiable = true;
+    config.package_operations.validate_bottle = [](const fs::path& bottle) {
+      return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+    };
+    kit = SyntheticKit(fixture.root / "kit");
+    config.admit_kit = [kit = kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+    config.uuid = [this]() -> std::optional<std::string> {
+      ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+    };
+    config.unix_time = [] { return std::int64_t{1760000000}; };
+    config.launch_title = [this](const std::string& title, const std::vector<std::string>& arguments) {
+      launches.emplace_back(title, arguments);
+      return TitleResult{true, 0, "launch"};
+    };
+    config.log = [log = log, mutex = log_mutex](const std::string& line) {
+      std::lock_guard<std::mutex> lock(*mutex);
+      log->push_back(line);
+    };
+    config.system_notification = [notices = notices, mutex = log_mutex](const std::string& text) {
+      std::lock_guard<std::mutex> lock(*mutex);
+      notices->push_back(text);
+    };
+    const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
+    Write(game / "hl2.exe", "existing-game", 0644);
+    title = game / "Title";
+    if (rockstar) Write(title / "title.rgl", "RGLM-example", 0644);
+    else Write(game / "__Installer/installerdata.xml", "<installer/>", 0644);  // EA's
+    Write(title / "proxy.dll", "game-proxy", 0644);
+    pack = fixture.root / "pack";
+    Write(pack / "stage.json", PublisherManifest(listed_app), 0644);
+    Write(pack / "proxy32.dll", "proxy-32", 0644);
+    Write(pack / "helper.dll", "helper", 0644);
+    Write(pack / "page/index.html", "<html></html>", 0644);
+    config.publisher_release = [pack = pack, releases = releases](Publisher publisher) {
+      CHECK(publisher == Publisher::kRockstar);
+      ++*releases;
+      return PublisherReleaseResult{true, pack.string(), {}};
+    };
+    config.ensure_publisher_runtime = [this, root = fixture.root](const PublisherRuntimeSpec& spec,
+                                                                  const std::string& install, Publisher) {
+      CHECK(spec.label == "Example Runtime");
+      CHECK(install == (root / "data/homebrew/FAKE77031/games/220").string());
+      // The game page names this step while it runs.
+      if (host) {
+        const auto now = host->Snapshot();
+        seen_step = now.work_step + "/" + (now.work_app ? std::to_string(*now.work_app) : std::string("-"));
+      }
+      return PublisherRuntimeResult{true, (root / "data/playden/publisher-work/runtime/rockstar/1.0").string(), {}};
+    };
+    accounts = fixture.root / "data/steam-state";
+    config.publisher_account_root = accounts;
+  }
+  std::vector<std::string> Notices() const {
+    std::lock_guard<std::mutex> lock(*log_mutex);
+    return *notices;
+  }
+  bool Logged(const std::string& text) const {
+    std::lock_guard<std::mutex> lock(*log_mutex);
+    return std::any_of(log->begin(), log->end(), [&](const std::string& line) { return line.find(text) != std::string::npos; });
+  }
+  void PrepareReady(RuntimeHost& host) {
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+    }, 60);
+  }
+  RuntimeSnapshot PlayHandled(RuntimeHost& host) {
+    const auto handled = host.Snapshot().plays_handled;
+    host.Play(220);
+    return WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
+  }
+};
+
+unsigned FileMode(const fs::path& path) {
+  struct stat info{};
+  CHECK(lstat(path.c_str(), &info) == 0);
+  return info.st_mode & 07777;
+}
+}  // namespace
+
+// A Rockstar game gets the pack's files when it is prepared; Play asks for the publisher's account
+// and places the credential last; a session that ends with the expired status asks again; the
+// maintenance action takes the files out and puts them back.
+void StagesPublisherGameAndPlaysWithAccount() {
+  PublisherFixture f;
+  RuntimeHost host(f.config);
+  f.host = &host;
+  f.PrepareReady(host);
+  // The runtime step is named while it runs and gone afterwards.
+  CHECK(f.seen_step == "Preparing Example Runtime/220");
+  CHECK(host.Snapshot().work_step.empty() && !host.Snapshot().work_app);
+  // Staged during preparation, without a credential (a start from Home finds the files).
+  CHECK(Read(f.title / "proxy.dll") == "proxy-32" && Read(f.title / "proxy_real.dll") == "game-proxy");
+  CHECK(Read(f.title / "helper.dll") == "helper");
+  CHECK(Read(f.title / "helper.ini") == "args=-example\r\nroot=Z:\\data\\playden\\publisher-work\\runtime\\rockstar\\1.0\\x86\r\n");
+  CHECK(!fs::exists(f.title / "credential.txt"));
+  CHECK(f.Logged("publisher stage app=220 publisher=rockstar changed=proxy_real.dll,proxy.dll,helper.dll,helper.ini"));
+  auto snapshot = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+  });
+  CHECK(snapshot.installs[0].publisher == Publisher::kRockstar);
+  const auto& view = snapshot.publishers.at(Publisher::kRockstar);
+  CHECK(view.name == "Rockstar Games" && view.pack_ready && view.pack_message.empty());
+  CHECK(view.account == PublisherAccountState::kSignedOut && view.runtime_label == "Example Runtime");
+  CHECK(view.signin_page == (f.pack / "page/index.html").string());
+
+  // Signed out: Play is refused with the sign-in code and no credential is written.
+  auto refused = f.PlayHandled(host);
+  CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherSignIn);
+  CHECK(refused.play_refusals.at(220).find("needs a Rockstar Games account.") != std::string::npos);
+  CHECK(!refused.handoff_ready && !fs::exists(f.title / "credential.txt"));
+
+  // A sign-in that holds no usable credential is refused; a good one is kept.
+  const auto bad = host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"{\"no\":1}"})", std::chrono::seconds(30));
+  CHECK(!bad.ok && !bad.message.empty() && bad.serial != 0);
+  const auto good = host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})",
+                                                  std::chrono::seconds(30));
+  CHECK(good.ok && good.display == "Player" && good.serial > bad.serial);
+  snapshot = host.Snapshot();
+  CHECK(snapshot.publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedIn);
+  CHECK(snapshot.publishers.at(Publisher::kRockstar).display == "Player");
+  CHECK(fs::exists(f.accounts / "publisher-account-rockstar.v1"));
+
+  // A refused request (the console no longer lists the title) takes the credential away again.
+  f.fixture.registered = false;
+  refused = f.PlayHandled(host);
+  CHECK(refused.play_refusals.count(220) && !refused.play_refusal_codes.count(220));
+  CHECK(!fs::exists(f.title / "credential.txt"));
+  CHECK(f.Logged("publisher credential app=220 removed"));
+  f.fixture.registered = true;
+
+  // Signed in: the credential is written last, private, and Play goes on.
+  host.Play(220);
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+  CHECK(Read(f.title / "credential.txt") == "c2VjcmV0dG9rZW4=\n" && FileMode(f.title / "credential.txt") == 0600);
+  CHECK(!host.Snapshot().play_refusal_codes.count(220));
+  // A pending handoff holds sign-ins back: one whose answer times out ("busy") is withdrawn, and
+  // the account stays the one the phone was last told about.
+  const auto late = host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"b3RoZXJ0b2tlbg==","name":"Other"})",
+                                                  std::chrono::milliseconds(200));
+  CHECK(!late.ok && late.message == "Playden is busy. Try again in a moment." && late.serial > good.serial);
+  CHECK(host.Handoff() && f.launches.size() == 1);
+  const auto after = host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"{\"no\":1}"})", std::chrono::seconds(30));
+  CHECK(!after.ok && after.serial > late.serial && !after.message.empty() && after.message.find("busy") == std::string::npos);
+  CHECK(host.Snapshot().publishers.at(Publisher::kRockstar).display == "Player");
+  CHECK(!f.Logged("publisher sign-in publisher=rockstar withdrawn"));  // it never reached the worker
+
+  // The session ends with the expired status: the account becomes Expired, the file is read once.
+  const std::string session = f.launches[0].second[0].substr(std::string("session=").size());
+  const auto sessions = f.fixture.root / "data/playden/games/steam-220/logs/sessions";
+  fs::create_directories(sessions);
+  CHECK(chmod((f.fixture.root / "data/playden/games/steam-220/logs").c_str(), 0700) == 0);
+  CHECK(chmod(sessions.c_str(), 0700) == 0);
+  Write(f.title / ".examplepub/status", "state=stale\n", 0644);
+  Write(sessions / (session + ".json"),
+        R"({"schema_version":1,"session_id":")" + session +
+            R"(","install_id":"steam-220","title_id":"FAKE78001","origin":"playden","settings_revision":0,)"
+            R"("runtime_bundle_id":"wine-wow64","phase":"exited"})" "\n", 0600);
+  snapshot = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) &&
+           s.publishers.at(Publisher::kRockstar).account == PublisherAccountState::kExpired;
+  }, 30);
+  CHECK(snapshot.publishers.at(Publisher::kRockstar).display == "Player");
+  CHECK(!fs::exists(f.title / ".examplepub/status"));
+  WaitFor(host, [](const RuntimeSnapshot& s) { return s.launch && s.launch->state == LaunchState::kExited; }, 30);
+  // The credential leaves the folder as soon as the account expires, not only at the next Play.
+  for (int i = 0; i < 300 && fs::exists(f.title / "credential.txt"); ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(!fs::exists(f.title / "credential.txt"));
+  // Expired: Play asks for a new sign-in, and the old credential leaves the folder.
+  refused = f.PlayHandled(host);
+  CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherSignIn && !fs::exists(f.title / "credential.txt"));
+
+  // Repair: the files go (the original comes back) and are placed again.
+  Write(f.title / "helper.ini", "edited", 0644);
+  host.Maintain(220, RuntimeMaintenance::kRepairPublisher);
+  const auto repaired = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.maintenance.count(220) && !s.maintenance.at(220).running;
+  }, 30);
+  CHECK(repaired.maintenance.at(220).ok);
+  CHECK(repaired.maintenance.at(220).message == "The Rockstar Games files are in place again.");
+  CHECK(f.Logged("publisher restore app=220 changed=helper.dll,proxy.dll,helper.ini"));
+  CHECK(Read(f.title / "proxy.dll") == "proxy-32" && Read(f.title / "proxy_real.dll") == "game-proxy");
+  CHECK(Read(f.title / "helper.ini").rfind("args=-example\r\n", 0) == 0);
+
+  // Signing out deletes the account and any credential left in a game's folder.
+  Write(f.title / "credential.txt", "left-behind\n", 0600);
+  host.SignOutPublisher(Publisher::kRockstar);
+  WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.at(Publisher::kRockstar).account == PublisherAccountState::kSignedOut;
+  }, 30);
+  CHECK(!fs::exists(f.accounts / "publisher-account-rockstar.v1"));
+  CHECK(!fs::exists(f.title / "credential.txt"));
+  // The pack is unpacked once and kept (the startup check, then this run's uses).
+  CHECK(*f.releases <= 2);
+  host.Shutdown();
+}
+
+// Without a hook the runtime comes from the game's own installer: a missing installer says so,
+// and once it is there preparation extracts it below <publisher_work_root>/runtime/<slug>/ and the
+// staged files point at its version folder.
+void ExtractsPublisherRuntimeFromTheGamesInstaller() {
+  PublisherFixture f;
+  f.config.ensure_publisher_runtime = nullptr;
+  RuntimeHost host(f.config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled > 0; }, 60);
+  CHECK(refused.refusals.count(220) &&
+        refused.refusals.at(220) == "The game's Example Runtime installer is missing. Verify the game's files.");
+  CHECK(!fs::exists(f.fixture.root / "data/playden/publisher-work/runtime/rockstar"));
+
+  // A self-extractor: some head bytes, then the 7z archive (tests/fixtures/publisher-runtime).
+  const auto fixtures = fs::path(g_runtime_dir) / "../tests/fixtures/publisher-runtime";
+  std::string installer = "MZ";
+  installer.resize(4096, '\0');
+  Write(f.fixture.root / "data/homebrew/FAKE77031/games/220/Redist/Example-Setup.exe",
+        installer + Read(fixtures / "plain.7z"), 0644);
+  host.Prepare(Hl2());
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.prepares_handled > 1 && !s.preparing_app;
+  }, 60);
+  CHECK(!ready.refusals.count(220));
+  CHECK(ready.work_step.empty() && !ready.work_app && !ready.work_progress);
+  const auto version = f.fixture.root / "data/playden/publisher-work/runtime/rockstar/1.2.3.6";
+  CHECK(fs::is_regular_file(version / ".complete"));
+  CHECK(fs::is_regular_file(version / "x86/runtime.dll"));
+  CHECK(Read(f.title / "helper.ini").find("root=Z:\\data\\playden\\publisher-work\\runtime\\rockstar\\1.2.3.6\\x86") !=
+        std::string::npos);
+  CHECK(f.Logged("publisher runtime rockstar version=1.2.3.6 extracted=1 ok=1"));
+  host.Shutdown();
+}
+
+// A Rockstar game the pack doesn't list keeps its files and Play says it isn't supported; a game of
+// another publisher (EA) is left exactly as before: no pack, no files, Play goes on.
+void PublisherGamesThePackDoesNotCoverAreUntouched() {
+  {
+    PublisherFixture f("999");
+    RuntimeHost host(f.config);
+    f.PrepareReady(host);
+    CHECK(Read(f.title / "proxy.dll") == "game-proxy" && !fs::exists(f.title / "helper.dll"));
+    CHECK(f.Logged("publisher stage app=220 publisher=rockstar skipped: not in the pack"));
+    const auto refused = f.PlayHandled(host);
+    CHECK(refused.play_refusal_codes.at(220) == kPlayRefusalPublisherUnsupported);
+    CHECK(refused.play_refusals.at(220) == "This game isn't supported yet.");
+    CHECK(!fs::exists(f.title / "credential.txt"));
+    host.Shutdown();
+  }
+  {
+    PublisherFixture f("220", false);
+    RuntimeHost host(f.config);
+    f.PrepareReady(host);
+    CHECK(Read(f.title / "proxy.dll") == "game-proxy" && !fs::exists(f.title / "helper.dll"));
+    auto snapshot = host.Snapshot();
+    CHECK(!snapshot.installs[0].publisher);
+    host.Play(220);
+    snapshot = WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    CHECK(!snapshot.play_refusals.count(220) && !fs::exists(f.title / "credential.txt"));
+    CHECK(!f.Logged("publisher stage"));
+    host.Shutdown();
+  }
+}
+
+// A Rockstar game without the publisher pack can't be prepared, and says why.
+void PublisherGameWithoutPackSaysWhy() {
+  PublisherFixture f;
+  f.config.publisher_release = nullptr;  // the real pack lookup
+  f.config.publisher_root = "/data/playden/publisher";
+  RuntimeHost host(f.config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.prepares_handled > 0; }, 60);
+  const std::string wanted = "Rockstar Games games need the publisher pack. Upload it from a computer (see the docs).";
+  CHECK(refused.refusals.count(220) && refused.refusals.at(220) == wanted);
+  const auto view = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+  }).publishers.at(Publisher::kRockstar);
+  CHECK(!view.pack_ready && view.pack_message == wanted);
+  CHECK(Read(f.title / "proxy.dll") == "game-proxy");
+  host.Shutdown();
+}
+
+namespace {
+// A publisher game whose Steam entry is a launcher (Start.exe) and whose pack may name the program
+// that starts the game instead: app 4300, both 64-bit, the title folder found by title.rgl.
+struct PublisherProgramFixture {
+  PublisherFixture f;
+  fs::path game;
+  std::shared_ptr<std::map<std::uint32_t, GameSettingsRecord>> saved =
+      std::make_shared<std::map<std::uint32_t, GameSettingsRecord>>();
+  explicit PublisherProgramFixture(const std::string& program, bool program_present = true) {
+    game = f.fixture.root / "data/homebrew/FAKE77031/games/4300";
+    std::string pe(0x80 + 26, '\0');
+    pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+    pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+    Write(game / "Start.exe", pe, 0644);
+    if (program_present) Write(game / "Game/game64.exe", pe + "game", 0644);
+    Write(game / "Title/title.rgl", "RGLM-example", 0644);
+    CHECK(chmod(game.c_str(), 0755) == 0);
+    WriteManifest(program);
+    f.config.settings_record = [saved = saved](const playden::GameId& id) -> std::optional<GameSettingsRecord> {
+      const auto app = id.steam_app();
+      const auto found = app ? saved->find(*app) : saved->end();
+      return found == saved->end() ? std::nullopt : std::optional<GameSettingsRecord>(found->second);
+    };
+  }
+  void WriteManifest(const std::string& program) {
+    Write(f.pack / "stage.json", R"({
+  "version": 1,
+  "account": {
+    "name": "Example Publisher",
+    "display_fields": ["name"],
+    "stage_fields": ["token"],
+    "stage_pattern": { "charset": "base64", "min": 8, "max": 64 },
+    "max_bytes": 4096
+  },
+  "titles": { "4300": { "arch": "x64", "args": "")" +
+                                     (program.empty() ? std::string() : ", \"program\": \"" + program + "\"") + R"( } },
+  "files": [ { "source": "helper.dll", "target": "helper.dll" } ],
+  "credential_file": "credential.txt"
+})", 0644);
+  }
+  static RuntimePrepareRequest Request() {
+    RuntimePrepareRequest request{4300, "/data/homebrew/FAKE77031/games/4300", "internal", "Example Title"};
+    request.launches = {{"", "Play", "Start.exe", "", ""}};
+    return request;
+  }
+  static RuntimeSnapshot Prepared(RuntimeHost& host) {
+    host.Prepare(Request());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(4300) ||
+                                  (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(4300)) std::fprintf(stderr, "Prepare refused: %s\n", done.refusals.at(4300).c_str());
+    return done;
+  }
+  static RuntimeSnapshot Played(RuntimeHost& host) {
+    const auto handled = host.Snapshot().plays_handled;
+    host.Play(4300);
+    return WaitFor(host, [handled](const RuntimeSnapshot& s) { return s.plays_handled > handled; }, 30);
+  }
+};
+}  // namespace
+
+// A publisher pack that names the game's program for a title makes it the default launch entry of a
+// game prepared fresh; Steam's launcher stays a choice, and a program chosen in Game settings wins.
+void PublisherProgramStartsAFreshlyPreparedGame() {
+  {
+    PublisherProgramFixture p("Game/game64.exe");
+    RuntimeHost host(p.f.config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    const auto done = PublisherProgramFixture::Prepared(host);
+    CHECK(done.installs.size() == 1 && done.installs[0].state == PreparationState::kReady);
+    CHECK(done.installs[0].launch_entry_id == "publisher" && done.installs[0].launch_path == "Game/game64.exe");
+    CHECK(done.generated_recipes.size() == 1 && done.generated_recipes[0].launch_entries.size() == 2);
+    const auto& entries = done.generated_recipes[0].launch_entries;
+    CHECK(entries[0].id == "publisher" && entries[0].executable == "Game/game64.exe");
+    CHECK(entries[1].id == "launch-1" && entries[1].executable == "Start.exe");
+    CHECK(done.generated_recipes[0].architecture == "pe64");
+    CHECK(p.f.Logged("publisher program app=4300 program=Game/game64.exe"));
+    CHECK(Read(p.game / "Title/helper.dll") == "helper");
+    host.Shutdown();
+  }
+  {
+    // The player's choice of Steam's entry, saved before preparing, wins.
+    PublisherProgramFixture p("Game/game64.exe");
+    GameSettingsRecord record;
+    record.revision = 1;
+    record.overrides["launch_option"] = "launch-1";
+    (*p.saved)[4300] = record;
+    RuntimeHost host(p.f.config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    const auto done = PublisherProgramFixture::Prepared(host);
+    CHECK(done.installs.size() == 1 && done.installs[0].state == PreparationState::kReady);
+    CHECK(done.installs[0].launch_entry_id == "launch-1" && done.installs[0].launch_path == "Start.exe");
+    CHECK(done.generated_recipes[0].launch_entries[0].id == "publisher");
+    host.Shutdown();
+  }
+  {
+    // A program the pack names but the game lacks: refused, saying which.
+    PublisherProgramFixture p("Game/game64.exe", false);
+    RuntimeHost host(p.f.config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    const auto done = PublisherProgramFixture::Prepared(host);
+    CHECK(done.installs.empty() && done.refusals.count(4300));
+    CHECK(done.refusals.at(4300) ==
+          "The Rockstar Games game program Game/game64.exe is missing or not a Windows program; verify the download.");
+    host.Shutdown();
+  }
+}
+
+// A game prepared before its pack named a program gets it on the next Play: the recipe lists it
+// first, and the next settings update starts it, unless the player chose a program.
+void PublisherProgramReachesAPreparedGame() {
+  {
+    PublisherProgramFixture p("");
+    {
+      RuntimeHost host(p.f.config);
+      CHECK(host.Start());
+      CHECK(WaitFor(host, Started).kit_available);
+      const auto done = PublisherProgramFixture::Prepared(host);
+      CHECK(done.installs.size() == 1 && done.installs[0].launch_path == "Start.exe");
+      CHECK(done.generated_recipes[0].launch_entries.size() == 1);
+      host.Shutdown();
+    }
+    p.WriteManifest("Game/game64.exe");  // a newer pack
+    RuntimeHost host(p.f.config);
+    CHECK(host.Start());
+    WaitFor(host, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+    // Play with unchanged settings: the recipe gets the program (and keeps its id and version).
+    auto played = PublisherProgramFixture::Played(host);
+    CHECK(played.generated_recipes.size() == 1 && played.generated_recipes[0].launch_entries.size() == 2);
+    CHECK(played.generated_recipes[0].launch_entries[0].id == "publisher");
+    CHECK(played.generated_recipes[0].launch_entries[1].id == "launch-1");
+    CHECK(played.generated_recipes[0].id == "steam-4300-auto");
+    const auto saved_recipe = Read(p.f.fixture.root / "data/runtime-state/recipe-steam-4300-auto.json");
+    CHECK(saved_recipe.find("Game/game64.exe") != std::string::npos);
+    CHECK(p.f.Logged("publisher program app=4300 program=Game/game64.exe added to recipe=steam-4300-auto"));
+    // A settings update publishes it as the program that starts.
+    GameSettingsRecord record;
+    record.revision = played.installs[0].settings_revision + 1;
+    (*p.saved)[4300] = record;
+    played = PublisherProgramFixture::Played(host);
+    CHECK(played.installs[0].launch_entry_id == "publisher" && played.installs[0].launch_path == "Game/game64.exe");
+    CHECK(played.installs[0].settings_revision == record.revision);
+    CHECK(p.f.Logged("program switch app=4300 from=launch-1:Start.exe to=publisher:Game/game64.exe"));
+    // Playing again changes nothing more.
+    played = PublisherProgramFixture::Played(host);
+    CHECK(played.installs[0].launch_path == "Game/game64.exe" && played.generated_recipes[0].launch_entries.size() == 2);
+    host.Shutdown();
+    // After a restart the amended recipe is read back.
+    RuntimeHost restarted(p.f.config);
+    CHECK(restarted.Start());
+    const auto reloaded = WaitFor(restarted, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+    CHECK(reloaded.generated_recipes[0].launch_entries[0].id == "publisher");
+    restarted.Shutdown();
+  }
+  {
+    // The player's saved choice of Steam's entry stays.
+    PublisherProgramFixture p("");
+    {
+      RuntimeHost host(p.f.config);
+      CHECK(host.Start());
+      CHECK(WaitFor(host, Started).kit_available);
+      CHECK(PublisherProgramFixture::Prepared(host).installs.size() == 1);
+      host.Shutdown();
+    }
+    p.WriteManifest("Game/game64.exe");
+    GameSettingsRecord record;
+    record.revision = 1;
+    record.overrides["launch_option"] = "launch-1";
+    (*p.saved)[4300] = record;
+    RuntimeHost host(p.f.config);
+    CHECK(host.Start());
+    WaitFor(host, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+    const auto played = PublisherProgramFixture::Played(host);
+    CHECK(played.installs[0].settings_revision == 1);  // the update ran
+    CHECK(played.installs[0].launch_entry_id == "launch-1" && played.installs[0].launch_path == "Start.exe");
+    CHECK(played.generated_recipes[0].launch_entries[0].id == "publisher");
+    CHECK(!p.f.Logged("program switch app=4300"));
+    host.Shutdown();
+  }
+  {
+    // The program the newer pack names is missing: Play says so and changes nothing.
+    PublisherProgramFixture p("", false);
+    {
+      RuntimeHost host(p.f.config);
+      CHECK(host.Start());
+      CHECK(WaitFor(host, Started).kit_available);
+      CHECK(PublisherProgramFixture::Prepared(host).installs.size() == 1);
+      host.Shutdown();
+    }
+    p.WriteManifest("Game/game64.exe");
+    RuntimeHost host(p.f.config);
+    CHECK(host.Start());
+    WaitFor(host, [](const RuntimeSnapshot& s) { return Started(s) && !s.generated_recipes.empty(); });
+    const auto played = PublisherProgramFixture::Played(host);
+    CHECK(played.play_refusals.count(4300) &&
+          played.play_refusals.at(4300) ==
+              "The Rockstar Games game program Game/game64.exe is missing or not a Windows program; verify the download.");
+    CHECK(played.generated_recipes[0].launch_entries.size() == 1 && played.installs[0].launch_path == "Start.exe");
+    host.Shutdown();
+  }
+}
+
+// A publisher game's first start is from Home, outside Play: the credential is placed when the game
+// is prepared (or the account signs in while it waits), and only when the account is signed in.
+void PlacesPublisherCredentialForAStartFromHome() {
+  const char* const good = R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})";
+  const auto waits = [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].awaiting_registration;
+  };
+  {
+    PublisherFixture f;
+    f.fixture.registers = false;
+    RuntimeHost host(f.config);
+    f.host = &host;
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, good, std::chrono::seconds(30)).ok);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    CHECK(fs::exists(f.title / "credential.txt"));
+    CHECK(f.Logged("publisher credential app=220 placed"));
+    // Signing out takes it away again.
+    host.SignOutPublisher(Publisher::kRockstar);
+    WaitFor(host, [&](const RuntimeSnapshot&) { return !fs::exists(f.title / "credential.txt"); }, 30);
+    CHECK(!fs::exists(f.title / "credential.txt"));
+  }
+  {
+    PublisherFixture f;
+    f.fixture.registers = false;
+    RuntimeHost host(f.config);
+    f.host = &host;
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    CHECK(!fs::exists(f.title / "credential.txt"));
+    CHECK(f.Logged("publisher credential app=220 not placed for a start from Home"));
+    // The account signs in while the game waits: it gets the credential then.
+    CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, good, std::chrono::seconds(30)).ok);
+    CHECK(fs::exists(f.title / "credential.txt"));
+  }
+}
+
+// Playden quits so the publisher game the player chose Play on starts from Home: a system
+// notification says when that start will lack the publisher's sign-in. A quit for anything else,
+// or Play on another game, says nothing about it.
+void NotifiesAtQuitWhenAHomeStartLacksTheSignIn() {
+  const char* const good = R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})";
+  const auto waits = [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].awaiting_registration;
+  };
+  const auto waiting = [&](PublisherFixture& f, RuntimeHost& host) {
+    f.fixture.registers = false;
+    f.host = &host;
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+  };
+  {
+    // Signed out: one notification, sent before Shutdown returns.
+    PublisherFixture f;
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    CHECK(f.Notices().empty());
+    host.ReportHomeStartsAtQuit(220);
+    host.Shutdown();
+    const auto notices = f.Notices();
+    CHECK(notices.size() == 1);
+    CHECK(notices[0].find(": not signed in to Rockstar Games. The game starts without your Rockstar Games account. "
+                          "Sign in from Playden › Settings › Account.") != std::string::npos);
+    CHECK(notices[0].rfind("Half-Life", 0) == 0);
+  }
+  {
+    // Play on another game: the publisher game waiting beside it is not the one starting.
+    PublisherFixture f;
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    host.ReportHomeStartsAtQuit(4242);
+    host.Shutdown();
+    CHECK(f.Notices().empty());
+  }
+  {
+    // Play on a waiting game of no staged publisher: nothing to say.
+    PublisherFixture f("220", false);
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    host.Prepare(Hl2());
+    CHECK(!WaitFor(host, waits, 60).installs[0].publisher);
+    host.ReportHomeStartsAtQuit(220);
+    host.Shutdown();
+    CHECK(f.Notices().empty());
+  }
+  {
+    // Signed in: the credential is in place, nothing to say.
+    PublisherFixture f;
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, good, std::chrono::seconds(30)).ok);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    host.ReportHomeStartsAtQuit(220);
+    host.Shutdown();
+    CHECK(f.Notices().empty());
+    CHECK(fs::exists(f.title / "credential.txt"));
+  }
+  {
+    // Expired since the game was prepared: the expired notification, and no credential stays.
+    PublisherFixture f;
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, good, std::chrono::seconds(30)).ok);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    std::string reason;
+    CHECK(MarkPublisherAccountExpired(f.accounts.string(), Publisher::kRockstar, &reason));
+    host.ReportHomeStartsAtQuit(220);
+    host.Shutdown();
+    const auto notices = f.Notices();
+    CHECK(notices.size() == 1 && notices[0].rfind("Half-Life", 0) == 0);
+    CHECK(notices[0].find(": your Rockstar Games sign-in has expired. Sign in again in Playden first.") !=
+          std::string::npos);
+    CHECK(!fs::exists(f.title / "credential.txt"));
+  }
+  {
+    // Signed in, but the pack now refuses the account's credential: Playden could not prepare it.
+    PublisherFixture f;
+    {
+      RuntimeHost host(f.config);
+      waiting(f, host);
+      CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, good, std::chrono::seconds(30)).ok);
+      host.Prepare(Hl2());
+      WaitFor(host, waits, 60);
+      host.Shutdown();
+    }
+    auto manifest = PublisherManifest("220");
+    manifest.replace(manifest.find("\"min\": 8"), 8, "\"min\": 32");
+    Write(f.pack / "stage.json", manifest, 0644);
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    CHECK(WaitFor(host, waits, 30).installs[0].publisher == Publisher::kRockstar);
+    host.ReportHomeStartsAtQuit(220);
+    host.Shutdown();
+    const auto notices = f.Notices();
+    CHECK(notices.size() == 1 && notices[0].rfind("Half-Life", 0) == 0);
+    CHECK(notices[0].find(": Playden could not prepare the Rockstar Games sign-in (") != std::string::npos);
+    CHECK(notices[0].find("can't be used. Sign in again).") != std::string::npos);
+  }
+  {
+    // Signed out, but Playden quits without Play on the waiting game: no notification.
+    PublisherFixture f;
+    RuntimeHost host(f.config);
+    waiting(f, host);
+    host.Prepare(Hl2());
+    WaitFor(host, waits, 60);
+    host.Shutdown();
+    CHECK(f.Notices().empty());
+  }
+}
+
+// A start from the PS5 Home screen leaves a status Playden reads when it next starts: an expired
+// sign-in expires the account and a start without any sign-in leaves it as it is; both are said as
+// system notifications. Statuses of Playden's own sessions are not.
+void NotifiesAboutTheStatusOfAStartFromHome() {
+  const char* const good = R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})";
+  for (const bool expired : {true, false}) {
+    PublisherFixture f;
+    {
+      RuntimeHost host(f.config);
+      f.host = &host;
+      f.PrepareReady(host);
+      CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, good, std::chrono::seconds(30)).ok);
+      host.Shutdown();
+    }
+    CHECK(f.Notices().empty());
+    // The game ran from Home and left its status; it is still running when Playden starts again.
+    Write(f.title / ".examplepub/status", expired ? "state=stale\n" : "state=none\n", 0644);
+    f.fixture.activity->store(static_cast<int>(NativeActivity::kActive));
+    {
+      RuntimeHost host(f.config);
+      f.host = &host;
+      CHECK(host.Start());
+      WaitFor(host, [](const RuntimeSnapshot& s) {
+        return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+      }, 30);
+      host.Shutdown();
+    }
+    CHECK(f.Notices().empty() && fs::exists(f.title / ".examplepub/status"));
+    // Stopped: the status is read once and said.
+    f.fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+    RuntimeHost host(f.config);
+    f.host = &host;
+    CHECK(host.Start());
+    for (int i = 0; i < 300 && f.Notices().empty(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto notices = f.Notices();
+    CHECK(notices.size() == 1 && notices[0].rfind("Half-Life", 0) == 0);
+    CHECK(!fs::exists(f.title / ".examplepub/status"));
+    const auto account = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+    }, 30).publishers.at(Publisher::kRockstar).account;
+    if (expired) {
+      CHECK(notices[0].find(": your Rockstar Games sign-in expired during the last start. Sign in again in Playden "
+                            "\u203a Settings \u203a Account.") != std::string::npos);
+      CHECK(account == PublisherAccountState::kExpired);
+    } else {
+      CHECK(notices[0].find(" started without your Rockstar Games sign-in. Start it from Playden once to sign in.") !=
+            std::string::npos);
+      CHECK(account == PublisherAccountState::kSignedIn);
+      CHECK(f.Logged("publisher status app=220 expired=0 missing=1 from Home"));
+    }
+    host.Shutdown();
+  }
+}
+
+// A status beside a session Playden started and has not seen end is that session's: it is not
+// reported as a start from Home.
+void StatusOfAPendingSessionIsNotAHomeStart() {
+  PublisherFixture f;
+  {
+    RuntimeHost host(f.config);
+    f.host = &host;
+    f.PrepareReady(host);
+    CHECK(host.SubmitPublisherSignInNow(Publisher::kRockstar, R"({"token":"c2VjcmV0dG9rZW4=","name":"Player"})",
+                                        std::chrono::seconds(30)).ok);
+    host.Play(220);
+    WaitFor(host, [](const RuntimeSnapshot& s) { return s.handoff_ready; }, 30);
+    CHECK(host.Handoff() && f.launches.size() == 1);
+    host.Shutdown();
+  }
+  Write(f.title / ".examplepub/status", "state=none\n", 0644);
+  RuntimeHost host(f.config);
+  f.host = &host;
+  CHECK(host.Start());
+  WaitFor(host, [](const RuntimeSnapshot& s) {
+    return s.publishers.count(Publisher::kRockstar) && s.publishers.at(Publisher::kRockstar).pack_checked;
+  }, 30);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  host.Shutdown();
+  CHECK(f.Notices().empty());
+  CHECK(!f.Logged("from Home"));
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_runtime_dir = argv[1];
@@ -10554,6 +11343,16 @@ int main(int argc, char** argv) {
   ImportedFolderRecipeStartsItsProgram();
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
+  StagesPublisherGameAndPlaysWithAccount();
+  ExtractsPublisherRuntimeFromTheGamesInstaller();
+  PublisherGamesThePackDoesNotCoverAreUntouched();
+  PublisherProgramStartsAFreshlyPreparedGame();
+  PublisherProgramReachesAPreparedGame();
+  PublisherGameWithoutPackSaysWhy();
+  PlacesPublisherCredentialForAStartFromHome();
+  NotifiesAtQuitWhenAHomeStartLacksTheSignIn();
+  NotifiesAboutTheStatusOfAStartFromHome();
+  StatusOfAPendingSessionIsNotAHomeStart();
   std::puts("runtime host tests passed");
   return 0;
 }

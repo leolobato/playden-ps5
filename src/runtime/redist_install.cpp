@@ -882,9 +882,11 @@ namespace {
 class RedistRun {
  public:
   RedistRun(const std::string& game_root, const std::string& install_dir, const std::string& prefix_dir,
-            std::int64_t unix_time, bool burn_bundles, const RedistProgress& progress)
+            std::int64_t unix_time, bool burn_bundles, const RedistProgress& progress,
+            std::set<std::string> publishers = {})
       : game_root_(game_root), install_dir_(install_dir), prefix_(prefix_dir), unix_time_(unix_time),
-        burn_bundles_(burn_bundles), progress_(progress), installed_(InstalledPackages(prefix_)) {}
+        burn_bundles_(burn_bundles), progress_(progress), installed_(InstalledPackages(prefix_)),
+        publishers_(std::move(publishers)) {}
 
   void Run(const std::string& script, const RedistEntry& entry);
   RedistInstallResult& result() { return result_; }
@@ -903,6 +905,7 @@ class RedistRun {
   const bool burn_bundles_;
   const RedistProgress& progress_;
   std::map<std::string, std::string> installed_;
+  std::set<std::string> publishers_;              // publisher installers (lowercased) the publisher covers
   std::map<std::string, std::string> failed_;     // hash and folder -> why
   std::set<std::string> without_package_;         // setup programs' hashes
   std::set<std::string> bundles_without_msi_;     // Burn bundles' hashes
@@ -975,6 +978,13 @@ void RedistRun::Run(const std::string& script, const RedistEntry& entry) {
   RedistOutcome outcome;
   outcome.script = script;
   outcome.name = entry.name;
+  // The game's publisher stands in for its own installers (its runtime, its launcher): treat them as covered.
+  if (std::string program; InsideGame(entry.process, install_dir_, &program) && publishers_.count(Lower(program))) {
+    outcome.result = "covered";
+    outcome.detail = "publisher: " + program;
+    result_.outcomes.push_back(std::move(outcome));
+    return;
+  }
   std::string package;
   const auto action = ClassifyRedist(entry, install_dir_, &package);
   if (action == RedistAction::kNotRun && InsideGame(entry.process, install_dir_, &package) && package.size() > 4 &&
@@ -1075,7 +1085,10 @@ RedistInstallResult InstallRedistEntries(const std::string& game_root, const std
 
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,
                                             const std::string& prefix_dir, std::int64_t unix_time, bool find_physx,
-                                            const RedistProgress& progress) {
+                                            const RedistProgress& progress,
+                                            const std::vector<std::string>& publisher_installers) {
+  std::set<std::string> publisher;
+  for (const auto& path : publisher_installers) publisher.insert(Lower(path));
   std::vector<std::string> scripts;
   {
     // The top level first (its scripts' registry values are ApplyInstallScripts' job too).
@@ -1092,7 +1105,7 @@ RedistInstallResult InstallRedistributables(const std::string& game_root, const 
     if (scripts.size() > kMaxScripts) scripts.resize(kMaxScripts);
   }
   // Steam's scripts are run as they always were: a Burn bundle they name is not looked into.
-  RedistRun run(game_root, install_dir, prefix_dir, unix_time, /*burn_bundles=*/false, progress);
+  RedistRun run(game_root, install_dir, prefix_dir, unix_time, /*burn_bundles=*/false, progress, publisher);
   auto& result = run.result();
   for (const auto& script : scripts) {
     std::string text, reason;

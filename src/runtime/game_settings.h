@@ -437,6 +437,8 @@ struct EffectiveSettings {
 
 // The launch entry id of a program the player chose from the game folder.
 inline constexpr const char* kProgramEntryId = "program";
+// The launch entry id of the program a publisher's pack names for the game.
+inline constexpr const char* kPublisherEntryId = "publisher";
 // Override key prefix for "Change anyway" on a row the recipe locks: "unlock.<setting id>" = "on".
 inline constexpr const char* kUnlockPrefix = "unlock.";
 bool IsUnlockKey(std::string_view key);
@@ -540,6 +542,15 @@ struct ProfileTarget {
   // steam-library-path); empty: the game is seen at its real path only. The profile names it only while the game's
   // Steam library folder row is Steam's folder.
   std::string steam_install_dir;
+  // A launcher a publisher's pack runs beside the game ([helper], kit capability helper-process): its program
+  // relative to install_root ('/' separated), the file below drive_c it writes when the game may start, and the
+  // seconds to wait for it. Empty program: none. The Steam host of Steam features = Online takes the one helper
+  // a title runs, so this one is left out for an Online game.
+  std::string helper_program;
+  std::string helper_ready;
+  std::uint32_t helper_wait = 0;
+  // "launcher" when the publisher helper is the game's required launcher: the profile marks it identity = launcher.
+  std::string helper_identity;
 };
 
 // The full prospero profile: [application], [display], [input] and [debug].
@@ -640,6 +651,9 @@ std::optional<std::string> CommunityRecipeSlug(std::string_view id, const GameRe
 // What the player chose in Game settings that changes how the recipe is generated.
 struct RecipeChoices {
   std::string program;      // game-relative .exe to start (entry kProgramEntryId, first); empty: Steam's
+  // Game-relative .exe a publisher's pack starts instead of Steam's launcher (entry
+  // kPublisherEntryId, after the player's program and before Steam's, so it is the default).
+  std::string publisher_program;
   bool try_anyway = false;  // soft refusals (.NET, a shared section) do not skip a program
 };
 // The player's choices from a settings record.

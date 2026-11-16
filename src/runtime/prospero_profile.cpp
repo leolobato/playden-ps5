@@ -376,6 +376,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       } else if (key == "wait") {
         const long seconds = IsDigits(value, 3) ? std::atol(std::string(value).c_str()) : 0;
         if (seconds < 1 || seconds > 120) return bad("not 1-120");
+      } else if (key == "identity") {
+        if (value != "launcher") return bad("not launcher");
       } else {
         return fail("unknown [helper] key " + key);
       }

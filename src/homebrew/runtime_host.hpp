@@ -13,6 +13,9 @@
 #include "runtime/leftover_titles.h"
 #include "runtime/online_session.h"
 #include "runtime/package_installer.h"
+#include "runtime/publisher_account.h"
+#include "runtime/publisher_manifest.h"
+#include "runtime/publisher_pack.h"
 #include "runtime/recipe_choice.h"
 #include "runtime/redist_install.h"
 
@@ -66,6 +69,21 @@ struct TitleRemoverResult {
   std::string detail;
 };
 
+// A publisher's unpacked pack release (its folder, a host path), or why its games can't use it.
+struct PublisherReleaseResult {
+  bool ok = false;
+  std::string directory;
+  std::string message;  // for the player
+};
+
+// A publisher's runtime made from a game's own installer: its version folder (a host path), or
+// why not.
+struct PublisherRuntimeResult {
+  bool ok = false;
+  std::string version_dir;
+  std::string reason;  // for the player
+};
+
 struct RuntimeHostConfig {
   // Existing trusted parent of state_root (for example /data).
   std::filesystem::path boundary;
@@ -103,6 +121,9 @@ struct RuntimeHostConfig {
   std::function<std::int64_t()> unix_time;
   // Diagnostic lines (no credentials): startup, each preparation step and refusals.
   std::function<void(const std::string&)> log;
+  // Shows a PS5 system notification (the bubble over any screen, the Home screen included), for
+  // what the player needs to know outside Playden. Called on the worker. Empty: only logged.
+  std::function<void(const std::string& text)> system_notification;
   // Held around startup and each batch of work on the worker: while the token lives, nothing
   // else may raise root, which is process-wide and would fail the worker's ownership checks
   // (ps5::HoldEffectiveUid). Empty holds nothing.
@@ -188,6 +209,25 @@ struct RuntimeHostConfig {
   // Console path of the folder holding the games' Cloud indexes (.playden-saves on console storage).
   std::string cloud_saves_root;
   std::function<bool(std::string* error)> finish_games_move;
+  // Publisher games (runtime/publisher_*.h): the console folder with the uploaded pack
+  // (<root>/<version>/). The upload tool creates it over FTP, so Playden can't write there.
+  std::string publisher_root = runtime::kPublisherPackRoot;
+  // Playden's own publisher folder (console path): unpacked releases (<work>/cache/) and the
+  // runtimes made from games' installers (<work>/runtime/<publisher>/).
+  std::string publisher_work_root = "/data/playden/publisher-work";
+  // Where pack releases are unpacked (console path); empty: <publisher_work_root>/cache.
+  std::string publisher_cache_root;
+  // Where publisher accounts are kept (the Steam state root, host path); empty: state_root.
+  std::filesystem::path publisher_account_root;
+  // Finds and verifies the pack and unpacks one publisher's release (worker only). Empty: the
+  // pinned pack under publisher_root, hashed once while it passes, unpacked into the cache root.
+  std::function<PublisherReleaseResult(runtime::Publisher publisher)> publisher_release;
+  // Makes sure the publisher's runtime is extracted from the game's installer below install_root
+  // (a host path) and returns its version folder (worker only). Empty: extracted from the
+  // installer (runtime/publisher_runtime.h) into <publisher_work_root>/runtime/<slug>/.
+  std::function<PublisherRuntimeResult(const runtime::PublisherRuntimeSpec& spec, const std::string& install_root,
+                                       runtime::Publisher publisher)>
+      ensure_publisher_runtime;
   // SQLite and the native readers run on this worker. PS5 std::thread stacks are
   // too small for them, so the worker uses an explicit stack size.
   std::size_t stack_bytes = 1024 * 1024;
@@ -259,6 +299,9 @@ struct RuntimeInstallView {
   std::size_t save_backups = 0;
   std::int64_t latest_save_backup = 0;
   std::string failure_code;  // Recorded preparation failure; the message remains available in diagnostics.
+  // A publisher whose files Playden places in the game folder (RuntimeSnapshot::publishers),
+  // found in the game's files; nothing for other games.
+  std::optional<runtime::Publisher> publisher;
 };
 
 // Work on a prepared game's files, run while its PS5 title is stopped.
@@ -268,6 +311,7 @@ enum class RuntimeMaintenance {
   kRepair,            // fix the bottle's start files, then apply the settings
   kBackupSaves,       // copy the bottle's Windows user folders aside
   kRegisterAgain,     // unregister the PS5 title and register it again with the parameters Playden writes now
+  kRepairPublisher,   // take the publisher's files out of the game folder and place them again
 };
 
 // The newest maintenance request for one game.
@@ -301,6 +345,34 @@ struct SteamLaunchChoice {
   std::string path;     // as Steam names it, '/' separated
   bool helper = false;  // an installer or tool (the import rules)
 };
+// A publisher whose games Playden stages: its account on the console and its part of the pack.
+struct RuntimePublisherView {
+  runtime::Publisher publisher = runtime::Publisher::kRockstar;
+  std::string name;  // "Rockstar Games"
+  runtime::PublisherAccountState account = runtime::PublisherAccountState::kSignedOut;
+  std::string display;            // the account's name, when signed in or expired
+  std::uint64_t obtained_at = 0;  // Unix time of the sign-in
+  // Whether the pack was checked yet, and whether its games can be staged; otherwise why not.
+  bool pack_checked = false;
+  bool pack_ready = false;
+  std::string pack_message;
+  std::string signin_page;    // the pack's sign-in page (host path), "" when it has none
+  std::string runtime_label;  // the runtime the pack makes from games' installers, "" when none
+};
+
+// How the latest publisher sign-in submission ended.
+struct RuntimePublisherSignIn {
+  std::uint64_t serial = 0;  // SubmitPublisherSignIn's return value
+  runtime::Publisher publisher = runtime::Publisher::kRockstar;
+  bool ok = false;
+  std::string display;  // the account's name on success
+  std::string message;  // why not, for the player
+};
+
+// RuntimeSnapshot::play_refusal_codes: Play needs the player to sign in to the game's publisher.
+inline constexpr const char* kPlayRefusalPublisherSignIn = "publisher-sign-in";
+// The pack doesn't list the game (it is a publisher game Playden can't start yet).
+inline constexpr const char* kPlayRefusalPublisherUnsupported = "publisher-unsupported";
 
 // What Game settings needs to pick a game's program: the Windows programs in its folder and,
 // for a game Playden could not prepare, a draft recipe to start the sheet from.
@@ -385,6 +457,10 @@ struct RuntimeSnapshot {
   // How far the current copy or deletion (including a leftover title) is, when
   // that is measurable; absent for steps whose progress is unknown.
   std::optional<float> work_progress;
+  // A step of a game's work the install journal doesn't name (a publisher runtime being
+  // extracted, during preparation or Play), in player words; work_progress tells how far it is.
+  std::optional<std::uint32_t> work_app;
+  std::string work_step;
   std::optional<RuntimeLaunchView> launch;
   // Settings requests no install record's journal names: left by an interrupted
   // preparation, a refused request or a finished publication. They grant nothing.
@@ -395,8 +471,10 @@ struct RuntimeSnapshot {
   std::uint64_t activity_serial = 0;
   // Play requests the worker has finished handling (accepted or refused).
   std::uint64_t plays_handled = 0;
-  // Latest refused Play per runtime number, for presentation.
+  // Latest refused Play per runtime number, for presentation, and the code of those the UI acts on
+  // (kPlayRefusalPublisherSignIn opens the publisher's sign-in).
   std::map<std::uint32_t, std::string> play_refusals;
+  std::map<std::uint32_t, std::string> play_refusal_codes;
   // A checked session waits for Handoff on the application thread.
   bool handoff_ready = false;
   // Recipes Playden generated (from Steam's launch options or the game's files), for the settings sheet.
@@ -456,6 +534,9 @@ struct RuntimeSnapshot {
   // and the recipes unfinished settings transactions carry. The wanted choices of games are in the
   // settings file, which the cache's owner reads itself.
   std::vector<std::string> community_references;
+  // Publishers whose games Playden stages, and the latest sign-in submission.
+  std::map<runtime::Publisher, RuntimePublisherView> publishers;
+  std::optional<RuntimePublisherSignIn> publisher_sign_in;
 };
 
 // Whether the game's preparation waits in the runtime's queue.
@@ -541,6 +622,11 @@ class RuntimeHost {
 
   bool Start();
   void Shutdown();
+  // Playden quits so the player starts app_id, the game they chose Play on, from the PS5 Home
+  // screen: when that game is a publisher game waiting for the PS5 that will start without its
+  // publisher's sign-in (signed out, expired, or not placed), the next Shutdown first says so as a
+  // system notification. Other games waiting for the PS5 are not reported; 0 reports nothing.
+  void ReportHomeStartsAtQuit(std::uint32_t app_id);
   RuntimeSnapshot Snapshot() const;
   // Before any download service receives its games root.
   bool WaitForStartup();
@@ -648,6 +734,18 @@ class RuntimeHost {
   // waiting now, and new ones are refused, so the install and Local workers they block can be
   // joined before this host shuts down. Doesn't stop the worker (Shutdown does); safe to call twice.
   void BeginClosing();
+  // Publisher accounts, handled on the worker. A sign-in is the credential JSON the player's
+  // sign-in delivered (wiped here once handled); its outcome is RuntimeSnapshot::publisher_sign_in
+  // with the returned serial, and the account is in RuntimeSnapshot::publishers.
+  std::uint64_t SubmitPublisherSignIn(runtime::Publisher publisher, std::string credential);
+  // The same, waiting up to `timeout` for the outcome (for the sign-in relay's answer). A timeout
+  // answers not ok ("Playden is busy") and withdraws the sign-in: it is never kept later. One the
+  // worker is already keeping is waited for, so the answer always matches the account.
+  RuntimePublisherSignIn SubmitPublisherSignInNow(runtime::Publisher publisher, std::string credential,
+                                                  std::chrono::milliseconds timeout);
+  void SignOutPublisher(runtime::Publisher publisher);
+  // Checks the publisher pack again (an upload while Playden runs) and reloads the accounts.
+  void RefreshPublishers();
   // Application thread only: starts the title of a prepared launch session.
   // Returns false when no session is waiting.
   bool Handoff();
@@ -887,7 +985,7 @@ class RuntimeHost {
                       const runtime::OnlineLaunch& online, const char* when);
   // HandOverForHome's work, on the worker: only for a game waiting for the PS5 whose title has its saved settings.
   void HomeHandoff(Composition& composition, std::uint32_t runtime_number);
-  std::string InstallScriptsStep(const GameFiles& files);                        // and redistributables
+  std::string InstallScriptsStep(Composition& composition, const GameFiles& files);  // and redistributables
   // A GOG game's setRegistry values (its products' goggame-<id>.script), after RecipeRegistryStep.
   std::string GogRegistryStep(const GameFiles& files);
   // A GOG game's redistributables (its .playden-gog/redist.list), at InstallScriptsStep's end; the outcomes go to log.
@@ -1005,6 +1103,51 @@ class RuntimeHost {
   // Settings request files that no record's journal names; with remove, deletes them.
   std::size_t LeftoverRequests(Composition& composition, bool remove);
   void RemoveFinishedRequests(Composition& composition);
+  // Publisher games: the publisher found in a game's files (cached per install), its unpacked
+  // release and stage manifest, staging, the credential before Play and the status after it.
+  struct PublisherRequest;
+  struct InstallPublisher;
+  const InstallPublisher* PublisherOf(Composition& composition, const runtime::RuntimeInstall& record);
+  // Empty when the publisher's pack release and manifest are loaded, otherwise why not.
+  std::string LoadPublisher(Composition& composition, runtime::Publisher publisher);
+  std::string StagePublisher(Composition& composition, const runtime::RuntimeInstall& record);
+  // The program the publisher's pack names for a game (titles[<app>].program, relative to the
+  // install root), or "" when it names none or the pack can't be used yet (staging says why).
+  std::string PublisherProgram(Composition& composition, std::uint32_t app_id, runtime::Publisher publisher);
+  // The launcher a publisher's pack runs beside the game (stage manifest "helper"), set on the profile target
+  // when the game is a staged publisher game whose pack names one.
+  void PublisherHelperTarget(Composition& composition, const runtime::RuntimeInstall& record, runtime::ProfileTarget* target);
+  // A prepared game whose generated recipe predates the publisher's program gets it as the
+  // recipe's default launch entry (same recipe id and version); a settings update then starts it,
+  // unless the player chose a program. Empty on success or with nothing to do, otherwise why the
+  // game can't start.
+  std::string AdoptPublisherProgram(Composition& composition, const runtime::RuntimeInstall& record);
+  // The default ensure_publisher_runtime: extracts below <publisher_work_root>/runtime/<slug>/, one
+  // extraction per folder at a time, reporting its progress as work.
+  PublisherRuntimeResult EnsurePublisherRuntime(const runtime::PublisherRuntimeSpec& spec,
+                                                const std::string& install_root, runtime::Publisher publisher);
+  // *failure, when given, gets the bare reason a signed-in account's credential could not be made
+  // or written.
+  std::string PlacePublisherCredential(Composition& composition, const runtime::RuntimeInstall& record,
+                                       std::string* code, bool* placed, std::string* failure = nullptr);
+  // Places the credential for a start outside Play (from Home); logs when it cannot.
+  void PlacePublisherCredentialForHome(Composition& composition, const runtime::RuntimeInstall& record);
+  void RemovePublisherCredentialFor(Composition& composition, const runtime::RuntimeInstall& record);
+  // Takes the credential out of every staged game folder of publisher.
+  void RemovePublisherCredentialsOf(Composition& c, runtime::Publisher publisher);
+  // Reads the status a game's last session left. from_home: a session Playden didn't start (from
+  // the PS5 Home screen), which the player is told about as a system notification.
+  void ApplyPublisherStatus(Composition& composition, const runtime::RuntimeInstall& record, bool from_home = false);
+  // Statuses left by starts from Home of publisher's stopped games with no Playden session pending.
+  void ApplyHomeStatuses(Composition& composition, runtime::Publisher publisher);
+  // ReportHomeStartsAtQuit's notification for app_id (worker, while stopping).
+  void ReportHomeStarts(Composition& composition, std::uint32_t app_id);
+  void Notify(const std::string& text) const;
+  std::string RestorePublisher(Composition& composition, const runtime::RuntimeInstall& record, bool removing = false);
+  void RunPublisherRequest(Composition* composition, PublisherRequest& request);
+  void PublishPublishers(Composition& composition);
+  std::filesystem::path PublisherAccountRoot() const;
+  std::string GameName(const runtime::RuntimeInstall& record) const;
   bool Stopping() const;
   void Log(const std::string& line) const;
   void LogSteamStubPrograms(std::uint32_t app, const std::vector<runtime::GameProgram>& programs) const;
@@ -1063,11 +1206,19 @@ class RuntimeHost {
   std::uint64_t home_handoffs_requested_ = 0;
   std::vector<std::uint32_t> activity_requests_;
   std::vector<std::shared_ptr<PendingRelocation>> relocation_requests_;  // guarded by mutex_
+  std::vector<std::unique_ptr<PublisherRequest>> publisher_requests_;
+  std::uint64_t publisher_serial_ = 0;  // guarded by mutex_
+  // SubmitPublisherSignInNow and the worker, guarded by mutex_: sign-ins whose waiter gave up
+  // (answered busy) while the worker held them, so they are never kept; and the sign-in the
+  // worker is keeping now, which its waiter waits for instead.
+  std::set<std::uint64_t> withdrawn_sign_ins_;
+  std::uint64_t keeping_sign_in_ = 0;
   int work_percent_ = -1;  // worker thread only: the published work percent, -1 for none
   bool launch_poll_ = false;
   // More games to publish for a USB drive that changed places, and when to try next. Guarded by mutex_.
   bool drive_updates_pending_ = false;
   std::chrono::steady_clock::time_point drive_update_not_before_{};
+  std::uint32_t report_home_start_ = 0;  // guarded by mutex_: the app ReportHomeStartsAtQuit names
   bool cleanup_requested_ = false;
   bool measure_requested_ = false;
   bool kit_reload_requested_ = false;  // guarded by mutex_

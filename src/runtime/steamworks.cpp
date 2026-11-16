@@ -352,10 +352,14 @@ std::vector<std::string> SteamInterfaces(std::string_view bytes) {
     check(bytes.substr(start, at - start));
     start = at + 1;
   }
-  // New SDKs keep the legacy SteamClient() export at v017 beside newer versions.
-  if (found.count("SteamClient017"))
+  // New SDKs keep the legacy SteamClient() export at v017 beside the version they were built
+  // with, and only one SteamClient line is kept. 017 is the one verified with later SDKs; games
+  // of the v020 SDK need 020 (with 017 they miss SteamController007 and GetISteamUGC).
+  if (found.count("SteamClient017")) {
+    const std::string keep = found.count("SteamClient020") ? "SteamClient020" : "SteamClient017";
     for (auto it = found.begin(); it != found.end();)
-      it = it->rfind("SteamClient", 0) == 0 && *it != "SteamClient017" ? found.erase(it) : std::next(it);
+      it = it->rfind("SteamClient", 0) == 0 && *it != keep ? found.erase(it) : std::next(it);
+  }
   return {found.begin(), found.end()};
 }
 

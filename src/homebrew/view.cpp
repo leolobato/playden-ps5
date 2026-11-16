@@ -513,6 +513,9 @@ class Render::Impl
         case Route::SignIn:
             draw_sign_in(scene, route_view, state);
             break;
+        case Route::PublisherSignIn:
+            draw_publisher_sign_in(route_view, state);
+            break;
         case Route::Home:
             draw_home(scene, simulation);
             break;
@@ -1294,16 +1297,19 @@ class Render::Impl
             link_qr_url_ = link;
             link_qr_ = link.empty() ? QrMatrix{} : encode_qr(link);
         }
-        const bool usable = state.account().authentication == AuthState::Waiting &&
-                            !state.account().challenge_url.empty();
+        // The publisher sign-in screen shows its phone page; otherwise the Steam challenge.
+        const bool publisher = state.navigation.route == Route::PublisherSignIn;
+        const std::string &url = publisher ? state.publishers.sign_in.address : state.account().challenge_url;
+        const bool usable = !url.empty() && (publisher ? publisher_code_shown(state.publishers.sign_in.state)
+                                                       : state.account().authentication == AuthState::Waiting);
         if (!usable) {
             clear_qr_cache();
             return;
         }
-        if (cached_qr_url_ == state.account().challenge_url)
+        if (cached_qr_url_ == url)
             return;
         clear_qr_cache();
-        cached_qr_url_ = state.account().challenge_url;
+        cached_qr_url_ = url;
         cached_qr_ = encode_qr(cached_qr_url_, &cached_qr_error_);
     }
 
@@ -1497,6 +1503,87 @@ class Render::Impl
         }
         scene_.circle(1198.0F, 772.0F, 7.0F, color);
         ui::text(scene_, fonts_.regular, status, 1220.0F, 780.0F, 25.0F, kText);
+    }
+
+    // While the publisher's sign-in page is open, its QR code stays on screen (a refused sign-in
+    // can be sent again from the same page).
+    static bool publisher_code_shown(PublisherSignInState state)
+    {
+        return state == PublisherSignInState::Waiting || state == PublisherSignInState::Connected ||
+               state == PublisherSignInState::Checking || state == PublisherSignInState::Refused;
+    }
+
+    // Publisher sign-in from the phone: the QR code opens Playden's one-time page on the local
+    // network, which hands the publisher's sign-in back to this screen.
+    void draw_publisher_sign_in(const ViewData &view, const State &state)
+    {
+        const LivePublisherSignIn &sign_in = state.publishers.sign_in;
+        std::string name;
+        for (const LivePublisher &publisher : state.publishers.publishers)
+            if (publisher.slug == sign_in.slug)
+                name = publisher.name;
+        section_label(name.empty() ? std::string("Publisher account") : name + " account", 96.0F, 78.0F);
+        draw_title(view, 96.0F, 272.0F, 760.0F);
+        // The steps, numbered, under the title.
+        float step_y = 470.0F;
+        for (const ViewRow &row : view.rows)
+        {
+            if (row.key.rfind("publisher-step-", 0) != 0)
+                continue;
+            scene_.circle(118.0F, step_y - 9.0F, 22.0F, kPanel);
+            ui::text(scene_, fonts_.semibold, row.value, 118.0F, step_y, 24.0F, kText, gfx::Align::center);
+            ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.title, 27.0F, 680.0F), 160.0F, step_y, 27.0F, kText);
+            step_y += 64.0F;
+        }
+        draw_actions(view, 96.0F, std::max(step_y + 24.0F, 560.0F), 540.0F);
+
+        constexpr float qr_x = 1116.0F;
+        constexpr float qr_y = 224.0F;
+        constexpr int qr_side = 430;
+        const auto side = static_cast<float>(qr_side);
+        switch (sign_in.state)
+        {
+        case PublisherSignInState::Idle:
+        case PublisherSignInState::Starting:
+            draw_qr_placeholder(qr_x, qr_y, side, "Preparing QR code", "Opening the sign-in page…");
+            break;
+        case PublisherSignInState::SignedIn:
+            draw_qr_placeholder(qr_x, qr_y, side, "Signed in", sign_in.display);
+            break;
+        case PublisherSignInState::Expired:
+            draw_qr_placeholder(qr_x, qr_y, side, "Code expired", "Get a new code");
+            break;
+        case PublisherSignInState::NoNetwork:
+            draw_qr_placeholder(qr_x, qr_y, side, "No network", "Connect the PS5 to a network");
+            break;
+        case PublisherSignInState::Failed:
+            draw_qr_placeholder(qr_x, qr_y, side, "Sign-in page unavailable", "Try again");
+            break;
+        default:
+            if (!cached_qr_error_.empty() || !draw_encoded_qr(qr_x, qr_y, qr_side))
+                draw_qr_placeholder(qr_x, qr_y, side, "QR code unavailable", "Try again");
+        }
+        // The address, for typing it on the phone, under the code.
+        if (publisher_code_shown(sign_in.state) && !sign_in.address.empty())
+            ui::text(scene_, fonts_.regular, fit(fonts_.regular, sign_in.address, 22.0F, 620.0F), qr_x + side * 0.5F,
+                     qr_y + side + 44.0F, 22.0F, kText.with_alpha(0.72F), gfx::Align::center);
+        for (const ViewRow &row : view.rows)
+        {
+            if (row.key != "publisher-status")
+                continue;
+            const gfx::Color color = row.tone == "good" ? kGreen : row.tone == "problem" ? kRed
+                                   : row.tone == "attention" ? kAmber : kAccent;
+            scene_.circle(1198.0F, 772.0F, 7.0F, color);
+            ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.title, 25.0F, 600.0F), 1220.0F, 780.0F, 25.0F, kText);
+            if (!row.value.empty())
+                ui::text(scene_, fonts_.regular, row.value, 1220.0F, 820.0F, 21.0F, kSecondary);
+        }
+        if (state.simulation_mode)
+        {
+            scene_.rounded_rect({1185.0F, 858.0F, 292.0F, 42.0F}, 21.0F, kAmber.with_alpha(0.18F));
+            ui::text(scene_, fonts_.semibold, "SIMULATED — NOT A LIVE PAGE", 1331.0F, 886.0F, 18.0F, kAmber,
+                     gfx::Align::center);
+        }
     }
 
     void draw_home(ui::Canvas &, Simulation &simulation)
@@ -3832,7 +3919,7 @@ class Render::Impl
             {
                 if (row.key.rfind("details-", 0) != 0 || row.key == "details-kept" ||
                     row.key == "details-hint" || row.key == "details-setup" || row.key == "details-recipe" ||
-                    row.key == "details-compat")
+                    row.key == "details-compat" || row.key == "details-publisher")
                     continue;
                 if (row.kind == RowKind::Status)
                 {
@@ -3877,6 +3964,16 @@ class Render::Impl
                     kept_note += " · " + row.subtitle;
                 ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, kept_note, 22.0F, 1128.0F), kSafeX, y + 4.0F,
                          22.0F, kSecondary);
+                y += 42.0F;
+            }
+            // A game that starts through its publisher: the account it uses, or that it needs one.
+            for (const ViewRow &row : view.rows)
+            {
+                if (row.key != "details-publisher")
+                    continue;
+                const bool needed = row.value == "Sign in required";
+                ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, row.title + ": " + row.value, 22.0F, 1128.0F),
+                         kSafeX, y + 4.0F, 22.0F, needed ? kAmber : kSecondary);
                 y += 42.0F;
             }
         }
@@ -4223,7 +4320,8 @@ class Render::Impl
              layout_sheet(current_state_->navigation.modals.back().id)))
             return;
         std::string shoulder;
-        draw_hint_row(scene_, legend_hints(view, shoulder, true), 96.0F);
+        // A publisher sign-in is left with Cancel only, which closes its page.
+        draw_hint_row(scene_, legend_hints(view, shoulder, view.surface != "publisher-qr"), 96.0F);
         if (view.show_simulation_label)
         {
             scene_.rounded_rect({1652.0F, 989.0F, 172.0F, 34.0F}, 17.0F, kText.with_alpha(0.08F));
@@ -4288,7 +4386,7 @@ class Render::Impl
         }
         if (view.surface != "home" && view.surface != "library" && view.surface != "downloads" &&
             view.surface != "settings" && view.surface != "details" && view.surface != "qr" &&
-            view.surface != "startup" && view.surface != "session" && view.surface != "saves" &&
+            view.surface != "publisher-qr" && view.surface != "startup" && view.surface != "session" && view.surface != "saves" &&
             view.surface != "save-details" && view.surface != "manage-games" && view.surface != "friends")
             draw_sheet_overlay(view);
 

@@ -80,9 +80,13 @@ using RedistProgress = std::function<void(const std::string& name, std::size_t d
 // package that fails is reported and left out; the others still install.
 // With find_physx (the game's program uses PhysX, ProgramUsesPhysx) and no script that names PhysX, PhysX's
 // packages in those folders are installed the same way, found by name: a game imported from a folder has no script.
+// publisher_installers: programs in the game folder ('/' separators, any case) that the game's staged publisher
+// stands in for (its stage manifest lists them); entries that run one are "covered" with detail
+// "publisher: <path>".
 RedistInstallResult InstallRedistributables(const std::string& game_root, const std::string& install_dir,
                                             const std::string& prefix_dir, std::int64_t unix_time, bool find_physx = false,
-                                            const RedistProgress& progress = {});
+                                            const RedistProgress& progress = {},
+                                            const std::vector<std::string>& publisher_installers = {});
 
 // Installs entries a caller found itself (a GOG game's redist list, gog/dependencies.h) the way
 // InstallRedistributables installs its scripts' entries: ClassifyRedist, the package or the one a setup program

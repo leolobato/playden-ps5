@@ -100,10 +100,11 @@ function(playden_add_homebrew_ps5_title)
     # The runtime host (per-game bottles and titles) is part of the normal app.
     # prospero-lld receives archives explicitly; CMake PUBLIC links do not reach it.
     set(title_database_targets playden_homebrew_runtime_host playden_native_coordinator playden_publication_transaction
-        playden_title_database playden_sqlite_reader playden_title_activity
+        playden_title_database playden_sqlite_reader playden_title_activity playden_system_notification
         playden_runtime_settings_publication playden_runtime_settings_publication_journal playden_runtime_publication_backup
         playden_runtime_publication_contract playden_runtime_publication_verifier playden_runtime_package_installer
-        playden_runtime_kit_trust playden_runtime_kit_admission playden_runtime_kit_manifest)
+        playden_runtime_kit_trust playden_runtime_kit_admission playden_runtime_kit_manifest
+        playden_runtime_publisher playden_publisher_runtime playden_lzma_dec playden_zstd playden_phone_relay)
     set(title_database_archives)
     foreach(target IN LISTS title_database_targets)
         list(APPEND title_database_archives $<TARGET_FILE:${target}>)

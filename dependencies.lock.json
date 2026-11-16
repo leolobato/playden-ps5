@@ -283,5 +283,27 @@
       "staging": "tools/kit-h/update_r4.py: symbolic links replaced by copies of their targets, lib/mono/*-api reference assemblies left out (673 files)"
     },
     "template_preparation": "hl2-fresh-v16-neutral-bceed2d"
+  },
+  "publisher_pack": {
+    "version": "20261116.8",
+    "source": "external, not distributed: the EA, Rockstar, Ubisoft and Steam host helper archives of one helper-tools release. Upload with tools/console_publisher_upload.py; src/runtime/publisher_pack.cpp holds the same pins.",
+    "archives": {
+      "playden-steamhost-20261116.8.tzst": {
+        "sha256": "4895d6d84c215ac74483398751cdebc71eb9ef742cea35601ae5436ad81e316c",
+        "tree_sha256": "44048e395a66268a6b262eb26331b0b5c50d05c4d6a6eb69e689d9014433fefd"
+      },
+      "playden-eahost-20261116.8.tzst": {
+        "sha256": "5ea657242889cac73145ac9456c43c771ff2179ae4ce05ea46a382c20e8f535d",
+        "tree_sha256": "c788f3c3db60a3b431caea99721543e75a3462703cff7b9c96dfde18c22643b0"
+      },
+      "playden-rgschost-20261116.8.tzst": {
+        "sha256": "8cc72a80a03188bab28ade6cd92535b62a63194455065bcd6f6b35ee91bd09a4",
+        "tree_sha256": "4f0ae3d7bb1e0152ec9bc241723b4d50e88609ce15a8a63a7db6bfd5cb89da9a"
+      },
+      "playden-ubisoft-20261116.8.tzst": {
+        "sha256": "1d87991955b6d45eb952429b3fdc16cd852051882777dd1de40bc3470d8e5aea",
+        "tree_sha256": "683efd398ec44478d05c6834d69b620639b451b1ad64c4b32cd42bf2d34dc48f"
+      }
+    }
   }
 }

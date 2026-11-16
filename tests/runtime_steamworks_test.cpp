@@ -2,6 +2,7 @@
 
 #include "runtime/artifact_hash.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -61,7 +62,24 @@ int main(int argc, char** argv) {
   // Interface names, as gbe_fork's generator finds them.
   const auto interfaces = SteamInterfaces(GameDll(true, ""));
   CHECK((interfaces == std::vector<std::string>{"STEAMAPPS_INTERFACE_VERSION008", "STEAMCONTROLLER_INTERFACE_VERSION",
-                                                 "SteamClient017", "SteamUser021"}));
+                                                 "SteamClient020", "SteamUser021"}));
+  // One SteamClient line. The v020 SDK keeps 017 for the legacy export beside 020, and its games
+  // (GTA IV: The Complete Edition) need 020; later SDKs (Sektori, Slay the Spire 2: 017 and 021)
+  // run with 017; older DLLs list a single version.
+  const auto clients = [](std::string names) {
+    std::replace(names.begin(), names.end(), ' ', '\0');
+    std::vector<std::string> found;
+    for (const auto& name : SteamInterfaces(names))
+      if (name.rfind("SteamClient", 0) == 0) found.push_back(name);
+    return found;
+  };
+  CHECK((clients(" SteamClient017 SteamClient020 ") == std::vector<std::string>{"SteamClient020"}));
+  CHECK((clients(" SteamClient020 SteamClient017 ") == std::vector<std::string>{"SteamClient020"}));
+  CHECK((clients(" SteamClient017 SteamClient021 ") == std::vector<std::string>{"SteamClient017"}));
+  CHECK((clients(" SteamClient017 SteamClient023 ") == std::vector<std::string>{"SteamClient017"}));
+  CHECK((clients(" SteamClient017 ") == std::vector<std::string>{"SteamClient017"}));
+  CHECK((clients(" SteamClient020 ") == std::vector<std::string>{"SteamClient020"}));
+  CHECK((clients(" SteamClient012 ") == std::vector<std::string>{"SteamClient012"}));
 
   // Discovery: any case, nested, no links, no hidden folders, nothing else.
   const auto own64 = GameDll(true, "own64");
@@ -118,7 +136,7 @@ int main(int argc, char** argv) {
   CHECK(EmulateSteamworks(root.string(), emulator, identity).ok);
   CHECK(!fs::exists(plugin / "steam_settings/owned_app_ids.txt"));
   CHECK(Read(plugin / "steam_settings/steam_interfaces.txt") ==
-        "STEAMAPPS_INTERFACE_VERSION008\nSTEAMCONTROLLER_INTERFACE_VERSION\nSteamClient017\nSteamUser021\n");
+        "STEAMAPPS_INTERFACE_VERSION008\nSTEAMCONTROLLER_INTERFACE_VERSION\nSteamClient020\nSteamUser021\n");
   CHECK(Read(plugin / "steam_interfaces.txt") == Read(plugin / "steam_settings/steam_interfaces.txt"));
   CHECK(!fs::exists(root / ".hidden/steam_api.dll.orig"));
   // No Steam Input map: no controller folder, so the emulator reports no Steam Input controller.
@@ -316,7 +334,7 @@ int main(int argc, char** argv) {
     CHECK(swapped.ok && (swapped.changed == std::vector<std::string>{"steam_api.dll"}));
     CHECK(Read(game / "steam_api.dll") == emulator32 && Read(game / "steam_api.dll.orig") == own);
     CHECK(Read(game / "steam_settings/steam_interfaces.txt") ==
-          "STEAMAPPS_INTERFACE_VERSION008\nSTEAMCONTROLLER_INTERFACE_VERSION\nSteamClient017\nSteamUser021\n");
+          "STEAMAPPS_INTERFACE_VERSION008\nSTEAMCONTROLLER_INTERFACE_VERSION\nSteamClient020\nSteamUser021\n");
     // The game's own mode puts it back from an earlier build too.
     Write(game / "steam_api.dll", earlier);
     auto restored = RestoreSteamworks(game.string(), retired);

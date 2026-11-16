@@ -21,7 +21,7 @@ These are compiled into Playden's PS5 package (`FAKE77031`) or copied into it.
 | CA certificate bundle (`trust/cacert.pem`) | 2026-09-25 | MPL-2.0 | Mozilla's root store, as extracted by [curl](https://curl.se/docs/caextract.html) |
 | SQLite | 3.53.1 | Public domain | [sqlite.org](https://sqlite.org/) |
 | zstd (decompression) | 1.5.6 | BSD-3-Clause | [facebook/zstd](https://github.com/facebook/zstd) |
-| LZMA SDK (decoder) | 24.09 | Public domain | [7-zip.org/sdk](https://www.7-zip.org/sdk.html) |
+| LZMA SDK (LZMA decoder, 7z reader, BCJ2) | 24.09 | Public domain | [7-zip.org/sdk](https://www.7-zip.org/sdk.html) |
 | stb_image | 2.30 | MIT or public domain | [nothings/stb](https://github.com/nothings/stb) |
 | miniz (zip reading, for updates) | 3.0.2 | MIT, Copyright 2013-2014 RAD Game Tools and Valve Software, 2010-2014 Rich Geldreich and Tenacious Software LLC | [richgel999/miniz](https://github.com/richgel999/miniz) |
 | utf8proc | 2.11.3 | MIT, with Unicode data under the Unicode license | [JuliaStrings/utf8proc](https://github.com/JuliaStrings/utf8proc) |

@@ -2974,6 +2974,202 @@ void live_setup_asks_for_a_steam_program(const std::filesystem::path& base) {
     check(model.view().surface == "steam-programs", "steam program: the sheet opens over the game's page");
 }
 
+// Publisher accounts (Rockstar Games): the Settings row, the phone sign-in screen in each state,
+// the game page's account line and Play's sign-in prompt, and Maintenance's publisher repair.
+void live_publisher_accounts(const std::filesystem::path& base) {
+    using namespace playden::homebrew;
+    using Requests = std::vector<PublisherRequest>;
+    std::filesystem::create_directories(base);
+    auto model = make_live(base);
+    model.SetWallClock(1'800'000'000);
+    model.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    playden::GameSummary game;
+    game.id = SteamId(12210);
+    game.title = "Example Heist";
+    check(model.UpdateLibrary({{game}, false, {}, false, true, 100}), "publisher: library delivered");
+    for (int i = 0; i < 6 && model.state().navigation.route != Route::Settings; ++i) model.action("r1");
+    check(model.state().navigation.route == Route::Settings, "publisher: settings open");
+
+    LivePublishers publishers;
+    publishers.publishers.push_back({"rockstar", "Rockstar Games", "Rockstar", PublisherAccountState::SignedOut, {}, 0, false});
+    model.SetPublishers(publishers);
+    check(!find_row(model, "settings-publisher-rockstar"), "publisher: no row while nothing needs the account");
+    publishers.publishers[0].shown = true;
+    model.SetPublishers(publishers);
+    const auto* row = find_row(model, "settings-publisher-rockstar");
+    check(row && row->title == "Rockstar Games" && row->value == "Not signed in" && row->section == "Accounts",
+          "publisher: Settings › Account offers the sign-in");
+
+    // Sign in: the screen opens at once and asks for the page.
+    activate(model, "settings-publisher-rockstar");
+    check(model.state().navigation.route == Route::PublisherSignIn && model.view().title == "Sign in to Rockstar Games",
+          "publisher: Sign in opens the sign-in screen");
+    check(model.TakePublisherRequests() == Requests{{PublisherRequestKind::SignIn, "rockstar"}},
+          "publisher: the screen asks for the phone page");
+    check(find_row(model, "publisher-status")->title == "Opening the sign-in page…", "publisher: starting");
+    check(find_row(model, "publisher-step-1")->title == "Scan the code with your phone" &&
+              find_row(model, "publisher-step-2")->title == "Follow the steps on your phone to sign in" &&
+              find_row(model, "publisher-step-3")->title == "Playden continues here",
+          "publisher: three numbered steps");
+    check(model.action("r1") && model.state().navigation.route == Route::PublisherSignIn,
+          "publisher: L1/R1 don't leave a sign-in that is under way");
+
+    publishers.sign_in = {"rockstar", PublisherSignInState::Waiting, "http://192.168.1.20:8099/s/abc", 1'800'000'600, {}, {}};
+    model.SetPublishers(publishers);
+    check(find_row(model, "publisher-status")->title == "Waiting for your phone" &&
+              find_row(model, "publisher-status")->value == "Code expires in 10:00",
+          "publisher: waiting, with the countdown");
+    model.SetWallClock(1'800'000'061);
+    check(find_row(model, "publisher-status")->value == "Code expires in 8:59", "publisher: the countdown runs");
+    publishers.sign_in.state = PublisherSignInState::Connected;
+    model.SetPublishers(publishers);
+    check(find_row(model, "publisher-status")->title == "Phone connected", "publisher: phone connected");
+    publishers.sign_in.state = PublisherSignInState::Checking;
+    model.SetPublishers(publishers);
+    check(find_row(model, "publisher-status")->title == "Checking your Rockstar Games account", "publisher: checking");
+    check(model.state().navigation.focus_key == "publisher-cancel" && !find_row(model, "publisher-retry"),
+          "publisher: only Cancel while it works");
+
+    // Refused: the reason, Try again (a new code) and Cancel.
+    publishers.sign_in.state = PublisherSignInState::Refused;
+    publishers.sign_in.message = "That sign-in has expired.";
+    model.SetPublishers(publishers);
+    check(find_row(model, "publisher-status")->title == "That sign-in has expired." &&
+              find_row(model, "publisher-status")->tone == "problem" &&
+              model.state().navigation.focus_key == "publisher-retry" && find_row(model, "publisher-retry")->title == "Try again",
+          "publisher: a refused sign-in says why and offers Try again");
+    model.action("cross");
+    check(model.TakePublisherRequests() == Requests{{PublisherRequestKind::SignIn, "rockstar"}} &&
+              model.state().navigation.route == Route::PublisherSignIn,
+          "publisher: Try again asks for a new page");
+
+    // Expired code: New code.
+    publishers.sign_in = {"rockstar", PublisherSignInState::Expired, {}, 0, {}, {}};
+    model.SetPublishers(publishers);
+    check(find_row(model, "publisher-status")->title == "The code expired" &&
+              find_row(model, "publisher-retry")->title == "New code" && find_row(model, "publisher-cancel"),
+          "publisher: an expired code offers a new one");
+    check(!find_row(model, "publisher-step-1"), "publisher: no steps without a code");
+
+    // No network address: explained, with Cancel.
+    publishers.sign_in = {"rockstar", PublisherSignInState::NoNetwork, {}, 0, {}, {}};
+    model.SetPublishers(publishers);
+    check(model.view().subtitle.find("Connect it to Wi-Fi or a network cable") != std::string::npos &&
+              find_row(model, "publisher-cancel"),
+          "publisher: no network is explained");
+
+    // Circle cancels: back to the row, and the page closes.
+    model.action("circle");
+    check(model.state().navigation.route == Route::Settings &&
+              model.state().navigation.focus_key == "settings-publisher-rockstar" &&
+              model.TakePublisherRequests() == Requests{{PublisherRequestKind::Cancel, "rockstar"}},
+          "publisher: Cancel closes the page and returns to Settings");
+
+    // Signed in: shown for two seconds, then the screen closes by itself.
+    activate(model, "settings-publisher-rockstar");
+    (void)model.TakePublisherRequests();
+    publishers.sign_in = {"rockstar", PublisherSignInState::SignedIn, {}, 0, "Player One", {}};
+    model.SetPublishers(publishers);
+    check(find_row(model, "publisher-status")->title == "Signed in as Player One" &&
+              model.state().navigation.focus_key == "publisher-done",
+          "publisher: the account's name is shown");
+    model.SetWallClock(1'800'000'062);
+    check(model.state().navigation.route == Route::PublisherSignIn, "publisher: it stays a moment");
+    model.SetWallClock(1'800'000'063);
+    check(model.state().navigation.route == Route::Settings &&
+              model.TakePublisherRequests() == Requests{{PublisherRequestKind::Cancel, "rockstar"}},
+          "publisher: a finished sign-in closes the screen");
+
+    // The account row once signed in: Sign in again, Sign out (confirmed), Cancel.
+    publishers.sign_in = {};
+    publishers.publishers[0].account = PublisherAccountState::SignedIn;
+    publishers.publishers[0].display = "Player One";
+    publishers.publishers[0].obtained_at = 1'800'000'000;
+    model.SetPublishers(publishers);
+    row = find_row(model, "settings-publisher-rockstar");
+    check(row->value == "Signed in as Player One" && row->subtitle == "Since 2027-01-15",
+          "publisher: the row names the account and since when");
+    activate(model, "settings-publisher-rockstar");
+    check(!model.state().navigation.modals.empty() && model.state().navigation.modals.back().title == "Rockstar Games" &&
+              find_row(model, "publisher-sign-in:rockstar")->title == "Sign in again" &&
+              find_row(model, "publisher-sign-out:rockstar")->title == "Sign out…" && find_row(model, "cancel"),
+          "publisher: a signed-in account offers Sign in again and Sign out");
+    check(model.TakePublisherRequests().empty(), "publisher: no request until a choice");
+    activate(model, "publisher-sign-out:rockstar");
+    check(model.state().navigation.modals.back().title == "Sign out of Rockstar Games?", "publisher: sign out asks first");
+    activate(model, "confirm-destructive");
+    check(model.state().navigation.modals.empty() &&
+              model.TakePublisherRequests() == Requests{{PublisherRequestKind::SignOut, "rockstar"}},
+          "publisher: a confirmed sign-out goes to the runtime");
+
+    publishers.publishers[0].account = PublisherAccountState::Expired;
+    model.SetPublishers(publishers);
+    check(find_row(model, "settings-publisher-rockstar")->value == "Sign-in expired", "publisher: an expired sign-in");
+    activate(model, "settings-publisher-rockstar");
+    check(model.state().navigation.route == Route::PublisherSignIn &&
+              model.TakePublisherRequests() == Requests{{PublisherRequestKind::SignIn, "rockstar"}},
+          "publisher: an expired sign-in signs in again directly");
+    model.action("circle");
+    (void)model.TakePublisherRequests();
+
+    // The game page: its account line, Play's prompt, and Play once signed in.
+    model.UpdateInstalls({}, {{SteamId(12210), 1024, "internal", true}});
+    LiveRuntimeGame runtime;
+    runtime.game_id = SteamId(12210);
+    runtime.status = "Ready";
+    runtime.ready = runtime.prepared = runtime.has_title = runtime.can_play = true;
+    runtime.activity = TitleActivity::Stopped;
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    publishers.games[SteamId(12210)] = "rockstar";
+    publishers.publishers[0].account = PublisherAccountState::SignedOut;
+    model.SetPublishers(publishers);
+    check(model.action("details:12210"), "publisher: open the game");
+    row = find_row(model, "details-publisher");
+    check(row && row->title == "Rockstar Games account" && row->value == "Sign in required",
+          "publisher: the game page says an account is needed");
+    model.NotifyPublisherSignInNeeded(SteamId(12210));
+    check(!model.state().navigation.modals.empty() &&
+              model.state().navigation.modals.back().title == "Example Heist needs a Rockstar Games account" &&
+              find_row(model, "publisher-sign-in-play:rockstar")->title == "Sign in",
+          "publisher: a refused Play asks to sign in");
+    activate(model, "publisher-sign-in-play:rockstar");
+    check(model.state().navigation.route == Route::PublisherSignIn &&
+              model.TakePublisherRequests() == Requests{{PublisherRequestKind::SignIn, "rockstar"}},
+          "publisher: Sign in opens the sign-in screen from the game");
+    publishers.sign_in = {"rockstar", PublisherSignInState::SignedIn, {}, 0, "Player One", {}};
+    model.SetPublishers(publishers);
+    activate(model, "publisher-done");
+    check(model.state().navigation.route == Route::Details && model.state().navigation.focus_key == "details-play" &&
+              model.TakeRuntimePlayRequests() == std::vector<GameId>{SteamId(12210)} &&
+              model.TakePublisherRequests() == Requests{{PublisherRequestKind::Cancel, "rockstar"}},
+          "publisher: once signed in, Play goes on");
+    publishers.sign_in = {};
+    publishers.publishers[0].account = PublisherAccountState::SignedIn;
+    model.SetPublishers(publishers);
+    check(find_row(model, "details-publisher")->value == "Player One", "publisher: the game page names the account");
+
+    // Cancel at the prompt starts nothing.
+    model.NotifyPublisherSignInNeeded(SteamId(12210));
+    activate(model, "cancel");
+    check(model.state().navigation.modals.empty() && model.TakePublisherRequests().empty() &&
+              model.TakeRuntimePlayRequests().empty(),
+          "publisher: Cancel at the prompt starts nothing");
+
+    // Maintenance: Repair Rockstar files, confirmed, goes to the runtime.
+    activate(model, "details-more");
+    activate(model, "game-maintenance");
+    (void)model.TakeActivityRequests();
+    model.UpdateRuntime(RuntimeState::Ready, {runtime});
+    row = find_row(model, "maintenance-publisher");
+    check(row && row->title == "Repair Rockstar files…" && row->enabled, "publisher: Maintenance offers the publisher repair");
+    activate(model, "maintenance-publisher");
+    check(model.state().navigation.modals.back().title == "Repair the Rockstar Games files?",
+          "publisher: the repair asks first");
+    activate(model, "confirm-destructive");
+    check(model.TakeMaintenanceRequests() ==
+              std::vector<std::pair<GameId, MaintenanceKind>>{{SteamId(12210), MaintenanceKind::RepairPublisher}},
+          "publisher: the repair goes to the runtime");
+}
 } // namespace
 
 // The installed games' update check: the list asks for one at most once a day (the wall clock), Check for
@@ -4596,6 +4792,7 @@ int main() {
     live_manage_uninstall_drive(base / "manage-uninstall-drive");
     live_manage_queue_full(base / "queue-full");
     live_settings_manage_rows(base / "settings-manage-rows");
+    live_publisher_accounts(base);
 
     std::filesystem::remove_all(base, error);
     std::cout << "homebrew_live_model_test passed\n";
