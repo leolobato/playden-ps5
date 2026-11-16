@@ -698,7 +698,7 @@ void PreferencesPrepareIndependentRoot() {
   Check(preferences.Save({true}).ok(),"preferences prepare a root independently of authentication");
   Check(preferences.Load().preferences.reduce_motion,"prepared preferences restore");
   struct stat info{};
-  Check(stat(root.c_str(),&info)==0 && (info.st_mode & 0777)==0700,"new preference root is private");
+  Check(stat(root.c_str(),&info)==0 && (info.st_mode & 0777)==0777,"new preference root is open to FTP (#868)");
   std::remove((root+"/preferences.conf").c_str());rmdir(root.c_str());
 }
 

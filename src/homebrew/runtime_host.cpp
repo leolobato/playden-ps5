@@ -370,7 +370,7 @@ std::optional<std::string> RandomUuid() { return playden::RandomUuid(); }
 // in reverse order, so no collaborator outlives what it references.
 struct RuntimeHost::Composition {
   explicit Composition(const RuntimeHostConfig& config)
-      : storage(config.state_root.string()),
+      : storage(playden::Storage(config.state_root.string()).OpenTree()),
         repository(storage, "installs.json",
                    [this](const std::string& title) {
                      return coordinator ? coordinator->Availability(title) : rt::NativeTitleAvailability{};
@@ -648,11 +648,12 @@ void RuntimeHost::SavePreparedHistory() {
     text += std::to_string(entry.runtime_number) + "\t" + std::to_string(entry.finished_at) + "\n";
   const auto path = config_.state_root / kPreparedHistory;
   const auto temporary = path.string() + ".playden-partial";
-  const int out = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  const int out = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0666);
   if (out < 0) {
     Log("prepared history not saved: " + std::string(std::strerror(errno)));
     return;
   }
+  (void)fchmod(out, 0666);  // open to FTP whatever the umask (#868)
   std::size_t written = 0;
   while (written < text.size()) {
     const auto count = write(out, text.data() + written, text.size() - written);
@@ -1819,8 +1820,9 @@ bool RuntimeHost::SaveSteamClientRecord(const std::string& version, const std::s
   const auto path = config_.state_root / kSteamClientRecord;
   const auto temporary = path.string() + ".playden-partial";
   const std::string text = version + " " + sha256 + "\n";
-  const int out = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  const int out = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0666);
   if (out < 0) return false;
+  (void)fchmod(out, 0666);  // open to FTP whatever the umask (#868)
   const bool ok = write(out, text.data(), text.size()) == static_cast<ssize_t>(text.size()) && fsync(out) == 0;
   close(out);
   if (!ok || std::rename(temporary.c_str(), path.c_str()) != 0) {
@@ -1928,7 +1930,7 @@ std::string RuntimeHost::RecipeRegistryStep(Composition& c, const GameFiles& fil
   // superset tracked, never a bottle holding values the file doesn't list.
   if (!values.empty()) {
     const auto interim = rt::SerializeRecipeRegistryState(rt::RecipeRegistryInterim(previous ? &*previous : nullptr, next));
-    const auto noted = c.storage.WriteAtomicPrivate(file, Bytes(interim.begin(), interim.end()));
+    const auto noted = c.storage.WriteAtomic(file, Bytes(interim.begin(), interim.end()));
     if (!noted.ok()) {
       Log("recipe registry state write failed install=" + files.record.install_id + " " + noted.message());
       return "The recipe's registry values could not be recorded: " + noted.message() + ".";
@@ -1949,7 +1951,7 @@ std::string RuntimeHost::RecipeRegistryStep(Composition& c, const GameFiles& fil
     return {};
   }
   const auto text = rt::SerializeRecipeRegistryState(next);
-  const auto written = c.storage.WriteAtomicPrivate(file, Bytes(text.begin(), text.end()));
+  const auto written = c.storage.WriteAtomic(file, Bytes(text.begin(), text.end()));
   if (!written.ok()) {
     Log("recipe registry state write failed install=" + files.record.install_id + " " + written.message());
     return "The recipe's registry values could not be recorded: " + written.message() + ".";
@@ -2202,7 +2204,7 @@ std::size_t RuntimeHost::LeftoverRequests(Composition& c, bool remove) {
     if (!referenced.count(transaction)) leftovers.push_back(name);
   }
   if (!remove) return leftovers.size();
-  playden::Storage storage(directory.string());
+  auto storage = playden::Storage(directory.string()).OpenTree();
   std::size_t kept = 0;
   for (const auto& name : leftovers) {
     const auto removed = storage.RemoveDurable(name);
@@ -2704,8 +2706,10 @@ std::string RuntimeHost::TightenWorkingFolder(const std::filesystem::path& root,
 // The publication being replaced is checked before its settings change, and that needs the folder its
 // program ran in. A folder the player deleted comes back empty so another program can still be chosen.
 // The folders it made, outermost first; empty when none was missing or the game folder itself is gone.
+// `mode`: 0777 under an unowned publication (FTP can delete it, #868), 0755 under an owned one, whose start
+// check refuses a folder others can write.
 static std::vector<std::filesystem::path> RestorePublishedFolder(const std::filesystem::path& root,
-                                                                 const std::string& working) {
+                                                                 const std::string& working, mode_t mode) {
   std::vector<std::filesystem::path> made;
   struct stat info{};
   if (working.empty() || lstat(root.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return made;
@@ -2725,8 +2729,8 @@ static std::vector<std::filesystem::path> RestorePublishedFolder(const std::file
       if (!S_ISDIR(info.st_mode)) break;
       continue;
     }
-    if (errno != ENOENT || mkdir(folder.c_str(), 0755) != 0) break;
-    chmod(folder.c_str(), 0755);  // whatever the umask: the publication check admits 0755
+    if (errno != ENOENT || mkdir(folder.c_str(), mode) != 0) break;
+    chmod(folder.c_str(), mode);  // whatever the umask
     made.push_back(folder);
   }
   return made;
@@ -3180,7 +3184,9 @@ std::string RuntimeHost::PublishSavedSettings(Composition& c, const rt::RuntimeI
   if (record.moved_from.empty())
     restored_folders = RestorePublishedFolder(HostPath(record.install_path),
                                               WorkingFolder(record.launch_working_directory, record.launch_path,
-                                                            record.launch_in_install_root));
+                                                            record.launch_in_install_root),
+                                              rt::PublishedGameRootUnowned(record, config_.host_namespace_prefix) ==
+                                                      std::optional<bool>(false) ? 0755 : 0777);
   for (const auto& folder : restored_folders) Log("settings update restored missing folder " + folder.string());
   rt::SettingsPublicationRequest request;
   request.transaction_id = *transaction;
@@ -4481,7 +4487,7 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
   });
   if (!made) return nullptr;
   const auto text = rt::SerializeGameRecipe(generated);
-  const auto written = c.storage.WriteAtomicPrivate(GeneratedRecipeFile(generated.id), Bytes(text.begin(), text.end()));
+  const auto written = c.storage.WriteAtomic(GeneratedRecipeFile(generated.id), Bytes(text.begin(), text.end()));
   if (!written.ok()) {
     Log("generated recipe write failed app=" + std::to_string(request.runtime_number) + " message=" + written.message());
     *reason = "Playden could not save how to start this game.";
@@ -4534,7 +4540,7 @@ void RuntimeHost::RefreshGeneratedRecipeDefaults(Composition& c, const rt::Runti
       return;
     }
     const auto saved = rt::SerializeGameRecipe(candidate);
-    const auto written = c.storage.WriteAtomicPrivate(GeneratedRecipeFile(candidate.id), Bytes(saved.begin(), saved.end()));
+    const auto written = c.storage.WriteAtomic(GeneratedRecipeFile(candidate.id), Bytes(saved.begin(), saved.end()));
     Log("generated recipe refreshed app=" + app + " defaults revision " + std::to_string(before.defaults_revision) + " to " +
         std::to_string(candidate.defaults_revision) + (written.ok() ? std::string() : " not saved: " + written.message()));
     PublishRecipes(c);
@@ -5445,16 +5451,20 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
       struct stat info{};
       if (lstat(users.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return "The game has no Windows user folders to back up.";
       const auto root = SaveBackupRoot(record->install_id);
-      if (lstat(root.c_str(), &info) != 0 && mkdir(root.c_str(), 0700) != 0) return "The backup folder could not be made.";
+      if (lstat(root.c_str(), &info) != 0 && (mkdir(root.c_str(), 0777) != 0 || chmod(root.c_str(), 0777) != 0))
+        return "The backup folder could not be made.";
       const auto stamp = std::to_string(config_.unix_time());
       const auto staging = root / ("." + stamp + ".partial");
       const auto target = root / stamp;
       std::error_code error;
       RemoveTreeNoFollow(staging, error);
-      if (mkdir(staging.c_str(), 0700) != 0) return "The backup folder could not be made.";
+      if (mkdir(staging.c_str(), 0777) != 0) return "The backup folder could not be made.";
       std::string reason;
-      if (!CopySavesTree(users, staging / "users", &reason, [this](const std::string& line) { Log(line); }) ||
-          rename(staging.c_str(), target.c_str()) != 0) {
+      // The copy is private like the bottle it comes from; no title uses a backup, so it is opened to FTP
+      // whole (#868), launcher sign-ins aside, before it takes its name.
+      const bool copied = CopySavesTree(users, staging / "users", &reason, [this](const std::string& line) { Log(line); });
+      if (copied) OpenKeptBottle(staging, "users/prospero");
+      if (!copied || rename(staging.c_str(), target.c_str()) != 0) {
         RemoveTreeNoFollow(staging, error);
         Log("maintenance backup failed app=" + std::to_string(app) + " " + reason);
         return "The saves could not be backed up" + (reason.empty() ? std::string(".") : ": " + reason + ".");
@@ -5563,8 +5573,8 @@ std::optional<RuntimeHost::RemovalFailure> RuntimeHost::RetireTitle(
     return RemovalFailure{"source-changed", "The PS5 title's folder changed since it was found; it was left as it is."};
   std::string reason;
   const auto trash = config_.state_root / "trash";
-  if (!rt::EnsurePrivateDirectories(config_.boundary, config_.state_root, trash, &reason))
-    return RemovalFailure{"trash-unavailable", "Playden could not prepare its private trash: " + reason};
+  if (!rt::EnsureOpenDirectories(config_.boundary, config_.state_root, trash, &reason))
+    return RemovalFailure{"trash-unavailable", "Playden could not prepare its trash: " + reason};
   auto homebrew = platform::ManagedDirectory::Open(config_.homebrew_root, platform::DirectoryPolicy::kApprovedTree);
   auto destination = platform::ManagedDirectory::Open(trash, platform::DirectoryPolicy::kApprovedTree);
   struct stat checked{};
@@ -5611,7 +5621,7 @@ std::string RuntimeHost::DeleteRetiredTitle(const std::string& title_id, const s
   const auto trash = config_.state_root / "trash" / (title_id + "-" + operation_id);
   struct stat info{};
   if (lstat(trash.c_str(), &info) != 0 && errno == ENOENT) return {};
-  auto parent = platform::ManagedDirectory::Open(trash.parent_path(), platform::DirectoryPolicy::kPrivate);
+  auto parent = platform::ManagedDirectory::Open(trash.parent_path(), platform::DirectoryPolicy::kOpenTree);
   if (!parent || !parent->InspectChild(trash.filename().string(), &info) ||
       !S_ISDIR(info.st_mode) || info.st_uid != geteuid())
     return "The retired PS5 title's folder is not Playden's; it was left as it is.";
@@ -5716,7 +5726,7 @@ std::string RuntimeHost::RunDeleteLeftover(Composition& c, LeftoverDelete reques
     const auto trash = config_.state_root / "trash";
     const auto retired = trash / (id + "-" + request.operation_id);
     if (lstat(retired.c_str(), &info) == 0) {
-      const auto parent = platform::ManagedDirectory::Open(trash, platform::DirectoryPolicy::kPrivate);
+      const auto parent = platform::ManagedDirectory::Open(trash, platform::DirectoryPolicy::kOpenTree);
       if (!parent || !S_ISDIR(info.st_mode) || info.st_uid != geteuid() ||
           request.title.device != static_cast<std::uint64_t>(info.st_dev) ||
           request.title.inode != static_cast<std::uint64_t>(info.st_ino))
@@ -5796,10 +5806,10 @@ void RuntimeHost::ResumeLeftoverDeletes(Composition& c) {
       continue;
     }
     c.blocked_leftover_titles.insert(id);
-    const auto directory = platform::ManagedDirectory::Open(config_.state_root, platform::DirectoryPolicy::kPrivate);
+    const auto directory = platform::ManagedDirectory::Open(config_.state_root, platform::DirectoryPolicy::kOpenTree);
     struct stat journal_info{};
     if (!directory || !directory->InspectChild(entry_name, &journal_info) || !S_ISREG(journal_info.st_mode) ||
-        journal_info.st_uid != geteuid() || (journal_info.st_mode & 07777) != 0600) {
+        journal_info.st_uid != geteuid() || ((journal_info.st_mode & 07777) != 0600 && (journal_info.st_mode & 07777) != 0666)) {
       Log("leftover removal journal permissions invalid title=" + id); continue;
     }
     const auto bytes = c.storage.ReadDurable(entry_name, 8192);
@@ -5851,7 +5861,7 @@ std::optional<RuntimeHost::RemovalFailure> RuntimeHost::KeepBottle(
                       std::to_string(runtime_number) + identity + ",\"name\":\"" + JsonEscaped(name) +
                       "\",\"kept_at\":" + std::to_string(config_.unix_time ? config_.unix_time() : std::int64_t(time(nullptr))) +
                       ",\"bytes\":" + std::to_string(TreeBytes(bottle)) + "}\n";
-  const int fd = open((bottle / kKeptMarker).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  const int fd = open((bottle / kKeptMarker).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0666);
   const bool written = fd >= 0 && write(fd, marker.data(), marker.size()) == static_cast<ssize_t>(marker.size()) &&
                        fsync(fd) == 0;
   if (fd >= 0) close(fd);
@@ -5886,7 +5896,24 @@ std::optional<RuntimeHost::RemovalFailure> RuntimeHost::KeepBottle(
   } else if (rename(bottle.c_str(), kept.c_str()) != 0) {
     return RemovalFailure{"bottle-keep", "The game's saves could not be kept (error " + std::to_string(errno) + ")."};
   }
+  // No title starts a kept or set-aside bottle, so it is opened to FTP whole (#868), launcher sign-ins
+  // (runtime::PrivateProfilePaths) aside. A failure is only logged: the saves are kept either way.
+  OpenKeptBottle(kept);
+  OpenKeptBottle(bottle.parent_path() / (install_id + ".set-aside-" + operation_id));
   return std::nullopt;
+}
+
+void RuntimeHost::OpenKeptBottle(const std::filesystem::path& folder, const std::filesystem::path& profile) {
+  struct stat info{};
+  if (lstat(folder.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return;
+  rt::SharedTreeOptions options;
+  options.private_paths = {};
+  options.open_private_folders = true;
+  for (const auto& path : rt::PrivateProfilePaths()) options.private_paths.push_back(profile / path);
+  const auto opened = rt::OpenTreeToEveryone(folder, options);
+  if (!opened.ok || opened.skipped || opened.truncated)
+    Log("kept bottle not fully opened path=" + folder.string() + " changed=" + std::to_string(opened.changed) +
+        " skipped=" + std::to_string(opened.skipped) + " truncated=" + std::to_string(opened.truncated));
 }
 
 void RuntimeHost::KeepUnrecordedBottles(Composition& c) {
@@ -6267,11 +6294,11 @@ bool RuntimeHost::RunServices() {
   std::string reason;
   const auto request_directory = config_.state_root / "requests";
   const bool private_ready =
-      rt::EnsurePrivateDirectories(config_.boundary, config_.state_root, config_.state_root, &reason) &&
-      rt::EnsurePrivateDirectories(config_.boundary, config_.state_root, request_directory, &reason);
+      rt::EnsureOpenDirectories(config_.boundary, config_.state_root, config_.state_root, &reason) &&
+      rt::EnsureOpenDirectories(config_.boundary, config_.state_root, request_directory, &reason);
   if (!private_ready) {
     Log("runtime unavailable: " + reason);
-    unavailable("Private runtime state is unavailable: " + reason);
+    unavailable("Runtime state is unavailable: " + reason);
   }
   std::unique_ptr<Composition> composition;
   if (private_ready) {

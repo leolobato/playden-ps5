@@ -55,7 +55,7 @@ Result<void> UpdateCheckStore::Save(std::uint64_t account, const SavedUpdateChec
   }
   const auto ready = storage_.EnsureRootDirectory();
   if (!ready.ok()) return ready;
-  return storage_.WriteAtomicPrivate(Path(account), Bytes(text.begin(), text.end()));
+  return storage_.WriteAtomicOpen(Path(account), Bytes(text.begin(), text.end()));
 }
 
 Result<std::optional<SavedUpdateCheck>> UpdateCheckStore::Load(std::uint64_t account) const {

@@ -45,7 +45,7 @@ bool RecipeStore::Prepare(std::string* error) {
     return false;
   }
   for (const char* child : {kObjects, kReleases}) {
-    if (!runtime::EnsurePrivateDirectories(root_.parent_path(), root_, root_ / child, &reason)) {
+    if (!runtime::EnsureOpenDirectories(root_.parent_path(), root_, root_ / child, &reason)) {
       if (error) *error = "community recipes folder unavailable: " + reason;
       return false;
     }
@@ -56,11 +56,11 @@ bool RecipeStore::Prepare(std::string* error) {
 
 std::optional<std::string> RecipeStore::ReadFile(const std::string& relative, std::size_t limit) const {
   if (!prepared_) return std::nullopt;
-  auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kPrivate);
+  auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kOpenTree);
   if (!directory) return std::nullopt;
   std::filesystem::path path(relative);
   for (const auto& part : path.parent_path()) {
-    auto child = directory->OpenChild(part.string(), DirectoryPolicy::kPrivate);
+    auto child = directory->OpenChild(part.string(), DirectoryPolicy::kOpenTree);
     if (!child) return std::nullopt;
     directory = std::move(child);
   }
@@ -99,7 +99,7 @@ bool RecipeStore::WriteFile(const std::string& relative, std::string_view bytes,
     if (error) *error = std::string("stopped before writing ") + step;
     return false;
   }
-  const auto result = Storage(root_.string()).WriteDurable(relative, Bytes(bytes.begin(), bytes.end()));
+  const auto result = Storage(root_.string()).OpenTree().WriteDurable(relative, Bytes(bytes.begin(), bytes.end()));
   if (!result.ok()) {
     if (error) *error = "cannot write " + relative + ": " + result.message();
     return false;
@@ -200,7 +200,7 @@ bool RecipeStore::RemoveRelease(std::string_view tag) {
   if (!SafeReleaseTag(tag)) return false;
   std::lock_guard<std::mutex> lock(mutex_);
   if (!prepared_) return false;
-  return Storage(root_.string()).RemoveDurable(ReleasePath(tag)).ok();
+  return Storage(root_.string()).OpenTree().RemoveDurable(ReleasePath(tag)).ok();
 }
 
 std::optional<std::string> RecipeStore::ReadVotes() const {
@@ -258,13 +258,13 @@ std::size_t RecipeStore::CollectGarbage(const std::set<std::string>& keep, const
       for (const auto& entry : listed.recipes) current.insert(entry.revision);
   } else {
     struct stat info{};
-    auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kPrivate);
+    auto directory = ManagedDirectory::Open(root_, DirectoryPolicy::kOpenTree);
     if (!directory || directory->InspectChild(kCurrent, &info) || errno != ENOENT) return 0;
   }
   const auto listed = ReadList();
   std::vector<std::string> remaining;
   std::size_t removed = 0;
-  const Storage storage(root_.string());
+  const auto storage = Storage(root_.string()).OpenTree();
   for (const auto& revision : listed) {
     // Stopping (Playden closes): what is left stays listed, for the next collection.
     if ((cancel && *cancel) || current.count(revision) || keep.count(revision) || keep.count(revision.substr(0, 32))) {

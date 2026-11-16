@@ -76,11 +76,13 @@ int main() {
   package.value.known = true; package.value.title_staged = true; package.value.manifest_matches = true; package.value.artifacts_valid = true;
   package.value.title_source_path = source.string();
   auto status = native.Query(record); CHECK(status.available && status.source_available && status.owned_manifest_matches && !status.installed && !status.collision);
-  // ShadowMount must read the source: an owned 0755 tree is still Playden's,
-  // but a group/other-writable one is not.
+  // ShadowMount must read the source: an owned 0755 tree (Playden 0.11) and an owned 0777 one (open to FTP,
+  // #868) are Playden's; another mode is not.
   CHECK(chmod(source.c_str(), 0755) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0755) == 0);
   status = native.Query(record); CHECK(status.owned_manifest_matches && !status.collision);
-  CHECK(chmod(source.c_str(), 0777) == 0); CHECK(native.Query(record).collision);
+  CHECK(chmod(source.c_str(), 0777) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0777) == 0);
+  status = native.Query(record); CHECK(status.owned_manifest_matches && !status.collision);
+  CHECK(chmod(source.c_str(), 0775) == 0); CHECK(native.Query(record).collision);
   CHECK(chmod(source.c_str(), 0755) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0775) == 0);
   CHECK(native.Query(record).collision);
   CHECK(chmod(source.c_str(), 0700) == 0); CHECK(chmod((source / "sce_sys").c_str(), 0700) == 0);

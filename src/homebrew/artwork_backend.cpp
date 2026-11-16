@@ -225,16 +225,15 @@ struct HttpArtworkBackend::Cache {
     if (dir && dir->Validate()) return true;
     if (path.empty()) return false;
     const std::filesystem::path target = std::filesystem::path(path).lexically_normal();
-    dir = platform::ManagedDirectory::Open(target, platform::DirectoryPolicy::kPrivate);
+    // Open to FTP (#868): the app user's at any mode, created 0777, files 0666.
+    dir = platform::ManagedDirectory::Open(target, platform::DirectoryPolicy::kOpenTree);
     if (dir || !create) return dir.has_value();
 
     const auto parent_path = target.parent_path();
     const auto child_name = target.filename().string();
     auto parent = platform::ManagedDirectory::Open(parent_path, platform::DirectoryPolicy::kApprovedTree);
-    if (!parent) parent = platform::ManagedDirectory::Open(parent_path, platform::DirectoryPolicy::kPrivateTraversable);
-    if (!parent) parent = platform::ManagedDirectory::Open(parent_path, platform::DirectoryPolicy::kPrivate);
     if (parent) {
-      dir = parent->OpenChild(child_name, platform::DirectoryPolicy::kPrivate, /*create=*/true, 0700);
+      dir = parent->OpenChild(child_name, platform::DirectoryPolicy::kOpenTree, /*create=*/true, 0777);
       if (dir) return true;
     }
     return false;
@@ -279,7 +278,7 @@ struct HttpArtworkBackend::Cache {
     static std::atomic<std::uint64_t> sequence{0};
     const std::string temp_name = "." + name + "." + std::to_string(::getpid()) + "." +
                                   std::to_string(sequence.fetch_add(1)) + ".tmp";
-    const int fd = dir->CreateExclusiveFile(temp_name, 0600);
+    const int fd = dir->CreateExclusiveFile(temp_name, 0666);
     if (fd < 0) return;
     std::size_t offset = 0;
     bool written = true;

@@ -265,7 +265,7 @@ Pairing::StoreWork Pairing::DoStoreWork(const std::function<std::shared_ptr<void
   if (!folder_ready_) {
     std::string reason;
     if (!root.is_absolute() || root.lexically_normal() != root || !root.has_parent_path() ||
-        !runtime::EnsurePrivateDirectories(root.parent_path(), root, root, &reason)) {
+        !runtime::EnsureOpenDirectories(root.parent_path(), root, root, &reason)) {
       // Nothing can be kept or read this session: pairing goes on in memory, as for a browser not remembered.
       std::lock_guard<std::mutex> lock(mutex_);
       store_disabled_ = true;
@@ -274,7 +274,8 @@ Pairing::StoreWork Pairing::DoStoreWork(const std::function<std::shared_ptr<void
     }
     folder_ready_ = true;
   }
-  Storage storage(options_.store_root);
+  // Open folder, owner-only browsers.v1 (a secret, platform/data_roots.h): FTP can delete it (#868).
+  auto storage = Storage(options_.store_root).OpenTree();
   bool was_loaded = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);

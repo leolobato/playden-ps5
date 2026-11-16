@@ -100,6 +100,9 @@ constexpr std::size_t kMaxPublicationBytes = 8192;
 constexpr char kTitleOwner[] = ".playden-title-owner";
 constexpr char kTemplateOwner[] = ".playden-template-owner";
 constexpr char kStageOwner[] = ".playden-stage-owner";
+// A PS5 title's folders and files are open to FTP (#868): its owner markers are 0666. A bottle's
+// stay 0600 until its title shell accepts open modes.
+mode_t MarkerMode(const std::string& kind) { return kind == "template" ? 0600 : 0666; }
 
 PackageActionResult Complete() {
   return {PackageActionState::kComplete, {}, {}};
@@ -268,7 +271,8 @@ void CleanInitialStage(const fs::path& staging, const struct stat& created) {
   struct stat marker{};
   if (directory->InspectChild(kStageOwner, &marker)) {
     if (!S_ISREG(marker.st_mode) || marker.st_uid != ::geteuid() ||
-        (marker.st_mode & 07777) != 0600 || !directory->RemoveRegularFile(kStageOwner) ||
+        ((marker.st_mode & 07777) != 0600 && (marker.st_mode & 07777) != 0666) ||
+        !directory->RemoveRegularFile(kStageOwner) ||
         !directory->Sync()) return;
   } else if (errno != ENOENT) return;
   if (!directory->Validate() || !parent->InspectChild(staging.filename().string(), &current) ||
@@ -822,9 +826,12 @@ bool FilesystemPackageInstaller::TitleFilesMatch(
     std::error_code size_error;
     auto since = PartTimes::Clock::now();
     const auto size = fs::file_size(path, size_error);
+    // The kit's mode, or more: a title opened to FTP (a recursive chmod, or Playden 0.12's first open pass) is
+    // still current; the title shell checks no title file's mode. A file missing a bit (execute) is not.
+    const auto mode = FileMode(path, &mode_ok);
     if (!PathComponentsHaveNoSymlink(paths.title, mapping.destination_relative, true) ||
         !IsRegularNoSymlink(path) || size_error || size != mapping.file->size ||
-        FileMode(path, &mode_ok) != mapping.file->mode || !mode_ok)
+        !mode_ok || (mode & mapping.file->mode) != mapping.file->mode)
       return false;
     times.Add("checks", since);
   }
@@ -1354,9 +1361,9 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
     if (!RemoveTreeNoFollow(staging.string()))
       return Failed("staging-cleanup", "owned incomplete staging could not be cleaned");
   }
-  // Staging trees are private to the app user. A published title's directories
-  // become 0755 afterwards so ShadowMount can read them; title files keep their
-  // kit modes. A bottle's way to its user profile is 0711 with bottle-profile-shared.
+  // A bottle's staging tree is private to the app user (its title shell wants it so); its way to
+  // its user profile is 0711 with bottle-profile-shared. A title's staging tree is open (0777) so
+  // FTP can delete it (#868); title files keep their kit modes.
   const bool template_stage = stage_kind == "template";
   const auto resolved = template_stage ? Resolve(record) : std::nullopt;
   const bool shared_profile = resolved && ProfileShared(record, *resolved);
@@ -1367,13 +1374,14 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
   const fs::path profile_relative = "drive_c/users/prospero";
   {
     std::string detail;
-    if (!EnsurePrivateDirectories(paths_.host_data_root, staging, staging, &detail, staging_traversal))
+    if (template_stage ? !EnsurePrivateDirectories(paths_.host_data_root, staging, staging, &detail, staging_traversal)
+                       : !EnsureOpenDirectories(paths_.host_data_root, staging, staging, &detail))
       return Failed("private-directory", detail);
   }
   struct stat created_stage{};
   if (error || ::lstat(staging.c_str(), &created_stage) != 0)
     return Failed("staging-unavailable", "owned staging could not be initialized");
-  if (!WriteFile(staging / kStageOwner, expected_stage, 0600)) {
+  if (!WriteFile(staging / kStageOwner, expected_stage, MarkerMode(stage_kind))) {
     CleanInitialStage(staging, created_stage);
     return Failed("staging-unavailable", "owned staging could not be initialized");
   }
@@ -1394,8 +1402,9 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
       if (!PathComponentsHaveNoSymlink(staging, mapping.destination_relative, false))
         return Failed("destination-invalid", "staging destination contains a symbolic link");
       std::string detail;
-      if (!EnsurePrivateDirectories(paths_.host_data_root, staging, destination.parent_path(), &detail,
-                                    staging_traversal))
+      if (template_stage ? !EnsurePrivateDirectories(paths_.host_data_root, staging, destination.parent_path(), &detail,
+                                                     staging_traversal)
+                         : !EnsureOpenDirectories(paths_.host_data_root, staging, destination.parent_path(), &detail))
         return Failed("private-directory", detail);
       checked_directories.insert(destination.parent_path());
     }
@@ -1513,7 +1522,7 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
   }
   if (stage_kind == "template" && !operations_.validate_bottle(staging))
     return Failed("template-validation", "staged bottle failed semantic validation");
-  if (!WriteFile(staging / final_marker, OwnerMarker(record, kit_, stage_kind.c_str()), 0600))
+  if (!WriteFile(staging / final_marker, OwnerMarker(record, kit_, stage_kind.c_str()), MarkerMode(stage_kind)))
     return Failed("ownership-write", "package ownership marker could not be written");
   if (!SyncPath(staging / final_marker, false))
     return Failed("sync-failed", "package ownership marker was not durably synced");
@@ -1542,7 +1551,7 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
     if (!EnsurePrivateDirectories(paths_.host_data_root, game, final.parent_path(), &detail, parents))
       return Failed("private-directory", detail);
   } else {
-    CreateDirectoriesWithMode(final.parent_path(), 0755, error);
+    CreateDirectoriesWithMode(final.parent_path(), 0777, error);
   }
   if (error)
     return Failed("destination-unwritable", "Playden can't create " + final.parent_path().string() +
@@ -1600,17 +1609,19 @@ PackageActionResult FilesystemPackageInstaller::CopyMappings(
 
 namespace {
 // ShadowMount registers a title by reading its folder, and it cannot read a
-// 0700 folder owned by the app user. Owned title directories are therefore
-// 0755 (still not writable by others). Only directories owned by this user
-// are changed; links and foreign entries refuse.
-// Every folder of the title is an owned 0755 directory (what registration reads).
+// 0700 folder owned by the app user. Owned title directories are 0777: readable
+// by ShadowMount and deletable over FTP (root has no permission bypass on /data,
+// #868). Only directories owned by this user are changed; links and foreign
+// entries refuse. The title shell checks nothing in the folder but game-launch.json.
+// Every folder of the title is an owned 0777 directory (0755 from Playden 0.11 and
+// earlier is accepted: the next publish opens it).
 bool TitleDirectoriesPublished(const fs::path& title) {
   std::vector<fs::path> pending{title};
   while (!pending.empty()) {
     const auto directory = pending.back(); pending.pop_back();
     struct stat info{};
     if (::lstat(directory.c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::geteuid() ||
-        (info.st_mode & 07777) != 0755)
+        ((info.st_mode & 07777) != 0777 && (info.st_mode & 07777) != 0755))
       return false;
     std::error_code error;
     for (fs::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
@@ -1630,7 +1641,7 @@ bool PublishTitleDirectories(const fs::path& title) {
   while (!pending.empty()) {
     const auto directory = pending.back(); pending.pop_back();
     if (::lstat(directory.c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::geteuid()) return false;
-    if ((info.st_mode & 07777) != 0755 && ::chmod(directory.c_str(), 0755) != 0) return false;
+    if ((info.st_mode & 07777) != 0777 && ::chmod(directory.c_str(), 0777) != 0) return false;
     std::error_code error;
     for (fs::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
       struct stat child{};
@@ -1744,7 +1755,7 @@ PackageActionResult FilesystemPackageInstaller::RebindRecipe(const RuntimeInstal
     if (!MarkerIdentifies(path, record, marker.kind)) continue;
     const auto temporary = marker.folder / (std::string(marker.name) + ".rebind");
     ::unlink(temporary.c_str());
-    const bool written = WriteFile(temporary, *wanted, 0600) && SyncPath(temporary, false) &&
+    const bool written = WriteFile(temporary, *wanted, MarkerMode(marker.kind)) && SyncPath(temporary, false) &&
                          ::rename(temporary.c_str(), path.c_str()) == 0 && SyncPath(marker.folder, true);
     if (!written) {
       ::unlink(temporary.c_str());
@@ -1850,7 +1861,7 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
     // A kit may add folders to the title (kit G's win/mesa-zink): make them as a full install does.
     if (!IsDirectoryNoSymlink(destination.parent_path())) {
       std::error_code created;
-      CreateDirectoriesWithMode(destination.parent_path(), 0755, created);
+      CreateDirectoriesWithMode(destination.parent_path(), 0777, created);
       if (created || !IsDirectoryNoSymlink(destination.parent_path()))
         return Failed("refresh-layout", "title directory layout changed; a full upgrade is required");
     }
@@ -1885,11 +1896,11 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
   // before this point leaves a refresh that runs again.
   if (!PublishTitleDirectories(paths->title) || !SyncTree(paths->title) || !TitleFilesMatch(record, *paths))
     return Failed("refresh-verify", "the refreshed title does not match the kit");
-  for (const auto& [path, text] : {std::pair{paths->title / kTitleOwner, new_title},
-                                   std::pair{paths->bottle / kTemplateOwner, new_bottle}}) {
+  for (const auto& [path, text, kind] : {std::tuple{paths->title / kTitleOwner, new_title, "title"},
+                                         std::tuple{paths->bottle / kTemplateOwner, new_bottle, "template"}}) {
     const auto temporary = path.parent_path() / (path.filename().string() + ".refresh");
     ::unlink(temporary.c_str());
-    if (!WriteFile(temporary, text, 0600) || !SyncPath(temporary, false) ||
+    if (!WriteFile(temporary, text, MarkerMode(kind)) || !SyncPath(temporary, false) ||
         ::rename(temporary.c_str(), path.c_str()) != 0 || !SyncPath(path.parent_path(), true))
       return Failed("refresh-marker", "an owner marker could not be rewritten");
   }

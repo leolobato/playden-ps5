@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The saved gamesdb entries under <user root>/gog/products: the file format, 0600 files in 0700 folders, links and
+// The saved gamesdb entries under <user root>/gog/products: the file format, 0666 files in 0777 folders (#868; 0600 ones from before are read), links and
 // unsafe files refused, a corrupt file ignored, and Clear removing every regular file (temporary ones too) without
 // following a link. Built twice: on the host's descriptor-relative paths, and with the console's absolute-path policy
 // (gog_product_cache_native_policy). Synthetic data only.
@@ -132,8 +132,8 @@ void SaveLoadRemove() {
   CHECK(!Exists(root / "gog"));
 
   CHECK(cache.Save(1351891846, Game()));
-  CHECK(ModeOf(root / "gog") == 0700 && ModeOf(root / "gog" / "products") == 0700);
-  CHECK(ModeOf(root / "gog" / "products" / "1351891846") == 0600);
+  CHECK(ModeOf(root / "gog") == 0777 && ModeOf(root / "gog" / "products") == 0777);  // #868
+  CHECK(ModeOf(root / "gog" / "products" / "1351891846") == 0666);
   auto loaded = cache.Load(1351891846);
   CHECK(loaded && Same(*loaded, Game()));
   CHECK(!cache.Load(1351891847));
@@ -157,9 +157,9 @@ void Refusals() {
   CHECK(!cache.Load(2));
   CHECK(cache.Save(2, Game()));
   CHECK(cache.Load(2));
-  // Another mode is refused.
-  CHECK(::chmod((products / "2").c_str(), 0644) == 0);
-  CHECK(!cache.Load(2));
+  // Any mode of the app user's is read (#868: a recursive chmod over FTP may leave anything).
+  CHECK(::chmod((products / "2").c_str(), 0777) == 0);
+  CHECK(cache.Load(2));
   // A link to a valid product is never followed.
   fs::create_symlink(products / "1", products / "3");
   CHECK(!cache.Load(3));
@@ -175,11 +175,12 @@ void Refusals() {
   CHECK(!through.Save(10, Game()));
   CHECK(!through.Clear());
   CHECK(Exists(other / "gog" / "products" / "9") && !Exists(other / "gog" / "products" / "10"));
-  // A gog folder of another mode is refused.
+  // A gog folder of the app user's at another mode is Playden's own (#868): used as it is.
   const auto open = FreshRoot();
   fs::create_directories(open / "gog");
   CHECK(::chmod((open / "gog").c_str(), 0755) == 0);
-  CHECK(!ProductCache(open.string()).Save(1, Game()));
+  CHECK(ProductCache(open.string()).Save(1, Game()));
+  CHECK(ModeOf(open / "gog") == 0755);
   // A relative or unnormalized user root is refused.
   CHECK(!ProductCache("relative/root").Save(1, Game()));
   CHECK(!ProductCache((root / "." / "x" / "..").string()).Save(1, Game()));

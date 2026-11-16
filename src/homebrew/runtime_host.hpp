@@ -916,6 +916,11 @@ class RuntimeHost {
   // Keeps bottles no install record and no unrecorded PS5 title names (their title was deleted
   // as a leftover, or its record was lost) as kept saves, so Storage lists them.
   void KeepUnrecordedBottles(Composition& composition);
+  // Opens a bottle no title uses (kept, set aside, or a saves backup) to FTP: folders 0777, files 0666,
+  // launcher sign-ins (runtime::PrivateProfilePaths under `profile`, relative to folder) 0700/0600.
+  // Logs what it couldn't open.
+  void OpenKeptBottle(const std::filesystem::path& folder,
+                      const std::filesystem::path& profile = "library/prefixes/game/drive_c/users/prospero");
   struct LeftoverDelete {
     runtime::LeftoverTitle title;
     std::string operation_id;

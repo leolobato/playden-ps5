@@ -122,7 +122,7 @@ std::vector<std::string> MyPresetsLoadLog(const MyPresetsLoad& load);
 // was set aside (LoadMyPresetsFile) once at startup. No file: true and none. A file that can't be read or parsed:
 // false, none and a reason.
 bool ReadMyPresetsFile(const std::string& path, std::vector<MyPreset>* presets, std::string* reason);
-// Replaces the file atomically (0600, ReadPrivateSettingsFile's folder and file rules). Refuses while the file there
+// Replaces the file atomically (0666, ReadPrivateSettingsFile's folder and file rules). Refuses while the file there
 // does not parse as presets (a load that came back kUnavailable), so a file Playden could not read is never replaced.
 // Also refuses proposed data that cannot be parsed back without loss, leaving the existing file untouched.
 bool SaveMyPresetsFile(const std::string& path, const std::vector<MyPreset>& presets, std::string* reason);

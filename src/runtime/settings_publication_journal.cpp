@@ -376,8 +376,9 @@ PublicationRequestLoad LoadSettingsPublicationRequest(const std::filesystem::pat
   };
   if (!IsSettingsPublicationTransactionId(transaction))
     return fail(PublicationRecoveryState::kCorrupt, "Invalid request transaction filename.");
-  auto directory = platform::ManagedDirectory::Open(root, platform::DirectoryPolicy::kPrivate);
-  if (!directory) return fail(PublicationRecoveryState::kUnavailable, "Private request directory unavailable.");
+  // runtime-state/requests: Playden's open data (#868), any mode as long as it is the app user's.
+  auto directory = platform::ManagedDirectory::Open(root, platform::DirectoryPolicy::kOpenTree);
+  if (!directory) return fail(PublicationRecoveryState::kUnavailable, "Request directory unavailable.");
   const auto name = "settings-request-" + transaction + ".v1";
   struct stat before{}, after{};
   if (!directory->InspectChild(name, &before)) {
@@ -387,10 +388,10 @@ PublicationRequestLoad LoadSettingsPublicationRequest(const std::filesystem::pat
         "Request could not be inspected or its absence synced.");
   }
   if (!S_ISREG(before.st_mode) || before.st_uid != geteuid() || before.st_nlink != 1 ||
-      (before.st_mode & 07777) != 0600 || before.st_size <= 0 ||
+      before.st_size <= 0 ||
       static_cast<std::uint64_t>(before.st_size) > kMaxSettingsPublicationOperationBytes)
-    return fail(PublicationRecoveryState::kCorrupt, "Request is not an exact private bounded file.");
-  Storage storage(root.string()); auto bytes = storage.ReadDurable(name, kMaxSettingsPublicationOperationBytes);
+    return fail(PublicationRecoveryState::kCorrupt, "Request is not an exact bounded file of Playden's.");
+  auto storage = Storage(root.string()).OpenTree(); auto bytes = storage.ReadDurable(name, kMaxSettingsPublicationOperationBytes);
   if (!bytes.ok()) return fail(PublicationRecoveryState::kUnavailable, bytes.message());
   if (!directory->Validate() || !directory->InspectChild(name, &after) ||
       before.st_dev != after.st_dev || before.st_ino != after.st_ino || before.st_mode != after.st_mode ||
@@ -404,7 +405,7 @@ PublicationRequestLoad LoadSettingsPublicationRequest(const std::filesystem::pat
 Result<void> CreateSettingsPublicationRequest(const std::filesystem::path& root, const SettingsPublicationRequest& request) {
   std::string reason; auto bytes = EncodeSettingsPublicationRequest(request, &reason);
   if (!bytes) return Result<void>::Failure(StorageError::kInvalidData, reason);
-  Storage storage(root.string());
+  auto storage = Storage(root.string()).OpenTree();
   auto written = storage.WriteDurableExclusive("settings-request-" + request.transaction_id + ".v1", *bytes);
   if (!written.ok()) return written;
   auto loaded = LoadSettingsPublicationRequest(root, request.transaction_id);

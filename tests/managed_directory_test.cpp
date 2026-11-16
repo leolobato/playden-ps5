@@ -7,6 +7,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "line %d: %s (errno %d)\n", __LINE__, #x, errno); std::exit(1); } } while (0)
@@ -277,6 +278,57 @@ void UnownedTreeOperations(DirectoryBackend backend) {
   CHECK(root->RemoveRegularFile("dxvk.conf") && !fs::exists(f.root / "dxvk.conf"));
 }
 
+// kOpenTree (#868): Playden's own data, any mode as long as the app user owns it, so FTP (root,
+// with no permission bypass on /data) can delete it. Folders it creates are 0777; a private
+// child still demands 0700, and a private parent never opens an open child.
+void OpenTreeAcceptsAnyModeOwnedOnly(DirectoryBackend backend) {
+  Fixture f;
+  const auto mode = [](const fs::path& path) {
+    struct stat info{};
+    CHECK(::lstat(path.c_str(), &info) == 0);
+    return info.st_mode & 07777;
+  };
+  const auto state = f.root / "state";
+  fs::create_directory(state);
+  for (mode_t any : {0700, 0711, 0755, 0777, 01777, 0500}) {
+    CHECK(::chmod(state.c_str(), any) == 0);
+    auto opened = ManagedDirectory::Open(state, DirectoryPolicy::kOpenTree, backend);
+    CHECK(opened && opened->policy() == DirectoryPolicy::kOpenTree && opened->root() == state);
+  }
+  CHECK(::chmod(state.c_str(), 0700) == 0);
+  auto open = ManagedDirectory::Open(state, DirectoryPolicy::kOpenTree, backend);
+  CHECK(open);
+  auto made = open->OpenChild("requests", DirectoryPolicy::kOpenTree, true);
+  CHECK(made && mode(state / "requests") == 0777 && made->root() == state);
+  auto deep = made->OpenChild("deeper", DirectoryPolicy::kOpenTree, true);
+  CHECK(deep && mode(state / "requests/deeper") == 0777);
+  auto secret = open->OpenChild("secret", DirectoryPolicy::kPrivate, true);
+  CHECK(secret && mode(state / "secret") == 0700 && secret->root() == state / "secret");
+  CHECK(!secret->OpenChild("child", DirectoryPolicy::kOpenTree, true) && errno == EINVAL);
+  // A 0666 file (what FTP and the app write now) is created and read back.
+  const int file = open->CreateExclusiveFile("installs.json", 0666);
+  CHECK(file >= 0 && ::close(file) == 0 && mode(state / "installs.json") == 0666);
+  const int read = open->OpenRegularFile("installs.json", true);
+  CHECK(read >= 0 && ::close(read) == 0);
+  // From an approved parent, the child becomes the open tree's root.
+  auto parent = ManagedDirectory::Open(f.root, DirectoryPolicy::kApprovedTree, backend);
+  CHECK(parent);
+  auto child = parent->OpenChild("state", DirectoryPolicy::kOpenTree);
+  CHECK(child && child->root() == state);
+  auto created = parent->OpenChild("art", DirectoryPolicy::kOpenTree, true);
+  CHECK(created && mode(f.root / "art") == 0777);
+  // Links are still refused, and a mode change under an open handle is drift like any other.
+  fs::create_symlink(state, f.root / "linked");
+  CHECK(!ManagedDirectory::Open(f.root / "linked", DirectoryPolicy::kOpenTree, backend));
+  CHECK(!parent->OpenChild("linked", DirectoryPolicy::kOpenTree));
+  CHECK(::chmod(state.c_str(), 0777) == 0);
+  CHECK(!open->Validate() && errno == ESTALE);
+  if (::geteuid() == 0) {
+    CHECK(::chown(state.c_str(), 1, static_cast<gid_t>(-1)) == 0);
+    CHECK(!ManagedDirectory::Open(state, DirectoryPolicy::kOpenTree, backend) && errno == EACCES);
+  }
+}
+
 int main() {
 #if defined(__PROSPERO__) || (defined(PLAYDEN_PLATFORM_PS5) && PLAYDEN_PLATFORM_PS5)
   CHECK(ManagedDirectory::DefaultBackend() == DirectoryBackend::kAbsolutePath);
@@ -294,6 +346,7 @@ int main() {
     ForeignOwnershipWhenPrivileged(backend);
     PrivateTraversableAccepts0711Only(backend);
     UnownedTreeOperations(backend);
+    OpenTreeAcceptsAnyModeOwnedOnly(backend);
   }
   std::printf("managed directory: %zu backends, identity, policy and file operations pass\n", backends.size());
 }

@@ -11,11 +11,11 @@ using runtime::TitleAvailability;
 bool RootValid(const std::filesystem::path& root) {
   return root.is_absolute() && root == root.lexically_normal() && root.filename() == "homebrew" && root.parent_path().filename() == "data";
 }
-// Playden owns a title directory it created: owned by this user and not
-// writable by others. ShadowMount must read it, so 0755 as well as 0700.
+// Playden owns a title directory it created: owned by this user. Titles are 0777 so FTP can
+// delete them (#868); 0755 and 0700 are what Playden 0.11 and earlier left.
 bool OwnedDirectoryMode(const struct stat& info) {
-  return S_ISDIR(info.st_mode) && info.st_uid == geteuid() &&
-      ((info.st_mode & 07777) == 0700 || (info.st_mode & 07777) == 0755);
+  const auto mode = info.st_mode & 07777;
+  return S_ISDIR(info.st_mode) && info.st_uid == geteuid() && (mode == 0700 || mode == 0755 || mode == 0777);
 }
 std::optional<std::string> ContentId(const std::filesystem::path& root, const std::string& title) {
   auto directory = platform::ManagedDirectory::Open(root / title / "sce_sys", platform::DirectoryPolicy::kApprovedTree);

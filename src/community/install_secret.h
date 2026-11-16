@@ -1,7 +1,7 @@
 #pragma once
 // install_secret.h - The console's install secret for sharing recipes and voting (Phase 5, item 8):
 // 128 random bits as 32 lowercase hex characters, made once per console and kept in
-// <community store root>/sharing-id (0600, private folder, durable write through
+// <community store root>/sharing-id (0600 in a folder FTP can empty, durable write through
 // platform::Storage). It is sent only as "Authorization: Bearer <secret>" to the Playden API and
 // never logged (diagnostics::RedactSecrets takes it out of any line that holds it).
 // Copyright (c) 2026 Playden contributors
@@ -16,8 +16,8 @@ namespace playden::community {
 inline constexpr const char* kInstallSecretFileName = "sharing-id";
 inline constexpr std::size_t kInstallSecretBytes = 32;  // hex characters
 
-// Creates store_root private (0700) when missing and checks it is: an absolute normalized folder
-// whose parent exists. The sharing ID and the vote memory call it before every file operation.
+// Creates store_root (0777, #868) when missing and checks it is the app user's: an absolute
+// normalized folder whose parent exists. The sharing ID and the vote memory call it before every file operation.
 bool PrepareCommunityRoot(const std::string& store_root, std::string* error);
 
 // Exactly 32 lowercase hex characters.
@@ -34,7 +34,7 @@ std::optional<std::string> NewIdempotencyKey();
 
 // The secret in store_root/sharing-id, made (and written) first when the file is missing or does
 // not hold exactly one secret (a trailing newline is accepted). store_root: an absolute normalized
-// folder whose parent exists; it is created private (0700) when missing. *note gets a line safe to
+// folder whose parent exists; it is created (0777) when missing. *note gets a line safe to
 // log when a malformed file was replaced (never the content); *error the reason on failure.
 std::optional<std::string> LoadOrCreateInstallSecret(const std::string& store_root, std::string* error,
                                                      std::string* note = nullptr);

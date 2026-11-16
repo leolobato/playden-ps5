@@ -710,7 +710,7 @@ int main(int argc, char** argv) {
                                   mount.string(), (mount / "playden" / "games").string()});
         }
         // Imported games: imports.json, and "Copy into Playden" as the install service's Local runner.
-        import_storage = std::make_unique<playden::Storage>(options->data_directory.string());
+        import_storage = std::make_unique<playden::Storage>(playden::Storage(options->data_directory.string()).OpenTree());
         imports = std::make_unique<playden::stores::local::ImportStore>(*import_storage);
         playden::stores::local::LocalCopyOptions copy_options;
         copy_options.log = [log_directory](const std::string& line) {

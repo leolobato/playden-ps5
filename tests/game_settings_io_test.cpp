@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
   std::string reason;
   reject_relative_operations = true;
   CHECK(SaveGameSettingsFile(records.string(), {{SteamId(220), {"", {}, 1}}}, &reason));
-  CHECK(Mode(records) == 0600);
+  CHECK(Mode(records) == 0666);  // open to FTP (#868)
   const auto original = Read(records);
   fail_file_sync = true;
   CHECK(!SaveGameSettingsFile(records.string(), {{SteamId(220), {"", {}, 2}}}, &reason));
@@ -120,10 +120,10 @@ int main(int argc, char** argv) {
   CHECK(SaveGameSettingsFile(records.string(), {{SteamId(220), {"", {}, 2}}}, &reason));
   CHECK(::chmod(records.c_str(), 0644) == 0);  // admitted legacy owner file
   CHECK(SaveGameSettingsFile(records.string(), {{SteamId(220), {"", {}, 3}}}, &reason));
-  CHECK(Mode(records) == 0600);  // every replacement migrates to private mode
+  CHECK(Mode(records) == 0666);  // every replacement opens it to FTP (#868)
   std::map<playden::GameId, GameSettingsRecord> loaded;
-  CHECK(::chmod(records.c_str(), 0660) == 0);
-  CHECK(!LoadGameSettingsFile(records.string(), &loaded, &reason));
+  CHECK(::chmod(records.c_str(), 0777) == 0);  // left by a recursive chmod over FTP: still Playden's (#868)
+  CHECK(LoadGameSettingsFile(records.string(), &loaded, &reason));
   CHECK(::chmod(records.c_str(), 0600) == 0);
   {
     // A record of a store this build doesn't read (a newer Playden's) is skipped and the rest loads; a GOG game's
@@ -203,10 +203,12 @@ int main(int argc, char** argv) {
           recipes_loaded.at(SteamId(274520)) == only_recipe && recipes_loaded.at(SteamId(220)) == only_shared);
   }
 
+  // A folder of the app user's at any mode is Playden's own (#868).
   const auto public_private_root = root / "public-settings";
   fs::create_directory(public_private_root);
-  CHECK(!SaveGameSettingsFile((public_private_root / "settings.json").string(),
-                              {{SteamId(220), {"", {}, 4}}}, &reason));
+  CHECK(::chmod(public_private_root.c_str(), 0777) == 0);
+  CHECK(SaveGameSettingsFile((public_private_root / "settings.json").string(),
+                             {{SteamId(220), {"", {}, 4}}}, &reason));
   CHECK(!SaveGameSettingsFile("relative-settings.json", {{SteamId(220), {"", {}, 4}}}, &reason));
   const auto linked_settings = root / "linked-settings.json";
   CHECK(::symlink(records.c_str(), linked_settings.c_str()) == 0);
@@ -227,7 +229,7 @@ int main(int argc, char** argv) {
   CHECK(MigrateLegacyGameSettingsFile(legacy.string(), migrated.string(), &reason));
   CHECK(Read(legacy) == original);
   CHECK(Mode(legacy) == 0644);
-  CHECK(Mode(migrated) == 0600);
+  CHECK(Mode(migrated) == 0666);
   CHECK(!MigrateLegacyGameSettingsFile(legacy.string(), migrated.string(), &reason));
   CHECK(reason.find("already exist") != std::string::npos);
   const auto malformed = legacy_root / "malformed.json";
@@ -237,9 +239,14 @@ int main(int argc, char** argv) {
   CHECK(!fs::exists(migrated_root / "other.json"));
   const auto unsafe_mode = legacy_root / "unsafe-mode.json";
   { std::ofstream(unsafe_mode) << original; }
-  CHECK(::chmod(unsafe_mode.c_str(), 0660) == 0);
-  CHECK(!MigrateLegacyGameSettingsFile(
+  // Playden's own file at any mode migrates (#868); a link in its place does not.
+  CHECK(::chmod(unsafe_mode.c_str(), 0777) == 0);
+  CHECK(MigrateLegacyGameSettingsFile(
       unsafe_mode.string(), (migrated_root / "unsafe.json").string(), &reason));
+  const auto linked_legacy = legacy_root / "linked.json";
+  fs::create_symlink(unsafe_mode, linked_legacy);
+  CHECK(!MigrateLegacyGameSettingsFile(
+      linked_legacy.string(), (migrated_root / "linked.json").string(), &reason));
 
   GameRecipe recipe;
   CHECK(ParseGameRecipe(Read(source / "runtime/recipes/steam-220-hl2-v1.json"), &recipe, &reason));

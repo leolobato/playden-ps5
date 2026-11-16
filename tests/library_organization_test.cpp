@@ -113,7 +113,7 @@ void V1RoundTripAndIsolation() {
   struct stat info {};
   Check(stat((directory.path() + "/" + Path(kFirstAccount)).c_str(), &info) == 0,
         "organization file exists");
-  Check((info.st_mode & 0777) == 0600, "organization file is owner-only");
+  Check((info.st_mode & 0777) == 0666, "organization file is open to FTP (#868)");
 }
 
 void RejectsInvalidValuesWithoutReplacingGoodData() {
@@ -417,8 +417,8 @@ void V2RoundTripsEveryStore() {
   invalid.favorites.insert(playden::GameId{playden::Store::kLocal, "not-a-uuid"});
   Check(!store.Save(kDevice, invalid).ok(), "an invalid game is rejected");
   struct stat info {};
-  Check(stat((directory.path() + "/" + kV2Path).c_str(), &info) == 0 && (info.st_mode & 0777) == 0600,
-        "organization.v2 is owner-only");
+  Check(stat((directory.path() + "/" + kV2Path).c_str(), &info) == 0 && (info.st_mode & 0777) == 0666,
+        "organization.v2 is open to FTP (#868)");
 }
 
 // Corrupt organization.v2 fails the load like a corrupt .v1 did; it never falls back to the merge.

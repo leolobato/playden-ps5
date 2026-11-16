@@ -205,8 +205,13 @@ int main() {
   CHECK(loaded_request.state == PublicationRecoveryState::kValid && loaded_request.request);
   CHECK(EncodeSettingsPublicationRequest(*loaded_request.request, &reason) == request_bytes);
   const auto request_file = root / ("settings-request-" + request.transaction_id + ".v1");
-  CHECK(chmod(request_file.c_str(), 0644) == 0);
+  // Any mode of the app user's is read (#868); a second link still makes it corrupt.
+  CHECK(chmod(request_file.c_str(), 0777) == 0);
+  CHECK(LoadSettingsPublicationRequest(root, request.transaction_id).state == PublicationRecoveryState::kValid);
+  const auto alias = root / "request-alias";
+  CHECK(link(request_file.c_str(), alias.c_str()) == 0);
   CHECK(LoadSettingsPublicationRequest(root, request.transaction_id).state == PublicationRecoveryState::kCorrupt);
+  CHECK(unlink(alias.c_str()) == 0);
   CHECK(chmod(request_file.c_str(), 0600) == 0);
   const std::string another_transaction = "00000000-0000-7000-8000-000000000099";
   const auto other_request = root / ("settings-request-" + another_transaction + ".v1");

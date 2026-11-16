@@ -15,10 +15,11 @@ std::optional<std::filesystem::path> PrepareGameSettingsStorage(
     return fail("App state root must be an absolute normalized path.");
   const auto private_root = state_root / "game-settings-private";
   const auto path = private_root / "game-settings.json";
-  if (!EnsurePrivateDirectories(state_root.parent_path(), private_root, private_root, reason))
+  // Open to FTP (#868): the app user's, any mode; created 0777.
+  if (!EnsureOpenDirectories(state_root.parent_path(), private_root, private_root, reason))
     return std::nullopt;
-  auto directory = platform::ManagedDirectory::Open(private_root, platform::DirectoryPolicy::kPrivate);
-  if (!directory) return fail("Private settings root is unavailable.");
+  auto directory = platform::ManagedDirectory::Open(private_root, platform::DirectoryPolicy::kOpenTree);
+  if (!directory) return fail("Settings root is unavailable.");
   struct stat existing{};
   const bool present = directory->InspectChild("game-settings.json", &existing);
   if (!present) {

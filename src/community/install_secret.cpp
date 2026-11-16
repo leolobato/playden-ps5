@@ -22,7 +22,7 @@ bool PrepareCommunityRoot(const std::string& store_root, std::string* error) {
     return false;
   }
   std::string reason;
-  if (!runtime::EnsurePrivateDirectories(root.parent_path(), root, root, &reason)) {
+  if (!runtime::EnsureOpenDirectories(root.parent_path(), root, root, &reason)) {
     if (error) *error = "community folder unavailable: " + reason;
     return false;
   }
@@ -38,7 +38,7 @@ std::optional<std::string> WriteNew(const std::string& store_root, std::string* 
     return std::nullopt;
   }
   const std::string text = *secret + "\n";
-  const auto result = Storage(store_root).WriteDurable(kInstallSecretFileName, Bytes(text.begin(), text.end()));
+  const auto result = Storage(store_root).OpenTree().WriteDurable(kInstallSecretFileName, Bytes(text.begin(), text.end()));
   if (!result.ok()) {
     if (error) *error = std::string("cannot write the sharing ID: ") + result.message();
     return std::nullopt;
@@ -87,7 +87,7 @@ std::optional<std::string> LoadOrCreateInstallSecret(const std::string& store_ro
                                                      std::string* note) {
   if (note) note->clear();
   if (!PrepareCommunityRoot(store_root, error)) return std::nullopt;
-  const auto read = Storage(store_root).ReadDurable(kInstallSecretFileName, 256);
+  const auto read = Storage(store_root).OpenTree().ReadDurable(kInstallSecretFileName, 256);
   if (read.ok()) {
     std::string text(read.value().begin(), read.value().end());
     if (!text.empty() && text.back() == '\n') text.pop_back();
@@ -118,7 +118,7 @@ bool IsAccountToken(std::string_view text) {
 std::optional<std::string> LoadAccountToken(const std::string& store_root, std::string* error) {
   if (error) error->clear();
   if (!PrepareCommunityRoot(store_root, error)) return std::nullopt;
-  const auto read = Storage(store_root).ReadDurable(kAccountTokenFileName, 1024);
+  const auto read = Storage(store_root).OpenTree().ReadDurable(kAccountTokenFileName, 1024);
   if (!read.ok()) {
     if (read.error() != StorageError::kNotFound && error) *error = std::string("cannot read the account link: ") + read.message();
     return std::nullopt;
@@ -136,7 +136,7 @@ bool SaveAccountToken(const std::string& store_root, const std::string& token, s
   }
   if (!PrepareCommunityRoot(store_root, error)) return false;
   const std::string text = token + "\n";
-  const auto written = Storage(store_root).WriteDurable(kAccountTokenFileName, Bytes(text.begin(), text.end()));
+  const auto written = Storage(store_root).OpenTree().WriteDurable(kAccountTokenFileName, Bytes(text.begin(), text.end()));
   if (!written.ok()) {
     if (error) *error = std::string("cannot save the account link: ") + written.message();
     return false;
@@ -146,7 +146,7 @@ bool SaveAccountToken(const std::string& store_root, const std::string& token, s
 
 bool DeleteAccountToken(const std::string& store_root, std::string* error) {
   if (!PrepareCommunityRoot(store_root, error)) return false;
-  const auto removed = Storage(store_root).Remove(kAccountTokenFileName);
+  const auto removed = Storage(store_root).OpenTree().Remove(kAccountTokenFileName);
   if (!removed.ok() && removed.error() != StorageError::kNotFound) {
     if (error) *error = std::string("cannot forget the account link: ") + removed.message();
     return false;

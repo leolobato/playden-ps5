@@ -1148,7 +1148,7 @@ void FixedTitleRefreshesToAnyTitleShell() {
   CHECK(Read(fixture.host_data / "homebrew/FAKE78001/win/mesa-zink/i386-windows/opengl32.dll") == "MZ zink");
   struct stat folder{};
   CHECK(::stat((fixture.host_data / "homebrew/FAKE78001/win/mesa-zink").c_str(), &folder) == 0 &&
-        (folder.st_mode & 07777) == 0755);
+        (folder.st_mode & 07777) == 0777);
 }
 
 // A kit renamed since a game was prepared (hl2-fw1360-dev1 became playden-kit with kit 0.13): Update refreshes
@@ -1196,12 +1196,24 @@ void PrivateTitleFoldersAreRepublished() {
   CHECK(!installer.Inspect(Record()).manifest_matches);
   CHECK(installer.StageTitle(Record()).state == PackageActionState::kComplete);
   struct stat info{};
-  CHECK(::stat(title.c_str(), &info) == 0 && (info.st_mode & 07777) == 0755);
+  CHECK(::stat(title.c_str(), &info) == 0 && (info.st_mode & 07777) == 0777);
   CHECK(installer.Inspect(Record()).manifest_matches);
+  // A title Playden 0.11 published (0755) still matches; the next stage opens it.
+  CHECK(::chmod(title.c_str(), 0755) == 0);
+  CHECK(installer.Inspect(Record()).manifest_matches);
+  CHECK(installer.StageTitle(Record()).state == PackageActionState::kComplete);
+  CHECK(::stat(title.c_str(), &info) == 0 && (info.st_mode & 07777) == 0777);
+  // Its files opened to FTP (a recursive chmod) keep it current; a file missing a bit of its kit mode doesn't.
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(title))
+    if (entry.is_regular_file() && entry.path().filename() != "game-launch.json")
+      CHECK(::chmod(entry.path().c_str(), 0777) == 0);
+  CHECK(installer.Inspect(Record()).manifest_matches);
+  CHECK(::chmod((title / "eboot.bin").c_str(), 0666) == 0);
+  CHECK(!installer.Inspect(Record()).manifest_matches);
 }
 
 // Folders the installer creates get an explicit mode whatever the umask: the
-// shared staging parents are 01777, the title stays 0755.
+// shared staging parents are 01777, the title 0777 (FTP can delete it, #868).
 void CreatedFoldersIgnoreUmask() {
   for (const mode_t mask : {mode_t{0}, mode_t{077}}) {
     const auto previous = ::umask(mask);
@@ -1212,7 +1224,10 @@ void CreatedFoldersIgnoreUmask() {
     struct stat info{};
     for (const auto* shared : {"playden", "playden/staging"})
       CHECK(::stat((fixture.host_data / shared).c_str(), &info) == 0 && (info.st_mode & 07777) == 01777);
-    CHECK(::stat((fixture.host_data / "homebrew/FAKE78001").c_str(), &info) == 0 && (info.st_mode & 07777) == 0755);
+    CHECK(::stat((fixture.host_data / "homebrew/FAKE78001").c_str(), &info) == 0 && (info.st_mode & 07777) == 0777);
+    for (const auto* marker : {".playden-title-owner", ".playden-stage-owner"})
+      CHECK(::stat((fixture.host_data / "homebrew/FAKE78001" / marker).c_str(), &info) == 0 &&
+            (info.st_mode & 07777) == 0666);
   }
 }
 

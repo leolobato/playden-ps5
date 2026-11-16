@@ -212,7 +212,7 @@ PackageActionResult SettingsPublicationOwner::DiscardRequested(const RuntimeInst
   if (removed_any && !control->Sync() && log_)
     log_("settings request dropped install=" + current->install_id + ": control folder sync failed");
   // Unreferenced now; a request that stays is a leftover (RuntimeHost::LeftoverRequests).
-  auto removed = Storage(directory.string()).RemoveDurable("settings-request-" + transaction + ".v1");
+  auto removed = Storage(directory.string()).OpenTree().RemoveDurable("settings-request-" + transaction + ".v1");
   return {PackageActionState::kComplete, {}, removed.ok() ? std::string{} : "The saved request stays as a leftover: " + removed.message()};
 }
 PackageActionResult SettingsPublicationOwner::InitializeControl(const RuntimeInstall& record, const std::string& transaction,

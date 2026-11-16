@@ -1,4 +1,5 @@
 #include "platform/storage.h"
+#include "platform/data_roots.h"
 #include "platform/ps5/title_allow_list.h"
 #include "platform/managed_directory.h"
 
@@ -14,12 +15,13 @@ using platform::DirectoryPolicy;
 using platform::ManagedDirectory;
 
 std::optional<ManagedDirectory> Parent(const std::string& root,
-                                       const std::string& relative_path, bool traversable_root) {
+                                       const std::string& relative_path, bool traversable_root, bool open_tree) {
   auto directory = ManagedDirectory::Open(
-      root, traversable_root ? DirectoryPolicy::kPrivateTraversable : DirectoryPolicy::kPrivate);
+      root, open_tree ? DirectoryPolicy::kOpenTree
+            : traversable_root ? DirectoryPolicy::kPrivateTraversable : DirectoryPolicy::kPrivate);
   if (!directory) return std::nullopt;
   for (const auto& part : std::filesystem::path(relative_path).parent_path()) {
-    auto child = directory->OpenChild(part.string(), DirectoryPolicy::kPrivate);
+    auto child = directory->OpenChild(part.string(), open_tree ? DirectoryPolicy::kOpenTree : DirectoryPolicy::kPrivate);
     if (!child) return std::nullopt;
     directory = std::move(child);
   }
@@ -36,7 +38,7 @@ Result<Bytes> Storage::ReadDurable(const std::string& relative_path,
   if (!resolved.ok()) return Result<Bytes>::Failure(resolved.error(), resolved.message());
   if (!max_bytes || max_bytes > 32 * 1024 * 1024)
     return Result<Bytes>::Failure(StorageError::kReadFailed, "Invalid bounded journal read.");
-  auto parent = Parent(root_, relative_path, traversable_root_);
+  auto parent = Parent(root_, relative_path, traversable_root_, open_tree_);
   if (!parent) return Result<Bytes>::Failure(StorageError::kOpenFailed, "Private journal directory is unavailable.");
   const auto name = std::filesystem::path(relative_path).filename().string();
   const int fd = parent->OpenRegularFile(name, true);
@@ -47,9 +49,11 @@ Result<Bytes> Storage::ReadDurable(const std::string& relative_path,
     return Result<Bytes>::Failure(StorageError::kOpenFailed, "Journal could not be opened or its absence synced.");
   }
   struct stat info{};
-  // Legacy registries used 0644; accept them for migration, publish new files 0600.
+  // Legacy registries used 0644, private ones 0600. Open data (#868) is written 0666 and may be left at any
+  // mode by a recursive chmod over FTP: its owner decides (OpenRegularFile checked it).
   bool valid = fstat(fd, &info) == 0 &&
-      ((info.st_mode & 07777) == 0600 || (info.st_mode & 07777) == 0644) &&
+      (open_tree_ || (info.st_mode & 07777) == 0600 || (info.st_mode & 07777) == 0644 ||
+       (info.st_mode & 07777) == 0666) &&
       info.st_size >= 0 && static_cast<std::uint64_t>(info.st_size) <= max_bytes;
   Bytes bytes;
   std::uint8_t buffer[4096];
@@ -88,7 +92,7 @@ Result<void> Storage::WriteDurableImpl(const std::string& relative_path,
   const auto uid = ps5::HoldEffectiveUid();
   const auto resolved = Resolve(relative_path);
   if (!resolved.ok()) return Failure(resolved.error(), "Invalid journal path.");
-  auto parent = Parent(root_, relative_path, traversable_root_);
+  auto parent = Parent(root_, relative_path, traversable_root_, open_tree_);
   if (!parent) return Failure(StorageError::kOpenFailed, "Private journal directory is unavailable.");
   const auto name = std::filesystem::path(relative_path).filename().string();
   if (!replace_existing) {
@@ -101,7 +105,7 @@ Result<void> Storage::WriteDurableImpl(const std::string& relative_path,
   int fd = -1;
   for (unsigned attempt = 0; attempt < 128; ++attempt) {
     temporary = "." + name + ".journal-" + std::to_string(getpid()) + "-" + std::to_string(sequence++);
-    fd = parent->CreateExclusiveFile(temporary, 0600);
+    fd = parent->CreateExclusiveFile(temporary, open_tree_ ? platform::data_roots::FileModeFor(name) : 0600);
     if (fd >= 0 || errno != EEXIST) break;
   }
   if (fd < 0) return Failure(StorageError::kOpenFailed, "Exclusive private journal creation failed.");
@@ -129,7 +133,7 @@ Result<void> Storage::WriteDurableImpl(const std::string& relative_path,
 Result<void> Storage::RemoveDurable(const std::string& relative_path) const {
   const auto resolved = Resolve(relative_path);
   if (!resolved.ok()) return Failure(resolved.error(), "Invalid journal removal path.");
-  auto parent = Parent(root_, relative_path, traversable_root_);
+  auto parent = Parent(root_, relative_path, traversable_root_, open_tree_);
   if (!parent) return Failure(StorageError::kOpenFailed, "Private journal directory is unavailable.");
   const auto name = std::filesystem::path(relative_path).filename().string();
   struct stat existing{};

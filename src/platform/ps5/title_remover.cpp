@@ -39,9 +39,9 @@ std::optional<std::string> ReadNoFollow(const std::filesystem::path& path, std::
 bool WriteRequest(const std::filesystem::path& directory, const std::string& text) {
   const auto temporary = directory / "request.tmp";
   unlink(temporary.c_str());
-  const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+  const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
   if (fd < 0) return false;
-  bool ok = fchmod(fd, 0644) == 0 && write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size()) &&
+  bool ok = fchmod(fd, 0666) == 0 && write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size()) &&
             fsync(fd) == 0;
   ok = close(fd) == 0 && ok;
   if (!ok || rename(temporary.c_str(), (directory / "request").c_str()) != 0) {
@@ -55,16 +55,17 @@ bool WriteRequest(const std::filesystem::path& directory, const std::string& tex
 TitleRemoverOutcome RunTitleRemover(const TitleRemoverConfig& config, const std::string& title, const std::string& nonce) {
   TitleRemoverOutcome outcome;
   const auto& directory = config.request_directory;
-  // The payload trusts only a directory owned by Playden's user that others cannot write.
+  // The payload trusts only a directory and a request owned by Playden's user. Both are open (0777, 0666) so the
+  // console owner can delete them over FTP (#868).
   struct stat info{};
   if (lstat(directory.c_str(), &info) != 0) {
-    if (errno != ENOENT || mkdir(directory.c_str(), 0755) != 0 || lstat(directory.c_str(), &info) != 0) {
+    if (errno != ENOENT || mkdir(directory.c_str(), 0777) != 0 || lstat(directory.c_str(), &info) != 0) {
       outcome.detail = "request directory unavailable";
       return outcome;
     }
   }
   if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid() ||
-      ((info.st_mode & 07777) != 0755 && chmod(directory.c_str(), 0755) != 0)) {
+      ((info.st_mode & 07777) != 0777 && chmod(directory.c_str(), 0777) != 0)) {
     outcome.detail = "request directory is not Playden's";
     return outcome;
   }

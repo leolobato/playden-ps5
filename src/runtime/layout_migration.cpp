@@ -163,7 +163,7 @@ std::string Escape(const std::string& text) {
 }
 
 bool PrepareState(const LayoutPaths& paths, std::string* error) {
-  return EnsurePrivateDirectories(paths.boundary, paths.state_root, paths.state_root, error);
+  return EnsureOpenDirectories(paths.boundary, paths.state_root, paths.state_root, error);
 }
 
 bool SaveJournal(const fs::path& state_root, const LayoutJournal& journal, std::string* error) {
@@ -181,7 +181,7 @@ bool SaveJournal(const fs::path& state_root, const LayoutJournal& journal, std::
     if (error) *error = "layout journal has too many entries";
     return false;
   }
-  const auto written = Storage(state_root.string()).WriteDurable(kLayoutJournal, Bytes(text.begin(), text.end()));
+  const auto written = Storage(state_root.string()).OpenTree().WriteDurable(kLayoutJournal, Bytes(text.begin(), text.end()));
   if (!written.ok() && error) *error = written.message();
   return written.ok();
 }
@@ -235,7 +235,7 @@ std::optional<std::string> PendingLaunchTitle(const Bytes& bytes) {
 // A pending session is only cleared once Playden sees its game end, which a game closed
 // while Playden was not running never shows: its title is asked about (ops.title_running).
 std::optional<std::string> PendingJournal(const LayoutPaths& paths, const LayoutOps& ops) {
-  Storage storage(paths.state_root.string());
+  auto storage = Storage(paths.state_root.string()).OpenTree();
   const auto launch = storage.ReadDurable("launch-pending.v1", 64 * 1024);
   if (launch.ok()) {
     const auto title = PendingLaunchTitle(launch.value());
@@ -334,7 +334,7 @@ std::string MovedText(const fs::path& to) {
 
 std::optional<LayoutJournal> LoadLayoutJournal(const fs::path& state_root, std::string* error) {
   if (error) error->clear();
-  const auto read = Storage(state_root.string()).ReadDurable(kLayoutJournal, 64 * 1024);
+  const auto read = Storage(state_root.string()).OpenTree().ReadDurable(kLayoutJournal, 64 * 1024);
   if (!read.ok()) {
     if (error && read.error() != StorageError::kNotFound) *error = read.message();
     return std::nullopt;
@@ -607,7 +607,7 @@ RevertResult RevertLayout(const LayoutPaths& paths, const LayoutOps& ops) {
     Log(ops, "revert incomplete: " + problems);
     return result;
   }
-  const auto removed = Storage(paths.state_root.string()).RemoveDurable(kLayoutJournal);
+  const auto removed = Storage(paths.state_root.string()).OpenTree().RemoveDurable(kLayoutJournal);
   if (!removed.ok()) {
     result.error = "the move record can't be removed: " + removed.message();
     return result;

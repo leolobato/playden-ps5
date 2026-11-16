@@ -77,7 +77,8 @@ void Secret(const fs::path& base) {
   const auto first = LoadOrCreateInstallSecret(root, &error, &note);
   CHECK(first && IsInstallSecret(*first));
   CHECK(note.empty());
-  CHECK(Mode(root) == 0700);
+  // Open folder, owner-only secret: FTP can delete it without reading it (#868).
+  CHECK(Mode(root) == 0777);
   CHECK(Mode(fs::path(root) / kInstallSecretFileName) == 0600);
   CHECK(Slurp(fs::path(root) / kInstallSecretFileName) == *first + "\n");
   // Kept: the same secret on every load.
@@ -114,11 +115,12 @@ void Secret(const fs::path& base) {
   CHECK(!LoadOrCreateInstallSecret("relative/root", &error));
   CHECK(!LoadOrCreateInstallSecret(root + "/../community-recipes", &error));
   CHECK(!ResetInstallSecret("", &error));
-  // A public folder is not taken over.
+  // A folder of the app user's at any mode is Playden's own (#868); its secret is still 0600.
   const fs::path open_root = base / "open";
   fs::create_directory(open_root);
   chmod(open_root.c_str(), 0777);
-  CHECK(!LoadOrCreateInstallSecret(open_root.string(), &error));
+  CHECK(LoadOrCreateInstallSecret(open_root.string(), &error));
+  CHECK(Mode(open_root / kInstallSecretFileName) == 0600);
 
   // Random hex.
   const auto a = RandomHex(16), b = RandomHex(16);
@@ -188,7 +190,7 @@ void Votes(const fs::path& base) {
   CHECK(state->WasAsked(kId, kRevA) && state->WasAsked(kId, kRevB) && state->asked.size() == 3);
 
   CHECK(SaveVoteState(root, *state, &error));
-  CHECK(Mode(fs::path(root) / kVoteStateFileName) == 0600);
+  CHECK(Mode(fs::path(root) / kVoteStateFileName) == 0666);
   const std::string saved = Slurp(fs::path(root) / kVoteStateFileName);
   CHECK(saved == "{\"format_version\":1,\"voting\":\"on\",\"votes\":[{\"recipe_id\":\"" + kId + "\",\"revision\":\"" +
                      kRevA + "\",\"vote\":\"down\",\"reason\":\"slow\"},{\"recipe_id\":\"" + kId +

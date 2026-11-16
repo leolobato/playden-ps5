@@ -142,7 +142,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
   // before it reached the disk) is set aside, and the defaults are saved from now on. Other unreadable files
   // (kDefaultCorrupt) stay as they are: one may be what a newer Playden wrote.
   if (serialized.rfind("version=", 0) != 0) {
-    const bool kept = storage_.WriteAtomicPrivate(kDamagedPreferencesPath, read.value()).ok();
+    const bool kept = storage_.WriteAtomicOpen(kDamagedPreferencesPath, read.value()).ok();
     const auto removed = storage_.Remove(kPreferencesPath);
     if (!removed.ok())
       return {Preferences{}, PreferencesLoadStatus::kDefaultReadError,

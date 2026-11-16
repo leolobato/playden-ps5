@@ -3108,8 +3108,7 @@ RelativeRead ReadRegularAt(const ManagedDirectory& directory, const char* name,
   if (file < 0) return errno == ENOENT ? RelativeRead::kMissing : RelativeRead::kError;
   struct stat status {}, after {};
   if (::fstat(file, &status) != 0 || !S_ISREG(status.st_mode) ||
-      (private_file && (status.st_mode & 07777) != 0600 &&
-       (status.st_mode & 07777) != 0644)) {
+      (private_file && status.st_uid != ::geteuid())) {
     ::close(file); return RelativeRead::kError;
   }
   if (mode) *mode = status.st_mode & 0777;
@@ -3144,8 +3143,7 @@ bool WriteAtomicAt(const ManagedDirectory& directory, const char* name,
   struct stat status {};
   if (directory.InspectChild(name, &status)) {
     if (!S_ISREG(status.st_mode)) return false;
-    if (private_file && (status.st_uid != ::geteuid() ||
-        ((status.st_mode & 07777) != 0600 && (status.st_mode & 07777) != 0644))) {
+    if (private_file && status.st_uid != ::geteuid()) {
       errno = EACCES;
       return false;
     }
@@ -3302,7 +3300,7 @@ bool ApplyGameSettings(const GameRecipe& recipe, const EffectiveSettings& settin
 PrivateSettingsRead ReadPrivateSettingsFile(const std::string& path, std::string* text) {
   text->clear();
   std::string name;
-  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
+  auto directory = OpenSafeParent(path, DirectoryPolicy::kOpenTree, &name);
   if (!directory) return errno == ENOENT ? PrivateSettingsRead::kMissing : PrivateSettingsRead::kError;
   switch (ReadRegularAt(*directory, name.c_str(), storage_json::Limits{}.max_bytes, text, nullptr, true)) {
     case RelativeRead::kMissing: return PrivateSettingsRead::kMissing;
@@ -3314,20 +3312,18 @@ PrivateSettingsRead ReadPrivateSettingsFile(const std::string& path, std::string
 
 bool WritePrivateSettingsFile(const std::string& path, const std::string& text) {
   std::string name;
-  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
+  auto directory = OpenSafeParent(path, DirectoryPolicy::kOpenTree, &name);
   if (!directory) return false;
   struct stat status {};
   const bool inspected = directory->InspectChild(name, &status);
-  if (inspected && (!S_ISREG(status.st_mode) || status.st_uid != ::geteuid() ||
-                    ((status.st_mode & 07777) != 0600 && (status.st_mode & 07777) != 0644)))
-    return false;
+  if (inspected && (!S_ISREG(status.st_mode) || status.st_uid != ::geteuid())) return false;
   if (!inspected && errno != ENOENT) return false;
-  return WriteAtomicAt(*directory, name.c_str(), text, 0600, false, true);
+  return WriteAtomicAt(*directory, name.c_str(), text, 0666, false, true);
 }
 
 bool SetPrivateSettingsFileAside(const std::string& path, const std::string& aside_name) {
   std::string name;
-  auto directory = OpenSafeParent(path, DirectoryPolicy::kPrivate, &name);
+  auto directory = OpenSafeParent(path, DirectoryPolicy::kOpenTree, &name);
   if (!directory || aside_name.empty() || aside_name == name) return false;
   struct stat status {};
   if (!directory->InspectChild(name, &status) || !S_ISREG(status.st_mode) || status.st_uid != ::geteuid()) return false;
@@ -3396,7 +3392,7 @@ bool MigrateLegacyGameSettingsFile(const std::string& legacy_path,
   };
   std::string destination_name;
   auto destination = OpenSafeParent(
-      private_path, DirectoryPolicy::kPrivate, &destination_name);
+      private_path, DirectoryPolicy::kOpenTree, &destination_name);
   if (!destination) return fail("private game settings folder is unavailable");
   struct stat destination_status {};
   if (destination->InspectChild(destination_name, &destination_status))
@@ -3421,7 +3417,7 @@ bool MigrateLegacyGameSettingsFile(const std::string& legacy_path,
   if (!ParseSettingsFile(text, &records))
     return fail("legacy game settings file is malformed");
   if (!WriteAtomicAt(*destination, destination_name.c_str(),
-                     SerializeSettingsFile(records), 0600, false, true, false))
+                     SerializeSettingsFile(records), 0666, false, true, false))
     return fail("cannot publish migrated game settings");
   return true;
 }

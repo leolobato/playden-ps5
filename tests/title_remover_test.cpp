@@ -37,21 +37,26 @@ int main() {
   auto outcome = RunTitleRemover(config, "FAKE78002", nonce);
   CHECK(!outcome.sent && outcome.detail == "payload missing");
   struct stat info{};
-  CHECK(stat(config.request_directory.c_str(), &info) == 0 && (info.st_mode & 07777) == 0755);
+  // Open, so FTP can delete it (#868); the payload checks owners, not modes.
+  CHECK(stat(config.request_directory.c_str(), &info) == 0 && (info.st_mode & 07777) == 0777);
   CHECK(!fs::exists(config.request_directory / "request"));
 
   // The payload reads the request and answers for this nonce.
   Write(config.payload, std::string("\x7f" "ELF payload"));
   std::string seen_request, sent;
+  unsigned request_mode = 0;
   config.send = [&](const std::string& elf, std::string*) {
     sent = elf;
     seen_request = Read(config.request_directory / "request");
+    struct stat request{};
+    if (stat((config.request_directory / "request").c_str(), &request) == 0) request_mode = request.st_mode & 07777;
     Write(config.request_directory / "result", "nonce=" + nonce + "\ncode=80990001\n");
     return true;
   };
   outcome = RunTitleRemover(config, "FAKE78002", nonce);
   CHECK(sent.rfind("\x7f" "ELF", 0) == 0);
   CHECK(seen_request == "title=FAKE78002\nnonce=" + nonce + "\n");
+  CHECK(request_mode == 0666);
   CHECK(stat((config.request_directory / "result").c_str(), &info) == 0);
   CHECK(outcome.sent && outcome.code && static_cast<unsigned>(*outcome.code) == 0x80990001u);
 

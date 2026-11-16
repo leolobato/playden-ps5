@@ -50,6 +50,12 @@ bool OwnedGameDirectory(const struct stat& info, bool unowned) {
   return S_ISDIR(info.st_mode) && (unowned || (info.st_uid == geteuid() &&
       ((info.st_mode & 07777) == 0700 || (info.st_mode & 07777) == 0755)));
 }
+// A PS5 title's folder: 0777 so FTP can delete it (#868), or 0700/0755 as Playden 0.11 and
+// earlier left it.
+bool TitleDirectoryMode(mode_t mode) {
+  mode &= 07777;
+  return mode == 0700 || mode == 0755 || mode == 0777;
+}
 // The operation publishes its game folder unowned (metadata schema 3).
 bool PublishesUnowned(const SettingsPublicationOperation& o) {
   PwTitlePublicationMetadata m{};
@@ -582,7 +588,7 @@ PackageActionResult ApplyPendingPublicationFiles(const SettingsPublicationOperat
   auto title = ManagedDirectory::Open(paths.descriptor.parent_path(), DirectoryPolicy::kApprovedTree);
   struct stat title_info{};
   if (!title || lstat(paths.descriptor.parent_path().c_str(), &title_info) || title_info.st_uid != geteuid() ||
-      ((title_info.st_mode & 07777) != 0700 && (title_info.st_mode & 07777) != 0755))
+      !TitleDirectoryMode(title_info.st_mode))
     return Failure("publication-directory", "Owned staged title directory is unavailable.");
   auto publish = [&](const ManagedDirectory& parent, const std::filesystem::path& path,
                      const std::string& bytes, const std::string& prior_hash) -> PackageActionResult {
@@ -645,7 +651,7 @@ PackageActionResult PreflightSettingsPublication(const SettingsPublicationOperat
   auto title = ManagedDirectory::Open(paths.descriptor.parent_path(), DirectoryPolicy::kApprovedTree);
   struct stat title_info{};
   if (!library || !title || lstat(title->path().c_str(), &title_info) || title_info.st_uid != geteuid() ||
-      ((title_info.st_mode & 07777) != 0700 && (title_info.st_mode & 07777) != 0755))
+      !TitleDirectoryMode(title_info.st_mode))
     return Failure("publication-preflight-directory", "Owned library or staged title directory is unavailable.");
   PwTitlePublicationMetadata previous{}, desired{};
   if (pw_title_publication_metadata_parse(reinterpret_cast<const uint8_t*>(o.metadata_bytes.data()),

@@ -217,7 +217,7 @@ void RoundTrip() {
     const auto saved = store.Save(Session());
     CHECK(saved.ok && !saved.storage_full);
   }
-  CHECK(ModeOf(root / "gog") == 0700);
+  CHECK(ModeOf(root / "gog") == 0777);  // open: FTP can delete the sign-in (#868)
   CHECK(ModeOf(root / "gog/session") == 0600);
   CHECK(EntryCount(root / "gog") == 1);
   SessionStore restarted(Options(root));
@@ -272,17 +272,18 @@ void Refusals() {
     CHECK(FilesWithToken(root / "gog", "OtherToken") == 0);
     CHECK(EntryCount(root / "gog") == 1);
   }
-  // A gog folder someone made 0755: refused, never chmodded, nothing written in it.
+  // A gog folder of the app user's at another mode is Playden's own (#868): used as it is, never chmodded,
+  // and the session in it is still owner-only.
   {
     const auto root = FreshRoot();
     fs::create_directory(root / "gog");
     CHECK(::chmod((root / "gog").c_str(), 0755) == 0);
     SessionStore store(Options(root));
-    CHECK(!store.Save(Session()).ok);
+    CHECK(store.Save(Session()).ok);
     SessionStore restarted(Options(root));
-    CHECK(restarted.Load().status == LoadStatus::kUnavailable);
+    CHECK(restarted.Load().status == LoadStatus::kOk);
     CHECK(ModeOf(root / "gog") == 0755);
-    CHECK(EntryCount(root / "gog") == 0);
+    CHECK(ModeOf(root / "gog/session") == 0600);
   }
   // A session file of another mode is refused and kept.
   {

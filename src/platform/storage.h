@@ -99,16 +99,22 @@ class Storage {
 
   // A single app writer is assumed. The temporary file is synced before the
   // rename and the folder after it (best effort), so a crash or power loss
-  // leaves the old contents or the new ones, not an empty file.
+  // leaves the old contents or the new ones, not an empty file. The file is
+  // 0666 where the filesystem keeps modes, so FTP can read and replace it.
   Result<void> WriteAtomic(const std::string& relative_path,
                            const Bytes& bytes) const;
+
+  // WriteAtomic with the effective UID held (ps5::HoldEffectiveUid), as WriteAtomicPrivate does: for Playden's
+  // own data that used to be owner-only and is open now (#868). Not for a caller that holds other locks.
+  Result<void> WriteAtomicOpen(const std::string& relative_path, const Bytes& bytes) const;
 
   // Creates the temporary file with owner-only permissions before writing any
   // bytes. Platforms without a supported permission primitive report failure.
   Result<void> WriteAtomicPrivate(const std::string& relative_path,
                                   const Bytes& bytes) const;
 
-  // Narrow journal operations: existing root/parents must be owned 0700 and
+  // Narrow journal operations: existing root/parents must be owned 0700 (any mode after
+  // OpenTree) and
   // have no symlink components. Write creates an exclusive 0600 file, syncs it,
   // closes, renames, then syncs the directory. Failure can follow publication;
   // callers must stop and reload/reconcile before further effects. Failed
@@ -136,6 +142,10 @@ class Storage {
   // Journal operations also admit a 0711 root (others may pass through, never
   // list): a bottle whose way to its user profile is open. Parents stay 0700.
   Storage& AllowTraversableRoot() { traversable_root_ = true; return *this; }
+  // Journal operations on Playden's open data (#868): the root and parents are the app user's at
+  // any mode (DirectoryPolicy::kOpenTree), and files are written 0666, or 0600 for a secret
+  // (platform/data_roots.h), so the console owner can delete them over FTP.
+  Storage& OpenTree() { open_tree_ = true; return *this; }
 
  private:
   Result<std::string> Resolve(const std::string& relative_path) const;
@@ -147,6 +157,7 @@ class Storage {
 
   std::string root_;
   bool traversable_root_ = false;
+  bool open_tree_ = false;
 };
 
 }  // namespace playden

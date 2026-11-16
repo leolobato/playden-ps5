@@ -964,12 +964,13 @@ bool BuildSettingsLaunchPlan(const SettingsLaunchInput& input, SettingsLaunchPla
 bool ApplySettingsFiles(const SettingsLaunchPlan& plan, const std::string& install_root, const std::string& prefix_dir,
                         std::int64_t unix_time, std::string* reason);
 
-// A file in the private settings folder (game-settings-private/, settings_storage.h): a regular file owned by the
-// effective user, 0600 or 0644, in a folder opened with DirectoryPolicy::kPrivate. A missing folder or file is
+// A file in the settings folder (game-settings-private/, settings_storage.h; the name is from when it was owner-only):
+// a regular file owned by the effective user at any mode, in a folder of the app user's at any mode
+// (DirectoryPolicy::kOpenTree, #868: written 0666, and a recursive chmod over FTP may leave anything). A missing folder or file is
 // kMissing; anything else that can't be read safely (another owner or mode, a symlink, over 1 MiB) is kError.
 enum class PrivateSettingsRead { kMissing, kPresent, kError };
 PrivateSettingsRead ReadPrivateSettingsFile(const std::string& path, std::string* text);
-// Replaces it atomically (a synced temporary file renamed over it), mode 0600. Refuses one it could not read back.
+// Replaces it atomically (a synced temporary file renamed over it), mode 0666. Refuses one it could not read back.
 bool WritePrivateSettingsFile(const std::string& path, const std::string& text);
 // Renames it to aside_name in the same folder; never replaces a file already named so (false, EEXIST).
 bool SetPrivateSettingsFileAside(const std::string& path, const std::string& aside_name);

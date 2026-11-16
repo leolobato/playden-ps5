@@ -558,8 +558,8 @@ void ImportedGamePlaysInPlace() {
   std::atomic<unsigned> drop_raises{0};
   std::atomic<unsigned> drop_opens{0};
   std::atomic<bool> hold_opens{false};
-  // imports.json sits next to installs.json, in the folder the runtime host makes private at its start.
-  playden::Storage import_storage((fixture.root / "data/runtime-state").string());
+  // imports.json sits next to installs.json, in the folder the runtime host makes at its start (open to FTP, #868).
+  auto import_storage = playden::Storage((fixture.root / "data/runtime-state").string()).OpenTree();
   std::string id;
 
   const auto run = [&](bool signed_in, const std::function<void(hb::Simulation&, hb::Controller&, RuntimeHost&,

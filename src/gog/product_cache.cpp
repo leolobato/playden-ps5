@@ -96,7 +96,7 @@ FolderState OpenProducts(const std::string& user_root, bool create, std::optiona
       if (errno != ENOENT) return FolderState::kUnsafe;  // a link (ELOOP), or not a folder or file
       if (!create) return FolderState::kMissing;
     }
-    auto child = folder->OpenChild(name, DirectoryPolicy::kPrivate, create, 0700);
+    auto child = folder->OpenChild(name, DirectoryPolicy::kOpenTree, create, 0777);  // open to FTP (#868)
     if (!child) return FolderState::kUnsafe;
     if (!existed && (!child->Sync() || !folder->Sync())) return FolderState::kUnsafe;
     folder = std::move(child);
@@ -161,11 +161,13 @@ std::optional<CachedProduct> ProductCache::Load(std::uint64_t id) const {
   const auto uid = ps5::HoldEffectiveUid();
   std::optional<ManagedDirectory> folder;
   if (OpenProducts(user_root_, false, &folder) != FolderState::kOpen) return std::nullopt;
-  // Only what this cache writes: a regular file of this user, 0600. A link is refused and never followed.
-  const int fd = folder->OpenRegularFile(Name(id), true, static_cast<mode_t>(0600));
+  // A regular file of this user at any mode (written 0666, 0600 before #868). A link is refused and
+  // never followed.
+  const int fd = folder->OpenRegularFile(Name(id), true);
   if (fd < 0) return std::nullopt;
   struct stat info{};
   bool valid = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= 0 &&
+               info.st_uid == ::geteuid() &&
                static_cast<std::uint64_t>(info.st_size) <= kMaxProductFileBytes;
   Bytes bytes;
   std::uint8_t buffer[4096];
@@ -192,7 +194,7 @@ bool ProductCache::Save(std::uint64_t id, const CachedProduct& product) const {
   const auto uid = ps5::HoldEffectiveUid();
   std::optional<ManagedDirectory> folder;
   if (OpenProducts(user_root_, true, &folder) != FolderState::kOpen) return false;
-  return Storage(folder->path().string()).WriteDurable(Name(id), bytes).ok();
+  return Storage(folder->path().string()).OpenTree().WriteDurable(Name(id), bytes).ok();
 }
 
 bool ProductCache::Remove(std::uint64_t id) const {

@@ -83,7 +83,7 @@ void RememberedBrowsers() {
     Work(first);
     CHECK(fs::is_directory(root));
     struct stat info {};
-    CHECK(::stat(root.c_str(), &info) == 0 && (info.st_mode & 0777) == 0700);
+    CHECK(::stat(root.c_str(), &info) == 0 && (info.st_mode & 0777) == 0777);  // open: FTP can delete it (#868)
     CHECK(first.Count() == 0);
     remembered = PairOne(first, true);
     CHECK(changes == 1);  // a remembered browser asks for a write at once

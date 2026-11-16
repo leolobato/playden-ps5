@@ -6,8 +6,8 @@
 //   <root>/releases/<tag>.json       a release's index.json, as downloaded
 //   <root>/votes.json                the last vote totals (summary.json), when there are any
 //   <root>/current                   "<tag> <fetched at, unix seconds>": the release in use
-// The root (console: /data/playden/user/community-recipes) is private to Playden (0700, files
-// 0600) and every write goes through platform::ManagedDirectory (platform::Storage's durable
+// The root (console: /data/playden/user/community-recipes) is Playden's, open to FTP (#868:
+// folders 0777, files 0666, the sharing ID and account token 0600) and every write goes through platform::ManagedDirectory (platform::Storage's durable
 // writes: a temporary file, then rename). A refresh writes objects.lst first, then the objects,
 // the release index and votes, and replaces current last, so a refresh cut short leaves the
 // previous release in use. Thread-safe: one mutex serializes the writes (and garbage collection).
@@ -39,7 +39,7 @@ class RecipeStore {
   // root: an absolute normalized folder whose parent exists (the user data folder).
   explicit RecipeStore(std::filesystem::path root);
 
-  // Creates root, objects/ and releases/ (0700) when missing and checks they are private. Every
+  // Creates root, objects/ and releases/ (0777) when missing and checks they are the app user's. Every
   // other call fails until this succeeded once.
   bool Prepare(std::string* error);
   bool prepared() const { return prepared_; }

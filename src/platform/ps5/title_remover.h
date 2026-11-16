@@ -18,7 +18,7 @@ struct TitleRemoverOutcome {
 };
 
 struct TitleRemoverConfig {
-  // Exchange directory the payload reads (0755, owned by Playden; see
+  // Exchange directory the payload reads (0777, owned by Playden; see
   // tools/title-remover/main.c) and the payload itself, shipped in Playden's title.
   std::filesystem::path request_directory = "/data/playden/title-remover";
   std::filesystem::path payload = "/data/homebrew/FAKE77031/title-remover.elf";

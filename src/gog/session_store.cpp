@@ -117,7 +117,8 @@ FolderState OpenFolder(const std::string& user_root, bool create, std::optional<
     if (errno != ENOENT) return FolderState::kUnsafe;  // a link (ELOOP) or something other than a folder or file
     if (!create) return FolderState::kMissing;
   }
-  auto folder = user->OpenChild(kSessionFolderName, DirectoryPolicy::kPrivate, create, 0700);
+  // Open to FTP (#868); the session file in it is a secret (0600, platform/data_roots.h).
+  auto folder = user->OpenChild(kSessionFolderName, DirectoryPolicy::kOpenTree, create, 0777);
   if (!folder) return FolderState::kUnsafe;
   if (!existed && (!folder->Sync() || !user->Sync())) return FolderState::kUnsafe;
   *out = std::move(folder);
@@ -314,7 +315,7 @@ LoadResult SessionStore::ReadLocked() {
     return Loaded(LoadStatus::kUnavailable, "file_unsafe");
   if (info.st_size < 0 || static_cast<std::uint64_t>(info.st_size) > kMaxSessionFileBytes)
     return Loaded(LoadStatus::kCorrupt, "oversized");
-  auto read = Storage(folder->path().string()).ReadDurable(kSessionFileName, kMaxSessionFileBytes);
+  auto read = Storage(folder->path().string()).OpenTree().ReadDurable(kSessionFileName, kMaxSessionFileBytes);
   if (!read.ok()) {
     if (read.error() == StorageError::kNotFound) return Loaded(LoadStatus::kNone);
     return Loaded(LoadStatus::kUnavailable, ErrorKind(read.error()));
@@ -370,7 +371,7 @@ SaveResult SessionStore::WriteLocked(const StoredSession& session) {
   Bytes bytes = EncodeSession(session);
   if (bytes.empty()) return Failed("invalid_session");
   errno = 0;
-  const auto written = write_(Storage(folder->path().string()), kSessionFileName, bytes);
+  const auto written = write_(Storage(folder->path().string()).OpenTree(), kSessionFileName, bytes);
   const int error = errno;
   ZeroizeSecret(bytes);
   if (written.ok()) return Ok();

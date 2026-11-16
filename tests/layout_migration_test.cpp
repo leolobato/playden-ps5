@@ -113,7 +113,7 @@ void MovesUserDataLogsAndGames() {
   const auto journal = LoadLayoutJournal(f->paths.state_root);
   CHECK(journal && journal->step == "games-moved");
   CHECK(journal->from == (f->paths.app_root / "games").string() && journal->to == f->paths.games_root.string());
-  CHECK(Mode(f->paths.state_root / kLayoutJournal) == 0600);
+  CHECK(Mode(f->paths.state_root / kLayoutJournal) == 0666);  // open to FTP (#868)
   CHECK(Read(f->paths.app_root / "games-MOVED.txt").find(f->paths.games_root.string()) != std::string::npos);
   // Later starts change nothing until the runtime host marks the move done.
   const auto again = MigrateLayout(f->paths, f->ops);
@@ -152,7 +152,7 @@ void ResumesAfterEachStep() {
     fs::create_directories(f->paths.state_root);
     CHECK(chmod(f->paths.state_root.c_str(), 0700) == 0);
     const std::string text = "{\"step\":\"user\",\"from\":\"a\",\"to\":\"b\",\"postponed\":0}";
-    CHECK(playden::Storage(f->paths.state_root.string()).WriteDurable(kLayoutJournal, playden::Bytes(text.begin(), text.end())).ok());
+    CHECK(playden::Storage(f->paths.state_root.string()).OpenTree().WriteDurable(kLayoutJournal, playden::Bytes(text.begin(), text.end())).ok());
     const auto result = MigrateLayout(f->paths, f->ops);
     CHECK(result.games_moved && result.notice.empty() && Moved(f->paths));
   }
@@ -183,7 +183,7 @@ void ResumesAfterEachStep() {
     auto f = Make("resume-games");
     CHECK(MigrateLayout(f->paths, f->ops).games_moved);
     const std::string text = "{\"step\":\"games\",\"from\":\"a\",\"to\":\"b\",\"postponed\":0}";
-    CHECK(playden::Storage(f->paths.state_root.string()).WriteDurable(kLayoutJournal, playden::Bytes(text.begin(), text.end())).ok());
+    CHECK(playden::Storage(f->paths.state_root.string()).OpenTree().WriteDurable(kLayoutJournal, playden::Bytes(text.begin(), text.end())).ok());
     const auto result = MigrateLayout(f->paths, f->ops);
     CHECK(result.games_moved && result.games_root == f->paths.games_root);
     const auto journal = LoadLayoutJournal(f->paths.state_root);

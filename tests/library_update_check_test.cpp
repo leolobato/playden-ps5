@@ -51,8 +51,8 @@ int main() {
   expected.games.erase(SteamId(440));
   Check(*loaded.value() == expected, "time, kinds and sizes survive the round trip");
   struct stat info{};
-  Check(stat((std::string(root) + "/updates-76561198000000001.v2").c_str(), &info) == 0 && (info.st_mode & 0777) == 0600,
-        "the file is owner-only");
+  Check(stat((std::string(root) + "/updates-76561198000000001.v2").c_str(), &info) == 0 && (info.st_mode & 0777) == 0666,
+        "the file is open to FTP (#868)");
   // Sizes not measured are not kept.
   saved.games[SteamId(220)].download_bytes = 5;
   Check(store.Save(76561198000000001ull, saved).ok() && *store.Load(76561198000000001ull).value() == expected,
@@ -112,7 +112,7 @@ int main() {
     of_gog.games[GameId::Gog(2000000001)] = {true, false, 0, 0, 0, false};
     Check(gog.Save(kKey, of_gog).ok(), "save GOG's check");
     const std::string gog_path = std::string(gog_root) + "/updates-gog-" + std::to_string(kKey) + ".v2";
-    Check(stat(gog_path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600, "GOG's file is updates-gog-<key>.v2, owner-only");
+    Check(stat(gog_path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0666, "GOG's file is updates-gog-<key>.v2, open to FTP");
     Check(stat((std::string(gog_root) + "/updates-" + std::to_string(kKey) + ".v2").c_str(), &info) != 0,
           "no Steam file for the same number");
     Check(steam.Load(kKey).ok() && !steam.Load(kKey).value(), "Steam's store doesn't read GOG's file");

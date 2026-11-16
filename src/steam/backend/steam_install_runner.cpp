@@ -283,7 +283,7 @@ std::set<std::uint32_t> LoadFreeDlcMemory(const Storage& storage, std::uint64_t 
 
 bool SaveFreeDlcMemory(const Storage& storage, std::uint64_t steam_id, const std::set<std::uint32_t>& refused) {
   const auto text = FormatFreeDlcMemory(refused);
-  return storage.WriteAtomicPrivate(FreeDlcMemoryName(steam_id), Bytes(text.begin(), text.end())).ok();
+  return storage.WriteAtomicOpen(FreeDlcMemoryName(steam_id), Bytes(text.begin(), text.end())).ok();
 }
 
 InstallRunner::Result SteamInstallRunner::InstallApp(const StoredSession& session, std::uint32_t id, const std::string& root,

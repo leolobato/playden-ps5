@@ -92,10 +92,13 @@ bool WriteAtomic(const fs::path& path, std::string_view bytes, mode_t mode = 064
   return true;
 }
 
+// In the game's folder: open (0777) whatever the umask, so FTP can delete it (#868).
 bool EnsureFolder(const fs::path& path) {
   struct stat info {};
   if (::lstat(path.c_str(), &info) == 0) return S_ISDIR(info.st_mode);
-  return ::mkdir(path.c_str(), 0755) == 0;
+  if (::mkdir(path.c_str(), 0777) != 0) return false;
+  (void)::chmod(path.c_str(), 0777);  // a drive that keeps no modes refuses; nothing to do there
+  return true;
 }
 
 // "pe32" or "pe64" from the PE header in bytes.

@@ -972,7 +972,7 @@ int main() {
         std::unique_ptr<playden::stores::local::LocalCopyRunner> copy_runner;
         if (!paths.runtime_data_root.empty()) {
             import_storage = std::make_unique<playden::Storage>(
-                (std::filesystem::path(paths.runtime_data_root) / "runtime-state").string());
+                playden::Storage((std::filesystem::path(paths.runtime_data_root) / "runtime-state").string()).OpenTree());
             imports = std::make_unique<playden::stores::local::ImportStore>(*import_storage);
             // "Copy into Playden": imported games become managed installs.
             playden::stores::local::LocalCopyOptions copy_options;

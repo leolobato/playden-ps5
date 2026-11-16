@@ -11,7 +11,9 @@ Result<void> LocalSessionRepository::Prepare() const {
   if (prepared_) return Result<void>::Success();
   if (root_.empty() || root_.find('\0') != std::string::npos)
     return Result<void>::Failure(StorageError::kInvalidPath,"Session storage path is invalid");
-  if (mkdir(root_.c_str(),0700) != 0 && errno != EEXIST) {
+  // Open, so the console owner can delete it over FTP (#868); the session file itself stays 0600.
+  if (mkdir(root_.c_str(),0777) == 0) (void)chmod(root_.c_str(),0777);
+  else if (errno != EEXIST) {
     const int error = errno;
     if (report_) report_("session storage mkdir failed errno=" + std::to_string(error));
     return Result<void>::Failure(StorageError::kOpenFailed,"Session storage is unavailable");

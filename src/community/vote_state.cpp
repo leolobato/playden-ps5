@@ -266,7 +266,7 @@ std::optional<VoteState> ParseVoteState(std::string_view json) {
 std::optional<VoteState> LoadVoteState(const std::string& store_root, std::string* error, std::string* note) {
   if (note) note->clear();
   if (!PrepareCommunityRoot(store_root, error)) return std::nullopt;
-  const auto read = Storage(store_root).ReadDurable(kVoteStateFileName, 1 << 20);
+  const auto read = Storage(store_root).OpenTree().ReadDurable(kVoteStateFileName, 1 << 20);
   if (!read.ok()) {
     if (read.error() == StorageError::kNotFound) return VoteState{};
     if (error) *error = std::string("cannot read the vote memory: ") + read.message();
@@ -281,7 +281,7 @@ std::optional<VoteState> LoadVoteState(const std::string& store_root, std::strin
 bool SaveVoteState(const std::string& store_root, const VoteState& state, std::string* error) {
   if (!PrepareCommunityRoot(store_root, error)) return false;
   const std::string text = SerializeVoteState(state);
-  const auto result = Storage(store_root).WriteDurable(kVoteStateFileName, Bytes(text.begin(), text.end()));
+  const auto result = Storage(store_root).OpenTree().WriteDurable(kVoteStateFileName, Bytes(text.begin(), text.end()));
   if (!result.ok()) {
     if (error) *error = std::string("cannot write the vote memory: ") + result.message();
     return false;

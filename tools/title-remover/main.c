@@ -10,9 +10,11 @@
 //   request   "title=FAKE78002\nnonce=<16..64 of [0-9a-f-]>\n"
 //
 // The directory and the request must be owned by Playden's user (the owner of
-// its private 0700 state folder /data/playden/runtime-state; the title folder
-// itself belongs to whoever deployed it), must not be links, and must not be
-// writable by others. The result goes next to the request, written as that user:
+// its state folder /data/playden/runtime-state; the title folder itself belongs
+// to whoever deployed it), and must not be links; the request has one link. Modes
+// are not checked: Playden keeps its data open so the console owner can delete it
+// over FTP (#868), and anything that can write there as root can send this loader
+// any payload anyway. The result goes next to the request, written as that user:
 //
 //   result    "nonce=<nonce>\ncode=<8 hex digits>\n"   (code 0 = accepted)
 //
@@ -35,10 +37,11 @@
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilAppUnInstall(const char *title_id);
 
-static int private_entry(const char *path, uid_t owner, int directory) {
+static int owned_entry(const char *path, uid_t owner, int directory) {
   struct stat info;
-  if (lstat(path, &info) != 0 || info.st_uid != owner || (info.st_mode & 0022) != 0) return 0;
-  return directory ? S_ISDIR(info.st_mode) : S_ISREG(info.st_mode) && info.st_size > 0 && info.st_size < 256;
+  if (lstat(path, &info) != 0 || info.st_uid != owner) return 0;
+  return directory ? S_ISDIR(info.st_mode)
+                   : S_ISREG(info.st_mode) && info.st_nlink == 1 && info.st_size > 0 && info.st_size < 256;
 }
 
 static int valid_title(const char *title) {
@@ -80,8 +83,9 @@ static void write_result(uid_t owner, const char *nonce, unsigned code) {
   kernel_set_ucred_uid(-1, owner);
   char text[128];
   const int length = snprintf(text, sizeof text, "nonce=%s\ncode=%08x\n", nonce, code);
-  const int fd = open(REQUEST_DIR "/result.tmp", O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+  const int fd = open(REQUEST_DIR "/result.tmp", O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666);
   if (fd < 0) return;
+  fchmod(fd, 0666);
   const int written = (int)write(fd, text, (size_t)length) == length;
   fsync(fd);
   close(fd);
@@ -91,9 +95,10 @@ static void write_result(uid_t owner, const char *nonce, unsigned code) {
 
 int main(void) {
   struct stat playden;
-  if (lstat(PLAYDEN_STATE, &playden) != 0 || !S_ISDIR(playden.st_mode) || (playden.st_mode & 0777) != 0700) return 1;
+  // Root never owns Playden's state: a root-made folder there is not Playden's.
+  if (lstat(PLAYDEN_STATE, &playden) != 0 || !S_ISDIR(playden.st_mode) || playden.st_uid == 0) return 1;
   const uid_t owner = playden.st_uid;
-  if (!private_entry(REQUEST_DIR, owner, 1) || !private_entry(REQUEST_DIR "/request", owner, 0)) return 2;
+  if (!owned_entry(REQUEST_DIR, owner, 1) || !owned_entry(REQUEST_DIR "/request", owner, 0)) return 2;
   char text[256] = {0};
   const int fd = open(REQUEST_DIR "/request", O_RDONLY | O_NOFOLLOW);
   if (fd < 0) return 3;

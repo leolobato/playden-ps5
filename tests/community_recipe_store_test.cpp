@@ -89,7 +89,8 @@ int main() {
   std::string error;
   CHECK(!store.ReadObject(std::string(64, '0')));  // not prepared: nothing
   CHECK(store.Prepare(&error));
-  CHECK(Mode(root) == 0700 && Mode(root / "objects") == 0700 && Mode(root / "releases") == 0700);
+  // Open to FTP (#868): folders 0777, files 0666.
+  CHECK(Mode(root) == 0777 && Mode(root / "objects") == 0777 && Mode(root / "releases") == 0777);
   CHECK(store.Prepare(&error));  // again: fine
 
   const std::string a = R"({"recipe":"a"})", b = R"({"recipe":"b"})", c = R"({"recipe":"c"})";
@@ -97,7 +98,7 @@ int main() {
   CHECK(IsRevision(ra) && IsRevision(rb));
   CHECK(store.WriteObjects({a, b}, &error));
   CHECK(store.ReadObject(ra) == a && store.ReadObject(rb) == b);
-  CHECK(Mode(root / "objects" / (ra + ".json")) == 0600);
+  CHECK(Mode(root / "objects" / (ra + ".json")) == 0666);
   CHECK(Slurp(root / "objects.lst") == ra + "\n" + rb + "\n");
   // Written again: nothing changes, nothing listed twice.
   CHECK(store.WriteObjects({b, a}, &error));
@@ -194,11 +195,14 @@ int main() {
     CHECK(closing.CollectGarbage({}, &stop) == 3 && closing.ListedObjects().empty());
   }
 
-  // A public (not private) folder is refused rather than used.
+  // A folder of the app user's is used at any mode (#868); a link in its place is refused.
   RecipeStore other(user / "other");
   fs::create_directory(user / "other");
   chmod((user / "other").c_str(), 0755);
-  CHECK(!other.Prepare(&error));
+  CHECK(other.Prepare(&error));
+  fs::create_symlink(user / "other", user / "linked");
+  RecipeStore linked(user / "linked");
+  CHECK(!linked.Prepare(&error));
 
   fs::remove_all(base);
   if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);

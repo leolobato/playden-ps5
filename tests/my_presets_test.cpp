@@ -220,7 +220,7 @@ void Storage() {
   CHECK(AddMyPreset(&presets, Id(1), "Point and click", {{"controller_preset", "mouse"}}, 5).ok());
   std::string reason;
   CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
-  CHECK(Mode(path) == 0600);
+  CHECK(Mode(path) == 0666);  // open to FTP (#868)
   load = LoadMyPresetsFile(path.string());
   CHECK(load.status == MyPresetsLoadStatus::kLoaded && load.presets == presets);
 
@@ -307,12 +307,11 @@ void Storage() {
   CHECK(Read(path) == newer && !fs::exists(bad));
   CHECK(!SaveMyPresetsFile(path.string(), presets, &reason) && Read(path) == newer);
 
-  // A file that can't be read safely is not set aside either.
+  // Any mode of the app user's is read (#868: a recursive chmod over FTP may leave anything).
   Write(path, SerializeMyPresets(presets));
-  CHECK(::chmod(path.c_str(), 0666) == 0);
-  CHECK(LoadMyPresetsFile(path.string()).status == MyPresetsLoadStatus::kUnavailable && !fs::exists(bad));
-  CHECK(!SaveMyPresetsFile(path.string(), presets, &reason));
-  CHECK(::chmod(path.c_str(), 0600) == 0);
+  CHECK(::chmod(path.c_str(), 0777) == 0);
+  CHECK(LoadMyPresetsFile(path.string()).status == MyPresetsLoadStatus::kLoaded);
+  CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
   fs::remove(path);
   fs::create_symlink(root / "elsewhere.json", path);
   CHECK(LoadMyPresetsFile(path.string()).status == MyPresetsLoadStatus::kUnavailable && !fs::exists(bad));
@@ -345,10 +344,13 @@ void Storage() {
     fs::remove(path);
   }
 
-  // The folder must be private.
+  // The folder must be the app user's, at any mode (#868); a link in its place is refused.
   CHECK(::chmod(folder.c_str(), 0755) == 0);
-  CHECK(!SaveMyPresetsFile(path.string(), presets, &reason) && !fs::exists(path));
-  CHECK(::chmod(folder.c_str(), 0700) == 0);
+  CHECK(SaveMyPresetsFile(path.string(), presets, &reason) && fs::exists(path));
+  fs::remove(path);
+  const auto linked = root / "linked-folder";
+  fs::create_directory_symlink(folder, linked);
+  CHECK(!SaveMyPresetsFile((linked / path.filename()).string(), presets, &reason) && !fs::exists(path));
   CHECK(SaveMyPresetsFile(path.string(), presets, &reason));
   fs::remove_all(root);
 }

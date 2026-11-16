@@ -239,7 +239,8 @@ void NoKitRefusesPreparationWithoutDurableEffects() {
   CHECK(!started.kit_available && started.kit_reason == "No verified runtime kit is installed.");
   CHECK(started.installs.empty());
   struct stat info{};
-  CHECK(stat((fixture.root / "data/runtime-state").c_str(), &info) == 0 && (info.st_mode & 0777) == 0700);
+  // Open, so the console owner can delete it over FTP (#868).
+  CHECK(stat((fixture.root / "data/runtime-state").c_str(), &info) == 0 && (info.st_mode & 0777) == 0777);
   host.Prepare(Hl2());
   const auto refused = WaitFor(host, [](const RuntimeSnapshot& s) { return s.refusals.count(220) != 0; });
   CHECK(refused.refusals.at(220) == "No verified runtime kit is installed.");
@@ -476,7 +477,7 @@ void StartupReportsJournalsWithoutResuming() {
   auto config = fixture.Config();
   fs::create_directories(config.state_root); CHECK(chmod(config.state_root.c_str(), 0700) == 0);
   {
-    playden::Storage storage(config.state_root.string());
+    auto storage = playden::Storage(config.state_root.string()).OpenTree();
     RuntimeInstallRepository repository(storage, "installs.json", [](const std::string&) {
       return NativeTitleAvailability{TitleAvailability::kFree, TitleAvailability::kFree};
     });
@@ -521,7 +522,7 @@ void LocalGameGetsRuntimeNumber() {
   // A Local game with a record from an earlier run: its view carries the game.
   fs::create_directories(config.state_root); CHECK(chmod(config.state_root.c_str(), 0700) == 0);
   {
-    playden::Storage storage(config.state_root.string());
+    auto storage = playden::Storage(config.state_root.string()).OpenTree();
     RuntimeInstallRepository repository(storage, "installs.json", [](const std::string&) {
       return NativeTitleAvailability{TitleAvailability::kFree, TitleAvailability::kFree};
     });
@@ -580,11 +581,22 @@ void LocalGameGetsRuntimeNumber() {
   CHECK(!host.RuntimeNumberFor(playden::GameId::Local("9a1d1f2e-0000-4000-8000-000000000001")));
 }
 
-// A public or foreign state root is refused rather than taken over.
+// A state root of the app user's at any mode is Playden's own (#868); a link in its place is refused
+// rather than followed.
 void PublicStateRootIsUnavailable() {
   Fixture fixture;
   auto config = fixture.Config();
-  fs::create_directories(config.state_root); CHECK(chmod(config.state_root.c_str(), 0755) == 0);
+  {
+    fs::create_directories(config.state_root); CHECK(chmod(config.state_root.c_str(), 0755) == 0);
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).status == RuntimeHostStatus::kReady);
+    host.Shutdown();
+  }
+  fs::remove_all(config.state_root);
+  fs::create_directories(fixture.root / "elsewhere");
+  CHECK(chmod((fixture.root / "elsewhere").c_str(), 0755) == 0);
+  fs::create_directory_symlink(fixture.root / "elsewhere", config.state_root);
   RuntimeHost host(config);
   CHECK(host.Start());
   const auto started = WaitFor(host, Started);
@@ -594,7 +606,9 @@ void PublicStateRootIsUnavailable() {
   CHECK(refused.refusals.at(220) == started.reason);
   host.Shutdown();
   struct stat info{};
-  CHECK(stat(config.state_root.c_str(), &info) == 0 && (info.st_mode & 0777) == 0755);
+  CHECK(lstat(config.state_root.c_str(), &info) == 0 && S_ISLNK(info.st_mode));
+  CHECK(stat((fixture.root / "elsewhere").c_str(), &info) == 0 && (info.st_mode & 0777) == 0755 &&
+        fs::is_empty(fixture.root / "elsewhere"));
 }
 
 // ShadowMountPlus registers a submitted title only once no title runs (Playden
@@ -719,10 +733,10 @@ void PreparesExistingDownloadToReady() {
   CHECK(stat(game.c_str(), &game_info) == 0 && (game_info.st_mode & 07777) == 0777);
   const auto metadata = Read(fixture.root / "data/playden/games/steam-220/library/profiles/.playden-publication");
   CHECK(metadata.find("schema=3\n") != std::string::npos && metadata.find("game_root.unowned=1\n") != std::string::npos);
-  // The staged title is readable by ShadowMount but not writable by others.
+  // The staged title is readable by ShadowMount and open to FTP (#868).
   struct stat title_info{};
   for (const auto* relative : {"data/homebrew/FAKE78001", "data/homebrew/FAKE78001/sce_sys"})
-    CHECK(stat((fixture.root / relative).c_str(), &title_info) == 0 && (title_info.st_mode & 07777) == 0755);
+    CHECK(stat((fixture.root / relative).c_str(), &title_info) == 0 && (title_info.st_mode & 07777) == 0777);
   // The PS5 title shows the game's own name and icon, not the kit's.
   const auto param = Read(fixture.root / "data/homebrew/FAKE78001/sce_sys/param.json");
   CHECK(param.find(R"("titleName": "Half-Life \"2\"")") != std::string::npos);
@@ -899,8 +913,8 @@ void TitleRefusalNamesTheSourceThatCannotAnswer() {
   }
 }
 
-// A capture refused after control setup (the console's world-writable game
-// folder) leaves a settings-control journal. An explicit Prepare resumes the
+// A capture refused after control setup (a PS5 title folder of an unexpected
+// mode) leaves a settings-control journal. An explicit Prepare resumes the
 // saved request and reaches Ready with one registration.
 void ResumesInterruptedCaptureFromSavedRequest(bool tamper_backup = false) {
   Fixture fixture;
@@ -919,10 +933,10 @@ void ResumesInterruptedCaptureFromSavedRequest(bool tamper_backup = false) {
   const auto game = fixture.root / "data/homebrew/FAKE77031/games/220";
   const auto staged = fixture.root / "data/homebrew/FAKE78001";
   unsigned uuids = 0;
-  // Called just before capture: the first attempt sees a world-writable PS5 title folder,
-  // which the capture's preflight refuses (game folders may be anything).
+  // Called just before capture: the first attempt sees a PS5 title folder of a mode Playden never
+  // gives it (group-writable), which the capture's preflight refuses (game folders may be anything).
   config.uuid = [&uuids, staged]() -> std::optional<std::string> {
-    if (++uuids == 1) CHECK(chmod(staged.c_str(), 0777) == 0);
+    if (++uuids == 1) CHECK(chmod(staged.c_str(), 0775) == 0);
     return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
   };
   config.unix_time = [] { return std::int64_t{1760000000}; };
@@ -934,7 +948,7 @@ void ResumesInterruptedCaptureFromSavedRequest(bool tamper_backup = false) {
   const auto failed = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.preparing_app && s.refusals.count(220); }, 60);
   CHECK(failed.installs.size() == 1 && failed.installs[0].state != PreparationState::kReady);
   CHECK(failed.installs[0].recovery_pending);
-  CHECK(chmod(staged.c_str(), 0755) == 0);
+  CHECK(chmod(staged.c_str(), 0777) == 0);
   // The saved request the journal names is in use: never leftover, never removed.
   CHECK(failed.leftover_requests == 0);
   host.CleanUpRequests();
@@ -1955,7 +1969,7 @@ void PreparesGameWithoutShippedRecipe() {
     CHECK(Read(client_folder / "steamclient64.dll") == client_dll && !fs::exists(client_folder / "crashhandler64.dll"));
     CHECK(Read(config.state_root / "steam-client") == "1792618285 " + client_sha + "\n");
     struct stat status {};
-    CHECK(::stat((config.state_root / "steam-client").c_str(), &status) == 0 && (status.st_mode & 0777) == 0600);
+    CHECK(::stat((config.state_root / "steam-client").c_str(), &status) == 0 && (status.st_mode & 0777) == 0666);
     CHECK(kept_text.find("\nclient_sha256=" + client_sha + "\n") != std::string::npos);
     CHECK(host.Snapshot().steam_client_version == "1792618285");
     // Logging isn't Verbose: no notify file for the title.
@@ -3235,7 +3249,7 @@ void MaintainsReadyTitle() {
     else if (line.rfind("package inspect ", 0) == 0) ++full_inspections;
     if (loosen_next && line.rfind("settings update request", 0) == 0 && line.find(" state=0 ") != std::string::npos) {
       loosen_next = false;
-      CHECK(chmod(staged.c_str(), 0777) == 0);
+      CHECK(chmod(staged.c_str(), 0775) == 0);  // a mode Playden never gives a title: the capture refuses it
     }
   };
   std::int64_t now = 1760000000;
@@ -3319,7 +3333,10 @@ void MaintainsReadyTitle() {
     CHECK(lstat((data / folder).c_str(), &info) == 0 && (info.st_mode & 07777) == 0700);
   CHECK(lstat((data / "library/prefixes/game/drive_c/users/prospero/Documents/save.dat").c_str(), &info) == 0 &&
         (info.st_mode & 07777) == 0600);
-  CHECK(lstat(backups.c_str(), &info) == 0 && (info.st_mode & 07777) == 0700);
+  // No title uses a backup: it is open to FTP (#868).
+  CHECK(lstat(backups.c_str(), &info) == 0 && (info.st_mode & 07777) == 0777);
+  CHECK(lstat((backups / "1760000003/users/prospero/Documents/save.dat").c_str(), &info) == 0 &&
+        (info.st_mode & 07777) == 0666);
 
   // An update interrupted after its arm keeps its journal: Play waits, and Resume (Prepare)
   // finishes the saved request instead of making a new one.
@@ -5973,7 +5990,7 @@ void WorkerMovesGamesUnderPublicationLease() {
   config.layout_paths = LayoutPaths{old.parent_path(), fixture.root / "data/playden/user",
       fixture.root / "data/playden/logs", target, config.state_root, fixture.root / "data"};
   const std::string text = "{\"step\":\"games\",\"from\":\"" + old.string() + "\",\"to\":\"" + target.string() + "\"}";
-  CHECK(playden::Storage(config.state_root.string()).WriteDurable(kLayoutJournal, playden::Bytes(text.begin(), text.end())).ok());
+  CHECK(playden::Storage(config.state_root.string()).OpenTree().WriteDurable(kLayoutJournal, playden::Bytes(text.begin(), text.end())).ok());
   const auto lock_path = fixture.root / "data/playden/games/steam-220/.playden-control/publication.lock";
   const auto busy = [&] {
     const int fd = ::open(lock_path.c_str(), O_RDONLY);
@@ -6647,7 +6664,7 @@ void MigrationSkipsRecordsOutsideOldPrefix() {
       {600, "/data/homebrew/FAKE77031/games-old/600"}, {700, "/data/homebrew/FAKE77031/games"},
       {220, "/data/homebrew/FAKE77031/games/220"}};
   {
-    playden::Storage storage(config.state_root.string());
+    auto storage = playden::Storage(config.state_root.string()).OpenTree();
     RuntimeInstallRepository repository(storage, "installs.json", [](const std::string&) {
       return NativeTitleAvailability{TitleAvailability::kFree, TitleAvailability::kFree};
     });
@@ -6670,13 +6687,13 @@ void MigrationSkipsRecordsOutsideOldPrefix() {
     // A trailing slash on the old root is ignored.
     const std::string journal = std::string(R"({"step":"games-moved","from":")") + kOldGames + R"(/","to":")" + kNewGames +
                                 R"(","postponed":0})";
-    CHECK(playden::Storage(config.state_root.string()).WriteDurable(kLayoutJournal, playden::Bytes(journal.begin(), journal.end())).ok());
+    CHECK(playden::Storage(config.state_root.string()).OpenTree().WriteDurable(kLayoutJournal, playden::Bytes(journal.begin(), journal.end())).ok());
   }
   RuntimeHost host(config);
   CHECK(host.Start());
   WaitFor(host, Started);
   host.Shutdown();
-  playden::Storage storage(config.state_root.string());
+  auto storage = playden::Storage(config.state_root.string()).OpenTree();
   RuntimeInstallRepository repository(storage, "installs.json", {});
   CHECK(repository.Load().ok());
   std::map<std::uint32_t, RuntimeInstall> records;
@@ -7011,11 +7028,11 @@ void SharedProfileKitOpensSaves() {
   auto result = run.Maintain(host, RuntimeMaintenance::kRepair);
   CHECK(result.maintenance.at(220).ok);
   for (const auto& folder : ProfileWay(run.data)) CHECK(ModeOf(folder) == 0711);
-  // Backups live in Playden's private backup folder.
+  // Backups live in Playden's backup folder, open to FTP (#868).
   result = run.Maintain(host, RuntimeMaintenance::kBackupSaves);
   CHECK(result.maintenance.at(220).ok);
   const auto backups = run.fixture.root / "data/playden/games/steam-220.saves";
-  CHECK(ModeOf(backups) == 0700 && ModeOf(backups / "1760000000/users/prospero/AppData/Roaming/Game/save.dat") == 0600);
+  CHECK(ModeOf(backups) == 0777 && ModeOf(backups / "1760000000/users/prospero/AppData/Roaming/Game/save.dat") == 0666);
 
   // Uninstalled keeping saves, prepared again: the saves come back open.
   const auto removals = host.Snapshot().removals_handled;
@@ -7637,7 +7654,7 @@ void RelocationResumesAfterRestart() {
     };
     if (step == 2) {
       // The record written (moved_from), then Playden stopped before the republish.
-      playden::Storage storage(config.state_root.string());
+      auto storage = playden::Storage(config.state_root.string()).OpenTree();
       RuntimeInstallRepository repository(storage, "installs.json", {});
       CHECK(repository.Load().ok());
       auto record = repository.Snapshot().front();
@@ -7906,7 +7923,7 @@ void DeletesLeftoverTitleAndResumesFailures() {
           CHECK(!fs::exists(title));
           const auto journal = config.state_root / "leftover-FAKE78001.json";
           struct stat info{};
-          CHECK(lstat(journal.c_str(), &info) == 0 && (info.st_mode & 07777) == 0600);
+          CHECK(lstat(journal.c_str(), &info) == 0 && (info.st_mode & 07777) == 0666);
           CHECK(Read(journal).find("\"step\":\"unregister\"") != std::string::npos);
           CHECK(fs::is_directory(config.state_root / "trash" / (std::string("FAKE78001-") + kLeftoverOperation)));
           if (scenario == 3) CHECK(done.leftover_delete_failures.at("FAKE78001").find("could not start") != std::string::npos);
@@ -7990,7 +8007,7 @@ void LeftoverRemovalRecoversRetireWriteGap(int scenario) {
   const auto text = std::string("{\"schema\":1,\"title\":\"FAKE78001\",\"operation_id\":\"") + kLeftoverOperation +
       "\",\"step\":\"retire\",\"device\":" + std::to_string(info.st_dev) + ",\"inode\":" +
       std::to_string(info.st_ino) + ",\"name\":\"Left Behind\",\"bytes\":11}\n";
-  playden::Storage storage(config.state_root.string());
+  auto storage = playden::Storage(config.state_root.string()).OpenTree();
   CHECK(storage.WriteDurable("leftover-FAKE78001.json", playden::Bytes(text.begin(), text.end())).ok());
   const auto trash = config.state_root / "trash";
   fs::create_directory(trash);
@@ -8392,7 +8409,7 @@ void CommunityRecipeSwitches() {
     { std::lock_guard<std::mutex> lock(lines_mutex); lines.push_back(line); }
     if (loosen_next && line.rfind("settings update request", 0) == 0 && line.find(" state=0 ") != std::string::npos) {
       loosen_next = false;
-      CHECK(chmod(staged.c_str(), 0777) == 0);
+      CHECK(chmod(staged.c_str(), 0775) == 0);  // a mode Playden never gives a title: the capture refuses it
     }
     if (break_after_commit && line.rfind("settings update resume app=220", 0) == 0 && line.find(" state=0 ") != std::string::npos) {
       break_after_commit = false;

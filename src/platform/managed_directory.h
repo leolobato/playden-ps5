@@ -9,7 +9,10 @@
 namespace playden::platform {
 
 enum class DirectoryBackend { kDescriptorRelative, kAbsolutePath };
-enum class DirectoryPolicy { kApprovedTree, kPrivate, kPrivateTraversable, kUnownedTree };
+enum class DirectoryPolicy { kApprovedTree, kPrivate, kPrivateTraversable, kUnownedTree, kOpenTree };
+
+// OpenChild's created_mode default: 0700 for every policy but kOpenTree, which creates 0777.
+inline constexpr mode_t kPolicyCreatedMode = 0;
 
 // Operations assume a stable managed namespace and coordinated writers. The
 // absolute-path backend checks components and observed identities, but is NOT a
@@ -24,6 +27,10 @@ enum class DirectoryPolicy { kApprovedTree, kPrivate, kPrivateTraversable, kUnow
 // children; a kPrivateTraversable one opens kPrivate or kPrivateTraversable
 // children; neither opens other policies. kApprovedTree accepts
 // existing directory ownership/modes, then refuses identity/owner/mode drift.
+// kOpenTree is Playden's own data that FTP must be able to delete (#868): LAN tools run as
+// root, which has no permission bypass on /data. It requires current-EUID ownership from the
+// selected root downward and accepts any mode; the folders it creates are 0777. It opens
+// kOpenTree, kPrivate and kApprovedTree children.
 // kUnownedTree is kApprovedTree for a filesystem that records no owner or
 // permissions (exFAT: every entry shows the mount owner and 0777): file
 // operations skip owner and mode checks, and a rename is checked by device,
@@ -52,12 +59,12 @@ class ManagedDirectory {
 
   // A folder it creates gets created_mode exactly (umask ignored); an existing
   // folder is never chmodded. kPrivate children are always created 0700,
-  // kPrivateTraversable ones 0700 or 0711. (Startup's self-heal, runtime/self_heal.h,
+  // kPrivateTraversable ones 0700 or 0711. kPolicyCreatedMode: 0777 for kOpenTree, else 0700. (Startup's self-heal, runtime/self_heal.h,
   // tightens the app's own private state before anything opens it.)
   std::optional<ManagedDirectory> OpenChild(const std::string& name,
                                            DirectoryPolicy policy,
                                            bool create = false,
-                                           mode_t created_mode = 0700) const;
+                                           mode_t created_mode = kPolicyCreatedMode) const;
   // Open/OpenChild never sync implicitly. After creation the caller must sync
   // the new directory and its parent before recording durable completion.
   bool Validate() const;
@@ -91,7 +98,7 @@ class ManagedDirectory {
   struct Observation {
     std::filesystem::path path;
     struct stat identity;
-    DirectoryPolicy check = DirectoryPolicy::kApprovedTree;  // kPrivate*: mode rechecked
+    DirectoryPolicy check = DirectoryPolicy::kApprovedTree;  // kPrivate*: mode rechecked; kOpenTree: owner
   };
   ManagedDirectory() = default;
   bool ValidName(const std::string& name) const;

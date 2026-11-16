@@ -106,6 +106,7 @@ target_compile_features(playden_runtime_install_service PUBLIC cxx_std_17)
 target_link_libraries(playden_runtime_install_service PUBLIC playden_runtime_installs)
 
 add_library(playden_managed_directory STATIC
+    "${CMAKE_SOURCE_DIR}/src/platform/data_roots.cpp"
     "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp"
     "${CMAKE_SOURCE_DIR}/src/platform/managed_file_lock.cpp")
 target_include_directories(playden_managed_directory PUBLIC "${CMAKE_SOURCE_DIR}/src")
@@ -200,6 +201,12 @@ if(BUILD_TESTING AND NOT PLAYDEN_PLATFORM_PS5)
     add_executable(managed_directory_test "${CMAKE_SOURCE_DIR}/tests/managed_directory_test.cpp")
     target_link_libraries(managed_directory_test PRIVATE playden_managed_directory)
     add_test(NAME managed_directory COMMAND managed_directory_test)
+    add_executable(managed_directory_native_policy_test "${CMAKE_SOURCE_DIR}/tests/managed_directory_test.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
+    target_include_directories(managed_directory_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
+    target_compile_features(managed_directory_native_policy_test PRIVATE cxx_std_17)
+    target_compile_definitions(managed_directory_native_policy_test PRIVATE PLAYDEN_PLATFORM_PS5=1)
+    add_test(NAME managed_directory_native_policy COMMAND managed_directory_native_policy_test)
     add_executable(runtime_private_directories_native_policy_test
         "${CMAKE_SOURCE_DIR}/tests/runtime_private_directories_native_policy_test.cpp"
         "${CMAKE_SOURCE_DIR}/src/runtime/private_directories.cpp"

@@ -30,11 +30,22 @@ bool PrivateFamily(DirectoryPolicy policy) {
   return policy == DirectoryPolicy::kPrivate || policy == DirectoryPolicy::kPrivateTraversable;
 }
 
+// Policies checked again at every Validate: private modes, or the open tree's owner.
+bool Checked(DirectoryPolicy policy) { return PrivateFamily(policy) || policy == DirectoryPolicy::kOpenTree; }
+
+// An open folder: the app user's, any mode (#868).
+bool OpenFolder(const struct stat& info, uid_t uid) { return S_ISDIR(info.st_mode) && info.st_uid == uid; }
+
 // kPrivateTraversable also admits 0711: others may enter, but not list or write.
 bool Private(const struct stat& info, uid_t uid, DirectoryPolicy policy = DirectoryPolicy::kPrivate) {
   const auto mode = info.st_mode & 07777;
   return S_ISDIR(info.st_mode) && info.st_uid == uid &&
          (mode == 0700 || (policy == DirectoryPolicy::kPrivateTraversable && mode == 0711));
+}
+
+bool Admitted(const struct stat& info, uid_t uid, DirectoryPolicy policy) {
+  if (policy == DirectoryPolicy::kOpenTree) return OpenFolder(info, uid);
+  return !PrivateFamily(policy) || Private(info, uid, policy);
 }
 
 bool Ordinary(const struct stat& info) {
@@ -123,10 +134,10 @@ std::optional<ManagedDirectory> ManagedDirectory::Open(
 #endif
       next = ::open(absolute.c_str(), kDirectoryFlags);
     if (next < 0) return false;
-    const auto check = PrivateFamily(policy) && absolute == path ? policy : DirectoryPolicy::kApprovedTree;
+    const auto check = Checked(policy) && absolute == path ? policy : DirectoryPolicy::kApprovedTree;
     bool valid = ::fstat(next, &after) == 0;
     if (valid && !SameIdentity(before, after)) valid = Refuse(ESTALE);
-    if (valid && PrivateFamily(check) && !Private(after, result.uid_, check)) valid = Refuse(EACCES);
+    if (valid && !Admitted(after, result.uid_, check)) valid = Refuse(EACCES);
     if (!valid) { ClosePreservingError(next); return false; }
     ClosePreservingError(result.fd_);
     result.fd_ = next;
@@ -153,7 +164,7 @@ bool ManagedDirectory::Validate() const {
     if (::lstat(observation.path.c_str(), &current) != 0) return false;
     if (!SameIdentity(observation.identity, current)) return Refuse(ESTALE);
     if (!S_ISDIR(current.st_mode)) return Refuse(ENOTDIR);
-    if (PrivateFamily(observation.check) && !Private(current, uid_, observation.check)) return Refuse(EACCES);
+    if (!Admitted(current, uid_, observation.check)) return Refuse(EACCES);
   }
   return true;
 }
@@ -192,6 +203,7 @@ bool ManagedDirectory::InspectChild(const std::string& name, struct stat* result
 std::optional<ManagedDirectory> ManagedDirectory::OpenChild(
     const std::string& name, DirectoryPolicy policy, bool create, mode_t created_mode) const {
   if (!ValidName(name) || !Validate()) return std::nullopt;
+  if (created_mode == kPolicyCreatedMode) created_mode = policy == DirectoryPolicy::kOpenTree ? 0777 : 0700;
   if ((created_mode & ~01777) != 0 ||
       ((created_mode & 01000) && policy != DirectoryPolicy::kApprovedTree) || (policy == DirectoryPolicy::kPrivate && created_mode != 0700) ||
       (policy == DirectoryPolicy::kPrivateTraversable && created_mode != 0700 && created_mode != 0711) ||
@@ -237,7 +249,7 @@ std::optional<ManagedDirectory> ManagedDirectory::OpenChild(
     errno = S_ISLNK(before.st_mode) ? ELOOP : ENOTDIR;
     return std::nullopt;
   }
-  if (PrivateFamily(policy) && !Private(before, uid_, policy)) {
+  if (!Admitted(before, uid_, policy)) {
     errno = EACCES;
     return std::nullopt;
   }
@@ -246,12 +258,13 @@ std::optional<ManagedDirectory> ManagedDirectory::OpenChild(
   if (child.fd_ < 0 || ::fstat(child.fd_, &after) != 0) return std::nullopt;
   if (!SameIdentity(before, after)) { errno = ESTALE; return std::nullopt; }
   child.path_ = path_ / name;
-  child.root_ = PrivateFamily(policy) && !PrivateFamily(policy_) ? child.path_ : root_;
+  child.root_ = (PrivateFamily(policy) && !PrivateFamily(policy_)) ||
+                (policy == DirectoryPolicy::kOpenTree && policy_ != DirectoryPolicy::kOpenTree) ? child.path_ : root_;
   child.policy_ = policy;
   child.backend_ = backend_;
   child.uid_ = uid_;
   child.observations_ = observations_;
-  child.observations_.push_back({child.path_, after, PrivateFamily(policy) ? policy : DirectoryPolicy::kApprovedTree});
+  child.observations_.push_back({child.path_, after, Checked(policy) ? policy : DirectoryPolicy::kApprovedTree});
   if (!child.Validate()) return std::nullopt;
   return child;
 }

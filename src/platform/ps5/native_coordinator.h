@@ -11,7 +11,7 @@ namespace playden::ps5 {
 struct TitleSourceObservation {
   runtime::TitleAvailability availability = runtime::TitleAvailability::kUnknown;
   bool directory = false;
-  // Owned by this user and not writable by others (0700 or 0755).
+  // Owned by this user: 0777, or 0700/0755 from Playden 0.11 and earlier.
   bool owned_directory = false;
 };
 // Read-only point observation in a controlled, stable /data/homebrew namespace.

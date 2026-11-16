@@ -683,7 +683,7 @@ Result<void> OrganizationStore::Save(std::uint64_t scope, const OrganizationSnap
 
   Bytes encoded = writer.Take();
   AppendChecksum(encoded);
-  return storage_.WriteAtomicPrivate(kPathV2, encoded);
+  return storage_.WriteAtomicOpen(kPathV2, encoded);
 }
 
 Result<std::optional<OrganizationSnapshot>> OrganizationStore::Load(std::uint64_t scope) const {
@@ -697,7 +697,7 @@ Result<std::optional<OrganizationSnapshot>> OrganizationStore::Load(std::uint64_
     // newer format. Its bytes are kept for a look; the organization starts again as if there were no file.
     if (CheckFrame(loaded.value(), kFixedBytesV2)) return DecodeV2(loaded.value());
     // Kept first: its copy is also what stops the .v1 merge later. Without it the file stays, and the load fails.
-    const auto kept = storage_.WriteAtomicPrivate(kDamagedPathV2, loaded.value());
+    const auto kept = storage_.WriteAtomicOpen(kDamagedPathV2, loaded.value());
     if (!kept.ok())
       return Loaded::Failure(StorageError::kInvalidData,
                              "organization data is damaged and could not be set aside: " + kept.message());
@@ -795,7 +795,7 @@ Result<void> OrganizationStore::SaveV1(std::uint64_t account_id,
 
   Bytes encoded = writer.Take();
   AppendChecksum(encoded);
-  return storage_.WriteAtomicPrivate(PathV1(account_id), encoded);
+  return storage_.WriteAtomicOpen(PathV1(account_id), encoded);
 }
 
 Result<std::optional<OrganizationSnapshot>> OrganizationStore::LoadV1(std::uint64_t account_id) const {
