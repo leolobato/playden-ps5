@@ -16,8 +16,8 @@ curl_version=8.22.0
 curl_sha256=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 curl_patch="$root/patches/curl-ps5-native-nonblock.patch"
 curl_patch_sha256=8ad3d3b23ed6c526d89e289c0acc11784df994f6ba99a3d6392cac0f5065e526
-mbedtls_version=3.6.6
-mbedtls_sha256=8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a
+mbedtls_version=3.6.7
+mbedtls_sha256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 cacert_sha256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
 
 fetch() {

@@ -42,14 +42,24 @@ std::string Header(const HttpResponse& response, const std::string& name) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  Check(argc == 5, "expected BASE_URL CA_BUNDLE WRONG_CA_BUNDLE PLAIN_URL");
+  Check(argc == 6, "expected BASE_URL CA_BUNDLE WRONG_CA_BUNDLE PLAIN_URL TLS12_URL");
   const std::string base_url = argv[1];
   const std::string ca_bundle = argv[2];
   const std::string wrong_ca_bundle = argv[3];
   const std::string plain_url = argv[4];
+  const std::string tls12_url = argv[5];
   std::atomic<bool> cancel{false};
   HttpClient client(ca_bundle);
 
+  {
+    // A TLS 1.2-only server that signs its key exchange with RSA-PSS, as Alibaba Cloud storage does (#155).
+    HttpRequest request;
+    request.url = tls12_url + "/ok";
+    const auto response = client.Perform(request, cancel);
+    if (!response.ok()) std::cerr << "TLS 1.2 RSA-PSS GET: " << playden::steam::HttpFailureName(response) << '\n';
+    Check(response.ok() && Text(response.body) == "fixture-ok",
+          "TLS 1.2 server with an RSA-PSS key exchange signature should be accepted");
+  }
 
   {
     HttpClient persistent(ca_bundle);

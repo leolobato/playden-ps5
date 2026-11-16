@@ -88,13 +88,13 @@
       "ps5_nonblock_patch_sha256": "8ad3d3b23ed6c526d89e289c0acc11784df994f6ba99a3d6392cac0f5065e526"
     },
     "mbedtls": {
-      "version": "3.6.6",
-      "source_sha256": "8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a",
+      "version": "3.6.7",
+      "source_sha256": "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6",
       "config": [
         "MBEDTLS_THREADING_C",
         "MBEDTLS_THREADING_PTHREAD"
       ],
-      "config_sha256": "92f08b8ed84a09b84ff9a1728a2b7868c45dabdcdda6574dc8ae3b64d290c035"
+      "config_sha256": "64ad19a193202d6f7b88e82ecf36a7332afa682525209a146afd47a3bd094f76"
     },
     "ca_bundle": {
       "version": "2026-09-25",
@@ -117,9 +117,9 @@
     "ps5_archives": {
       "libcurl.a": "48073d585213b7698514c3d15ee9f85f6fa74ba8d7f3728116b96271601eb951",
       "libeverest.a": "beb61a9fb21e7a9cc016f0ad7fc9027cc09da674a3f2c743bfa8d1bfe06de00c",
-      "libmbedcrypto.a": "10702b58c100c6c6dfde592949a8282c708518c030f6672b6bed955113bcecde",
-      "libmbedtls.a": "d7e12979e590a796a8f6383fec0b5e285b3badc19afc44f4cb89da7e7544c8b2",
-      "libmbedx509.a": "547c3ea5244efe1836edbec54a43c5fda31244926892084076fdcbeccc217aa6",
+      "libmbedcrypto.a": "16e45abd9b232a057a490be00ff6a25335a4a8d7722bf43f5b0655b5583913ac",
+      "libmbedtls.a": "d46e1a4b8d5c70307f1f24edfa96b810dbdb846259960bdb50c952ff882198f1",
+      "libmbedx509.a": "38903b35e1a79b449dcfe6c67b65c570338201f0a6da300f7c82521c4fb4ad63",
       "libp256m.a": "412e12a472d4b2a3377760ccea57c87609831197c9183736ccd848d23b27da02"
     },
     "ps5_build_flags": "-ffile-prefix-map=<source root>/= (relative source paths; byte-reproducible with SDK v0.43 and LLVM 18.1.8)"

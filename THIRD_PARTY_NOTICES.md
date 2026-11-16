@@ -17,7 +17,7 @@ These are compiled into Playden's PS5 package (`FAKE77031`) or copied into it.
 | ps5-payload-sdk | v0.43 (v0.42 for the root helper) | GPL-3.0 | [ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk) |
 | PS5-Lapy-JB-Daemon (root helper, `lapy.elf`) | fork `66ab4f1` | MIT, Copyright (c) 2026 Arksama (Team PHU) | [mpereiraesaa/PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon), my fork in `third_party/PS5-Lapy-JB-Daemon` |
 | curl | 8.22.0, with a PS5 non-blocking patch | curl license (MIT-style) | [curl.se](https://curl.se/) |
-| Mbed TLS | 3.6.6 | Apache-2.0 | [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) |
+| Mbed TLS | 3.6.7 | Apache-2.0 | [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) |
 | CA certificate bundle (`trust/cacert.pem`) | 2026-09-25 | MPL-2.0 | Mozilla's root store, as extracted by [curl](https://curl.se/docs/caextract.html) |
 | SQLite | 3.53.1 | Public domain | [sqlite.org](https://sqlite.org/) |
 | zstd (decompression) | 1.5.6 | BSD-3-Clause | [facebook/zstd](https://github.com/facebook/zstd) |

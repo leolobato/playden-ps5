@@ -1,6 +1,6 @@
 # Network dependencies
 
-Playden's Steam client uses curl 8.22.0 with Mbed TLS 3.6.6 LTS and the Mozilla CA bundle dated 2026-09-25. These
+Playden's Steam client uses curl 8.22.0 with Mbed TLS 3.6.7 LTS and the Mozilla CA bundle dated 2026-09-25. These
 scripts download the pinned sources (checked by SHA-256) and build them as static libraries into `.deps/<platform>`:
 
 ```sh
