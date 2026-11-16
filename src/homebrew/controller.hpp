@@ -429,6 +429,7 @@ class Controller {
     std::chrono::steady_clock::time_point submitted_at{};
   };
   std::map<GameId, Recreate> recreate_;
+  std::uint64_t playden_removals_seen_ = 0;  // RuntimeSnapshot::playden_removals_handled already shown
   std::map<GameId, std::pair<bool, std::string>> recreate_results_;
   // Maintenance › Update runtime: the preparation Play runs first for a title on an older kit's runtime (RunPrepare's
   // update, with its settings republish), without starting the game. Results stay for the maintenance sheet.

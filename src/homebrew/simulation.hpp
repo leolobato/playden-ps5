@@ -1072,6 +1072,11 @@ struct State {
     bool root_access_missing = false;
     std::string root_access_detail;  // the startup error, shortened
     bool root_access_granted = false;  // the grant succeeded; its data in /data/playden failed
+    // Uninstall Playden finished (or stopped with files left): the one-action screen above says so instead.
+    bool playden_removed = false;
+    bool playden_removed_complete = false;
+    std::vector<std::string> playden_removed_notes;  // what stays and why: kept saves, a drive not connected
+    bool removing_playden = false;  // live: Uninstall Playden is running
     LogState log_state = LogState::Ready;
     std::vector<std::string> log_lines;
     int log_offset = 0;
@@ -1340,6 +1345,13 @@ public:
     // "Root access is missing" screen; its one action quits to Home (quit_requested).
     // granted: the grant succeeded but Playden can't use /data/playden (other words, same screen).
     void ShowRootAccessMissing(const std::string& raw, bool granted = false);
+    // Uninstall Playden (#868): the screen after it, with Quit to Home. `complete`: every file is gone (but
+    // what `notes` says stays).
+    void ShowPlaydenRemoved(bool complete, std::vector<std::string> notes);
+    // Uninstall Playden: running (the progress dialog), or stopped with `refusal` before removing anything final.
+    void UpdatePlaydenRemoval(bool running, const std::string& refusal);
+    // Uninstall Playden asked for (Settings › About › Uninstall Playden), keep_saves; taken once.
+    [[nodiscard]] std::optional<bool> TakePlaydenRemovalRequest();
     // Live mode: Playden's own update, and what the player asked of it: "check" (from Settings),
     // "install", "cancel", "restart" (apply at quit; quit follows), "rollback" (put the previous
     // version back at quit; quit follows) and "acknowledge" (a finished update's message was shown).
@@ -1960,6 +1972,8 @@ private:
     // Games whose Game actions asked the console whether they run, for Move to…; cleared by the game's next runtime update.
     std::set<GameId> move_activity_asked_;
     bool uninstall_delete_saves_ = false;  // the uninstall dialog's choice
+    std::optional<bool> playden_removal_request_;  // Uninstall Playden asked for: keep_saves
+    bool remove_playden_delete_saves_ = false;  // its dialog's "Delete saves too"
     std::set<GameId> kept_selected_;  // the kept game data manager's checked games
     std::set<std::string> leftover_selected_;  // the leftover titles manager's checked title IDs
     // Manage installed games: each tab's checked games, order and focus, kept while the screen is open.

@@ -337,6 +337,15 @@ struct PreparedGame {
 inline constexpr std::int64_t kPreparedDays = 7;
 inline constexpr std::size_t kMaxPrepared = 20;
 
+// Uninstall Playden (#868): how RuntimeHost::RemovePlayden went.
+struct PlaydenRemovalOutcome {
+  bool complete = false;                 // every PS5 title and every file of Playden's is gone
+  std::string message;                   // why it stopped, when it did
+  std::vector<std::string> kept;         // kept on purpose: kept saves, an import folder that holds files
+  std::vector<std::string> failed;       // files that could not be removed
+  std::vector<std::string> disconnected; // drives with games that weren't connected: their playden folder stays
+};
+
 struct RuntimeSnapshot {
   std::uint64_t revision = 0;
   RuntimeHostStatus status = RuntimeHostStatus::kStarting;
@@ -394,6 +403,10 @@ struct RuntimeSnapshot {
   std::optional<std::uint32_t> removing_app;
   std::map<std::uint32_t, std::string> removal_failures;
   std::uint64_t removals_handled = 0;
+  // Uninstall Playden: running, and how the last one went (RemovePlayden).
+  bool removing_playden = false;
+  std::optional<PlaydenRemovalOutcome> playden_removal;
+  std::uint64_t playden_removals_handled = 0;  // one more for each outcome, so none is missed between looks
   // Game data kept when a game was uninstalled (bottles with no install record).
   std::vector<KeptBottleView> kept_bottles;
   // Unrecorded PS5 titles, and their queued/running deletion or latest failure (keyed by title ID).
@@ -581,6 +594,11 @@ class RuntimeHost {
   void Remove(std::uint32_t runtime_number, bool delete_saves);
   // Queues deletion of a game's kept bottle.
   void DeleteKeptBottle(std::uint32_t runtime_number);
+  // Uninstall Playden (#868): removes every game's PS5 title (keeping each bottle as <id>.kept with
+  // keep_saves), every leftover title of Playden's, then every file Playden made on the console
+  // (runtime/playden_removal.h). Refused while a game runs. The outcome is RuntimeSnapshot::playden_removal;
+  // Playden then quits. A removal stopped part way is finished by the next start (uninstall.json).
+  void RemovePlayden(bool keep_saves);
   // Deletes only a scanned leftover's PS5 title and registration; its game files and saves stay.
   bool DeleteLeftoverTitle(const std::string& title_id, std::string* error = nullptr);
   // Queues a scan of a game folder for the Program picker (RuntimeSnapshot::game_setups).
@@ -916,6 +934,7 @@ class RuntimeHost {
   // Keeps bottles no install record and no unrecorded PS5 title names (their title was deleted
   // as a leftover, or its record was lost) as kept saves, so Storage lists them.
   void KeepUnrecordedBottles(Composition& composition);
+  PlaydenRemovalOutcome RunRemovePlayden(Composition& composition, bool keep_saves);
   // Opens a bottle no title uses (kept, set aside, or a saves backup) to FTP: folders 0777, files 0666,
   // launcher sign-ins (runtime::PrivateProfilePaths under `profile`, relative to folder) 0700/0600.
   // Logs what it couldn't open.
@@ -1022,6 +1041,7 @@ class RuntimeHost {
   std::uint64_t next_work_order_ = 0;
   std::map<std::uint32_t, std::uint64_t> prepare_order_;
   std::vector<std::uint32_t> kept_delete_requests_;
+  std::optional<bool> playden_removal_request_;  // keep_saves; guarded by mutex_
   std::vector<std::pair<std::uint32_t, std::string>> scan_requests_;
   std::vector<std::pair<std::uint32_t, RuntimeMaintenance>> maintenance_requests_;
   std::vector<std::uint32_t> home_handoff_requests_;

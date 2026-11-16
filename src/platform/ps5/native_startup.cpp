@@ -5,6 +5,7 @@
 #include "runtime/kit_trust.h"
 #include "runtime/layout_migration.h"
 #include "runtime/self_heal.h"
+#include "runtime/playden_removal.h"
 #include "runtime/writable_folders.h"
 #include <EGL/egl.h>
 #include "steam/backend/native_network.h"
@@ -178,6 +179,19 @@ NativeAccessResult PrepareNativeStartup(const std::string& title_id) {
     namespace fs = std::filesystem;
     const fs::path data_root = result.paths.runtime_data_root;
     const auto layout_log = [&layout_lines](const std::string& line) { layout_lines.push_back(line); };
+    // Uninstall Playden stopped while removing files: finished first, and nothing is made again. Its PS5 titles
+    // are gone already; a removal stopped before that goes on in the runtime host instead.
+    if (const auto journal = runtime::LoadRemovalJournal(data_root); journal && journal->step == runtime::RemovalStep::kFiles) {
+      const auto removed = runtime::RemovePlaydenFiles(
+          runtime::ConsoleRemovalPaths(), journal->keep_saves,
+          [](const std::function<bool()>& work) { return WithRoot(work); }, {});
+      result.playden_removed = true;
+      result.playden_removal_complete = removed.complete;
+      for (const auto& path : removed.kept) result.playden_removal_notes.push_back("Kept: " + path);
+      for (const auto& failure : removed.failed) result.playden_removal_notes.push_back("Left: " + failure);
+      result.runtime_ready = false;
+      return result;
+    }
     // Playden's own data is open so the console owner can delete it over FTP (#868): what an older
     // Playden left owner-only is opened before anything reads it. The kit keeps its manifest modes.
     runtime::OpenPlaydenModes(data_root, "/data/homebrew", layout_log);

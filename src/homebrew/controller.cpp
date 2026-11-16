@@ -1033,7 +1033,12 @@ void Controller::WithApp(const GameId& id, std::function<void(std::uint32_t)> us
 }
 
 void Controller::TickRuntime() {
-  if (!runtime_) return;
+  if (!runtime_) {
+    // Without the runtime services no PS5 title can be removed, so nothing is.
+    if (model_.TakePlaydenRemovalRequest())
+      model_.UpdatePlaydenRemoval(false, "Playden's runtime services aren't running, so its games' PS5 titles can't be removed.");
+    return;
+  }
   // Calls that waited for the runtime worker (a game's first number) are asked again, in order.
   for (auto& again : std::exchange(deferred_runtime_, {})) again();
   {
@@ -1142,6 +1147,37 @@ void Controller::TickRuntime() {
                            : kind == MaintenanceKind::BackupSaves ? RuntimeMaintenance::kBackupSaves
                                                                   : RuntimeMaintenance::kApplySettings);
     });
+  // Uninstall Playden (#868): asked for in Settings, or a removal the worker resumed at its start (uninstall.json).
+  if (const auto keep_saves = model_.TakePlaydenRemovalRequest()) runtime_->RemovePlayden(*keep_saves);
+  {
+    const auto removal_shared = runtime_->Shared();
+    const auto& removal = *removal_shared;
+    if (removal.removing_playden) {
+      model_.UpdatePlaydenRemoval(true, {});
+    } else if (removal.playden_removals_handled != playden_removals_seen_ && removal.playden_removal) {
+      playden_removals_seen_ = removal.playden_removals_handled;
+      const auto& outcome = *removal.playden_removal;
+      // An outcome first seen as done (a removal resumed at the start that finished between looks) still
+      // passes through the progress screen, which a refusal leaves for Settings.
+      model_.UpdatePlaydenRemoval(true, {});
+      // Stopped before any file went (a game still running, a title that wouldn't go): Playden goes on as before.
+      if (!outcome.complete && outcome.failed.empty()) {
+        model_.UpdatePlaydenRemoval(false, outcome.message);
+      } else {
+        std::vector<std::string> notes;
+        for (const auto& path : outcome.kept)
+          notes.push_back(path.find(".kept") != std::string::npos ? "Kept: saves in " + path
+                                                                   : "Kept: your games to import in " + path);
+        for (const auto& mount : outcome.disconnected)
+          notes.push_back("Not connected: " + mount + ". Delete its playden folder over FTP, or connect it and open Playden again.");
+        constexpr std::size_t kNamed = 5;
+        for (std::size_t index = 0; index < outcome.failed.size() && index < kNamed; ++index)
+          notes.push_back("Left: " + outcome.failed[index]);
+        if (outcome.failed.size() > kNamed) notes.push_back("And " + std::to_string(outcome.failed.size() - kNamed) + " more.");
+        model_.ShowPlaydenRemoved(outcome.complete, std::move(notes));
+      }
+    }
+  }
   {
     const auto current_shared = runtime_->Shared();
     const auto& current = *current_shared;

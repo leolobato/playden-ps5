@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace playden::ps5 {
 
@@ -90,6 +91,11 @@ struct NativeAccessResult {
   NativePaths paths;
   std::string error;
   std::string notice;  // one line for the user about the data layout, when set
+  // Uninstall Playden (#868) had removed the PS5 titles and was removing files when Playden stopped: startup
+  // finished it instead of making Playden's folders again. Nothing else starts; the "removed" screen shows.
+  bool playden_removed = false;
+  bool playden_removal_complete = false;
+  std::vector<std::string> playden_removal_notes;
 };
 
 // Orders the portable parts of startup around the root-view change. Successful

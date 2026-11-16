@@ -254,22 +254,55 @@ Playden's web page uses plain HTTP, so use it only on a network you trust.
 
 For Half-Life 2 that is `steam-220`. Look in `AppData/Roaming`, `AppData/Local`, `Documents` and `Saved Games`.
 
-This needs a runtime kit with the `bottle-profile-shared` capability. Kit 0.18 doesn't have it and keeps the whole
-folder private, so FTP answers with a permission error. With the capability, you can read and write everything in
-`prospero`. The folders above it can be entered but not listed, so type the full path in your FTP client instead of
-browsing to it. New saves a game writes are private at first. Playden opens them to FTP when it starts, when a game
-it started ends, and before it starts a game.
+The runtime kit keeps the folder of a game that has a PS5 title private, so FTP answers with a permission error there.
+Use the web page above, or Maintenance › Back up saves: backups are in
+`/data/playden/games/steam-<Steam app ID>.saves/` and FTP can read and delete them.
 
-Without the capability, set `/data/playden/games/steam-<Steam app ID>` to `777`, recursive, to reach the folder.
-
-- **Never undo this with a recursive `chmod 700`.** FTP loses access to everything below the first folder it changes,
-  so the folders stay open, and files it already changed can become unreadable. Playden takes back the modes it needs
-  on its own.
-- **Files you upload belong to root**, so the game may not be able to use them. Run the recursive `777` again after
-  you upload saves. Otherwise the game can fail to load them, and Recreate bottle can't bring them back
-  ([#569](https://github.com/leolobato/playden-ps5/issues/569)).
-- **If Play fails afterwards**, use Maintenance › Repair, which may also fail, then press Play again
+- **Don't change the modes of a game's folder** in `/data/playden/games` (a recursive `chmod`). If you did and Play
+  fails, use Maintenance › Repair: Playden puts the modes back
   ([#568](https://github.com/leolobato/playden-ps5/issues/568)).
+- **Files you upload belong to root**, so the game may not be able to use them. Upload saves through the web page
+  instead ([#569](https://github.com/leolobato/playden-ps5/issues/569)).
+
+## Where Playden keeps data
+
+Everything Playden makes outside a game's private folder can be read and deleted over FTP or a file manager: its
+folders are `777` and its files `666`. Your Steam, GOG and web access sign-ins are files only Playden can read, but you
+can still delete them.
+
+| Folder | What is in it |
+|---|---|
+| `/data/playden` | Playden's own data: everything in the rows below that starts with it |
+| `/data/playden/user` | Sign-ins, preferences, game settings, shared recipes, paired browsers |
+| `/data/playden/logs` | Logs |
+| `/data/playden/runtime-state` | Which games are installed, their PS5 titles, removals in progress |
+| `/data/playden/art` | Game artwork |
+| `/data/playden/games` | Each game's Windows folder and saves. `<id>.kept`: saves kept after an uninstall. `<id>.saves`: backups |
+| `/data/playden/staging` | PS5 titles and game folders being built |
+| `/data/playden/steam-client` | Valve's Steam client, for games with Steam features set to Online |
+| `/data/playden/exported-recipes` | Recipes you exported as files |
+| `/data/playden/redist` | Microsoft runtimes Playden downloads for games (MFC, Visual C++) |
+| `/data/playden/title-remover` | Requests to remove a PS5 title |
+| `/data/playden/kits` | The runtime kit (belongs to root) |
+| `/data/playden/title-rule` | The list of PS5 titles Playden may start (belongs to root) |
+| `/data/playden/self-update` | Playden updates being installed (belongs to root) |
+| `/data/playden-games` | Game files on console storage |
+| `/data/playden-import` | Games you copy in to import. They are yours: removing Playden keeps them |
+| `/data/homebrew/FAKE78xxx` | One PS5 title for each game. Playden itself is `/data/homebrew/FAKE77031` |
+| `/mnt/<drive>/playden` | Game files (`games`) and games to import (`import`) on an M.2 SSD, extended storage or USB drive |
+
+### Uninstall Playden
+
+Settings › About › **Uninstall Playden** takes everything above off the console. Close any game first.
+
+1. Choose whether to keep your saves. Kept saves stay in `/data/playden/games/<id>.kept`, and a new install of Playden
+   gives them back when you install the game again.
+2. Playden removes every game's PS5 title, the game files on each connected drive, the runtime kit and its own data.
+   Games waiting in an `import` folder stay.
+3. Playden quits. Delete the Playden tile from the Home screen to finish.
+
+A drive that is not connected keeps its `playden` folder. Delete it over FTP, or connect the drive before you remove
+Playden.
 
 ## Import Windows games
 

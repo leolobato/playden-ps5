@@ -800,7 +800,7 @@ std::string action_label(const std::string& key) {
         {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
         {"start-failed-report", "Report the problem"}, {"start-failed-logs", "Open logs"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"compatibility", "Compatibility"}, {"note", "Note"}, {"verify", "Verify files"},
-        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"logs", "Open logs"}, {"logs-back", "Back"},
+        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"remove-playden-delete-saves", "Delete saves too"}, {"remove-playden-confirm", "Uninstall Playden"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
         {"log-launch", "Launch log"}, {"log-cloud", "Cloud saves log"}, {"logs-refresh", "Refresh"},
         {"cloud-sync", "Cloud saves"}, {"cloud-choose", "Cloud saves"}, {"cloud-use-cloud", "Use Cloud saves"},
@@ -3144,6 +3144,55 @@ void Simulation::ShowRootAccessMissing(const std::string& raw, bool granted) {
     state_.navigation.route = Route::Startup;
     state_.navigation.focus_key = "root-quit";
     rebuild_view();
+}
+
+namespace {
+constexpr std::string_view remove_playden_body_kept =
+    "Each game's saves are kept in /data/playden/games, and a new install of Playden gives them back.";
+constexpr std::string_view remove_playden_body_deleted =
+    "Each game's saves on this console are deleted too. Saves in Steam Cloud stay there.";
+}  // namespace
+
+void Simulation::ShowPlaydenRemoved(bool complete, std::vector<std::string> notes) {
+    state_.removing_playden = false;
+    state_.playden_removed = true;
+    state_.playden_removed_complete = complete;
+    state_.playden_removed_notes = std::move(notes);
+    // The one-action screen "Root access is missing" uses: nothing else of Playden is left to use.
+    state_.root_access_missing = true;
+    state_.root_access_detail.clear();
+    state_.notices.clear();
+    state_.navigation.modals.clear();
+    state_.editor.active = false;
+    state_.navigation.route = Route::Startup;
+    state_.navigation.focus_key = "root-quit";
+    rebuild_view();
+}
+
+void Simulation::UpdatePlaydenRemoval(bool running, const std::string& refusal) {
+    if (running && !state_.removing_playden) {
+        state_.removing_playden = true;
+        state_.root_access_missing = true;  // input waits: quitting half way would leave a removal to finish
+        state_.navigation.modals.clear();
+        state_.editor.active = false;
+        state_.navigation.route = Route::Startup;
+        state_.navigation.focus_key.clear();
+        rebuild_view();
+    } else if (!running && state_.removing_playden && !refusal.empty()) {
+        // Stopped before anything final (a game still running): back to Settings, saying why.
+        state_.removing_playden = false;
+        state_.root_access_missing = false;
+        state_.navigation.route = Route::Settings;
+        state_.navigation.focus_key = "settings-remove-playden";
+        push_notice({"remove-playden", "Playden was not uninstalled", "", false, kLiveNoticeSeconds * 2, true, refusal});
+        rebuild_view();
+    }
+}
+
+std::optional<bool> Simulation::TakePlaydenRemovalRequest() {
+    auto request = playden_removal_request_;
+    playden_removal_request_.reset();
+    return request;
 }
 
 void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
@@ -8744,6 +8793,12 @@ void Simulation::rebuild_view() {
                 item.kind = RowKind::Toggle;
                 item.selected = action_key == "run-once-dont-show" ? state_.hide_run_once_help : state_.hide_launcher_help;
             }
+            else if (action_key == "remove-playden-delete-saves") {
+                item.kind = RowKind::Toggle;
+                item.dangerous = false;
+                item.selected = remove_playden_delete_saves_;
+                item.subtitle = "Deletes each game's Windows folder instead of keeping it. Saves in Steam Cloud stay there.";
+            }
             else if (action_key == "uninstall-delete-saves") {
                 item.kind = RowKind::Toggle;
                 item.dangerous = false;
@@ -8989,6 +9044,21 @@ void Simulation::rebuild_view() {
         else if (modal.id == "gog-sign-in") view_.legends = {"Cross Select", "Circle Back"};
         else if (modal.id == "move-storage") view_.legends = {move_picker_game_.valid() ? "Cross Move here" : "Cross Choose", "Circle Back"};
         else if (!modal.setting_id.empty()) view_.legends = {"Cross Select", "Triangle Reset", "L1/R1 Jump", "Circle Back"};
+    } else if (state_.navigation.route == Route::Startup && state_.root_access_missing && state_.removing_playden) {
+        view_.title = "Uninstalling Playden…";
+        view_.subtitle = "Removing each game's PS5 title, the game files and Playden's data. Don't turn the console off.";
+        row("remove-playden-progress", RowKind::Status, "This can take a few minutes.", "").enabled = false;
+        view_.legends.clear();
+    } else if (state_.navigation.route == Route::Startup && state_.root_access_missing && state_.playden_removed) {
+        view_.title = state_.playden_removed_complete ? "Playden is uninstalled" : "Some of Playden's data is left";
+        view_.subtitle = state_.playden_removed_complete
+            ? "Delete the Playden tile from the Home screen to finish."
+            : "Open Playden again to try again, or delete what is left over FTP. Then delete the Playden tile from "
+              "the Home screen.";
+        for (std::size_t index = 0; index < state_.playden_removed_notes.size(); ++index)
+            row("removed-note-" + std::to_string(index), RowKind::Status, state_.playden_removed_notes[index], "").enabled = false;
+        row("root-quit", RowKind::Action, "Quit to Home", "root-quit");
+        view_.legends = {"Cross Quit to Home"};
     } else if (state_.navigation.route == Route::Startup && state_.root_access_missing) {
         auto problem = describe_startup_problem(state_.root_access_detail, state_.root_access_granted);
         view_.title = std::move(problem.title);
@@ -10201,6 +10271,9 @@ void Simulation::rebuild_view() {
         auto& reset = add("settings-reset", RowKind::Action, "Reset UI data…", "reset-confirm");
         reset.dangerous = true;
         reset.subtitle = "Forget favorites, collections and view state on this console";
+        auto& uninstall = add("settings-remove-playden", RowKind::Action, "Uninstall Playden…", "remove-playden");
+        uninstall.subtitle = "Removes every game, its PS5 title and Playden's data from this console";
+        uninstall.dangerous = true;
         section = "Quit Playden";
         // As on macOS, the rail entry itself quits: the section has no rows to review.
         auto& quit = add("settings-quit", RowKind::Action, "Quit Playden…", "quit-confirm");
@@ -13613,6 +13686,45 @@ void Simulation::activate() {
     else if (live() && action_name == "self-update-restart") { close_modal(); request_self_update_restart(); }
     else if (live() && action_name == "self-update-notes") open_release_notes(false);
     else if (action_name == "release-notes-ok") close_modal();
+    else if (action_name == "remove-playden") {
+        const bool busy = std::any_of(state_.jobs.begin(), state_.jobs.end(), [](const Job& job) {
+            return job.state == JobState::Queued || job.state == JobState::Downloading || job.state == JobState::Pausing ||
+                   job.state == JobState::Verifying;
+        });
+        if (busy) {
+            push_notice({"remove-playden", "Pause or cancel your downloads first", "", false, kLiveNoticeSeconds * 2, true,
+                         "Playden can't be uninstalled while a game downloads or installs."});
+        } else {
+            remove_playden_delete_saves_ = false;
+            ModalEntry confirm{"confirmation", "Uninstall Playden?", state_.navigation.focus_key,
+                               {"cancel", "remove-playden-delete-saves", "remove-playden-confirm"}, 0, true};
+            confirm.body = "Every game's PS5 title and game files are removed from this console, with the runtime kit, "
+                           "your settings and your sign-ins. Games waiting in an import folder stay. " +
+                           std::string(remove_playden_body_kept) + " Then Playden quits, and you delete its tile from the "
+                           "Home screen.";
+            open_modal(std::move(confirm));
+        }
+    }
+    else if (action_name == "remove-playden-delete-saves") {
+        remove_playden_delete_saves_ = !remove_playden_delete_saves_;
+        if (!state_.navigation.modals.empty()) {
+            auto& body = state_.navigation.modals.back().body;
+            const auto from = remove_playden_delete_saves_ ? remove_playden_body_kept : remove_playden_body_deleted;
+            const auto to = remove_playden_delete_saves_ ? remove_playden_body_deleted : remove_playden_body_kept;
+            if (const auto at = body.find(from); at != std::string::npos) body.replace(at, from.size(), to);
+        }
+    }
+    else if (action_name == "remove-playden-confirm") {
+        close_modal();
+        if (live()) {
+            playden_removal_request_ = !remove_playden_delete_saves_;
+            UpdatePlaydenRemoval(true, {});
+        } else {
+            std::vector<std::string> notes;
+            if (!remove_playden_delete_saves_) notes.push_back("Kept: each game's saves, in /data/playden/games.");
+            ShowPlaydenRemoved(true, std::move(notes));
+        }
+    }
     else if (live() && action_name == "self-update-back") {
         ModalEntry confirm{"confirmation", "Go back to Playden " + state_.self_update.previous + "?",
                            state_.navigation.focus_key, {"self-update-back-confirm", "cancel"}, 1, false};
@@ -13747,6 +13859,7 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
     else if (logical_action == "options") state_.controller.options = true;
     // Without the root grant nothing else runs: Cross (or the action itself) quits to Home.
     if (state_.root_access_missing) {
+        if (state_.removing_playden) return true;  // Uninstall Playden is running: nothing to do but wait
         if (logical_action != "cross" && logical_action != "root-quit") return false;
         state_.quit_requested = true;
         return true;

@@ -26,6 +26,7 @@
 #include "homebrew/sharing_service.hpp"
 #include "homebrew/title_icon.hpp"
 #include "platform/ps5/title_allow_list.h"
+#include "runtime/playden_removal.h"
 #include "platform/ps5/console_address.h"
 #include "platform/ps5/console_services.h"
 #include "platform/ps5/system_keyboard.h"
@@ -243,6 +244,31 @@ void show_root_access_missing(hui::ps5::Display& display, const playden::ps5::Na
         pad.tick(1.0F / 60.0F);
     }
 }
+// Startup finished an Uninstall Playden that had stopped (NativeAccessResult::playden_removed): only its screen shows.
+void show_playden_removed(hui::ps5::Display& display, const playden::ps5::NativeAccessResult& access) {
+    hui::sys::log("Playden removal finished at startup complete=%d", access.playden_removal_complete ? 1 : 0);
+    sceUserServiceInitialize(nullptr);
+    playden::homebrew::Simulation simulation({}, {}, playden::homebrew::ModelMode::Live);
+    simulation.ShowPlaydenRemoved(access.playden_removal_complete, access.playden_removal_notes);
+    playden::homebrew::Render renderer(access.launcher_ready ? access.paths.assets_root : std::string("/app0/assets"));
+    hui::ps5::Pad pad;
+    pad.open();
+    hui::InputTracker tracker;
+    std::array<hui::PadSample, 64> samples{};
+    bool presented = false;
+    while (!simulation.state().quit_requested) {
+        const auto count = pad.read(samples);
+        dispatch(simulation, tracker.update(std::span<const hui::PadSample>(samples.data(), count),
+                                            hui::sys::monotonic_us()));
+        renderer.draw(simulation, display.width(), display.height(), 1.0F / 60.0F);
+        if (!display.swap()) break;
+        if (!presented) {
+            hui::sys::hide_splash_screen();
+            presented = true;
+        }
+        pad.tick(1.0F / 60.0F);
+    }
+}
 }  // namespace
 
 int main() {
@@ -260,6 +286,12 @@ int main() {
 #else
     const bool root_access_missing = !native_access.runtime_ready;
 #endif
+    if (native_access.playden_removed) {
+        show_playden_removed(display, native_access);
+        display.close();
+        hui::sys::quit();
+        return 0;
+    }
     if (root_access_missing) {
         show_root_access_missing(display, native_access);
         display.close();
@@ -1504,6 +1536,12 @@ int main() {
             playden::app::AppendLogLine(log_root, "update.log", std::string("self-update: quit ") +
                                                                     (swapped ? "with the new files in place" : "without changing the app"));
         }
+        // Uninstall Playden finished this run: what the services wrote while stopping (logs, preferences) goes
+        // too. Kept saves stay (a removal that deleted them left none to keep).
+        if (simulation.state().playden_removed && simulation.state().playden_removed_complete)
+            (void)playden::runtime::RemovePlaydenFiles(
+                playden::runtime::ConsoleRemovalPaths(), true,
+                [](const std::function<bool()>& work) { return playden::ps5::WithRoot(work); }, {});
 #endif
     }
     display.close();

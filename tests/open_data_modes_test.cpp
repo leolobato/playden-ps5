@@ -8,6 +8,7 @@
 #include "open_modes_walk.h"
 #include "runtime_host_fixture.h"
 #include "runtime/artifact_hash.h"
+#include "runtime/playden_removal.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -157,12 +158,102 @@ void RepairHealsAnOpenedBottleFirst() {
   CHECK(stat((bottle / ".playden-control").c_str(), &info) == 0 && (info.st_mode & 0777) == 0700);
   host.Shutdown();
 }
+
+// Uninstall Playden (#868): every game's PS5 title goes, then every file Playden made. With keep_saves only the kept
+// bottles stay. A sentinel beside the roots and the target of a link planted in them survive.
+void RemovePlaydenLeavesOnlyKeptSaves(bool keep_saves, bool resumed = false) {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.state_root = fixture.root / "data/playden/runtime-state";
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  config.uuid = []() -> std::optional<std::string> { return std::string("00000000-0000-4000-8000-000000000001"); };
+  config.unregister_title = [&fixture](const std::string&, const std::string&) {
+    fixture.registered = false; fixture.submitted = false;
+    return TitleRemoverResult{true, 0, "answered"};
+  };
+  unsigned raises = 0;
+  config.as_root = [&raises](const std::function<bool()>& work) { ++raises; return work(); };
+  const auto data = fixture.root / "data";
+  Write(data / "playden-games/220/hl2.exe", "existing-game", 0666);
+  Write(data / "other-app/keep.txt", "not Playden's", 0644);
+  Write(data / "playden/kits/playden-kit/manifest.json", "{}", 0644);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare({220, "/data/playden-games/220", "internal", "Half-Life 2"});
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && (s.refusals.count(220) ||
+        (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+  }, 60);
+  if (ready.refusals.count(220)) std::fprintf(stderr, "Prepare refused: %s\n", ready.refusals.at(220).c_str());
+  CHECK(!ready.refusals.count(220));
+  Write(data / "playden/games/steam-220/library/prefixes/game/drive_c/users/steamuser/save.dat", "player-save", 0600);
+  fs::create_symlink(data / "other-app", data / "playden/user-link");
+  // A running game refuses it, and nothing is removed.
+  fixture.activity->store(static_cast<int>(NativeActivity::kActive));
+  host.RemovePlayden(keep_saves);
+  auto done = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.removing_playden && s.playden_removal; }, 60);
+  CHECK(!done.playden_removal->complete && done.playden_removal->message.find("Close every game") == 0);
+  CHECK(fs::exists(data / "homebrew/FAKE78001") && fs::exists(data / "playden/runtime-state/installs.json"));
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+  if (resumed) {
+    // The console went off just after the removal began: the next start finds its journal and finishes it.
+    host.Shutdown();
+    CHECK(SaveRemovalJournal(data / "playden", {RemovalStep::kTitles, keep_saves}));
+    RuntimeHost restarted(config);
+    CHECK(restarted.Start());
+    done = WaitFor(restarted, [](const RuntimeSnapshot& s) { return s.playden_removals_handled > 0; }, 60);
+    restarted.Shutdown();
+  } else {
+    host.RemovePlayden(keep_saves);
+    done = WaitFor(host, [](const RuntimeSnapshot& s) { return !s.removing_playden && s.playden_removal; }, 60);
+    host.Shutdown();
+  }
+  for (const auto& failure : done.playden_removal->failed) std::fprintf(stderr, "failed: %s\n", failure.c_str());
+  if (!done.playden_removal->message.empty()) std::fprintf(stderr, "removal: %s\n", done.playden_removal->message.c_str());
+  CHECK(done.playden_removal->complete);
+  CHECK(!fs::exists(data / "homebrew/FAKE78001") && !fs::exists(data / "playden-games"));
+  CHECK(Read(data / "other-app/keep.txt") == "not Playden's");
+  CHECK(fixture.registry_mutations >= 2);  // registered once, then the title removed
+  if (keep_saves) {
+    std::vector<std::string> left;
+    for (const auto& entry : fs::recursive_directory_iterator(data / "playden"))
+      if (!entry.is_directory()) left.push_back(entry.path().lexically_relative(data / "playden").string());
+    for (const auto& path : left)
+      CHECK(path.rfind("games/steam-220.kept/", 0) == 0 || path.rfind("logs/", 0) == 0);
+    CHECK(Read(data / "playden/games/steam-220.kept/library/prefixes/game/drive_c/users/steamuser/save.dat") ==
+          "player-save");
+    // Opened: FTP can delete the kept saves too.
+    CHECK(OpenModesProblems(data / "playden/games/steam-220.kept", {{}, AllowedPrivate}).empty());
+  } else {
+    // Logs a thread writes after the removal can make logs/ again; nothing else of Playden's stays.
+    std::vector<std::string> left;
+    if (fs::exists(data / "playden"))
+      for (const auto& entry : fs::recursive_directory_iterator(data / "playden"))
+        if (!entry.is_directory()) left.push_back(entry.path().string());
+    for (const auto& path : left) std::fprintf(stderr, "left: %s\n", path.c_str());
+    CHECK(left.empty());
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc > 1) g_runtime_dir = argv[1];
   PrepareAndKeepLeaveOpenModes();
   RepairHealsAnOpenedBottleFirst();
+  RemovePlaydenLeavesOnlyKeptSaves(true);
+  RemovePlaydenLeavesOnlyKeptSaves(false);
+  RemovePlaydenLeavesOnlyKeptSaves(true, true);
   std::puts("open_data_modes: ok");
   return 0;
 }

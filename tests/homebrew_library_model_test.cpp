@@ -5223,7 +5223,49 @@ void live_game_update() {
           "after the update, no button and Play again");
 }
 
+// Settings › About › Uninstall Playden (#868): a dangerous row; the dialog keeps saves unless asked, its focus starts on Cancel;
+// the request reaches the runtime once; the progress screen takes no input; the end screen quits to Home.
+void live_remove_playden() {
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    model.action("l1");
+    check(model.state().navigation.route == Route::Settings, "Settings opens");
+    const auto* row = find_row(model, "settings-remove-playden");
+    check(row && row->dangerous && row->section == "About" && row->title == "Uninstall Playden…", "Uninstall Playden is a dangerous row in About");
+    activate(model, "settings-remove-playden");
+    const auto& modal = model.state().navigation.modals.back();
+    check(modal.destructive && modal.title == "Uninstall Playden?", "it asks first");
+    check(modal.focused_action == 0 && modal.action_keys.front() == "cancel", "Cancel has the focus");
+    check(modal.body.find("saves are kept") != std::string::npos, "saves are kept by default");
+    const auto* toggle = find_row(model, "remove-playden-delete-saves");
+    check(toggle && toggle->kind == RowKind::Toggle && !toggle->selected, "deleting saves is a choice, off by default");
+    activate(model, "remove-playden-delete-saves");
+    check(model.state().navigation.modals.back().body.find("saves on this console are deleted") != std::string::npos,
+          "the dialog says the saves go when the choice is on");
+    activate(model, "cancel");
+    check(model.state().navigation.modals.empty() && !model.TakePlaydenRemovalRequest(), "Cancel asks for nothing");
+    activate(model, "settings-remove-playden");
+    activate(model, "remove-playden-confirm");
+    const auto request = model.TakePlaydenRemovalRequest();
+    check(request && *request && !model.TakePlaydenRemovalRequest(), "the request (keep saves) is taken once");
+    check(model.state().removing_playden && model.view().title == "Uninstalling Playden…", "the progress screen shows");
+    check(!model.action("circle") || model.state().removing_playden, "it can't be left while it runs");
+    check(!model.state().quit_requested, "nor quit");
+    // A game still running stops it before anything goes: back to Settings with the reason.
+    model.UpdatePlaydenRemoval(false, "Close every game first.");
+    check(!model.state().removing_playden && model.state().navigation.route == Route::Settings, "back to Settings");
+    // Done: the end screen, and Cross quits to Home.
+    model.UpdatePlaydenRemoval(true, {});
+    model.ShowPlaydenRemoved(true, {"Kept: saves in /data/playden/games/steam-220.kept"});
+    check(model.view().title == "Playden is uninstalled" &&
+              model.view().subtitle.find("Delete the Playden tile from the Home screen") != std::string::npos,
+          "the end screen says how to finish");
+    check(find_row(model, "removed-note-0") != nullptr, "it says what was kept");
+    check(model.action("cross") && model.state().quit_requested, "Cross quits to Home");
+}
+
 int main() {
+    live_remove_playden();
     live_filters_sheet_sections();
     live_game_menus_regrouped();
     live_game_update();

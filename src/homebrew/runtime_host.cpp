@@ -17,6 +17,7 @@
 #include "runtime/community_rules.h"
 #include "runtime/kit_version.h"
 #include "runtime/private_directories.h"
+#include "runtime/playden_removal.h"
 #include "runtime/recipe_choice.h"
 #include "runtime/prospero_profile.h"
 #include "runtime/settings_publication_journal.h"
@@ -728,6 +729,16 @@ void RuntimeHost::Remove(std::uint32_t app_id, bool delete_saves) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopping_) return;
     remove_requests_.push_back({app_id, delete_saves, std::nullopt, ++next_work_order_});
+  }
+  wake_.notify_all();
+}
+
+void RuntimeHost::RemovePlayden(bool keep_saves) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    playden_removal_request_ = keep_saves;
+    snapshot_.playden_removal.reset();
   }
   wake_.notify_all();
 }
@@ -5814,7 +5825,7 @@ void RuntimeHost::ResumeLeftoverDeletes(Composition& c) {
     const auto directory = platform::ManagedDirectory::Open(config_.state_root, platform::DirectoryPolicy::kOpenTree);
     struct stat journal_info{};
     if (!directory || !directory->InspectChild(entry_name, &journal_info) || !S_ISREG(journal_info.st_mode) ||
-        journal_info.st_uid != geteuid() || ((journal_info.st_mode & 07777) != 0600 && (journal_info.st_mode & 07777) != 0666)) {
+        journal_info.st_uid != geteuid()) {
       Log("leftover removal journal permissions invalid title=" + id); continue;
     }
     const auto bytes = c.storage.ReadDurable(entry_name, 8192);
@@ -5919,6 +5930,70 @@ void RuntimeHost::OpenKeptBottle(const std::filesystem::path& folder, const std:
   if (!opened.ok || opened.skipped || opened.truncated)
     Log("kept bottle not fully opened path=" + folder.string() + " changed=" + std::to_string(opened.changed) +
         " skipped=" + std::to_string(opened.skipped) + " truncated=" + std::to_string(opened.truncated));
+}
+
+PlaydenRemovalOutcome RuntimeHost::RunRemovePlayden(Composition& c, bool keep_saves) {
+  PlaydenRemovalOutcome outcome;
+  const auto paths = rt::ConsoleRemovalPaths(config_.host_namespace_prefix);
+  const auto stop = [&](std::string message) {
+    Log("playden removal stopped: " + message);
+    outcome.message = std::move(message);
+    PublishInstalls(c);
+    PublishKeptBottles(c);
+    PublishLeftoverTitles(c);
+    return outcome;
+  };
+  // Nothing of a game may run: its title is removed, and Wine holds its bottle.
+  if (c.launch_journal) {
+    const auto pending = c.launch_journal->LoadPending();
+    if (!pending.ok) return stop("The launch record cannot be read. Restart Playden and try again.");
+    if (pending.session) return stop("Close the game first. A game started from Playden may still be running or suspended.");
+  }
+  const auto records = c.repository.Snapshot();
+  for (const auto& record : records)
+    if (c.coordinator->Activity(record.title_id) != rt::NativeActivity::kStopped)
+      return stop("Close every game first: " + record.title_id + " is running or suspended.");
+  // A drive that isn't there keeps its playden folder: the player is told which.
+  std::set<std::string> disconnected;
+  for (const auto& record : records) {
+    const auto path = std::filesystem::path(record.install_path);
+    auto it = path.begin();
+    if (path.is_absolute() && ++it != path.end() && *it == "mnt" && ++it != path.end()) {
+      const auto mount = std::filesystem::path("/mnt") / *it;
+      struct stat info{};
+      if (lstat(HostPath(mount.string()).c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) disconnected.insert(mount.string());
+    }
+  }
+  outcome.disconnected.assign(disconnected.begin(), disconnected.end());
+  Log("playden removal starts games=" + std::to_string(records.size()) + " keep_saves=" + std::to_string(keep_saves) +
+      " disconnected=" + std::to_string(disconnected.size()));
+  if (!rt::SaveRemovalJournal(paths.data_root, {rt::RemovalStep::kTitles, keep_saves}))
+    return stop("Playden could not record that it is being removed (" + std::string(std::strerror(errno)) + ").");
+  // 1. Every game's PS5 title, as Uninstall does (its bottle kept as <id>.kept with keep_saves).
+  for (const auto& record : records) {
+    Publish([&](RuntimeSnapshot& s) { s.removing_app = record.runtime_number; });
+    const auto refusal = RunRemove(c, record.runtime_number, !keep_saves);
+    Publish([](RuntimeSnapshot& s) { s.removing_app.reset(); });
+    if (!refusal.empty()) return stop("A game's PS5 title could not be removed (" + record.title_id + "): " + refusal);
+  }
+  // 2. Titles of Playden's with no game record left (an interrupted uninstall, an older version).
+  PublishLeftoverTitles(c);
+  for (const auto& title : Snapshot().leftover_titles) {
+    const auto refusal = RunDeleteLeftover(c, LeftoverDelete{title, {}, "retire"});
+    if (!refusal.empty()) return stop("A leftover PS5 title could not be removed (" + title.title_id + "): " + refusal);
+  }
+  // 3. No title left to allow (the list itself goes with Playden's files).
+  if (const auto refused = SyncTitleAllowList(c); !refused.empty()) Log("playden removal allow-list: " + refused);
+  if (!rt::SaveRemovalJournal(paths.data_root, {rt::RemovalStep::kFiles, keep_saves}))
+    return stop("Playden could not record that its PS5 titles are gone.");
+  Log("playden removal titles done; removing files");
+  // 4. The files. Nothing is logged after this: the log folder is gone.
+  const auto removed = rt::RemovePlaydenFiles(paths, keep_saves, config_.as_root, {});
+  outcome.complete = removed.complete;
+  outcome.kept = removed.kept;
+  outcome.failed = removed.failed;
+  if (!removed.complete) outcome.message = "Some of Playden's files could not be removed.";
+  return outcome;
 }
 
 void RuntimeHost::KeepUnrecordedBottles(Composition& c) {
@@ -6565,6 +6640,10 @@ bool RuntimeHost::RunServices() {
         std::lock_guard<std::mutex> lock(mutex_);
         drive_updates_pending_ = drive_updates > 0;
         drive_update_not_before_ = {};
+        // Uninstall Playden stopped while removing PS5 titles (the console went off): it goes on now.
+        if (const auto journal = rt::LoadRemovalJournal(rt::ConsoleRemovalPaths(config_.host_namespace_prefix).data_root);
+            journal && journal->step == rt::RemovalStep::kTitles && !playden_removal_request_)
+          playden_removal_request_ = journal->keep_saves;
       }
       Publish([&](RuntimeSnapshot& s) {
         s.status = RuntimeHostStatus::kReady; s.reason.clear();
@@ -6598,6 +6677,7 @@ bool RuntimeHost::RunServices() {
     std::vector<PlayRequest> plays;
     std::vector<RemovalRequest> removals;
     std::vector<std::uint32_t> kept_deletes;
+    std::optional<bool> remove_playden;  // keep_saves
     std::vector<std::pair<std::uint32_t, RuntimeMaintenance>> maintenance;
     std::vector<std::pair<std::uint32_t, std::string>> scans;
     bool poll = false;
@@ -6623,6 +6703,7 @@ bool RuntimeHost::RunServices() {
                steam_account_changed_ ||
                (!remove_requests_.empty() && !snapshot_.handoff_ready) ||
                (!kept_delete_requests_.empty() && !snapshot_.handoff_ready) ||
+               (playden_removal_request_ && !snapshot_.handoff_ready) ||
                !scan_requests_.empty() || !prepared_dismissals_.empty() || prepared_clear_requested_ ||
                (!maintenance_requests_.empty() && !snapshot_.handoff_ready) ||
                (!home_handoff_requests_.empty() && !snapshot_.handoff_ready) ||
@@ -6661,6 +6742,10 @@ bool RuntimeHost::RunServices() {
         remove_requests_.erase(remove_requests_.begin());
       }
       if (!snapshot_.handoff_ready) kept_deletes.swap(kept_delete_requests_);
+      if (!snapshot_.handoff_ready && playden_removal_request_) {
+        remove_playden = playden_removal_request_;
+        playden_removal_request_.reset();
+      }
       scans.swap(scan_requests_);
       // Maintenance changes the bottle and install record, like removal.
       if (!snapshot_.handoff_ready) maintenance.swap(maintenance_requests_);
@@ -6822,6 +6907,18 @@ bool RuntimeHost::RunServices() {
         if (refusal.empty()) s.removal_failures.erase(app);
         else s.removal_failures[app] = refusal;
         ++s.removals_handled;
+      });
+    }
+    if (remove_playden) {
+      Publish([](RuntimeSnapshot& s) { s.removing_playden = true; s.playden_removal.reset(); });
+      PlaydenRemovalOutcome outcome;
+      if (composition) outcome = RunRemovePlayden(*composition, *remove_playden);
+      else outcome.message = Snapshot().reason.empty() ? "The runtime services are unavailable." : Snapshot().reason;
+      ClearWork();
+      Publish([&](RuntimeSnapshot& s) {
+        s.removing_playden = false;
+        s.playden_removal = outcome;
+        ++s.playden_removals_handled;
       });
     }
     for (const auto app : kept_deletes) {

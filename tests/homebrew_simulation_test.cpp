@@ -3890,7 +3890,7 @@ constexpr const char* kSettingsKeys =
     "settings-share-as settings-account-link settings-sharing-reset settings-storage settings-installed settings-kept "
     "settings-runtime settings-content-language settings-downloads-slow settings-download-server settings-motion "
     "settings-beta-updates settings-update settings-game-updates settings-web-access settings-web-browsers settings-about "
-    "settings-logs settings-reset settings-quit ";
+    "settings-logs settings-reset settings-remove-playden settings-quit ";
 
 void line_off_views_unchanged() {
     for (const bool with_gog : {false, true}) {

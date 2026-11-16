@@ -8018,7 +8018,10 @@ void LeftoverRemovalRecoversRetireWriteGap(int scenario) {
     fs::rename(retired, config.state_root / "protected-original");
     Write(retired / "replacement", "another-title", 0644);
   } else if (scenario == 2) {
-    CHECK(chmod((config.state_root / "leftover-FAKE78001.json").c_str(), 0644) == 0);
+    // A journal that is a link (any mode of Playden's own is read, #868) is never followed.
+    const auto journal = config.state_root / "leftover-FAKE78001.json";
+    fs::rename(journal, config.state_root / "elsewhere.json");
+    fs::create_symlink(config.state_root / "elsewhere.json", journal);
   }
   unsigned calls = 0;
   config.unregister_title = [&fixture, &calls](const std::string&, const std::string&) {
