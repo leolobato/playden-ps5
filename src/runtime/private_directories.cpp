@@ -188,6 +188,9 @@ bool ShareFolder(int fd, const fs::path& path, int depth, Walk& walk) {
     if (name == "." || name == "..") continue;
     if (++walk.entries > kSharedTreeEntries) { result->truncated = true; break; }
     if (entry->d_type == DT_LNK) continue;
+    if (entry->d_type == DT_REG && walk.options.visit_file &&
+        !walk.options.visit_file((path / name).lexically_relative(walk.root)))
+      continue;
     if (walk.options.before_open) walk.options.before_open(path / name);
     // O_NOFOLLOW: a link swapped in is refused, never followed.
     const int child = platform::OpenWalkChild(fd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC,
@@ -208,7 +211,8 @@ bool ShareFolder(int fd, const fs::path& path, int depth, Walk& walk) {
     // A file with another link is someone else's too (a private file linked in): left alone.
     if (S_ISREG(opened.st_mode) && opened.st_nlink != 1) {
       ++result->linked;
-    } else if (S_ISREG(opened.st_mode) && opened.st_uid == ::geteuid()) {
+    } else if (S_ISREG(opened.st_mode) && opened.st_uid == ::geteuid() &&
+               !(walk.options.keep_file && walk.options.keep_file((path / name).lexically_relative(walk.root)))) {
       const mode_t wanted = IsPrivateProfilePath((path / name).lexically_relative(walk.root), walk.options.private_paths)
                                 ? 0600 : 0666 | (opened.st_mode & 0111);
       if ((opened.st_mode & 07777) != wanted) {

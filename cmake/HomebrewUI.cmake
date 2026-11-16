@@ -471,12 +471,14 @@ if(BUILD_TESTING)
         "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
     target_compile_features(runtime_self_heal_test PRIVATE cxx_std_20)
     target_include_directories(runtime_self_heal_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
-    target_link_libraries(runtime_self_heal_test PRIVATE playden_steam_protocol)
+    target_link_libraries(runtime_self_heal_test PRIVATE playden_steam_protocol playden_runtime_private_directories)
     add_test(NAME runtime_self_heal COMMAND runtime_self_heal_test)
     add_executable(runtime_self_heal_native_policy_test
         "${CMAKE_SOURCE_DIR}/tests/runtime_self_heal_test.cpp"
         "${CMAKE_SOURCE_DIR}/tests/directory_gateway_host.cpp"
-        "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp")
+        "${CMAKE_SOURCE_DIR}/src/runtime/self_heal.cpp"
+        "${CMAKE_SOURCE_DIR}/src/runtime/private_directories.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/managed_directory.cpp")
     target_compile_features(runtime_self_heal_native_policy_test PRIVATE cxx_std_20)
     target_include_directories(runtime_self_heal_native_policy_test PRIVATE "${CMAKE_SOURCE_DIR}/src")
     target_link_libraries(runtime_self_heal_native_policy_test PRIVATE playden_steam_protocol)

@@ -38,72 +38,110 @@ int main() {
   const auto log = [&lines](const std::string& line) { lines.push_back(line); };
 
   // Nothing there yet (a first start): nothing to do, nothing failed.
-  auto result = TightenPrivateModes(root / "data/playden", log);
-  CHECK(result.tightened == 0 && result.failed == 0 && lines.empty());
-
-  // What a recursive chmod 777 over FTP leaves behind.
   const auto data = root / "data/playden";
+  const auto homebrew = root / "data/homebrew";
+  auto opened = OpenPlaydenModes(data, homebrew, log);
+  CHECK(opened.walked == 0 && opened.opened == 0 && lines.empty());
+
+  // What Playden 0.11 left: owner-only state, settings, art and titles. FTP (root, no permission bypass on
+  // /data) could delete none of it (#868).
   const auto state = data / "runtime-state";
   Folder(data, 0777);
-  Folder(state, 0777);
-  File(state / "layout-0.6.json", 0777);
-  File(state / "installs.json", 0777);
-  File(state / "legacy.json", 0644);
+  Folder(state, 0700);
+  File(state / "installs.json", 0600);
   File(state / "read-only", 0400);
-  Folder(state / "requests", 0777);
-  File(state / "requests/settings-request-1.v1", 0777);
-  Folder(state / "trash", 0777);
-  Folder(state / "trash/FAKE00001-op", 0755);
-  File(state / "trash/FAKE00001-op/eboot.bin", 0755);
-  Folder(state / "unknown", 0777);
-  File(state / "unknown/file", 0777);
-  Folder(data / "user", 0777);
-  File(data / "user/session.v1", 0777);
-  File(data / "user/library-1.cache", 0666);  // an ordinary cache, written 0666
-  Folder(data / "user/game-settings-private", 0777);
-  File(data / "user/game-settings-private/game-settings.json", 0777);
-  // GOG's sign-in and its saved products.
-  Folder(data / "user/gog", 0777);
-  File(data / "user/gog/session", 0777);
-  Folder(data / "user/gog/products", 0777);
-  File(data / "user/gog/products/1207658924", 0777);
-  Folder(data / "art", 0777);
-  File(data / "art/cover.png", 0777);
-  Folder(data / "logs", 0777);
-  File(data / "logs/playden.log", 0777);
-  // A link in a private folder is never followed; a file with another link is left alone.
-  File(root / "outside", 0777);
+  Folder(state / "requests", 0700);
+  File(state / "requests/settings-request-1.v1", 0600);
+  Folder(state / "trash/FAKE78009-op", 0755);
+  File(state / "trash/FAKE78009-op/eboot.bin", 0755);
+  Folder(data / "user", 01777);
+  File(data / "user/session.v1", 0600);
+  File(data / "user/steam-device-id", 0600);
+  File(data / "user/organization.v2", 0600);
+  Folder(data / "user/game-settings-private", 0700);
+  File(data / "user/game-settings-private/game-settings.json", 0600);
+  Folder(data / "user/gog/products", 0700);
+  CHECK(chmod((data / "user/gog").c_str(), 0700) == 0);
+  File(data / "user/gog/session", 0600);
+  File(data / "user/gog/products/1207658924", 0600);
+  Folder(data / "art", 0700);
+  File(data / "art/cover.png", 0600);
+  Folder(data / "title-remover", 0755);
+  File(data / "title-remover/request", 0644);
+  Folder(data / "staging/title-steam-220", 0700);
+  Folder(data / "staging/bottle-steam-220", 0700);
+  Folder(data / "games/steam-220/library", 0700);
+  CHECK(chmod((data / "games").c_str(), 0700) == 0);
+  CHECK(chmod((data / "staging").c_str(), 0755) == 0);
+  CHECK(chmod((data / "games/steam-220").c_str(), 0700) == 0);
+  Folder(data / "games/steam-10.kept/library/prefixes/game/drive_c/users/prospero/AppData/Local/Steam", 0700);
+  File(data / "games/steam-10.kept/library/prefixes/game/drive_c/users/prospero/AppData/Local/Steam/local.vdf", 0600);
+  CHECK(chmod((data / "games/steam-10.kept").c_str(), 0700) == 0);
+  Folder(data / "games/steam-10.saves/1760000000", 0700);
+  CHECK(chmod((data / "games/steam-10.saves").c_str(), 0700) == 0);
+  // Playden's title (its owner marker) and another app's folder.
+  Folder(homebrew / "FAKE78001/sce_sys", 0755);
+  CHECK(chmod((homebrew / "FAKE78001").c_str(), 0755) == 0);
+  File(homebrew / "FAKE78001/.playden-title-owner", 0600);
+  File(homebrew / "FAKE78001/game-launch.json", 0600);
+  File(homebrew / "FAKE78001/eboot.bin", 0755);
+  Folder(homebrew / "FAKE78002", 0755);
+  Folder(homebrew / "OTHER0001", 0700);
+  // A link is never followed; a file with another link is left alone.
+  File(root / "outside", 0600);
   fs::create_symlink(root / "outside", state / "link");
-  File(root / "shared", 0777);
+  File(root / "shared", 0600);
   fs::create_hard_link(root / "shared", state / "hard");
 
-  result = TightenPrivateModes(data, log);
-  CHECK(Mode(state) == 0700);
-  CHECK(Mode(state / "layout-0.6.json") == 0600 && Mode(state / "installs.json") == 0600);
-  CHECK(Mode(state / "legacy.json") == 0600);
-  CHECK(Mode(state / "read-only") == 0400);  // never given bits it lacked
-  CHECK(Mode(state / "requests") == 0700 && Mode(state / "requests/settings-request-1.v1") == 0600);
-  CHECK(Mode(state / "trash") == 0700);
-  CHECK(Mode(state / "trash/FAKE00001-op") == 0755 && Mode(state / "trash/FAKE00001-op/eboot.bin") == 0755);
-  CHECK(Mode(state / "unknown") == 0777 && Mode(state / "unknown/file") == 0777);
-  CHECK(Mode(data / "user") == 0777);  // shared
-  CHECK(Mode(data / "user/session.v1") == 0600 && Mode(data / "user/library-1.cache") == 0666);
-  CHECK(Mode(data / "user/game-settings-private") == 0700);
-  CHECK(Mode(data / "user/game-settings-private/game-settings.json") == 0600);
-  CHECK(Mode(data / "user/gog") == 0700 && Mode(data / "user/gog/session") == 0600);
-  CHECK(Mode(data / "user/gog/products") == 0700 && Mode(data / "user/gog/products/1207658924") == 0600);
-  CHECK(Mode(data / "art") == 0700 && Mode(data / "art/cover.png") == 0777);
-  CHECK(Mode(data / "logs") == 0777 && Mode(data / "logs/playden.log") == 0777);
-  CHECK(Mode(root / "outside") == 0777 && Mode(root / "shared") == 0777);
-  CHECK(result.tightened == 15);
-  CHECK(result.foreign == 1 && result.failed == 0);
-  CHECK(lines.size() == 16);
+  opened = OpenPlaydenModes(data, homebrew, log);
+  CHECK(opened.skipped == 0 && !opened.truncated);
+  CHECK(Mode(state) == 0777 && Mode(state / "installs.json") == 0666);
+  CHECK(Mode(state / "read-only") == 0666);  // only ever given bits
+  CHECK(Mode(state / "requests") == 0777 && Mode(state / "requests/settings-request-1.v1") == 0666);
+  CHECK(Mode(state / "trash/FAKE78009-op") == 0777 && Mode(state / "trash/FAKE78009-op/eboot.bin") == 0777);
+  CHECK(Mode(data / "user") == 0777 && Mode(data / "user/organization.v2") == 0666);
+  // Secrets stay owner-only; their folders open, so FTP can still delete them.
+  CHECK(Mode(data / "user/session.v1") == 0600 && Mode(data / "user/steam-device-id") == 0600);
+  CHECK(Mode(data / "user/gog") == 0777 && Mode(data / "user/gog/session") == 0600);
+  CHECK(Mode(data / "user/gog/products") == 0777 && Mode(data / "user/gog/products/1207658924") == 0666);
+  CHECK(Mode(data / "user/game-settings-private") == 0777);
+  CHECK(Mode(data / "user/game-settings-private/game-settings.json") == 0666);
+  CHECK(Mode(data / "art") == 0777 && Mode(data / "art/cover.png") == 0666);
+  CHECK(Mode(data / "title-remover") == 0777 && Mode(data / "title-remover/request") == 0666);
+  CHECK(Mode(data / "staging/title-steam-220") == 0777);
+  // The folders directly in /data/playden open (folder only), so FTP reaches the kept bottles in games/.
+  CHECK(Mode(data / "games") == 0777 && Mode(data / "staging") == 0777);
+  // A live bottle and its staging stay as the title shell wants them.
+  CHECK(Mode(data / "staging/bottle-steam-220") == 0700);
+  CHECK(Mode(data / "games/steam-220") == 0700 && Mode(data / "games/steam-220/library") == 0700);
+  // Bottles no title uses open whole.
+  CHECK(Mode(data / "games/steam-10.kept") == 0777 && Mode(data / "games/steam-10.saves/1760000000") == 0777);
+  CHECK(Mode(data / "games/steam-10.kept/library/prefixes/game/drive_c/users/prospero/AppData/Local/Steam") == 0777);
+  CHECK(Mode(data / "games/steam-10.kept/library/prefixes/game/drive_c/users/prospero/AppData/Local/Steam/local.vdf") ==
+        0600);
+  // Playden's title opens, but game-launch.json stays 0600 (the title shell wants it so). Others are left.
+  CHECK(Mode(homebrew / "FAKE78001") == 0777 && Mode(homebrew / "FAKE78001/sce_sys") == 0777);
+  // Its runtime files keep their kit modes (folders alone decide what FTP can delete): only the markers change.
+  CHECK(Mode(homebrew / "FAKE78001/.playden-title-owner") == 0666 && Mode(homebrew / "FAKE78001/eboot.bin") == 0755);
+  CHECK(Mode(homebrew / "FAKE78001/game-launch.json") == 0600);
+  CHECK(Mode(homebrew / "FAKE78002") == 0755 && Mode(homebrew / "OTHER0001") == 0700);
+  CHECK(Mode(root / "outside") == 0600 && Mode(root / "shared") == 0600);
+  CHECK(fs::exists(state / "open-modes.v1") && Mode(state / "open-modes.v1") == 0666);
+  CHECK(lines.size() == 1 && lines[0].find("self-heal open roots=") == 0 && lines[0].find(" first=1") != std::string::npos);
 
-  // A second start finds nothing to change and says nothing.
+  // A second start finds every root open: nothing is walked, nothing logged.
   lines.clear();
-  result = TightenPrivateModes(data, log);
-  CHECK(result.tightened == 0 && result.failed == 0 && result.foreign == 1 && lines.size() == 1);
+  opened = OpenPlaydenModes(data, homebrew, log);
+  CHECK(opened.walked == 0 && lines.empty());
+  // An older Playden tightened the state again (a downgrade and back): only that root is walked.
+  CHECK(chmod(state.c_str(), 0700) == 0 && chmod((state / "installs.json").c_str(), 0600) == 0);
+  CHECK(chmod((data / "art/cover.png").c_str(), 0600) == 0);  // under an open root: left until a full pass
+  opened = OpenPlaydenModes(data, homebrew, log);
+  CHECK(opened.walked == 1 && Mode(state) == 0777 && Mode(state / "installs.json") == 0666);
+  CHECK(Mode(data / "art/cover.png") == 0600);
+  CHECK(chmod((data / "art/cover.png").c_str(), 0666) == 0);
 
+  SelfHealResult result;
   // A bottle after a recursive 777: the title's private folders and files go back, drive_c stays.
   const auto bottle = data / "games/steam-274520";
   CHECK(!BottleTooOpen(bottle));  // missing
@@ -148,6 +186,7 @@ int main() {
   CHECK(result.tightened == 0 && Mode(bottle) == 0711 && Mode(bottle / "library") == 0711);
 
   // The kit: extra bits go, missing bits are not added, links are not followed.
+  CHECK(chmod((root / "outside").c_str(), 0777) == 0);
   const auto kit = data / "kits/playden-kit";
   Folder(kit / "bin", 0777);
   Folder(kit / "lib", 0777);

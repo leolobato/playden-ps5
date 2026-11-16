@@ -2,6 +2,8 @@
 #include "runtime/self_heal.h"
 #include "platform/directory_walk.h"
 #include "steam/backend/json.h"
+#include "platform/data_roots.h"
+#include "runtime/private_directories.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -17,6 +19,7 @@ namespace playden::runtime {
 namespace fs = std::filesystem;
 namespace {
 using Log = std::function<void(const std::string&)>;
+constexpr char kOpenModesMarker[] = "open-modes.v1";
 
 std::string Octal(mode_t mode) {
   char text[8];
@@ -130,20 +133,118 @@ std::optional<std::string> ReadManifest(const fs::path& path, std::size_t max_by
 }
 }  // namespace
 
-SelfHealResult TightenPrivateModes(const fs::path& data_root, const Log& log) {
-  SelfHealResult result;
-  const auto state = data_root / "runtime-state";
-  TightenFolder(state, true, true, log, &result);
-  TightenFolder(state / "requests", true, true, log, &result);
-  // Retired title trees inside trash/ are 0755 on purpose: only the folder itself.
-  TightenFolder(state / "trash", true, false, log, &result);
-  // user/ is shared (01777); its private files hold the sign-in, beside ordinary 0666 caches.
-  TightenFolder(data_root / "user", false, true, log, &result, false, true);
-  TightenFolder(data_root / "user/game-settings-private", true, true, log, &result);
-  // GOG's sign-in (gog/session) and its saved products, each a private folder of 0600 files.
-  TightenFolder(data_root / "user/gog/products", true, true, log, &result);
-  TightenFolder(data_root / "user/gog", true, true, log, &result);
-  TightenFolder(data_root / "art", true, false, log, &result);
+OpenModesResult OpenPlaydenModes(const fs::path& data_root, const fs::path& homebrew_root, const Log& log) {
+  OpenModesResult result;
+  namespace roots = platform::data_roots;
+  const auto marker = data_root / roots::kState / kOpenModesMarker;
+  struct stat info{};
+  const bool first = ::lstat(marker.c_str(), &info) != 0;
+  std::vector<fs::path> walk, title_walk, titles;
+  const auto consider = [&](const fs::path& path, std::vector<fs::path>* into) {
+    struct stat seen{};
+    if (::lstat(path.c_str(), &seen) != 0 || !S_ISDIR(seen.st_mode) || seen.st_uid != ::geteuid()) return;
+    if (first || (seen.st_mode & 07777) != 0777) into->push_back(path);
+  };
+  for (const char* name : {roots::kState, roots::kUser, roots::kArt, roots::kTitleRemover, roots::kRedist})
+    consider(data_root / name, &walk);
+  const auto list = [](const fs::path& folder) {
+    std::vector<std::string> names;
+    DIR* listing = ::opendir(folder.c_str());
+    if (!listing) return names;
+    while (const auto* entry = ::readdir(listing)) {
+      const std::string name = entry->d_name;
+      if (name != "." && name != "..") names.push_back(name);
+    }
+    ::closedir(listing);
+    return names;
+  };
+  // The folders directly in data_root (games/, staging/, ...) open as folders only, every start (one lstat each):
+  // FTP can then reach what is in them, kept bottles and staging leftovers, without entering a live bottle.
+  for (const auto& name : list(data_root)) {
+    const auto path = data_root / name;
+    struct stat seen{};
+    if (::lstat(path.c_str(), &seen) != 0 || !S_ISDIR(seen.st_mode) || seen.st_uid != ::geteuid() ||
+        (seen.st_mode & 0777) == 0777)
+      continue;
+    const int fd = platform::OpenDirectoryWalk(path);
+    if (fd < 0) { ++result.skipped; continue; }
+    struct stat opened{};
+    if (::fstat(fd, &opened) == 0 && opened.st_dev == seen.st_dev && opened.st_ino == seen.st_ino &&
+        ::fchmod(fd, 0777) == 0)
+      ++result.opened;
+    else
+      ++result.skipped;
+    ::close(fd);
+  }
+  for (const auto& name : list(data_root / roots::kStaging))
+    if (name.rfind("title-", 0) == 0) consider(data_root / roots::kStaging / name, &walk);
+  for (const auto& name : list(data_root / roots::kGames)) {
+    const auto dot = name.find('.');
+    if (dot == std::string::npos) continue;  // a live bottle: its title shell wants it owner-only
+    const auto suffix = name.substr(dot);
+    if (suffix == ".kept" || suffix == ".saves" || suffix.rfind(".set-aside-", 0) == 0)
+      consider(data_root / roots::kGames / name, &walk);
+  }
+  // Playden's own titles only: another app's folder in /data/homebrew is never touched.
+  for (const auto& name : list(homebrew_root)) {
+    if (name.size() != 9 || name.rfind("FAKE78", 0) != 0) continue;
+    struct stat owner{};
+    const auto title_marker = homebrew_root / name / ".playden-title-owner";
+    if (::lstat(title_marker.c_str(), &owner) != 0 || !S_ISREG(owner.st_mode) || owner.st_uid != ::geteuid()) continue;
+    titles.push_back(homebrew_root / name);
+  }
+  SharedTreeOptions options;
+  options.private_paths = {};
+  // Launcher sign-ins (PrivateProfilePaths) in a bottle no title uses are secrets too, wherever its profile is.
+  options.keep_file = [](const fs::path& relative) {
+    const auto name = relative.filename().string();
+    if (roots::IsSecretFile(name) || name == "game-launch.json") return true;
+    const auto text = "/" + relative.generic_string();
+    for (const auto& profile : PrivateProfilePaths())
+      if (text.find("/users/prospero/" + profile.generic_string() + "/") != std::string::npos) return true;
+    return false;
+  };
+  for (const auto& title : titles) consider(title, &title_walk);
+  // A title's thousands of runtime files keep their kit modes: only its folders (what FTP needs to delete it) and
+  // its owner markers change, so the first start after an update isn't held up by every file.
+  auto title_options = options;
+  title_options.visit_file = [](const fs::path& relative) {
+    const auto name = relative.filename().string();
+    return name == ".playden-title-owner" || name == ".playden-stage-owner";
+  };
+  bool complete = true;
+  for (const auto& root : title_walk) {
+    const auto opened = OpenTreeToEveryone(root, title_options);
+    ++result.walked;
+    result.opened += opened.changed;
+    result.skipped += opened.skipped;
+    result.truncated = result.truncated || opened.truncated;
+    complete = complete && opened.ok && !opened.truncated;
+    if (!opened.ok) Note(log, "self-heal open failed path=" + root.string());
+  }
+  for (const auto& root : walk) {
+    const auto opened = OpenTreeToEveryone(root, options);
+    ++result.walked;
+    result.opened += opened.changed;
+    result.skipped += opened.skipped;
+    result.truncated = result.truncated || opened.truncated;
+    complete = complete && opened.ok && !opened.truncated;
+    if (!opened.ok) Note(log, "self-heal open failed path=" + root.string());
+  }
+  // Recorded once every root was walked whole: until then each start walks them all again.
+  if (first && complete && ::lstat((data_root / roots::kState).c_str(), &info) == 0) {
+    const int fd = ::open(marker.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0666);
+    if (fd >= 0) {
+      (void)::fchmod(fd, 0666);
+      const bool written = ::write(fd, "1\n", 2) == 2;
+      ::close(fd);
+      if (!written) ::unlink(marker.c_str());
+    }
+  }
+  if (result.walked || result.opened)
+    Note(log, "self-heal open roots=" + std::to_string(result.walked) + " opened=" + std::to_string(result.opened) +
+                  " skipped=" + std::to_string(result.skipped) + (result.truncated ? " truncated=1" : "") +
+                  (first ? " first=1" : ""));
   return result;
 }
 

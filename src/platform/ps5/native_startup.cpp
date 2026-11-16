@@ -178,9 +178,9 @@ NativeAccessResult PrepareNativeStartup(const std::string& title_id) {
     namespace fs = std::filesystem;
     const fs::path data_root = result.paths.runtime_data_root;
     const auto layout_log = [&layout_lines](const std::string& line) { layout_lines.push_back(line); };
-    // A recursive chmod over FTP leaves the private state and the kit too open to be accepted:
-    // given back their modes before anything reads them.
-    runtime::TightenPrivateModes(data_root, layout_log);
+    // Playden's own data is open so the console owner can delete it over FTP (#868): what an older
+    // Playden left owner-only is opened before anything reads it. The kit keeps its manifest modes.
+    runtime::OpenPlaydenModes(data_root, "/data/homebrew", layout_log);
     runtime::TightenKitModes(runtime::kDevelopmentKitRoot, WithRoot, layout_log);
     // The app folder's empty stubs, before the move writes MOVED.txt into them. A failure is only
     // logged: the move takes a missing one.

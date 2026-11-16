@@ -116,11 +116,53 @@ void PrepareAndKeepLeaveOpenModes() {
   CHECK(stat(steam.c_str(), &info) == 0 && (info.st_mode & 0777) == 0777);
   host.Shutdown();
 }
+
+// #568: a recursive chmod over FTP opens a live bottle, which the title shell refuses. Repair gives the
+// bottle its modes back first, instead of failing on it ("the bottle is not this install's private directory").
+void RepairHealsAnOpenedBottleFirst() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  config.admit_kit = [kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  config.uuid = []() -> std::optional<std::string> { return std::string("00000000-0000-4000-8000-000000000001"); };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0666);
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  CHECK(WaitFor(host, Started).kit_available);
+  host.Prepare(Hl2());
+  const auto ready = WaitFor(host, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && s.installs[0].state == PreparationState::kReady;
+  }, 60);
+  CHECK(ready.installs[0].state == PreparationState::kReady);
+  const auto bottle = fixture.root / "data/playden/games/steam-220";
+  for (const auto* folder : {"", "library", "library/prefixes", "library/prefixes/game", "library/profiles",
+                             "library/input", ".playden-control"})
+    CHECK(chmod((bottle / folder).c_str(), 0777) == 0);
+  const auto before = host.Snapshot().maintenance_handled;
+  host.Maintain(220, RuntimeMaintenance::kRepair);
+  const auto repaired = WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  if (!repaired.maintenance.at(220).ok) std::fprintf(stderr, "Repair: %s\n", repaired.maintenance.at(220).message.c_str());
+  CHECK(repaired.maintenance.at(220).ok);
+  struct stat info{};
+  CHECK(stat(bottle.c_str(), &info) == 0 && (info.st_mode & 0777) == 0700);
+  CHECK(stat((bottle / ".playden-control").c_str(), &info) == 0 && (info.st_mode & 0777) == 0700);
+  host.Shutdown();
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc > 1) g_runtime_dir = argv[1];
   PrepareAndKeepLeaveOpenModes();
+  RepairHealsAnOpenedBottleFirst();
   std::puts("open_data_modes: ok");
   return 0;
 }

@@ -70,6 +70,12 @@ struct SharedTreeOptions {
   // Folders on private_paths are 0777 too (their files stay 0600): FTP can delete a sign-in without
   // reading it (#868). Off: they are 0700, as a live bottle's open profile keeps them.
   bool open_private_folders = false;
+  // Files left exactly as they are (relative to the walked root), whatever private_paths says: a secret whose
+  // mode only Playden sets, or a title's game-launch.json, which the title shell wants 0600.
+  std::function<bool(const std::filesystem::path&)> keep_file;
+  // When set, a regular file (as the listing says) is opened and changed only when this says so (relative to the
+  // walked root): folders alone decide what FTP can delete, so a tree of many files is walked by its folders.
+  std::function<bool(const std::filesystem::path&)> visit_file;
   std::function<void(const std::filesystem::path&)> before_open;
 };
 SharedTreeResult OpenTreeToEveryone(const std::filesystem::path& root, const SharedTreeOptions& options = {});

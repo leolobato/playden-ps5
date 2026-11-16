@@ -3759,6 +3759,9 @@ void RuntimeHost::RunPlay(Composition& c, std::uint32_t app_id, const std::strin
                record->state == rt::PreparationState::kReady &&
                c.coordinator->Activity(record->title_id) == rt::NativeActivity::kStopped;
       }
+      // A bottle opened over FTP is given its modes back before the settings below read it (#568): the
+      // launch preflight heals it too, but only after them.
+      if (idle) HealBottle(c, record->data_root, record->title_id);
       std::string settings;
       if (!setup_program.empty()) {
         // Another program for one run: its profile is published now, so nothing of the game may be running.
@@ -5396,6 +5399,8 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
     if (action == RuntimeMaintenance::kApplySettings) return "Changes apply the next time Playden starts the game.";
     return refused;
   }
+  // The game is stopped: a bottle opened over FTP gets its modes back before anything reads it (#568).
+  HealBottle(c, record->data_root, record->title_id);
   switch (action) {
     case RuntimeMaintenance::kApplySettings: {
       bool published = false;
