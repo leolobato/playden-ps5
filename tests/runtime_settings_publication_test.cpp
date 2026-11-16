@@ -1245,6 +1245,17 @@ int main() {
     request.install = ready; request.plan = t.operation.plan; request.registry_unix_time = 1760000000;
     CHECK(request.plan.settings_revision == ready.settings_revision);
     SettingsPublicationOwner capable(records, package, native, true, t.root);
+    {
+      // A profile the writer emitted but the profile parser rejects is refused before any OWNER check,
+      // and the refusal names why it is invalid instead of blaming the install record. Guards against a
+      // settings publish failing opaquely when the writer and the profile parser disagree.
+      auto invalid = request; invalid.plan.profile_bytes += "[unsupported]\nkey = value\n";
+      const auto refused = capable.Request(invalid, requests);
+      CHECK(refused.state == PackageActionState::kFailed);
+      CHECK(refused.code == "publication-request-invalid");
+      CHECK(refused.message == "Requested profile is unsupported or has mismatched identities.");
+      CHECK(!repository.Find(ready.install_id)->journal && fs::is_empty(requests));
+    }
     publish(*unowned_bytes);
     CHECK(PublishedGameRootUnowned(ready, t.root) == std::optional<bool>(true));
     CHECK(capable.Request(request, requests).code == "publication-request-owner");

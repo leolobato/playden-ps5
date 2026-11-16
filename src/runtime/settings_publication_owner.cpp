@@ -76,10 +76,17 @@ SettingsPublicationOwner::SettingsPublicationOwner(InstallRecordStore& records, 
 PackageActionResult SettingsPublicationOwner::Request(const SettingsPublicationRequest& request,
     const std::filesystem::path& directory) {
   std::string reason; auto expected = EncodeSettingsPublicationRequest(request, &reason);
+  // A request the writer produced that the profile parser or the field bounds reject is not an
+  // OWNER-state disagreement: report why it is invalid, so a profile Playden rendered but then cannot
+  // validate (a key a newer writer emits that this build's parser does not know, a mismatched identity,
+  // an oversized field) is diagnosable instead of hidden behind the install-record message.
+  if (!expected)
+    return {PackageActionState::kFailed, "publication-request-invalid",
+            reason.empty() ? std::string("The settings request is not valid.") : reason};
   auto current = records_.Find(request.install.install_id);
   const bool update = current && current->state == PreparationState::kReady;
   const bool armed = current && current->journal && current->journal->operation == "settings-request";
-  if (!expected || !current || !SameRuntimeInstallIdentity(*current, request.install) ||
+  if (!current || !SameRuntimeInstallIdentity(*current, request.install) ||
       (update ? !UpdateRevisionAllowed(*current, request.plan, unowned_game_roots_, host_namespace_prefix_) :
                 request.plan.settings_revision != current->settings_revision) ||
       (update ? !ReadyCaptureAllowed(*current, request.transaction_id) :
