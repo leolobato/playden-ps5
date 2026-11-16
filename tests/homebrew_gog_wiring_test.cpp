@@ -698,7 +698,6 @@ void InstalledGameWithDlcOffersManageDlc() {
            });
   });
   Choose(app, "details-more");
-  Choose(app, "game-maintenance");
   const auto* manage = FindRow(app.model, "manage-dlc");
   CHECK(manage && manage->enabled && manage->value == "0 of 1");
   Choose(app, "manage-dlc");

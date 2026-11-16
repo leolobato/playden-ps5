@@ -791,17 +791,14 @@ void live_manage_dlc() {
 
     check(model.action("details:43"), "details open");
     activate(model, "details-more");
-    activate(model, "game-maintenance");
     check(!has_row(model, "manage-dlc"), "without the install record there is no Manage DLC");
-    model.action("circle");
     model.action("circle");
     model.action("circle");
 
     check(model.action("details:42"), "details open");
     activate(model, "details-more");
-    activate(model, "game-maintenance");
     const auto* row = find_row(model, "manage-dlc");
-    check(row && row->enabled && row->value == "1 of 4", "Maintenance offers Manage DLC with what is installed");
+    check(row && row->enabled && row->value == "1 of 4", "Game actions offers Manage DLC with what is installed");
     activate(model, "manage-dlc");
     check(model.view().surface == "manage-dlc" && model.view().title == "Manage DLC", "the row opens the sheet");
     check(find_row(model, "heading-manage-dlc-installed") && find_row(model, "heading-manage-dlc-other"), "installed DLC comes first");
@@ -853,7 +850,6 @@ void live_manage_dlc() {
     const auto* note = find_row(model, "details-updating");
     check(note && note->title == "Changing DLC", "the game's page names the DLC change too");
     activate(model, "details-more");
-    activate(model, "game-maintenance");
     row = find_row(model, "manage-dlc");
     check(row && !row->enabled && row->subtitle == "Wait for its job in Queue to finish.", "one change at a time");
     model.action("circle");
@@ -880,7 +876,6 @@ void live_manage_dlc() {
         if (model.state().navigation.route == Route::Details) model.action("circle");
         check(model.action("details:42"), "details open");
         activate(model, "details-more");
-        activate(model, "game-maintenance");
         row = find_row(model, "manage-dlc");
         check(row && row->enabled, "Manage DLC stays without a Steam sign-in");
         activate(model, "manage-dlc");
@@ -4007,6 +4002,204 @@ void live_refused_preparation_offers_uninstall() {
     check(!has_row(model, "uninstall") && !has_row(model, "import-remove"), "nothing to remove without its files");
 }
 
+// Game actions, regrouped: the page's sheet holds the game's own rows (Manage DLC… and Move to… among them), then Start,
+// Library and Your rating under headings, and Uninstall… and Cancel below a divider. A tile's sheet (Home and Library,
+// the same) is the page's with rows left out, never reordered. Cancel download is the Queue's Cancel, from both.
+void live_game_menus_regrouped() {
+    using namespace playden::homebrew;
+    auto model = make_live();
+    model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
+    model.UpdateVolumes({{"internal", "Console storage", true, 800'000'000'000, 500'000'000'000},
+                         {"usb", "USB Drive", true, 1000'000'000'000, 100'000'000'000}}, "internal");
+    const auto local = playden::GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11");
+    check(model.UpdateLibrary({{game(SteamId(36), "Doom 3"), game(SteamId(37), "Failed"), game(SteamId(38), "Queued"),
+                                game(SteamId(39), "Moving"), game(SteamId(40), "Updating"), game(SteamId(41), "Update failed")},
+                               false, {}, false, false, {}}),
+          "menus: library loaded");
+    LibraryUpdate imported{{game(local, "Rally")}, false, {}, false, false, {}};
+    imported.source = playden::Store::kLocal;
+    check(model.UpdateLibrary(imported), "menus: imported library");
+    LiveInstalledGame doom{SteamId(36), 600'000'000, "internal", true, 0};
+    doom.dlc_known = true;
+    doom.installed_dlc = SteamIds({501});
+    LiveInstallJob failed{SteamId(37), JobState::Failed, 50, 200, "Download failed"};
+    LiveInstallJob queued{SteamId(38), JobState::Queued, 0, 200, {}};
+    LiveInstallJob moving{SteamId(39), JobState::Downloading, 50, 200, {}, "usb"};
+    moving.move = true;
+    moving.from_volume_id = "internal";
+    LiveInstallJob updating{SteamId(40), JobState::Downloading, 50, 200, {}};
+    updating.update = true;
+    LiveInstallJob locked{SteamId(41), JobState::Failed, 50, 200, "Disk error"};
+    locked.update = true;
+    locked.locked = true;
+    model.UpdateInstalls({failed, queued, moving, updating, locked},
+                         {doom, {SteamId(39), 100, "internal"}, {SteamId(40), 100, "internal"}, {SteamId(41), 100, "internal"}});
+    model.UpdateAppDetails(SteamId(36), 300'000'000, 500'000'000, true, {"english"},
+                           {{SteamId(501), "Art Book", 40'000'000, 50'000'000, false},
+                            {SteamId(502), "Campaign", 200'000'000, 300'000'000, false}});
+    model.UpdateExternalGames({{local, "usb0", true, ""}});
+    LiveRuntimeGame ready;
+    ready.game_id = SteamId(36);
+    ready.status = "Ready";
+    ready.ready = ready.prepared = ready.has_title = ready.can_play = true;
+    ready.activity = TitleActivity::Stopped;
+    model.UpdateRuntime(RuntimeState::Ready, {ready});
+
+    const auto keys = [&model] {
+        std::vector<std::string> result;
+        for (const auto& row : model.view().rows) result.push_back(row.key);
+        return result;
+    };
+    const auto close = [&model] {
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+    };
+    const auto page = [&](playden::GameId id) {
+        close();
+        if (model.state().navigation.route == Route::Details) model.action("circle");
+        check(model.action("details:" + ToKey(id)), "menus: the game's page opens");
+        activate(model, "details-more");
+        return keys();
+    };
+    const auto tile = [&](Route route, playden::GameId id) {
+        close();
+        if (model.state().navigation.route == Route::Details) model.action("circle");
+        if (model.state().navigation.route != route) model.action(route == Route::Library ? "r1" : "l1");
+        check(model.state().navigation.route == route, "menus: on the tile's screen");
+        check(model.action("select:" + ToKey(id)) && model.action("options") && model.state().navigation.modals.size() == 1 &&
+                  model.state().navigation.modals.back().id == "context",
+              "menus: the tile's Game actions open");
+        return keys();
+    };
+    // Every row of `part` is in `whole`, in the same order.
+    const auto in_order = [](const std::vector<std::string>& part, const std::vector<std::string>& whole) {
+        auto at = whole.begin();
+        for (const auto& key : part) {
+            at = std::find(at, whole.end(), key);
+            if (at == whole.end()) return false;
+            ++at;
+        }
+        return true;
+    };
+
+    // The page: the game's rows, then Start, Library and Your rating, then Uninstall… and Cancel apart.
+    const auto doom_page = page(SteamId(36));
+    check(doom_page == std::vector<std::string>{"game-settings", "manage-dlc", "manage-saves", "game-move", "game-maintenance",
+                                                "heading-start", "run-once", "play-detailed-logs", "heading-library",
+                                                "favorite", "collection", "note", "hide", "heading-rating", "compatibility",
+                                                "share-feedback", "divider", "uninstall", "cancel"},
+          "menus: the page's Game actions, in the mockup's order");
+    check(model.state().navigation.focus_key == "game-settings", "menus: focus lands on Game settings");
+    check(find_row(model, "heading-start")->kind == RowKind::Separator && find_row(model, "heading-start")->title == "Start" &&
+              find_row(model, "heading-library")->title == "Library" && find_row(model, "heading-rating")->title == "Your rating" &&
+              find_row(model, "divider")->kind == RowKind::Separator && find_row(model, "divider")->title.empty(),
+          "menus: headings name the groups; the divider is untitled");
+    check(find_row(model, "game-maintenance")->title == "Maintenance…", "menus: Maintenance… opens another sheet");
+    check(find_row(model, "manage-dlc")->enabled && find_row(model, "manage-dlc")->value == "1 of 2",
+          "menus: Manage DLC… moved here, with what is installed");
+    check(!find_row(model, "game-move")->enabled && find_row(model, "game-move")->value == "Checking…",
+          "menus: Move to… waits to hear whether the game runs");
+    check(find_row(model, "run-once")->enabled, "menus: Run launcher or setup… doesn't wait for that answer");
+    model.UpdateRuntime(RuntimeState::Ready, {ready});
+    check(find_row(model, "game-move")->enabled && find_row(model, "game-move")->value == "Console storage",
+          "menus: Move to… moved here, with the game's drive, once the console answers");
+    check(find_row(model, "uninstall")->dangerous && !find_row(model, "cancel")->dangerous, "menus: Uninstall… is set apart in red");
+
+    // Maintenance: Fix problems, then Settings and saves; no Manage DLC… or Move to…
+    activate(model, "game-maintenance");
+    check(keys() == std::vector<std::string>{"heading-fix", "maintenance-repair", "maintenance-update", "maintenance-recreate",
+                                             "maintenance-shader", "heading-settings-saves", "maintenance-reset",
+                                             "maintenance-backup", "divider", "cancel"},
+          "menus: Maintenance in two groups");
+    check(model.state().navigation.focus_key == "maintenance-repair", "menus: Maintenance opens on Repair, past its heading");
+    check(find_row(model, "heading-fix")->title == "Fix problems" &&
+              find_row(model, "heading-settings-saves")->title == "Settings and saves",
+          "menus: Maintenance's headings");
+
+    // Tiles: the page's rows left out, never reordered; Home and Library the same, Compatibility on both.
+    tile(Route::Library, SteamId(36));
+    activate(model, "compatibility");
+    activate(model, "rating-works");
+    const std::vector<std::string> doom_tile{"heading-library", "favorite", "collection", "note", "hide", "heading-rating",
+                                             "compatibility", "share-feedback", "divider", "uninstall", "cancel"};
+    const auto library_tile = tile(Route::Library, SteamId(36));
+    check(library_tile == doom_tile, "menus: the Library tile's rows");
+    check(model.state().navigation.focus_key == "favorite", "menus: a tile's sheet opens on Favorite, past its heading");
+    check(find_row(model, "compatibility")->value == "Works", "menus: Compatibility shows the player's rating");
+    check(tile(Route::Home, SteamId(36)) == doom_tile, "menus: the Home tile's rows are the Library's");
+    check(in_order(doom_tile, doom_page), "menus: a tile's rows are the page's, in its order");
+
+    // Cancel download: a failed download, from its tile and its page; the tile's rows stay in the page's order.
+    const auto failed_page = page(SteamId(37));
+    check(failed_page == std::vector<std::string>{"cancel-download", "heading-library", "favorite", "collection", "note", "hide",
+                                                  "heading-rating", "compatibility", "divider", "uninstall", "cancel"},
+          "menus: a failed download's page: Cancel download…, no Share feedback… or Start");
+    check(model.state().navigation.focus_key == "cancel-download", "menus: focus lands on Cancel download…");
+    check(find_row(model, "cancel-download")->title == "Cancel download", "menus: the row says Cancel download, as the mockup");
+    check(!find_row(model, "uninstall")->enabled, "menus: the page's Uninstall… says the game isn't installed");
+    const auto failed_tile = tile(Route::Library, SteamId(37));
+    check(failed_tile == std::vector<std::string>{"cancel-download", "heading-library", "favorite", "collection", "note", "hide",
+                                                  "heading-rating", "compatibility", "divider", "cancel"},
+          "menus: a failed download's tile has Cancel download…");
+    check(in_order(failed_tile, failed_page), "menus: the failed tile's rows are the page's, in its order");
+    activate(model, "cancel-download");
+    check(model.state().navigation.modals.size() == 2 && model.state().navigation.modals.back().title == "Cancel download?" &&
+              model.TakeInstallRequests().empty(),
+          "menus: it asks the Queue's question first");
+    activate(model, "confirm-destructive");
+    auto requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Cancel && requests[0].game_id == SteamId(37) &&
+              model.state().navigation.modals.empty() && model.state().navigation.route == Route::Library &&
+              model.state().navigation.focus_key == "game-37",
+          "menus: confirmed, the download is canceled and focus returns to its tile");
+    // A queued one, from its page; one that ends while the sheet is open leaves the row disabled.
+    page(SteamId(38));
+    model.UpdateInstalls({queued, moving, updating, locked},
+                         {doom, {SteamId(39), 100, "internal"}, {SteamId(40), 100, "internal"}, {SteamId(41), 100, "internal"}});
+    check(find_row(model, "cancel-download") && find_row(model, "cancel-download")->enabled,
+          "menus: the queued download can still be canceled");
+    model.UpdateInstalls({moving, updating, locked},
+                         {doom, {SteamId(39), 100, "internal"}, {SteamId(40), 100, "internal"}, {SteamId(41), 100, "internal"}});
+    check(find_row(model, "cancel-download") && !find_row(model, "cancel-download")->enabled &&
+              find_row(model, "cancel-download")->value == "Nothing to cancel",
+          "menus: a download gone while the sheet is open leaves nothing to cancel");
+    activate(model, "cancel-download");
+    check(model.state().navigation.modals.size() == 1 && model.TakeInstallRequests().empty(), "menus: the disabled row asks nothing");
+    model.UpdateInstalls({queued, moving, updating, locked},
+                         {doom, {SteamId(39), 100, "internal"}, {SteamId(40), 100, "internal"}, {SteamId(41), 100, "internal"}});
+    page(SteamId(38));
+    activate(model, "cancel-download");
+    activate(model, "confirm-destructive");
+    requests = model.TakeInstallRequests();
+    check(requests.size() == 1 && requests[0].kind == InstallRequestKind::Cancel && requests[0].game_id == SteamId(38) &&
+              model.state().navigation.modals.empty() && model.state().navigation.route == Route::Details &&
+              model.state().navigation.focus_key == "details-more",
+          "menus: a queued download is canceled from its page, back on More");
+    check(has_row(model, "details-more"), "menus: More is still on the page");
+    // An update downloading can be canceled too; a move or an update putting its files in place can't.
+    check(std::ranges::count(page(SteamId(40)), std::string("cancel-download")) == 1, "menus: an update is canceled here too");
+    check(std::ranges::count(page(SteamId(39)), std::string("cancel-download")) == 0, "menus: a move has no Cancel download…");
+    check(std::ranges::count(page(SteamId(41)), std::string("cancel-download")) == 0,
+          "menus: an update putting its files in place has no Cancel download…");
+    check(std::ranges::count(page(SteamId(36)), std::string("cancel-download")) == 0, "menus: nothing to cancel, no row");
+
+    // An imported game playing from its folder: Remove from library… on Home too, and Home stays open.
+    const auto rally_page = page(local);
+    check(rally_page.size() >= 2 && rally_page[rally_page.size() - 2] == "import-remove" &&
+              std::ranges::count(rally_page, std::string("uninstall")) == 0,
+          "menus: the page removes an in-place game from the library");
+    const auto rally_home = tile(Route::Home, local);
+    check(rally_home.size() >= 2 && rally_home[rally_home.size() - 2] == "import-remove" &&
+              std::ranges::count(rally_home, std::string("uninstall")) == 0 && in_order(rally_home, rally_page),
+          "menus: the Home tile removes it from the library too, in the page's order");
+    activate(model, "import-remove");
+    check(model.state().navigation.modals.back().title == "Remove Rally from the library?", "menus: it asks about Home's game");
+    activate(model, "confirm-destructive");
+    const auto removed = model.TakeImportRequests();
+    check(removed.size() == 1 && removed[0].kind == ImportRequestKind::Remove && removed[0].game_id == local &&
+              model.state().navigation.route == Route::Home && model.state().navigation.modals.empty(),
+          "menus: confirmed, the game leaves the library and Home stays open");
+}
+
 // The Library's Game actions uninstall an installed game, with the question Home and its page ask, and the uninstall
 // joins the Queue. An imported game playing from its folder leaves the library instead; one not installed has no row.
 // A game that runs, waits in Queue or is uninstalling already says so and can't be uninstalled from there.
@@ -5032,6 +5225,7 @@ void live_game_update() {
 
 int main() {
     live_filters_sheet_sections();
+    live_game_menus_regrouped();
     live_game_update();
     live_install_language_row();
     live_install_version_row();

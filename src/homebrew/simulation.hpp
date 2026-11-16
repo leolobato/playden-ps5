@@ -1957,6 +1957,8 @@ private:
     int leftover_delete_ticks_ = 0;
     std::vector<std::pair<GameId, MaintenanceKind>> pending_maintenance_requests_;
     std::vector<GameId> pending_activity_requests_;
+    // Games whose Game actions asked the console whether they run, for Move to…; cleared by the game's next runtime update.
+    std::set<GameId> move_activity_asked_;
     bool uninstall_delete_saves_ = false;  // the uninstall dialog's choice
     std::set<GameId> kept_selected_;  // the kept game data manager's checked games
     std::set<std::string> leftover_selected_;  // the leftover titles manager's checked title IDs
@@ -2344,10 +2346,17 @@ private:
     // Whether Game settings' "Game must be closed" rows can change: game_closed, or the game is being set up.
     [[nodiscard]] bool settings_closed(GameId id, std::string* reason = nullptr) const;
     [[nodiscard]] std::vector<std::string> maintenance_actions() const;
-    // The game page's More menu: Game settings and Maintenance first for a prepared game.
+    // The game page's Game actions (Options): the game's own rows, then Start, Library and Your rating under headings,
+    // then Uninstall… (or Remove from library…) and Cancel below a divider.
     [[nodiscard]] std::vector<std::string> details_context_actions() const;
-    // The Library tile's Game actions; it fixes the game Remove from library acts on.
-    [[nodiscard]] std::vector<std::string> library_context_actions();
+    // A tile's Game actions (Home and Library): the page's rows with some left out, never reordered. It fixes the game
+    // Remove from library acts on.
+    [[nodiscard]] std::vector<std::string> tile_context_actions();
+    // The game's download or update in Queue that Cancel download stops (the Queue's own Cancel): queued, running,
+    // paused or failed. Not a move, a job putting its files in place, or an imported game's copy.
+    [[nodiscard]] const Job* cancelable_download(GameId id) const;
+    // Opens the page's Game actions (Options on the page or its More button).
+    void open_game_actions();
     void request_maintenance(GameId id, MaintenanceKind kind);
     // Rows the preset chooser compares: Current → This preset for the focused preset.
     void build_preset_comparison(GameId id, const std::string& preset_id);

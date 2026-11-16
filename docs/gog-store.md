@@ -49,7 +49,7 @@ restart Playden after you change it. Dev builds and nightlies also need the line
   the Queue: it downloads beside the game, and the files go in place once the game is closed. An update leaves out
   the DLC you turned off, and it brings the DLC you bought since the install.
 - **Choosing DLC.** The DLC list on the install sheet chooses which of your DLC install with the game. On an installed
-  game, Maintenance › Manage DLC adds or removes your DLC through the Queue. Sign in to GOG first. When you remove a
+  game, Game actions › Manage DLC adds or removes your DLC through the Queue. Sign in to GOG first. When you remove a
   DLC, Playden deletes its files. What its install script did outside those files stays: copied files, INI keys and
   registry values.
 

@@ -82,6 +82,72 @@ void t01_authentication_ignores_late_approval(const std::filesystem::path& fixtu
           "T01 retry creates a fresh challenge after interrupted sync");
 }
 
+void activate(playden::homebrew::Simulation& simulation, const std::string& key);
+
+// The fixture's Game actions follow the same layout as Live: a tile's rows are the page's, in its order; its own Verify
+// files and Open logs stay above the divider; Cancel download is the Queue's Cancel.
+void fixture_game_menus(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    playden::homebrew::Simulation simulation(fixtures, profile);
+    simulation.scenario("default");
+    const auto keys = [&] {
+        std::vector<std::string> result;
+        for (const auto& row : simulation.view().rows) result.push_back(row.key);
+        return result;
+    };
+    const auto in_order = [](const std::vector<std::string>& part, const std::vector<std::string>& whole) {
+        auto at = whole.begin();
+        for (const auto& key : part) {
+            at = std::find(at, whole.end(), key);
+            if (at == whole.end()) return false;
+            ++at;
+        }
+        return true;
+    };
+    const auto index = [](const std::vector<std::string>& rows, const char* key) {
+        return std::find(rows.begin(), rows.end(), key) - rows.begin();
+    };
+    check(simulation.action("details:900001") && simulation.action("options"), "menus fixture: the page's Game actions open");
+    const auto page = keys();
+    check(page.size() > 3 && page[page.size() - 3] == "divider" && page[page.size() - 2] == "uninstall" && page.back() == "cancel",
+          "menus fixture: Uninstall… and Cancel come last, below a divider");
+    check(index(page, "verify") < index(page, "divider") && index(page, "logs") < index(page, "divider") &&
+              index(page, "game-maintenance") < index(page, "heading-library") &&
+              index(page, "compatibility") < index(page, "share-feedback"),
+          "menus fixture: the fixture's rows stay above the divider; Compatibility before Share feedback…");
+    check(std::find(page.begin(), page.end(), "heading-start") == page.end(), "menus fixture: no Start heading without its rows");
+    simulation.action("circle");
+    simulation.action("circle");
+    check(simulation.action("select:900001") && simulation.action("options"), "menus fixture: a tile's Game actions open");
+    const auto tile = keys();
+    check(in_order(tile, page) && std::find(tile.begin(), tile.end(), "game-settings") == tile.end() &&
+              std::find(tile.begin(), tile.end(), "verify") == tile.end(),
+          "menus fixture: a tile's rows are the page's, in its order, without Game settings");
+    simulation.action("circle");
+    // The fixture's downloading game: Cancel download… on its tile asks the Queue's question.
+    // A failed download (the 0.11.0 QA case: only Queue had Cancel), on a fresh fixture's Home.
+    std::error_code removed;
+    std::filesystem::remove(profile, removed);  // the fixture's own Queue, not the one saved above
+    playden::homebrew::Simulation downloads(fixtures, profile);
+    downloads.scenario("default");
+    check(downloads.action("job:fail:job-1:download"), "menus fixture: the fixture's download fails");
+    const auto* job = &downloads.state().jobs.front();
+    const auto game = job->game_id;
+    const auto id = job->id;
+    check(downloads.action("select:" + playden::ToKey(game)) && downloads.action("options"), "menus fixture: the failed tile");
+    check(downloads.view().rows.front().key == "cancel-download" && downloads.state().navigation.focus_key == "cancel-download",
+          "menus fixture: Cancel download… comes first and takes the focus");
+    const auto opener = downloads.state().navigation.modals.front().opener_focus_key;
+    activate(downloads, "cancel-download");
+    check(downloads.state().navigation.modals.back().title == "Cancel download?", "menus fixture: it asks first");
+    activate(downloads, "confirm-destructive");
+    const auto canceled = std::find_if(downloads.state().jobs.begin(), downloads.state().jobs.end(),
+                                       [&id](const playden::homebrew::Job& value) { return value.id == id; });
+    check(canceled != downloads.state().jobs.end() && canceled->state == playden::homebrew::JobState::Cancelled &&
+              downloads.state().navigation.modals.empty() && downloads.state().navigation.focus_key == opener &&
+              opener == "game-" + playden::ToKey(game),
+          "menus fixture: the download is canceled and focus returns to the tile");
+}
+
 void t02_focus_and_nested_modal_restoration(const std::filesystem::path& fixtures,
                                              const std::filesystem::path& profile) {
     playden::homebrew::Simulation simulation(fixtures, profile);
@@ -577,7 +643,9 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
           "T08b maintenance lists clear shader cache");
     check(find_row(simulation, "maintenance-recreate")->badge == "Prepares bottle", "T08b recreate prepares the bottle");
     simulation.action("r1");
-    check(simulation.state().navigation.modals.back().focused_action == 5, "T08b R1 jumps five rows in maintenance");
+    check(simulation.state().navigation.modals.back().focused_action == 6 &&
+              simulation.state().navigation.focus_key == "maintenance-reset",
+          "T08b R1 jumps five rows in maintenance, from Repair (under Fix problems) to Reset settings");
     simulation.action("l1");
     check(simulation.view().legends.size() == 3 && simulation.view().legends[1] == "L1/R1 Jump", "T08b maintenance names the jump");
     activate(simulation, "maintenance-shader");
@@ -2370,7 +2438,7 @@ void rows_follow_store_traits(const std::filesystem::path& profile) {
         const auto rows = keys();
         return std::find(rows.begin(), rows.end(), key) != rows.end();
     };
-    // On each game's page: More, then Maintenance.
+    // On each game's page: More (Game actions).
     const auto open_more = [&](playden::GameId id) {
         close_all();
         check(live.action("details:" + playden::ToKey(id)), "the game's page opens");
@@ -2381,8 +2449,9 @@ void rows_follow_store_traits(const std::filesystem::path& profile) {
         const bool saves = has("manage-saves");
         check(has("game-settings") && has("game-maintenance"), "an installed game has Game settings and Maintenance");
         check(saves == (id == steam), "only the Steam game has a Saves link: GOG and imported games have no cloud saves");
-        activate(live, "game-maintenance");
         check(has("game-move") == (id != local), "Steam and GOG installs move to another drive; imported games don't");
+        activate(live, "game-maintenance");
+        check(!has("game-move") && !has("manage-dlc"), "Move to… and Manage DLC… are on Game actions, not Maintenance");
     }
     // Game settings: the GOG game's Steam app ID row follows Program, and it is saved as an imported game's is.
     for (const auto id : {steam, gog, local}) {
@@ -4425,12 +4494,11 @@ void gog_manage_dlc() {
                                    {c, "Texture Pack", 100'000'000, 120'000'000, false}};
     live.UpdateAppDetails(game, 700'000'000ull, 1'200'000'000ull, true, {}, dlc);
     live.UpdateAppDetails(unread, 700'000'000ull, 1'200'000'000ull, true, {}, dlc);
-    const auto open_maintenance = [&](GameId id) {
+    const auto open_game_actions = [&](GameId id) {
         while (!live.state().navigation.modals.empty()) live.action("circle");
         if (live.state().navigation.route == Route::Details) live.action("circle");
         check(live.action("details:" + playden::ToKey(id)), "the GOG game's page opens");
         choose(live, "details-more");
-        choose(live, "game-maintenance");
     };
     const auto no_steam = [&](const char* what) {
         for (const auto& item : live.view().rows)
@@ -4439,12 +4507,12 @@ void gog_manage_dlc() {
                   what);
     };
 
-    open_maintenance(unread);
+    open_game_actions(unread);
     check(!row(live, "manage-dlc"), "a GOG game whose record isn't read has no Manage DLC");
 
-    open_maintenance(game);
+    open_game_actions(game);
     const auto* manage = row(live, "manage-dlc");
-    check(manage && manage->enabled && manage->value == "1 of 3", "Maintenance offers Manage DLC with what is installed");
+    check(manage && manage->enabled && manage->value == "1 of 3", "Game actions offers Manage DLC with what is installed");
     choose(live, "manage-dlc");
     check(live.view().surface == "manage-dlc" && live.view().title == "Manage DLC", "the row opens the sheet");
     check(row(live, "heading-manage-dlc-installed") && row(live, "heading-manage-dlc-other"), "Installed, then Not installed");
@@ -4494,14 +4562,14 @@ void gog_manage_dlc() {
 
     // With a pending update the change comes with it.
     live.UpdateAppDetails(game, 700'000'000ull, 1'200'000'000ull, true, {}, dlc, {}, GameUpdate{true, false, 0, 0, 7, false});
-    open_maintenance(game);
+    open_game_actions(game);
     choose(live, "manage-dlc");
     choose(live, "manage-dlc-gog-1000000011");
     check(row(live, "manage-dlc-apply")->subtitle == "With the game's update", "Apply says the update comes with it");
 
     // Offline keeps the GOG session: Manage DLC stays, and the change waits in Queue.
     live.UpdateAccount(gog(AuthState::Offline, "Synthetic GOG"));
-    open_maintenance(game);
+    open_game_actions(game);
     manage = row(live, "manage-dlc");
     check(manage && manage->enabled, "Manage DLC stays while GOG is offline");
     choose(live, "manage-dlc");
@@ -4516,7 +4584,7 @@ void gog_manage_dlc() {
     live.UpdateAccount(gog(AuthState::SigningOut, "Synthetic GOG"));
     live.UpdateAccount(gog(AuthState::SignedOut));
     check(listed(live, game), "the installed GOG game stays listed");
-    open_maintenance(game);
+    open_game_actions(game);
     manage = row(live, "manage-dlc");
     check(manage && !manage->enabled && manage->subtitle == "Sign in to GOG.", "Manage DLC waits for the GOG sign-in");
     check(live.action("focus:manage-dlc") && (live.action("cross"), live.view().surface != "manage-dlc"),
@@ -4608,6 +4676,8 @@ int main(int argc, char** argv) {
     synthetic_download_servers(fixtures, profile);
     clean();
     leftover_titles_simulation_uses_controller_navigation(fixtures, profile);
+    fixture_game_menus(fixtures, profile);
+    clean();
     t01_authentication_ignores_late_approval(fixtures, profile);
     account_update_by_store();
     rows_follow_store_traits(profile);

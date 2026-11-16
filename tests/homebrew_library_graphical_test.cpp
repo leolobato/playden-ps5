@@ -450,16 +450,16 @@ int main(int argc,char** argv) {
       assert(fixture.action("focus:manage-move-to") && fixture.action("cross") && fixture.view().surface == "move-storage");
       for(int i=0;i<24;++i) renderer.draw(fixture,1920,1080);
       assert(renderer.capture_png(output/"manage-move-picker.png",1920,1080));
-      // A game's Maintenance: Move to… opens the same picker for that game, its own drive disabled.
+      // A game's Game actions: Move to… opens the same picker for that game, its own drive disabled.
       assert(fixture.scenario("manage-move") && fixture.action("circle"));
       const auto first = fixture.state().games.front().id;
       assert(fixture.action("details:" + playden::ToKey(first)) && fixture.action("focus:details-more") && fixture.action("cross"));
-      assert(fixture.action("focus:game-maintenance") && fixture.action("cross") && fixture.action("focus:game-move"));
+      assert(fixture.action("focus:game-move"));
       for(int i=0;i<24;++i) renderer.draw(fixture,1920,1080);
-      assert(renderer.capture_png(output/"maintenance-move.png",1920,1080));
+      assert(renderer.capture_png(output/"game-actions-move.png",1920,1080));
       assert(fixture.action("cross") && fixture.view().surface == "move-storage");
       for(int i=0;i<24;++i) renderer.draw(fixture,1920,1080);
-      assert(renderer.capture_png(output/"maintenance-move-picker.png",1920,1080));
+      assert(renderer.capture_png(output/"game-actions-move-picker.png",1920,1080));
       assert(fixture.action("focus:volume-external") && fixture.action("cross") && fixture.state().navigation.modals.empty());
       assert(fixture.scenario("manage-move") && fixture.action("triangle") && fixture.state().navigation.route != Route::ManageGames);
       assert(std::any_of(fixture.state().notices.begin(), fixture.state().notices.end(),

@@ -602,9 +602,15 @@ std::string import_files_wait(const State& state, GameId id) {
     return {};
 }
 
-std::vector<std::string> context_actions(bool live) {
-    if (live) return {"favorite", "collection", "compatibility", "note", "hide", "uninstall", "cancel"};
-    return {"favorite", "collection", "compatibility", "note", "hide", "verify", "uninstall", "logs", "cancel"};
+// A sheet leaves out a heading with no row under it: one followed by another heading, a divider or nothing.
+std::vector<std::string> drop_empty_headings(std::vector<std::string> actions) {
+    for (std::size_t index = actions.size(); index-- > 0;) {
+        if (actions[index].rfind("heading-", 0) != 0) continue;
+        const bool empty = index + 1 == actions.size() || actions[index + 1].rfind("heading-", 0) == 0 ||
+                           actions[index + 1] == "divider";
+        if (empty) actions.erase(actions.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+    return actions;
 }
 
 constexpr const char* uninstall_body_kept = "The game's files and its PS5 title are removed from this console. Its saves and "
@@ -815,7 +821,7 @@ std::string action_label(const std::string& key) {
         {"share-as-name-edit", "Change your name…"}, {"share-as-account", "Playden account"},
         {"heading-reason", "What went wrong"}, {"heading-report", "Report"}, {"heading-recipe", "Recipe"},
         {"shared-recipe", "Shared recipe"}, {"sharing-reset-confirm", "Reset"}, {"web-forget-browsers-confirm", "Forget all"}, {"program-scan", "Looking for programs…"},
-        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"change-settings", "Change settings…"}, {"heading-your-changes", "Your changes"}, {"save-my-preset", "Save as my preset…"},
+        {"preset-picker", "Preset"}, {"game-settings", "Game settings"}, {"game-maintenance", "Maintenance…"}, {"cancel-download", "Cancel download"}, {"heading-start", "Start"}, {"heading-library", "Library"}, {"heading-rating", "Your rating"}, {"heading-fix", "Fix problems"}, {"heading-settings-saves", "Settings and saves"}, {"run-once", "Run launcher or setup…"}, {"play-detailed-logs", "Play with detailed logs"}, {"run-once-start", "Run once"}, {"game-move", "Move to…"}, {"runtime-check-again", "Check again"}, {"reset-settings", "Reset all to preset"}, {"change-settings", "Change settings…"}, {"heading-your-changes", "Your changes"}, {"save-my-preset", "Save as my preset…"},
         {"my-preset-rename", "Rename…"}, {"my-preset-update", "Update from this game"}, {"my-preset-delete", "Delete…"},
         {"my-preset-delete-confirm", "Delete"}, {"clear-shader-cache", "Clear shader cache"},
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
@@ -3358,6 +3364,8 @@ void Simulation::UpdateRuntime(RuntimeState runtime, const std::vector<LiveRunti
         if (value.awaiting_registration) value.queued = false;
     }
     for (const auto& [id, game] : next) {
+        // The console's answer for Move to… (open_game_actions).
+        move_activity_asked_.erase(id);
         if (game.status != "Not prepared") rechosen_after_refusal_.erase(id);
         const auto before = state_.runtime_games.find(id);
         // Launch outcomes are separate from setup readiness. Surface a new actionable
@@ -6668,7 +6676,7 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.selected_game_id = id;
         state_.navigation.focus_key = "details-update";
     } else if (name == "dlc-manage") {
-        // An installed game's Maintenance with Manage DLC: two DLC installed (one turned off would show as not
+        // An installed game's Game actions with Manage DLC: two DLC installed (one turned off would show as not
         // installed), one left out at install and a free one never claimed. Replay "action focus:manage-dlc" and
         // "action cross" for the sheet.
         const auto id = GameId::Steam(900001);
@@ -6693,7 +6701,8 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.detail_id = id;
         state_.navigation.selected_game_id = id;
         state_.navigation.focus_key = "details-play";
-        open_modal({"game-maintenance", "Maintenance", "details-play", maintenance_actions(), 0, false});
+        state_.navigation.focus_key = "details-more";
+        open_game_actions();
         state_.navigation.focus_key = "manage-dlc";
     } else if (name == "install-options") {
         // The install sheet of a game in several languages and versions, with owned DLC: its Version,
@@ -7562,6 +7571,8 @@ void Simulation::rebuild_view() {
         for (const auto& action_key : modal.action_keys) {
             auto& item = row(action_key, RowKind::Action, action_label(action_key), action_key);
             item.dangerous = modal.destructive && action_key != "cancel";
+            // Game actions: the row that takes the game off the console is set apart in red, below its divider.
+            if (modal.id == "context" && (action_key == "uninstall" || action_key == "import-remove")) item.dangerous = true;
             if (action_key == "gog-stay") {
                 // The one "Stay signed in" for both stores: its words name neither.
                 item.kind = RowKind::Toggle;
@@ -8458,7 +8469,7 @@ void Simulation::rebuild_view() {
                 item.subtitle = "Like dinput8=n,b: n uses the game's copy, b Wine's.";
             } else if (settings_ready && action_key == "unlock-setting") {
                 item.dangerous = true;
-            } else if (modal.id == "game-maintenance" && action_key == "manage-dlc") {
+            } else if (modal.id == "context" && action_key == "manage-dlc") {
                 // The game's DLC, installed or not: the same check boxes as the install sheet's.
                 const auto offered = manage_dlc(settings_game);
                 const auto held = std::count_if(offered.begin(), offered.end(), [&](const GameDlc& dlc) {
@@ -8473,7 +8484,9 @@ void Simulation::rebuild_view() {
                 else if (blocker == "In Queue") item.subtitle = "Wait for its job in Queue to finish.";
                 else if (!blocker.empty()) item.subtitle = blocker + ".";
                 else item.subtitle = "Install DLC you left out or bought later, or remove DLC to free space.";
-            } else if (modal.id == "game-maintenance" && action_key == "game-move") {
+                // Game actions shows a value, not the line under the name: why it waits, in short.
+                if (!item.enabled) item.value = blocker == "Playing" ? "Quit the game first" : blocker == "In Queue" ? "Wait for Queue" : blocker;
+            } else if (modal.id == "context" && action_key == "game-move") {
                 // The game's move to another drive: the same Queue job as the Move tab's.
                 const auto* installation = find_installation(state_, settings_game);
                 const auto* here = installation ? volume_of(state_, installation->volume_id) : nullptr;
@@ -8483,16 +8496,21 @@ void Simulation::rebuild_view() {
                 const auto blocker = move_blocker(settings_game, {});
                 const auto* game = find_game(state_, settings_game);
                 const std::string title = game && !game->title.empty() ? game->title : "the game";
-                // Opening Maintenance asks the console whether the game runs; the row waits for the answer.
+                // Opening Game actions asks the console whether the game runs; the row waits for the answer.
                 const auto runtime_game = state_.runtime_games.find(settings_game);
                 const bool asking = live() && runtime_game != state_.runtime_games.end() &&
-                                    runtime_game->second.activity == TitleActivity::Unknown;
+                                    (runtime_game->second.activity == TitleActivity::Unknown ||
+                                     move_activity_asked_.contains(settings_game));
                 item.enabled = blocker.empty() && !asking && move_volumes().size() >= 2;
                 if (blocker.empty() && asking) item.subtitle = "Checking whether " + title + " is running…";
                 else if (blocker == "Playing") item.subtitle = "Quit " + title + " to move it.";
                 else if (blocker == "In Queue") item.subtitle = "Wait for its job in Queue to finish.";
                 else if (!blocker.empty()) item.subtitle = blocker + ".";
                 else if (!item.enabled) item.subtitle = "Connect another drive to move the game.";
+                // Game actions shows a value, not the line under the name: why it waits, in short.
+                if (!item.enabled)
+                    item.value = blocker.empty() && asking ? "Checking…" : blocker == "Playing" ? "Quit the game first"
+                               : blocker == "In Queue" ? "Wait for Queue" : !blocker.empty() ? blocker : "No other drive";
             } else if (modal.id == "game-maintenance" && action_key.rfind("maintenance-", 0) == 0) {
                 const auto runtime_game = state_.runtime_games.find(settings_game);
                 const LiveRuntimeGame* runtime = live() && runtime_game != state_.runtime_games.end() ? &runtime_game->second : nullptr;
@@ -8804,6 +8822,19 @@ void Simulation::rebuild_view() {
                     item.subtitle = blocker;
                 }
             } else if (action_key == "hide") item.title = state_.library.hidden.contains(state_.navigation.selected_game_id) ? "Unhide" : "Hide";
+            else if (modal.id == "context" && action_key == "cancel-download" &&
+                     !cancelable_download(state_.navigation.selected_game_id)) {
+                // The download ended (or began putting its files in place) while the sheet was open.
+                item.enabled = false;
+                item.value = "Nothing to cancel";
+            }
+            else if (modal.id == "context" && action_key == "compatibility") {
+                // The player's own rating, once there is one.
+                const auto rating = state_.library.ratings.find(state_.navigation.selected_game_id);
+                const auto value = rating == state_.library.ratings.end() ? Compatibility::Untested : rating->second;
+                item.value = value == Compatibility::Works ? "Works" : value == Compatibility::Playable ? "Playable"
+                           : value == Compatibility::Broken ? "Broken" : "";
+            }
             else if (action_key == "runtime-retry") item.subtitle = state_.runtime == RuntimeState::Ready ? "Ready — simulated" : state_.runtime == RuntimeState::Checking ? "Checking — simulated" : state_.runtime == RuntimeState::Failed ? "Failed — retry available" : "Unavailable — retry available";
             else if (action_key == "account-auth") { item.kind = RowKind::Status; item.value = auth_name(state_.account().authentication); item.subtitle = state_.account().error; item.enabled = false; }
             else if (action_key == "account-last-sync") { item.kind = RowKind::Status; item.value = state_.account().last_sync == 0 ? "Never" : std::to_string(state_.account().last_sync); item.enabled = false; }
@@ -11533,7 +11564,7 @@ void Simulation::activate() {
             state_.navigation.selected_game_id = remaining[static_cast<std::size_t>(state_.navigation.selected_index)]->id;
             state_.navigation.focus_key = game_key(state_.navigation.selected_game_id);
         }
-    } else if (action_name == "context") open_modal({"context", "Game actions", "details-more", details_context_actions(), 0, false});
+    } else if (action_name == "context") open_game_actions();
     else if (action_name == "install") open_install_sheet(state_.navigation.selected_game_id, install_sheet_actions(state_.navigation.selected_game_id));
     else if (action_name == "download-server-picker") {
         download_server_focus_choice_ = true;
@@ -12280,6 +12311,13 @@ void Simulation::activate() {
         if (const auto* job = find_job(state_, id); live() && job && job->state == JobState::Downloaded)
             pending_install_requests_.push_back({InstallRequestKind::DismissCompleted, job->game_id});
         state_.jobs.erase(std::remove_if(state_.jobs.begin(), state_.jobs.end(), [&id](const Job& value) { return value.id == id && value.state == JobState::Downloaded; }), state_.jobs.end());
+    } else if (action_name == "cancel-download") {
+        // The Queue's Cancel for the game's download, asked the same way. The job is looked up now: it may have
+        // finished since the sheet opened.
+        const auto* job = cancelable_download(state_.navigation.selected_game_id);
+        if (!job) return;
+        pending_destructive_action_ = "job-cancel-" + job->id;
+        open_modal(cancel_job_confirmation(state_, job, selected.key));
     } else if (action_name.rfind("job-cancel-", 0) == 0) {
         pending_destructive_action_ = action_name;
         open_modal(cancel_job_confirmation(state_, find_job(state_, action_name.substr(11)), selected.key));
@@ -12717,12 +12755,17 @@ void Simulation::activate() {
             // A canceled update leaves the game installed: its job ending is not "Update complete".
             if (job->update) canceled_updates_.insert(job->game_id);
         }
+        // From a game's Game actions: back to the tile or the page's button the sheet opened from.
+        if (pending_destructive_action_.rfind("job-cancel-", 0) == 0 && state_.navigation.modals.front().id == "context")
+            state_.navigation.focus_key = state_.navigation.modals.front().opener_focus_key;
         pending_destructive_action_.clear();
         state_.navigation.modals.clear();
     } else if (action_name == "confirm-destructive") {
         if (pending_destructive_action_.rfind("job-cancel-", 0) == 0) {
             if (auto* job = find_job(state_, pending_destructive_action_.substr(11))) { job->state = JobState::Cancelled; job->reservation_held = false; }
             reconcile_storage(state_);
+            if (state_.navigation.modals.front().id == "context")
+                state_.navigation.focus_key = state_.navigation.modals.front().opener_focus_key;
         }
         else if (pending_destructive_action_ == "uninstall") {
             if (const auto* installation = find_installation(state_, state_.navigation.selected_game_id)) {
@@ -14045,16 +14088,16 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
     else if (logical_action == "options") {
         if (!state_.editor.active && state_.navigation.route == Route::Details && state_.navigation.modals.empty()) {
             if (live()) force_organization_selection_ = true;
-            open_modal({"context", "Game actions", "details-more", details_context_actions(), 0, false});
+            open_game_actions();
         } else if (!state_.editor.active && state_.navigation.route == Route::Home && state_.navigation.selected_game_id.valid() && state_.navigation.modals.empty()) {
             if (live()) force_organization_selection_ = true;
-            open_modal({"context", "Game actions", state_.navigation.focus_key, context_actions(live()), 0, false});
+            open_modal({"context", "Game actions", state_.navigation.focus_key, tile_context_actions(), 0, false});
         }
         else if (!state_.editor.active && state_.navigation.route == Route::Library && !state_.navigation.modals.empty()) {}
         else if (!state_.editor.active && state_.navigation.route == Route::Library && state_.navigation.selected_game_id.valid() && state_.navigation.modals.empty()
                  && state_.navigation.focus_key.rfind("game-", 0) == 0) {
             if (live()) force_organization_selection_ = true;
-            open_modal({"context", "Game actions", state_.navigation.focus_key, library_context_actions(), 0, false});
+            open_modal({"context", "Game actions", state_.navigation.focus_key, tile_context_actions(), 0, false});
         }
         else if (!state_.editor.active && state_.navigation.route == Route::Downloads && state_.navigation.modals.empty()) activate();
     } else if (logical_action == "square") {
@@ -16084,66 +16127,91 @@ bool Simulation::known_problem(GameId id) const {
     return false;
 }
 
-std::vector<std::string> Simulation::library_context_actions() {
-    std::vector<std::string> actions{"favorite", "collection", "note", "hide", "cancel"};
-    // An installed game is uninstalled from here as from Home and its page: the same question, then the Queue.
-    // An imported game playing from its folder leaves the library instead; a game that isn't installed has no row.
+std::vector<std::string> Simulation::tile_context_actions() {
+    // What a tile keeps of the page's sheet, in the page's order. Game settings stays on the page, where Play is after
+    // a change; so do the rows that open more sheets (Maintenance…, Manage DLC…, Move to…) and Start.
+    static const std::set<std::string> kept{"cancel-download", "heading-library", "favorite", "collection", "note", "hide",
+                                            "heading-rating", "compatibility", "share-feedback", "divider", "uninstall",
+                                            "import-remove", "cancel"};
+    auto actions = details_context_actions();
+    std::erase_if(actions, [](const std::string& action) { return !kept.contains(action); });
     const auto id = state_.navigation.selected_game_id;
     if (external_game(id)) {
-        // Remove from library acts on the page's game and goes back where the page was opened from: here.
+        // Remove from library acts on the page's game and goes back where the page was opened from: this tile's screen.
         state_.navigation.detail_id = id;
-        state_.navigation.detail_origin = Route::Library;
-        actions.insert(actions.end() - 1, "import-remove");
-    } else if (is_installed(state_, id)) {
-        actions.insert(actions.end() - 1, "uninstall");
+        state_.navigation.detail_origin = state_.navigation.route;
+    } else if (!is_installed(state_, id)) {
+        // A game that isn't installed has no Uninstall… on a tile; its page's row says why.
+        std::erase(actions, std::string("uninstall"));
     }
-    return actions;
+    return drop_empty_headings(std::move(actions));
+}
+
+const Job* Simulation::cancelable_download(GameId id) const {
+    // An imported game's copy into Playden has Cancel the copy on its page instead.
+    if (!id.valid() || id.store == Store::kLocal) return nullptr;
+    for (const auto& job : state_.jobs)
+        if (job.game_id == id && job.kind == "install" && !job.move && !job.locked && job.state != JobState::Downloaded &&
+            job.state != JobState::Cancelled)
+            return &job;
+    return nullptr;
+}
+
+void Simulation::open_game_actions() {
+    const auto actions = details_context_actions();
+    // Move to… needs the game closed: ask the console again whether it runs, and the row waits for the answer. The
+    // game's activity is left as it is: marking it unknown (as Maintenance does) would let Run launcher or setup, which
+    // waits only for a game known to run, through while the game runs.
+    const auto id = state_.navigation.selected_game_id;
+    if (live() && std::find(actions.begin(), actions.end(), "game-move") != actions.end()) {
+        pending_activity_requests_.push_back(id);
+        if (state_.runtime_games.contains(id)) move_activity_asked_.insert(id);
+    }
+    open_modal({"context", "Game actions", "details-more", actions, 0, false});
 }
 
 std::vector<std::string> Simulation::details_context_actions() const {
-    auto actions = context_actions(live());
+    const auto selected = state_.navigation.selected_game_id;
     // A game Playden could not prepare opens Game settings too, to choose a program or try anyway.
-    const auto setup = game_setups_.find(state_.navigation.selected_game_id);
+    const auto setup = game_setups_.find(selected);
     // A hard refusal blocks that program, not the picker: another program in the folder may start.
-    const bool refused = live() && setup != game_setups_.end() && setup->second.draft &&
-                         !game_prepared(state_.navigation.selected_game_id);
+    const bool refused = live() && setup != game_setups_.end() && setup->second.draft && !game_prepared(selected);
+    // An imported game playing from its folder is "installed" there: its settings apply, and it
+    // leaves the library rather than being uninstalled.
+    const bool in_place = external_game(selected) != nullptr;
     // An installed game not set up yet (a refusal from before Playden restarted is not kept) sets
     // itself up first, so Game settings is there before Play is pressed once (#46).
     // Maintenance is there for every installed game, whatever its state (a title waiting for
     // recovery gets out through Recreate bottle); rows that can't run say why.
-    const auto selected = state_.navigation.selected_game_id;
-    // An imported game playing from its folder is "installed" there: its settings apply, and it
-    // leaves the library rather than being uninstalled.
-    const bool in_place = external_game(selected) != nullptr;
-    if (in_place) std::replace(actions.begin(), actions.end(), std::string("uninstall"), std::string("import-remove"));
     const bool installed = (live() && is_installed(state_, selected)) || in_place;
-    if (installed || game_prepared(state_.navigation.selected_game_id))
-        actions.insert(actions.begin(), {"game-settings", "game-maintenance"});
-    // How it ran, any time: the same sheet as after a game (plan 2026-11-06, decision 1).
-    if (installed || game_prepared(selected) || (!live() && is_installed(state_, selected))) {
-        const auto after = std::find(actions.begin(), actions.end(), "game-maintenance");
-        actions.insert(after == actions.end() ? actions.begin() : after + 1, "share-feedback");
-    }
-    else if (refused)
-        actions.insert(actions.begin(), "game-settings");
+    const bool set_up = installed || game_prepared(selected);
+    std::vector<std::string> actions;
     // A title waiting for the PS5 is ready to play from Home; asking the console again is a side action.
-    const auto runtime = state_.runtime_games.find(state_.navigation.selected_game_id);
+    const auto runtime = state_.runtime_games.find(selected);
     if (live() && runtime != state_.runtime_games.end() && runtime->second.awaiting_registration &&
         runtime->second.can_prepare)
-        actions.insert(actions.begin(), "runtime-check-again");
-    // The game's saves in the Saves tab, after Game settings and Maintenance; only a store with cloud saves has the
-    // link (imported and GOG games have none).
-    if (live() && is_installed(state_, state_.navigation.selected_game_id) && Traits(selected.store).cloud_saves) {
-        const auto maintenance = std::find(actions.begin(), actions.end(), "game-maintenance");
-        actions.insert(maintenance == actions.end() ? actions.begin() : maintenance + 1, "manage-saves");
-    }
-    // A program from the game folder (its settings launcher) for one run, after Maintenance.
-    if (live() && game_prepared(selected)) {
-        const auto maintenance = std::find(actions.begin(), actions.end(), "game-maintenance");
-        const auto run_once = actions.insert(maintenance == actions.end() ? actions.begin() : maintenance + 1, "run-once");
-        actions.insert(run_once + 1, "play-detailed-logs");
-    }
-    return actions;
+        actions.push_back("runtime-check-again");
+    if (set_up || refused) actions.push_back("game-settings");
+    // The Queue's Cancel for the game's download, here too: a failed download's only way out was Queue.
+    if (cancelable_download(selected)) actions.push_back("cancel-download");
+    // Its DLC can be installed or removed later (Manage DLC).
+    if (set_up && manage_dlc_offered(selected)) actions.push_back("manage-dlc");
+    // The game's saves in the Saves tab; only a store with cloud saves has the link (imported and GOG games have none).
+    if (live() && is_installed(state_, selected) && Traits(selected.store).cloud_saves) actions.push_back("manage-saves");
+    // An installed game can move to another drive; imported games have Copy or Move into Playden instead.
+    if (set_up && Traits(selected.store).downloads && find_installation(state_, selected)) actions.push_back("game-move");
+    if (set_up) actions.push_back("game-maintenance");
+    // The fixture's own rows: a verify job in Queue and the logs screen.
+    if (!live()) actions.insert(actions.end(), {"verify", "logs"});
+    // A program from the game folder (its settings launcher) for one run, or Play with more logging.
+    actions.push_back("heading-start");
+    if (live() && game_prepared(selected)) actions.insert(actions.end(), {"run-once", "play-detailed-logs"});
+    actions.insert(actions.end(), {"heading-library", "favorite", "collection", "note", "hide", "heading-rating", "compatibility"});
+    // How it ran, any time: the same sheet as after a game (plan 2026-11-06, decision 1).
+    // The fixture counts every game as prepared (Game settings opens for any); a report needs it installed there.
+    if (live() ? set_up : in_place || is_installed(state_, selected)) actions.push_back("share-feedback");
+    actions.insert(actions.end(), {"divider", in_place ? "import-remove" : "uninstall", "cancel"});
+    return drop_empty_headings(std::move(actions));
 }
 
 void Simulation::open_setup_programs() {
@@ -16163,15 +16231,9 @@ void Simulation::open_setup_programs() {
 }
 
 std::vector<std::string> Simulation::maintenance_actions() const {
-    std::vector<std::string> actions{"maintenance-reset", "maintenance-update", "maintenance-repair", "maintenance-shader",
-                                     "maintenance-backup", "maintenance-recreate", "cancel"};
-    // An installed game can move to another drive; imported games have Copy or Move into Playden instead.
-    const auto id = state_.navigation.selected_game_id;
-    // Its DLC can be installed or removed later (Manage DLC), beside the move.
-    if (manage_dlc_offered(id)) actions.insert(actions.end() - 1, "manage-dlc");
-    if (Traits(id.store).downloads && find_installation(state_, id))
-        actions.insert(actions.end() - 1, "game-move");
-    return actions;
+    // Manage DLC… and Move to… are on Game actions.
+    return {"heading-fix", "maintenance-repair", "maintenance-update", "maintenance-recreate", "maintenance-shader",
+            "heading-settings-saves", "maintenance-reset", "maintenance-backup", "divider", "cancel"};
 }
 
 bool Simulation::game_prepared(GameId id) const {

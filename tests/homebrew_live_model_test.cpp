@@ -1729,6 +1729,8 @@ void live_runs_setup_program_once(const std::filesystem::path& base) {
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {runtime});
     activate(model, "details-more");
     check(find_row(model, "run-once")->enabled, "setup program: a game not known to run can open the list");
+    check(model.TakeActivityRequests() == std::vector<GameId>{SteamId(35140), SteamId(35140)},
+          "setup program: each opening of Game actions asks whether the game runs, for Move to…");
     activate(model, "run-once");
     check(model.TakeActivityRequests() == std::vector<GameId>{SteamId(35140)}, "setup program: the list asks whether it runs");
     activate(model, "setup-program-0");
@@ -4237,12 +4239,11 @@ void live_manage_move(const std::filesystem::path& base) {
     check(navigation.route == Route::Downloads && notice != model.state().notices.end() && notice->message == "2 moves queued",
           "move: the screen closes on the Queue, with a notice");
 
-    // The game page: Maintenance has Move to…, for installed Steam games only, and it queues the same move.
+    // The game page: Game actions has Move to…, for installed Steam games only, and it queues the same move.
     check(model.action("details:20"), "move: game page");
     activate(model, "details-more");
-    activate(model, "game-maintenance");
     const auto* entry = find_row(model, "game-move");
-    check(entry && entry->enabled && entry->value == "Console storage", "move: Maintenance offers Move to…");
+    check(entry && entry->enabled && entry->value == "Console storage", "move: Game actions offers Move to…");
     activate(model, "game-move");
     check(model.view().surface == "move-storage" && !find_row(model, "volume-internal")->enabled &&
               find_row(model, "volume-internal")->subtitle == "The game is here" && navigation.focus_key == "volume-usb",
@@ -4252,16 +4253,24 @@ void live_manage_move(const std::filesystem::path& base) {
     check(one.size() == 1 && one[0].kind == InstallRequestKind::Move && one[0].game_id == SteamId(20) && one[0].volume_id == "usb" &&
               navigation.modals.empty() && navigation.route == Route::Details,
           "move: choosing a drive queues the game's move and returns to its page");
+    // Last known stopped: the row still waits for the console's answer, which says it runs now.
+    auto stopped = playing;
+    stopped.activity = playden::homebrew::TitleActivity::Stopped;
+    model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {stopped});
     check(model.action("details:40"), "move: running game page");
+    model.TakeActivityRequests();
     activate(model, "details-more");
-    activate(model, "game-maintenance");
-    check(!find_row(model, "game-move")->enabled, "move: Maintenance waits to hear whether the game runs");
+    check(model.TakeActivityRequests() == std::vector<playden::GameId>{SteamId(40)},
+          "move: Game actions asks whether the game runs");
+    check(!find_row(model, "game-move")->enabled && find_row(model, "game-move")->value == "Checking…",
+          "move: Game actions waits to hear whether the game runs");
     model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {playing});
     check(find_row(model, "game-move") && !find_row(model, "game-move")->enabled &&
-              find_row(model, "game-move")->subtitle == "Quit Celeste to move it.",
-          "move: a running game can't move from Maintenance");
+              find_row(model, "game-move")->subtitle == "Quit Celeste to move it." &&
+              find_row(model, "game-move")->value == "Quit the game first",
+          "move: a running game can't move from Game actions, and the row says why");
     activate(model, "game-move");
-    check(model.view().surface == "game-maintenance" && model.TakeInstallRequests().empty(), "move: the disabled row does nothing");
+    check(model.view().surface == "context" && model.TakeInstallRequests().empty(), "move: the disabled row does nothing");
 }
 
 // The Queue holds 64 jobs: a batch of updates or moves that doesn't fit is not queued, the games stay
