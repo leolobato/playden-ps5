@@ -4107,6 +4107,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.title_any_id = has(kKitTitleAnyId);
   kit.game_root_unowned = has(kKitGameRootUnowned);
   kit.bottle_profile_shared = has(kKitBottleProfileShared);
+  kit.publication_open_modes = has(kKitPublicationOpenModes);
   kit.opengl_zink = has(kKitOpenGLZink);
   kit.wine_mono = has(kKitWineMono);
   kit.vkd3d_proton = has(kKitVkd3dProton);

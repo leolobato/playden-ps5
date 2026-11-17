@@ -1705,6 +1705,17 @@ int main() {
     CHECK(installer.PublishProfile(record).state == PackageActionState::kComplete);
     CHECK(::chmod(profiles.c_str(), 0755) == 0);
     CHECK(!installer.Inspect(record).profile_published);
+    // A title made from a kit with publication-open-modes admits the opened folder and an opened user.reg (#868);
+    // Playden checks the older shell's modes for every other title.
+    const auto user_reg = fixture.host_data / "playden/games/install-hl2/library/prefixes/game/user.reg";
+    CHECK(::chmod(user_reg.c_str(), 0666) == 0);
+    CHECK(installer.QuickAdmission(record).rfind("stage 7", 0) == 0);
+    installer.AdmitOpenModes(true);
+    CHECK(installer.Inspect(record).profile_published);
+    CHECK(installer.QuickAdmission(record) == "ok");
+    CHECK(installer.AdmissionDiagnostic(record) == "ok");
+    installer.AdmitOpenModes(false);
+    CHECK(::chmod(user_reg.c_str(), 0600) == 0);
     CHECK(installer.PublishProfile(record).code == "private-directory");
   }
 #ifdef PLAYDEN_TEST_SETTINGS_OWNER_INTEGRATION

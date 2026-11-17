@@ -845,6 +845,16 @@ bool FilesystemPackageInstaller::ProfileShared(const RuntimeInstall& record, con
   return profile_shared_ && MarkerEquals(paths.title / kTitleOwner, OwnerMarker(record, kit_, "title"));
 }
 
+bool FilesystemPackageInstaller::OpenModes(const RuntimeInstall& record, const ResolvedPaths& paths) const {
+  // As ProfileShared: a title keeps the shell it was made with after a kit swap, and an older shell wants 0700/0600.
+  return open_modes_ && MarkerEquals(paths.title / kTitleOwner, OwnerMarker(record, kit_, "title"));
+}
+
+bool FilesystemPackageInstaller::OpenModes(const RuntimeInstall& record) const {
+  const auto paths = Resolve(record);
+  return paths && OpenModes(record, *paths);
+}
+
 PrivateTraversal FilesystemPackageInstaller::BottleTraversal(const ResolvedPaths& paths, bool shared) const {
   return {{paths.game, paths.library, paths.library / "prefixes", paths.bottle}, static_cast<mode_t>(shared ? 0711 : 0700)};
 }
@@ -887,6 +897,8 @@ std::string FilesystemPackageInstaller::AdmissionDiagnostic(const RuntimeInstall
   const auto prefix = paths_.host_data_root == fs::path("/data") ? std::string{} : paths_.host_data_root.parent_path().string();
   PwTitlePublicationPlatform platform{};
   platform.host_root = prefix.empty() ? nullptr : prefix.c_str(); platform.owner_uid = ::geteuid();
+  // The pinned shell's check, with the modes the title's own shell wants.
+  platform.strict_modes = OpenModes(record) ? 0 : 1;
   platform.try_lock_shared = [](void*, int descriptor) {
 #if defined(__PROSPERO__) || (defined(PLAYDEN_PLATFORM_PS5) && PLAYDEN_PLATFORM_PS5)
     return playden_ps5_file_lock(descriptor, LOCK_SH | LOCK_NB);
@@ -910,15 +922,16 @@ std::string FilesystemPackageInstaller::AdmissionDiagnostic(const RuntimeInstall
 
 std::string FilesystemPackageInstaller::QuickAdmission(const RuntimeInstall& record) {
   // The title reads user.reg at its start check (stage 7) as an app-owned, single-link
-  // regular file in mode 0600 or 0644. Wine saving it with umask 0 leaves 0666, which
-  // RepairBottle fixes; the rest of the check runs at Play and Update.
+  // regular file, in mode 0600 or 0644 unless its shell has publication-open-modes. Wine saving
+  // it with umask 0 leaves 0666, which RepairBottle fixes; the rest of the check runs at Play and Update.
   const auto paths = Resolve(record);
   if (!paths) return "kit or record is invalid";
   struct stat info{};
   const auto path = paths->bottle / "user.reg";
   if (::lstat(path.c_str(), &info) != 0) return "stage 7: user.reg is missing";
   const auto mode = info.st_mode & 07777;
-  if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || info.st_nlink != 1 || (mode != 0600 && mode != 0644)) {
+  const bool mode_admitted = OpenModes(record, *paths) || mode == 0600 || mode == 0644;
+  if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || info.st_nlink != 1 || !mode_admitted) {
     char octal[8]; std::snprintf(octal, sizeof(octal), "%04o", static_cast<unsigned>(mode));
     return std::string("stage 7: user.reg mode ") + octal + " is not admitted";
   }
@@ -1091,6 +1104,7 @@ bool FilesystemPackageInstaller::PublicationMatches(
   const auto prefix = paths_.host_data_root == fs::path("/data") ? std::string{} : paths_.host_data_root.parent_path().string();
   PwTitlePublicationPlatform platform{};
   platform.host_root = prefix.empty() ? nullptr : prefix.c_str(); platform.owner_uid = ::geteuid();
+  platform.strict_modes = OpenModes(record, paths) ? 0 : 1;
   platform.try_lock_shared = [](void*, int descriptor) {
 #if defined(__PROSPERO__) || (defined(PLAYDEN_PLATFORM_PS5) && PLAYDEN_PLATFORM_PS5)
     return playden_ps5_file_lock(descriptor, LOCK_SH | LOCK_NB);

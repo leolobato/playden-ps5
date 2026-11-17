@@ -526,8 +526,11 @@ std::optional<ManagedDirectory> FilesystemReconcileSessionSource::OpenSessions(
                          "managed bottle ownership marker is invalid");
     return std::nullopt;
   }
-  auto sessions = Child(std::move(*game), {"logs", "sessions"});
-  if (!sessions) {
+  // The title shell makes logs/sessions 0700, or 0777 with publication-open-modes (#868, FTP can delete them): any
+  // mode of Playden's user is read, links never.
+  auto logs = ManagedDirectory::Open(mapped / "logs", DirectoryPolicy::kOpenTree);
+  auto sessions = logs ? logs->OpenChild("sessions", DirectoryPolicy::kOpenTree) : std::nullopt;
+  if (!sessions || !game->Validate()) {
     *failure = SourceFailure("session-evidence-unavailable",
                          "wrapper session evidence is unavailable or unsafe");
     return std::nullopt;

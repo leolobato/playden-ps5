@@ -188,6 +188,9 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // their way to the user profile 0711 and the profile open to FTP (0777/0666); titles of older
   // kits keep 0700 until Update. Reads always admit 0711.
   void ShareBottleProfiles(bool shared) { profile_shared_ = shared; }
+  // The kit has publication-open-modes: a title made from it admits Playden's data at any mode. The start check
+  // Playden runs (compiled from the pinned title shell) checks the older shell's modes for every other title.
+  void AdmitOpenModes(bool open) { open_modes_ = open; }
 
   PackageStatus Inspect(const RuntimeInstall& record) override;
   // The title's owner marker instead of its files and folder modes; the bottle,
@@ -249,6 +252,9 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // The bottle's way to its profile is 0711 and the profile open: the kit has
   // bottle-profile-shared and the record's title was made from it (an older shell demands 0700).
   bool ProfileShared(const RuntimeInstall& record, const ResolvedPaths& paths) const;
+  // The title's shell admits Playden's data at any mode (publication-open-modes, and the title made from this kit).
+  bool OpenModes(const RuntimeInstall& record, const ResolvedPaths& paths) const;
+  bool OpenModes(const RuntimeInstall& record) const;
   bool ArtifactsMatch(const RuntimeInstall& record, const ResolvedPaths& paths) const;
   bool PublicationMatches(const RuntimeInstall& record, const ResolvedPaths& paths,
                           std::uint64_t* revision) const;
@@ -274,6 +280,7 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   std::vector<std::string> shipped_recipe_ids_;
   std::function<bool(const RuntimeInstall&)> accept_recipe_;
   bool profile_shared_ = false;
+  bool open_modes_ = false;
   // Full passes over the kit's file list (KitListPasses).
   mutable std::size_t kit_list_passes_ = 0;
   bool view_consistent_ = false;

@@ -187,6 +187,22 @@ void SourceAcceptsCanonicalV1UuidAndRejectsIdentityOrNumericDrift() {
   CHECK(!result.ok && result.sessions.empty());
 }
 
+// A title shell with publication-open-modes makes its session folders 0777 (#868); an older one 0700. Both are read.
+void SourceReadsOpenSessionFolders() {
+  for (const mode_t mode : {mode_t{0755}, mode_t{0777}}) {
+    TemporaryDirectory temporary;
+    const auto record = Record();
+    AdmitOwnedGame(temporary, record);
+    const auto sessions = MappedGame(temporary) / "logs/sessions";
+    PrivateDirectories(sessions);
+    Write(sessions / (std::string(kSession) + ".json"), SessionJson(record, kSession));
+    CHECK(::chmod(sessions.parent_path().c_str(), mode) == 0 && ::chmod(sessions.c_str(), mode) == 0);
+    FilesystemReconcileSessionSource source(HostDataRootForTests{temporary.path});
+    const auto result = source.Enumerate(record, 8);
+    CHECK(result.ok && result.sessions.size() == 1);
+  }
+}
+
 void SourceTreatsUnsafeOrAmbiguousEvidenceAsFailure() {
   const auto run = [](const auto &damage) {
     TemporaryDirectory temporary;
@@ -250,9 +266,6 @@ void SourceTreatsUnsafeOrAmbiguousEvidenceAsFailure() {
     Write(MappedGame(temporary) /
               "library/prefixes/game/.playden-template-owner",
           marker);
-  });
-  run([](const auto &, const auto &, const auto &sessions) {
-    CHECK(::chmod(sessions.c_str(), 0755) == 0);
   });
   run([](const auto &, const auto &, const auto &sessions) {
     const auto target = sessions.parent_path() / "other-sessions";
@@ -522,6 +535,7 @@ int main() {
   ActualWriterFixtureIsAdmittedThroughCanonicalDataMapping();
   SourceAcceptsCanonicalV1UuidAndRejectsIdentityOrNumericDrift();
   SourceTreatsUnsafeOrAmbiguousEvidenceAsFailure();
+  SourceReadsOpenSessionFolders();
   SourceBoundsEnumerationAndRejectsNonCanonicalRecordRoots();
   HistoricalRuntimeIdentityRemainsVisibleBesideCurrentEvidence();
   DurableJournalRoundTripsAcrossRestartAndOverwritesOneSession();

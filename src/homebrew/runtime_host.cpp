@@ -6408,7 +6408,9 @@ bool RuntimeHost::RunServices() {
       // Community recipes resolve by their id's form (CommunityRecipeNamesGame); the object itself, and its game, are
       // required only where a plan is built from it (RecipeOf).
       installer->AcceptRecipes(CommunityRecipeNamesGame);
-      installer->ShareBottleProfiles(rt::KitCapabilitiesFromManifest(c.kit->capabilities, true).bottle_profile_shared);
+      const auto capabilities = rt::KitCapabilitiesFromManifest(c.kit->capabilities, true);
+      installer->ShareBottleProfiles(capabilities.bottle_profile_shared);
+      installer->AdmitOpenModes(capabilities.publication_open_modes);
       c.filesystem_installer = installer.get();
       c.installer = std::move(installer);
     } else {
