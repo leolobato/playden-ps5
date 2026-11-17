@@ -82,6 +82,13 @@ class UnavailablePackageInstaller final : public rt::PackageInstaller {
 };
 
 constexpr int kMaxPreparationSteps = 64;
+// Kept bottles: <games>/<install id>.kept (KeepBottle).
+constexpr char kKeptSuffix[] = ".kept";
+// Custom title art (#213) that could not be copied stops what would overwrite or lose it; any other refusal (a record
+// the kit no longer resolves) is left for the step that writes the title to report.
+bool ArtNotKept(const rt::PackageActionResult& result) {
+  return result.state != rt::PackageActionState::kComplete && result.code == "title-art";
+}
 // A pending launch is polled at this interval, and Handoff trusts a preflight
 // the worker made at most this long ago: the handoff can come several seconds after
 // the check (a Play that first updated the runtime, a game on a slow drive), and an
@@ -2459,7 +2466,7 @@ void RuntimeHost::PublishInstalls(const Composition& composition, const std::str
                view.title_icon_file) = kept->second;
     } else if (record.state == rt::PreparationState::kReady && composition.kit) {
       const bool files_current = composition.installer->TitleCurrent(record);
-      view.title_current = files_current && composition.installer->TitleMetadataCurrent(record) && TitleNameCurrent(record) &&
+      view.title_current = files_current && composition.installer->TitleMetadataCurrent(record) && TitleNameCurrent(composition, record) &&
                            TitleVariableRefreshCurrent(composition, record);
       const auto icon_file = GameIconFile(record);
       if (!icon_file.empty()) view.title_icon_file = record.install_path + "/" + icon_file;
@@ -3990,7 +3997,7 @@ bool RuntimeHost::TitleVariableRefreshCurrent(const Composition& c, const rt::Ru
   return ((*attribute3 & rt::kTitleAttribute3VariableRefresh) != 0) == KitDeclaresVariableRefresh(c);
 }
 
-bool RuntimeHost::TitleNameCurrent(const rt::RuntimeInstall& record) const {
+bool RuntimeHost::TitleNameCurrent(const Composition& c, const rt::RuntimeInstall& record) const {
   std::string wanted;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -3999,7 +4006,14 @@ bool RuntimeHost::TitleNameCurrent(const rt::RuntimeInstall& record) const {
     wanted = found->second;
   }
   const auto installed = InstalledTitleName(record);
-  return installed && *installed == wanted;
+  return installed && (*installed == wanted || TitleNameIsCustom(c, record, *installed));
+}
+
+bool RuntimeHost::TitleNameIsCustom(const Composition& c, const rt::RuntimeInstall& record,
+                                    const std::string& installed) const {
+  // A name the player gave the title with another app (#213) is the one Playden writes.
+  const auto custom = c.installer->CustomTitleName(record);
+  return custom && *custom == installed;
 }
 
 // The source recorded with a title's icon (PackageInstaller::TitleIconSource): the game's icon file, by name.
@@ -4054,7 +4068,10 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
       !(replace_value("titleId", record.title_id) && replace_value("conceptId", record.title_id.substr(4)) &&
         replace_value("contentId", "UP9000-" + record.title_id + "_00-PROSPEROWIN00001")))
     return failed("The runtime kit's title parameters have an unexpected layout.");
-  const std::string name = title_name.empty() ? "Steam game " + std::to_string(record.runtime_number) : title_name;
+  // A name the player gave the title with another app stays (#213).
+  const auto custom_name = c.installer->CustomTitleName(record);
+  const std::string name = custom_name ? *custom_name
+                           : title_name.empty() ? "Steam game " + std::to_string(record.runtime_number) : title_name;
   if (!replace_value("titleName", JsonEscaped(name)))
     Log("title metadata app=" + std::to_string(record.runtime_number) + " keeps the kit's name: unexpected layout");
   // VRR support only with a runtime that keeps 120 Hz under VRR: older ones would cap a VRR display at 60 Hz.
@@ -4693,6 +4710,10 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       return "The game's folder is missing; download it again.";
     Log("moved install app=" + std::to_string(request.runtime_number) + " title=" + existing->title_id + " from=" +
         existing->install_path + " to=" + request.install_path);
+    // The art the player gave the title goes with its data to the new title (#213). A move resumed after
+    // its title was removed has nothing left to adopt.
+    if (const auto adopted = c.installer->AdoptCustomTitleArt(*existing); ArtNotKept(adopted))
+      return adopted.message;
     // Recorded as a move, so a removal that stops part way is finished by the next Play or Prepare
     // and never turns into an uninstall of the game's new download.
     if (const auto removed = RunRemove(c, request.runtime_number, false, true); !removed.empty()) {
@@ -4782,6 +4803,13 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       const auto bound = c.repository.Update(record);
       if (!bound.ok()) return "The runtime kit artifacts could not be recorded: " + bound.message();
     }
+    // The art the player gave the title before a move or an uninstall comes back from the kept data (#213),
+    // and art in a title left part way is kept, before the metadata is written again.
+    const auto kept = HostPath(record.data_root).parent_path() / (record.install_id + kKeptSuffix);
+    if (const auto imported = c.installer->ImportCustomTitleArt(record, kept); ArtNotKept(imported))
+      return imported.message;
+    if (const auto adopted = c.installer->AdoptCustomTitleArt(record); ArtNotKept(adopted))
+      return adopted.message;
     if (!c.installer->TitleMetadataCurrent(record) || !TitleVariableRefreshCurrent(c, record) ||
         !TitleIconCurrent(c, record, GameIconFile(record))) {
       const auto written = WriteTitleMetadata(c, record, request.title_name);
@@ -4820,9 +4848,14 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       // A recipe switch that committed but stopped before its markers followed: finished here first,
       // or the title would read as another kit's.
       if (const auto rebound = RebindRecipeMarkers(c, *existing); !rebound.empty()) return rebound;
+      // Art and a name the player gave the title with another app are kept before anything is written (#213).
+      if (const auto adopted = c.installer->AdoptCustomTitleArt(*existing); ArtNotKept(adopted))
+        return adopted.message;
       // Older titles carry the kit's generic name and icon: give them the game's.
+      const auto installed_name = InstalledTitleName(*existing);
       const bool metadata_current = c.installer->TitleMetadataCurrent(*existing) &&
-                                    (request.title_name.empty() || InstalledTitleName(*existing) == request.title_name) &&
+                                    (request.title_name.empty() || installed_name == request.title_name ||
+                                     (installed_name && TitleNameIsCustom(c, *existing, *installed_name))) &&
                                     TitleVariableRefreshCurrent(c, *existing) &&
                                     TitleIconCurrent(c, *existing, GameIconFile(*existing));
       if (!metadata_current) {
@@ -5140,7 +5173,6 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
 namespace {
 // Kept bottles: <games>/<install id>.kept, identified by this marker inside.
 constexpr char kKeptMarker[] = "playden-kept.json";
-constexpr char kKeptSuffix[] = ".kept";
 // In a bottle once its kept saves were brought back: a kept copy still beside it is then older.
 constexpr char kRestoredMarker[] = ".playden-saves-restored";
 // In a bottle whose kept saves came back but for files that could not be read: the kept copy stays beside it, as it
@@ -6182,6 +6214,10 @@ std::string RuntimeHost::RunRemove(Composition& c, std::uint32_t app, bool delet
       " delete_saves=" + std::to_string(delete_saves));
   const auto source = config_.homebrew_root / record.title_id;
   if (record.journal->step == "retire") {
+    // Saves kept: so is the art the player gave the title (#213), for a reinstall. Never a reason to stop an uninstall.
+    if (!delete_saves)
+      if (const auto adopted = c.installer->AdoptCustomTitleArt(record); adopted.state != rt::PackageActionState::kComplete)
+        Log("remove keeps no title art install=" + record.install_id + ": " + adopted.message);
     if (const auto failed = RetireTitle(c, record.title_id, record.journal->operation_id))
       return fail(failed->code, failed->message);
     if (auto failed = advance("unregister"); !failed.empty()) return failed;

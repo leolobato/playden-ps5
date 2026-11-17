@@ -1630,7 +1630,234 @@ void StatusQueriesDoNotRecheckTheKitList() {
   CHECK(installer.QuickAdmission(staged) == "kit or record is invalid");
 }
 
+// Art and a name another app (ArtSwap) put into a title stay (#213): the title reads as current, a refresh to a new
+// kit keeps them, and a title staged again (a move) gets them back. Playden's own out-of-date icon is still replaced.
+namespace custom_art {
+const std::string kOwnParam =
+    "{\n  \"attribute3\": 64,\n  \"localizedParameters\": {\n    \"defaultLanguage\": \"en-US\",\n"
+    "    \"en-US\": {\n      \"titleName\": \"Borderlands 2\"\n    }\n  },\n  \"titleId\": \"FAKE78001\"\n}\n";
+// ArtSwap's rename: every language's titleName, the file printed again by cJSON.
+std::string ArtSwapParam(const std::string& name, const std::string& title = "FAKE78001", int attribute3 = 64) {
+  return "{\n\t\"attribute3\":\t" + std::to_string(attribute3) + ",\n\t\"localizedParameters\":\t{\n\t\t\"defaultLanguage\":\t\"en-US\",\n"
+         "\t\t\"en-US\":\t{\n\t\t\t\"titleName\":\t\"" + name + "\"\n\t\t}\n\t},\n\t\"titleId\":\t\"" + title + "\"\n}";
+}
+
+struct Setup {
+  Fixture fixture;
+  RuntimeInstall record = Record();
+  std::filesystem::path title = fixture.host_data / "homebrew/FAKE78001";
+  std::filesystem::path metadata = fixture.host_data / "playden/games/install-hl2/title-metadata";
+  Setup() {
+    Write(fixture.kit / "titles/variant/sce_sys/icon0.png", "kit-icon", 0644);
+    fixture.view.files.push_back({"titles/variant/sce_sys/icon0.png", 8, *TestHash(fixture.kit / "titles/variant/sce_sys/icon0.png"), 0644});
+    std::filesystem::create_directories(fixture.host_data);
+    for (const auto& artifact : fixture.view.artifacts)
+      record.artifacts.push_back({artifact.artifact_id, artifact.identity, artifact.sha256});
+    auto installer = fixture.Installer();
+    CHECK(installer.WriteTitleMetadata(record, kOwnParam, std::string("game-icon"), "").state == PackageActionState::kComplete);
+    CHECK(installer.StageTitle(record).state == PackageActionState::kComplete);
+    CHECK(installer.CopyTemplate(record).state == PackageActionState::kComplete);
+    CHECK(Read(title / "sce_sys/icon0.png") == "game-icon" && std::filesystem::exists(metadata / ".installed"));
+  }
+  // What ArtSwap does to a title: each original kept as <file>.old, a background added, a new name.
+  void ArtSwap(bool rename = true) {
+    std::filesystem::rename(title / "sce_sys/icon0.png", title / "sce_sys/icon0.png.old");
+    Write(title / "sce_sys/icon0.png", "steamgriddb-icon-png", 0666);
+    Write(title / "sce_sys/pic0.dds", "steamgriddb-background", 0666);
+    if (rename) {
+      std::filesystem::rename(title / "sce_sys/param.json", title / "sce_sys/param.json.old");
+      Write(title / "sce_sys/param.json", ArtSwapParam("BL2 GOTY"), 0666);
+    }
+  }
+  // A new build of the same kit: a changed shell, so the title needs a refresh.
+  void Respin() {
+    Write(fixture.kit / "titles/variant/eboot.bin", "native-2", 0755);
+    for (auto& file : fixture.view.files)
+      if (file.path == "titles/variant/eboot.bin") { file.size = 8; file.sha256 = *TestHash(fixture.kit / file.path); }
+    fixture.view.files_sha256 = std::string(64, 'b');
+  }
+};
+
+void KeptThroughRefreshAndStage() {
+  Setup setup;
+  setup.ArtSwap();
+  {
+    auto installer = setup.fixture.Installer();
+    // Nothing to update: the art is the player's.
+    CHECK(installer.TitleMetadataCurrent(setup.record) && installer.Inspect(setup.record).manifest_matches);
+    CHECK(installer.TitleCurrent(setup.record));
+  }
+  setup.Respin();
+  auto installer = setup.fixture.Installer();
+  CHECK(!installer.TitleCurrent(setup.record));
+  const auto refreshed = installer.RefreshTitle(setup.record);
+  if (refreshed.state != PackageActionState::kComplete) std::fprintf(stderr, "refresh: %s %s\n", refreshed.code.c_str(), refreshed.message.c_str());
+  CHECK(refreshed.state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "eboot.bin") == "native-2");
+  CHECK(Read(setup.title / "sce_sys/icon0.png") == "steamgriddb-icon-png");
+  CHECK(Read(setup.title / "sce_sys/param.json") == ArtSwapParam("BL2 GOTY"));
+  CHECK(Read(setup.title / "sce_sys/pic0.dds") == "steamgriddb-background");
+  CHECK(Read(setup.title / "sce_sys/icon0.png.old") == "game-icon");
+  CHECK(installer.TitleCurrent(setup.record) && installer.TitleMetadataCurrent(setup.record));
+  // Adopted beside Playden's own metadata.
+  CHECK(Read(setup.metadata / "custom/icon0.png") == "steamgriddb-icon-png");
+  CHECK(Read(setup.metadata / "custom/title-name") == "BL2 GOTY\n");
+  CHECK(installer.CustomTitleName(setup.record) == std::string("BL2 GOTY"));
+  CHECK(Read(setup.metadata / "custom/sce_sys/pic0.dds") == "steamgriddb-background");
+  CHECK(Read(setup.metadata / "custom/sce_sys/param.json.old") == kOwnParam);
+  CHECK(!std::filesystem::exists(setup.metadata / "custom/sce_sys/icon0.png") &&
+        !std::filesystem::exists(setup.metadata / "custom/sce_sys/eboot.bin"));
+  // The title goes and is staged again (a move): the art comes back with it. Playden's metadata now carries the
+  // player's name, as RuntimeHost writes it.
+  std::filesystem::remove_all(setup.title);
+  CHECK(installer.WriteTitleMetadata(setup.record, ArtSwapParam("BL2 GOTY"), std::string("game-icon"), "").state ==
+        PackageActionState::kComplete);
+  CHECK(installer.StageTitle(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "sce_sys/icon0.png") == "steamgriddb-icon-png");
+  CHECK(Read(setup.title / "sce_sys/pic0.dds") == "steamgriddb-background");
+  CHECK(Read(setup.title / "sce_sys/icon0.png.old") == "game-icon");
+  CHECK(Read(setup.title / "sce_sys/param.json.old") == kOwnParam);
+  struct stat info{};
+  CHECK(::stat((setup.title / "sce_sys/pic0.dds").c_str(), &info) == 0 && (info.st_mode & 07777) == 0644);
+  CHECK(installer.TitleMetadataCurrent(setup.record) && installer.Inspect(setup.record).manifest_matches);
+  // ArtSwap's Restore: the originals come back and the background goes; the adopted copies follow.
+  std::filesystem::rename(setup.title / "sce_sys/icon0.png.old", setup.title / "sce_sys/icon0.png");
+  std::filesystem::remove(setup.title / "sce_sys/pic0.dds");
+  CHECK(installer.TitleMetadataCurrent(setup.record));
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  CHECK(!std::filesystem::exists(setup.metadata / "custom/icon0.png"));
+  CHECK(!std::filesystem::exists(setup.metadata / "custom/sce_sys/pic0.dds") &&
+        !std::filesystem::exists(setup.metadata / "custom/sce_sys/icon0.png.old"));
+  CHECK(installer.TitleMetadataCurrent(setup.record) && installer.Inspect(setup.record).manifest_matches);
+}
+
+// Art kept in the data folder a move or uninstall left (<install>.kept) comes back into the new one.
+void ImportedFromKeptData() {
+  Setup setup;
+  setup.ArtSwap();
+  auto installer = setup.fixture.Installer();
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  const auto game = setup.fixture.host_data / "playden/games/install-hl2";
+  const auto kept = setup.fixture.host_data / "playden/games/install-hl2.kept";
+  std::filesystem::remove_all(setup.title);
+  std::filesystem::rename(game, kept);
+  CHECK(installer.WriteTitleMetadata(setup.record, kOwnParam, std::string("game-icon"), "").state == PackageActionState::kComplete);
+  CHECK(installer.ImportCustomTitleArt(setup.record, kept).state == PackageActionState::kComplete);
+  CHECK(installer.CustomTitleName(setup.record) == std::string("BL2 GOTY"));
+  CHECK(Read(setup.metadata / "custom/icon0.png") == "steamgriddb-icon-png");
+  CHECK(Read(setup.metadata / "custom/sce_sys/pic0.dds") == "steamgriddb-background");
+  // Once there, a second import leaves it as it is.
+  Write(kept / "title-metadata/custom/title-name", "Other\n", 0600);
+  CHECK(installer.ImportCustomTitleArt(setup.record, kept).state == PackageActionState::kComplete);
+  CHECK(installer.CustomTitleName(setup.record) == std::string("BL2 GOTY"));
+  CHECK(installer.StageTitle(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "sce_sys/icon0.png") == "steamgriddb-icon-png");
+  CHECK(Read(setup.title / "sce_sys/pic0.dds") == "steamgriddb-background");
+}
+
+// Playden's own icon, out of date (the game's icon changed), is replaced and never taken for the player's.
+void StalePlaydenIconIsReplaced() {
+  Setup setup;
+  auto installer = setup.fixture.Installer();
+  CHECK(installer.WriteTitleMetadata(setup.record, kOwnParam, std::string("new-game-icon"), "file:new.ico").state ==
+        PackageActionState::kComplete);
+  CHECK(!installer.TitleMetadataCurrent(setup.record));
+  CHECK(installer.RefreshTitle(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "sce_sys/icon0.png") == "new-game-icon");
+  CHECK(installer.TitleMetadataCurrent(setup.record) && !std::filesystem::exists(setup.metadata / "custom"));
+  // A name Playden changed (the store name added) is Playden's too.
+  const std::string suffixed = "{\"attribute3\": 64, \"titleId\": \"FAKE78001\", \"titleName\": \"Borderlands 2 (Steam)\"}\n";
+  CHECK(installer.WriteTitleMetadata(setup.record, suffixed, std::string("new-game-icon"), "file:new.ico").state ==
+        PackageActionState::kComplete);
+  CHECK(!installer.TitleMetadataCurrent(setup.record));
+  CHECK(installer.RefreshTitle(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "sce_sys/param.json") == suffixed && !installer.CustomTitleName(setup.record));
+}
+
+// A title an older Playden made has no record of what it copied: a changed icon is the player's only when the other
+// app kept the original beside it (ArtSwap's .old). Otherwise it is refreshed once, as before.
+void TitleWithoutRecord() {
+  for (const bool artswap : {true, false}) {
+    Setup setup;
+    std::filesystem::remove(setup.metadata / ".installed");
+    if (artswap) {
+      setup.ArtSwap(false);
+    } else {
+      Write(setup.title / "sce_sys/icon0.png", "other-app-icon", 0666);
+    }
+    auto installer = setup.fixture.Installer();
+    CHECK(installer.TitleMetadataCurrent(setup.record) == artswap);
+    CHECK(installer.RefreshTitle(setup.record).state == PackageActionState::kComplete);
+    CHECK(Read(setup.title / "sce_sys/icon0.png") == (artswap ? "steamgriddb-icon-png" : "game-icon"));
+    CHECK(std::filesystem::exists(setup.metadata / "custom/icon0.png") == artswap);
+    // The refresh recorded what is in the title now: the next change by any app is kept.
+    Write(setup.title / "sce_sys/icon0.png", "another-icon", 0666);
+    CHECK(installer.TitleMetadataCurrent(setup.record));
+  }
+}
+
+// A param.json another app changed in more than the name (here the title ID) is Playden's to write again; the name
+// alone is never enough to keep the rest.
+void ParametersStayPlaydens() {
+  for (const auto& param : {ArtSwapParam("BL2", "FAKE78002"), ArtSwapParam("BL2", "FAKE78001", 262208)}) {
+    Setup setup;
+    std::filesystem::rename(setup.title / "sce_sys/param.json", setup.title / "sce_sys/param.json.old");
+    Write(setup.title / "sce_sys/param.json", param, 0666);
+    auto installer = setup.fixture.Installer();
+    CHECK(!installer.TitleMetadataCurrent(setup.record));
+    CHECK(installer.RefreshTitle(setup.record).state == PackageActionState::kComplete);
+    CHECK(Read(setup.title / "sce_sys/param.json") == kOwnParam && !installer.CustomTitleName(setup.record));
+  }
+}
+
+// A title staged again stops before its extra files are back (a move): the next adoption keeps the saved copies, and
+// the retried stage puts them back.
+void InterruptedStageKeepsArt() {
+  Setup setup;
+  setup.ArtSwap();
+  auto installer = setup.fixture.Installer();
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  std::filesystem::remove_all(setup.title);
+  CHECK(installer.StageTitle(setup.record).state == PackageActionState::kComplete);
+  // As if it stopped right after the shell's files were published.
+  std::filesystem::remove(setup.title / "sce_sys/pic0.dds");
+  std::filesystem::remove(setup.title / "sce_sys/icon0.png.old");
+  std::filesystem::remove(setup.metadata / ".installed");
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.metadata / "custom/sce_sys/pic0.dds") == "steamgriddb-background");
+  CHECK(installer.StageTitle(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "sce_sys/pic0.dds") == "steamgriddb-background");
+  CHECK(Read(setup.title / "sce_sys/icon0.png.old") == "game-icon");
+  CHECK(std::filesystem::exists(setup.metadata / ".installed"));
+  // Complete again: a file the player removes now leaves the saved copies too.
+  std::filesystem::remove(setup.title / "sce_sys/pic0.dds");
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  CHECK(!std::filesystem::exists(setup.metadata / "custom/sce_sys/pic0.dds"));
+}
+
+// ArtSwap's Restore puts Playden's param.json back: the adopted name goes, so a later metadata write keeps the game's.
+void RestoredNameIsDropped() {
+  Setup setup;
+  setup.ArtSwap();
+  auto installer = setup.fixture.Installer();
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  CHECK(installer.CustomTitleName(setup.record) == std::string("BL2 GOTY"));
+  std::filesystem::rename(setup.title / "sce_sys/param.json.old", setup.title / "sce_sys/param.json");
+  CHECK(installer.TitleMetadataCurrent(setup.record));
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  CHECK(!installer.CustomTitleName(setup.record) && !std::filesystem::exists(setup.metadata / "custom/title-name"));
+  CHECK(Read(setup.metadata / "custom/icon0.png") == "steamgriddb-icon-png");
+}
+}  // namespace custom_art
+
 int main() {
+  custom_art::KeptThroughRefreshAndStage();
+  custom_art::ImportedFromKeptData();
+  custom_art::StalePlaydenIconIsReplaced();
+  custom_art::TitleWithoutRecord();
+  custom_art::ParametersStayPlaydens();
+  custom_art::InterruptedStageKeepsArt();
+  custom_art::RestoredNameIsDropped();
   StatusQueriesDoNotRecheckTheKitList();
   CloudSaveFoldersAreMadeInTheProfile();
   TemplateCopyReportsProgress();

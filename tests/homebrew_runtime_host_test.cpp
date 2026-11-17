@@ -4059,6 +4059,28 @@ void PreparesGameInstalledAgainElsewhere() {
   CHECK(!first.refusals.count(220) && first.installs.size() == 1 &&
         first.installs[0].install_path == "/data/homebrew/FAKE77031/games/220");
   Write(bottle / save, "player-save", 0600);
+  // The player gave the title an icon, a background and a name with ArtSwap (#213): each original is kept as
+  // <file>.old, and every language's titleName is set in a param.json printed again.
+  const auto title = fixture.root / "data/homebrew" / first.installs[0].title_id / "sce_sys";
+  const auto playden_param = Read(title / "param.json");
+  auto custom_param = playden_param;
+  for (std::size_t at = 0; (at = custom_param.find("\n  ", at)) != std::string::npos;) custom_param.replace(at, 3, "\n\t");
+  const std::string name_key = "\"titleName\":";
+  const auto name_at = custom_param.find("\"", custom_param.find(name_key) + name_key.size()) + 1;
+  custom_param.replace(name_at, custom_param.find("\"\n", name_at) - name_at, "HL2: My Edition");
+  CHECK(custom_param.find("HL2: My Edition") != std::string::npos && custom_param != playden_param);
+  fs::rename(title / "param.json", title / "param.json.old");
+  Write(title / "param.json", custom_param, 0666);
+  fs::rename(title / "icon0.png", title / "icon0.png.old");
+  Write(title / "icon0.png", "steamgriddb-icon", 0666);
+  Write(title / "pic0.dds", "steamgriddb-background", 0666);
+  // Play from Playden: the game is Ready, nothing is updated, and the art stays.
+  const auto registrations = fixture.registry_mutations;
+  const auto played = prepare(host, Hl2());
+  CHECK(played.refusals.count(220) && played.refusals.at(220) == "This game is already prepared.");
+  CHECK(played.installs[0].title_current && played.installs[0].runtime_current);
+  CHECK(Read(title / "icon0.png") == "steamgriddb-icon" && Read(title / "param.json") == custom_param);
+  CHECK(Read(title / "pic0.dds") == "steamgriddb-background" && fixture.registry_mutations == registrations);
   // The download went away with an uninstall that stopped; the game is on the USB drive now.
   fs::remove_all(fixture.root / "data/homebrew/FAKE77031/games/220");
   auto elsewhere = Hl2();
@@ -4087,6 +4109,12 @@ void PreparesGameInstalledAgainElsewhere() {
   CHECK(Read(bottle / save) == "player-save" && moved.kept_bottles.empty());
   // The move brought the saves back and says so in the bottle.
   CHECK(fs::exists(bottle / ".playden-saves-restored"));
+  // The new title has the player's art, with its name in Playden's own parameters, and is current.
+  const auto moved_title = fixture.root / "data/homebrew" / moved.installs[0].title_id / "sce_sys";
+  CHECK(Read(moved_title / "icon0.png") == "steamgriddb-icon" && Read(moved_title / "pic0.dds") == "steamgriddb-background");
+  CHECK(Read(moved_title / "icon0.png.old") == "kit-icon" && Read(moved_title / "param.json.old") == playden_param);
+  CHECK(Read(moved_title / "param.json").find("\"titleName\": \"HL2: My Edition\"") != std::string::npos);
+  CHECK(moved.installs[0].title_current);
   // A kept copy whose saves never came back (a preparation stopped before that, so no mark): an
   // uninstall keeping saves leaves it as it is and sets the newer bottle aside beside it.
   fs::remove(bottle / ".playden-saves-restored");
@@ -4747,6 +4775,11 @@ void RemovesTitleKeepingSaves() {
                              "library/prefixes/game/drive_c/users/steamuser/AppData/Roaming",
                              "library/prefixes/game/drive_c/users/steamuser/AppData/Roaming/Game"})
       CHECK(chmod((bottle / part).c_str(), 0700) == 0);
+    // The player gave the title an icon and a background with ArtSwap (#213): an uninstall that keeps the saves keeps them.
+    const auto art = fixture.root / "data/homebrew/FAKE78001/sce_sys";
+    fs::rename(art / "icon0.png", art / "icon0.png.old");
+    Write(art / "icon0.png", "steamgriddb-icon", 0666);
+    Write(art / "pic0.dds", "steamgriddb-background", 0666);
 
     // A running title is never removed.
     fixture.activity->store(static_cast<int>(NativeActivity::kActive));
@@ -4812,6 +4845,9 @@ void RemovesTitleKeepingSaves() {
     // Prepared again, the game gets its saves back and the kept copy goes.
     const auto ready = prepare(host);
     CHECK(ready.kept_bottles.empty() && !fs::exists(kept));
+    // ... and its title gets the player's art back.
+    const auto again = fixture.root / "data/homebrew" / ready.installs[0].title_id / "sce_sys";
+    CHECK(Read(again / "icon0.png") == "steamgriddb-icon" && Read(again / "pic0.dds") == "steamgriddb-background");
     CHECK(!ready.work_progress);  // the copy's progress ends with the preparation
     CHECK(Read(bottle / save) == "player-save");
     struct stat info{};

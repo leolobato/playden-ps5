@@ -968,7 +968,10 @@ class RuntimeHost {
   // The param.json Playden wrote for the game's title, or nothing.
   std::optional<std::string> InstalledTitleParameters(const runtime::RuntimeInstall& record) const;
   std::optional<std::string> InstalledTitleName(const runtime::RuntimeInstall& record) const;
-  bool TitleNameCurrent(const runtime::RuntimeInstall& record) const;
+  bool TitleNameCurrent(const Composition& composition, const runtime::RuntimeInstall& record) const;
+  // `installed` is the name the player gave the title with another app (#213), adopted.
+  bool TitleNameIsCustom(const Composition& composition, const runtime::RuntimeInstall& record,
+                         const std::string& installed) const;
   // The kit can declare a title VRR-supported (display-vrr).
   static bool KitDeclaresVariableRefresh(const Composition& composition);
   // The title's written parameters declare VRR support exactly when the kit can (an unreadable layout counts as current).

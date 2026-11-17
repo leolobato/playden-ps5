@@ -224,6 +224,14 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   // new one except for the kit's files_sha256, and the record's artifacts are
   // the kit's. The bottle's contents and the publication are not touched.
   PackageActionResult RefreshTitle(const RuntimeInstall& record) override;
+  // Custom art (#213) is the title's icon0.png or param.json that neither Playden's metadata nor
+  // what Playden last copied into the title (title-metadata/.installed) explains, and any sce_sys
+  // file the shell doesn't ship. Title checks accept it as it is; this copies it into
+  // title-metadata/custom/ (icon0.png, title-name, sce_sys/<file>), mirroring the title's extra
+  // files. StageTitle and RefreshTitle adopt first themselves.
+  PackageActionResult AdoptCustomTitleArt(const RuntimeInstall& record) override;
+  PackageActionResult ImportCustomTitleArt(const RuntimeInstall& record, const std::filesystem::path& kept_game) override;
+  std::optional<std::string> CustomTitleName(const RuntimeInstall& record) override;
 
  private:
   struct Mapping;
@@ -266,6 +274,16 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   bool PublicationPathsSafe(const ProfilePublication& publication,
                             const PublicationPaths& paths) const;
   std::vector<Mapping> TitleMappings(const RuntimeInstall& record) const;
+  // The file a title metadata mapping should hold instead of Playden's own (`expected`): the adopted
+  // custom icon, or the title's own file when it is the player's art; nothing keeps Playden's.
+  std::optional<std::filesystem::path> PlayerArtSource(const RuntimeInstall& record, const ResolvedPaths& paths,
+                                                       const std::string& destination,
+                                                       const std::string& expected_sha256) const;
+  // Writes title-metadata/.installed with the hashes of the title's icon0.png and param.json, as
+  // Playden just copied them. Logged, never a failure: without it nothing in the title is adopted.
+  void RecordInstalledTitleArt(const RuntimeInstall& record, const ResolvedPaths& paths);
+  // Copies the adopted extra sce_sys files into a freshly staged title.
+  bool RestoreCustomTitleFiles(const RuntimeInstall& record, const ResolvedPaths& paths);
   std::vector<Mapping> TemplateMappings() const;
   PackageActionResult CopyMappings(const RuntimeInstall& record,
                                    const std::vector<Mapping>& mappings,

@@ -55,6 +55,17 @@ namespace {
 // says its metadata was generated.
 constexpr const char* kTitleMetadataFiles[] = {"sce_sys/param.json", "sce_sys/icon0.png"};
 constexpr const char* kTitleMetadataMarker = ".generated";
+// Custom title art (#213), under title-metadata/: what Playden last copied into the title's
+// icon0.png and param.json, and the player's art adopted from the title.
+constexpr const char* kInstalledTitleArt = ".installed";
+constexpr const char* kCustomIcon = "custom/icon0.png";
+constexpr const char* kCustomTitleName = "custom/title-name";
+constexpr const char* kCustomFiles = "custom/sce_sys";
+// Bounds on what is adopted from sce_sys, a folder any app can write: a 3840x2160 BC7 pic0.dds is
+// about 8 MiB.
+constexpr std::uint64_t kMaxCustomFileBytes = 64ULL * 1024 * 1024;
+constexpr std::size_t kMaxCustomFiles = 64;
+constexpr std::size_t kMaxParamBytes = 64 * 1024;
 }  // namespace
 
 struct FilesystemPackageInstaller::ResolvedPaths {
@@ -656,22 +667,31 @@ FilesystemPackageInstaller::TitleMappings(const RuntimeInstall& record) const {
         !destinations.insert(destination).second)
       return {};
     Mapping mapping{&file, file.path, destination, kit_.root / file.path, nullptr};
-    for (const auto* metadata : kTitleMetadataFiles) {
-      if (destination != metadata) continue;
-      const auto own = TitleMetadataPath(record, destination);
+    const auto describe = [&](const fs::path& own) {
       std::error_code error;
-      if (own.empty() || !IsRegularNoSymlink(own)) continue;
       const auto size = fs::file_size(own, error);
       const auto digest = operations_.hash_file(own);
-      if (error || !digest) return {};
+      if (error || !digest) return false;
       auto described = std::make_shared<KitFile>(KitFile{own.string(), size, *digest, file.mode});
       mapping.file = described.get();
       mapping.owned = std::move(described);
       mapping.source = own;
+      return true;
+    };
+    const bool metadata = destination == kTitleMetadataFiles[0] || destination == kTitleMetadataFiles[1];
+    if (metadata) {
+      const auto own = TitleMetadataPath(record, destination);
+      if (!own.empty() && IsRegularNoSymlink(own) && !describe(own)) return {};
     }
     // The any-title shell's own param.json names its template ID: a game title only ever
     // gets the parameters Playden wrote for it.
     if (variant->any_title && destination == kTitleMetadataFiles[0] && !mapping.owned) return {};
+    if (metadata) {
+      const auto paths = Resolve(record);
+      if (!paths) return {};
+      if (const auto player = PlayerArtSource(record, *paths, destination, mapping.file->sha256))
+        if (!describe(*player)) return {};
+    }
     mappings.push_back(std::move(mapping));
   }
   return mappings;
@@ -693,6 +713,378 @@ bool FilesystemPackageInstaller::TitleMetadataCurrent(const RuntimeInstall& reco
     const auto digest = IsRegularNoSymlink(installed) ? operations_.hash_file(installed) : std::nullopt;
     if (!digest || *digest != mapping.file->sha256) return false;
   }
+  return true;
+}
+
+namespace {
+using JsonValue = playden::steam::json::Value;
+
+std::optional<JsonValue> ParseTitleParameters(const std::string& text) {
+  auto parsed = playden::steam::json::Parse(text, {kMaxParamBytes, 8, 1024, kMaxParamBytes});
+  if (!parsed || !parsed->is_object()) return std::nullopt;
+  return parsed;
+}
+
+// The name the home screen shows for a param.json: its default language's titleName, else the
+// first language's, else a top-level titleName (Playden's tests and older kits).
+std::optional<std::string> TitleNameIn(const JsonValue& parameters) {
+  const auto string_at = [](const JsonValue* object, std::string_view key) -> std::optional<std::string> {
+    const auto* value = object && object->is_object() ? object->Find(key) : nullptr;
+    if (!value || !value->is_string()) return std::nullopt;
+    return value->text();
+  };
+  if (const auto* languages = parameters.Find("localizedParameters"); languages && languages->is_object()) {
+    if (const auto language = string_at(languages, "defaultLanguage"))
+      if (auto name = string_at(languages->Find(*language), "titleName")) return name;
+    for (const auto& [key, value] : languages->object())
+      if (auto name = string_at(&value, "titleName")) return name;
+  }
+  return string_at(&parameters, "titleName");
+}
+
+// Equal but for titleName values, wherever they are (ArtSwap sets every language's) and however the
+// text is laid out (ArtSwap prints the file again).
+bool SameExceptTitleNames(const JsonValue& a, const JsonValue& b) {
+  if (a.type() != b.type()) return false;
+  switch (a.type()) {
+    case JsonValue::Type::kNull: return true;
+    case JsonValue::Type::kBool: return a.boolean() == b.boolean();
+    case JsonValue::Type::kNumber:
+    case JsonValue::Type::kString: return a.text() == b.text();
+    case JsonValue::Type::kArray:
+      if (a.array().size() != b.array().size()) return false;
+      for (std::size_t i = 0; i < a.array().size(); ++i)
+        if (!SameExceptTitleNames(a.array()[i], b.array()[i])) return false;
+      return true;
+    case JsonValue::Type::kObject: {
+      std::size_t a_keys = 0, b_keys = 0;
+      for (const auto& [key, value] : a.object()) {
+        if (key == "titleName") continue;
+        ++a_keys;
+        const auto* other = b.Find(key);
+        if (!other || !SameExceptTitleNames(value, *other)) return false;
+      }
+      for (const auto& [key, value] : b.object()) b_keys += key == "titleName" ? 0 : 1;
+      return a_keys == b_keys;
+    }
+  }
+  return false;
+}
+
+struct InstalledTitleArt {
+  std::string icon_sha256;   // empty: the title had no icon0.png
+  std::string param_sha256;
+};
+
+std::optional<InstalledTitleArt> ReadInstalledTitleArt(const fs::path& path) {
+  const auto text = path.empty() ? std::nullopt : ReadBounded(path, 512);
+  if (!text) return std::nullopt;
+  InstalledTitleArt art;
+  bool icon = false, param = false;
+  std::size_t start = 0;
+  while (start < text->size()) {
+    const auto end = text->find('\n', start);
+    if (end == std::string::npos) return std::nullopt;
+    const auto line = text->substr(start, end - start);
+    if (line.rfind("icon_sha256=", 0) == 0) { art.icon_sha256 = line.substr(12); icon = true; }
+    else if (line.rfind("param_sha256=", 0) == 0) { art.param_sha256 = line.substr(13); param = true; }
+    start = end + 1;
+  }
+  if (!icon || !param || (!art.icon_sha256.empty() && !IsHexDigest(art.icon_sha256)) || !IsHexDigest(art.param_sha256))
+    return std::nullopt;
+  return art;
+}
+
+// Copies a regular file (never through a link) beside `to` and renames it over `to`, synced.
+bool CopyFileReplacing(const fs::path& from, const fs::path& to, mode_t mode, std::uint64_t limit) {
+  const auto temporary = to.parent_path() / ("." + to.filename().string() + ".adopt");
+  ::unlink(temporary.c_str());
+  const int input = ::open(from.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  struct stat info{};
+  if (input < 0) return false;
+  if (::fstat(input, &info) != 0 || !S_ISREG(info.st_mode) || static_cast<std::uint64_t>(info.st_size) > limit) {
+    ::close(input);
+    return false;
+  }
+  const int output = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
+  bool ok = output >= 0 && ::fchmod(output, mode) == 0;
+  std::vector<char> buffer(256 * 1024);  // heap: console worker stacks are small
+  std::uint64_t copied = 0;
+  while (ok) {
+    const auto count = ::read(input, buffer.data(), buffer.size());
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) { ok = count == 0; break; }
+    // Another app may still be writing the file: it never grows past the bound here.
+    copied += static_cast<std::uint64_t>(count);
+    if (copied > limit) { ok = false; break; }
+    for (ssize_t offset = 0; ok && offset < count;) {
+      const auto written = ::write(output, buffer.data() + offset, static_cast<std::size_t>(count - offset));
+      if (written < 0 && errno == EINTR) continue;
+      ok = written > 0;
+      offset += written > 0 ? written : 0;
+    }
+  }
+  ::close(input);
+  if (output >= 0) {
+    ok = ::fsync(output) == 0 && ok;
+    ok = ::close(output) == 0 && ok;
+  }
+  if (!ok || ::rename(temporary.c_str(), to.c_str()) != 0) {
+    ::unlink(temporary.c_str());
+    return false;
+  }
+  return NativeSync(to.parent_path(), true);
+}
+
+// The regular files directly in a title's (or the adopted) sce_sys folder, by name, but for hidden
+// ones (Playden's and other apps' temporaries).
+std::optional<std::vector<std::string>> ListArtFiles(const fs::path& folder) {
+  std::vector<std::string> names;
+  if (!IsDirectoryNoSymlink(folder)) return names;
+  std::error_code error;
+  for (fs::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+    const auto name = it->path().filename().string();
+    if (name.empty() || name[0] == '.' || !IsRegularNoSymlink(it->path())) continue;
+    names.push_back(name);
+  }
+  if (error) return std::nullopt;
+  std::sort(names.begin(), names.end());
+  return names;
+}
+}  // namespace
+
+std::optional<fs::path> FilesystemPackageInstaller::PlayerArtSource(const RuntimeInstall& record,
+                                                                    const ResolvedPaths& paths,
+                                                                    const std::string& destination,
+                                                                    const std::string& expected_sha256) const {
+  const auto installed = paths.title / destination;
+  const bool icon = destination == kTitleMetadataFiles[1];
+  const auto adopted_icon = TitleMetadataPath(record, kCustomIcon);
+  // The adopted icon, for a title that has no icon of the player's in it (staged again after a move).
+  const auto adopted_or_ours = [&]() -> std::optional<fs::path> {
+    if (icon && IsRegularNoSymlink(adopted_icon)) return adopted_icon;
+    return std::nullopt;
+  };
+  std::error_code error;
+  if (!PathComponentsHaveNoSymlink(paths.title, destination, true) || !IsRegularNoSymlink(installed)) return adopted_or_ours();
+  const auto size = fs::file_size(installed, error);
+  if (error || size > kMaxCustomFileBytes) return adopted_or_ours();
+  const auto digest = operations_.hash_file(installed);
+  if (!digest) return adopted_or_ours();
+  // The title has Playden's own file (ArtSwap's Restore puts it back): the adopted icon is dropped
+  // at the next adoption.
+  if (*digest == expected_sha256) return std::nullopt;
+  const auto last = ReadInstalledTitleArt(TitleMetadataPath(record, kInstalledTitleArt));
+  // What Playden last put there, out of date: its current file goes in again. A title an older
+  // Playden made has no record; there the original another app kept beside its change
+  // (ArtSwap's <file>.old) tells it apart.
+  const auto playden_copy = [&](const std::string& recorded) {
+    return last ? *digest == recorded : !IsRegularNoSymlink(paths.title / (destination + ".old"));
+  };
+  if (icon) {
+    if (IsRegularNoSymlink(adopted_icon) && operations_.hash_file(adopted_icon) == digest) return adopted_icon;
+    if (playden_copy(last ? last->icon_sha256 : std::string())) return adopted_or_ours();
+    return installed;
+  }
+  // A name the player gave the title: its parameters must otherwise be Playden's (the title ID,
+  // the VRR bit, anything a kit changes), or Playden's are written again with that name.
+  const auto ours = TitleMetadataPath(record, destination);
+  const auto expected_text = ReadBounded(IsRegularNoSymlink(ours) ? ours : kit_.root / Variant(record)->path / destination,
+                                         kMaxParamBytes);
+  const auto title_text = ReadBounded(installed, kMaxParamBytes);
+  const auto expected = expected_text ? ParseTitleParameters(*expected_text) : std::nullopt;
+  const auto title = title_text ? ParseTitleParameters(*title_text) : std::nullopt;
+  const auto name = title ? TitleNameIn(*title) : std::nullopt;
+  if (!expected || !name || !SameExceptTitleNames(*expected, *title)) return std::nullopt;
+  const auto adopted = ReadBounded(TitleMetadataPath(record, kCustomTitleName), 2048);
+  if (adopted && *adopted == *name + "\n") return installed;
+  if (playden_copy(last ? last->param_sha256 : std::string())) return std::nullopt;
+  return installed;
+}
+
+void FilesystemPackageInstaller::RecordInstalledTitleArt(const RuntimeInstall& record, const ResolvedPaths& paths) {
+  const auto path = TitleMetadataPath(record, kInstalledTitleArt);
+  const auto icon_path = paths.title / kTitleMetadataFiles[1];
+  const auto icon = IsRegularNoSymlink(icon_path) ? operations_.hash_file(icon_path) : std::optional<std::string>(std::string());
+  const auto param = operations_.hash_file(paths.title / kTitleMetadataFiles[0]);
+  std::string detail;
+  bool ok = icon && param && !path.empty() &&
+            EnsurePrivateDirectories(paths_.host_data_root, paths.game, path.parent_path(), &detail,
+                                     BottleTraversal(paths, ProfileShared(record, paths)));
+  if (ok) {
+    const auto temporary = path.parent_path() / (std::string(kInstalledTitleArt) + ".new");
+    ::unlink(temporary.c_str());
+    ok = WriteFile(temporary, "icon_sha256=" + *icon + "\nparam_sha256=" + *param + "\n", 0600) &&
+         SyncPath(temporary, false) && ::rename(temporary.c_str(), path.c_str()) == 0 && SyncPath(path.parent_path(), true);
+    if (!ok) ::unlink(temporary.c_str());
+  }
+  if (!ok) {
+    // Without a record nothing in the title reads as the player's: the next refresh puts Playden's back.
+    if (!path.empty()) ::unlink(path.c_str());
+    if (operations_.log) operations_.log("title art record failed install=" + record.install_id + " " + detail);
+  }
+}
+
+PackageActionResult FilesystemPackageInstaller::AdoptCustomTitleArt(const RuntimeInstall& record) {
+  const auto paths = Resolve(record);
+  if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
+  // A title already removed (a move that stopped part way) has nothing left to adopt.
+  if (!IsDirectoryNoSymlink(paths->title)) return Complete();
+  const auto mappings = TitleMappings(record);
+  if (mappings.empty()) return Failed("kit-invalid", "the title's files are not known");
+  const auto root = TitleMetadataPath(record, {});
+  const auto failed = [&](const std::string& what) {
+    if (operations_.log) operations_.log("title art adopt failed install=" + record.install_id + " " + what);
+    return Failed("title-art", "The game's custom title art could not be kept (" + what + ").");
+  };
+  const auto ensure = [&](const fs::path& folder) {
+    std::string detail;
+    return EnsurePrivateDirectories(paths_.host_data_root, paths->game, folder, &detail,
+                                    BottleTraversal(*paths, ProfileShared(record, *paths)));
+  };
+  std::vector<std::string> adopted;
+  std::set<std::string> shell_files;
+  for (const auto& mapping : mappings) {
+    std::string name;
+    if (HasPrefix(mapping.destination_relative, "sce_sys", &name) && name.find('/') == std::string::npos)
+      shell_files.insert(name);
+    const auto installed = paths->title / mapping.destination_relative;
+    if (mapping.destination_relative == kTitleMetadataFiles[1]) {
+      const auto custom = root / kCustomIcon;
+      if (mapping.source == installed) {
+        if (!ensure(custom.parent_path()) || !CopyFileReplacing(installed, custom, 0600, kMaxCustomFileBytes))
+          return failed("icon0.png");
+        adopted.push_back("icon0.png");
+      } else if (mapping.source != custom && IsRegularNoSymlink(custom) && IsRegularNoSymlink(installed) &&
+                 operations_.hash_file(installed) == mapping.file->sha256) {
+        // The title has Playden's icon again (ArtSwap's Restore): the adopted one goes.
+        if (::unlink(custom.c_str()) != 0 && errno != ENOENT) return failed("icon0.png");
+        adopted.push_back("-icon0.png");
+      }
+    } else if (mapping.destination_relative == kTitleMetadataFiles[0] && mapping.source != installed) {
+      // The title has Playden's parameters again (ArtSwap's Restore) while Playden's still carry the game's
+      // name: the adopted name goes, or the next metadata write would bring it back.
+      const auto custom = root / kCustomTitleName;
+      const auto adopted_name = CustomTitleName(record);
+      if (!adopted_name || !IsRegularNoSymlink(installed) || operations_.hash_file(installed) != mapping.file->sha256)
+        continue;
+      const auto ours = ReadBounded(mapping.source, kMaxParamBytes);
+      const auto parameters = ours ? ParseTitleParameters(*ours) : std::nullopt;
+      if (!parameters || TitleNameIn(*parameters) == adopted_name) continue;
+      if (::unlink(custom.c_str()) != 0 && errno != ENOENT) return failed("title name");
+      adopted.push_back("-title-name");
+    } else if (mapping.destination_relative == kTitleMetadataFiles[0] && mapping.source == installed) {
+      const auto text = ReadBounded(installed, kMaxParamBytes);
+      const auto parameters = text ? ParseTitleParameters(*text) : std::nullopt;
+      const auto name = parameters ? TitleNameIn(*parameters) : std::nullopt;
+      if (!name || name->empty() || name->size() > 1024 || name->find_first_of("\r\n") != std::string::npos ||
+          name->find('\0') != std::string::npos)
+        continue;
+      const auto custom = root / kCustomTitleName;
+      if (ReadBounded(custom, 2048) == *name + "\n") continue;
+      const auto temporary = custom.parent_path() / ".title-name.new";
+      ::unlink(temporary.c_str());
+      if (!ensure(custom.parent_path()) || !WriteFile(temporary, *name + "\n", 0600) || !SyncPath(temporary, false) ||
+          ::rename(temporary.c_str(), custom.c_str()) != 0 || !SyncPath(custom.parent_path(), true)) {
+        ::unlink(temporary.c_str());
+        return failed("title name");
+      }
+      adopted.push_back("title-name");
+    }
+  }
+  // The files the shell doesn't ship (pic0.dds, logo.png, ArtSwap's .old files): the adopted copy
+  // follows the title, added, changed and removed.
+  const auto title_files = paths->title / "sce_sys";
+  const auto kept = root / kCustomFiles;
+  const auto listed = ListArtFiles(title_files);
+  const auto kept_listed = ListArtFiles(kept);
+  if (!listed || !kept_listed) return failed("sce_sys listing");
+  std::set<std::string> extras;
+  for (const auto& name : *listed) {
+    if (shell_files.count(name)) continue;
+    std::error_code error;
+    const auto size = fs::file_size(title_files / name, error);
+    if (error || size > kMaxCustomFileBytes || extras.size() >= kMaxCustomFiles) {
+      if (operations_.log) operations_.log("title art skips install=" + record.install_id + " file=" + name);
+      continue;
+    }
+    extras.insert(name);
+    std::error_code kept_error;
+    if (IsRegularNoSymlink(kept / name) && fs::file_size(kept / name, kept_error) == size && !kept_error &&
+        operations_.hash_file(kept / name) == operations_.hash_file(title_files / name))
+      continue;
+    if (!ensure(kept) || !CopyFileReplacing(title_files / name, kept / name, 0600, kMaxCustomFileBytes))
+      return failed("sce_sys/" + name);
+    adopted.push_back("sce_sys/" + name);
+  }
+  // Files gone from the title leave the adopted copy only once Playden finished putting the title in place
+  // (its record): a title staged part way lacks them because they were not restored yet.
+  const bool complete = ReadInstalledTitleArt(root / kInstalledTitleArt).has_value();
+  for (const auto& name : *kept_listed) {
+    if (extras.count(name) || !complete) continue;
+    if (::unlink((kept / name).c_str()) != 0 && errno != ENOENT) return failed("sce_sys/" + name);
+    adopted.push_back("-sce_sys/" + name);
+  }
+  if (!adopted.empty() && operations_.log) {
+    std::string line = "title art adopted install=" + record.install_id;
+    for (const auto& item : adopted) line += " " + item;
+    operations_.log(line);
+  }
+  return Complete();
+}
+
+PackageActionResult FilesystemPackageInstaller::ImportCustomTitleArt(const RuntimeInstall& record, const fs::path& kept_game) {
+  const auto paths = Resolve(record);
+  if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
+  const auto from = kept_game / "title-metadata";
+  const auto root = TitleMetadataPath(record, {});
+  if (!IsDirectoryNoSymlink(from / "custom") || IsDirectoryNoSymlink(root / "custom")) return Complete();
+  std::string detail;
+  const auto ensure = [&](const fs::path& folder) {
+    return EnsurePrivateDirectories(paths_.host_data_root, paths->game, folder, &detail,
+                                    BottleTraversal(*paths, ProfileShared(record, *paths)));
+  };
+  const auto failed = [&](const std::string& what) {
+    if (operations_.log) operations_.log("title art import failed install=" + record.install_id + " " + what + " " + detail);
+    return Failed("title-art", "The game's custom title art could not be brought back (" + what + ").");
+  };
+  // Into custom.import first, renamed into place at the end: a stop part way leaves no custom/ to
+  // stand for the whole.
+  const auto staging = root / "custom.import";
+  if (!RemoveTreeNoFollow(staging.string()) || !ensure(staging / "sce_sys")) return failed("folder");
+  std::vector<std::string> names;
+  for (const char* file : {"icon0.png", "title-name"})
+    if (IsRegularNoSymlink(from / "custom" / file)) names.emplace_back(file);
+  const auto files = ListArtFiles(from / kCustomFiles);
+  if (!files) return failed("listing");
+  for (const auto& name : *files) names.push_back("sce_sys/" + name);
+  for (const auto& name : names)
+    if (!CopyFileReplacing(from / "custom" / name, staging / name, 0600, kMaxCustomFileBytes)) return failed(name);
+  if (::rename(staging.c_str(), (root / "custom").c_str()) != 0 || !SyncPath(root, true)) return failed("rename");
+  if (operations_.log) operations_.log("title art imported install=" + record.install_id + " files=" + std::to_string(names.size()));
+  return Complete();
+}
+
+std::optional<std::string> FilesystemPackageInstaller::CustomTitleName(const RuntimeInstall& record) {
+  const auto text = ReadBounded(TitleMetadataPath(record, kCustomTitleName), 2048);
+  if (!text || text->size() < 2 || text->back() != '\n') return std::nullopt;
+  auto name = text->substr(0, text->size() - 1);
+  if (name.find_first_of("\r\n") != std::string::npos || name.find('\0') != std::string::npos) return std::nullopt;
+  return name;
+}
+
+bool FilesystemPackageInstaller::RestoreCustomTitleFiles(const RuntimeInstall& record, const ResolvedPaths& paths) {
+  const auto kept = TitleMetadataPath(record, kCustomFiles);
+  const auto files = ListArtFiles(kept);
+  if (!files) return false;
+  for (const auto& name : *files) {
+    const auto to = paths.title / "sce_sys" / name;
+    // The shell's own files stay the kit's.
+    if (ExistsNoThrow(to)) continue;
+    if (!CopyFileReplacing(kept / name, to, 0644, kMaxCustomFileBytes)) return false;
+  }
+  if (!files->empty() && operations_.log)
+    operations_.log("title art restored install=" + record.install_id + " files=" + std::to_string(files->size()));
   return true;
 }
 
@@ -1677,27 +2069,39 @@ PackageActionResult FilesystemPackageInstaller::StageTitle(
   if (IsDirectoryNoSymlink(paths->title) &&
       MarkerEquals(paths->title / kTitleOwner, OwnerMarker(record, kit_, "title")) &&
       TitleFilesMatch(record, *paths)) {
+    // Art the player added since, kept; art a stop before publishing left out, put back.
+    if (const auto adopted = AdoptCustomTitleArt(record); adopted.state != PackageActionState::kComplete) return adopted;
+    if (!RestoreCustomTitleFiles(record, *paths))
+      return Failed("title-art", "The game's custom title art could not be put back.");
     const auto started = PartTimes::Clock::now();
     const bool durable = PublishTitleDirectories(paths->title) && SyncTree(paths->title) &&
                          SyncAncestors(paths->title.parent_path());
     if (operations_.log) operations_.log("title republish " + PartTimes{}.Summary(started));
-    return durable ? Complete()
-                   : Failed("sync-failed", "owned native title durability could not be established");
+    if (!durable) return Failed("sync-failed", "owned native title durability could not be established");
+    RecordInstalledTitleArt(record, *paths);
+    return Complete();
   }
   bool title_known = false;
   const bool title_exists = ExistsNoThrow(paths->title, &title_known);
   if (!title_known) return Failed("title-unavailable", "native title state is unavailable");
   if (title_exists)
     return Failed("title-collision", "native title source already exists and is not owned");
+  // Until the new title is complete, nothing records what Playden put into it (AdoptCustomTitleArt).
+  if (const auto record_path = TitleMetadataPath(record, kInstalledTitleArt); !record_path.empty())
+    ::unlink(record_path.c_str());
   const auto copied = CopyMappings(record, TitleMappings(record), paths->title_staging, paths->title,
                                   "title", kTitleOwner);
   if (copied.state != PackageActionState::kComplete) return copied;
+  // A game that moved, or came back after an uninstall, gets the art the player gave its title.
+  if (!RestoreCustomTitleFiles(record, *paths))
+    return Failed("title-art", "The game's custom title art could not be put back.");
   const auto started = PartTimes::Clock::now();
   const bool published = PublishTitleDirectories(paths->title) && SyncTree(paths->title, false);
   if (operations_.log) operations_.log("title publish " + PartTimes{}.Summary(started));
-  return published
-             ? copied
-             : Failed("title-modes", "owned native title directories could not be made readable to registration");
+  if (!published)
+    return Failed("title-modes", "owned native title directories could not be made readable to registration");
+  RecordInstalledTitleArt(record, *paths);
+  return copied;
 }
 
 namespace {
@@ -1845,8 +2249,13 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
       RespinIdentity(new_title, kit_.kit_id) != RespinIdentity(*title_marker, kit_.kit_id) ||
       RespinIdentity(new_bottle, kit_.kit_id) != RespinIdentity(*bottle_marker, kit_.kit_id))
     return Failed("refresh-ownership", "installed title and bottle are not this install's from a compatible kit");
+  // The player's art in the title is kept first: the files below then leave it as it is.
+  if (const auto adopted = AdoptCustomTitleArt(record); adopted.state != PackageActionState::kComplete) return adopted;
   // TitleMatches checks sizes and modes only: new metadata of the same size (an attribute3 bit) still needs copying.
-  if (title_digest == kit_.files_sha256 && TitleMatches(record, *paths) && TitleMetadataCurrent(record)) return Complete();
+  if (title_digest == kit_.files_sha256 && TitleMatches(record, *paths) && TitleMetadataCurrent(record)) {
+    RecordInstalledTitleArt(record, *paths);
+    return Complete();
+  }
   std::vector<char> buffer(kCopyBufferBytes);  // heap: console worker stacks are small
   const auto mappings = TitleMappings(record);
   // Progress: the title's bytes, checked or copied; a file already current counts as done.
@@ -1920,6 +2329,7 @@ PackageActionResult FilesystemPackageInstaller::RefreshTitle(const RuntimeInstal
   }
   if (!PublishTitleDirectories(paths->title) || !SyncTree(paths->title) || !TitleMatches(record, *paths))
     return Failed("refresh-verify", "the refreshed title does not match the kit");
+  RecordInstalledTitleArt(record, *paths);
   return Complete();
 }
 

@@ -2,6 +2,7 @@
 
 #include "runtime/game_install.h"
 
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -123,6 +124,18 @@ public:
   // The icon source the title metadata was written with (empty before sources were recorded); nothing
   // without readable metadata.
   virtual std::optional<std::string> TitleIconSource(const RuntimeInstall &) { return std::string(); }
+  // Art and a name another app (ArtSwap) put into the title's sce_sys: copied into the game's
+  // title-metadata/custom/ so a refresh, a new kit or a move keeps them. Nothing to adopt is complete.
+  virtual PackageActionResult AdoptCustomTitleArt(const RuntimeInstall &) {
+    return {PackageActionState::kComplete, {}, {}};
+  }
+  // Brings the custom art kept in another copy of the game's data folder (the one a move or an
+  // uninstall kept, `<install>.kept`) into this one, when this one has none.
+  virtual PackageActionResult ImportCustomTitleArt(const RuntimeInstall &, const std::filesystem::path & /*kept_game*/) {
+    return {PackageActionState::kComplete, {}, {}};
+  }
+  // The title name the player gave the title with another app, once adopted.
+  virtual std::optional<std::string> CustomTitleName(const RuntimeInstall &) { return std::nullopt; }
   // Updates an installed title's immutable files to the admitted kit when only
   // the kit's file inventory changed (same kit id, variant, runtime, recipe).
   virtual PackageActionResult RefreshTitle(const RuntimeInstall &) {
