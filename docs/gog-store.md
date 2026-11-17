@@ -1,15 +1,15 @@
 # GOG store (experimental)
 
-GOG is being added as a second store, next to Steam. Until it is finished, it is an experimental feature for testers
-and maintainers. This page says what it does now, how to turn it on, and what to know before you test it.
+GOG is a second store, next to Steam. It is still experimental. This page says what it does now and what to know
+before you use it.
 
 ## Turning it on
 
-Add a line `gog-store` to `features.txt` in Playden's data folder (`/data/playden/features.txt` on the console,
-writable over FTP; the data folder given with `--data-dir` on the Mac). Playden reads the file once at startup, so
-restart Playden after you change it. Dev builds and nightlies also need the line: GOG is off in every build without it.
+GOG is on in every build since 0.12.0-beta.1: sign in from Settings › Accounts › Stores › GOG. Older builds need a line
+`gog-store` in `features.txt` in Playden's data folder (`/data/playden/features.txt` on the console); newer builds still
+accept the line.
 
-## What the line turns on now
+## What it does now
 
 - **Sign-in.** Settings › Accounts lists Steam and GOG under Stores. The startup screen offers "Sign in to GOG" after Steam's
   sign-in, so a player can start with GOG only.
@@ -61,8 +61,8 @@ Not there yet:
 - **Other builds.** Playden offers only the newest build of the default branch. It doesn't offer branch builds or
   older builds, and it downloads changed files whole instead of using GOG's patches.
 
-With the line off, Playden does not change: there is no Stores section, no GOG sign-in, no GOG routes in web access,
-and no `gog` folder in user data.
+With GOG off (a build older than 0.12.0-beta.1 without the line), there is no Stores section, no GOG sign-in, no GOG
+routes in web access, and no `gog` folder in user data.
 
 ## Signing in with your phone
 
@@ -112,8 +112,8 @@ Before you go back to an older build of Playden with GOG games in your data, rea
 
 ## For maintainers
 
-- The wiring is in `src/homebrew/gog_wiring.*`. `host.cpp` and `ps5.cpp` make it only with the line on. When "Stay
-  signed in" is off, it deletes a GOG session left from an earlier run even with the line off.
+- The wiring is in `src/homebrew/gog_wiring.*`. `host.cpp` and `ps5.cpp` make it only with GOG on. When "Stay
+  signed in" is off, it deletes a GOG session left from an earlier run even with GOG off.
 - The client is `src/gog/`, the store is `src/stores/gog*`, and the phone relay is `src/web/gog_relay.*` with the page
   in `src/web/page/`.
 - `playden-gog-dev` (host preset only, not shipped; `tools/gog-dev/main.cpp`) runs GOG's calls through the same

@@ -52,6 +52,8 @@ private Windows environment and its own tile on the PS5 Home screen.
 - **Online play (experimental).** Playden can run Valve's own Steam client beside a game, so the game reaches
   Steam's servers, lobbies and friends as on a PC. You choose it per game. It is off by default and has risks of its
   own. See [Online play](#online-play-experimental).
+- **GOG games (experimental).** Sign in to GOG from your phone, and your GOG games join the Library next to your
+  Steam games. They install, update and play like Steam games. See [GOG store](docs/gog-store.md).
 - **Import Windows games.** Add game folders you already have, from a USB drive, an M.2 SSD or over FTP. No Steam
   account is needed. See [Import Windows games](#import-windows-games).
 - **Install to internal or external disks.** Console storage, or an exFAT USB drive formatted on a Mac or PC. USB
@@ -62,7 +64,7 @@ See the [compatibility list](COMPATIBILITY.md) for the games we have tested.
 ### Planned
 
 - Steam game updates
-- Other stores (GOG, Epic)
+- Other stores (Epic)
 - Support for game launches (Rockstar, EA, Ubisoft)
 - Community recipes in the preset chooser
 

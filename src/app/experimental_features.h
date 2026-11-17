@@ -20,17 +20,17 @@ inline constexpr std::size_t kExperimentalFeaturesMaxBytes = 16384;
 // ignored: it turns nothing on and is not reported as unknown.
 struct ExperimentalFeatures {
   // Line online-steam: Steam features = Online (Steam's client beside the game), Steam sign-in and Steam network
-  // (runtime::SetOnlineSteamEnabled). Off in every build unless the file names it.
+  // (runtime::SetOnlineSteamEnabled). On by default in every build since 0.12.0-beta.1; the line is still accepted.
   bool online_steam = false;
-  // Line gog-store: GOG as a second store (sign-in, library, installs), while it is being built. On in nightlies and
-  // dev builds; off in releases unless the file names it. Going back to a build older than the first release that reads GOG records (Phase 1 of
-  // the GOG plan) breaks Play for every game until the GOG titles are removed: that build refuses the whole runtime
-  // install records file when one record names GOG.
+  // Line gog-store: GOG as a second store (sign-in, library, installs). On by default in every build since
+  // 0.12.0-beta.1; the line is still accepted. Going back to a build older than the first release that reads GOG
+  // records (Phase 1 of the GOG plan) breaks Play for every game until the GOG titles are removed: that build refuses
+  // the whole runtime install records file when one record names GOG.
   bool gog_store = false;
 };
 
-// What a build has on before features.txt. all_on (nightlies and local dev builds) turns GOG on; Online stays off in
-// every build.
+// What a build has on before features.txt. Online and GOG are on in every build; all_on (nightlies and local dev
+// builds) is kept for the next experimental feature and turns nothing more on today.
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on);
 // defaults with the features text names turned on. unknown: each line that names no feature, as written.
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults = {},

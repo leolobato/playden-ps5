@@ -27,8 +27,9 @@ void Write(const std::filesystem::path& path, const std::string& text) {
 
 int main() {
   // Online Steam features is off in every build, nightlies and dev builds too, until the file names it.
-  CHECK(!DefaultExperimentalFeatures(false).online_steam);
-  CHECK(!DefaultExperimentalFeatures(true).online_steam);
+  // Online is on by default in every build, releases included.
+  CHECK(DefaultExperimentalFeatures(false).online_steam);
+  CHECK(DefaultExperimentalFeatures(true).online_steam);
 
   // One name per line, surrounding whitespace and CRLF trimmed, comments and blank lines skipped.
   std::vector<std::string> unknown;
@@ -47,15 +48,16 @@ int main() {
   features = ParseExperimentalFeatures("community-recipes\nonline-steam\n", {}, &unknown);
   CHECK(features.online_steam && unknown.empty());
 
-  // GOG as a store: on by default in nightlies and dev builds (all_on); a release needs the line.
-  CHECK(!DefaultExperimentalFeatures(false).gog_store && DefaultExperimentalFeatures(true).gog_store);
+  // GOG as a store: on by default in every build, releases included; the line is still accepted.
+  CHECK(DefaultExperimentalFeatures(false).gog_store && DefaultExperimentalFeatures(true).gog_store);
   {
     std::vector<std::string> gog_unknown;
     const auto gog = ParseExperimentalFeatures(" gog-store\r\ngog\nGOG-STORE\n#gog-store\n", {}, &gog_unknown);
     CHECK(gog.gog_store && !gog.online_steam);
     CHECK((gog_unknown == std::vector<std::string>{"gog", "GOG-STORE"}));
     CHECK(!ParseExperimentalFeatures("gog-store-x\n# gog-store").gog_store);
-    CHECK(!ParseExperimentalFeatures("online-steam\ncommunity-recipes\n", DefaultExperimentalFeatures(false)).gog_store);
+    CHECK(!ParseExperimentalFeatures("online-steam\ncommunity-recipes\n").gog_store);
+    CHECK(ParseExperimentalFeatures("online-steam\n", DefaultExperimentalFeatures(false)).gog_store);
     CHECK(ParseExperimentalFeatures("online-steam\n", DefaultExperimentalFeatures(true)).gog_store);
     CHECK(ParseExperimentalFeatures("gog-store", DefaultExperimentalFeatures(true)).gog_store);
   }
