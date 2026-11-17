@@ -422,6 +422,24 @@ void Share() {
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, changed, kit, &after, &error));
   library = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(library.recipe.defaults.at("steam_library_path") == "playden");
+  // Microphone: its default (On) stays out of a share, even with a runtime that reads it; Off is shared.
+  kit.audio_microphone = true;
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, kit, &before, &error));
+  CHECK(before.values.at("microphone").available && before.values.at("microphone").value == "on");
+  CHECK(!BuildSettingsOnlyRecipe(base, before, before, playden::GameRef::Steam(274520), "Darkwood")
+             .recipe.defaults.count("microphone"));
+  CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"microphone", "off"}}, kit, &after, &error));
+  const auto quiet = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
+  CHECK(quiet.recipe.defaults.at("microphone") == "off");
+  {
+    auto shared_row = quiet;
+    shared_row.recipe.id = "community-steam-274520-shared";
+    shared_row.title = "Shared";
+    CommunityRecipe reread_row;
+    std::string why;
+    CHECK(ParseCommunityRecipe(SerializeCommunityRecipe(shared_row), &reread_row, &why) &&
+          reread_row.recipe.defaults.at("microphone") == "off" && CommunityRecipeRefusals(reread_row).empty());
+  }
 }
 
 }  // namespace

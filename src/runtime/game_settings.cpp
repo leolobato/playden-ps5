@@ -254,6 +254,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"100", "100%", ""}, {"75", "75%", ""}, {"50", "50%", ""}, {"25", "25%", ""},
                          {"0", "Muted", ""}},
                         "100", 4));
+  list.push_back(Choice("microphone", "Microphone", "Let this game hear the controller or headset microphone.", "",
+                        G::kSound, {{"on", "On", ""}, {"off", "Off", "The game finds no microphone."}}, "on", 4));
   // Compatibility.
   // Shown only for a game whose program Playden refuses for a reason a run could get past.
   list.push_back(Choice("start_check", "Known problems", "What Playden does with a problem it found in the game's program.",
@@ -655,6 +657,10 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if (id == "volume" && !kit.audio_volume) {
     if (kit.audio_volume_needs_update) return kAppliesAfterKitUpdate;
     return "Needs a newer runtime kit with per-game volume.";
+  }
+  if (id == "microphone" && !kit.audio_microphone) {
+    if (kit.audio_microphone_needs_update) return kAppliesAfterKitUpdate;
+    return "Needs a newer runtime kit with microphone support.";
   }
   // Rumble alone (input-rumble) or with the rest of controller tuning.
   if (id == "rumble" && !kit.input_tuning && !kit.input_rumble) {
@@ -1550,8 +1556,13 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
     }
   }
 
+  // [audio]: only what differs from the runtime's defaults (full volume, microphone on), so a share or an older
+  // runtime never sees a row the player left alone.
   const bool audio_section = settings.values.at("volume").available && value("volume") != "100";
-  if (audio_section) text += "\n[audio]\nvolume = " + value("volume") + "\n";
+  const bool microphone_off = settings.values.at("microphone").available && value("microphone") == "off";
+  if (audio_section || microphone_off) text += "\n[audio]\n";
+  if (audio_section) text += "volume = " + value("volume") + "\n";
+  if (microphone_off) text += "microphone = off\n";
 
   // [runtime] version 2: the title takes the driver's defaults. Without the line the profile is version 1.
   const auto& cpu = OptionalValue(settings, "cpu");
@@ -1708,6 +1719,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.input_rumble = tuned_rumble;
   features.input_wheel = wheel;
   features.audio_section = audio_section;
+  features.audio_microphone = microphone_off;
   features.display_frame_rate = frame_rate;
   features.display_framegen = display_framegen;
   features.display_fps_counter = fps_counter;
@@ -4115,7 +4127,8 @@ namespace playden::runtime {
 
 const std::vector<std::string>& SettingsKitCapabilityNames() {
   // Sorted, as a kit manifest lists them.
-  static const std::vector<std::string> names = {kKitDisplay120Hz, kKitDisplayFpsCounter, kKitDisplayFramegen,
+  static const std::vector<std::string> names = {kKitAudioMicrophone, kKitDisplay120Hz, kKitDisplayFpsCounter,
+                                                 kKitDisplayFramegen,
                                                  kKitHelperProcess, kKitInputPlaystation, kKitInputRumble,
                                                  kKitLauncherMode, kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent,
                                                  kKitInputTuning, kKitInputWheel, kKitEnvironment,
@@ -4136,6 +4149,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.input_tuning = has(kKitInputTuning);
   kit.input_wheel = has(kKitInputWheel);
   kit.audio_volume = has(kKitAudioVolume);
+  kit.audio_microphone = has(kKitAudioMicrophone);
   kit.shared_sections = has(kKitSharedSections);
   kit.title_any_id = has(kKitTitleAnyId);
   kit.game_root_unowned = has(kKitGameRootUnowned);
@@ -4195,10 +4209,14 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
     kit.profile_version_2 = false;
     kit.profile_version_2_needs_update = true;
   }
-  // An older title refuses [audio]: volume waits for its update.
+  // An older title refuses [audio]: volume and microphone wait for its update.
   if (!title_runtime_current && kit.audio_volume) {
     kit.audio_volume = false;
     kit.audio_volume_needs_update = true;
+  }
+  if (!title_runtime_current && kit.audio_microphone) {
+    kit.audio_microphone = false;
+    kit.audio_microphone_needs_update = true;
   }
   if (!title_runtime_current && kit.input_rumble) {
     kit.input_rumble = false;
@@ -4629,8 +4647,11 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     if (feature == "profile-environment") { if (!kit.environment) return false; }
     else if (feature == "input-tuning") { if (!kit.input_tuning) return false; }
     else if (feature == "input-wheel") { if (!kit.input_wheel) return false; }
-    // Like the row it sets, it applies once the game's title runs the kit's runtime.
+    // Like the rows they set, these apply once the game's title runs the kit's runtime.
     else if (feature == "audio-volume") { if (!kit.audio_volume && !kit.audio_volume_needs_update) return false; }
+    else if (feature == "audio-microphone") {
+      if (!kit.audio_microphone && !kit.audio_microphone_needs_update) return false;
+    }
     // A runtime name, not a settings one: its values apply once the game's title runs the kit's runtime, like the
     // rows they set (KitForTitleRuntime), so a title that waits for its update may choose the preset too.
     else if (feature == "display-120hz") { if (!kit.display_120hz && !kit.display_120hz_needs_update) return false; }

@@ -13,7 +13,7 @@ KitAdmissionConfig DevelopmentKitAdmission() {
   config.known_capabilities = {"dxvk", "offline_bottle", "per_game_title", "wow64_i386", kKitSharedSections,
                                 kKitTitleAnyId, kKitGameRootUnowned, kKitBottleProfileShared, kKitPublicationOpenModes,
                                 kKitOpenGLZink,
-                                kKitAudioVolume, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
+                                kKitAudioVolume, kKitAudioMicrophone, kKitAudioCapture, kKitDxvkConfig, kKitDxvkPresent, kKitInputTuning,
                                 kKitInputWheel, kKitEnvironment, kKitWineMono, kKitVkd3dProton,
                                 kKitDisplay120Hz, kKitProfileVersion2, kKitInputRumble,
                                 kKitDisplayFramegen, kKitDisplayFpsCounter, kKitLauncherMode,

@@ -203,6 +203,17 @@ int main(int argc, char** argv) {
   CHECK(CheckProsperoProfile(base + "[audio]\nvolume = 0\n", &reason, {.audio_section = true}));
   CHECK(!CheckProsperoProfile(base + "[audio]\nvolume = 101\n", &reason, {.audio_section = true}));
   CHECK(!CheckProsperoProfile(base + "[audio]\nmute = true\n", &reason, {.audio_section = true}));
+  CHECK(!CheckProsperoProfile(base + "[audio]\nvolume = 0100\n", &reason, {.audio_section = true}));
+  // [audio] microphone needs its own runtime (audio-microphone); volume needs settings-audio-volume.
+  CHECK(!CheckProsperoProfile(base + "[audio]\nmicrophone = off\n", &reason));
+  CHECK(!CheckProsperoProfile(base + "[audio]\nmicrophone = off\n", &reason, {.audio_section = true}));
+  CHECK(CheckProsperoProfile(base + "[audio]\nmicrophone = off\n", &reason, {.audio_microphone = true}));
+  CHECK(CheckProsperoProfile(base + "[audio]\nmicrophone = on\n", &reason, {.audio_microphone = true}));
+  CHECK(!CheckProsperoProfile(base + "[audio]\nvolume = 50\n", &reason, {.audio_microphone = true}));
+  CHECK(!CheckProsperoProfile(base + "[audio]\nmicrophone = mute\n", &reason, {.audio_microphone = true}));
+  CHECK(!CheckProsperoProfile(base + "[audio]\nmicrophone = off\nmicrophone = on\n", &reason, {.audio_microphone = true}));
+  CHECK(CheckProsperoProfile(base + "[audio]\nvolume = 50\nmicrophone = off\n", &reason,
+                             {.audio_section = true, .audio_microphone = true}));
   CHECK(!CheckProsperoProfile(base + "[input]\ncross = f25\n", &reason));
   CHECK(!CheckProsperoProfile(base + "[input]\ncross = vk:0x00\n", &reason));
   CHECK(!CheckProsperoProfile(base + "[debug]\nwinedebug = +all relay\n", &reason));

@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         "window_view",
         "controller", "controller_preset", "touchpad_hold",
         "pointer_stick", "pointer_speed", "stick_deadzone", "rumble", "invert_stick", "trigger_deadzone", "wheel_stick",
-        "volume",
+        "volume", "microphone",
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
         "steam_library_path", "steam_network", "steam_input", "windows_version", "text_scale",
@@ -1703,6 +1703,53 @@ int main(int argc, char** argv) {
     CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
     CHECK(profile.text.find("\n[audio]\nvolume = 25\n") != std::string::npos);
   }
+  // Microphone: on by default and not written; off only with an audio-microphone runtime, and alone or beside volume.
+  {
+    CHECK(FindSetting("microphone")->group == SettingGroup::kSound && FindSetting("microphone")->playden_default == "on");
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "off"}}, KitCapabilities{}, &settings, &error));
+    CHECK(!settings.values.at("microphone").available &&
+          settings.values.at("microphone").reason == "Needs a newer runtime kit with microphone support.");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason) && profile.text.find("[audio]") == std::string::npos);
+    const auto microphone_kit = KitCapabilitiesFromManifest({kKitAudioMicrophone}, false);
+    CHECK(microphone_kit.audio_microphone && !microphone_kit.audio_volume);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {}, microphone_kit, &settings, &error));
+    CHECK(settings.values.at("microphone").available && settings.values.at("microphone").value == "on");
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason) && profile.text.find("[audio]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "on"}}, microphone_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason) && profile.text.find("[audio]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "off"}, {"volume", "50"}}, microphone_kit, &settings,
+                                 &error));
+    CHECK(!settings.values.at("volume").available);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[audio]\nmicrophone = off\n") != std::string::npos &&
+          profile.text.find("volume") == std::string::npos);
+    // A runtime with volume alone refuses the microphone key, and the other way round.
+    CHECK(CheckProsperoProfile(profile.text, &reason, {.audio_microphone = true}));
+    CHECK(!CheckProsperoProfile(profile.text, &reason, {.audio_section = true}));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "off"}, {"volume", "50"}}, all_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[audio]\nvolume = 50\nmicrophone = off\n") != std::string::npos);
+    CHECK(!ValidateSettingValue(hl2, "microphone", "mute", &reason));
+    // An older title refuses [audio]: both rows wait for the title's update, and the profile has no [audio] meanwhile.
+    const auto both = KitCapabilitiesFromManifest({kKitAudioMicrophone, kKitAudioVolume}, false);
+    const auto stale = KitForTitleRuntime(both, false);
+    CHECK(!stale.audio_volume && stale.audio_volume_needs_update && !stale.audio_microphone &&
+          stale.audio_microphone_needs_update);
+    CHECK(KitForTitleRuntime(both, true).audio_volume && KitForTitleRuntime(both, true).audio_microphone);
+    CHECK(KitDependsOnTitleRuntime(both) && !KitForTitleRuntime(KitCapabilities{}, false).audio_microphone_needs_update);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "off"}, {"volume", "25"}}, stale, &settings, &error));
+    CHECK(settings.values.at("microphone").reason == kAppliesAfterKitUpdate &&
+          settings.values.at("volume").reason == kAppliesAfterKitUpdate);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason) && profile.text.find("[audio]") == std::string::npos);
+    // The kit knows both names, and audio-capture besides.
+    CHECK(std::find(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end(), kKitAudioMicrophone) !=
+          SettingsKitCapabilityNames().end());
+    // A community recipe shares Off, never the default On.
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "on"}}, microphone_kit, &settings, &error));
+    CHECK(!BuildCommunityRecipe(hl2, settings, playden::GameRef::Steam(220), "Half-Life 2").recipe.defaults.count("microphone"));
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"microphone", "off"}}, microphone_kit, &settings, &error));
+    CHECK(BuildCommunityRecipe(hl2, settings, playden::GameRef::Steam(220), "Half-Life 2").recipe.defaults.at("microphone") == "off");
+  }
   CHECK(std::is_sorted(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end()));
   CHECK(!ValidateSettingValue(hl2, "environment", "WINEPREFIX=C:\\x", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_HUD=full", &reason));
@@ -1965,6 +2012,14 @@ int main(int argc, char** argv) {
   CHECK(CommunityPresetSupported(needs_volume, KitForTitleRuntime(KitCapabilitiesFromManifest({kKitAudioVolume}, false), false)));
   needs_volume.requires_prospero_win.push_back("profile-environment");
   CHECK(!CommunityPresetSupported(needs_volume, KitCapabilitiesFromManifest({kKitAudioVolume}, false)));
+  {
+    auto needs_microphone = community;
+    needs_microphone.requires_prospero_win.push_back("audio-microphone");
+    const auto microphone = KitCapabilitiesFromManifest({kKitAudioMicrophone}, false);
+    CHECK(CommunityPresetSupported(needs_microphone, microphone) &&
+          CommunityPresetSupported(needs_microphone, KitForTitleRuntime(microphone, false)));
+    CHECK(!CommunityPresetSupported(needs_microphone, KitCapabilitiesFromManifest({kKitAudioVolume}, false)));
+  }
   // 120 Hz output counts for a game whose title runs a display-120hz runtime.
   {
     auto needs_display = community;

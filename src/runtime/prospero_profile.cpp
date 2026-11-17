@@ -260,7 +260,8 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       const auto name = Lower(line.substr(1, line.size() - 2));
       if ((name != "application" && name != "display" && name != "input" && name != "debug" &&
            !(features.environment_section && name == "environment") &&
-           !(features.audio_section && name == "audio") && !((features.runtime_version || features.runtime_locale) && name == "runtime") &&
+           !((features.audio_section || features.audio_microphone) && name == "audio") &&
+           !((features.runtime_version || features.runtime_locale) && name == "runtime") &&
            !(features.launcher_section && name == "launcher") && !(features.helper_section && name == "helper") &&
            !(features.steam_section && name == "steam")) ||
           std::find(sections.begin(), sections.end(), name) != sections.end())
@@ -439,8 +440,14 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         return fail("unknown [runtime] key " + key);
       }
     } else if (section == "audio") {
-      if (key != "volume") return fail("unknown [audio] key " + key);
-      if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > 100) return bad("not 0-100");
+      // Each key needs its own runtime: settings-audio-volume, audio-microphone.
+      if (key == "volume" && features.audio_section) {
+        if (!IsDigits(value, 3) || std::atol(std::string(value).c_str()) > 100) return bad("not 0-100");
+      } else if (key == "microphone" && features.audio_microphone) {
+        if (!OneOf(value, {"on", "off"})) return bad("not on or off");
+      } else {
+        return fail("unknown [audio] key " + key);
+      }
     } else {
       if (key == "env" && features.debug_env) {
         const auto equals = value.find('=');

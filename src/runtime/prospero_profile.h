@@ -81,7 +81,8 @@ struct ProsperoProfileFeatures {
   bool input_tuning = false;         // [input] stick_deadzone, rumble, trigger_deadzone
   bool input_rumble = false;         // [input] rumble alone (kit capability input-rumble)
   bool input_wheel = false;          // [input] wheel
-  bool audio_section = false;        // [audio] volume
+  bool audio_section = false;        // [audio] volume (kit capability settings-audio-volume)
+  bool audio_microphone = false;     // [audio] microphone = on|off (kit capability audio-microphone)
   bool debug_env = false;            // [debug] env = NAME=value (upstream prospero-win)
   bool display_frame_rate = false;   // [display] frame_rate = 0|120|60|40|30 (kit capability display-120hz)
   bool display_framegen = false;     // [display] framegen = off|2|3|4 (kit capability display-framegen)

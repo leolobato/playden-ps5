@@ -57,10 +57,12 @@ struct KitCapabilities {
   bool registry = false;     // Playden can edit the stopped bottle's user.reg (decision D2)
   bool input_tuning = false;  // prospero-win [input] stick_deadzone, rumble, trigger_deadzone (U4, not released)
   bool input_wheel = false;   // prospero-win [input] wheel, with Wine patch 0745 (U4, not built yet)
-  // prospero-win [audio] volume. Counts only for a title that runs this kit's runtime, like display_120hz: an older
-  // title refuses a profile with [audio].
+  // prospero-win [audio] volume and [audio] microphone. Count only for a title that runs this kit's runtime, like
+  // display_120hz: an older title refuses a profile with [audio].
   bool audio_volume = false;
   bool audio_volume_needs_update = false;
+  bool audio_microphone = false;
+  bool audio_microphone_needs_update = false;
   bool shared_sections = false;  // Wine maps unaligned shared PE sections as private copies (patch 0602)
   bool title_any_id = false;     // one title shell for every game; no fixed set of titles
   // The title finds a USB game's drive when it starts, so it can be published naming no mount.
@@ -829,7 +831,7 @@ inline bool IsSettingsOnlyRecipe(const CommunityRecipe& community) {
 
 // Whether the kit's runtime has every newer profile feature the sidecar declares in
 // requires.prospero_win: the kit capability names without "settings-" (profile-environment,
-// input-tuning, input-wheel, audio-volume; see prospero-win-profiles SIDECARS.md), and display-120hz, input-rumble,
+// input-tuning, input-wheel, audio-volume; see prospero-win-profiles SIDECARS.md), audio-microphone, and display-120hz, input-rumble,
 // display-framegen and input-playstation, which need the game's own title on such a runtime: pass the kit as KitForTitleRuntime gives it
 // for the game. Other entries (pull requests, versions) are not checked.
 bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabilities& kit);
@@ -846,6 +848,12 @@ inline constexpr const char* kKitEnvironment = "settings-profile-environment";  
 inline constexpr const char* kKitInputTuning = "settings-input-tuning";      // stick/trigger dead zones, rumble
 inline constexpr const char* kKitInputWheel = "settings-input-wheel";        // [input] wheel
 inline constexpr const char* kKitAudioVolume = "settings-audio-volume";      // [audio] volume
+// The title reads [audio] microphone = on|off: off lists no capture device for the game. Runtimes without it refuse the
+// key.
+inline constexpr const char* kKitAudioMicrophone = "audio-microphone";
+// Runtime ability: Wine lists the console's microphone (the headset's, else the controller's) as the game's default
+// capture device. Nothing in Playden depends on it.
+inline constexpr const char* kKitAudioCapture = "audio-capture";
 // Runtime ability (not a setting): games with a shared section, such as GameMaker's, can start.
 inline constexpr const char* kKitSharedSections = "wine-shared-sections";
 // Runtime ability: the kit carries one title shell for every game (an any-title variant), so
@@ -935,7 +943,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
 // display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation,
-// audio_volume, title_notify, steam_library_path and windows_locale are off and their _needs_update say why.
+// audio_volume, audio_microphone, title_notify, steam_library_path and windows_locale are off and their _needs_update
+// say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 // Whether any capability the kit has counts only for a title on its runtime: whether KitForTitleRuntime would turn
 // something off for an older title. Reading the title's markers is worth it only then.
