@@ -57,7 +57,10 @@ struct KitCapabilities {
   bool registry = false;     // Playden can edit the stopped bottle's user.reg (decision D2)
   bool input_tuning = false;  // prospero-win [input] stick_deadzone, rumble, trigger_deadzone (U4, not released)
   bool input_wheel = false;   // prospero-win [input] wheel, with Wine patch 0745 (U4, not built yet)
-  bool audio_volume = false;  // prospero-win [audio] volume (U4, not released)
+  // prospero-win [audio] volume. Counts only for a title that runs this kit's runtime, like display_120hz: an older
+  // title refuses a profile with [audio].
+  bool audio_volume = false;
+  bool audio_volume_needs_update = false;
   bool shared_sections = false;  // Wine maps unaligned shared PE sections as private copies (patch 0602)
   bool title_any_id = false;     // one title shell for every game; no fixed set of titles
   // The title finds a USB game's drive when it starts, so it can be published naming no mount.
@@ -932,7 +935,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
 // display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation,
-// title_notify, steam_library_path and windows_locale are off and their _needs_update say why.
+// audio_volume, title_notify, steam_library_path and windows_locale are off and their _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 // Whether any capability the kit has counts only for a title on its runtime: whether KitForTitleRuntime would turn
 // something off for an older title. Reading the title's markers is worth it only then.

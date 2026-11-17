@@ -652,7 +652,10 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   if ((id == "environment" || id == "pixel_shader_waves") && !kit.environment && !kit.opengl_zink)
     return "Needs a newer runtime kit that reads [environment].";
   if (id == "wheel_stick" && !kit.input_wheel) return "Needs a newer runtime kit that turns the mouse wheel.";
-  if (id == "volume" && !kit.audio_volume) return "Needs a newer runtime kit with per-game volume.";
+  if (id == "volume" && !kit.audio_volume) {
+    if (kit.audio_volume_needs_update) return kAppliesAfterKitUpdate;
+    return "Needs a newer runtime kit with per-game volume.";
+  }
   // Rumble alone (input-rumble) or with the rest of controller tuning.
   if (id == "rumble" && !kit.input_tuning && !kit.input_rumble) {
     if (kit.input_rumble_needs_update) return kAppliesAfterKitUpdate;
@@ -4192,6 +4195,11 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
     kit.profile_version_2 = false;
     kit.profile_version_2_needs_update = true;
   }
+  // An older title refuses [audio]: volume waits for its update.
+  if (!title_runtime_current && kit.audio_volume) {
+    kit.audio_volume = false;
+    kit.audio_volume_needs_update = true;
+  }
   if (!title_runtime_current && kit.input_rumble) {
     kit.input_rumble = false;
     kit.input_rumble_needs_update = true;
@@ -4621,7 +4629,8 @@ bool CommunityPresetSupported(const CommunityPreset& community, const KitCapabil
     if (feature == "profile-environment") { if (!kit.environment) return false; }
     else if (feature == "input-tuning") { if (!kit.input_tuning) return false; }
     else if (feature == "input-wheel") { if (!kit.input_wheel) return false; }
-    else if (feature == "audio-volume") { if (!kit.audio_volume) return false; }
+    // Like the row it sets, it applies once the game's title runs the kit's runtime.
+    else if (feature == "audio-volume") { if (!kit.audio_volume && !kit.audio_volume_needs_update) return false; }
     // A runtime name, not a settings one: its values apply once the game's title runs the kit's runtime, like the
     // rows they set (KitForTitleRuntime), so a title that waits for its update may choose the preset too.
     else if (feature == "display-120hz") { if (!kit.display_120hz && !kit.display_120hz_needs_update) return false; }

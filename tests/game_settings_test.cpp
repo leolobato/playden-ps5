@@ -1690,6 +1690,19 @@ int main(int argc, char** argv) {
   CHECK(BuildEffectiveSettings(hl2, nullptr, {{"volume", "100"}, {"wheel_stick", "none"}}, all_kit, &settings, &error));
   CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
   CHECK(profile.text.find("[audio]") == std::string::npos && profile.text.find("wheel") == std::string::npos);
+  // An older title refuses [audio]: Volume waits for the title's update, and the profile has no [audio] meanwhile.
+  {
+    const auto volume_kit = KitCapabilitiesFromManifest({kKitAudioVolume}, false);
+    const auto stale = KitForTitleRuntime(volume_kit, false);
+    CHECK(!stale.audio_volume && stale.audio_volume_needs_update && KitForTitleRuntime(volume_kit, true).audio_volume);
+    CHECK(KitDependsOnTitleRuntime(volume_kit) && !KitForTitleRuntime(KitCapabilities{}, false).audio_volume_needs_update);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"volume", "25"}}, stale, &settings, &error));
+    CHECK(settings.values.at("volume").reason == kAppliesAfterKitUpdate);
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason) && profile.text.find("[audio]") == std::string::npos);
+    CHECK(BuildEffectiveSettings(hl2, nullptr, {{"volume", "25"}}, volume_kit, &settings, &error));
+    CHECK(RenderProsperoProfile(hl2, settings, target, &profile, &reason));
+    CHECK(profile.text.find("\n[audio]\nvolume = 25\n") != std::string::npos);
+  }
   CHECK(std::is_sorted(SettingsKitCapabilityNames().begin(), SettingsKitCapabilityNames().end()));
   CHECK(!ValidateSettingValue(hl2, "environment", "WINEPREFIX=C:\\x", &reason));
   CHECK(!ValidateSettingValue(hl2, "environment", "DXVK_HUD=full", &reason));
@@ -1948,6 +1961,8 @@ int main(int argc, char** argv) {
   needs_volume.requires_prospero_win.push_back("audio-volume");
   CHECK(!CommunityPresetSupported(needs_volume, KitCapabilities{}));
   CHECK(CommunityPresetSupported(needs_volume, KitCapabilitiesFromManifest({kKitAudioVolume}, false)));
+  // Like the row it sets, a title that waits for its update may take the preset too.
+  CHECK(CommunityPresetSupported(needs_volume, KitForTitleRuntime(KitCapabilitiesFromManifest({kKitAudioVolume}, false), false)));
   needs_volume.requires_prospero_win.push_back("profile-environment");
   CHECK(!CommunityPresetSupported(needs_volume, KitCapabilitiesFromManifest({kKitAudioVolume}, false)));
   // 120 Hz output counts for a game whose title runs a display-120hz runtime.
