@@ -9,10 +9,11 @@
 namespace playden::app {
 
 ExperimentalFeatures DefaultExperimentalFeatures(bool all_on) {
-  // Online stays off until features.txt names it. GOG stays off for all_on too: until a release that reads GOG records
-  // has shipped, a nightly would write gog- organization keys and install records that the builds before it refuse.
-  (void)all_on;
-  return {};
+  // Online stays off until features.txt names it. GOG is on in nightlies and dev builds: 0.11.0, the release a nightly
+  // falls back to, reads GOG records. Releases still need the gog-store line until GOG ships.
+  ExperimentalFeatures features;
+  features.gog_store = all_on;
+  return features;
 }
 
 ExperimentalFeatures ParseExperimentalFeatures(std::string_view text, ExperimentalFeatures defaults,

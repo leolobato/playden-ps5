@@ -47,15 +47,16 @@ int main() {
   features = ParseExperimentalFeatures("community-recipes\nonline-steam\n", {}, &unknown);
   CHECK(features.online_steam && unknown.empty());
 
-  // GOG as a store: the line turns it on; off by default, nightlies and dev builds included.
-  CHECK(!DefaultExperimentalFeatures(false).gog_store && !DefaultExperimentalFeatures(true).gog_store);
+  // GOG as a store: on by default in nightlies and dev builds (all_on); a release needs the line.
+  CHECK(!DefaultExperimentalFeatures(false).gog_store && DefaultExperimentalFeatures(true).gog_store);
   {
     std::vector<std::string> gog_unknown;
     const auto gog = ParseExperimentalFeatures(" gog-store\r\ngog\nGOG-STORE\n#gog-store\n", {}, &gog_unknown);
     CHECK(gog.gog_store && !gog.online_steam);
     CHECK((gog_unknown == std::vector<std::string>{"gog", "GOG-STORE"}));
     CHECK(!ParseExperimentalFeatures("gog-store-x\n# gog-store").gog_store);
-    CHECK(!ParseExperimentalFeatures("online-steam\ncommunity-recipes\n", DefaultExperimentalFeatures(true)).gog_store);
+    CHECK(!ParseExperimentalFeatures("online-steam\ncommunity-recipes\n", DefaultExperimentalFeatures(false)).gog_store);
+    CHECK(ParseExperimentalFeatures("online-steam\n", DefaultExperimentalFeatures(true)).gog_store);
     CHECK(ParseExperimentalFeatures("gog-store", DefaultExperimentalFeatures(true)).gog_store);
   }
 
