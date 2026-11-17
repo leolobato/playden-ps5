@@ -173,6 +173,7 @@ PreferencesLoadResult PreferencesStore::Load() const {
     if (serialized == std::string("version=1\nreduce_motion=") + char('0' + motion) + "\n") {
       Preferences preferences;
       preferences.reduce_motion = motion == 1;
+      preferences.title_store_suffix = false;
       return PreferencesLoadResult{preferences, PreferencesLoadStatus::kLoaded, std::string()};
     }
     for (const int suffix : {0, 1})

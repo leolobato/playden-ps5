@@ -9967,6 +9967,12 @@ void Simulation::rebuild_view() {
                 ? "When an Online game starts, a notification shows the Steam account it signed in as."
                 : "Off: Online games start without the notification.";
         }
+        // How the stores show on the PS5 home screen.
+        if (live()) {
+            auto& suffix = add("settings-title-store", RowKind::Toggle, "Store name in PS5 titles", "toggle-title-store");
+            suffix.selected = state_.title_store_suffix;
+            suffix.subtitle = "Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.";
+        }
         heading("Community");
         // The Playden account shares and reports credit (plan 2026-11-06 Phase D).
         auto& account_row = add("settings-account-link", RowKind::Action, "Playden account", "account-link");
@@ -10081,11 +10087,6 @@ void Simulation::rebuild_view() {
             }
         }
         heading("PS5 titles");
-        if (live()) {
-            auto& suffix = add("settings-title-store", RowKind::Toggle, "Store name in PS5 titles", "toggle-title-store");
-            suffix.selected = state_.title_store_suffix;
-            suffix.subtitle = "Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.";
-        }
         if (!state_.leftover_titles.empty()) {
             // PS5 titles Playden made but has no record of: one row that opens their manager, like kept game data.
             std::uint64_t bytes = 0;
@@ -13834,7 +13835,8 @@ void Simulation::activate() {
     }
     else if (action_name == "account") {
         std::vector<std::string> actions = {"account-auth", "account-last-sync"};
-        if (state_.account().authentication == AuthState::SignedIn) actions.push_back("account-sync");
+        // Refresh library, as in GOG's sheet: the library reloads where the player is.
+        if (state_.account().authentication == AuthState::SignedIn) actions.push_back("refresh-library");
         else actions.push_back("account-recover");
         // A new QR sign-in for the same account: a fresh token, keeping the library and organization.
         if (live() && (state_.account().authentication == AuthState::SignedIn || state_.account().authentication == AuthState::Offline))

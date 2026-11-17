@@ -22,8 +22,8 @@ restart Playden after you change it. Dev builds and nightlies also need the line
   and a download that stops when Playden closes continues at the next start. You can install to a USB drive. The page
   shows the install size before you start. Games whose Windows build uses GOG's older download format (gen 1) install
   too.
-- **Play.** An installed GOG game becomes its own PS5 title, named "<name> (GOG)" when "Store name in PS5 titles" is
-  on. It starts the program that the game's primary play task names. Game settings, recipes (`gog/<product id>`),
+- **Play.** An installed GOG game becomes its own PS5 title, named "<name> (GOG)" when Settings › Accounts › "Store name in
+  PS5 titles" is on (the default for a new install). It starts the program that the game's primary play task names. Game settings, recipes (`gog/<product id>`),
   uninstall and Move to… work as for a Steam game.
 - **DOSBox and ScummVM games.** Playden installs the DOSBox or ScummVM files that the game needs into its game
   folder. It also runs the install script's `supportData` and `setIni` steps: they copy the game's support files into

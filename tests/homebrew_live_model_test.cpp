@@ -166,12 +166,14 @@ void account_commands_dispatch_refresh_and_switch_barriers(const std::filesystem
     refresh.UpdateAccount({AuthState::SignedIn, "76561198000000002", "Refresh Tester", {}, {}, false});
     refresh.action("l1");
     activate(refresh, "settings-account");
-    activate(refresh, "account-sync");
+    activate(refresh, "refresh-library");
     auto actions = refresh.TakeServiceActions();
     check(actions.size() == 1 && actions.front() == ServiceAction::RefreshLibrary
               && refresh.state().account().authentication == AuthState::SignedIn
               && refresh.state().library_loading && refresh.state().library_syncing,
           "account sync dispatches refresh and remains pending external completion");
+    check(refresh.state().navigation.route == Route::Settings,
+          "Refresh library in Steam's account sheet keeps Settings on screen, as GOG's does");
 
     auto switching = make_live(base);
     switching.UpdateAccount({AuthState::SignedIn, "76561198000000003", "Switch Tester", {}, {}, false});

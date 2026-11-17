@@ -1084,7 +1084,7 @@ struct State {
     GameId session_game_id;
     std::string session_error;
     bool reduced_motion = false;
-    bool title_store_suffix = false;  // PS5 titles named "<game> (Steam)"
+    bool title_store_suffix = true;  // PS5 titles named "<game> (Steam)"; on for a new install
     bool cloud_saves_auto = false;    // Cloud saves move before Play, after sessions and at startup (opt-in)
     bool beta_updates = false;
     // The language games are downloaded in, as Steam names its depot languages ("german").

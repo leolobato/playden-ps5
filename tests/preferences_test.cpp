@@ -147,7 +147,13 @@ void TitleStoreSuffixPersistsAndVersionOneStillLoads() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
   playden::PreferencesStore store(storage);
+  const auto fresh = store.Load();
+  Check(fresh.status == playden::PreferencesLoadStatus::kDefaultMissing && fresh.preferences.title_store_suffix,
+        "a new install names PS5 titles with their store");
   playden::Preferences preferences;
+  preferences.title_store_suffix = false;
+  Check(store.Save(preferences).ok(), "suffix preference saves");
+  Check(!store.Load().preferences.title_store_suffix, "turning the store name off survives restart");
   preferences.title_store_suffix = true;
   Check(store.Save(preferences).ok(), "suffix preference saves");
   const auto loaded = store.Load();
@@ -181,6 +187,7 @@ void SignInMethodPersistsAndVersionThreeOpensQr() {
   playden::Storage storage(directory.path());
   playden::PreferencesStore store(storage);
   playden::Preferences preferences;
+  preferences.title_store_suffix = false;
   preferences.steam_sign_in_password = true;
   preferences.cloud_saves_auto = true;
   Check(store.Save(preferences).ok(), "sign-in method preference saves");

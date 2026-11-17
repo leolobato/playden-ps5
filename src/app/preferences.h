@@ -23,8 +23,9 @@ enum class ShareAs { kNone, kName, kAccount };
 
 struct Preferences {
   bool reduce_motion = false;
-  // PS5 titles made for games are named "<game> (<store>)", e.g. "Half-Life 2 (Steam)".
-  bool title_store_suffix = false;
+  // PS5 titles made for games are named "<game> (<store>)", e.g. "Half-Life 2 (Steam)". On for a new install;
+  // a version 1 file, written before the setting existed, keeps it off.
+  bool title_store_suffix = true;
   // Cloud saves move on their own: before Play, after a session, at startup and before an
   // uninstall. Off (the default, so a fresh install never changes Cloud saves unasked) leaves only
   // the Sync actions the player chooses.

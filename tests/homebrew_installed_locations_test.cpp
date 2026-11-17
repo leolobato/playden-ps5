@@ -334,7 +334,8 @@ void ImportedGamePreparesWithoutSteam() {
            std::any_of(model.state().games.begin(), model.state().games.end(), [&](const hb::Game& game) { return game.id == local; });
   });
   for (int i = 0; i < 6 && model.state().navigation.route != hb::Route::Settings; ++i) model.action("r1");
-  CHECK(model.action("focus:settings-title-store") && model.action("cross") && model.state().title_store_suffix);
+  // On by default for a new install (no preferences file).
+  CHECK(model.action("focus:settings-title-store") && model.state().title_store_suffix);
   model.RequestRuntimePrepare(local);
   auto refused = tick_until([](const RuntimeSnapshot& s) { return s.prepares_handled > 0 && !s.preparing_app; });
   const auto number = NumberOf(refused, local);

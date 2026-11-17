@@ -3929,22 +3929,25 @@ constexpr const char* kStartupRestoring = "startup-loading|Loading your library�
 constexpr const char* kAccountSignedIn =
     "settings-heading-stores|Stores|Accounts||||0\n"
     "settings-account|Account|Accounts|Steam connected|Synthetic account|account|1\n"
-    "settings-signout|Sign out…|Accounts|||signout-confirm|1\n";
+    "settings-signout|Sign out…|Accounts|||signout-confirm|1\n"
+    "settings-title-store|Store name in PS5 titles|Accounts|Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.||toggle-title-store|1\n";
 constexpr const char* kAccountOffline =
     "settings-heading-stores|Stores|Accounts||||0\n"
     "settings-account|Account|Accounts|Cached library · Offline|Synthetic account|account|1\n"
-    "settings-signout|Sign out…|Accounts|||signout-confirm|1\n";
+    "settings-signout|Sign out…|Accounts|||signout-confirm|1\n"
+    "settings-title-store|Store name in PS5 titles|Accounts|Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.||toggle-title-store|1\n";
 constexpr const char* kAccountSignedOut =
     "settings-heading-stores|Stores|Accounts||||0\n"
-    "settings-account|Account|Accounts|Connect Steam||account|1\n";
-// Settings after the stores, live: Accounts › Community, Games, Downloads, Web access, System, then Quit Playden.
-// A group's heading comes before its first row; a group with no row shown (PS5 titles' clean-up, the runtime kit's
+    "settings-account|Account|Accounts|Connect Steam||account|1\n"
+    "settings-title-store|Store name in PS5 titles|Accounts|Name game titles like \"Half-Life 2 (Steam)\". Prepared games change with their next Update.||toggle-title-store|1\n";
+// Settings after Steam and its Sign out, live: Store name in PS5 titles, Accounts › Community, Games, Downloads, Web access, System, then Quit Playden.
+// A group's heading comes before its first row; a group with no row shown (PS5 titles without leftovers or clean-up, the runtime kit's
 // download) has no heading of its own.
 constexpr const char* kSettingsKeys =
-    "settings-heading-community settings-account-link settings-share-as settings-ask-after-games settings-recipe-votes "
+    "settings-title-store settings-heading-community settings-account-link settings-share-as settings-ask-after-games settings-recipe-votes "
     "settings-sharing-reset "
     "settings-heading-installed-games settings-installed settings-game-updates settings-import "
-    "settings-heading-saves-and-data settings-cloud-saves settings-kept settings-heading-ps5-titles settings-title-store "
+    "settings-heading-saves-and-data settings-cloud-saves settings-kept "
     "settings-storage settings-content-language settings-download-server settings-downloads-slow "
     "settings-web-access settings-web-browsers "
     "settings-heading-playden-updates settings-update settings-beta-updates settings-heading-runtime-kit settings-runtime "
@@ -4033,8 +4036,10 @@ void stores_section() {
     to_route(live, Route::Settings);
     check(stores(live) == "settings-heading-stores|Stores|Accounts||||0\n"
                           "settings-account|Steam|Accounts|Steam connected|Synthetic account|account|1\n"
-                          "settings-store-gog|GOG|Accounts|Sign in||gog-account|1\n",
-          "line on: Stores lists Steam and GOG, with no Sign out row between them");
+                          "settings-store-gog|GOG|Accounts|Sign in||gog-account|1\n"
+                          "settings-title-store|Store name in PS5 titles|Accounts|Name game titles like \"Half-Life 2 (Steam)\". "
+                          "Prepared games change with their next Update.||toggle-title-store|1\n",
+          "line on: Stores lists Steam and GOG, with no Sign out row between them, then the store name setting");
     check(keys(live) == std::string("settings-heading-stores settings-account settings-store-gog ") + kSettingsKeys,
           "line on: the rest of Settings is as before");
     {

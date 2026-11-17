@@ -1543,7 +1543,7 @@ void refresh_actions_preserve_authentication_and_wall_clock_is_external() {
           "baseline for refresh action accepted");
     model.action("l1");
     activate(model, "settings-account");
-    activate(model, "account-sync");
+    activate(model, "refresh-library");
     const auto actions = model.TakeServiceActions();
     check(actions.size() == 1 && actions.front() == ServiceAction::RefreshLibrary
               && model.state().account().authentication == AuthState::SignedIn
@@ -2174,11 +2174,10 @@ void live_storage_section_and_installed_games() {
     check(keys_in("Games") == std::vector<std::string>{"settings-heading-installed-games", "settings-installed",
                                                       "settings-game-updates", "settings-import",
                                                       "settings-heading-saves-and-data", "settings-cloud-saves",
-                                                      "settings-kept", "settings-heading-ps5-titles",
-                                                      "settings-title-store"},
-          "Games: installed games with their updates and Import, then saves and data, then PS5 titles");
+                                                      "settings-kept"},
+          "Games: installed games with their updates and Import, then saves and data; no PS5 titles heading without a row");
     check(keys_in("Accounts") == std::vector<std::string>{"settings-heading-stores", "settings-account", "settings-signout",
-                                                         "settings-heading-community", "settings-account-link",
+                                                         "settings-title-store", "settings-heading-community", "settings-account-link",
                                                          "settings-share-as", "settings-ask-after-games",
                                                          "settings-recipe-votes", "settings-sharing-reset"},
           "Accounts: the stores, then Community with the Playden account first");
@@ -2271,8 +2270,8 @@ void live_storage_section_and_installed_games() {
     model.SetRuntimeLeftovers(1);
     {
         const auto games = keys_in("Games");
-        check(games.size() >= 2 && games[games.size() - 2] == "settings-title-store" && games.back() == "settings-runtime-cleanup",
-              "unused settings data ends Games › PS5 titles when there is some");
+        check(games.size() >= 2 && games[games.size() - 2] == "settings-heading-ps5-titles" && games.back() == "settings-runtime-cleanup",
+              "unused settings data shows Games › PS5 titles when there is some");
     }
     model.SetRuntimeLeftovers(0);
     // The Settings drive picker changes the default, not one install's drive.
