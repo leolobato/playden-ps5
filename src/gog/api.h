@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace playden::gog {
@@ -59,6 +60,37 @@ OwnedResult ParseOwned(std::string_view body);
 // GET https://embed.gog.com/user/data/games with "Authorization: Bearer <access token>". The request's header and the
 // response body are wiped before it returns.
 OwnedResult FetchOwned(Transport& transport, std::string_view access_token, const std::atomic<bool>& cancel);
+
+// The player's library tags (#536), read-only, from embed.gog.com's account library listing:
+// GET /account/getFilteredProducts?mediaType=1&page=N, then the same with &hiddenFlag=1 for the hidden products (left
+// out of the first). Each page has the account's tags ([{"id":"<digits>","name":...}]) and its products with their
+// tag IDs ("tags":["<digits>"]).
+struct LibraryTagsPage {
+  bool ok = false;
+  std::uint32_t total_pages = 0;
+  std::vector<std::pair<std::string, std::string>> tags;                         // id, name
+  std::vector<std::pair<std::uint64_t, std::vector<std::string>>> products;      // product, its tag IDs
+};
+inline constexpr std::uint32_t kMaxTagPages = 50;  // a view: 5000 products at 100 a page
+inline constexpr std::size_t kMaxTagPageBytes = 8 * 1024 * 1024;
+// One page. A tag without a canonical ID or a name, or a product without a canonical ID, is skipped; anything but an
+// object with "tags" and "products" arrays is not ok.
+LibraryTagsPage ParseLibraryTagsPage(std::string_view body);
+struct LibraryTag {
+  std::string id;  // digits
+  std::string name;
+  std::vector<std::uint64_t> products;  // hidden ones too, each once
+};
+struct TagsResult {
+  enum class Kind { kOk, kRejected, kNetwork, kProtocol };
+  Kind kind = Kind::kNetwork;
+  std::vector<LibraryTag> tags;  // kOk: in GOG's order
+  long status = 0;                      // the last HTTP status; 0 when there was no answer
+  std::size_t pages = 0;                // pages read, for the log
+};
+// Every page of both views, with "Authorization: Bearer <access token>" (wiped, as the answers, before it returns).
+// A view of more than kMaxTagPages pages is kProtocol: never a partial list.
+TagsResult FetchLibraryTags(Transport& transport, std::string_view access_token, const std::atomic<bool>& cancel);
 
 struct ProductResult {
   enum class Kind {

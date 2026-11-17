@@ -53,6 +53,7 @@ GogServices::GogServices(GogWiringConfig config) : config_(std::move(config)) {
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
   }, gog_log);
   cache_ = std::make_unique<LibraryCache>(*config_.library_storage, "library-gog-");
+  tags_ = std::make_unique<CollectionsCache>(*config_.library_storage, "collections-gog-");
   // Its transports are made per download thread while an install runs, never here.
   const std::string install_logs = config_.install_log_directory.empty() ? logs : config_.install_log_directory;
   install_runner_ = std::make_unique<stores::GogInstallRunner>(
@@ -61,7 +62,8 @@ GogServices::GogServices(GogWiringConfig config) : config_(std::move(config)) {
       config_.free_bytes);
   owned_account_ = std::make_unique<stores::GogAccount>(*session_, *store_, gog_log);
   account_ = owned_account_.get();
-  owned_library_ = std::make_unique<stores::GogLibrarySource>(*session_, transport(), *cache_, config_.user_root, gog_log);
+  owned_library_ = std::make_unique<stores::GogLibrarySource>(*session_, transport(), *cache_, config_.user_root, gog_log,
+                                                              std::function<std::uint64_t()>{}, tags_.get());
   library_ = owned_library_.get();
   // Its transport is made on its own worker, at its first request.
   owned_details_ = std::make_unique<stores::GogDetailsSource>(*session_, transport, config_.content_language, gog_log);

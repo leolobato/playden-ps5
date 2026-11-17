@@ -210,6 +210,110 @@ OwnedResult ParseOwned(std::string_view body) {
   return result;
 }
 
+LibraryTagsPage ParseLibraryTagsPage(std::string_view body) {
+  LibraryTagsPage page;
+  steam::json::Limits limits;
+  limits.max_bytes = kMaxTagPageBytes;
+  limits.max_values = kMaxOwnedValues;
+  limits.max_depth = 8;
+  limits.max_string_bytes = 64 * 1024;
+  const auto parsed = steam::json::Parse(body, limits);
+  const Value* tags = parsed && parsed->is_object() ? Array(&*parsed, "tags") : nullptr;
+  const Value* products = parsed && parsed->is_object() ? Array(&*parsed, "products") : nullptr;
+  if (!tags || !products) return page;
+  std::uint64_t number = 0;
+  for (const auto& tag : tags->array()) {
+    const std::string* id = tag.is_object() ? String(&tag, "id") : nullptr;
+    const std::string* name = tag.is_object() ? String(&tag, "name") : nullptr;
+    if (!id || !CanonicalId(*id, &number) || !name || name->empty() || name->size() > 1024) continue;
+    page.tags.emplace_back(*id, *name);
+  }
+  for (const auto& product : products->array()) {
+    std::uint64_t id = 0;
+    const Value* value = product.is_object() ? product.Find("id") : nullptr;
+    if (!value || !value->is_number() || !CanonicalId(value->text(), &id)) continue;
+    std::vector<std::string> ids;
+    if (const Value* list = Array(&product, "tags"))
+      for (const auto& tag : list->array())
+        if (tag.is_string() && CanonicalId(tag.text(), &number)) ids.push_back(tag.text());
+    page.products.emplace_back(id, std::move(ids));
+  }
+  if (const Value* total = parsed->Find("totalPages"); total && total->is_number()) {
+    std::uint64_t pages = 0;
+    if (CanonicalId(total->text(), &pages)) page.total_pages = static_cast<std::uint32_t>(std::min<std::uint64_t>(pages, UINT32_MAX));
+  }
+  page.ok = true;
+  return page;
+}
+
+TagsResult FetchLibraryTags(Transport& transport, std::string_view access_token, const std::atomic<bool>& cancel) {
+  TagsResult result;
+  if (!transport) return result;
+  std::vector<std::pair<std::string, std::string>> names;  // GOG's order, from the first page
+  std::vector<std::pair<std::uint64_t, std::vector<std::string>>> products;
+  for (const bool hidden : {false, true}) {
+    std::uint32_t total = 1;
+    for (std::uint32_t number = 1; number <= total; ++number) {
+      std::string url = "https://";
+      url += kEmbedHost;
+      url += "/account/getFilteredProducts?mediaType=1&page=" + std::to_string(number);
+      if (hidden) url += "&hiddenFlag=1";
+      auto request = Get(std::move(url), kMaxTagPageBytes);
+      std::string bearer;
+      bearer.reserve(7 + access_token.size());
+      bearer += "Bearer ";
+      bearer += access_token;
+      request.headers.reserve(2);
+      request.headers.emplace_back("User-Agent", kUserAgent);
+      request.headers.emplace_back("Authorization", std::string());
+      request.headers.back().second.swap(bearer);
+      auto response = transport(request, cancel);
+      platform::ZeroizeSecret(request.headers.back().second);
+      result.status = response.ok() ? response.status_code : 0;
+      if (!response.ok()) {
+        result.kind = TagsResult::Kind::kNetwork;
+        return result;
+      }
+      if (response.status_code != 200) {
+        platform::ZeroizeSecret(response.body);
+        result.kind = response.status_code == 401 ? TagsResult::Kind::kRejected
+                      : response.status_code == 429 || response.status_code >= 400 ? TagsResult::Kind::kNetwork
+                                                                                    : TagsResult::Kind::kProtocol;
+        return result;
+      }
+      auto page = ParseLibraryTagsPage(BodyOf(response));
+      platform::ZeroizeSecret(response.body);
+      if (!page.ok) {
+        result.kind = TagsResult::Kind::kProtocol;
+        return result;
+      }
+      ++result.pages;
+      if (names.empty()) names = std::move(page.tags);
+      for (auto& product : page.products) products.push_back(std::move(product));
+      // More pages than Playden reads: an incomplete list would drop tagged games, so the read fails (saved tags stay).
+      if (page.total_pages > kMaxTagPages) {
+        result.kind = TagsResult::Kind::kProtocol;
+        return result;
+      }
+      total = std::max<std::uint32_t>(page.total_pages, 1);
+    }
+  }
+  for (auto& [id, name] : names) {
+    if (std::any_of(result.tags.begin(), result.tags.end(), [&](const LibraryTag& tag) { return tag.id == id; }))
+      continue;
+    LibraryTag tag;
+    tag.id = id;
+    tag.name = std::move(name);
+    std::unordered_set<std::uint64_t> seen;
+    for (const auto& [product, ids] : products)
+      if (std::find(ids.begin(), ids.end(), tag.id) != ids.end() && seen.insert(product).second)
+        tag.products.push_back(product);
+    result.tags.push_back(std::move(tag));
+  }
+  result.kind = TagsResult::Kind::kOk;
+  return result;
+}
+
 OwnedResult FetchOwned(Transport& transport, std::string_view access_token, const std::atomic<bool>& cancel) {
   std::string url = "https://";
   url += kEmbedHost;

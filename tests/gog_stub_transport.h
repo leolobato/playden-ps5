@@ -111,7 +111,8 @@ class Gate {
   bool open_ = false;
 };
 
-enum class Endpoint { kToken, kUser, kOwned, kProduct, kOther };
+// kTags: the account library listing (the library tags, #536). Unscripted, it answers 503: a tags read that fails.
+enum class Endpoint { kToken, kUser, kOwned, kProduct, kTags, kOther };
 
 inline const std::string kProductPrefix = "https://gamesdb.gog.com/platforms/gog/external_releases/";
 
@@ -161,7 +162,8 @@ class Stub {
 
  private:
   std::deque<Step>& Queue(Endpoint endpoint) {
-    return endpoint == Endpoint::kToken ? tokens_ : endpoint == Endpoint::kOwned ? owned_ : users_;
+    return endpoint == Endpoint::kToken ? tokens_ : endpoint == Endpoint::kOwned ? owned_
+           : endpoint == Endpoint::kTags ? tags_ : users_;
   }
 
   HttpResponse Perform(const HttpRequest& request, const std::atomic<bool>& cancel) {
@@ -174,6 +176,7 @@ class Stub {
     if (request.url.rfind("https://auth.gog.com/token?", 0) == 0) seen.endpoint = Endpoint::kToken;
     else if (request.url == "https://embed.gog.com/userData.json") seen.endpoint = Endpoint::kUser;
     else if (request.url == "https://embed.gog.com/user/data/games") seen.endpoint = Endpoint::kOwned;
+    else if (request.url.rfind("https://embed.gog.com/account/getFilteredProducts?", 0) == 0) seen.endpoint = Endpoint::kTags;
     else if (request.url.rfind(kProductPrefix, 0) == 0) {
       seen.endpoint = Endpoint::kProduct;
       seen.product = std::strtoull(request.url.c_str() + kProductPrefix.size(), nullptr, 10);
@@ -185,6 +188,8 @@ class Stub {
       seen_.push_back(seen);
       if (seen.endpoint == Endpoint::kProduct) {
         products = products_;
+      } else if (seen.endpoint == Endpoint::kTags && tags_.empty()) {
+        step = {Answer(503, ""), nullptr};
       } else if (seen.endpoint == Endpoint::kOther || Queue(seen.endpoint).empty()) {
         std::fprintf(stderr, "unscripted request\n");
         std::exit(1);
@@ -211,6 +216,7 @@ class Stub {
   std::deque<Step> tokens_;
   std::deque<Step> users_;
   std::deque<Step> owned_;
+  std::deque<Step> tags_;
   ProductHandler products_;
   std::vector<Seen> seen_;
 };

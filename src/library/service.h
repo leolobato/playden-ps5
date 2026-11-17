@@ -1,5 +1,6 @@
 #pragma once
 
+#include "library/collections_cache.h"
 #include "library/repository.h"
 #include "steam/library_backend.h"
 
@@ -31,6 +32,11 @@ struct LibraryEvent {
   StorageError cache_error = StorageError::kNone;
   // kComplete: this load read the account's licenses too (never for a cached library).
   bool licenses_read = false;
+  // The store's collections (Steam collections, GOG tags) on kCached, kComplete and kUpdated, when known: read
+  // from the store with this load, or its saved copy. A store that couldn't read them keeps the saved copy; with
+  // none, collections_known is false and the model keeps what it has.
+  std::vector<LibraryCollection> collections;
+  bool collections_known = false;
 };
 
 // A single worker owns session, network, and cache IO. Dependencies outlive the
@@ -40,7 +46,8 @@ class LibraryService {
  public:
   LibraryService(steam::LibraryBackend&, SessionRepository&,
                  LibraryRepository* cache = nullptr,
-                 std::function<std::uint64_t()> unix_seconds = {});
+                 std::function<std::uint64_t()> unix_seconds = {},
+                 CollectionsRepository* collections = nullptr);
   ~LibraryService();
   LibraryService(const LibraryService&) = delete;
   LibraryService& operator=(const LibraryService&) = delete;
@@ -82,11 +89,13 @@ class LibraryService {
   void PushEvent(LibraryEvent, bool destructive_terminal = false);
   bool DestructiveRequest(std::uint64_t request) const;
   std::uint64_t Now() const;
+  std::optional<std::vector<LibraryCollection>> SavedCollections(std::uint64_t account) const;
 
   steam::LibraryBackend& backend_;
   SessionRepository& sessions_;
   LibraryRepository* cache_;
   std::function<std::uint64_t()> unix_seconds_;
+  CollectionsRepository* collections_;
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<Job> pending_;
@@ -104,6 +113,7 @@ class LibraryService {
   std::uint64_t completed_request_ = 0;
   std::uint64_t completed_account_ = 0;
   bool completed_cache_available_ = false;
+  std::optional<std::vector<LibraryCollection>> completed_collections_;
   std::thread worker_;
 };
 

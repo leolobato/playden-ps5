@@ -29,6 +29,7 @@
 #include "steam/backend/cm_app_details.h"
 #include "steam/backend/cm_friends_source.h"
 #include "steam/backend/download_server_source.h"
+#include "steam/backend/collections_client.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
 #include "steam/backend/steam_cloud_runner.h"
@@ -468,6 +469,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<playden::steam::EntitledLibraryBackend> library_backend;
     playden::steam::LicensedDepots licensed_depots;
     std::unique_ptr<playden::LibraryCache> library_cache;
+    std::unique_ptr<playden::CollectionsCache> collections_cache;
     std::unique_ptr<playden::LibraryService> library_service;
     std::unique_ptr<playden::PreferencesStore> preferences;
     std::unique_ptr<playden::OrganizationStore> organization;
@@ -612,8 +614,17 @@ int main(int argc, char** argv) {
         library_backend->SetFamilyDiagnostics(PLAYDEN_HOMEBREW_CA_BUNDLE, [log_directory](const std::string& line) {
             playden::app::AppendLogLine(log_directory, "steam-cm.log", line);
         });
+        // Steam collections (#536), read with each library load; one log line per read, without names.
+        library_backend->SetCollectionsSource([cm = cm_client.get(), log_directory](const playden::StoredSession& session,
+                                                                                    const std::atomic<bool>& cancel) {
+            return playden::steam::FetchLibraryCollections(*cm, session, cancel, [&log_directory](const std::string& line) {
+                playden::app::AppendLogLine(log_directory, "steam-cm.log", line);
+            });
+        });
         library_cache = std::make_unique<playden::LibraryCache>(*library_storage);
-        library_service = std::make_unique<playden::LibraryService>(*library_backend,*library_sessions,library_cache.get());
+        collections_cache = std::make_unique<playden::CollectionsCache>(*library_storage);
+        library_service = std::make_unique<playden::LibraryService>(*library_backend,*library_sessions,library_cache.get(),
+                                                                    std::function<std::uint64_t()>{},collections_cache.get());
         preferences=std::make_unique<playden::PreferencesStore>(*library_storage);
         {
             // A download resumed at startup starts before the UI has loaded the settings: it reads the saved ones.
@@ -748,6 +759,8 @@ int main(int argc, char** argv) {
             };
             gog = playden::homebrew::MakeGogServices(std::move(gog_config));
         }
+        // Without the GOG store there are no GOG tags: a saved GOG tag view falls back at once instead of waiting.
+        if (!gog) simulation.UpdateStoreCollections(playden::Store::kGog, {});
         playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, install_runner.get()},
                                                                    {playden::Store::kLocal, copy_runner.get()}};
         if (gog) install_runners[playden::Store::kGog] = gog->install_runner();

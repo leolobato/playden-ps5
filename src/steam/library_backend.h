@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 namespace playden::steam {
@@ -30,6 +31,12 @@ class LibraryBackend {
   virtual std::vector<playden::GameSummary> TakeLateGames(std::uint64_t /*steam_id*/) { return {}; }
   // Called from the backend's own thread when TakeLateGames has games. It must only queue work.
   virtual void SetLateGamesCallback(std::function<void()> /*callback*/) {}
+  // The account's collections in the store, after a successful Fetch with the same session. None when the store
+  // couldn't give them (or the backend doesn't read them); a library load never fails for them.
+  virtual std::optional<std::vector<playden::LibraryCollection>> FetchCollections(const StoredSession& /*session*/,
+                                                                                const std::atomic<bool>& /*cancel*/) {
+    return std::nullopt;
+  }
 };
 
 }  // namespace playden::steam

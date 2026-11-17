@@ -4,6 +4,7 @@
 #include "gog/product_cache.h"
 #include "gog/session.h"
 #include "library/cache.h"
+#include "library/collections_cache.h"
 #include "library/service.h"
 #include "stores/library_source.h"
 
@@ -42,8 +43,12 @@ class GogLibrarySource final : public LibrarySource {
 
   // transport belongs to this source's worker (gog::ClientTransport); the session's own transport stays the
   // session's. gog_cache is a LibraryCache with the "library-gog-" prefix. user_root holds gog/products.
+  // tags (optional) is a CollectionsCache with the "collections-gog-" prefix: the library tags (#536), read after the
+  // products on each Refresh and sent with every kCached and kComplete. A tags read that fails never fails the
+  // library and keeps the saved tags. Clear deletes them too.
   GogLibrarySource(gog::Session& session, gog::Transport transport, LibraryCache& gog_cache, std::string user_root,
-                   LogSink log = {}, std::function<std::uint64_t()> unix_seconds = {});
+                   LogSink log = {}, std::function<std::uint64_t()> unix_seconds = {},
+                   CollectionsRepository* tags = nullptr);
   ~GogLibrarySource() override;
   GogLibrarySource(const GogLibrarySource&) = delete;
   GogLibrarySource& operator=(const GogLibrarySource&) = delete;
@@ -88,10 +93,14 @@ class GogLibrarySource final : public LibrarySource {
   void DropEventsLocked();
   std::uint64_t Now() const;
   void Log(const std::string& line) const;
+  std::optional<std::vector<LibraryCollection>> SavedTags(std::uint64_t account) const;
+  // The tags read from GOG now, or none (the saved ones then stay).
+  std::optional<std::vector<LibraryCollection>> FetchTags(const Job& job);
 
   gog::Session& session_;
   gog::Transport transport_;
   LibraryCache& cache_;
+  CollectionsRepository* tags_;
   gog::ProductCache products_;
   LogSink log_;
   std::function<std::uint64_t()> unix_seconds_;

@@ -1089,6 +1089,36 @@ std::vector<LiveImportCandidate> fixture_import_candidates() {
     return candidates;
 }
 
+// The fixture's store collections: Steam collections (one empty, one non-ASCII, enough to scroll the rail) and,
+// with GOG games in the library, GOG tags. Both stores' lists are known.
+void add_fixture_store_collections(State& state) {
+    state.store_collections.clear();
+    std::vector<GameId> steam, gog;
+    for (const Game& game : state.games) {
+        if (game.id.store == Store::kSteam) steam.push_back(game.id);
+        if (game.id.store == Store::kGog) gog.push_back(game.id);
+    }
+    const auto members = [](const std::vector<GameId>& ids, std::size_t first, std::size_t count) {
+        std::set<GameId> result;
+        for (std::size_t index = first; index < first + count && index < ids.size(); ++index) result.insert(ids[index]);
+        return result;
+    };
+    const std::vector<std::pair<const char*, std::pair<std::size_t, std::size_t>>> collections = {
+        {"Couch co-op", {0, 3}}, {"Backlog", {3, 5}}, {"A\xC3\xA7\xC3\xA3o e aventura", {8, 2}},
+        {"Empty shelf", {0, 0}}, {"Racing", {10, 2}}, {"Puzzles", {12, 3}}, {"Short games", {1, 4}}, {"Retro", {5, 2}},
+        {"Story rich", {7, 3}}, {"Finished", {2, 6}}, {"Replay later", {9, 1}}, {"With friends", {4, 3}},
+        {"Cozy evenings", {11, 2}}, {"Horror nights", {6, 1}}, {"Weekend picks", {13, 4}}, {"zz Last one", {15, 2}}};
+    int next = 1;
+    for (const auto& [name, range] : collections)
+        state.store_collections.push_back(
+            {Store::kSteam, "uc-fixture" + std::to_string(next++), name, members(steam, range.first, range.second)});
+    if (!gog.empty()) {
+        state.store_collections.push_back({Store::kGog, "1001", "Classics", members(gog, 0, 2)});
+        state.store_collections.push_back({Store::kGog, "1002", "To finish", members(gog, 2, 1)});
+    }
+    state.store_collections_known = {Store::kSteam, Store::kGog};
+}
+
 // The fixture's imported game (Night Sky, already added from the USB drive).
 GameId fixture_imported_game() { return GameId::Local("6d1f3a52-0c55-4f3e-9b2a-5d1c7e0a9f11"); }
 
@@ -4668,6 +4698,33 @@ void Simulation::UpdateStoreDetails(GameId id, std::string description, std::vec
     rebuild_view();
 }
 
+void Simulation::UpdateStoreCollections(Store store, std::vector<playden::LibraryCollection> collections) {
+    if (!live() || store == Store::kLocal) return;
+    std::erase_if(state_.store_collections, [store](const StoreCollection& value) { return value.store == store; });
+    std::set<std::string> ids;
+    for (auto& collection : collections) {
+        // The service checked them; a bad one is still never shown.
+        if (!ValidLibraryCollectionId(collection.id) || trimmed(collection.name).empty() || !ids.insert(collection.id).second)
+            continue;
+        StoreCollection value;
+        value.store = store;
+        value.id = std::move(collection.id);
+        value.name = std::move(collection.name);
+        for (auto& member : collection.members)
+            if (member.valid() && member.store == store) value.members.insert(std::move(member));
+        state_.store_collections.push_back(std::move(value));
+    }
+    state_.store_collections_known.insert(store);
+    // A chosen collection deleted in the store (or gone with a sign-out) falls back to the store's games.
+    if (reconcile_store_collection_scope(state_)) {
+        reconcile_library_selection(state_);
+        save_profile();
+    }
+    // A focused rail entry the new list doesn't have hands the focus on, so Cross never acts on it.
+    reconcile_library_rail_focus(state_);
+    rebuild_view();
+}
+
 bool Simulation::UpdateLibrary(LibraryUpdate update) {
     if (!live()) return false;
 
@@ -4793,6 +4850,8 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
             state_.navigation.focus_key = prior_focus;
         } else if (state_.navigation.route == Route::Library && state_.navigation.library_rail_focused) {
             state_.navigation.focus_key = prior_focus;
+            // The rail follows the games: a store collection's row comes and goes with its library games.
+            reconcile_library_rail_focus(state_);
         } else if (state_.navigation.route == Route::Home || state_.navigation.route == Route::Library) {
             state_.navigation.focus_key = !state_.navigation.selected_game_id.valid()
                 ? (state_.library.query.empty() ? "library-empty" : "clear-search")
@@ -5165,6 +5224,9 @@ bool Simulation::ApplyOrganization(std::uint64_t account, PersistenceLoadToken t
         return false;
     }
     apply_organization_snapshot(merged);
+    // A saved store collection its store's known list doesn't have (the lists can arrive first) falls back now.
+    if (reconcile_store_collection_scope(state_)) reconcile_library_selection(state_);
+    merged.scope = state_.library.scope;
     merged.selected_game_id = state_.navigation.selected_game_id;
     captured_organization_ = merged;
     persisted_organization_ = std::move(loaded_base);
@@ -6336,6 +6398,19 @@ bool Simulation::scenario(const std::string& name) {
                 break;
             }
         }
+    } else if (name == "library-steam-collections" || name == "library-steam-collections-offline") {
+        // Steam only, with Steam collections: the rail's lone "Steam collections" folder (2A), with the Steam account
+        // signed in or offline (the saved lists show).
+        std::erase_if(state_.games, [](const Game& game) { return game.id.store != Store::kSteam; });
+        state_.navigation.modals.clear();
+        state_.account().authentication = name == "library-steam-collections" ? AuthState::SignedIn : AuthState::Offline;
+        state_.library_offline = name != "library-steam-collections";
+        add_fixture_store_collections(state_);
+        state_.library.scope = "all";
+        state_.navigation.library_rail_open_store.reset();
+        state_.navigation.route = Route::Library;
+        state_.navigation.library_rail_focused = false;
+        reconcile_library_selection(state_);
     } else if (name == "gog-signed-out" || name == "gog-sign-in" || name == "gog-library" || name == "library-stores") {
         // GOG (gog-store): Startup offering its sign-in, the sign-in dialog with its QR code, or both stores signed in
         // with the GOG scope in the Library. library-stores adds the imported game and opens All, with the rail's store
@@ -6373,7 +6448,13 @@ bool Simulation::scenario(const std::string& name) {
                 added.push_back(std::move(game));
             }
             for (auto& game : added) state_.games.push_back(std::move(game));
-            if (name == "library-stores") add_fixture_imported_game(state_);
+            state_.store_collections.clear();
+            state_.store_collections_known.clear();
+            if (name == "library-stores") {
+                add_fixture_imported_game(state_);
+                add_fixture_store_collections(state_);
+            }
+            state_.navigation.library_rail_open_store.reset();
             state_.library.scope = name == "library-stores" ? "all" : "gog";
             state_.navigation.route = Route::Library;
             state_.navigation.library_rail_focused = false;
@@ -9236,6 +9317,27 @@ void Simulation::rebuild_view() {
         view_.legends = state_.library.query.empty()
             ? std::vector<std::string>{"Cross Open", "Square Favorite", "Options Actions", "Triangle Filters", "Touchpad Search"}
             : std::vector<std::string>{"Cross Open", "Options Actions", "Triangle Filters", "Touchpad Search", "Circle Clear search"};
+        if (state_.navigation.library_rail_focused) {
+            // On the rail: what Cross does to the focused entry, and Left in an open store.
+            const auto entries = library_rail_entries(state_);
+            const auto entry = std::find_if(entries.begin(), entries.end(), [this](const RailEntry& value) {
+                return "rail-" + value.key == state_.navigation.focus_key;
+            });
+            std::vector<std::string> legends;
+            if (entry == entries.end() || entry->kind == RailEntryKind::kScope || entry->kind == RailEntryKind::kStoreAll ||
+                entry->kind == RailEntryKind::kStoreCollection)
+                legends.push_back("Cross Show");
+            else if (entry->kind == RailEntryKind::kStoreFolder)
+                legends.push_back(entry->open ? "Cross Close" : "Cross Open");
+            else
+                legends.push_back("Cross Create");
+            if (entry != entries.end() && (entry->kind == RailEntryKind::kStoreAll || entry->kind == RailEntryKind::kStoreCollection ||
+                                           (entry->kind == RailEntryKind::kStoreFolder && entry->open)))
+                legends.push_back(std::string("Left Close ") + (entry->store == "gog" ? "GOG" : "Steam"));
+            legends.insert(legends.end(), {"Triangle Filters", "Touchpad Search"});
+            if (!state_.library.query.empty()) legends.push_back("Circle Clear search");
+            view_.legends = std::move(legends);
+        }
     } else if (state_.navigation.route == Route::Details) {
         const auto* game = find_game(state_, state_.navigation.detail_id.value_or(state_.navigation.selected_game_id));
         view_.title = game ? game->title : "Game unavailable";
@@ -11557,7 +11659,25 @@ void Simulation::activate() {
     }
     if (state_.navigation.route == Route::Library && state_.navigation.library_rail_focused) {
         const auto scope = state_.navigation.focus_key.rfind("rail-", 0) == 0 ? state_.navigation.focus_key.substr(5) : state_.library.scope;
+        if (const auto keys = library_rail_scopes(state_); std::find(keys.begin(), keys.end(), scope) == keys.end()) {
+            // The focused entry left the rail (a store list changed): the focus moves, nothing is chosen.
+            reconcile_library_rail_focus(state_);
+            rebuild_view();
+            return;
+        }
         if (scope == "new-collection") { start_editor("Collection name", ""); return; }
+        if (scope.rfind("store-", 0) == 0) {
+            // A store with collections opens to its rows (the first one gets the focus), or closes. One store is open
+            // at a time.
+            const std::string store = scope.substr(6);
+            const bool open = library_rail_open_store(state_) == store;
+            state_.navigation.library_rail_open_store = open ? std::string() : store;
+            const auto keys = library_rail_scopes(state_);
+            const auto folder = std::find(keys.begin(), keys.end(), scope);
+            if (!open && folder != keys.end() && std::next(folder) != keys.end()) focus_library_rail_entry(state_, *std::next(folder));
+            else focus_library_rail_entry(state_, scope);
+            return;
+        }
         state_.library.scope = scope;
         state_.navigation.library_rail_focused = false;
         const auto games = visible_games();
@@ -13771,7 +13891,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "scenario-library-steam-collections", "scenario-library-steam-collections-offline", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});

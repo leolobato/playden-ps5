@@ -58,10 +58,12 @@ gog::CachedProduct Cached(const gog::ProductInfo& info, std::string etag) {
 }  // namespace
 
 GogLibrarySource::GogLibrarySource(gog::Session& session, gog::Transport transport, LibraryCache& gog_cache,
-                                   std::string user_root, LogSink log, std::function<std::uint64_t()> unix_seconds)
+                                   std::string user_root, LogSink log, std::function<std::uint64_t()> unix_seconds,
+                                   CollectionsRepository* tags)
     : session_(session),
       transport_(std::move(transport)),
       cache_(gog_cache),
+      tags_(tags),
       products_(std::move(user_root)),
       log_(std::move(log)),
       unix_seconds_(std::move(unix_seconds)),
@@ -266,6 +268,41 @@ void GogLibrarySource::Run() {
   }
 }
 
+std::optional<std::vector<LibraryCollection>> GogLibrarySource::SavedTags(std::uint64_t account) const {
+  if (!tags_) return std::nullopt;
+  auto loaded = tags_->Load(account);
+  if (!loaded.ok()) return std::nullopt;
+  return std::move(loaded.value());
+}
+
+std::optional<std::vector<LibraryCollection>> GogLibrarySource::FetchTags(const Job& job) {
+  if (!tags_) return std::nullopt;
+  auto token = session_.Token(*job.cancel);
+  if (token.status != gog::AccessToken::Status::kOk || token.generation != session_.generation() ||
+      session_.identity().account_key != job.account) {
+    Log("library tags result=no_token");
+    return std::nullopt;
+  }
+  auto result = gog::FetchLibraryTags(transport_, token.token, *job.cancel);
+  if (result.kind != gog::TagsResult::Kind::kOk) {
+    Log("library tags status=" + std::to_string(result.status) + " pages=" + std::to_string(result.pages));
+    return std::nullopt;
+  }
+  std::size_t members = 0;
+  std::vector<LibraryCollection> tags;
+  for (auto& tag : result.tags) {
+    LibraryCollection collection;
+    collection.id = std::move(tag.id);
+    collection.name = std::move(tag.name);
+    for (const auto product : tag.products) collection.members.push_back(GameId::Gog(product));
+    members += collection.members.size();
+    tags.push_back(std::move(collection));
+  }
+  Log("library tags=" + std::to_string(tags.size()) + " members=" + std::to_string(members) +
+      " pages=" + std::to_string(result.pages));
+  return tags;
+}
+
 void GogLibrarySource::ExecuteLoadCached(const Job& job) {
   if (!Current(job)) return;
   auto loaded = cache_.Load(job.account);
@@ -277,11 +314,20 @@ void GogLibrarySource::ExecuteLoadCached(const Job& job) {
   event.games = std::move(loaded.value().games);
   event.retrieved_at_unix_seconds = loaded.value().retrieved_at_unix_seconds;
   event.cache_available = true;
+  if (auto tags = SavedTags(job.account)) {
+    event.collections = std::move(*tags);
+    event.collections_known = true;
+  }
   Emit(job, std::move(event));
 }
 
 void GogLibrarySource::ExecuteClear(const Job& job) {
-  const auto cleared = cache_.Clear(job.account);
+  auto cleared = cache_.Clear(job.account);
+  // The saved tags go with the saved library.
+  if (tags_) {
+    const auto tags_cleared = tags_->Clear(job.account);
+    if (cleared.ok() && !tags_cleared.ok()) cleared = tags_cleared;
+  }
   const bool products = products_.Clear();
   Log(std::string("library clear result=") + (cleared.ok() && products ? "ok" : "failed"));
   std::lock_guard<std::mutex> lock(mutex_);
@@ -305,6 +351,13 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
   }
 
   bool cache_available = false;
+  // The tags saved by an earlier refresh: sent with the saved library and every batch, kept if GOG can't give them.
+  std::optional<std::vector<LibraryCollection>> tags = SavedTags(job.account);
+  const auto with_tags = [&tags](LibraryEvent& event) {
+    if (!tags) return;
+    event.collections = *tags;
+    event.collections_known = true;
+  };
   {
     auto saved = cache_.Load(job.account);
     if (!Current(job)) return;
@@ -314,6 +367,7 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
       cached.games = std::move(saved.value().games);
       cached.retrieved_at_unix_seconds = saved.value().retrieved_at_unix_seconds;
       cached.cache_available = true;
+      with_tags(cached);
       Emit(job, std::move(cached));
     }
   }
@@ -433,6 +487,7 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
       batch.games = games();
       batch.retrieved_at_unix_seconds = Now();
       batch.cache_available = cache_available;
+      with_tags(batch);
       Emit(job, std::move(batch));
     }
   }
@@ -450,11 +505,19 @@ void GogLibrarySource::ExecuteRefresh(const Job& job) {
   else cache_error = saved.error();
   if (!saved.ok()) Log("library save result=failed");
 
+  if (auto fresh = FetchTags(job)) {
+    if (!Current(job)) return;
+    if (!tags_->Save(job.account, *fresh).ok()) Log("library tags save result=failed");
+    tags = std::move(fresh);
+  }
+  if (!Current(job)) return;
+
   auto complete = Event(job, LibraryEventKind::kComplete);
   complete.games = std::move(snapshot.games);
   complete.retrieved_at_unix_seconds = snapshot.retrieved_at_unix_seconds;
   complete.cache_available = cache_available;
   complete.cache_error = cache_error;
+  with_tags(complete);
   Emit(job, std::move(complete));
 }
 

@@ -15,6 +15,8 @@
 //                                                     and play tasks included; run again to resume
 //   playden-gog-dev --data <folder> update <id> <game folder>
 //                                                     brings that install to the default branch's newest build
+//   playden-gog-dev --data <folder> get <path> <file>  one signed-in GET of https://embed.gog.com<path>, the answer
+//                                                     saved to <file> (0600); prints the status and size
 //   playden-gog-dev --data <folder> sign-out          deletes the saved session
 //
 // --ca <file> picks the CA bundle (default: the one the host app uses). <folder> and <game folder> are absolute,
@@ -37,6 +39,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/stat.h>
 #include <memory>
 #include <optional>
 #include <string>
@@ -52,7 +55,7 @@ using namespace playden;
 int Usage() {
   std::fputs(
       "usage: playden-gog-dev [--ca <file>] [--data <folder>] <command> [arguments]\n"
-      "  url | sign-in | restore | owned | product <id> | builds <id>\n"
+      "  url | sign-in | restore | owned | product <id> | builds <id> | get <path> <file>\n"
       "  install <id> <game folder> [language] | update <id> <game folder> | sign-out\n"
       "sign-in reads the address GOG opened after sign-in from stdin.\n",
       stderr);
@@ -209,6 +212,51 @@ int Owned(Account& account, const std::string& ca) {
   return 0;
 }
 
+// One signed-in GET of a path on embed.gog.com (#536 Phase 0: the library tags), its answer written to `out` (0600).
+// Prints the status and size only.
+int Get(Account& account, const std::string& ca, const std::string& path, const std::string& out) {
+  if (path.empty() || path[0] != '/' || path.find("//") != std::string::npos || path.find('@') != std::string::npos) {
+    std::puts("get: the path must start with one '/'");
+    return 2;
+  }
+  const std::atomic<bool> cancel{false};
+  const auto restored = account.session->Restore(cancel);
+  if (restored.kind != gog::RestoreOutcome::Kind::kSignedIn) {
+    std::printf("get: not signed in (%s)\n", RestoreName(restored.kind));
+    return 1;
+  }
+  auto token = account.session->Token(cancel);
+  if (token.status != gog::AccessToken::Status::kOk) {
+    std::printf("get: no access token (%s)\n", TokenName(token.status));
+    return 1;
+  }
+  steam::HttpRequest request;
+  request.method = steam::HttpMethod::kGet;
+  request.url = std::string("https://embed.gog.com") + path;
+  request.timeout_ms = 30'000;
+  request.max_response_bytes = 16u << 20;
+  std::string bearer = "Bearer ";
+  bearer.reserve(7 + token.token.size());
+  bearer += token.token;
+  token.Wipe();
+  request.headers.emplace_back("User-Agent", gog::kUserAgent);
+  request.headers.emplace_back("Authorization", std::move(bearer));
+  auto transport = gog::ClientTransport(ca);
+  const auto response = transport(request, cancel);
+  platform::ZeroizeSecret(request.headers.back().second);
+  if (!response.ok()) {
+    std::puts("get: no answer");
+    return 1;
+  }
+  FILE* file = std::fopen(out.c_str(), "wb");
+  if (!file) return 1;
+  chmod(out.c_str(), 0600);
+  std::fwrite(response.body.data(), 1, response.body.size(), file);
+  std::fclose(file);
+  std::printf("get: status=%ld bytes=%zu\n", response.status_code, response.body.size());
+  return response.status_code == 200 ? 0 : 1;
+}
+
 int Product(std::uint64_t id, const std::string& ca) {
   const std::atomic<bool> cancel{false};
   auto transport = gog::ClientTransport(ca);
@@ -328,6 +376,7 @@ int main(int argc, char** argv) {
   if (command == "sign-in" && rest == 0) return SignIn(account);
   if (command == "restore" && rest == 0) return Restore(account);
   if (command == "owned" && rest == 0) return Owned(account, ca);
+  if (command == "get" && rest == 2) return Get(account, ca, argv[at], argv[at + 1]);
   if (command == "sign-out" && rest == 0) {
     const auto cleared = account.session->SignOut();
     std::printf("sign-out: %s\n", cleared.ok ? "done" : "failed");

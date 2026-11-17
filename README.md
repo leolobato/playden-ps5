@@ -25,7 +25,7 @@ private Windows environment and its own tile on the PS5 Home screen.
   Steam Guard email codes, Steam Mobile app codes and approval in the app are supported. The sign-in screen opens on
   the method you used last.
 - **Your whole Steam library.** Search, sort, favorites, collections, ratings and notes, with cover art and store
-  details. The library works offline from a cache.
+  details. The library works offline from a cache. Your Steam collections show under Steam in the Library, read-only.
 - **Downloads from Steam.** Queue games and watch progress. The Queue screen also lists the games being prepared, in
   the order they start; Prepare next moves a waiting game to the front.
 - **Storage at a glance.** Settings › Downloads shows how much space is used, and Settings › Games › Manage installed

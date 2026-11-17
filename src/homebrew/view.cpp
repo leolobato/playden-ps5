@@ -343,6 +343,8 @@ ui::Button legend_button(std::string_view legend, std::size_t index)
         return ui::Button::options;
     if (legend.rfind("Touchpad", 0) == 0)
         return ui::Button::touchpad;
+    if (legend.rfind("Left ", 0) == 0)
+        return ui::Button::dpad;
     if (legend.find("Favorite") != std::string_view::npos)
         return ui::Button::square;
     if (legend.find("Backspace") != std::string_view::npos)
@@ -363,7 +365,7 @@ ui::Button legend_button(std::string_view legend, std::size_t index)
 // The glyph already names the button, so "Cross Open" reads "Open" beside it.
 const char *legend_text(const std::string &legend)
 {
-    for (const std::string_view button : {"Cross ", "Circle ", "Square ", "Triangle ", "Options ", "Touchpad "})
+    for (const std::string_view button : {"Cross ", "Circle ", "Square ", "Triangle ", "Options ", "Touchpad ", "Left "})
     {
         if (legend.rfind(button, 0) == 0)
             return legend.c_str() + button.size();
@@ -1638,6 +1640,21 @@ class Render::Impl
         const ViewData &view = simulation.route_view();
         const auto games = simulation.visible_games();
         draw_library_rail(canvas, view, state);
+        // A store collection gets a heading over the grid: its name, its store's word for it, and its games.
+        float grid_top = 123.0F;
+        if (const StoreCollection *chosen = find_store_collection(state, state.library.scope))
+        {
+            library_heading_.style.theme = theme_;
+            library_heading_.title = chosen->name + (chosen->store == Store::kGog ? " · GOG tag" : " · Steam collection");
+            library_heading_.set_count(static_cast<int>(games.size()));
+            library_heading_.set_bounds({444.0F, 146.0F, 1380.0F, 44.0F});
+            library_heading_.update(1.0F / 60.0F);
+            library_heading_.draw(canvas);
+            grid_top += 56.0F;
+        }
+        // Only on a change: setting the bounds snaps the grid's scroll.
+        if (grid_.bounds().y != grid_top)
+            grid_.set_bounds({417.0F, grid_top, 1434.0F, 903.0F - (grid_top - 123.0F)});
 
         if (games.empty())
         {
@@ -1695,12 +1712,16 @@ class Render::Impl
 
     void draw_library_rail(ui::Canvas &canvas, const ViewData &view, const State &state)
     {
-        struct RailEntry
+        struct RailRow
         {
             std::string key;
             std::string title;
             std::string value;
+            std::string second;  // under the title: a closed store's chosen collection
             bool selected = false;
+            bool child = false;   // a row inside an open store: indented
+            bool folder = false;  // a store with collections: a chevron, down while open
+            bool open = false;
         };
         // As the Installed scope counts them: imported games playing from their folder too.
         const std::size_t installed = std::count_if(
@@ -1712,14 +1733,40 @@ class Render::Impl
             return std::to_string(std::count_if(state.games.begin(), state.games.end(),
                                                 [store](const Game &game) { return game.id.store == store; }));
         };
-        // One entry per scope the rail steps through (library_rail_scopes), so selected_index finds its entry;
-        // the dividers around the store section are drawn between entries and never take the focus.
+        const auto store_of = [](const std::string &name) { return name == "gog" ? Store::kGog : Store::kSteam; };
+        const auto store_title = [](const std::string &name) { return std::string(name == "gog" ? "GOG" : "Steam"); };
+        // No store section: a store folder stands alone (2A), named for its collections.
+        const bool lone_folder = library_store_scopes(state).empty();
+        // One row per rail entry (library_rail_entries), so selected_index finds its row;
+        // the dividers around the store section are drawn between rows and never take the focus.
         const std::string marked = library_rail_marked_scope(state);
-        std::vector<RailEntry> entries;
-        for (const std::string &scope : library_rail_scopes(state))
+        std::vector<RailRow> entries;
+        for (const RailEntry &rail : library_rail_entries(state))
         {
-            RailEntry entry{"rail-" + scope, {}, {}, scope == marked};
-            if (scope == "installed")
+            const std::string &scope = rail.key;
+            RailRow entry{"rail-" + scope, {}, {}, {}, scope == marked};
+            entry.child = rail.kind == RailEntryKind::kStoreAll || rail.kind == RailEntryKind::kStoreCollection;
+            if (rail.kind == RailEntryKind::kStoreFolder)
+            {
+                entry.folder = true, entry.open = rail.open;
+                if (lone_folder)
+                    entry.title = rail.store == "gog" ? "GOG tags" : "Steam collections",
+                    entry.value = std::to_string(store_collections_of(state, store_of(rail.store)).size());
+                else
+                    entry.title = store_title(rail.store), entry.value = store_count(store_of(rail.store));
+                // Closed, with one of its collections chosen: the collection's name under the store.
+                if (!rail.open && entry.selected)
+                    if (const StoreCollection *chosen = find_store_collection(state, state.library.scope))
+                        entry.second = chosen->name;
+            }
+            else if (rail.kind == RailEntryKind::kStoreAll)
+                entry.title = "All " + store_title(rail.store) + " games", entry.value = store_count(store_of(rail.store));
+            else if (rail.kind == RailEntryKind::kStoreCollection)
+            {
+                if (const StoreCollection *collection = find_store_collection(state, scope))
+                    entry.title = collection->name, entry.value = std::to_string(store_collection_count(state, *collection));
+            }
+            else if (scope == "installed")
                 entry.title = "Installed", entry.value = std::to_string(installed);
             else if (scope == "all")
                 entry.title = "All", entry.value = std::to_string(state.games.size());
@@ -1743,11 +1790,16 @@ class Render::Impl
         }
         const std::vector<int> dividers = library_rail_dividers(state);
         const auto selected_entry = std::find_if(entries.begin(), entries.end(),
-                                                 [](const RailEntry &entry) { return entry.selected; });
+                                                 [](const RailRow &entry) { return entry.selected; });
         const int selected = selected_entry == entries.end() ? -1 :
                                  static_cast<int>(std::distance(entries.begin(), selected_entry));
-        const int focus_index = state.navigation.library_rail_focused ? state.navigation.selected_index :
-                                                                         std::max(0, selected);
+        // The focused row by its key: an open or closed store moves the rows under it.
+        const auto focus_entry = std::find_if(entries.begin(), entries.end(), [&state](const RailRow &entry) {
+            return entry.key == state.navigation.focus_key;
+        });
+        const int rail_focus = focus_entry != entries.end() ? static_cast<int>(std::distance(entries.begin(), focus_entry))
+                                                            : state.navigation.selected_index;
+        const int focus_index = state.navigation.library_rail_focused ? rail_focus : std::max(0, selected);
         // An applied search gets its own row above the rail, so nothing is drawn over a focus ring.
         const bool searching = !state.library.query.empty();
         const float rail_top = searching ? 200.0F : 150.0F;
@@ -1777,9 +1829,10 @@ class Render::Impl
                 ui::draw_divider(canvas, line, {108.0F, middle - 9.0F, 276.0F, 18.0F});
                 y += kDividerGap;
             }
-            const bool focused = route_focus_ && state.navigation.library_rail_focused &&
-                                 index == state.navigation.selected_index;
-            const gfx::Rect entry{96.0F, y, 300.0F, 60.0F};
+            const bool focused = route_focus_ && state.navigation.library_rail_focused && index == rail_focus;
+            const RailRow &row = entries[static_cast<std::size_t>(index)];
+            const float indent = row.child ? 24.0F : 0.0F;
+            const gfx::Rect entry{96.0F + indent, y, 300.0F - indent, 60.0F};
             const float amount = control_focus(entries[static_cast<std::size_t>(index)].key, focused);
             focus_glow(scene_, entry, amount, true);
             scene_.rounded_rect(entry, 8.0F, kBackground);
@@ -1788,11 +1841,36 @@ class Render::Impl
             focus_ring(scene_, entry, amount, true);
             if (focused)
                 stats_.focused_control_key = entries[static_cast<std::size_t>(index)].key;
-            ui::text(scene_, fonts_.display,
-                     fit(fonts_.display, entries[static_cast<std::size_t>(index)].title, 28.0F, 225.0F),
-                     118.0F, y + 40.0F, 28.0F,
-                     entries[static_cast<std::size_t>(index)].selected || index == selected ? kText
-                                                                                             : kSecondary);
+            const gfx::Color ink = row.selected || index == selected ? kText : kSecondary;
+            float title_x = 118.0F + indent;
+            if (row.folder)
+            {
+                // Before the title, as the Library's other chevrons are drawn (the console fonts lack the glyphs):
+                // right while closed, down while open.
+                const float cx = title_x + 5.0F, cy = y + (row.second.empty() ? 30.0F : 22.0F);
+                if (row.open)
+                {
+                    scene_.line(cx - 6.0F, cy - 3.0F, cx, cy + 3.0F, 2.4F, ink);
+                    scene_.line(cx, cy + 3.0F, cx + 6.0F, cy - 3.0F, 2.4F, ink);
+                }
+                else
+                {
+                    scene_.line(cx - 3.0F, cy - 6.0F, cx + 3.0F, cy, 2.4F, ink);
+                    scene_.line(cx + 3.0F, cy, cx - 3.0F, cy + 6.0F, 2.4F, ink);
+                }
+                title_x += 22.0F;
+            }
+            const float title_width = 343.0F - title_x;
+            if (row.second.empty())
+                ui::text(scene_, fonts_.display, fit(fonts_.display, row.title, 28.0F, title_width), title_x, y + 40.0F,
+                         28.0F, ink);
+            else
+            {
+                ui::text(scene_, fonts_.display, fit(fonts_.display, row.title, 24.0F, title_width), title_x, y + 29.0F,
+                         24.0F, ink);
+                ui::text(scene_, fonts_.regular, fit(fonts_.regular, row.second, 18.0F, title_width), title_x, y + 51.0F,
+                         18.0F, kMuted);
+            }
             ui::text(scene_, fonts_.regular, entries[static_cast<std::size_t>(index)].value,
                      374.0F, y + 38.0F, 20.0F, kMuted,
                      gfx::Align::right);
@@ -5253,6 +5331,7 @@ class Render::Impl
     ui::TabBar tabs_;
     ui::Spinner startup_spinner_;  // Startup while accounts and libraries load
     ui::GridView grid_;
+    ui::SectionHeader library_heading_;  // over the grid while a store collection is shown
     ui::ListView list_;
     ui::Keyboard keyboard_;
     int keyboard_layouts_ = 0;  // 0 the default layouts, 1 a password's (Show), 2 a revealed password's (Hide)

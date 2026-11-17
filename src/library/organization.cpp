@@ -1,5 +1,6 @@
 #include "library/organization.h"
 
+#include "library/model.h"
 #include "library/store.h"
 
 #include <algorithm>
@@ -111,6 +112,15 @@ bool RailScope(const std::string& value) {
   return value == "installed" || value == "steam" || value == "gog" || value == "imported";
 }
 
+// A store's own collection (#536): "steam-collection:<id>" or "gog-tag:<id>" (ValidLibraryCollectionId). The
+// collections come from the stores after loading, so any such ID is kept; the Library falls back to the store when
+// its store no longer has it. A collection ID never has ':', so the two can't collide.
+bool StoreCollectionScope(const std::string& value) {
+  for (const std::string_view prefix : {std::string_view("steam-collection:"), std::string_view("gog-tag:")})
+    if (value.compare(0, prefix.size(), prefix) == 0) return ValidLibraryCollectionId(value.substr(prefix.size()));
+  return false;
+}
+
 bool ReservedCollectionId(const std::string& value) {
   return BuiltInScope(value) || RailScope(value) || value == "new-collection";
 }
@@ -172,7 +182,8 @@ bool Validate(const OrganizationSnapshot& snapshot, std::uint16_t version) {
     }
     for (const GameId& id : collection.members) if (!AddGameId(game_ids, id, version)) return false;
   }
-  if (!BuiltInScope(snapshot.scope) && !RailScope(snapshot.scope) && !collection_ids.count(snapshot.scope))
+  if (!BuiltInScope(snapshot.scope) && !RailScope(snapshot.scope) && !StoreCollectionScope(snapshot.scope) &&
+      !collection_ids.count(snapshot.scope))
     return false;
 
   if (snapshot.ratings.size() > kMaximumGameIds || snapshot.notes.size() > kMaximumGameIds)
@@ -560,7 +571,7 @@ Loaded DecodeV2(const Bytes& bytes) {
   // A scope this build doesn't know (a newer rail, or a removed collection) reads as "all". Only the
   // reader is lenient: Validate, and so the writer, still refuse it. An empty or invalid scope stays damage.
   if (ValidText(snapshot.scope, kMaximumScopeBytes, false) && !BuiltInScope(snapshot.scope) &&
-      !RailScope(snapshot.scope) &&
+      !RailScope(snapshot.scope) && !StoreCollectionScope(snapshot.scope) &&
       std::none_of(snapshot.collections.begin(), snapshot.collections.end(),
                    [&](const OrganizationCollection& collection) { return collection.id == snapshot.scope; })) {
     snapshot.scope = "all";

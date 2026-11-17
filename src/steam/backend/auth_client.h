@@ -5,6 +5,7 @@
 #include "steam/backend/http_client.h"
 #include <functional>
 #include <memory>
+#include <string>
 
 namespace playden::steam {
 
@@ -29,6 +30,8 @@ struct AuthClientHooks {
   // Optional report of a new sign-in's token claims: Steam's persistence flag (-1: none) and the token's
   // lifetime in seconds. Never the token or the account.
   std::function<void(long long persistence, std::uint64_t lifetime_seconds)> signed_in;
+  // The device name a sign-in shows in the account's Steam devices list (empty: "Playden (PS5)").
+  std::string device_name;
 };
 
 class AuthClient final : public AuthBackend {
@@ -49,6 +52,8 @@ class AuthClient final : public AuthBackend {
   void SetSignInReport(std::function<void(long long, std::uint64_t)> report) {
     hooks_.signed_in = std::move(report);
   }
+  // For host tools signing in from another machine: the name Steam lists the device under.
+  void SetDeviceName(std::string name) { hooks_.device_name = std::move(name); }
   void SetCmRenewal(std::function<AuthResult(const StoredSession&, const std::atomic<bool>&)> renew) {
     hooks_.cm_renew = std::move(renew);
   }

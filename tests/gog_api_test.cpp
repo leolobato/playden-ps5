@@ -278,6 +278,84 @@ void TestSecureLinks() {
 
 }  // namespace
 
+// The library tags (#536), in the shape of the account library listing, with synthetic tags and products.
+std::string TagsPage(int page, int total, const std::string& products,
+                     const std::string& tags = R"([{"id":"100000001","name":"Couch","productCount":2},)"
+                                               R"({"id":"100000002","name":"To finish","productCount":1},)"
+                                               R"({"id":"100000003","name":"Unused","productCount":0}])") {
+  return R"({"sortBy":null,"page":)" + std::to_string(page) + R"(,"totalProducts":3,"totalPages":)" +
+         std::to_string(total) + R"(,"productsPerPage":100,"contentSystemCompatibility":null,"moviesCount":0,"tags":)" +
+         tags + R"(,"products":[)" + products + R"(],"updatedProductsCount":0,"hiddenUpdatedProductsCount":0,)" +
+         R"("appliedFilters":{"tags":null},"hasHiddenProducts":true})";
+}
+std::string TagsProduct(std::uint64_t id, const std::string& tags, bool hidden = false) {
+  return R"({"isGalaxyCompatible":true,"tags":)" + tags + R"(,"id":)" + std::to_string(id) +
+         R"(,"availability":{"isAvailable":true,"isAvailableInAccount":true},"title":"Synthetic","isHidden":)" +
+         (hidden ? "true" : "false") + R"(,"worksOn":{"Windows":true,"Mac":false,"Linux":false}})";
+}
+
+void TestLibraryTags() {
+  auto page = gog::ParseLibraryTagsPage(TagsPage(1, 1, TagsProduct(1900000101, R"(["100000001"])") + "," +
+                                                           TagsProduct(1900000103, R"(["100000002","bad"])") + "," +
+                                                           TagsProduct(1900000102, "[]")));
+  CHECK(page.ok && page.total_pages == 1 && page.tags.size() == 3 && page.tags[0].first == "100000001" &&
+        page.tags[0].second == "Couch");
+  CHECK(page.products.size() == 3 && page.products[1].second == std::vector<std::string>{"100000002"});
+  CHECK(!gog::ParseLibraryTagsPage("{not json").ok);
+  CHECK(!gog::ParseLibraryTagsPage(R"({"products":[]})").ok);
+  // A tag without a name or a canonical ID is skipped.
+  page = gog::ParseLibraryTagsPage(TagsPage(1, 1, "", R"([{"id":"012","name":"A"},{"id":"5","name":""},{"id":"6","name":"B"}])"));
+  CHECK(page.ok && page.tags.size() == 1 && page.tags[0].first == "6");
+
+  // Every page of the listing, then the hidden view's: the hidden product's tags count too.
+  std::vector<std::string> urls;
+  std::vector<HttpResponse> answers = {
+      Answer(200, TagsPage(1, 2, TagsProduct(1900000101, R"(["100000001"])"))),
+      Answer(200, TagsPage(2, 2, TagsProduct(1900000102, R"(["100000001","100000002"])"))),
+      Answer(200, TagsPage(1, 1, TagsProduct(1900000104, R"(["100000002"])", true))),
+  };
+  std::string authorization;
+  gog::Transport transport = [&](const HttpRequest& request, const std::atomic<bool>&) {
+    urls.push_back(request.url);
+    for (const auto& header : request.headers)
+      if (header.first == "Authorization") authorization = header.second;
+    if (urls.size() > answers.size()) return Answer(500, "");
+    return answers[urls.size() - 1];
+  };
+  const std::atomic<bool> cancel{false};
+  auto tags = gog::FetchLibraryTags(transport, "synthetic-access", cancel);
+  CHECK(tags.kind == gog::TagsResult::Kind::kOk && tags.pages == 3 && authorization == "Bearer synthetic-access");
+  CHECK((urls == std::vector<std::string>{
+             "https://embed.gog.com/account/getFilteredProducts?mediaType=1&page=1",
+             "https://embed.gog.com/account/getFilteredProducts?mediaType=1&page=2",
+             "https://embed.gog.com/account/getFilteredProducts?mediaType=1&page=1&hiddenFlag=1"}));
+  CHECK(tags.tags.size() == 3 && tags.tags[0].id == "100000001" &&
+        (tags.tags[0].products == std::vector<std::uint64_t>{1900000101, 1900000102}));
+  CHECK((tags.tags[1].products == std::vector<std::uint64_t>{1900000102, 1900000104}) && tags.tags[2].products.empty());
+  // Any page that fails fails the whole read.
+  urls.clear();
+  answers = {Answer(200, TagsPage(1, 2, "")), Answer(401, "")};
+  CHECK(gog::FetchLibraryTags(transport, "x", cancel).kind == gog::TagsResult::Kind::kRejected);
+  urls.clear();
+  answers = {Answer(503, "")};
+  CHECK(gog::FetchLibraryTags(transport, "x", cancel).kind == gog::TagsResult::Kind::kNetwork);
+  urls.clear();
+  answers = {Answer(200, "[]")};
+  CHECK(gog::FetchLibraryTags(transport, "x", cancel).kind == gog::TagsResult::Kind::kProtocol);
+  urls.clear();
+  answers = {Failure(HttpError::kTimeout)};
+  CHECK(gog::FetchLibraryTags(transport, "x", cancel).kind == gog::TagsResult::Kind::kNetwork);
+  // More pages than the cap: refused at once, never a partial list.
+  urls.clear();
+  answers.assign(200, Answer(200, TagsPage(1, gog::kMaxTagPages + 1, "")));
+  CHECK(gog::FetchLibraryTags(transport, "x", cancel).kind == gog::TagsResult::Kind::kProtocol && urls.size() == 1);
+  // Exactly the cap is read whole.
+  urls.clear();
+  answers.assign(200, Answer(200, TagsPage(1, gog::kMaxTagPages, "")));
+  CHECK(gog::FetchLibraryTags(transport, "x", cancel).kind == gog::TagsResult::Kind::kOk &&
+        urls.size() == gog::kMaxTagPages + gog::kMaxTagPages);
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   g_fixtures = argv[1];
@@ -289,5 +367,6 @@ int main(int argc, char** argv) {
   TestArtUrl();
   TestFetch();
   TestSecureLinks();
+  TestLibraryTags();
   return 0;
 }

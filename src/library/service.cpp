@@ -28,9 +28,10 @@ void SetSchema(LibrarySnapshot* snapshot) {
 LibraryService::LibraryService(steam::LibraryBackend& backend,
                                SessionRepository& sessions,
                                LibraryRepository* cache,
-                               std::function<std::uint64_t()> unix_seconds)
+                               std::function<std::uint64_t()> unix_seconds,
+                               CollectionsRepository* collections)
     : backend_(backend), sessions_(sessions), cache_(cache),
-      unix_seconds_(std::move(unix_seconds)), worker_([this] { Run(); }) {
+      unix_seconds_(std::move(unix_seconds)), collections_(collections), worker_([this] { Run(); }) {
   backend_.SetLateGamesCallback([this] { NotifyLateGames(); });
 }
 
@@ -260,9 +261,20 @@ void LibraryService::ExecuteLoadCached(const Job& job) {
   event.metadata_partial = loaded.value().metadata_partial;
   event.retrieved_at_unix_seconds = loaded.value().retrieved_at_unix_seconds;
   event.cache_available = true;
+  if (auto saved = SavedCollections(job.account)) {
+    event.collections = std::move(*saved);
+    event.collections_known = true;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   if (!stopping_ && job.request == request_ && job.generation == generation_ &&
       !job.cancel->load()) PushEvent(std::move(event));
+}
+
+std::optional<std::vector<LibraryCollection>> LibraryService::SavedCollections(std::uint64_t account) const {
+  if (!collections_) return std::nullopt;
+  auto loaded = collections_->Load(account);
+  if (!loaded.ok()) return std::nullopt;  // none saved yet, or damaged: the next read from the store replaces it
+  return std::move(loaded.value());
 }
 
 void LibraryService::ExecuteRefresh(const Job& job) {
@@ -283,6 +295,9 @@ void LibraryService::ExecuteRefresh(const Job& job) {
   StorageError cache_error = StorageError::kNone;
   // Acquisition dates from the previous snapshot, kept when a refresh cannot obtain them.
   std::unordered_map<GameId, std::uint64_t> previous_added_at;
+  // The collections saved by an earlier load: shown with the saved library, and kept when the store can't give them.
+  const auto saved_collections = SavedCollections(job.account);
+  if (!Current(job)) return;
   if (cache_) {
     auto loaded = cache_->Load(job.account);
     if (!Current(job)) return;
@@ -299,6 +314,10 @@ void LibraryService::ExecuteRefresh(const Job& job) {
       cached.metadata_partial = loaded.value().metadata_partial;
       cached.retrieved_at_unix_seconds = loaded.value().retrieved_at_unix_seconds;
       cached.cache_available = true;
+      if (saved_collections) {
+        cached.collections = *saved_collections;
+        cached.collections_known = true;
+      }
       std::lock_guard<std::mutex> lock(mutex_);
       if (!stopping_ && job.request == request_ && job.generation == generation_ &&
           !job.cancel->load()) PushEvent(std::move(cached));
@@ -335,7 +354,18 @@ void LibraryService::ExecuteRefresh(const Job& job) {
     }
   }
 
+  // The store's collections: a failure here never fails the library, and the saved list stays.
+  auto collections = backend_.FetchCollections(*session.value(), *job.cancel);
+  if (!Current(job)) return;
+  if (collections) {
+    if (collections_) (void)collections_->Save(job.account, *collections);
+  } else {
+    collections = saved_collections;
+  }
+  if (!Current(job)) return;
+
   completed_ = snapshot;
+  completed_collections_ = collections;
   completed_request_ = job.request;
   completed_account_ = job.account;
   completed_cache_available_ = cache_available;
@@ -356,6 +386,10 @@ void LibraryService::ExecuteRefresh(const Job& job) {
   event.cache_available = cache_available;
   event.cache_error = cache_error;
   event.licenses_read = result.licenses_read;
+  if (collections) {
+    event.collections = std::move(*collections);
+    event.collections_known = true;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   if (!stopping_ && job.request == request_ && job.generation == generation_ &&
       !job.cancel->load()) PushEvent(std::move(event));
@@ -390,6 +424,10 @@ void LibraryService::ExecuteMerge(const Job& job) {
   event.retrieved_at_unix_seconds = completed_->retrieved_at_unix_seconds;
   event.cache_available = completed_cache_available_;
   event.cache_error = cache_error;
+  if (completed_collections_) {
+    event.collections = *completed_collections_;
+    event.collections_known = true;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   if (stopping_ || job.request != request_ || job.generation != generation_ || job.cancel->load()) return;
   // Each update carries the whole library: one waiting is enough, and they can't crowd out the completion.
@@ -403,6 +441,11 @@ void LibraryService::ExecuteClear(const Job& job) {
   Result<void> cleared = cache_
       ? cache_->Clear(job.account)
       : Result<void>::Failure(StorageError::kInvalidData, "No library cache configured.");
+  // The saved collections go with the saved library.
+  if (collections_) {
+    const auto collections_cleared = collections_->Clear(job.account);
+    if (cleared.ok() && !collections_cleared.ok()) cleared = collections_cleared;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   clear_barrier_ = false;
   LibraryEvent event;

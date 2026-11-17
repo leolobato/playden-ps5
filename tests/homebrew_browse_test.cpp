@@ -606,6 +606,177 @@ void store_filter_narrows_the_library(const std::filesystem::path& fixtures)
           "a store this build doesn't know is Any");
 }
 
+// Steam collections and GOG tags (#536): a store with collections is a folder in the rail that Cross opens, with
+// "All <store> games" first and its collections in name order; one store open at a time; Left closes it.
+void rail_store_collections(const std::filesystem::path& fixtures)
+{
+    using playden::GameId;
+    using playden::Store;
+    State state = fixture_state(fixtures);
+    state.navigation.route = Route::Library;
+    state.library.collections = {{"collection-1", "Weekend", false, {}}};
+    Game gog;
+    gog.id = GameId::Gog(1000000001);
+    gog.title = "Synthetic GOG game";
+    state.games.push_back(gog);
+    Game imported;
+    imported.id = GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
+    imported.title = "Night Sky";
+    state.games.push_back(imported);
+    const GameId hidden = *state.library.hidden.begin();
+    // Members: two library games, the hidden one, and an app the library doesn't have.
+    state.store_collections = {
+        {Store::kSteam, "uc-b", "beta", {SteamId(900001), SteamId(900002), hidden, SteamId(4242)}},
+        {Store::kSteam, "uc-a", "Alpha", {SteamId(900003)}},
+        {Store::kSteam, "uc-c", "\xC3\x81gua", {SteamId(900002)}},
+        // Only apps the library doesn't have (a Steam ROM Manager list of non-Steam shortcuts): not in the rail.
+        {Store::kSteam, "srm-d", "Emulators", {SteamId(4242)}},
+        {Store::kSteam, "uc-e", "Empty", {}},
+    };
+    state.store_collections_known = {Store::kSteam, Store::kGog};
+
+    state.navigation.library_rail_open_store = std::string();
+    check(library_rail_scopes(state) == std::vector<std::string>{"installed", "all", "favorites", "hidden", "store-steam",
+                                                                 "gog", "imported", "collection-1", "new-collection"},
+          "closed: Steam is a folder entry, GOG without tags stays its scope, Imported never opens");
+    check(library_rail_dividers(state) == std::vector<int>{4, 7}, "closed: dividers as before");
+
+    state.navigation.library_rail_open_store = "steam";
+    check(library_rail_scopes(state) ==
+              std::vector<std::string>{"installed", "all", "favorites", "hidden", "store-steam", "steam",
+                                       "steam-collection:uc-a", "steam-collection:uc-b", "steam-collection:uc-c", "gog",
+                                       "imported", "collection-1", "new-collection"},
+          "open: All Steam games first, then the collections in case-folded name order (as game titles sort)");
+    check(library_rail_dividers(state) == std::vector<int>{4, 11}, "open: the second divider follows the open rows");
+    state.library.scope = "steam-collection:uc-e";
+    check(library_rail_scopes(state) ==
+              std::vector<std::string>{"installed", "all", "favorites", "hidden", "store-steam", "steam",
+                                       "steam-collection:uc-a", "steam-collection:uc-b", "steam-collection:uc-e",
+                                       "steam-collection:uc-c", "gog", "imported", "collection-1", "new-collection"},
+          "a chosen collection without library games keeps its row");
+    state.library.scope = "all";
+    const auto steam_only = state.store_collections;
+    state.store_collections = {steam_only[3], steam_only[4]};
+    check(library_rail_scopes(state) == std::vector<std::string>{"installed", "all", "favorites", "hidden", "steam", "gog",
+                                                                 "imported", "collection-1", "new-collection"},
+          "a store whose collections have no library games is no folder");
+    state.store_collections = steam_only;
+
+    state.store_collections.push_back({Store::kGog, "7", "Classics", {gog.id}});
+    state.navigation.library_rail_open_store = "gog";
+    check(library_rail_scopes(state) == std::vector<std::string>{"installed", "all", "favorites", "hidden", "store-steam",
+                                                                 "store-gog", "gog", "gog-tag:7", "imported",
+                                                                 "collection-1", "new-collection"},
+          "one store open at a time");
+
+    // Filtering: the members in the library, hidden ones left out as for every scope but Hidden.
+    state.library.scope = "steam-collection:uc-b";
+    auto games = filtered_games(state);
+    check(games.size() == 2 && std::none_of(games.begin(), games.end(), [&](const Game* game) { return game->id == hidden; }),
+          "a store collection lists its library games, not the hidden one or an unknown app");
+    check(store_collection_count(state, state.store_collections[0]) == 3, "its count includes the hidden game");
+    state.library.scope = "gog-tag:7";
+    check(filtered_games(state).size() == 1, "a GOG tag lists its games");
+    state.library.scope = "steam-collection:uc-missing";
+    check(filtered_games(state).empty(), "a store collection the store hasn't given lists nothing");
+
+    // Unset, the store of the chosen scope opens; marked: the scope's row, or the closed store's folder.
+    state.library.scope = "steam-collection:uc-a";
+    state.navigation.library_rail_open_store.reset();
+    check(library_rail_open_store(state) == "steam" && library_rail_marked_scope(state) == "steam-collection:uc-a",
+          "on loading with a Steam collection chosen, Steam is open and the collection marked");
+    state.navigation.library_rail_open_store = std::string();
+    check(library_rail_marked_scope(state) == "store-steam", "with Steam closed, its folder is marked");
+    state.library.scope = "steam";
+    check(library_rail_marked_scope(state) == "store-steam", "the saved Steam scope marks the closed folder");
+    state.navigation.library_rail_open_store.reset();
+    check(library_rail_marked_scope(state) == "steam", "and its All Steam games row once open");
+    state.library.scope = "all";
+    check(library_rail_open_store(state).empty(), "All opens no store");
+
+    // Left: closes the open store from its folder or a row inside it; elsewhere it stays.
+    state.library.filters.insert("empty-fixture");
+    state.navigation.library_rail_focused = true;
+    state.navigation.library_rail_open_store = "steam";
+    check(focus_library_rail_entry(state, "steam-collection:uc-c"), "a Steam collection takes the focus");
+    move_browser(state, -1, 0);
+    check(library_rail_open_store(state).empty() && state.navigation.focus_key == "rail-store-steam" &&
+              state.navigation.selected_index == 4,
+          "Left in an open store closes it and focuses the store");
+    state.navigation.library_rail_open_store = "steam";
+    move_browser(state, -1, 0);
+    check(library_rail_open_store(state).empty() && state.navigation.focus_key == "rail-store-steam",
+          "Left on the open store closes it");
+    focus_library_rail_entry(state, "hidden");
+    move_browser(state, -1, 0);
+    check(state.navigation.focus_key == "rail-hidden" && state.navigation.library_rail_focused, "Left on Hidden stays");
+    state.library.filters.erase("empty-fixture");
+
+    // Left from the grid's first column: the shown collection's own row, its store open again.
+    state.library.scope = "steam-collection:uc-b";
+    state.navigation.library_rail_open_store = std::string();
+    state.navigation.library_rail_focused = false;
+    games = filtered_games(state);
+    state.navigation.selected_game_id = games.front()->id;
+    state.navigation.selected_index = 0;
+    move_browser(state, -1, 0);
+    check(state.navigation.library_rail_focused && library_rail_open_store(state) == "steam" &&
+              state.navigation.focus_key == "rail-steam-collection:uc-b" && state.navigation.selected_index == 7,
+          "Left from the grid returns to the open collection");
+
+    // The focused collection is deleted (a refresh): the focus moves to its store, never stays on a missing entry.
+    state.navigation.library_rail_focused = true;
+    check(focus_library_rail_entry(state, "steam-collection:uc-c"), "Água takes the focus");
+    const auto kept = state.store_collections;
+    std::erase_if(state.store_collections, [](const StoreCollection& value) { return value.id == "uc-c"; });
+    reconcile_library_rail_focus(state);
+    check(state.navigation.focus_key == "rail-steam" || state.navigation.focus_key == "rail-store-steam",
+          "the focus leaves the deleted collection for its store");
+    const auto keys_now = library_rail_scopes(state);
+    check(keys_now[static_cast<std::size_t>(state.navigation.selected_index)] == state.navigation.focus_key.substr(5),
+          "selected_index follows the focus key");
+    state.store_collections = kept;
+    state.navigation.library_rail_focused = false;
+
+    // A deleted collection falls back to its store once the store's list is known.
+    state.library.scope = "steam-collection:uc-gone";
+    state.store_collections_known = {};
+    check(!reconcile_store_collection_scope(state) && state.library.scope == "steam-collection:uc-gone",
+          "the list not known yet: the scope waits");
+    state.store_collections_known = {Store::kSteam};
+    check(reconcile_store_collection_scope(state) && state.library.scope == "steam",
+          "known and gone: the scope becomes the store's games");
+
+    // 2A: Steam has every game; its collections get a lone folder with no "All" row.
+    std::erase_if(state.games, [](const Game& game) { return game.id.store != Store::kSteam; });
+    state.library.scope = "all";
+    state.navigation.library_rail_open_store = std::string();
+    check(library_rail_scopes(state) == std::vector<std::string>{"installed", "all", "favorites", "hidden", "store-steam",
+                                                                 "collection-1", "new-collection"} &&
+              library_rail_dividers(state) == std::vector<int>{4, 5},
+          "one store: a Steam collections folder between dividers");
+    state.navigation.library_rail_open_store = "steam";
+    check(library_rail_scopes(state) == std::vector<std::string>{"installed", "all", "favorites", "hidden", "store-steam",
+                                                                 "steam-collection:uc-a", "steam-collection:uc-b",
+                                                                 "steam-collection:uc-c", "collection-1",
+                                                                 "new-collection"},
+          "open: its collections only, no All Steam games row");
+    state.library.scope = "steam";
+    check(library_rail_marked_scope(state) == "all", "a saved Steam scope with only Steam games still marks All");
+    state.library.scope = "steam-collection:uc-gone";
+    check(reconcile_store_collection_scope(state) && state.library.scope == "steam",
+          "a deleted collection falls back to Steam's games (All's games) in 2A too");
+
+    // Without store collections, the rail is exactly today's.
+    state.store_collections.clear();
+    state.navigation.library_rail_open_store.reset();
+    state.library.scope = "all";
+    check(library_rail_scopes(state) ==
+                  std::vector<std::string>{"installed", "all", "favorites", "hidden", "collection-1", "new-collection"} &&
+              library_rail_dividers(state).empty(),
+          "no store collections: the rail is unchanged");
+}
+
 int main(int argc, char** argv)
 {
     check(argc == 2, "fixture directory argument is required");
@@ -623,6 +794,7 @@ int main(int argc, char** argv)
     imported_scope_lists_local_games(fixtures);
     gog_scope_lists_gog_games(fixtures);
     rail_store_section(fixtures);
+    rail_store_collections(fixtures);
     store_filter_narrows_the_library(fixtures);
     imported_games_fill_home_signed_out();
     std::cout << "homebrew browse tests passed\n";

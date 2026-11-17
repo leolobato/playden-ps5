@@ -11,6 +11,7 @@
 #include "installs/install_record.h"
 #include "library/store.h"
 #include "library/cache.h"
+#include "library/collections_cache.h"
 #include "platform/storage.h"
 
 #include <cstdint>
@@ -106,6 +107,7 @@ class GogServices {
   std::unique_ptr<gog::SessionStore> store_;
   std::unique_ptr<gog::Session> session_;
   std::unique_ptr<LibraryCache> cache_;
+  std::unique_ptr<CollectionsCache> tags_;  // the library tags (#536), next to the saved library
   std::unique_ptr<stores::GogInstallRunner> install_runner_;
   // Made here, handed to the registry by Register; the pointers stay valid while the registry keeps them.
   std::unique_ptr<stores::GogAccount> owned_account_;

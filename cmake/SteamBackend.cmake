@@ -148,6 +148,7 @@ endif()
 add_library(playden_steam_cm STATIC
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/cm_friends_source.cpp"
+    "${CMAKE_SOURCE_DIR}/src/steam/backend/collections_client.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_info_http.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/app_names.cpp"
     "${CMAKE_SOURCE_DIR}/src/steam/backend/entitled_library.cpp"
@@ -212,6 +213,14 @@ add_custom_command(OUTPUT "${playden_staged_ca}"
     DEPENDS "${PLAYDEN_STEAM_CA_BUNDLE}" VERBATIM)
 add_custom_target(playden_steam_trust ALL DEPENDS "${playden_staged_ca}")
 
+# Host tool: Steam reads through Playden's own client on a real account (tools/steam-dev/main.cpp). Not shipped.
+if(NOT PLAYDEN_PLATFORM_PS5)
+    add_executable(playden-steam-dev "${CMAKE_SOURCE_DIR}/tools/steam-dev/main.cpp")
+    target_compile_definitions(playden-steam-dev PRIVATE PLAYDEN_STEAM_DEV_CA_BUNDLE="${playden_staged_ca}")
+    target_link_libraries(playden-steam-dev PRIVATE playden_steam_auth playden_steam_cm playden_storage playden_homebrew_qr)
+    add_dependencies(playden-steam-dev playden_steam_trust)
+endif()
+
 function(playden_register_steam_backend_tests)
     if(NOT BUILD_TESTING OR PLAYDEN_PLATFORM_PS5)
         return()
@@ -230,6 +239,11 @@ function(playden_register_steam_backend_tests)
         target_link_libraries(${test_name}_test PRIVATE playden_steam_protocol)
         add_test(NAME ${test_name} COMMAND ${test_name}_test)
     endforeach()
+
+    # Steam collections (#536): the Download answer's parser and the saved copy.
+    add_executable(steam_collections_test "${CMAKE_SOURCE_DIR}/tests/steam_collections_test.cpp")
+    target_link_libraries(steam_collections_test PRIVATE playden_steam_cm)
+    add_test(NAME steam_collections COMMAND steam_collections_test)
 
     # The Steam host's core (tools/steam-host/core), the same C file steam.exe is built from.
     add_executable(steam_host_core_test "${CMAKE_SOURCE_DIR}/tests/steam_host_core_test.cpp"

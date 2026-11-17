@@ -574,5 +574,95 @@ void ManyLateGamesKeepTheCompletion() {
   }
   Wait(controller,[&]{return !model.state().library_loading && model.state().games.size()==101;});
 }
+struct Collections final : CollectionsRepository {
+  mutable std::optional<std::vector<LibraryCollection>> value;
+  mutable int saves=0;
+  Result<std::vector<LibraryCollection>> Load(std::uint64_t) const override {
+    if(!value) return Result<std::vector<LibraryCollection>>::Failure(StorageError::kNotFound,"missing");
+    return Result<std::vector<LibraryCollection>>::Success(*value);
+  }
+  Result<void> Save(std::uint64_t,const std::vector<LibraryCollection>& collections) const override { value=collections;++saves;return Result<void>::Success(); }
+  Result<void> Clear(std::uint64_t) const override { value.reset();return Result<void>::Success(); }
+};
+struct CollectionsBackend final : LibraryBackend {
+  std::mutex mutex;
+  std::optional<std::vector<LibraryCollection>> collections;
+  LibraryError error=LibraryError::kNone;
+  LibraryResult Fetch(const StoredSession&,const std::atomic<bool>&) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return {error,{{SteamId(42),"Synthetic title",{},{},{}},{SteamId(43),"Synthetic other",{},{},{}}},false,true};
+  }
+  std::optional<std::vector<LibraryCollection>> FetchCollections(const StoredSession&,const std::atomic<bool>&) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return collections;
+  }
+  void Set(std::optional<std::vector<LibraryCollection>> value,LibraryError fetch=LibraryError::kNone) {
+    std::lock_guard<std::mutex> lock(mutex);collections=std::move(value);error=fetch;
+  }
+};
+// #536: Steam collections come with the library, are saved, survive a failed read and an offline start, fall back
+// when deleted, and go with a sign-out.
+void SteamCollectionsReachTheLibrary() {
+  Simulation model({}, {},ModelMode::Live);
+  model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+  const auto token=model.BeginOrganizationLoad(kDeviceOrganization);
+  OrganizationSnapshot organization;organization.scope="steam-collection:uc-b";
+  assert(model.ApplyOrganization(kDeviceOrganization,token,organization));
+  Sessions sessions;Cache cache;Collections saved;CollectionsBackend backend;
+  backend.Set(std::vector<LibraryCollection>{{"uc-a","Couch",{SteamId(42),SteamId(99)}},{"uc-b","Backlog",{SteamId(43)}}});
+  {
+    LibraryService service(backend,sessions,&cache,[]{return 12345;},&saved);
+    app::LibraryController controller(model,service);
+    controller.Activate(123,false);
+    Wait(controller,[&]{return !model.state().library_loading && model.state().store_collections.size()==2;});
+    assert(model.state().store_collections_known.count(Store::kSteam) && saved.value && saved.value->size()==2);
+    assert(model.state().library.scope=="steam-collection:uc-b" && model.visible_games().size()==1);
+    // Steam can't give them this time: the saved list stays.
+    backend.Set(std::nullopt);
+    controller.Refresh();
+    Wait(controller,[&]{return !model.state().library_loading && !controller.Busy();});
+    assert(model.state().store_collections.size()==2 && saved.value->size()==2);
+    // Deleted on the PC while its rail row has the focus: the chosen one falls back to Steam's games, the focus
+    // leaves the row, and Cross right away never chooses the deleted collection.
+    for(int i=0;i<6 && model.state().navigation.route!=Route::Library;++i) model.action("r1");
+    assert(model.state().navigation.route==Route::Library);
+    for(int i=0;i<8 && !model.state().navigation.library_rail_focused;++i) model.action("left");
+    assert(model.state().navigation.library_rail_focused &&
+           model.state().navigation.focus_key=="rail-steam-collection:uc-b");
+    backend.Set(std::vector<LibraryCollection>{{"uc-a","Couch renamed",{SteamId(42)}}});
+    controller.Refresh();
+    Wait(controller,[&]{return !model.state().library_loading && model.state().store_collections.size()==1;});
+    assert(model.state().store_collections[0].name=="Couch renamed" && model.state().library.scope=="steam");
+    assert(model.state().navigation.focus_key!="rail-steam-collection:uc-b");
+    model.action("cross");
+    assert(model.state().library.scope.find("uc-b")==std::string::npos);
+    // A sign-out clears them with the saved library.
+    controller.Clear();
+    std::optional<LibraryError> cleared;
+    Wait(controller,[&]{cleared=controller.TakeClearResult();return cleared.has_value();});
+    assert(*cleared==LibraryError::kNone && !saved.value && model.state().store_collections.empty() &&
+           model.state().store_collections_known.count(Store::kSteam));
+  }
+  // Offline: the saved list arrives with the saved library.
+  Simulation offline({}, {},ModelMode::Live);
+  offline.UpdateAccount({AuthState::Offline,"123","Synthetic",{},{},true});
+  cache.value=LibrarySnapshot{};cache.value->retrieved_at_unix_seconds=100;
+  cache.value->games={{SteamId(7),"Offline title",{},{},{}}};
+  saved.value=std::vector<LibraryCollection>{{"uc-c","Saved",{SteamId(7)}}};
+  LibraryService service(backend,sessions,&cache,{},&saved);
+  app::LibraryController controller(offline,service);
+  controller.Activate(123,true);
+  Wait(controller,[&]{return !offline.state().library_loading && offline.state().store_collections.size()==1;});
+  assert(offline.state().store_collections[0].id=="uc-c");
+  // The organization loads after the lists: a saved collection Steam no longer has falls back at once.
+  const auto late=offline.BeginOrganizationLoad(kDeviceOrganization);
+  OrganizationSnapshot gone;gone.scope="steam-collection:uc-gone";
+  assert(offline.ApplyOrganization(kDeviceOrganization,late,gone));
+  assert(offline.state().library.scope=="steam");
+  const auto kept=offline.BeginOrganizationLoad(kDeviceOrganization);
+  OrganizationSnapshot present;present.scope="steam-collection:uc-c";
+  assert(offline.ApplyOrganization(kDeviceOrganization,kept,present));
+  assert(offline.state().library.scope=="steam-collection:uc-c");
+}
 int main(){AccountStoreWaitsForActivate();ActivateLoadsTheAccount();OfflineActivateLoadsCached();BatchesKeepTheStoreLoading();StaleAndForeignEventsAreDropped();ResetDuringLoadStopsLoading();ClearPerStore();ClearThenResetStillDeletes();FailureMessagesNameTheStore();RefreshCoversActiveStores();
-  OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();}
+  OtherSourceSurvivesSteam();StaleSteamCompletionKeepsOtherSource();UpdateRefusesAnotherStoresGames();FreshRefreshAndFailure();OfflineCacheAndClear();StaleCompletionCannotRepopulate();RejectedCacheStillAcceptsFreshResult();RejectedRequestStopsLoading();LateGamesJoinTheLibrary();ManyLateGamesKeepTheCompletion();SteamCollectionsReachTheLibrary();}

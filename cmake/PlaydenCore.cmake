@@ -17,6 +17,7 @@ add_library(playden_library STATIC
     "${CMAKE_SOURCE_DIR}/third_party/utf8proc/utf8proc.c"
     "${CMAKE_SOURCE_DIR}/src/library/query.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/cache.cpp"
+    "${CMAKE_SOURCE_DIR}/src/library/collections_cache.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/organization.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/store.cpp"
     "${CMAKE_SOURCE_DIR}/src/library/game_ref.cpp"

@@ -167,8 +167,10 @@ void LibraryController::TickOther(Other& other,LibraryEvent& event) {
     if(event.kind==LibraryEventKind::kCleared || event.kind==LibraryEventKind::kFailure) {
       other.clear_result=event.kind==LibraryEventKind::kCleared ? LibraryError::kNone : event.error;
       other.clearing=false;other.request=0;
-      if(*other.clear_result==LibraryError::kNone)
+      if(*other.clear_result==LibraryError::kNone) {
         model_.UpdateLibrary({{},false,"Clearing saved session…",false,false,{},store});
+        model_.UpdateStoreCollections(store,{});  // they went with the saved library
+      }
     }
     return;
   }
@@ -188,6 +190,7 @@ void LibraryController::TickOther(Other& other,LibraryEvent& event) {
     if(!awaiting_fresh) other.request=0;
     return;
   }
+  if(event.collections_known) model_.UpdateStoreCollections(store,std::move(event.collections));
   if(awaiting_fresh) model_.UpdateLibrary({{},true,{},false,event.cache_available,{},store});
   else other.request=0;
 }
@@ -200,6 +203,7 @@ void LibraryController::TickSteam(LibraryEvent& event) {
     const std::string status=event.cache_error!=StorageError::kNone ? "Library loaded, but saving failed. Retry to save."
         : model_.state().account().error;
     model_.UpdateLibrary({std::move(event.games),false,status,false,event.cache_available,Time(event)});
+    if(event.collections_known) model_.UpdateStoreCollections(Store::kSteam,std::move(event.collections));
     return;
   }
   if(!request_ || event.request_id!=request_ || event.account_id!=account_ || event.account_generation!=generation_) return;
@@ -207,8 +211,10 @@ void LibraryController::TickSteam(LibraryEvent& event) {
     if(event.kind==LibraryEventKind::kCleared || event.kind==LibraryEventKind::kFailure) {
       clear_result_=event.kind==LibraryEventKind::kCleared ? LibraryError::kNone : event.error;
       clearing_=false;request_=0;
-      if(*clear_result_==LibraryError::kNone)
+      if(*clear_result_==LibraryError::kNone) {
         model_.UpdateLibrary({{},false,"Clearing saved session…",false,false,{}});
+        model_.UpdateStoreCollections(Store::kSteam,{});  // they went with the saved library
+      }
     }
     return;
   }
@@ -229,6 +235,7 @@ void LibraryController::TickSteam(LibraryEvent& event) {
     if(!awaiting_fresh) request_=0;
     return;
   }
+  if(event.collections_known) model_.UpdateStoreCollections(Store::kSteam,std::move(event.collections));
   // Only a load that read the account's licenses can tell which games have updates.
   if(!cached && event.licenses_read) { licenses_generation_=model_.state().account_generation;++licenses_read_; }
   if(cached && !offline_) Loading();

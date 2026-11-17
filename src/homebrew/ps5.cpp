@@ -50,6 +50,7 @@
 #include "steam/backend/cm_app_details.h"
 #include "steam/backend/cm_friends_source.h"
 #include "steam/backend/download_server_source.h"
+#include "steam/backend/collections_client.h"
 #include "steam/backend/entitled_library.h"
 #include "steam/backend/steam_install_runner.h"
 #include "steam/backend/steam_cloud_runner.h"
@@ -441,8 +442,17 @@ int main() {
         library_backend.SetFamilyDiagnostics(paths.trust_store, [](const std::string& line) {
             playden::app::AppendLogLine(log_root, "steam-cm.log", line);
         });
+        // Steam collections (#536), read with each library load; one log line per read, without names.
+        library_backend.SetCollectionsSource([&cm_client](const playden::StoredSession& session,
+                                                          const std::atomic<bool>& cancel) {
+            return playden::steam::FetchLibraryCollections(cm_client, session, cancel, [](const std::string& line) {
+                playden::app::AppendLogLine(log_root, "steam-cm.log", line);
+            });
+        });
         playden::LibraryCache library_cache(library_storage);
-        playden::LibraryService library_service(library_backend,library_sessions,&library_cache);
+        playden::CollectionsCache collections_cache(library_storage);
+        playden::LibraryService library_service(library_backend,library_sessions,&library_cache,
+                                                std::function<std::uint64_t()>{},&collections_cache);
         playden::PreferencesStore preferences(library_storage);
         bool saved_steam_invisible = false;
         bool saved_steam_online_notice = true;
@@ -1105,6 +1115,8 @@ int main() {
             return std::nullopt;
         };
         const auto gog = playden::homebrew::MakeGogServices(std::move(gog_config));
+        // Without the GOG store there are no GOG tags: a saved GOG tag view falls back at once instead of waiting.
+        if (!gog) simulation.UpdateStoreCollections(playden::Store::kGog, {});
         playden::installs::InstallService::Runners install_runners{{playden::Store::kSteam, &install_runner}};
         if (copy_runner) install_runners[playden::Store::kLocal] = copy_runner.get();
         if (gog) install_runners[playden::Store::kGog] = gog->install_runner();

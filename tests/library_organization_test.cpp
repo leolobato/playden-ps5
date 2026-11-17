@@ -172,6 +172,28 @@ void RejectsInvalidValuesWithoutReplacingGoodData() {
     Check(restored.ok() && restored.value() && *restored.value() == steam, "steam scope restored");
     Check(store.Save(kDevice, expected).ok(), "restore the expected organization file after steam scope");
   }
+  for (const char* scope : {"steam-collection:uc-1a2B3c4D5e6F", "gog-tag:1234567", "steam-collection:a.b_c-d",
+                            "steam-collection:uc-AbC*+dEf==", "steam-collection:srm-Xy/z"}) {
+    // A store's own collection (#536): saved and restored, though the store gives the collections only later.
+    auto chosen = expected; chosen.scope = scope;
+    Check(store.Save(kDevice, chosen).ok(), (std::string("store collection scope accepted: ") + scope).c_str());
+    const auto restored = store.Load(kDevice);
+    Check(restored.ok() && restored.value() && *restored.value() == chosen,
+          (std::string("store collection scope restored: ") + scope).c_str());
+    Check(store.Save(kDevice, expected).ok(), "restore the expected organization file after a store collection scope");
+  }
+  invalid = expected; invalid.scope = "steam-collection:"; rejects(invalid, "a store collection scope without an ID rejected");
+  invalid = expected; invalid.scope = "steam-collection:a b"; rejects(invalid, "a store collection ID with a space rejected");
+  invalid = expected; invalid.scope = "gog-tag:a:b"; rejects(invalid, "a store collection ID with ':' rejected");
+  invalid = expected; invalid.scope = "steam-collection:caf\xC3\xA9"; rejects(invalid, "a non-ASCII store collection ID rejected");
+  invalid = expected; invalid.scope = "epic-collection:1"; rejects(invalid, "another store's collection rejected");
+  invalid = expected; invalid.scope = "steam-collection:" + std::string(65, 'a');
+  rejects(invalid, "a store collection ID over 64 bytes rejected");
+  {
+    auto longest = expected; longest.scope = "steam-collection:" + std::string(64, 'a');
+    Check(store.Save(kDevice, longest).ok(), "a 64-byte store collection ID accepted");
+    Check(store.Save(kDevice, expected).ok(), "restore the expected organization file after the longest ID");
+  }
   invalid = expected; invalid.scope = "new-collection"; rejects(invalid, "collection action cannot be restored as scope");
   invalid = expected; invalid.sort = "install-size"; rejects(invalid, "simulation-only metadata sort rejected");
   {
@@ -870,11 +892,12 @@ void V2UnknownScopeReadsAsAll() {
   Check(loaded.ok() && loaded.value() && loaded.value()->scope == "collection-2",
         "a scope naming a collection is kept");
   for (const std::string scope :
-       {"collection-9", "gog", "steam", "epic", "favorites", "hidden", "installed", "imported", "new-collection"}) {
+       {"collection-9", "gog", "steam", "epic", "favorites", "hidden", "installed", "imported", "new-collection",
+        "steam-collection:uc-1", "gog-tag:42", "steam-collection:", "steam-collection:a b", "epic-collection:1"}) {
     file.scope = scope;
     loaded = LoadFile(storage, EncodeV2(file));
     const bool known = scope == "favorites" || scope == "hidden" || scope == "installed" || scope == "imported" ||
-                       scope == "gog" || scope == "steam";
+                       scope == "gog" || scope == "steam" || scope == "steam-collection:uc-1" || scope == "gog-tag:42";
     auto expected = Example();
     expected.scope = known ? scope : "all";
     Check(loaded.ok() && loaded.value() && *loaded.value() == expected,

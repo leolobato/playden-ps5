@@ -52,6 +52,9 @@ restart Playden after you change it. Dev builds and nightlies also need the line
   game, Game actions › Manage DLC adds or removes your DLC through the Queue. Sign in to GOG first. When you remove a
   DLC, Playden deletes its files. What its install script did outside those files stays: copied files, INI keys and
   registry values.
+- **Library tags.** The tags you gave your GOG games on gog.com show under GOG in the Library rail, read-only. They
+  are read with each GOG library load, saved with the library, and removed when you sign out of GOG. Change them on
+  gog.com.
 
 Not there yet:
 
@@ -101,6 +104,8 @@ Before you go back to an older build of Playden with GOG games in your data, rea
   GOG or Imported) or a Store filter is set. Favorites, hidden games, collections, ratings and notes are then lost on
   that build for every store, Steam and imported games included. That build doesn't save over the file, so they come
   back with a newer build. Choosing All and setting Store to Any before going back avoids the store part.
+- A build older than 0.11.0 refuses the Library organization in the same way while a Steam collection or a GOG tag
+  is the Library's chosen view. Choose All before you go back to such a build.
 - After you install a GOG game, the same older builds (those that can't read GOG records) also break Play for every
   game until the GOG titles are removed: they refuse the whole install records file when one record names GOG. A build
   that reads GOG records but doesn't install GOG games keeps Play working.

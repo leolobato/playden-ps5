@@ -41,6 +41,15 @@ class EntitledLibraryBackend final : public LibraryBackend {
   LibraryResult Fetch(const StoredSession& session, const std::atomic<bool>& cancel) override;
   std::vector<GameSummary> TakeLateGames(std::uint64_t steam_id) override;
   void SetLateGamesCallback(std::function<void()> callback) override;
+  // The player's Steam collections, from the source set below (none without one).
+  std::optional<std::vector<LibraryCollection>> FetchCollections(const StoredSession& session,
+                                                                 const std::atomic<bool>& cancel) override {
+    return collections_ ? collections_(session, cancel) : std::nullopt;
+  }
+  using CollectionsSource = std::function<std::optional<std::vector<LibraryCollection>>(const StoredSession&,
+                                                                                         const std::atomic<bool>&)>;
+  // Where FetchCollections reads them (FetchLibraryCollections on the CM). Set before the first load.
+  void SetCollectionsSource(CollectionsSource source) { collections_ = std::move(source); }
   // Where app names are saved (app-names.cache); without it they last for the run. Set before the first Fetch.
   void SetAppNameStorage(const Storage* storage);
   // For tests: waits until no background lookup runs. False on timeout.
@@ -91,6 +100,7 @@ class EntitledLibraryBackend final : public LibraryBackend {
 
   LibraryBackend& owned_;
   AcquisitionSource& acquisitions_;
+  CollectionsSource collections_;
   LicensedDepots* licensed_ = nullptr;
   std::atomic<CmError> last_error_{CmError::kNone};
   // What each looked-up app is, loaded from names_storage_ on the first load. The load and the background

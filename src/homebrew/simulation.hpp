@@ -813,6 +813,15 @@ struct Collection {
     std::set<GameId> members;
 };
 
+// A collection a store keeps for the player (a Steam collection, a GOG tag), read from the store and shown
+// read-only in the Library rail under its store. Never in the organization file: the store holds it.
+struct StoreCollection {
+    Store store = Store::kSteam;
+    std::string id;    // the store's own ID; the rail scope is store_collection_scope()
+    std::string name;
+    std::set<GameId> members;
+};
+
 struct UserLibrary {
     std::set<GameId> favorites;
     std::set<GameId> hidden;
@@ -924,6 +933,9 @@ struct Navigation {
     int home_shelf = 0;
     std::map<std::string, int> home_shelf_focus;
     bool library_rail_focused = false;
+    // The store open in the Library rail ("steam", "gog"; empty: none). Unset: the store of the chosen scope opens
+    // (library_rail_open_store()). Not saved.
+    std::optional<std::string> library_rail_open_store;
     bool settings_rail_focused = false;
     int library_grid_column = 0;
     // The Home/Library/Downloads/Saves/Settings bar has focus (Up from the top of a page), and
@@ -996,6 +1008,11 @@ struct State {
     std::uint64_t account_generation = 1; // Invalidates account-scoped presentation resources.
     std::vector<Game> games;
     UserLibrary library;
+    // The stores' own collections (Steam collections, GOG tags), as the stores last gave them.
+    std::vector<StoreCollection> store_collections;
+    // The stores whose collection list is known (read from the store or its saved copy, or a store that can't
+    // have any). A chosen store collection of such a store that isn't in the list falls back to the store.
+    std::set<Store> store_collections_known;
     std::vector<Installation> installations;
     std::vector<Job> jobs;
     std::vector<Volume> volumes;
@@ -1230,6 +1247,9 @@ public:
     // Another store has a signed-in account or games: Steam's sign-in screen need not take over.
     [[nodiscard]] bool HasGamesBeyondSteam() const { return beyond_steam(); }
     bool UpdateLibrary(LibraryUpdate update);
+    // A store's collections as the store last gave them (#536), replacing that store's; its list is then known. A
+    // chosen collection the store no longer has falls back to the store's games. Live only.
+    void UpdateStoreCollections(Store store, std::vector<playden::LibraryCollection> collections);
     // The store's library stopped loading with nothing to show (its request was dropped): its games and status stay.
     void EndLibraryLoading(Store store);
     // Live mode: requests for the real install service, and its state for display.

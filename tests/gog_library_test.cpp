@@ -9,8 +9,10 @@
 #include "gog/session_store.h"
 #include "gog_stub_transport.h"
 #include "library/cache.h"
+#include "library/collections_cache.h"
 #include "stores/gog_library.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
@@ -107,6 +109,7 @@ struct Fixture {
   gog::Session session{store, stub.Transport(), [this] { return now.load(); }};
   Storage storage{(fs::create_directories(library_root), library_root.string())};
   LibraryCache cache{storage, "library-gog-"};
+  CollectionsCache tags{storage, "collections-gog-"};
   std::vector<std::string> lines;
   std::mutex lines_mutex;
   GogLibrarySource source{session, stub.Transport(), cache, root.string(),
@@ -114,7 +117,7 @@ struct Fixture {
                             std::lock_guard<std::mutex> lock(lines_mutex);
                             lines.push_back(line);
                           },
-                          [] { return std::uint64_t{1'800'000'000}; }};
+                          [] { return std::uint64_t{1'800'000'000}; }, &tags};
 
   Fixture() { SignIn(); }
 
@@ -129,6 +132,7 @@ struct Fixture {
   }
 
   fs::path CacheFile() const { return library_root / ("library-gog-" + std::to_string(kAccount) + ".cache"); }
+  fs::path TagsFile() const { return library_root / ("collections-gog-" + std::to_string(kAccount) + ".cache"); }
   fs::path ProductFile(std::uint64_t id) const { return root / "gog" / "products" / std::to_string(id); }
 
   // Events until one of the terminal kinds (10 s at most), then a short wait shows nothing follows.
@@ -530,6 +534,48 @@ void InvalidateDuringRefresh() {
 
 }  // namespace
 
+// The library tags (#536): read after the products, sent with kComplete and saved; a failed read keeps the saved
+// ones (sent with the saved library first); offline they come with the saved library; Clear deletes them.
+std::string TagsPageJson(const std::string& products) {
+  return R"({"page":1,"totalPages":1,"tags":[{"id":"100000001","name":"Couch","productCount":1},)"
+         R"({"id":"100000003","name":"Unused","productCount":0}],"products":[)" + products + "]}";
+}
+void TagsWithTheLibrary() {
+  Fixture f;
+  f.stub.Script(Endpoint::kOwned, Answer(200, OwnedJson({1207658924, 1207658925})));
+  f.stub.SetProducts([](std::uint64_t id, const std::string&) { return Product(id); });
+  f.stub.Script(Endpoint::kTags, Answer(200, TagsPageJson(R"({"id":1207658924,"tags":["100000001"]})")));
+  f.stub.Script(Endpoint::kTags, Answer(200, TagsPageJson("")));  // the hidden view
+  f.source.Refresh(kAccount, 1);
+  auto events = f.Until(LibraryEventKind::kComplete);
+  const auto& complete = events.back();
+  CHECK(complete.kind == LibraryEventKind::kComplete && complete.collections_known && complete.collections.size() == 2);
+  CHECK(complete.collections[0].id == "100000001" && complete.collections[0].name == "Couch" &&
+        (complete.collections[0].members == std::vector<GameId>{GameId::Gog(1207658924)}));
+  CHECK(complete.collections[1].members.empty());
+  CHECK(Exists(f.TagsFile()) && f.LogText().find("library tags=2 members=1 pages=2") != std::string::npos);
+  CHECK(f.LogText().find("Couch") == std::string::npos);  // never a name in the log
+
+  // GOG doesn't answer the tags: the saved ones come with the saved library and stay with the fresh one.
+  f.stub.Script(Endpoint::kOwned, Answer(200, OwnedJson({1207658924, 1207658925})));
+  f.source.Refresh(kAccount, 2);
+  events = f.Until(LibraryEventKind::kComplete);
+  const auto first_cached = std::find_if(events.begin(), events.end(),
+                                         [](const LibraryEvent& event) { return event.kind == LibraryEventKind::kCached; });
+  CHECK(first_cached != events.end() && first_cached->collections_known && first_cached->collections.size() == 2);
+  CHECK(events.back().collections_known && events.back().collections.size() == 2);
+
+  // Offline: with the saved library.
+  f.source.LoadCached(kAccount, 3);
+  events = f.Until(LibraryEventKind::kCached);
+  CHECK(events.back().kind == LibraryEventKind::kCached && events.back().collections_known &&
+        events.back().collections.size() == 2);
+
+  f.source.Clear(kAccount, 4);
+  f.Until(LibraryEventKind::kCleared);
+  CHECK(!Exists(f.TagsFile()));
+}
+
 int main(int argc, char** argv) {
   CHECK(argc == 3);
   const fs::path parent(argv[2]);
@@ -543,6 +589,7 @@ int main(int argc, char** argv) {
   LoadCachedOffline();
   ClearAndInvalidate();
   InvalidateDuringRefresh();
+  TagsWithTheLibrary();
   fs::remove_all(g_base);
   std::printf("gog library ok\n");
   return 0;

@@ -4779,6 +4779,144 @@ void gog_scenarios(const std::filesystem::path& fixtures) {
 
 }  // namespace gog_view
 
+// #536: Steam collections and GOG tags in the Library rail, read-only. Cross opens a store, Left closes it, Right
+// still goes to the grid; the chosen collection is saved with the profile; the collection sheets never list them.
+void store_collections_rail(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    using namespace playden::homebrew;
+    std::string chosen;
+    {
+        Simulation simulation(fixtures, profile);
+        check(simulation.scenario("library-stores") && !simulation.state().store_collections.empty(),
+              "library-stores: Steam collections and GOG tags");
+        const auto focus = [&] { return simulation.state().navigation.focus_key; };
+        const auto legend = [&](const std::string& value) {
+            const auto& legends = simulation.view().legends;
+            return std::find(legends.begin(), legends.end(), value) != legends.end();
+        };
+        simulation.action("left");
+        while (focus() != "rail-all") simulation.action("left");
+        for (int step = 0; step < 3; ++step) simulation.action("down");
+        check(focus() == "rail-store-steam" && legend("Cross Open") && !legend("Left Close Steam"),
+              "Down from Hidden: the closed Steam store, Cross opens it");
+        check(simulation.action("right") && !simulation.state().navigation.library_rail_focused,
+              "Right on a closed store goes to the grid, as today");
+        simulation.action("left");
+        while (!simulation.state().navigation.library_rail_focused) simulation.action("left");
+        while (focus() != "rail-store-steam") simulation.action(focus() == "rail-all" || focus() == "rail-installed" ||
+                                                                       focus() == "rail-favorites" || focus() == "rail-hidden"
+                                                                   ? "down" : "up");
+        simulation.action("cross");
+        check(focus() == "rail-steam" && library_rail_open_store(simulation.state()) == "steam" &&
+                  simulation.state().library.scope == "all" && legend("Cross Show") && legend("Left Close Steam"),
+              "Cross opens Steam and focuses All Steam games, the scope unchanged");
+        simulation.action("cross");
+        check(simulation.state().library.scope == "steam" && !simulation.state().navigation.library_rail_focused,
+              "Cross on All Steam games shows Steam's games");
+        simulation.action("left");
+        while (!simulation.state().navigation.library_rail_focused) simulation.action("left");
+        check(focus() == "rail-steam", "Left from the grid returns to All Steam games, Steam open");
+        simulation.action("left");
+        check(focus() == "rail-store-steam" && library_rail_open_store(simulation.state()).empty(),
+              "Left closes Steam and focuses it");
+        simulation.action("cross");
+        simulation.action("up");
+        check(focus() == "rail-store-steam" && legend("Cross Close"), "Up from All Steam games: the open store");
+        simulation.action("cross");
+        check(focus() == "rail-store-steam" && library_rail_open_store(simulation.state()).empty() &&
+                  legend("Cross Open"),
+              "Cross on the open store closes it");
+        simulation.action("cross");
+        simulation.action("down");
+        check(focus().rfind("rail-steam-collection:", 0) == 0, "Down from All Steam games: the first collection");
+        chosen = focus().substr(5);
+        simulation.action("cross");
+        check(simulation.state().library.scope == chosen && !simulation.state().navigation.library_rail_focused &&
+                  !simulation.visible_games().empty(),
+              "Cross shows the collection");
+        // GOG opens and Steam closes: one store at a time.
+        simulation.action("left");
+        while (!simulation.state().navigation.library_rail_focused) simulation.action("left");
+        simulation.action("left");
+        simulation.action("down");
+        check(focus() == "rail-store-gog", "GOG follows the closed Steam store");
+        simulation.action("cross");
+        check(library_rail_open_store(simulation.state()) == "gog" && focus() == "rail-gog",
+              "Cross opens GOG at All GOG games");
+        const auto keys = library_rail_scopes(simulation.state());
+        check(std::find(keys.begin(), keys.end(), "steam") == keys.end() &&
+                  std::find(keys.begin(), keys.end(), "store-steam") != keys.end(),
+              "Steam is closed while GOG is open");
+        // Read-only: the collection sheets (a game's Options › Collections, then Manage) list Playden's collections only.
+        simulation.action("right");
+        check(!simulation.state().navigation.library_rail_focused && simulation.action("options") &&
+                  simulation.action("focus:collection") && simulation.action("cross") &&
+                  !simulation.state().navigation.modals.empty() &&
+                  simulation.state().navigation.modals.back().id == "collections",
+              "a game's Collections sheet opens");
+        const auto only_playden = [&] {
+            const auto& actions = simulation.state().navigation.modals.back().action_keys;
+            return std::none_of(actions.begin(), actions.end(), [](const std::string& key) {
+                return key.find("steam-collection:") != std::string::npos || key.find("gog-tag:") != std::string::npos ||
+                       key.find("uc-fixture") != std::string::npos;
+            });
+        };
+        check(only_playden(), "the Collections sheet never lists a store collection");
+        check(simulation.action("focus:collection-manage") && simulation.action("cross") &&
+                  simulation.state().navigation.modals.back().id == "collections-manage" && only_playden(),
+              "nor the Manage sheet (no Rename, Pin or Delete)");
+    }
+    {
+        Simulation simulation(fixtures, profile);
+        check(simulation.state().library.scope == chosen, "the chosen Steam collection survives a profile save and load");
+        check(library_rail_open_store(simulation.state()) == "steam", "and its store opens with the Library");
+    }
+}
+
+// #536: a store collection's row leaves the rail with its last library game; a focused one hands the focus to its
+// store, with the matching index.
+void store_collection_row_follows_the_library() {
+    using namespace playden::homebrew;
+    using namespace gog_view;
+    Simulation live({}, {}, ModelMode::Live);
+    live.SetWallClock(1700000000);
+    live.SetGogStoreEnabled(true);
+    live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+    const auto steam = [](std::vector<std::uint32_t> apps) {
+        LibraryUpdate update{{}, false, {}, false, false, {}};
+        for (std::uint32_t app : apps)
+            update.games.push_back(playden::GameSummary{GameId::Steam(app), "Steam " + std::to_string(app), {}, {}, {}});
+        return update;
+    };
+    check(live.UpdateLibrary(steam({42, 43})), "Steam's games load");
+    live.UpdateAccount(gog(AuthState::SignedIn, "Synthetic GOG"));
+    check(live.UpdateLibrary(gog_library({{1000000001, "GOG one"}})), "GOG's games load");
+    live.UpdateStoreCollections(Store::kSteam, {{"uc-a", "Alpha", {GameId::Steam(42)}},
+                                                {"uc-b", "Beta", {GameId::Steam(43)}},
+                                                {"srm-c", "Shortcuts", {GameId::Steam(4242)}}});
+    const auto keys = [&] { return library_rail_scopes(live.state()); };
+    const auto has = [&](const std::string& key) {
+        const auto list = keys();
+        return std::find(list.begin(), list.end(), key) != list.end();
+    };
+    to_route(live, Route::Library);
+    const auto focus = [&] { return live.state().navigation.focus_key; };
+    live.action("left");
+    while (!live.state().navigation.library_rail_focused) live.action("left");
+    while (focus() != "rail-store-steam") live.action("down");
+    live.action("cross");
+    live.action("down");
+    check(focus() == "rail-steam-collection:uc-a" && !has("steam-collection:srm-c"),
+          "Steam open: Alpha under All Steam games, the shortcuts-only collection left out");
+    check(live.UpdateLibrary(steam({43})), "Alpha's only game leaves the library");
+    const auto list = keys();
+    const auto store = std::find(list.begin(), list.end(), "store-steam");
+    check(!has("steam-collection:uc-a") && focus() == "rail-store-steam" && live.state().navigation.library_rail_focused &&
+              store != list.end() && live.state().navigation.selected_index == static_cast<int>(store - list.begin()),
+          "its row leaves the rail and the focus moves to Steam, with Steam's index");
+    check(live.UpdateLibrary(steam({42, 43})) && has("steam-collection:uc-a") && focus() == "rail-store-steam",
+          "the game comes back: so does the row, and the focus stays");
+}
+
 int main(int argc, char** argv) {
     check(argc == 2, "fixture directory argument is required");
     const std::filesystem::path fixtures(argv[1]);
@@ -4886,6 +5024,9 @@ int main(int argc, char** argv) {
     t18_imported_game_page(fixtures, profile);
     clean();
     public_contract_and_snapshot(fixtures, profile);
+    clean();
+    store_collections_rail(fixtures, profile);
+    store_collection_row_follows_the_library();
     std::error_code error;
     std::filesystem::remove(profile, error);
     std::cout << "homebrew_simulation_test passed\n";
