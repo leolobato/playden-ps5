@@ -850,6 +850,7 @@ Development builds carry the version they lead to, such as `0.12-dev.20261020.1`
 
 | Kit | What changed for games |
 | --- | --- |
+| 0.29 | Unreal Engine 5 games on vkd3d-proton (Direct3D 12) no longer stop with "Fatal error!" as they start. Playden's data can be opened over FTP without breaking a game's start check. Bottles need no Recreate. |
 | 0.28 | Fixes 0.27, where every game closed at start. Games that keep many files open for writing, or locked, still no longer run out of open files. Bottles need no Recreate. |
 | 0.27 | Games that keep many files open for writing, or locked, no longer run out of open files: a modded Minecraft with Distant Horizons loads its worlds. Bottles need no Recreate. |
 | 0.26 | Need for Speed III: Hot Pursuit (Modern Patch) starts: the 32-bit translator runs its Watcom code. A game that asks for more memory than the console can give gets Windows' out-of-memory error instead of access denied. Bottles need no Recreate. |

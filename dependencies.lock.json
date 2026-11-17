@@ -227,9 +227,9 @@
   "prospero_kit": {
     "kit_id": "playden-kit",
     "published": false,
-    "status": "Kit 0.28, installed as playden-kit. Kit 0.27 with ntdll.prx, wineserver.prx, win32u.prx and nsiproxy.prx of prospero-win bd2da43 (Wine patch 1021 adds its server request last, so every earlier request keeps its number and the PE modules kept from earlier kits, ntoskrnl.exe and conhost.exe, fit again; kit 0.27 crashed every game at start, #894). The template, DXVK and Mono are 0.27's, so bottles need no Recreate.",
-    "manifest_sha256": "38626b6020f5ba6f24d4138fd8f1b17dc3c1bca8393b3dcba8dd641510e20223",
-    "files_sha256": "ef2ae590473f3447bc19dd305bd2e4cdb2486c105de0e9485ace2ec4f69fa700",
+    "status": "Kit 0.29, installed as playden-kit. Kit 0.28 with win32u.prx and winevulkan.dll of prospero-win 80b7cad (Wine patch 1027: Unreal Engine 5 games on vkd3d-proton no longer jump to address 0 at start, #574) and the any-title shell of 80b7cad, which admits Playden's data at any mode (publication-open-modes, #868). The template, DXVK and Mono are 0.28's, so bottles need no Recreate.",
+    "manifest_sha256": "18dc30584e24117cf4c71765ea3c5627d600f92aa5da1e4ac4e06c52a5680d0d",
+    "files_sha256": "dceeef28c7d25f4c6954cf2a7f4da4e70ec85246cad195b107e7f50053c2ff91",
     "console_root": "/data/playden/kits/playden-kit",
     "firmware": [
       "13.60"
@@ -253,6 +253,7 @@
       "opengl-zink",
       "per_game_title",
       "profile-version-2",
+      "publication-open-modes",
       "settings-profile-environment",
       "steam-library-path",
       "title-any-id",
@@ -265,9 +266,9 @@
       "wine-shared-sections",
       "wow64_i386"
     ],
-    "wrapper_revision": "2ddfbbff2d91a73949c58b58b0af232168861949",
-    "runtime_artifact_revision": "bd2da43-kit-0.28",
-    "runtime_inventory_source": "Kit 0.28: staged by kits/kit-0.28/stage.py in the kit archive: kit 0.27 with the four .prx modules that differ in a fresh release cross build of bd2da43 (scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-028-1), identical to kit 0.27 in every other module. The recipe checks that stock Wine's server requests keep their numbers. Earlier kits: see this file's git history.",
+    "wrapper_revision": "80b7cadde0f093fbe256dc552f0fc30388af4868",
+    "runtime_artifact_revision": "80b7cad-kit-0.29",
+    "runtime_inventory_source": "Kit 0.29: staged by kits/kit-0.29/stage.py in the kit archive: kit 0.28 with win32u.prx (the only .prx that differs in a fresh release cross build of 80b7cad, scripts/build-kit-cross.sh --no-reuse, kit-h/work/wine-ps5-029-1), winevulkan.dll (x64, i386 and the template's copies) and the any-title shell built from a clean clone of 80b7cad. The recipe checks that stock Wine's server requests keep their numbers. Earlier kits: see this file's git history.",
     "wine_mono": {
       "version": "11.3.0",
       "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
