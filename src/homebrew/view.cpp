@@ -2599,14 +2599,25 @@ class Render::Impl
                 rows.push_back(index);
         // Games storage carries the default drive's usage under its title.
         const Volume *usage = nullptr;
-        if (current == "Storage" && !state.volumes.empty())
+        if (!state.volumes.empty())
         {
             const auto found = std::find_if(state.volumes.begin(), state.volumes.end(),
                                             [&state](const Volume &volume) { return volume.id == state.default_volume_id; });
             usage = found != state.volumes.end() ? &*found : &state.volumes.front();
         }
         const auto drive_row = [&](const ViewRow &row) { return usage != nullptr && row.key == "settings-storage"; };
+        // A group's heading: its name, and above every heading but the section's first a line that sets the
+        // groups apart, as in the side sheets. The first heading sits flush with the top.
+        const int first_row = rows.empty() ? -1 : rows.front();
+        constexpr float heading_line = 36.0F, heading_name = 40.0F;
+        const auto heading_height = [&](int index) {
+            return index == first_row ? heading_name : heading_line + heading_name;
+        };
+        // The space under a row: a heading keeps close to the rows it names.
+        const auto gap = [&](const ViewRow &row) { return row.kind == RowKind::Heading ? 8.0F : 24.0F; };
         const auto height = [&](const ViewRow &row) {
+            if (row.kind == RowKind::Heading)
+                return heading_height(static_cast<int>(&row - view.rows.data()));
             if (!row.qr.empty())
                 return 300.0F;
             return drive_row(row) ? (usage->capacity_known ? 186.0F : 160.0F) : row.subtitle.empty() ? 92.0F : 118.0F;
@@ -2614,19 +2625,23 @@ class Render::Impl
         float offset = 0.0F;
         {
             // Eased to the focused row like Home; with the focus on the rail the list stays where it was.
-            float top = 0.0F, focus_min = -1.0F, focus_max = 0.0F;
+            // The heading right above the focused row comes into view with it.
+            float top = 0.0F, focus_min = -1.0F, focus_max = 0.0F, heading_top = -1.0F, last_gap = 0.0F;
             for (const int index : rows)
             {
-                const float h = height(view.rows[static_cast<std::size_t>(index)]);
+                const ViewRow &row = view.rows[static_cast<std::size_t>(index)];
+                const float h = height(row);
                 if (index == focused)
                 {
-                    focus_min = top;
+                    focus_min = heading_top >= 0.0F ? heading_top : top;
                     focus_max = top + h;
                 }
-                top += h + 24.0F;
+                heading_top = row.kind == RowKind::Heading ? top : -1.0F;
+                last_gap = gap(row);
+                top += h + last_gap;
             }
             Scroll &scroll = list_scrolls_["settings-" + current];
-            const float content = std::max(0.0F, top - 24.0F);
+            const float content = std::max(0.0F, top - last_gap);
             scroll.target = focus_min >= 0.0F ? reveal(scroll.target, focus_min, focus_max, 740.0F, content)
                                               : std::clamp(scroll.target, 0.0F, std::max(0.0F, content - 740.0F));
             offset = scroll.step(frame_dt_, state.reduced_motion);
@@ -2637,6 +2652,22 @@ class Render::Impl
         {
             const ViewRow &row = view.rows[static_cast<std::size_t>(index)];
             const float h = height(row);
+            if (row.kind == RowKind::Heading)
+            {
+                const float name_top = y + h - heading_name;
+                if (index != first_row)
+                {
+                    ui::DividerStyle line;
+                    line.theme = theme_;
+                    line.color = kText.with_alpha(0.12F);
+                    ui::Canvas canvas{scene_, fonts_, renderer_.glass_texture(), clock_};
+                    ui::draw_divider(canvas, line, {left, y + 6.0F, width, 18.0F});
+                }
+                ui::text(scene_, fonts_.display, ui::upper(row.title), left + 4.0F, name_top + 30.0F, 19.0F, kMuted,
+                         gfx::Align::left, 2.0F);
+                y += h + gap(row);
+                continue;
+            }
             const gfx::Rect card{left, y, width, h};
             // The title, summary and control sit in the row's usual height; the drive's bar goes below.
             const gfx::Rect head{left, y, width, drive_row(row) ? 118.0F : h};

@@ -1215,7 +1215,7 @@ void report_with_logs(const std::filesystem::path& base) {
     service.Shutdown();
 }
 
-// Settings › Community › Playden account: a code and QR code, polled until approved; the token stays with the
+// Settings › Accounts › Playden account: a code and QR code, polled until approved; the token stays with the
 // worker (0600), shares and reports carry it, and an ended link is forgotten.
 void account_link(const std::filesystem::path& base) {
     std::filesystem::create_directories(base);

@@ -179,7 +179,7 @@ struct LiveVolume {
     std::optional<std::uint64_t> free_bytes;
     bool writable = true;    // Playden can make its games folder there
 };
-// The runtime kit in use, for Settings > About. Every field is empty when no kit is usable.
+// The runtime kit in use, for Settings › System › About. Every field is empty when no kit is usable.
 struct LiveKitInfo {
     std::string kit_id;
     std::string manifest_sha256;
@@ -1030,18 +1030,18 @@ struct State {
     std::map<std::string, SubmissionView> submissions;
     playden::community::VoteState vote_memory;
     bool vote_memory_loaded = false;
-    // Preferences: Recipe votes (Settings › Community), whether a share explained what it sends, and
+    // Preferences: Recipe votes (Settings › Accounts), whether a share explained what it sends, and
     // the name shared recipes credit.
     playden::RecipeVotesPreference recipe_votes = playden::RecipeVotesPreference::kUnset;
     bool sharing_explained = false;
     bool reports_explained = false;  // the first report said what it sends
-    playden::ShareAs share_as = playden::ShareAs::kNone;  // who shares and reports credit (Settings › Community)
-    bool ask_after_games = true;  // Settings › Community › Ask how games ran; "Don't ask again" turns it off
+    playden::ShareAs share_as = playden::ShareAs::kNone;  // who shares and reports credit (Settings › Accounts)
+    bool ask_after_games = true;  // Settings › Accounts › Ask how games ran; "Don't ask again" turns it off
     // Preference (online-steam): the account appears invisible to Steam friends instead of online (Friends › Triangle).
     bool steam_invisible = false;
-    // Settings › Online play › Steam sign-in notice (online-steam): an Online game's start names the account. Saved.
+    // Settings › Accounts › Steam sign-in notice (online-steam): an Online game's start names the account. Saved.
     bool steam_online_notice = true;
-    // The Playden account this console is linked to (Settings › Community › Account), as the sharing worker last said.
+    // The Playden account this console is linked to (Settings › Accounts › Playden account), as the sharing worker last said.
     struct AccountLink {
         std::string state;  // "" not linked (or not known yet), "linking" (a code shown), "linked"
         std::string name;
@@ -1089,7 +1089,7 @@ struct State {
     bool beta_updates = false;
     // The language games are downloaded in, as Steam names its depot languages ("german").
     std::string content_language{playden::steam::kDefaultContentLanguage};
-    bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Storage)
+    bool downloads_slow_network = false;  // 8 download pieces at a time instead of 4 (Settings › Downloads)
     // Empty: Steam default (Steam's order); kFastestDownloadServer: Fastest (raced at each download); otherwise
     // the chosen provider's stable identifier.
     std::string download_server;
@@ -1337,7 +1337,7 @@ public:
     [[nodiscard]] std::vector<LiveCompletedPreparation> TakePreparedDismissals();
     [[nodiscard]] bool TakePreparedClear();
     // The game runtime could not start (raw: its log reason; empty: it runs). Shown on every screen
-    // until it is fixed, with the reason under Settings › Runtime status (#64).
+    // until it is fixed, with the reason under Settings › System › Runtime kit status (#64).
     void UpdateRuntimeProblem(const std::string& raw);
     // Live mode: a one-line note from startup's data layout move (a step held back this start).
     void ShowLayoutNotice(const std::string& text);
@@ -1350,7 +1350,7 @@ public:
     void ShowPlaydenRemoved(bool complete, std::vector<std::string> notes);
     // Uninstall Playden: running (the progress dialog), or stopped with `refusal` before removing anything final.
     void UpdatePlaydenRemoval(bool running, const std::string& refusal);
-    // Uninstall Playden asked for (Settings › About › Uninstall Playden), keep_saves; taken once.
+    // Uninstall Playden asked for (Settings › System › Uninstall Playden), keep_saves; taken once.
     [[nodiscard]] std::optional<bool> TakePlaydenRemovalRequest();
     // Live mode: Playden's own update, and what the player asked of it: "check" (from Settings),
     // "install", "cancel", "restart" (apply at quit; quit follows), "rollback" (put the previous
@@ -1538,7 +1538,7 @@ public:
     // most once per revision and kept (objects are named by their content, so they never change).
     void UpdateCommunityCatalog(CommunityCatalog catalog);
     // GOG (features.txt gog-store); off unless set. Off: every view is as without GOG (no Stores section, no GOG
-    // sign-in, no GOG scope rows beyond what its games bring). On: Settings › Stores lists Steam and GOG, Startup
+    // sign-in, no GOG scope rows beyond what its games bring). On: Settings › Accounts lists Steam and GOG, Startup
     // offers Sign in to GOG, and the gog-sign-in dialog shows the phone relay's QR code.
     void SetGogStoreEnabled(bool enabled);
     [[nodiscard]] bool GogStoreEnabled() const noexcept { return gog_store_enabled_; }
@@ -2189,7 +2189,7 @@ private:
     [[nodiscard]] std::vector<std::string> leftover_manager_actions() const;
     [[nodiscard]] bool leftover_queued(const std::string& title_id) const;
     // The Import sheet: Look for games, then the candidates grouped by drive (headings never take
-    // the focus), then Close. Opened from Startup, Home's empty state and Settings › Library.
+    // the focus), then Close. Opened from Startup, Home's empty state and Settings › Games.
     [[nodiscard]] std::vector<std::string> import_sheet_actions() const;
     [[nodiscard]] const LiveImportCandidate* import_candidate(const std::string& key) const;
     void open_import_sheet();

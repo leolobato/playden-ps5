@@ -10,7 +10,7 @@ uploaded to the console separately; Playden builds never build Wine or download 
   (`prospero_win.revision`) records the exact commit, and builds refuse another revision or a dirty checkout.
   Initialize it with `git submodule update --init third_party/prospero-win`.
 - `src/runtime/kit_trust.h`: the kit this build was tested with (its id and manifest SHA-256), shown next to the
-  installed kit in Settings › About. `dependencies.lock.json` (`prospero_kit`) records the same kit with its runtime
+  installed kit in Settings › System › About. `dependencies.lock.json` (`prospero_kit`) records the same kit with its runtime
   revision and how it was built; a host test checks the two agree.
 
 Playden uses the kit installed at `/data/playden/kits/<kit id>` (`playden-kit` since kit 0.13) as long as it is

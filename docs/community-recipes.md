@@ -29,7 +29,7 @@ how the game ran. Playden sends the recipe to the Playden API, which opens the p
 playden-ps5-recipes for review. No GitHub account is needed.
 
 Who a recipe (or a test report) credits is the **Shared as** row on the Share and feedback sheets, and its default
-in Settings › Community › **Share as**:
+in Settings › Accounts › **Share as**:
 
 - **No name**: shown as "from the community".
 - **Your name**: a name you type, no account needed.

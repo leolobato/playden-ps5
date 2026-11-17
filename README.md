@@ -28,8 +28,8 @@ private Windows environment and its own tile on the PS5 Home screen.
   details. The library works offline from a cache.
 - **Downloads from Steam.** Queue games and watch progress. The Queue screen also lists the games being prepared, in
   the order they start; Prepare next moves a waiting game to the front.
-- **Storage at a glance.** Settings › Storage shows how much space is used and lists installed games by size or
-  last played. Select several games and uninstall them together; saves are kept unless you choose otherwise.
+- **Storage at a glance.** Settings › Downloads shows how much space is used, and Settings › Games › Manage installed
+  games lists installed games by size or last played. Select several games and uninstall them together; saves are kept unless you choose otherwise.
 - **Each game is its own PS5 app.** It gets a tile on the Home screen, so you can start it without Playden.
 - **A private Windows environment per game** ("bottle"), so games do not share settings or files.
 - **Steam Cloud saves.** Playden checks your Cloud saves before a game starts and syncs them after it ends. If the
@@ -175,21 +175,21 @@ ShadowMountPlus adds its tile to the Home screen.
 
 Since 0.3.0, Playden updates itself from this repository's GitHub releases:
 
-- **Check:** at startup, and with Settings › Updates › Playden updates › Check now. When a newer release is out,
+- **Check:** at startup, and with Settings › System › Playden updates › Check now. When a newer release is out,
   Playden offers it once, with its notes, its download size, and a QR code for its release page on GitHub.
 - **Download:** Download and install fetches the new app and, when the release has a new one, the runtime kit. You
   can follow the download on the Queue screen and keep using Playden meanwhile.
 - **Restart:** when the update is ready, Restart Playden closes Playden, puts the new version and kit in place, and
   opens Playden again. If it doesn't open by itself (the payload loader on port 9021 isn't running), open it from
-  the Home screen. On that first start Playden shows what's new in the version; Settings › Updates › Release notes
+  the Home screen. On that first start Playden shows what's new in the version; Settings › System › Release notes
   shows it again later.
 
-Settings › Updates › **Beta updates** opts into test versions before their stable release. It is off by default;
+Settings › System › **Beta updates** opts into test versions before their stable release. It is off by default;
 betas can have new bugs and use the same app and data. Turning it off keeps an installed beta until a newer stable
 version is available. Updates never downgrade Playden.
 
 The previous app and kit are kept until the next update, in `/data/playden/self-update/backup/` and
-`/data/playden/kits/.previous-*`. Settings › Updates › **Go back to Playden <version>** puts them back: Playden
+`/data/playden/kits/.previous-*`. Settings › System › **Go back to Playden <version>** puts them back: Playden
 closes, swaps the previous version and its kit in, and opens again. If the swap does not take and the previous
 version opens again, it says so and puts its kit back. If the new version itself fails to start, nothing can report it: reinstall Playden over FTP as
 described above (your games, sign-in and settings are kept), and, if the new kit is at fault, rename the previous
@@ -207,11 +207,11 @@ folders' modes right if they changed.
 The runtime kit is what runs Windows games: Wine, Mesa and DXVK. Playden
 downloads the kit its version was made for from this repository's releases, on its first start and whenever the
 installed kit isn't that one. It installs in the background, shows on the Queue screen, and games can be prepared
-as soon as it is in place. If you choose Later, or the download fails, Settings › About › Runtime kit starts
+as soon as it is in place. If you choose Later, or the download fails, Settings › System › Runtime kit starts
 it again.
 
 Games pick up a new kit when you press Play, or all at once: Playden offers this the first time you open it with a new
-kit, and Settings › Manage installed games › Runtimes does it whenever you want. Saves and settings are kept.
+kit, and Settings › Games › Manage installed games › Runtimes does it whenever you want. Saves and settings are kept.
 
 You can also install the kit by hand, with Python 3: download `playden-kit-<version>.zip` from the release, unzip it
 next to `playden-ps5-<version>`, and run this from the `playden-ps5-<version>` folder. A plain FTP copy does not
@@ -293,7 +293,7 @@ can still delete them.
 
 ### Uninstall Playden
 
-Settings › About › **Uninstall Playden** takes everything above off the console. Close any game first.
+Settings › System › **Uninstall Playden** takes everything above off the console. Close any game first.
 
 1. Choose whether to keep your saves. Kept saves stay in `/data/playden/games/<id>.kept`, and a new install of Playden
    gives them back when you install the game again.
@@ -317,7 +317,7 @@ The drive must be exFAT. The PS5 can't read NTFS, and FAT32 can't hold files ove
 
 **Add a game:**
 
-1. Open **Import games**: on the Startup screen, on Home when your library is empty, or in Settings › Library.
+1. Open **Import games**: on the Startup screen, on Home when your library is empty, or in Settings › Games.
 2. Choose **Look for games**. Playden lists the folders it finds, with their size.
 3. Pick a folder. When it holds one program besides installers and tools, Playden starts the game with it. Otherwise
    pick the program that starts the game; installers and tools are labelled as such. You can change it later in
@@ -407,7 +407,7 @@ build/homebrew-host/playden-homebrew --simulation --scenario signed-out
 - If you plug in or swap USB drives while Playden is open, restart Playden so it sees them.
 - Online multiplayer and games with anti-cheat do not work. See [Before you use it](#before-you-use-it).
 - Uninstall games from Playden. Title folders belong to Playden; FTP and file managers can't delete them.
-  Leftover titles appear in Settings › Storage. Deleting a leftover removes its title folder and Home tile;
+  Leftover titles appear in Settings › Games. Deleting a leftover removes its title folder and Home tile;
   its saves and settings move to Kept game data, where you can delete them or get them back by installing the game
   again.
 - New games can stay at *Waiting for the PS5* after you quit Playden when ShadowMountPlus stops registering titles.
@@ -434,7 +434,7 @@ build/homebrew-host/playden-homebrew --simulation --scenario signed-out
   includes Mesa itself, so heavy ones can be slow.
 - After you update Playden, it can ask you to sign in to Steam again.
 - Steam can turn down a saved sign-in that worked before. Playden tries again the next time it starts; if it keeps
-  happening, use Settings › Account › **Sign in again**: it keeps your library, favorites and settings.
+  happening, use Settings › Accounts › **Sign in again**: it keeps your library, favorites and settings.
 - Godot games (Slay the Spire 2) need `--rendering-driver opengl3` in Game settings › Extra arguments. Playden picks
   Godot's Vulkan renderer, which did not work on this kit.
 - Some games start only after their own settings program has run once. On the game's page, use Options ›
@@ -462,7 +462,7 @@ Every test helps, including games that work.
 actions). Choose whether it ran well or had problems, and Playden sends a test report for you: the game, its
 settings, your versions and, when it had problems, its logs with your Steam account name, IDs, PS5 user and home
 network addresses removed. The report is a public issue on this repository. With a community recipe in use, your
-answer is also its vote (unless **Recipe votes** is off). Settings › Community › **Ask how games ran** turns the
+answer is also its vote (unless **Recipe votes** is off). Settings › Accounts › **Ask how games ran** turns the
 question off; votes and **Share feedback…** still work.
 
 **By hand**, for anything Playden can't send:

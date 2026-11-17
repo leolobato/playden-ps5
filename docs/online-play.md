@@ -136,7 +136,7 @@ older version of the runtime kit keeps Online for its update.
   screen keeps the choice it was written with until it is written again (the game's next Play, a settings change or
   the next sign-in).
 
-  Settings › Online play › Steam sign-in notice (the preference `steam_online_notice`, on by default) puts `notice=1`
+  Settings › Accounts › Steam sign-in notice (the preference `steam_online_notice`, on by default) puts `notice=1`
   in the handoff. Once the game may start, the host writes "Online on Steam as <name>" (or "Signed in to Steam as
   <name>, invisible to friends") to the title's messages file, which the title shows as a notification once the game
   runs. The name is the one Valve's client has for the account (`ISteamFriends::GetPersonaName`, the friends interface

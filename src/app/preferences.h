@@ -70,7 +70,7 @@ struct Preferences {
   // or Invisible, which friends see as offline. Friends tab › Triangle.
   bool steam_invisible = false;
   // Whether an Online game's start shows the Steam account it signed in as (version 16, online-steam only; on in older
-  // files). Settings › Online play › Steam sign-in notice.
+  // files). Settings › Accounts › Steam sign-in notice.
   bool steam_online_notice = true;
 };
 

@@ -378,7 +378,7 @@ int main(int argc,char** argv) {
       assert(live.state().navigation.route == Route::Settings);
       live.UpdateLeftoverTitles({});
       live.UpdateLeftoverDeletions({});
-      // Settings > Storage: the default drive's usage above the rows, then the installed games list.
+      // Settings > Downloads: the default drive's usage above the rows, then the installed games list.
       while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
       live.UpdateVolumes({{"internal","Console storage",true,825'000'000'000ull,512'000'000'000ull}}, "internal");
       live.UpdateInstalls({}, {{SteamId(42), 62'700'000'000ull, "internal"}, {SteamId(43), 8'400'000'000ull, "internal"},
@@ -388,6 +388,29 @@ int main(int argc,char** argv) {
       live.UpdateRuntime(RuntimeState::Ready, {titled, playing});
       assert(live.action("focus:settings-storage"));
       capture_live("settings-storage-drive.png");
+      {
+        // Every Settings section from the rail, in order (settings-section-N.png), with the clean-up rows shown.
+        live.UpdateLeftoverTitles({{"FAKE78001", "A Short Hike", 12'000'000}});
+        live.SetRuntimeLeftovers(1);
+        const auto focused_row = [&live]() -> const ViewRow& {
+          return live.view().rows[static_cast<std::size_t>(live.view().focused_row)];
+        };
+        assert(live.action("focus:settings-account") && live.action("left"));
+        for (int section = 0; section < 16 && !focused_row().rail_only; ++section) {
+          assert(live.action("right"));
+          const std::string name = "settings-section-" + std::to_string(section) + ".png";
+          capture_live(name.c_str());
+          assert(live.action("left") && live.action("down"));
+        }
+        // System's last groups (Help, Reset) below its first ones.
+        assert(live.action("focus:settings-remove-playden") && live.action("right"));
+        assert(!live.state().navigation.settings_rail_focused);
+        capture_live("settings-system-bottom.png");
+        live.UpdateLeftoverTitles({});
+        live.SetRuntimeLeftovers(0);
+        assert(live.action("focus:settings-storage"));
+        if (live.state().navigation.settings_rail_focused) live.action("right");
+      }
       assert(live.action("focus:settings-installed"));
       capture_live("settings-storage.png");
       assert(live.action("cross"));
@@ -417,14 +440,16 @@ int main(int argc,char** argv) {
       live.action("r1");
       live.action("r1");
       assert(live.state().navigation.route==Route::Settings);
-      // With every Storage row shown the list scrolls; back on the first row the usage card shows again.
+      // With every Games row shown the list scrolls; back on the first row its heading shows again.
       while(!live.state().navigation.modals.empty()) assert(live.action("circle"));
       live.SetRuntimeLeftovers(1);
-      assert(live.action("focus:settings-runtime"));
-      capture_live("settings-storage-bottom.png");
-      while(live.state().navigation.focus_key!="settings-storage") assert(live.action("up"));
-      capture_live("settings-storage-top-again.png");
+      assert(live.action("focus:settings-runtime-cleanup"));
+      capture_live("settings-games-bottom.png");
+      for(int step=0; step<16 && live.state().navigation.focus_key!="settings-installed"; ++step) assert(live.action("up"));
+      assert(live.state().navigation.focus_key=="settings-installed" && !live.state().navigation.tabs_focused);
+      capture_live("settings-games-top-again.png");
       // A drive without a space report that is disconnected: one line and its state.
+      assert(live.action("focus:settings-storage"));
       live.UpdateVolumes({{"internal","USB drive",false,{},{}}}, "internal");
       capture_live("settings-storage-unknown.png");
     }

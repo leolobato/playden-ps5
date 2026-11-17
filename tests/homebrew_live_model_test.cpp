@@ -423,7 +423,7 @@ void live_friends_join_and_invite(const std::filesystem::path& base) {
     }
 
     {
-        // Settings › Online play › Steam sign-in notice: on by default, a saved Off comes back, and the row changes it as
+        // Settings › Accounts › Steam sign-in notice: on by default, a saved Off comes back, and the row changes it as
         // a preference to save.
         auto settings = make_live(base);
         check(settings.state().steam_online_notice && settings.ExportPreferences().steam_online_notice,
@@ -435,9 +435,9 @@ void live_friends_join_and_invite(const std::filesystem::path& base) {
         settings.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
         for (int step = 0; step < 8 && settings.state().navigation.route != Route::Settings; ++step) settings.action("r1");
         const auto* row = find_row(settings, "settings-steam-online-notice");
-        check(row && row->kind == playden::homebrew::RowKind::Toggle && !row->selected && row->section == "Online play" &&
+        check(row && row->kind == playden::homebrew::RowKind::Toggle && !row->selected && row->section == "Accounts" &&
                   row->subtitle == "Off: Online games start without the notification.",
-              "notice: Settings has the row under Online play, off");
+              "notice: Settings has the row under Accounts › Stores, off");
         activate(settings, "settings-steam-online-notice");
         row = find_row(settings, "settings-steam-online-notice");
         check(settings.state().steam_online_notice && settings.ExportPreferences().steam_online_notice &&
@@ -2065,7 +2065,7 @@ void live_self_update(const std::filesystem::path& base) {
           find_row(model, "settings-beta-wait")->subtitle ==
               "Playden moves to the next stable version when it is out.",
           "opting out on a beta explains waiting for stable");
-    // Settings › About names a nightly as such, with its build number and commit.
+    // Settings › System › About names a nightly as such, with its build number and commit.
     update.current = "0.8.0-nightly.20261027.2";
     update.commit = "d94c0b384d";
     model.UpdateSelfUpdate(update);
@@ -3315,7 +3315,7 @@ void live_manage_update_selected(const std::filesystem::path& base) {
           "update selected: Update anyway queues the games the drive may lack room for");
 }
 
-// Settings: Storage's Manage installed games counts the saved check's updates and opens on Uninstall; Updates'
+// Settings › Games: Manage installed games counts the saved check's updates and opens on Uninstall;
 // Game updates says how the check stands and opens on Updates. Both read the saved result without asking Steam.
 // The Runtimes tab: what is due, what it skips and why, and a batch that goes one game at a time and stops before
 // console storage runs too low.

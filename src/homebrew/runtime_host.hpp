@@ -586,7 +586,7 @@ class RuntimeHost {
   // until it is written again: at the game's next Play, a change of its settings or the account's next sign-in (each
   // Playden start). Safe from any thread.
   void SetSteamInvisible(bool invisible);
-  // Settings › Online play › Steam sign-in notice: whether each handoff from now on asks the Steam host to show the
+  // Settings › Accounts › Steam sign-in notice: whether each handoff from now on asks the Steam host to show the
   // account it signed in as (notice=1). On until the saved choice says otherwise; kept handoffs as above. Any thread.
   void SetSteamOnlineNotice(bool notice);
   // Queues removal of a game's PS5 title. Its bottle (saves and settings) is kept

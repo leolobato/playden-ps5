@@ -2262,7 +2262,7 @@ bool Controller::DownloadServerTestAllowed() const {
 void Controller::TickSteamPersona() {
   // Not before the saved choice is known: the default would show an invisible player online.
   if (persistence_ && !model_.PreferencesLoaded()) return;
-  // Settings › Online play › Steam sign-in notice, for the runtime host's next handoffs.
+  // Settings › Accounts › Steam sign-in notice, for the runtime host's next handoffs.
   const bool notice = model_.state().steam_online_notice;
   if (runtime_ && applied_steam_online_notice_ != notice) {
     applied_steam_online_notice_ = notice;

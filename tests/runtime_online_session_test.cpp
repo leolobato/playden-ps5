@@ -55,7 +55,7 @@ int main() {
         "app_id=548430\nsteam_id=76561198000000001\naccount_name=player\nrefresh_token=eyJ.token\n"
         "machine_name=Playden-PS5\nmachine_id=004dff\nlogin_id=" + std::to_string(BridgeLoginId(0x12345678)) +
         "\ncell_id=7\npersona=online\n");
-  // Settings › Online play › Steam sign-in notice: notice=1; off writes no key (above).
+  // Settings › Accounts › Steam sign-in notice: notice=1; off writes no key (above).
   {
     auto notice = Session();
     notice.notice = true;

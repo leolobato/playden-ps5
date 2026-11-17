@@ -2163,34 +2163,37 @@ void live_storage_section_and_installed_games() {
     model.UpdateAccount({AuthState::SignedIn, "123", "Synthetic", {}, {}, true});
     model.UpdateVolumes({{"internal", "Console storage", true, 800 * gb, 500 * gb}}, "internal");
 
-    // Nothing installed: the Storage rows say so, and leftovers stay hidden.
+    // Nothing installed: the Games rows say so, and leftovers stay hidden with their heading's group showing.
     model.action("l1");
     check(model.state().navigation.route == Route::Settings, "Settings opens");
-    const auto section_of = [&model](const std::string& key) {
-        const auto* row = find_row(model, key);
-        return row ? row->section : std::string("missing");
+    const auto keys_in = [&model](const std::string& section) {
+        std::vector<std::string> keys;
+        for (const auto& row : model.view().rows) if (row.section == section) keys.push_back(row.key);
+        return keys;
     };
-    for (const auto* key : {"settings-storage", "settings-installed", "settings-kept", "settings-runtime"})
-        check(section_of(key) == "Storage", "the storage rows are in the Storage section");
-    std::vector<std::string> library;
-    for (const auto& row : model.view().rows) if (row.section == "Library") library.push_back(row.key);
-    check(library == std::vector<std::string>{"settings-import", "settings-title-store", "settings-cloud-saves"},
-          "Library starts with Import games, then its toggles");
-    std::vector<std::string> community;
-    for (const auto& row : model.view().rows) if (row.section == "Community") community.push_back(row.key);
-    check(community == std::vector<std::string>{"settings-ask-after-games", "settings-recipe-votes", "settings-share-as", "settings-account-link",
-                                                "settings-sharing-reset"},
-          "Community holds the feedback toggle, the Playden account and Reset sharing ID");
+    check(keys_in("Games") == std::vector<std::string>{"settings-heading-installed-games", "settings-installed",
+                                                      "settings-game-updates", "settings-import",
+                                                      "settings-heading-saves-and-data", "settings-cloud-saves",
+                                                      "settings-kept", "settings-heading-ps5-titles",
+                                                      "settings-title-store"},
+          "Games: installed games with their updates and Import, then saves and data, then PS5 titles");
+    check(keys_in("Accounts") == std::vector<std::string>{"settings-heading-stores", "settings-account", "settings-signout",
+                                                         "settings-heading-community", "settings-account-link",
+                                                         "settings-share-as", "settings-ask-after-games",
+                                                         "settings-recipe-votes", "settings-sharing-reset"},
+          "Accounts: the stores, then Community with the Playden account first");
     check(find_row(model, "settings-storage")->action == "storage-picker", "Games storage opens the drive picker");
-    std::vector<std::string> order;
-    for (const auto& row : model.view().rows) if (row.section == "Storage") order.push_back(row.key);
-    check(order == std::vector<std::string>{"settings-storage", "settings-installed", "settings-kept", "settings-runtime"},
-          "Storage lists its rows in order, without the hidden cleanup row");
-    std::vector<std::string> downloads;
-    for (const auto& row : model.view().rows) if (row.section == "Downloads") downloads.push_back(row.key);
-    check(downloads == std::vector<std::string>{"settings-content-language", "settings-downloads-slow",
-                                                "settings-download-server"},
-          "Downloads holds the download language, the slow-network toggle and the download server");
+    check(keys_in("Downloads") == std::vector<std::string>{"settings-storage", "settings-content-language",
+                                                          "settings-download-server", "settings-downloads-slow"},
+          "Downloads: where new games go, their language, the server and the slow-network toggle, with no heading");
+    check(keys_in("System") == std::vector<std::string>{"settings-heading-playden-updates", "settings-update",
+                                                       "settings-beta-updates", "settings-heading-runtime-kit",
+                                                       "settings-runtime", "settings-heading-display", "settings-motion",
+                                                       "settings-heading-help", "settings-logs", "settings-about",
+                                                       "settings-heading-reset", "settings-reset",
+                                                       "settings-remove-playden"},
+          "System: Playden updates, the runtime kit, display, help, then the two reset rows");
+    check(find_row(model, "settings-runtime")->title == "Runtime kit status", "the runtime kit's status says runtime kit");
     {
         const auto* language = find_row(model, "settings-content-language");
         check(language->title == "Download language" && language->value == "English" &&
@@ -2208,9 +2211,8 @@ void live_storage_section_and_installed_games() {
     std::vector<std::string> sections;
     for (const auto& row : model.view().rows)
         if (sections.empty() || sections.back() != row.section) sections.push_back(row.section);
-    check(sections == std::vector<std::string>{"Account", "Library", "Community", "Storage", "Downloads", "Display", "Updates",
-                                                  "Web access", "About", "Quit Playden"},
-          "the rail order is Account, Library, Community, Storage, Downloads, Display, Updates, Web access, About, Quit");
+    check(sections == std::vector<std::string>{"Accounts", "Games", "Downloads", "Web access", "System", "Quit Playden"},
+          "the rail order is Accounts, Games, Downloads, Web access, System, Quit Playden");
     // Web access: on by default; the address and its QR once the server reports them; the reason when it can't open.
     check(find_row(model, "settings-web-access")->selected && model.ExportPreferences().web_access, "web access is on by default");
     check(!find_row(model, "settings-web-address"), "no address before the server reports one");
@@ -2267,11 +2269,11 @@ void live_storage_section_and_installed_games() {
     check(find_row(model, "settings-kept")->value == "None" && !has_row(model, "settings-runtime-cleanup"),
           "kept data says None and the cleanup row is hidden");
     model.SetRuntimeLeftovers(1);
-    order.clear();
-    for (const auto& row : model.view().rows) if (row.section == "Storage") order.push_back(row.key);
-    check(order == std::vector<std::string>{"settings-storage", "settings-installed", "settings-kept",
-                                            "settings-runtime-cleanup", "settings-runtime"},
-          "unused settings data sits before Runtime status when there is some");
+    {
+        const auto games = keys_in("Games");
+        check(games.size() >= 2 && games[games.size() - 2] == "settings-title-store" && games.back() == "settings-runtime-cleanup",
+              "unused settings data ends Games › PS5 titles when there is some");
+    }
     model.SetRuntimeLeftovers(0);
     // The Settings drive picker changes the default, not one install's drive.
     activate(model, "settings-storage");
@@ -2282,16 +2284,16 @@ void live_storage_section_and_installed_games() {
     check(model.action("focus:settings-storage"), "Games storage is focused");
     model.action("up");
     check(model.state().navigation.focus_key == "settings-storage" &&
-              model.view().rows[static_cast<std::size_t>(model.view().focused_row)].section == "Storage",
-          "Up on Storage's first row does not leave the section");
+              model.view().rows[static_cast<std::size_t>(model.view().focused_row)].section == "Downloads",
+          "Up on Downloads' first row does not leave the section");
     if (model.state().navigation.tabs_focused) model.action("down");
-    check(model.action("focus:settings-download-server"), "Download server is focused");
+    check(model.action("focus:settings-downloads-slow"), "Downloads for slow networks is focused");
     model.action("down");
-    check(model.state().navigation.focus_key == "settings-download-server", "Down on Downloads' last row stays on it");
+    check(model.state().navigation.focus_key == "settings-downloads-slow", "Down on Downloads' last row stays on it");
     model.action("left");
     model.action("down");
     model.action("right");
-    check(model.state().navigation.focus_key == "settings-motion", "the rail moves to the next section");
+    check(model.state().navigation.focus_key == "settings-web-access", "the rail moves to the next section");
 
     const auto played = [&](playden::GameId id, std::string title, std::optional<std::int64_t> days) {
         auto summary = game(id, std::move(title));
@@ -2563,8 +2565,9 @@ void live_settings_focus_stays_near_a_removed_row() {
     const auto& rows = model.view().rows;
     const auto focused = rows[static_cast<std::size_t>(model.view().focused_row)];
     check(!has_row(model, "settings-runtime-cleanup"), "the cleaned row is gone");
-    check(focused.section == "Storage" && !focused.rail_only && !model.state().navigation.settings_rail_focused,
-          "focus moves to the nearest row in the same section, not the rail");
+    check(focused.section == "Games" && !focused.rail_only && !model.state().navigation.settings_rail_focused &&
+              focused.kind != playden::homebrew::RowKind::Heading,
+          "focus moves to the nearest row in the same section, not the rail or a heading");
     check(focused.enabled, "a row that can be chosen is preferred");
 }
 
@@ -2960,6 +2963,9 @@ void live_play_does_the_next_useful_thing() {
                   "missing kit does not queue an impossible preparation");
             check(model.state().navigation.focus_key == "about-kit", "missing kit opens Runtime kit in About");
             while (!model.state().navigation.modals.empty()) check(model.action("circle"), "close kit information");
+            const auto& focused = model.view().rows[static_cast<std::size_t>(model.view().focused_row)];
+            check(focused.key == "settings-about" && focused.section == "System",
+                  "closing it leaves About focused in Settings › System");
         } else {
             check(play->action == expected.action, "redesigned action preserves existing behavior");
             if (play->action == "runtime-play" || play->action == "runtime-prepare") {
@@ -5042,9 +5048,9 @@ void leftover_titles_require_confirmation_and_follow_the_queue() {
     check(!has_row(model, "settings-leftovers"), "no leftover row without titles");
     model.UpdateLeftoverTitles({{"FAKE78001", "Lost game (Steam)", 12'000'000}, {"FAKE78002", "", 3'000'000}});
     const auto* row = find_row(model, "settings-leftovers");
-    check(row && row->title == "Leftover PS5 titles" && row->value == "2 titles · 15 MB" && row->section == "Storage" &&
+    check(row && row->title == "Leftover PS5 titles" && row->value == "2 titles · 15 MB" && row->section == "Games" &&
               !has_row(model, "settings-leftover-FAKE78001"),
-          "Storage has one Leftover PS5 titles row with their count and size, like Kept game data");
+          "Games has one Leftover PS5 titles row with their count and size, like Kept game data");
     activate(model, "settings-leftovers");
     check(model.state().navigation.modals.back().id == "leftover-titles" && model.view().surface == "leftover-titles",
           "the row opens the leftover titles manager");
@@ -5223,7 +5229,7 @@ void live_game_update() {
           "after the update, no button and Play again");
 }
 
-// Settings › About › Uninstall Playden (#868): a dangerous row; the dialog keeps saves unless asked, its focus starts on Cancel;
+// Settings › System › Uninstall Playden (#868): a dangerous row; the dialog keeps saves unless asked, its focus starts on Cancel;
 // the request reaches the runtime once; the progress screen takes no input; the end screen quits to Home.
 void live_remove_playden() {
     auto model = make_live();
@@ -5231,7 +5237,7 @@ void live_remove_playden() {
     model.action("l1");
     check(model.state().navigation.route == Route::Settings, "Settings opens");
     const auto* row = find_row(model, "settings-remove-playden");
-    check(row && row->dangerous && row->section == "About" && row->title == "Uninstall Playden…", "Uninstall Playden is a dangerous row in About");
+    check(row && row->dangerous && row->section == "System" && row->title == "Uninstall Playden…", "Uninstall Playden is a dangerous row in System");
     activate(model, "settings-remove-playden");
     const auto& modal = model.state().navigation.modals.back();
     check(modal.destructive && modal.title == "Uninstall Playden?", "it asks first");
@@ -5254,6 +5260,14 @@ void live_remove_playden() {
     // A game still running stops it before anything goes: back to Settings with the reason.
     model.UpdatePlaydenRemoval(false, "Close every game first.");
     check(!model.state().removing_playden && model.state().navigation.route == Route::Settings, "back to Settings");
+    {
+        // Under the alert that says why: Uninstall Playden, in Settings › System.
+        while (!model.state().navigation.modals.empty()) model.action("circle");
+        const auto& focused = model.view().rows[static_cast<std::size_t>(model.view().focused_row)];
+        check(focused.key == "settings-remove-playden" && focused.section == "System" &&
+                  !model.state().navigation.settings_rail_focused,
+              "on Uninstall Playden in Settings › System");
+    }
     // Done: the end screen, and Cross quits to Home.
     model.UpdatePlaydenRemoval(true, {});
     model.ShowPlaydenRemoved(true, {"Kept: saves in /data/playden/games/steam-220.kept"});

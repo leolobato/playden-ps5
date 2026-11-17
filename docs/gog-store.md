@@ -11,7 +11,7 @@ restart Playden after you change it. Dev builds and nightlies also need the line
 
 ## What the line turns on now
 
-- **Sign-in.** Settings › Stores lists Steam and GOG. The startup screen offers "Sign in to GOG" after Steam's
+- **Sign-in.** Settings › Accounts lists Steam and GOG under Stores. The startup screen offers "Sign in to GOG" after Steam's
   sign-in, so a player can start with GOG only.
 - **The library.** The GOG games you own load into the Library with their art, next to your Steam games, in All and in
   a GOG section of the rail. Playden lists Windows games only. The library is saved, so it shows while Playden is
@@ -44,7 +44,7 @@ restart Playden after you change it. Dev builds and nightlies also need the line
   `redist` or `__installer`, then pick it in "Run launcher or setup".
 
 - **Game updates.** When GOG has a newer build of an installed game on its default branch, the game's page shows
-  Update… with the exact download size, and Settings › Game updates lists the game. Check for updates and the daily
+  Update… with the exact download size, and Settings › Games › Game updates lists the game. Check for updates and the daily
   check ask GOG and Steam each on their own, so a player signed in to GOG only gets them too. The update goes through
   the Queue: it downloads beside the game, and the files go in place once the game is closed. An update leaves out
   the DLC you turned off, and it brings the DLC you bought since the install.

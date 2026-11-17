@@ -988,6 +988,29 @@ void t12_stress_dataset_keeps_logical_focus(const std::filesystem::path& fixture
           "T12 snapshot records bounded library materialization");
 }
 
+// Links into Settings focus a row by its key; the rail follows that row's section. Each one lands in the section
+// the row moved to, on the row itself, never on the rail or a heading.
+void t13_settings_links_land_in_their_section(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    const std::vector<std::tuple<std::string, std::string, std::string>> links{
+        {"account-link", "settings-account-link", "Accounts"},
+        {"leftover-titles", "settings-leftovers", "Games"},
+        {"manage-settings", "settings-game-updates", "Games"},
+        {"import-empty", "settings-import", "Games"},
+        {"download-servers", "settings-download-server", "Downloads"},
+        {"web-access", "settings-web-access", "Web access"},
+    };
+    for (const auto& [scenario, key, section] : links) {
+        playden::homebrew::Simulation simulation(fixtures, profile);
+        check(simulation.action("scenario:" + scenario), ("T13 scenario " + scenario + " loads").c_str());
+        for (int step = 0; step < 4 && !simulation.state().navigation.modals.empty(); ++step) simulation.action("circle");
+        if (simulation.state().navigation.route != playden::homebrew::Route::Settings) simulation.action("route:settings");
+        const auto& view = simulation.view();
+        const auto& focused = view.rows[static_cast<std::size_t>(view.focused_row)];
+        check(focused.key == key && focused.section == section && !simulation.state().navigation.settings_rail_focused,
+              ("T13 " + key + " lands in " + section + " (focused " + focused.key + " in " + focused.section + ")").c_str());
+    }
+}
+
 void t13_settings_sections_rail(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
     playden::homebrew::Simulation simulation(fixtures, profile);
     simulation.action("route:settings");
@@ -995,46 +1018,71 @@ void t13_settings_sections_rail(const std::filesystem::path& fixtures, const std
         const auto& view = simulation.view();
         return view.rows[static_cast<std::size_t>(view.focused_row)].section;
     };
-    check(section() == "Account", "T13 Settings opens on the Account section");
+    const auto focus = [&simulation] { return simulation.state().navigation.focus_key; };
+    check(section() == "Accounts" && focus() == "settings-account",
+          "T13 Settings opens on Accounts, on its first row under the Stores heading");
     simulation.action("left");
     check(simulation.state().navigation.settings_rail_focused, "T13 Left moves to the section rail");
     simulation.action("down");
-    check(section() == "Library" && simulation.state().navigation.focus_key == "settings-import",
-          "T13 Down on the rail switches to the next section's first row (Import games heads Library)");
+    check(section() == "Games" && focus() == "settings-import",
+          "T13 Down on the rail switches to the next section's first row, past its heading");
     simulation.action("cross");
-    check(!simulation.state().navigation.settings_rail_focused && simulation.state().navigation.focus_key == "settings-import" &&
+    check(!simulation.state().navigation.settings_rail_focused && focus() == "settings-import" &&
               simulation.state().navigation.modals.empty(),
           "T13 Cross on the rail enters the section without activating its row");
     simulation.action("down");
-    check(section() == "Library" && simulation.state().navigation.focus_key == "settings-import",
-          "T13 Down on a section's last row stays in the section");
-    simulation.action("left");
-    simulation.action("down");
-    check(section() == "Community", "T13 Community follows Library on the rail");
-    simulation.action("down");
-    simulation.action("right");
-    check(section() == "Storage" && simulation.state().navigation.focus_key == "settings-storage",
-          "T13 Storage starts with Games storage, Import games no longer in it");
-    simulation.action("down");
-    simulation.action("down");
-    check(section() == "Storage" && simulation.state().navigation.focus_key == "settings-runtime",
-          "T13 Down stops on the section's last row");
+    check(section() == "Games" && focus() == "settings-import", "T13 Down on a section's last row stays in the section");
     simulation.action("up");
-    check(section() == "Storage" && simulation.state().navigation.focus_key == "settings-storage" &&
-              !simulation.state().navigation.tabs_focused, "T13 Up stops on the section's first row");
+    check(focus() == "settings-import" && simulation.state().navigation.tabs_focused,
+          "T13 Up on a section's first row goes to the tab bar, not to its heading or the previous section");
+    simulation.action("down");
+    simulation.action("left");
+    simulation.action("down");
+    check(section() == "Downloads" && focus() == "settings-storage", "T13 Downloads starts with Games storage");
+    simulation.action("down");
+    check(section() == "Web access" && focus() == "settings-web-access", "T13 Web access keeps its own rail entry");
+    simulation.action("down");
+    simulation.action("right");
+    // In the simulation, System has no Playden updates rows: its first group is the runtime kit.
+    check(section() == "System" && focus() == "settings-runtime", "T13 System starts at its first group with a row");
+    simulation.action("down");
+    check(focus() == "settings-motion", "T13 Down passes over the Display heading");
+    simulation.action("down");
+    simulation.action("down");
+    check(focus() == "settings-logs", "T13 Down passes over the Help heading");
     simulation.action("up");
-    check(simulation.state().navigation.focus_key == "settings-storage" && simulation.state().navigation.tabs_focused,
-          "T13 Up on a section's first row goes to the tab bar, not the previous section");
-    simulation.action("down");
+    simulation.action("up");
+    check(focus() == "settings-motion" && !simulation.state().navigation.tabs_focused, "T13 Up passes over headings too");
+    {
+        const auto& rows = simulation.view().rows;
+        const auto at = [&rows](const std::string& key) {
+            return static_cast<int>(std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.key == key; }) - rows.begin());
+        };
+        int expected = at("settings-motion");
+        for (int moved = 0; moved < 4;)
+            if (rows[static_cast<std::size_t>(++expected)].kind != playden::homebrew::RowKind::Heading) ++moved;
+        const std::string four_down = rows[static_cast<std::size_t>(expected)].key;
+        simulation.action("r2");
+        check(focus() == four_down, "T13 R2 moves four rows down, not counting the headings it passes");
+        simulation.action("l2");
+        check(focus() == "settings-motion", "T13 L2 moves four rows back up");
+        simulation.action("l2");
+        check(focus() == "settings-runtime" && section() == "System" && !simulation.state().navigation.tabs_focused,
+              "T13 L2 stops on the section's first row");
+        simulation.action("down");
+        simulation.action("focus:settings-heading-display");
+        check(focus() == "settings-motion", "T13 a heading refuses focus and the focus stays where it was");
+    }
     simulation.action("left");
-    simulation.action("down");
     simulation.action("right");
-    check(section() == "Display" && simulation.state().navigation.focus_key == "settings-motion",
-          "T13 the rail moves to the next section");
-    simulation.action("left");
-    simulation.action("right");
-    check(!simulation.state().navigation.settings_rail_focused && simulation.state().navigation.focus_key == "settings-motion",
+    check(!simulation.state().navigation.settings_rail_focused && focus() == "settings-motion",
           "T13 Right returns from the rail to the same row");
+    for (int step = 0; step < 30; ++step) {
+        simulation.action("down");
+        check(simulation.view().rows[static_cast<std::size_t>(simulation.view().focused_row)].kind != playden::homebrew::RowKind::Heading,
+              "T13 the focus never rests on a heading");
+    }
+    check(section() == "System" && focus() == "settings-remove-playden", "T13 Down stops on System's last row");
 
     // Quit Playden, as on macOS: the rail entry is the action, with no "Quit / Review" card.
     simulation.action("left");
@@ -1495,7 +1543,7 @@ void t16_system_keyboard_text(const std::filesystem::path& fixtures, const std::
     check(simulation.state().sign_in.code == "AB12C", "T16 text with no open field is ignored");
 }
 
-// T17: the Import sheet opens from Startup, Home's empty state and Settings › Storage; it lists the
+// T17: the Import sheet opens from Startup, Home's empty state and Settings › Games; it lists the
 // drives' folders by drive with their size, says what to do when there are none, shows the scan,
 // and adds a game from its program list.
 static void t17_import_sheet(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
@@ -1564,7 +1612,7 @@ static void t17_import_sheet(const std::filesystem::path& fixtures, const std::f
     simulation.action("circle");
     check(simulation.state().navigation.modals.empty() && simulation.state().navigation.focus_key == "settings-import" &&
               row("settings-import")->value == "6 found",
-          "T17 Settings › Library counts the folders found");
+          "T17 Settings › Games counts the folders found");
 
     // Candidates: Added, copy only, no program (no size: the scan doesn't measure folders).
     check(simulation.scenario("import-candidates"), "T17 import-candidates scenario");
@@ -3787,7 +3835,7 @@ void friends_tab_join_and_invite(const std::filesystem::path& fixtures, const st
     playden::runtime::SetOnlineSteamEnabled(false);
 }
 
-// GOG (gog-store) in the model: Settings › Stores, the sign-in dialog, a GOG-only start, sign-out and expiry, the
+// GOG (gog-store) in the model: Settings › Accounts › Stores, the sign-in dialog, a GOG-only start, sign-out and expiry, the
 // GOG scope, the game page, and the Steam-only places a GOG-only player sees.
 namespace gog_view {
 using namespace playden::homebrew;
@@ -3879,18 +3927,68 @@ constexpr const char* kStartupSignedOut =
     "startup-skip|Skip for now||||skip|1\n";
 constexpr const char* kStartupRestoring = "startup-loading|Loading your library…|||||0\n";
 constexpr const char* kAccountSignedIn =
-    "settings-account|Account|Account|Steam connected|Synthetic account|account|1\n"
-    "settings-signout|Sign out…|Account|||signout-confirm|1\n";
+    "settings-heading-stores|Stores|Accounts||||0\n"
+    "settings-account|Account|Accounts|Steam connected|Synthetic account|account|1\n"
+    "settings-signout|Sign out…|Accounts|||signout-confirm|1\n";
 constexpr const char* kAccountOffline =
-    "settings-account|Account|Account|Cached library · Offline|Synthetic account|account|1\n"
-    "settings-signout|Sign out…|Account|||signout-confirm|1\n";
-constexpr const char* kAccountSignedOut = "settings-account|Account|Account|Connect Steam||account|1\n";
+    "settings-heading-stores|Stores|Accounts||||0\n"
+    "settings-account|Account|Accounts|Cached library · Offline|Synthetic account|account|1\n"
+    "settings-signout|Sign out…|Accounts|||signout-confirm|1\n";
+constexpr const char* kAccountSignedOut =
+    "settings-heading-stores|Stores|Accounts||||0\n"
+    "settings-account|Account|Accounts|Connect Steam||account|1\n";
+// Settings after the stores, live: Accounts › Community, Games, Downloads, Web access, System, then Quit Playden.
+// A group's heading comes before its first row; a group with no row shown (PS5 titles' clean-up, the runtime kit's
+// download) has no heading of its own.
 constexpr const char* kSettingsKeys =
-    "settings-import settings-title-store settings-cloud-saves settings-ask-after-games settings-recipe-votes "
-    "settings-share-as settings-account-link settings-sharing-reset settings-storage settings-installed settings-kept "
-    "settings-runtime settings-content-language settings-downloads-slow settings-download-server settings-motion "
-    "settings-beta-updates settings-update settings-game-updates settings-web-access settings-web-browsers settings-about "
-    "settings-logs settings-reset settings-remove-playden settings-quit ";
+    "settings-heading-community settings-account-link settings-share-as settings-ask-after-games settings-recipe-votes "
+    "settings-sharing-reset "
+    "settings-heading-installed-games settings-installed settings-game-updates settings-import "
+    "settings-heading-saves-and-data settings-cloud-saves settings-kept settings-heading-ps5-titles settings-title-store "
+    "settings-storage settings-content-language settings-download-server settings-downloads-slow "
+    "settings-web-access settings-web-browsers "
+    "settings-heading-playden-updates settings-update settings-beta-updates settings-heading-runtime-kit settings-runtime "
+    "settings-heading-display settings-motion settings-heading-help settings-logs settings-about "
+    "settings-heading-reset settings-reset settings-remove-playden settings-quit ";
+
+// Settings › Accounts › Stores: the Accounts rows before the Community heading.
+std::string stores(const Simulation& simulation) {
+    const auto all = rows(simulation, "Accounts");
+    return all.substr(0, all.find("settings-heading-community|"));
+}
+
+// Settings' headings name rows: none is the last row of its section or sits right on another heading, live or in
+// the simulation, with GOG on or off, with the clean-up rows shown or not.
+void settings_headings_name_rows(const std::filesystem::path& fixtures, const std::filesystem::path& profile) {
+    const auto check_headings = [](const Simulation& simulation, const std::string& where) {
+        const auto& rows = simulation.view().rows;
+        bool seen = false;
+        for (std::size_t index = 0; index < rows.size(); ++index) {
+            if (rows[index].kind != RowKind::Heading) continue;
+            seen = true;
+            const bool named = index + 1 < rows.size() && rows[index + 1].section == rows[index].section &&
+                               rows[index + 1].kind != RowKind::Heading;
+            check(named, (where + ": heading " + rows[index].key + " names a row of its section").c_str());
+        }
+        check(seen, (where + ": Settings has headings").c_str());
+    };
+    Simulation simulation(fixtures, profile);
+    simulation.action("route:settings");
+    check_headings(simulation, "simulation");
+    for (const bool with_gog : {false, true})
+        for (const bool clean_up : {false, true}) {
+            Simulation live({}, {}, ModelMode::Live);
+            live.SetWallClock(1700000000);
+            live.SetGogStoreEnabled(with_gog);
+            live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
+            if (clean_up) {
+                live.UpdateLeftoverTitles({{"FAKE78001", "A Short Hike", 12'000'000}});
+                live.SetRuntimeLeftovers(1);
+            }
+            to_route(live, Route::Settings);
+            check_headings(live, std::string("live") + (with_gog ? ", GOG" : "") + (clean_up ? ", clean-up rows" : ""));
+        }
+}
 
 void line_off_views_unchanged() {
     for (const bool with_gog : {false, true}) {
@@ -3907,18 +4005,20 @@ void line_off_views_unchanged() {
         if (!with_gog) check(rows(live) == kStartupRestoring, "line off: Startup restoring is as before");
         live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
         to_route(live, Route::Settings);
-        check(rows(live, "Account") == kAccountSignedIn && rows(live, "Stores").empty(), "line off: the Account section, signed in");
-        check(keys(live) == std::string("settings-account settings-signout ") + kSettingsKeys, "line off: Settings keys, signed in");
+        check(stores(live) == kAccountSignedIn, "line off: Accounts › Stores, signed in");
+        check(keys(live) == std::string("settings-heading-stores settings-account settings-signout ") + kSettingsKeys,
+              "line off: Settings keys, signed in");
         live.UpdateAccount({AuthState::Offline, "123", "Synthetic account"});
-        check(rows(live, "Account") == kAccountOffline, "line off: the Account section, offline");
+        check(stores(live) == kAccountOffline, "line off: Accounts › Stores, offline");
         live.UpdateAccount({AuthState::SignedOut, {}, {}, {}, {}, true});
         to_route(live, Route::Settings);
-        check(rows(live, "Account") == kAccountSignedOut, "line off: the Account section, signed out");
-        check(keys(live) == std::string("settings-account ") + kSettingsKeys, "line off: Settings keys, signed out");
+        check(stores(live) == kAccountSignedOut, "line off: Accounts › Stores, signed out");
+        check(keys(live) == std::string("settings-heading-stores settings-account ") + kSettingsKeys,
+              "line off: Settings keys, signed out");
     }
 }
 
-// Settings › Stores: Steam's row as before under its own name, GOG's row with each state, and its sheet.
+// Settings › Accounts › Stores: Steam's row as before under its own name, GOG's row with each state, and its sheet.
 void stores_section() {
     Simulation live({}, {}, ModelMode::Live);
     live.SetWallClock(1700000000);
@@ -3931,11 +4031,11 @@ void stores_section() {
           "line on: Startup offers Sign in to GOG after Connect Steam");
     live.UpdateAccount({AuthState::SignedIn, "123", "Synthetic account", {}, {}, true});
     to_route(live, Route::Settings);
-    check(rows(live, "Account").empty(), "line on: no Account section");
-    check(rows(live, "Stores") == "settings-account|Steam|Stores|Steam connected|Synthetic account|account|1\n"
-                                  "settings-store-gog|GOG|Stores|Sign in||gog-account|1\n",
+    check(stores(live) == "settings-heading-stores|Stores|Accounts||||0\n"
+                          "settings-account|Steam|Accounts|Steam connected|Synthetic account|account|1\n"
+                          "settings-store-gog|GOG|Accounts|Sign in||gog-account|1\n",
           "line on: Stores lists Steam and GOG, with no Sign out row between them");
-    check(keys(live) == std::string("settings-account settings-store-gog ") + kSettingsKeys,
+    check(keys(live) == std::string("settings-heading-stores settings-account settings-store-gog ") + kSettingsKeys,
           "line on: the rest of Settings is as before");
     {
         choose(live, "settings-account");
@@ -4690,6 +4790,7 @@ int main(int argc, char** argv) {
     rows_follow_store_traits(profile);
     gog_view::line_off_views_unchanged();
     gog_view::stores_section();
+    gog_view::settings_headings_name_rows(fixtures, profile);
     gog_view::sign_in_dialog();
     gog_view::gog_only_start();
     gog_view::sign_out_and_expiry();
@@ -4761,6 +4862,7 @@ int main(int argc, char** argv) {
     game_update_scenarios(fixtures, profile);
     clean();
     t13_settings_sections_rail(fixtures, profile);
+    t13_settings_links_land_in_their_section(fixtures, profile);
     clean();
     t14_tab_bar_from_the_top_of_a_page(fixtures, profile);
     clean();

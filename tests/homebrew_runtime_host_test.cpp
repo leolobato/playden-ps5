@@ -1675,7 +1675,7 @@ void FinishSetupHandsOverForHome() {
   const auto text = Read(handoff);
   CHECK(text.find("app_id=220\n") != std::string::npos && text.find("\nkeep=1\n") == std::string::npos);
   CHECK(text.find("eyJ.token") != std::string::npos);
-  // Settings › Online play › Steam sign-in notice is on unless the saved choice says otherwise: the host names the
+  // Settings › Accounts › Steam sign-in notice is on unless the saved choice says otherwise: the host names the
   // account as the game starts.
   CHECK(text.find("\nnotice=1\n") != std::string::npos);
   CHECK(fs::remove(handoff));

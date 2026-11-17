@@ -38,7 +38,7 @@ struct OnlineSession {
   // Game settings › Network adapters is Off (PW_NSIPROXY_DISABLE): adapters=off, and the host doesn't make the
   // console's network adapters listable. Otherwise no key, and it does: Valve's client needs them for peer-to-peer.
   bool adapters_off = false;
-  // Settings › Online play › Steam sign-in notice: notice=1, and the host shows "Online on Steam as <name>" once the
+  // Settings › Accounts › Steam sign-in notice: notice=1, and the host shows "Online on Steam as <name>" once the
   // game may start. Off writes no key.
   bool notice = false;
 };

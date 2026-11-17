@@ -24,7 +24,7 @@ body:
         - Copying the kit with console_kit_upload.py
         - Playden doesn't start, or stays on the splash screen
         - Playden starts and shows an error (runtime, kit or storage)
-        - Updating Playden from Settings > About
+        - Updating Playden from Settings > System
         - Other (say below)
     validations:
       required: true
@@ -48,7 +48,7 @@ body:
     id: versions
     attributes:
       label: Playden and kit versions
-      description: The zips you downloaded, or Settings > About if Playden starts.
+      description: The zips you downloaded, or Settings > System > About if Playden starts.
       placeholder: playden-ps5-0.8.0.zip, playden-kit-0.13.zip
     validations:
       required: true
