@@ -1312,8 +1312,9 @@ int main() {
         hui::ps5::Pad pad;
         pad.open();
         {
-            // The controller Playden reads belongs to the initial user; log both
-            // users so a controller that does nothing can be explained.
+            // Playden reads every signed-in user's controller and takes input from the one
+            // used last, starting with the foreground user's (the initial user's when there
+            // is none); log both so a controller that does nothing can be explained.
             int initial = -1;
             uint32_t foreground = 0;
             const int initial_rc = sceUserServiceGetInitialUser(&initial);
@@ -1345,10 +1346,18 @@ int main() {
         std::uint64_t dev_prepares_until = 0;
         std::uint64_t last_render_us = 0;
         int slow_frames = 0;
+        bool system_menu_open = false;
         for (;;) {
             const auto now = hui::sys::monotonic_us();
             const auto count = pad.read(samples);
             const auto input = tracker.update(std::span<const hui::PadSample>(samples.data(), count), now);
+            if (pad.system_menu_open() != system_menu_open) {
+                // Input is held back while a system menu covers Playden; log it so a
+                // controller that seems to do nothing (or too much) can be explained.
+                system_menu_open = pad.system_menu_open();
+                playden::app::AppendLogLine(log_root, "launch.log",
+                                            system_menu_open ? "pad system menu open" : "pad system menu closed");
+            }
             if (input.connected != was_connected) {
                 simulation.SetControllerConnected(input.connected);
                 was_connected = input.connected;

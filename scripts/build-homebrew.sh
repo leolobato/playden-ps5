@@ -6,7 +6,7 @@
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-revision=0a6fb4b851da86cd4e9512aae3abf1352a96086a
+revision=a936bab253c36abf113109b06f4faf781896b736
 hui_source=${PLAYDEN_HUI_SOURCE_DIR:-"$root/third_party/ps5-homebrew-ui"}
 build_dir="$root/build/homebrew-host"
 font_dir="$root/build/homebrew-fonts"

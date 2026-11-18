@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Leo Lobato
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-set(PLAYDEN_HOMEBREW_UI_REVISION "0a6fb4b851da86cd4e9512aae3abf1352a96086a")
+set(PLAYDEN_HOMEBREW_UI_REVISION "a936bab253c36abf113109b06f4faf781896b736")
 set(PLAYDEN_HUI_SOURCE_DIR
     "${CMAKE_SOURCE_DIR}/third_party/ps5-homebrew-ui" CACHE PATH
     "ps5-homebrew-ui checkout (the pinned submodule, from its fork's main)")
