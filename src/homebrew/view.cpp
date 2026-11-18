@@ -2006,12 +2006,23 @@ class Render::Impl
     }
 
     // A game's status on the community's compatibility list, as the design system's status symbol on a dark rim:
-    // a tick for Works, a warning for Partial, a cross for Broken and Refused, a question mark for a game the list
-    // doesn't have (no status).
+    // a tick for Works, a warning for Partial, a cross for Broken and Refused; a plain question mark for a game the
+    // list doesn't have (no status).
     void compat_mark(const std::string &status, float cx, float cy)
     {
-        const ui::StatusKind kind = status.empty() ? ui::StatusKind::question
-                                  : status == "works" ? ui::StatusKind::success
+        if (status.empty())
+        {
+            // Untested is not a warning: a quiet question mark like the download mark, with no coloured plate
+            // (the design system's question kind is an orange disc).
+            scene_.circle(cx, cy, 15.0F, kBackground.with_alpha(0.8F));
+            const gfx::Color ink = kText.with_alpha(0.85F);
+            const float hook_cy = cy - 3.5F;
+            scene_.arc(cx, hook_cy, 5.0F, 2.0F, 4.712389F, 4.1F, ink);
+            scene_.line(cx + 1.9F, hook_cy + 3.8F, cx, cy + 3.5F, 2.0F, ink);
+            scene_.circle(cx, cy + 7.8F, 1.4F, ink);
+            return;
+        }
+        const ui::StatusKind kind = status == "works" ? ui::StatusKind::success
                                   : status == "partial" ? ui::StatusKind::warning : ui::StatusKind::danger;
         scene_.circle(cx, cy, 17.0F, kBackground.with_alpha(0.8F));
         ui::Canvas canvas{scene_, fonts_, renderer_.glass_texture(), clock_};
