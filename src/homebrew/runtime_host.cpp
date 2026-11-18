@@ -4423,7 +4423,24 @@ const rt::GameRecipe* RuntimeHost::GenerateRecipeForPrepare(Composition& c, cons
   // The program the player chose and "Try anyway" come from Game settings, so a game whose
   // Steam launch options don't work can still be started.
   const auto saved = config_.settings_record ? config_.settings_record(GameOf(request)) : std::nullopt;
-  const auto choices = saved ? rt::RecipeChoicesFrom(*saved) : rt::RecipeChoices{};
+  auto choices = saved ? rt::RecipeChoicesFrom(*saved) : rt::RecipeChoices{};
+  // An imported game has no launch options: with no program in its settings, Playden's own recipe for it (the one a
+  // settings-only recipe takes its program from) is made from the program its settings-only recipe names when the copy
+  // has it (#1034: a recipe.json from its folder took the player's out), else from the one it was added with.
+  if (choices.program.empty() && request.launches.empty() && !request.added_program.empty()) {
+    if (saved && !saved->community_recipe.id.empty()) {
+      const auto load = LoadCommunityRecipe(c, saved->community_recipe.revision);
+      if (load.recipe && rt::IsSettingsOnlyRecipe(*load.recipe)) {
+        const auto named = load.recipe->recipe.defaults.find("program");
+        if (named != load.recipe->recipe.defaults.end() &&
+            rt::ValidateSettingValue(rt::GameRecipe{}, "program", named->second, nullptr) &&
+            !rt::GameProgramArchitecture(root.string(), *steam::RelativeGamePath(named->second)).empty())
+          choices.program = *steam::RelativeGamePath(named->second);
+      }
+    }
+    if (choices.program.empty() && rt::ValidateSettingValue(rt::GameRecipe{}, "program", request.added_program, nullptr))
+      choices.program = *steam::RelativeGamePath(request.added_program);
+  }
   const auto kit = c.kit ? rt::KitCapabilitiesFromManifest(c.kit->capabilities, true) : rt::KitCapabilities{};
   // Steam's options all for other branches: the program the player chose goes first, and with no
   // choice yet, the options whose program is in the folder decide (the import rules: one clear

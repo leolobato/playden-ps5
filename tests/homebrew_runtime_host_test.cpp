@@ -9270,6 +9270,80 @@ void SettingsOnlyRecipeStartsPlaydensProgram() {
   host.Shutdown();
 }
 
+// A playden/recipe.json from an imported game's folder, used when the game was added (#1034): Playden takes the player's
+// program out when the recipe names its own, and the game has no launch options, so Playden's recipe for it is made
+// from the program it was added with. The recipe's program starts (with its arguments), the added one when the copy
+// hasn't the recipe's.
+void ImportedFolderRecipeStartsItsProgram() {
+  const auto local = playden::GameId::Local("0f8fad5b-d9cb-469f-a165-70867728950e");
+  struct Case {
+    std::string program;   // the recipe's program default
+    std::string expected;  // the program that starts
+    bool added_gone = false;  // the program the game was added with is gone since
+  };
+  for (const auto& [program, expected, added_gone] : std::vector<Case>{{"audio_capture_lab.exe", "audio_capture_lab.exe"},
+                                                                       {"Bin/Game.exe", "Bin/Game.exe"},
+                                                                       {"Gone.exe", "audio_capture_lab.exe"},
+                                                                       {"Bin/Game.exe", "Bin/Game.exe", true}}) {
+    Fixture fixture;
+    auto kit = SyntheticKit(fixture.root / "kit", "native", "kit-1", 'a', "runtime", "f729534-kit-0.12");
+    unsigned uuids = 0;
+    std::int64_t now = 1760000000;
+    auto config = CommunityConfig(fixture, kit, &uuids, &now);
+    RecipeCache cache;
+    cache.Wire(config);
+    const auto game = fixture.root / "data/playden-import/Microphone lab";
+    std::string pe(0x80 + 26, '\0');
+    pe[0] = 'M'; pe[1] = 'Z'; pe[0x3c] = 0x40; pe[0x40] = 'P'; pe[0x41] = 'E';
+    pe[0x44] = 0x64; pe[0x45] = static_cast<char>(0x86); pe[0x40 + 24] = 0x0b; pe[0x40 + 25] = 0x02;
+    if (!added_gone) Write(game / "audio_capture_lab.exe", pe, 0644);
+    Write(game / "Bin/Game.exe", pe, 0644);
+    CHECK(chmod(game.c_str(), 0777) == 0);
+    // As the console's playden/recipe.json: an imported game's settings-only recipe with its program.
+    const auto text = "{\"recipe_id\": \"community-imported-microphone-lab-test\", \"recipe_version\": 1,"
+                      " \"game\": {\"store\": \"imported\", \"key\": \"microphone-lab\", \"name\": \"Microphone lab\"},"
+                      " \"name\": \"Microphone lab\", \"defaults\": {\"controller_preset\": \"gamepad\", \"program\": \"" +
+                      program + "\", \"program_arguments\": \"-mic\"}, \"locked\": [],"
+                      " \"community\": {\"format_version\": 2, \"title\": \"Test\", \"status\": \"works\", \"author\": \"Ana\"}}";
+    CommunityRecipe parsed;
+    std::string reason;
+    CHECK(ParseCommunityRecipe(text, &parsed, &reason));
+    const auto revision = cache.Add(text);
+    // What Use leaves: the recipe chosen for the game it names, and no program of the player's.
+    GameSettingsRecord saved;
+    saved.revision = 2;
+    ChooseCommunityRecipe(&saved, parsed.recipe.id, revision, parsed.game);
+    config.settings_record = [&saved](const playden::GameId&) -> std::optional<GameSettingsRecord> { return saved; };
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    const auto number = *host.RuntimeNumberFor(local);
+    // As Controller::SubmitPrepare asks for an imported game: no launch options, the program it was added with.
+    RuntimePrepareRequest request{number, "/data/playden-import/Microphone lab", "internal", "Microphone lab"};
+    request.game = local;
+    request.launch_reason = "Choose the program that starts this game in Game settings.";
+    request.added_program = "audio_capture_lab.exe";
+    host.Prepare(request);
+    const auto done = WaitFor(host, [number](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(number) || (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    if (done.refusals.count(number)) std::fprintf(stderr, "Prepare refused (%s): %s\n", program.c_str(), done.refusals.at(number).c_str());
+    if (done.recipe_fallbacks.count(number))
+      std::fprintf(stderr, "Recipe fallback (%s): %s\n", program.c_str(), done.recipe_fallbacks.at(number).c_str());
+    CHECK(!done.refusals.count(number) && !done.recipe_fallbacks.count(number) && done.installs.size() == 1);
+    if (done.installs.size() != 1) { host.Shutdown(); continue; }
+    CHECK(done.installs[0].recipe_id == parsed.recipe.id && done.installs[0].recipe_version == revision.substr(0, 32));
+    CHECK(done.installs[0].launch_path == expected);
+    if (done.installs[0].launch_path != expected) std::fprintf(stderr, "starts %s\n", done.installs[0].launch_path.c_str());
+    // The recipe's arguments go with its program; the added program starts as it was added.
+    std::string profile;
+    for (const auto& entry : fs::recursive_directory_iterator(fixture.root / "data/playden/games"))
+      if (entry.path().extension() == ".profile") profile = Read(entry.path());
+    CHECK((profile.find("\narguments = -mic\n") != std::string::npos) == (expected == program));
+    host.Shutdown();
+  }
+}
+
 // An imported game takes the community recipes of its Steam app ID (Game settings here, or its steam_appid.txt): the
 // chosen recipe is bound to the imported game's own runtime number and game. A recipe of another game reads as
 // unreadable, and without a Steam app ID nothing matches (searching by name comes later).
@@ -10107,6 +10181,7 @@ int main(int argc, char** argv) {
   CommunityRecipeOverGeneratedAndKitFallback();
   WorkingFolderTakesTheDiskSpelling();
   SettingsOnlyRecipeStartsPlaydensProgram();
+  ImportedFolderRecipeStartsItsProgram();
   ImportedGameTakesItsSteamAppIdsRecipe();
   LinkedRecipeAppliesUnderItsAlias();
   std::puts("runtime host tests passed");

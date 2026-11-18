@@ -66,7 +66,9 @@ Put the file in the game folder as `playden/recipe.json`.
 **When you add the game,** Playden reads the recipe and asks "Use the recipe in the game's folder?":
 
 - **Use the recipe:** the game gets the recipe's settings. If the folder was added before and you changed its settings,
-  the recipe replaces them. When the recipe names no program, the game keeps the program you picked when you added it.
+  the recipe replaces them. When the recipe names a program that is in the game folder, that program starts, with the
+  recipe's arguments. When it names none, or the folder doesn't have that file, the program you picked when you added
+  the game starts.
 - **Don't use it:** the game keeps Playden's settings.
 
 You can change the settings later in Game settings. The recipe can be for another copy of the game, or for a game with

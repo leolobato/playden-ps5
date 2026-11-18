@@ -203,6 +203,9 @@ is format 1. A settings-only recipe is written by hand, or shared from a game ba
 
 Playden fills in the program from its own recipe for the player's copy: the one it ships for the game, else the one it
 makes from Steam's launch options and the game's folder (`FillSettingsOnlyRecipe`, `src/runtime/recipe_choice.h`).
+An imported game has no launch options: Playden's recipe for it is made from the program in Game settings, else the
+recipe's `program` default when the copy has it, else the program the game was added with
+(`RuntimePrepareRequest::added_program`).
 Each recipe field is one of three kinds:
 
 | From Playden's recipe for the copy | From the file | Refused |

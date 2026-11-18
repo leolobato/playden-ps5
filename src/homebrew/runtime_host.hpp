@@ -488,6 +488,10 @@ struct RuntimePrepareRequest {
   // No option is for the public branch: `launches` are every branch's, and Steam doesn't say
   // which program starts the game.
   bool launches_any_branch = false;
+  // An imported game's program from when it was added (the Local store's). With no program in Game settings (a
+  // recipe.json from the game's folder that names its own takes the player's out, #1034), Playden's recipe for the game
+  // is made from the settings-only recipe's program when the copy has it, else from this one.
+  std::string added_program;
   // A Steam game's folder name in a Steam library (installdir), when Steam's app details gave it.
   std::string steam_install_dir;
   // The game; a default one stands for the Steam game runtime_number names.

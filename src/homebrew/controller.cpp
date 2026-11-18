@@ -3068,16 +3068,19 @@ void Controller::SubmitPrepare(GameId id, bool announce) {
   // it was added, or here before its first preparation if that couldn't be; never over the player's
   // own choice or reset (SeedGameProgram).
   std::string imported_name;
+  std::string added_program;
   if (id.store == Store::kLocal && local_) {
     const auto snapshot = local_->Snapshot();
     for (const auto& game : snapshot->games)
       if (game.id == id.value) {
         model_.SeedGameProgram(id, game.program);
         imported_name = game.title;
+        added_program = game.program;
       }
   }
   RuntimePrepareRequest request{*app, root->second, game_volumes_[id], {}};
   request.game = id;
+  request.added_program = std::move(added_program);
   for (const auto& game : model_.state().games) if (game.id == id) request.title_name = game.title;
   // A new import prepares straight away, maybe before the library lists it: Home keeps the name it registers with.
   if (request.title_name.empty()) request.title_name = imported_name;
