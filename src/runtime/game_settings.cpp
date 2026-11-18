@@ -338,9 +338,10 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"96", "100%", ""}, {"120", "125%", ""}, {"144", "150%", ""}}, "96", 3, ApplyMode::kGameClosed));
   // Windows' user locale and system locale ([runtime] user_locale and system_locale, kit capability windows-locale).
   // Wine takes both once, at start, from the Unix locale (prospero-win Wine patch 1028), so they are not registry
-  // values: Wine rewrites Control Panel\International from them.
+  // values: Wine rewrites Control Panel\International from them. In Wine the user locale sets only the UI language;
+  // the formats follow the system locale.
   list.push_back(Choice("locale", "Language and region",
-                        "Language and formats the game is told.", "user locale", G::kWindows,
+                        "Language the game is told to use.", "user locale", G::kWindows,
                         {{"en-US", "English (United States)", ""}, {"en-GB", "English (United Kingdom)", ""},
                          {"de-DE", "German", ""}, {"fr-FR", "French", ""}, {"es-ES", "Spanish", ""},
                          {"it-IT", "Italian", ""}, {"pt-BR", "Portuguese (Brazil)", ""}, {"pl-PL", "Polish", ""},
