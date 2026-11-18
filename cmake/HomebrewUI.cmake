@@ -575,6 +575,15 @@ if(BUILD_TESTING)
     add_test(NAME homebrew_library_graphical COMMAND homebrew_library_graphical_test
         "${CMAKE_BINARY_DIR}/synthetic-live-library")
 
+    # Corner notifications show their whole text: a long reason wraps and the box grows.
+    add_executable(homebrew_notice_graphical_test "${CMAKE_SOURCE_DIR}/tests/homebrew_notice_graphical_test.cpp")
+    target_compile_features(homebrew_notice_graphical_test PRIVATE cxx_std_20)
+    target_compile_definitions(homebrew_notice_graphical_test PRIVATE PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")
+    target_include_directories(homebrew_notice_graphical_test PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
+    target_link_libraries(homebrew_notice_graphical_test PRIVATE playden_homebrew_ui PkgConfig::SDL2 OpenGL::GL)
+    add_dependencies(homebrew_notice_graphical_test playden_homebrew_assets)
+    add_test(NAME homebrew_notice_graphical COMMAND homebrew_notice_graphical_test "${CMAKE_BINARY_DIR}/notice-graphical")
+
     add_executable(homebrew_artwork_graphical_test "${CMAKE_SOURCE_DIR}/tests/homebrew_artwork_graphical_test.cpp")
     target_compile_features(homebrew_artwork_graphical_test PRIVATE cxx_std_20)
     target_compile_definitions(homebrew_artwork_graphical_test PRIVATE PLAYDEN_HOMEBREW_ASSETS_DIR="${playden_homebrew_assets}")

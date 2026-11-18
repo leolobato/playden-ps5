@@ -4229,20 +4229,66 @@ class Render::Impl
         // Live notifications wait behind dialogs (they also stop counting down there).
         const bool hide_transient = !state.simulation_mode &&
             (!state.navigation.modals.empty() || state.editor.active);
-        float y = 118.0F;
+        // The message and the line under it (the detail, else the action) wrap, and the box grows to hold them, so
+        // a long reason is never cut. A notice of one line each keeps the 84 px box.
+        struct CornerNotice
+        {
+            const Notice *notice;
+            std::vector<std::string> message;
+            std::vector<std::string> below;
+            float height;
+        };
+        constexpr float kMessageLine = 28.0F;
+        constexpr float kBelowLine = 24.0F;
+        constexpr float kGap = 14.0F;
+        std::vector<CornerNotice> corner;
         for (const Notice &notice : state.notices)
         {
             if (notice.persistent || hide_transient)
                 continue;
-            overlay_.shadow({1288.0F, y, 536.0F, 84.0F}, 10.0F, 28.0F, gfx::Color::rgb(0x000000, 0.6F));
-            overlay_.rounded_rect({1288.0F, y, 536.0F, 84.0F}, 10.0F, kPanel);
-            overlay_.circle(1320.0F, y + 42.0F, 7.0F, notice.failure ? kRed : kAccent);
-            ui::text(overlay_, fonts_.semibold, fit(fonts_.semibold, notice.message, 22.0F, 440.0F),
-                     1342.0F, y + 36.0F, 22.0F, kText);
+            CornerNotice item{&notice, fonts_.semibold.font->wrap(notice.message, 22.0F, 440.0F), {}, 0.0F};
             const std::string &second = notice.detail.empty() ? notice.action : notice.detail;
             if (!second.empty())
-                ui::text(overlay_, fonts_.regular, fit(fonts_.regular, second, 18.0F, 460.0F), 1342.0F, y + 62.0F,
-                         18.0F, notice.detail.empty() ? kAccent : kSecondary);
+                item.below = fonts_.regular.font->wrap(second, 18.0F, 460.0F);
+            item.height = 84.0F + static_cast<float>(item.message.size() - 1) * kMessageLine +
+                          (item.below.empty() ? 0.0F : static_cast<float>(item.below.size() - 1) * kBelowLine);
+            corner.push_back(std::move(item));
+        }
+        // Taller boxes can outgrow the screen: the newest always show, and the oldest, shown since they came, give
+        // way at the top.
+        constexpr float kTop = 118.0F;
+        constexpr float kBottom = kHeight - 96.0F;
+        std::size_t first = corner.size();
+        for (float used = 0.0F; first > 0; --first)
+        {
+            const float next = used + corner[first - 1].height + (used > 0.0F ? kGap : 0.0F);
+            if (kTop + next > kBottom && first < corner.size())
+                break;
+            used = next;
+        }
+        float y = kTop;
+        for (std::size_t index = first; index < corner.size(); ++index)
+        {
+            const CornerNotice &item = corner[index];
+            const Notice &notice = *item.notice;
+            const float height = item.height;
+            overlay_.shadow({1288.0F, y, 536.0F, height}, 10.0F, 28.0F, gfx::Color::rgb(0x000000, 0.6F));
+            overlay_.rounded_rect({1288.0F, y, 536.0F, height}, 10.0F, kPanel);
+            // Centred in a one-line box; beside the first line of a taller one.
+            overlay_.circle(1320.0F, y + (height > 84.0F ? 29.0F : 42.0F), 7.0F, notice.failure ? kRed : kAccent);
+            float baseline = y + 36.0F;
+            for (const std::string &line : item.message)
+            {
+                ui::text(overlay_, fonts_.semibold, line, 1342.0F, baseline, 22.0F, kText);
+                baseline += kMessageLine;
+            }
+            baseline += 26.0F - kMessageLine;  // the first line below sits 26 px under the message's last
+            for (const std::string &line : item.below)
+            {
+                ui::text(overlay_, fonts_.regular, line, 1342.0F, baseline, 18.0F,
+                         notice.detail.empty() ? kAccent : kSecondary);
+                baseline += kBelowLine;
+            }
             if (notice.progress >= 0.0F)
             {
                 ui::ProgressBar bar;
@@ -4251,12 +4297,12 @@ class Render::Impl
                 bar.style.placement = ui::LabelPlacement::none;
                 bar.style.status = ui::Status::accent;
                 bar.style.finish_flash = false;
-                bar.set_bounds({1342.0F, y + 70.0F, 460.0F, 6.0F});
+                bar.set_bounds({1342.0F, y + height - 14.0F, 460.0F, 6.0F});
                 bar.set_value(std::clamp(notice.progress, 0.0F, 1.0F), true);
                 ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
                 bar.draw(canvas);
             }
-            y += 98.0F;
+            y += height + kGap;
         }
     }
 
