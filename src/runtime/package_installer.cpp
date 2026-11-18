@@ -1065,6 +1065,51 @@ PackageActionResult FilesystemPackageInstaller::ImportCustomTitleArt(const Runti
   return Complete();
 }
 
+PackageActionResult FilesystemPackageInstaller::SeedCustomTitleArt(
+    const RuntimeInstall& record, const std::function<std::optional<TitleArtSeed>()>& make) {
+  const auto paths = Resolve(record);
+  if (!paths) return Failed("kit-invalid", "record or verified kit view is invalid");
+  const auto root = TitleMetadataPath(record, {});
+  // Only for the game's first title: a title, art already kept (the player's, or brought back from kept data) or a
+  // record of what Playden put into a title means it had one.
+  bool title_known = false;
+  const bool title_exists = ExistsNoThrow(paths->title, &title_known);
+  if (!title_known) return Failed("title-unavailable", "native title state is unavailable");
+  if (title_exists || ExistsNoThrow(root / "custom") || ExistsNoThrow(root / kInstalledTitleArt)) return Complete();
+  const auto seed = make ? make() : std::nullopt;
+  if (!seed || (!seed->icon_png && seed->sce_sys_files.empty())) return Complete();
+  std::string detail;
+  const auto failed = [&](const std::string& what) {
+    if (operations_.log) operations_.log("title art seed failed install=" + record.install_id + " " + what + " " + detail);
+    return Failed("title-art", "The game's title art could not be kept (" + what + ").");
+  };
+  std::vector<std::pair<std::string, const std::string*>> files;
+  if (seed->icon_png) files.emplace_back("icon0.png", &*seed->icon_png);
+  for (const auto& [name, bytes] : seed->sce_sys_files) {
+    if (name.empty() || name[0] == '.' || name.find_first_of("/\\") != std::string::npos || name == "param.json" ||
+        name == "icon0.png" || files.size() > kMaxCustomFiles)
+      return failed("file name " + name);
+    files.emplace_back("sce_sys/" + name, &bytes);
+  }
+  // Into custom.seed first, renamed into place at the end: a stop part way leaves no custom/ to stand for the whole.
+  const auto staging = root / "custom.seed";
+  if (!RemoveTreeNoFollow(staging.string())) return failed("folder");
+  if (!EnsurePrivateDirectories(paths_.host_data_root, paths->game, staging / "sce_sys", &detail,
+                                BottleTraversal(*paths, ProfileShared(record, *paths))))
+    return failed("folder");
+  std::string names;
+  for (const auto& [name, bytes] : files) {
+    if (bytes->empty() || bytes->size() > kMaxCustomFileBytes) return failed(name);
+    if (!WriteFile(staging / name, *bytes, 0600) || !SyncPath(staging / name, false)) return failed(name);
+    names += " " + name;
+  }
+  if (!SyncPath(staging / "sce_sys", true) || ::rename(staging.c_str(), (root / "custom").c_str()) != 0 ||
+      !SyncPath(root, true))
+    return failed("rename");
+  if (operations_.log) operations_.log("title art seeded install=" + record.install_id + names);
+  return Complete();
+}
+
 std::optional<std::string> FilesystemPackageInstaller::CustomTitleName(const RuntimeInstall& record) {
   const auto text = ReadBounded(TitleMetadataPath(record, kCustomTitleName), 2048);
   if (!text || text->size() < 2 || text->back() != '\n') return std::nullopt;

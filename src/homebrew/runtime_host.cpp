@@ -4816,6 +4816,15 @@ std::string RuntimeHost::RunPrepare(Composition& c, const RuntimePrepareRequest&
       return imported.message;
     if (const auto adopted = c.installer->AdoptCustomTitleArt(record); ArtNotKept(adopted))
       return adopted.message;
+    // An imported game's first title gets the art in its folder (#444), kept as the player's art (#213). Never a
+    // reason to stop: the title keeps Playden's art.
+    if (config_.folder_title_art && GameOf(record).store == Store::kLocal && !record.install_path.empty()) {
+      const auto game = GameOf(record);
+      const auto root = HostPath(record.install_path);
+      const auto seeded = c.installer->SeedCustomTitleArt(record, [&] { return config_.folder_title_art(game, root); });
+      if (seeded.state != rt::PackageActionState::kComplete)
+        Log("prepare keeps no folder art app=" + std::to_string(record.runtime_number) + ": " + seeded.message);
+    }
     if (!c.installer->TitleMetadataCurrent(record) || !TitleVariableRefreshCurrent(c, record) ||
         !TitleIconCurrent(c, record, GameIconFile(record))) {
       const auto written = WriteTitleMetadata(c, record, request.title_name);

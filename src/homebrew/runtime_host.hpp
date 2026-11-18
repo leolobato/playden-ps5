@@ -128,6 +128,10 @@ struct RuntimeHostConfig {
   // may use the network. Named by the game, so a runtime number never reaches a store's artwork.
   std::function<std::optional<std::string>(const GameId& game, const std::filesystem::path& program,
                                            const std::filesystem::path& icon_file)> title_icon;
+  // The art for an imported game's first title from the pictures in its folder (homebrew/folder_art.hpp,
+  // `install_root` a host path), or nothing. Runs on the worker, only while the game has no title yet.
+  std::function<std::optional<runtime::TitleArtSeed>(const GameId& game, const std::filesystem::path& install_root)>
+      folder_title_art;
   // The DLC of a Steam game this account owns, from the Library's license read and app lookups
   // (EntitledLibraryBackend::DlcOf). Each prepare adds them to what the download recorded, so DLC past
   // the 64 that Steam's listofdlc names, or bought after the download, reach the emulator; DLC the download

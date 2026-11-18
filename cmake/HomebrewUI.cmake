@@ -277,7 +277,8 @@ add_library(playden_homebrew_artwork STATIC
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/artwork_backend.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/program_icon.cpp"
-    "${CMAKE_SOURCE_DIR}/src/homebrew/title_icon.cpp")
+    "${CMAKE_SOURCE_DIR}/src/homebrew/title_icon.cpp"
+    "${CMAKE_SOURCE_DIR}/src/homebrew/folder_art.cpp")
 target_compile_features(playden_homebrew_artwork PUBLIC cxx_std_20)
 target_include_directories(playden_homebrew_artwork PUBLIC "${CMAKE_SOURCE_DIR}/src"
     PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}" "${CMAKE_SOURCE_DIR}/third_party/ps5-homebrew-ui/third_party/stb")
@@ -489,6 +490,12 @@ if(BUILD_TESTING)
     target_include_directories(homebrew_title_icon_test PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}")
     target_link_libraries(homebrew_title_icon_test PRIVATE playden_homebrew_artwork)
     add_test(NAME homebrew_title_icon COMMAND homebrew_title_icon_test)
+    add_executable(homebrew_folder_art_test "${CMAKE_SOURCE_DIR}/tests/homebrew_folder_art_test.cpp")
+    target_compile_features(homebrew_folder_art_test PRIVATE cxx_std_20)
+    target_include_directories(homebrew_folder_art_test PRIVATE "${PLAYDEN_STB_IMAGE_INCLUDE_DIR}"
+        "${CMAKE_SOURCE_DIR}/third_party/ps5-homebrew-ui/third_party/stb")
+    target_link_libraries(homebrew_folder_art_test PRIVATE playden_homebrew_artwork playden_miniz)
+    add_test(NAME homebrew_folder_art COMMAND homebrew_folder_art_test)
 
     add_executable(homebrew_program_icon_test "${CMAKE_SOURCE_DIR}/tests/homebrew_program_icon_test.cpp")
     target_compile_features(homebrew_program_icon_test PRIVATE cxx_std_20)

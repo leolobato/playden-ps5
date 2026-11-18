@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace playden::runtime {
@@ -65,6 +66,12 @@ struct PackageActionResult {
   PackageActionState state = PackageActionState::kFailed;
   std::string code;
   std::string message;
+};
+
+// Custom title art Playden gives a game's first title (PackageInstaller::SeedCustomTitleArt).
+struct TitleArtSeed {
+  std::optional<std::string> icon_png;
+  std::vector<std::pair<std::string, std::string>> sce_sys_files;  // file name, bytes
 };
 
 class PackageInstaller {
@@ -136,6 +143,13 @@ public:
   }
   // The title name the player gave the title with another app, once adopted.
   virtual std::optional<std::string> CustomTitleName(const RuntimeInstall &) { return std::nullopt; }
+  // Art for a game's first title (#444, the pictures in an imported game's folder), kept as custom title art: only
+  // while the game has no title, no custom art and no record of art Playden put into a title. `make` is called only
+  // then, and gives the icon0.png and the other sce_sys files (name, bytes), or nothing.
+  virtual PackageActionResult SeedCustomTitleArt(const RuntimeInstall &,
+                                                 const std::function<std::optional<TitleArtSeed>()> & /*make*/) {
+    return {PackageActionState::kComplete, {}, {}};
+  }
   // Updates an installed title's immutable files to the admitted kit when only
   // the kit's file inventory changed (same kit id, variant, runtime, recipe).
   virtual PackageActionResult RefreshTitle(const RuntimeInstall &) {

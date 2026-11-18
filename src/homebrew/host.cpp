@@ -4,6 +4,7 @@
 
 #include "homebrew/render.hpp"
 #include "homebrew/artwork_backend.hpp"
+#include "homebrew/folder_art.hpp"
 #include "homebrew/program_icon.hpp"
 #include "homebrew/simulation.hpp"
 #include "homebrew/controller.hpp"
@@ -859,6 +860,7 @@ int main(int argc, char** argv) {
             return playden::runtime::GameProgramInstead(folder, program);
         };
         import_config.keep_folder_recipe = playden::homebrew::FolderRecipeKeeper(recipe_imports);
+        import_config.check_folder_art = [](const std::string& folder) { return playden::homebrew::CheckFolderArt(folder); };
         auto local_library = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
         auto* local = local_library.get();
         copy_runner->SetChanged([local] { local->Reload(); });

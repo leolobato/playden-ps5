@@ -1888,6 +1888,17 @@ void folder_recipe(const std::filesystem::path& base) {
                      contains(notice.detail, refused.problem);
           }),
           "and a notice says why");
+
+    // Title art in its folder that can't be used (#444): a corner notice names each picture.
+    model.NotifyFolderArtRefused({playden::homebrew::ImportRequestKind::Add, {}, "internal", "playden-import/minecraft-1-20-1", "Minecraft.exe"},
+                                 game, {"playden/icon.png is not a PNG picture.", "playden/background.png is larger than 3840x2160 pixels."});
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(), [&](const auto& notice) {
+              return notice.id == "folder-art-" + playden::ToKey(game) && notice.message == "Title art not used" &&
+                     contains(notice.detail, "Minecraft 1.20.1 was added without some of its title art.") &&
+                     contains(notice.detail, "playden/icon.png is not a PNG picture.") &&
+                     contains(notice.detail, "playden/background.png is larger") && !notice.alert;
+          }),
+          "a notice says which title art wasn't used");
 }
 
 // A report and a share list Library overrides only when the overrides the player or the recipe set change: the DXVK

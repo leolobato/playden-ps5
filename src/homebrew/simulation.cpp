@@ -15996,6 +15996,19 @@ void Simulation::NotifyFolderRecipeRefused(const ImportRequest& request, GameId 
     rebuild_view();
 }
 
+void Simulation::NotifyFolderArtRefused(const ImportRequest& request, GameId id, const std::vector<std::string>& problems) {
+    if (problems.empty()) return;
+    std::string title;
+    if (const auto* game = find_game(state_, id)) title = game->title;
+    for (const auto& candidate : state_.import_candidates)
+        if (title.empty() && candidate.volume_id == request.volume_id && candidate.folder == request.folder) title = candidate.title;
+    if (title.empty()) title = request.folder.substr(request.folder.find_last_of('/') + 1);
+    std::string detail = title + " was added without some of its title art.";
+    for (const auto& problem : problems) detail += " " + problem;
+    push_notice({"folder-art-" + ToKey(id), "Title art not used", "", false, kLiveNoticeSeconds * 2, true, detail, false});
+    rebuild_view();
+}
+
 bool Simulation::FolderRecipeWaiting(GameId id) const {
     // Queued, open, or closed without an answer (asked again).
     return folder_recipe_game_ == id ||

@@ -2117,6 +2117,8 @@ void Controller::TickImports() {
       // added before is told apart by the settings it brought back), or told why it can't be used.
       if (!outcome->recipe_revision.empty()) model_.OfferFolderRecipe(game, outcome->recipe_revision);
       else if (!outcome->recipe_problem.empty()) model_.NotifyFolderRecipeRefused(it->second, game, outcome->recipe_problem);
+      // Title art in its folder that can't be used: a notice, and the title keeps Playden's art for it.
+      if (!outcome->art_problems.empty()) model_.NotifyFolderArtRefused(it->second, game, outcome->art_problems);
       // A game just added: the program chosen with it goes into its Game settings.
       model_.SeedGameProgram(game, it->second.program);
       if (it->second.prepare) prepare_after_import_[GameId::Local(outcome->id)] = false;

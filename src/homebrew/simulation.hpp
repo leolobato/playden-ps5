@@ -1605,6 +1605,9 @@ public:
     // Live mode: the recipe.json in the folder of a game just added can't be used (`problem`, a sentence): a notice
     // says so, and the game is added without it.
     void NotifyFolderRecipeRefused(const ImportRequest& request, GameId id, const std::string& problem);
+    // Live mode: pictures in the playden folder of a game just added can't be used as its title art (`problems`, one
+    // sentence each): a notice says so, and the game is added with Playden's art for them.
+    void NotifyFolderArtRefused(const ImportRequest& request, GameId id, const std::vector<std::string>& problems);
     // Whether the game's folder recipe question is waiting or open: its preparation waits for the answer.
     [[nodiscard]] bool FolderRecipeWaiting(GameId id) const;
     // The game on this console a kept recipe is for (its GameRef: a Steam game's app ID, an imported game's Steam app ID

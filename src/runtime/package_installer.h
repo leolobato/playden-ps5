@@ -232,6 +232,10 @@ class FilesystemPackageInstaller final : public PackageInstaller {
   PackageActionResult AdoptCustomTitleArt(const RuntimeInstall& record) override;
   PackageActionResult ImportCustomTitleArt(const RuntimeInstall& record, const std::filesystem::path& kept_game) override;
   std::optional<std::string> CustomTitleName(const RuntimeInstall& record) override;
+  // Into title-metadata/custom/ (icon0.png, sce_sys/<file>) at once, so StageTitle puts it into the new title and
+  // later refreshes and moves keep it as the player's art.
+  PackageActionResult SeedCustomTitleArt(const RuntimeInstall& record,
+                                         const std::function<std::optional<TitleArtSeed>()>& make) override;
 
  private:
   struct Mapping;

@@ -19,6 +19,16 @@ inline constexpr std::size_t kMaxArtworkDecodeAllocationBytes = 16 * 1024 * 1024
 std::optional<ArtworkImage> DecodeArtwork(
     const std::vector<std::uint8_t>& encoded);
 
+// A picture a player put beside a game (homebrew/folder_art.hpp): a PNG, up to 4K, larger than store art can be.
+inline constexpr std::size_t kMaxPlayerArtBytes = 32 * 1024 * 1024;
+inline constexpr std::uint32_t kMaxPlayerArtSide = 8192;
+inline constexpr std::uint64_t kMaxPlayerArtPixels = 3840ULL * 2160;
+enum class PlayerArtCheck { kOk, kNotPng, kTooLarge, kUnreadable };
+// Its header only: a PNG of at most kMaxPlayerArtSide on each side and kMaxPlayerArtPixels in all.
+PlayerArtCheck CheckPlayerArt(const std::vector<std::uint8_t>& encoded);
+// The whole picture, as 8-bit RGBA, for a file CheckPlayerArt accepts (8- or 16-bit, interlaced or not).
+std::optional<ArtworkImage> DecodePlayerArt(const std::vector<std::uint8_t>& encoded);
+
 namespace artwork_internal {
 // Deterministic budget seam for allocator-bound tests. Production callers use
 // DecodeArtwork and its fixed kMaxArtworkDecodeAllocationBytes ceiling.

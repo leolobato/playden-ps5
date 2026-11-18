@@ -94,6 +94,8 @@ int main() {
   fs::create_directories(import / "Folder/recipe.json");
   Write(import / "Unkept/Game.exe", PeProgram());
   Write(import / "Unkept/recipe.json", recipe);
+  Write(import / "Art/Game.exe", PeProgram());
+  Write(import / "Art/playden/icon.png", "not a png");
 
   fs::create_directories(root / "state");
   auto storage = playden::Storage((root / "state").string()).OpenTree();
@@ -110,6 +112,14 @@ int main() {
     if (!keeper.problem.empty()) return {};
     return {"sha256-of-the-recipe", {}};
   };
+  // The title art check (#444) gets each added folder's host path; its sentences come back in the outcome.
+  std::vector<std::string> art_folders;
+  config.check_folder_art = [&keeper, &art_folders](const std::string& folder) {
+    std::lock_guard<std::mutex> lock(keeper.mutex);
+    art_folders.push_back(folder);
+    return fs::exists(fs::path(folder) / "playden/icon.png") ? std::vector<std::string>{"playden/icon.png is not a PNG picture."}
+                                                             : std::vector<std::string>{};
+  };
   LocalLibrarySource source(store, config);
 
   // No recipe.json: nothing is offered and the keeper is never asked.
@@ -119,6 +129,14 @@ int main() {
     CHECK(outcome.ok && !outcome.id.empty());
     CHECK(outcome.recipe_revision.empty() && outcome.recipe_problem.empty());
     CHECK(keeper.files.empty());
+    CHECK(outcome.art_problems.empty() && art_folders.size() == 1 && art_folders.back() == (import / "Plain").string());
+  }
+  // Art that can't be used: the game is added, and the outcome says why.
+  {
+    const auto outcome = AddAndWait(source, "Art");
+    CHECK(outcome.ok && !outcome.id.empty() && outcome.recipe_problem.empty());
+    CHECK(outcome.art_problems == std::vector<std::string>{"playden/icon.png is not a PNG picture."});
+    CHECK(art_folders.back() == (import / "Art").string());
   }
   // A recipe.json at the folder's root: its bytes are kept, the outcome names the revision, and the file stays.
   {

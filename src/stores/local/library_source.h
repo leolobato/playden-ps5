@@ -59,6 +59,8 @@ struct ImportOutcome {
   // (LocalLibraryConfig::keep_folder_recipe), or why it can't be used. Both empty when the folder has none.
   std::string recipe_revision;
   std::string recipe_problem;
+  // An Add whose folder has title art (homebrew/folder_art.hpp) that can't be used: one sentence per picture.
+  std::vector<std::string> art_problems;
 };
 
 // The recipe a packager may put at the root of a game's folder: offered to the player when the game is added.
@@ -121,6 +123,9 @@ struct LocalLibraryConfig {
   // kMaxFolderRecipeBytes), on the worker, so the game can use it later (homebrew WebRecipeImports::Keep). Empty:
   // recipe files are not looked for.
   std::function<FolderRecipeKept(std::string bytes)> keep_folder_recipe;
+  // Checks the title art in a folder being added (its host path), on the worker: why each picture can't be used.
+  // Empty: art is not looked at when a game is added.
+  std::function<std::vector<std::string>(const std::string& host_folder)> check_folder_art;
 };
 
 // The words for a game that can't play from its folder because of its name (the descriptor rule).
@@ -220,7 +225,8 @@ class LocalLibrarySource final : public LibrarySource {
   void FollowUsbDrives();  // games on a USB drive that changed places: their folder says where they are now
   void Scan();
   void Project();
-  void Outcome(const Job& job, bool ok, std::string id, std::string message, FolderRecipeKept recipe = {});
+  void Outcome(const Job& job, bool ok, std::string id, std::string message, FolderRecipeKept recipe = {},
+               std::vector<std::string> art_problems = {});
   // The recipe file at the root of the folder at `path` (a console path), kept; both empty when there is none.
   FolderRecipeKept KeepFolderRecipe(const std::string& path);
   const ImportVolume* Volume(const std::string& id) const;

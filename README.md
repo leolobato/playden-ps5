@@ -377,6 +377,16 @@ Playden asks whether to use it once the game is added. The recipe sets the game'
 folder you added before brought back. A recipe Playden can't use is skipped with a notice, and the game is added
 without it. The file stays in the game folder.
 
+**Title art in the game folder:** to give the game's PS5 title your own art, put PNG pictures in a `playden` folder
+at the root of the game folder, before Playden sets up the game:
+
+- `playden/icon.png`: the icon on Home. Playden uses the middle square of the picture, at 512x512.
+- `playden/background.png`: the background on Home. Playden scales and crops it to fill 3840x2160 (16:9).
+
+A picture of any size up to 3840x2160 pixels is used. Playden reads the pictures once, when it first sets up the
+game's title. It doesn't use pictures that you add or change after that. A picture Playden can't use is skipped with a
+notice, and the title keeps Playden's art for it. Art you set later with another app, such as ArtSwap, stays.
+
 **Limits:**
 
 - To play from where it is, the folder's path must be plain ASCII. Otherwise, copy the game.

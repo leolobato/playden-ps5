@@ -1647,7 +1647,8 @@ struct Setup {
   RuntimeInstall record = Record();
   std::filesystem::path title = fixture.host_data / "homebrew/FAKE78001";
   std::filesystem::path metadata = fixture.host_data / "playden/games/install-hl2/title-metadata";
-  Setup() {
+  // `stage` false: the game's metadata is written, and it has no title yet.
+  explicit Setup(bool stage = true) {
     Write(fixture.kit / "titles/variant/sce_sys/icon0.png", "kit-icon", 0644);
     fixture.view.files.push_back({"titles/variant/sce_sys/icon0.png", 8, *TestHash(fixture.kit / "titles/variant/sce_sys/icon0.png"), 0644});
     std::filesystem::create_directories(fixture.host_data);
@@ -1655,6 +1656,7 @@ struct Setup {
       record.artifacts.push_back({artifact.artifact_id, artifact.identity, artifact.sha256});
     auto installer = fixture.Installer();
     CHECK(installer.WriteTitleMetadata(record, kOwnParam, std::string("game-icon"), "").state == PackageActionState::kComplete);
+    if (!stage) return;
     CHECK(installer.StageTitle(record).state == PackageActionState::kComplete);
     CHECK(installer.CopyTemplate(record).state == PackageActionState::kComplete);
     CHECK(Read(title / "sce_sys/icon0.png") == "game-icon" && std::filesystem::exists(metadata / ".installed"));
@@ -1881,6 +1883,90 @@ void OlderRequestGoesWithThePlayersName() {
   CHECK(Read(setup.title / "sce_sys/icon0.png") == "steamgriddb-icon-png");
   CHECK(Read(setup.title / "sce_sys/pic0.dds") == "steamgriddb-background");
 }
+
+// Art from an imported game's folder (#444) is seeded for its first title only: the title is staged with it, and a
+// refresh to a new kit keeps it as the player's art. A game that had a title, or has custom art, is never seeded.
+void SeededForTheFirstTitleOnly() {
+  const auto seed = [](int* calls) {
+    return [calls]() -> std::optional<TitleArtSeed> {
+      ++*calls;
+      TitleArtSeed art;
+      art.icon_png = "folder-icon-png";
+      art.sce_sys_files = {{"pic0.dds", "folder-background"}, {"pic1.dds", "folder-background"}};
+      return art;
+    };
+  };
+  {
+    Setup setup(false);
+    auto installer = setup.fixture.Installer();
+    int calls = 0;
+    CHECK(installer.SeedCustomTitleArt(setup.record, seed(&calls)).state == PackageActionState::kComplete && calls == 1);
+    CHECK(Read(setup.metadata / "custom/icon0.png") == "folder-icon-png");
+    CHECK(Read(setup.metadata / "custom/sce_sys/pic1.dds") == "folder-background");
+    CHECK(!std::filesystem::exists(setup.metadata / "custom.seed"));
+    // Asked again before the title is staged (a retried Prepare): the art is there, nothing is made again.
+    CHECK(installer.SeedCustomTitleArt(setup.record, seed(&calls)).state == PackageActionState::kComplete && calls == 1);
+    CHECK(installer.StageTitle(setup.record).state == PackageActionState::kComplete);
+    CHECK(installer.CopyTemplate(setup.record).state == PackageActionState::kComplete);
+    CHECK(Read(setup.title / "sce_sys/icon0.png") == "folder-icon-png");
+    CHECK(Read(setup.title / "sce_sys/pic0.dds") == "folder-background");
+    CHECK(Read(setup.title / "sce_sys/pic1.dds") == "folder-background");
+    CHECK(installer.TitleMetadataCurrent(setup.record) && installer.Inspect(setup.record).manifest_matches);
+    CHECK(installer.TitleCurrent(setup.record));
+    setup.Respin();
+    auto respun = setup.fixture.Installer();
+    CHECK(respun.RefreshTitle(setup.record).state == PackageActionState::kComplete);
+    CHECK(Read(setup.title / "eboot.bin") == "native-2");
+    CHECK(Read(setup.title / "sce_sys/icon0.png") == "folder-icon-png");
+    CHECK(Read(setup.title / "sce_sys/pic0.dds") == "folder-background");
+    CHECK(respun.TitleCurrent(setup.record) && respun.TitleMetadataCurrent(setup.record));
+    // Its title moved (staged again): the art goes with it, and the folder isn't asked.
+    std::filesystem::remove_all(setup.title);
+    CHECK(respun.SeedCustomTitleArt(setup.record, seed(&calls)).state == PackageActionState::kComplete && calls == 1);
+    CHECK(respun.StageTitle(setup.record).state == PackageActionState::kComplete);
+    CHECK(Read(setup.title / "sce_sys/icon0.png") == "folder-icon-png");
+    CHECK(Read(setup.title / "sce_sys/pic1.dds") == "folder-background");
+  }
+  {
+    // A game with a title (prepared before the folder had art) keeps Playden's art.
+    Setup setup;
+    auto installer = setup.fixture.Installer();
+    int calls = 0;
+    CHECK(installer.SeedCustomTitleArt(setup.record, seed(&calls)).state == PackageActionState::kComplete && calls == 0);
+    CHECK(!std::filesystem::exists(setup.metadata / "custom") && Read(setup.title / "sce_sys/icon0.png") == "game-icon");
+    // Nor once its title is gone, while the record of what Playden put into it stays.
+    std::filesystem::remove_all(setup.title);
+    CHECK(installer.SeedCustomTitleArt(setup.record, seed(&calls)).state == PackageActionState::kComplete && calls == 0);
+  }
+  {
+    // Art brought back from kept data (#213) wins over the folder's.
+    Setup setup(false);
+    Write(setup.metadata / "custom/icon0.png", "kept-icon", 0600);
+    auto installer = setup.fixture.Installer();
+    int calls = 0;
+    CHECK(installer.SeedCustomTitleArt(setup.record, seed(&calls)).state == PackageActionState::kComplete && calls == 0);
+    CHECK(Read(setup.metadata / "custom/icon0.png") == "kept-icon");
+  }
+  {
+    // No art in the folder, or a file name that isn't a plain sce_sys file: nothing is kept.
+    Setup setup(false);
+    auto installer = setup.fixture.Installer();
+    CHECK(installer.SeedCustomTitleArt(setup.record, [] { return std::optional<TitleArtSeed>(); }).state ==
+          PackageActionState::kComplete);
+    CHECK(!std::filesystem::exists(setup.metadata / "custom"));
+    for (const char* name : {"../eboot.bin", "param.json", ".hidden"}) {
+      const auto refused = installer.SeedCustomTitleArt(setup.record, [name] {
+        TitleArtSeed art;
+        art.sce_sys_files = {{name, "bytes"}};
+        return std::optional<TitleArtSeed>(art);
+      });
+      CHECK(refused.state == PackageActionState::kFailed && refused.code == "title-art");
+      CHECK(!std::filesystem::exists(setup.metadata / "custom"));
+    }
+    CHECK(installer.StageTitle(setup.record).state == PackageActionState::kComplete);
+    CHECK(Read(setup.title / "sce_sys/icon0.png") == "game-icon" && !std::filesystem::exists(setup.title / "sce_sys/pic0.dds"));
+  }
+}
 }  // namespace custom_art
 
 int main() {
@@ -1891,6 +1977,7 @@ int main() {
   custom_art::ParametersStayPlaydens();
   custom_art::InterruptedStageKeepsArt();
   custom_art::RestoredNameIsDropped();
+  custom_art::SeededForTheFirstTitleOnly();
   custom_art::OlderRequestGoesWithThePlayersName();
   StatusQueriesDoNotRecheckTheKitList();
   CloudSaveFoldersAreMadeInTheProfile();

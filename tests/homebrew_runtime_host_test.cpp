@@ -7804,6 +7804,44 @@ void RelocationWaitsForQueuedPreparation() {
   host.Shutdown();
 }
 
+// An imported game's first title gets the art from its folder (#444): the icon and both backgrounds are in the title,
+// which reads as current, and the folder is not read again once the title exists.
+void ImportedGameGetsFolderArt() {
+  Fixture fixture;
+  GamesMove move;
+  const auto kit = SyntheticKit(fixture.root / "kit");
+  unsigned uuids = 0;
+  auto config = MoveConfig(fixture, kit, &uuids, move);
+  int calls = 0;
+  fs::path asked;
+  config.folder_title_art = [&](const playden::GameId& game, const fs::path& root) -> std::optional<playden::runtime::TitleArtSeed> {
+    ++calls;
+    asked = root;
+    CHECK(game == playden::GameId::Local(kImportedId));
+    playden::runtime::TitleArtSeed art;
+    art.icon_png = "folder-icon";
+    art.sce_sys_files = {{"pic0.dds", "folder-background"}, {"pic1.dds", "folder-background"}};
+    return art;
+  };
+  const std::string drop = "/data/playden-import/Imported";
+  const auto imported = PrepareImported(fixture, config, drop);
+  CHECK(calls == 1 && asked == fixture.root / fs::path(drop).relative_path());
+  const auto title = fixture.root / "data/homebrew" / imported.title_id / "sce_sys";
+  CHECK(Read(title / "icon0.png") == "folder-icon");
+  CHECK(Read(title / "pic0.dds") == "folder-background" && Read(title / "pic1.dds") == "folder-background");
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(started.installs.size() == 1 && started.installs[0].title_current);
+  host.Play(imported.number);
+  const auto number = imported.number;
+  const auto played = WaitFor(host, [number](const RuntimeSnapshot& s) { return s.handoff_ready || s.play_refusals.count(number); }, 30);
+  if (played.play_refusals.count(number)) std::fprintf(stderr, "Play refused: %s\n", played.play_refusals.at(number).c_str());
+  CHECK(played.handoff_ready && calls == 1);
+  CHECK(Read(title / "icon0.png") == "folder-icon");
+  host.Shutdown();
+}
+
 // Move: the drop folder renamed under the title's publication lease; refused while the title runs.
 void MovedGameKeepsItsTitle() {
   Fixture fixture;
@@ -9983,6 +10021,7 @@ int main(int argc, char** argv) {
   DriveUpdateSkipsABusyGame();
   UsbGameNamesNoMount();
   MoveAfterUsbSwap();
+  ImportedGameGetsFolderArt();
   GogScriptSetsIniAtEachStart();
   PausedQueueHoldsGogPreparation();
   GogScriptSetsRegistryAtEachStart();

@@ -362,7 +362,9 @@ void LocalLibrarySource::Execute(const Job& job) {
       auto recipe = KeepFolderRecipe(path);
       if (!recipe.revision.empty()) Log("import recipe id=" + added.value().id + " revision=" + recipe.revision);
       if (!recipe.problem.empty()) Log("import recipe refused id=" + added.value().id + ": " + recipe.problem);
-      return Outcome(job, true, added.value().id, {}, std::move(recipe));
+      auto art_problems = config_.check_folder_art ? config_.check_folder_art(HostPath(path)) : std::vector<std::string>{};
+      for (const auto& problem : art_problems) Log("import art refused id=" + added.value().id + ": " + problem);
+      return Outcome(job, true, added.value().id, {}, std::move(recipe), std::move(art_problems));
     }
     case Command::kOpen: {
       const auto game = store_.Find(job.id);
@@ -565,8 +567,10 @@ FolderRecipeKept LocalLibrarySource::KeepFolderRecipe(const std::string& path) {
   return kept;
 }
 
-void LocalLibrarySource::Outcome(const Job& job, bool ok, std::string id, std::string message, FolderRecipeKept recipe) {
-  outcomes_.push_back({job.request, ok, std::move(id), std::move(message), std::move(recipe.revision), std::move(recipe.problem)});
+void LocalLibrarySource::Outcome(const Job& job, bool ok, std::string id, std::string message, FolderRecipeKept recipe,
+                                 std::vector<std::string> art_problems) {
+  outcomes_.push_back({job.request, ok, std::move(id), std::move(message), std::move(recipe.revision), std::move(recipe.problem),
+                       std::move(art_problems)});
   if (outcomes_.size() > kMaxOutcomes) outcomes_.erase(outcomes_.begin());
   Project();
 }

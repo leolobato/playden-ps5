@@ -334,6 +334,46 @@ std::optional<ArtworkImage> artwork_internal::DecodeArtworkWithAllocationBudget(
   return image;
 }
 
+PlayerArtCheck CheckPlayerArt(const std::vector<std::uint8_t>& encoded) {
+  static constexpr unsigned char kPngSignature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+  if (encoded.size() < sizeof(kPngSignature) || !std::equal(kPngSignature, kPngSignature + 8, encoded.begin()))
+    return PlayerArtCheck::kNotPng;
+  if (encoded.size() > kMaxPlayerArtBytes) return PlayerArtCheck::kTooLarge;
+  int width = 0, height = 0, components = 0;
+  if (!stbi_info_from_memory(encoded.data(), static_cast<int>(encoded.size()), &width, &height, &components) ||
+      width <= 0 || height <= 0)
+    return PlayerArtCheck::kUnreadable;
+  if (static_cast<std::uint32_t>(width) > kMaxPlayerArtSide || static_cast<std::uint32_t>(height) > kMaxPlayerArtSide ||
+      static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) > kMaxPlayerArtPixels)
+    return PlayerArtCheck::kTooLarge;
+  return PlayerArtCheck::kOk;
+}
+
+std::optional<ArtworkImage> DecodePlayerArt(const std::vector<std::uint8_t>& encoded) {
+  if (CheckPlayerArt(encoded) != PlayerArtCheck::kOk) return std::nullopt;
+  int width = 0, height = 0, components = 0;
+  if (!stbi_info_from_memory(encoded.data(), static_cast<int>(encoded.size()), &width, &height, &components))
+    return std::nullopt;
+  // What stb holds at once: the compressed data, the inflated rows (each interlace pass's too), the image at its own
+  // depth (16-bit pictures are two bytes a channel) and its 8-bit RGBA copy. At most about 170 MB, for a 4K 16-bit one.
+  const std::size_t area = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  const std::size_t depth = stbi_is_16_bit_from_memory(encoded.data(), static_cast<int>(encoded.size())) ? 2 : 1;
+  const bool interlaced = encoded.size() > 28 && encoded[28] != 0;  // IHDR's interlace method
+  DecodeBudgetScope budget(encoded.size() + area * 4 * depth * (interlaced ? 2 : 1) + area * 4 * depth + area * 4 +
+                           (4u << 20));
+  stbi_uc* decoded = stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()), &width, &height,
+                                           &components, 4);
+  if (!decoded) return std::nullopt;
+  std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(decoded, stbi_image_free);
+  if (width <= 0 || height <= 0 || static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) > kMaxPlayerArtPixels)
+    return std::nullopt;
+  ArtworkImage image;
+  image.width = static_cast<std::uint32_t>(width);
+  image.height = static_cast<std::uint32_t>(height);
+  image.rgba.assign(pixels.get(), pixels.get() + static_cast<std::size_t>(width) * height * 4);
+  return image;
+}
+
 std::optional<ArtworkImage> DecodeArtwork(
     const std::vector<std::uint8_t>& encoded) {
   return artwork_internal::DecodeArtworkWithAllocationBudget(

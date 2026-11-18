@@ -24,6 +24,7 @@
 #include "homebrew/runtime_host.hpp"
 #include "homebrew/program_icon.hpp"
 #include "homebrew/sharing_service.hpp"
+#include "homebrew/folder_art.hpp"
 #include "homebrew/title_icon.hpp"
 #include "platform/ps5/title_allow_list.h"
 #include "runtime/playden_removal.h"
@@ -815,6 +816,25 @@ int main() {
                                                           : " has no cover, program icon or generic icon"));
                 return generic_icon;
             };
+            // An imported game's own pictures for its first title (#444): icon0.png, and pic0.dds and pic1.dds.
+            config.folder_title_art = [](const playden::GameId& game, const std::filesystem::path& root)
+                -> std::optional<playden::runtime::TitleArtSeed> {
+                auto art = playden::homebrew::MakeFolderArt(root);
+                for (const auto& problem : art.problems)
+                    playden::app::AppendLogLine(log_root, "runtime.log", "folder art app=" + playden::ToKey(game) +
+                                                " not used: " + problem);
+                if (!art.icon_png && !art.background_dds) return std::nullopt;
+                playden::runtime::TitleArtSeed seed;
+                seed.icon_png = std::move(art.icon_png);
+                if (art.background_dds) {
+                    seed.sce_sys_files.emplace_back("pic0.dds", *art.background_dds);
+                    seed.sce_sys_files.emplace_back("pic1.dds", std::move(*art.background_dds));
+                }
+                playden::app::AppendLogLine(log_root, "runtime.log", "folder art app=" + playden::ToKey(game) +
+                                            " icon=" + (seed.icon_png ? "1" : "0") +
+                                            " background=" + (seed.sce_sys_files.empty() ? "0" : "1"));
+                return seed;
+            };
             // What Playden downloads for a game's bottle (Microsoft's Visual C++ redistributable, for games that need
             // MFC): ranged HTTPS GETs on the worker, with its own client made on first use. Redirects are followed by
             // hand to other HTTPS addresses; the bytes are checked against their pinned SHA-256 afterwards.
@@ -1220,6 +1240,7 @@ int main() {
                 return playden::runtime::GameProgramInstead(folder, program);
             };
             import_config.keep_folder_recipe = playden::homebrew::FolderRecipeKeeper(recipe_imports);
+            import_config.check_folder_art = [](const std::string& folder) { return playden::homebrew::CheckFolderArt(folder); };
             auto source = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
             local_library = source.get();
             copy_runner->SetChanged([local_library] { local_library->Reload(); });
