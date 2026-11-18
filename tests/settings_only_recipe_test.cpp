@@ -342,6 +342,21 @@ void Share() {
   CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"resolution", "1280x720"}}, kit, &after, &error));
   const auto kept = BuildSettingsOnlyRecipe(base, before, after, playden::GameRef::Steam(274520), "Darkwood");
   CHECK(kept.recipe.graphics.empty() && !Has(SerializeCommunityRecipe(kept), "\"graphics\""));
+  // The system locale is shared once a player sets it (a Japanese game that needs code page 932); Language and region
+  // is the player's own language and stays out (#1025).
+  {
+    auto locale_kit = kit;
+    locale_kit.windows_locale = true;
+    EffectiveSettings plain, japanese;
+    CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {}, locale_kit, &plain, &error));
+    CHECK(BuildEffectiveSettings(filled.recipe, nullptr, {{"system_locale", "ja-JP"}, {"locale", "de-DE"}}, locale_kit,
+                                 &japanese, &error));
+    const auto with_locale = BuildSettingsOnlyRecipe(base, plain, japanese, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(with_locale.recipe.defaults.at("system_locale") == "ja-JP" && !with_locale.recipe.defaults.count("locale"));
+    CHECK(IsPersonalSettingRow("locale") && !IsPersonalSettingRow("system_locale"));
+    const auto plain_share = BuildSettingsOnlyRecipe(base, plain, plain, playden::GameRef::Steam(274520), "Darkwood");
+    CHECK(!plain_share.recipe.defaults.count("system_locale") && !plain_share.recipe.defaults.count("locale"));
+  }
   // Online is shared; the sign-in and invites stay each player's own; Offline emulation and its Steam network value
   // are shared.
   SetOnlineSteamEnabled(true);

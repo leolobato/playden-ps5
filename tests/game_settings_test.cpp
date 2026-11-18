@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
         "start_check",
         "graphics", "d3d12", "pixel_shader_waves", "frame_latency", "reported_gpu", "reported_vram",
         "steam_library_path", "steam_network", "steam_input", "windows_version", "text_scale",
-        "locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
+        "locale", "system_locale", "cpu_topology", "address_space", "cpu", "network_adapters", "logging",
         "environment", "program_folder", "program_arguments", "arguments", "architecture", "dll_overrides",
         "library_overrides", "registry_dll_overrides"};
     CHECK(ids == expected);
@@ -1210,6 +1210,61 @@ int main(int argc, char** argv) {
     CHECK(!CheckProsperoProfile(base + "\n[runtime]\nversion = 3\n", &reason, {.runtime_version = true}));
     CHECK(CheckProsperoProfile(base + "\n[runtime]\ncpu = native\n", &reason, {.runtime_version = true}));
     CHECK(!CheckProsperoProfile(base + "\n[runtime]\ncpu = fast\n", &reason, {.runtime_version = true}));
+
+    // System locale and Language and region (#1025): the title sets Windows' system and user locale from [runtime]
+    // system_locale and user_locale (windows-locale). Wine's own default, en-US, writes nothing.
+    {
+      CHECK(KitCapabilitiesFromManifest({kKitWindowsLocale}, false).windows_locale);
+      CHECK(!KitCapabilitiesFromManifest({kKitProfileVersion2}, false).windows_locale);
+      auto locale_kit = version_kit;
+      locale_kit.windows_locale = true;
+      const std::map<std::string, std::string> japanese = {{"system_locale", "ja-JP"}};
+      CHECK(render(hl2, japanese, locale_kit) == base + "\n[runtime]\nversion = 2\nsystem_locale = ja-JP\n");
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.runtime_version = true, .runtime_locale = true}));
+      CHECK(!CheckProsperoProfile(profile.text, &reason, {.runtime_version = true}));  // an older runtime refuses it
+      CHECK(render(hl2, {{"system_locale", "ja-JP"}, {"locale", "de-DE"}}, locale_kit) ==
+            base + "\n[runtime]\nversion = 2\nsystem_locale = ja-JP\nuser_locale = de-DE\n");
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.runtime_version = true, .runtime_locale = true}));
+      // Without version 2 the section still opens for the locales.
+      auto locale_only = environment_kit;
+      locale_only.windows_locale = true;
+      CHECK(render(hl2, {{"locale", "ja-JP"}}, locale_only) ==
+            base + "\n[runtime]\nuser_locale = ja-JP\n\n[environment]\nRADV_PERFTEST = pswave32\n");
+      CHECK(CheckProsperoProfile(profile.text, &reason, {.environment_section = true, .runtime_locale = true}));
+      // English (United States) on either row is the default: the same profile as a game that never set them.
+      CHECK(render(hl2, {{"system_locale", "en-US"}, {"locale", "en-US"}}, locale_kit) == base + version_2);
+      // A runtime kit without it: both rows disabled, nothing written.
+      CHECK(render(hl2, {{"system_locale", "ja-JP"}, {"locale", "ja-JP"}}, version_kit) == base + version_2);
+      for (const char* id : {"system_locale", "locale"}) {
+        CHECK(!settings.values.at(id).available && settings.values.at(id).value == "en-US");
+        CHECK(settings.values.at(id).reason == "Needs a newer runtime kit that sets the game's locale.");
+      }
+      // A title still on an older runtime keeps the choice for its update.
+      const auto stale = KitForTitleRuntime(locale_kit, false);
+      CHECK(!stale.windows_locale && stale.windows_locale_needs_update);
+      CHECK(KitForTitleRuntime(locale_kit, true).windows_locale && KitDependsOnTitleRuntime(locale_kit));
+      CHECK(render(hl2, japanese, stale).find("system_locale") == std::string::npos);
+      CHECK(settings.values.at("system_locale").reason == kAppliesAfterKitUpdate &&
+            settings.values.at("system_locale").after_update == "ja-JP");
+      // The choices: one per code page for the system locale, Windows names the title knows, nothing else.
+      const auto* system_row = FindSetting("system_locale");
+      CHECK(system_row && system_row->group == SettingGroup::kWindows && system_row->apply == ApplyMode::kGameClosed &&
+            system_row->playden_default == "en-US" && system_row->also_called == "Language for non-Unicode programs");
+      std::vector<std::string> values;
+      for (const auto& choice : system_row->choices) values.push_back(choice.value);
+      CHECK((values == std::vector<std::string>{"en-US", "ja-JP", "zh-CN", "zh-TW", "ko-KR", "ru-RU", "pl-PL"}));
+      for (const auto* row : {system_row, FindSetting("locale")})
+        for (const auto& choice : row->choices) {
+          CHECK(ValidateSettingValue(hl2, row->id, choice.value, &reason));
+          CHECK(CheckProsperoProfile(base + "\n[runtime]\nsystem_locale = " + choice.value + "\nuser_locale = " +
+                                         choice.value + "\n", &reason, {.runtime_locale = true}));
+        }
+      CHECK(!ValidateSettingValue(hl2, "system_locale", "nl-NL", &reason));
+      CHECK(!CheckProsperoProfile(base + "\n[runtime]\nsystem_locale = nl-NL\n", &reason, {.runtime_locale = true}));
+      CHECK(!CheckProsperoProfile(base + "\n[runtime]\nsystem_locale = ja_JP.UTF-8\n", &reason, {.runtime_locale = true}));
+      CHECK(!CheckProsperoProfile(base + "\n[runtime]\nsystem_locale = ja-JP\nsystem_locale = ja-JP\n", &reason,
+                                  {.runtime_locale = true}));
+    }
     // Wave64 is the opt-out: RADV_PS5_PS_WAVE64=1, as before.
     CHECK(render(stray, {{"pixel_shader_waves", "wave64"}}, version_kit) ==
           base + version_2 + "\n[environment]\nRADV_PS5_PS_WAVE64 = 1\n");
@@ -1252,7 +1307,7 @@ int main(int argc, char** argv) {
   {
     const auto every = KitCapabilitiesFromManifest(SettingsKitCapabilityNames(), true);
     const std::map<std::string, std::string> unbuilt = {{"invert_stick", "right_y"},
-        {"locale", "de-DE"}, {"registry_dll_overrides", "dinput8=n,b"}};
+        {"registry_dll_overrides", "dinput8=n,b"}};
     CHECK(BuildEffectiveSettings(hl2, nullptr, unbuilt, every, &settings, &error));
     for (const auto& [id, value] : unbuilt) {
       CHECK(SettingShown(*FindSetting(id), every));

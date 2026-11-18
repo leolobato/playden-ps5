@@ -93,6 +93,7 @@ struct ProsperoProfileFeatures {
   bool runtime_version = false;      // [runtime] version = 1|2 (kit capability profile-version-2)
   bool long_arguments = false;       // arguments up to 4096 bytes, a profile up to 16384 (launch-arguments-4096)
   bool steam_section = false;        // [steam] install_dir (kit capability steam-library-path)
+  bool runtime_locale = false;       // [runtime] system_locale, user_locale (kit capability windows-locale)
 };
 
 // Where a runtime with [steam] shows a Steam game to Wine: kProsperoSteamCommon\<install_dir>.

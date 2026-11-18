@@ -260,7 +260,7 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
       const auto name = Lower(line.substr(1, line.size() - 2));
       if ((name != "application" && name != "display" && name != "input" && name != "debug" &&
            !(features.environment_section && name == "environment") &&
-           !(features.audio_section && name == "audio") && !(features.runtime_version && name == "runtime") &&
+           !(features.audio_section && name == "audio") && !((features.runtime_version || features.runtime_locale) && name == "runtime") &&
            !(features.launcher_section && name == "launcher") && !(features.helper_section && name == "helper") &&
            !(features.steam_section && name == "steam")) ||
           std::find(sections.begin(), sections.end(), name) != sections.end())
@@ -429,6 +429,12 @@ bool CheckProsperoProfile(std::string_view text, std::string* reason, ProsperoPr
         if (value != "native" && value != "translator") return bad("not native or translator");
       } else if (key == "version") {
         if (value != "1" && value != "2") return bad("not 1 or 2");
+      } else if (features.runtime_locale && (key == "system_locale" || key == "user_locale")) {
+        // The names prospero-win's title takes (src/pw_game_profile.c runtime_locales).
+        static constexpr std::string_view kLocales[] = {"en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "pt-BR",
+                                                         "pl-PL", "ru-RU", "ja-JP", "ko-KR", "zh-CN", "zh-TW"};
+        if (std::find(std::begin(kLocales), std::end(kLocales), value) == std::end(kLocales))
+          return bad("not a locale the runtime takes");
       } else {
         return fail("unknown [runtime] key " + key);
       }

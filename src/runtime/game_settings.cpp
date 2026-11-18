@@ -336,11 +336,28 @@ std::vector<SettingDefinition> BuildCatalogue() {
   list.push_back(Choice("text_scale", "Text scale", "Size of Windows text and dialogs. Shared by every game in the same bottle.",
                         "LogPixels · DPI", G::kWindows,
                         {{"96", "100%", ""}, {"120", "125%", ""}, {"144", "150%", ""}}, "96", 3, ApplyMode::kGameClosed));
-  list.push_back(Choice("locale", "Language and region", "Which Windows language and region the game sees.",
-                        "LocaleName · registry", G::kWindows,
+  // Windows' user locale and system locale ([runtime] user_locale and system_locale, kit capability windows-locale).
+  // Wine takes both once, at start, from the Unix locale (prospero-win Wine patch 1028), so they are not registry
+  // values: Wine rewrites Control Panel\International from them.
+  list.push_back(Choice("locale", "Language and region",
+                        "Language and formats the game is told.", "user locale", G::kWindows,
                         {{"en-US", "English (United States)", ""}, {"en-GB", "English (United Kingdom)", ""},
                          {"de-DE", "German", ""}, {"fr-FR", "French", ""}, {"es-ES", "Spanish", ""},
-                         {"pt-BR", "Portuguese (Brazil)", ""}, {"ja-JP", "Japanese", ""}},
+                         {"it-IT", "Italian", ""}, {"pt-BR", "Portuguese (Brazil)", ""}, {"pl-PL", "Polish", ""},
+                         {"ru-RU", "Russian", ""}, {"ja-JP", "Japanese", ""}, {"ko-KR", "Korean", ""},
+                         {"zh-CN", "Chinese (Simplified)", ""}, {"zh-TW", "Chinese (Traditional)", ""}},
+                        "en-US", 3, ApplyMode::kGameClosed));
+  // The code page programs that are not Unicode use (#1025): one choice per code page, as Western European languages
+  // all share 1252.
+  list.push_back(Choice("system_locale", "System locale",
+                        "How older games read text.", "Language for non-Unicode programs", G::kWindows,
+                        {{"en-US", "English", "Code page 1252, as on most PCs."},
+                         {"ja-JP", "Japanese", "Shift-JIS (932). For Japanese games that show garbled text or don't start."},
+                         {"zh-CN", "Chinese (Simplified)", "GBK (936)."},
+                         {"zh-TW", "Chinese (Traditional)", "Big5 (950)."},
+                         {"ko-KR", "Korean", "Code page 949."},
+                         {"ru-RU", "Russian", "Cyrillic (1251)."},
+                         {"pl-PL", "Polish", "Central European (1250)."}},
                         "en-US", 3, ApplyMode::kGameClosed));
   list.push_back(Choice("cpu_topology", "CPU cores", "How many processor cores the game is told about.",
                         "WINE_CPU_TOPOLOGY", G::kWindows,
@@ -650,9 +667,11 @@ std::string Unavailable(const SettingDefinition& definition, const std::string& 
   }
   // Rows whose runtime or Playden side is not built yet: listed so players see what is coming.
   if (id == "invert_stick") return "Needs a newer runtime kit that inverts sticks.";
-  // Wine sets the user locale from the Unix locale (LANG, LC_ALL) at start and only mirrors it into
-  // Control Panel\International, so a registry value alone would be overwritten.
-  if (id == "locale") return "Needs a newer runtime kit that sets the game's language (LANG).";
+  // Wine sets both locales from the Unix locale at start and only mirrors them into the registry, so the title sets
+  // them ([runtime] user_locale and system_locale).
+  if ((id == "locale" || id == "system_locale") && !kit.windows_locale)
+    return kit.windows_locale_needs_update ? kAppliesAfterKitUpdate
+                                           : "Needs a newer runtime kit that sets the game's locale.";
   // The title publication carries only the two registry values it owns (Windows version, text scale).
   if (id == "registry_dll_overrides") return "Needs a newer runtime kit that lets Playden write more registry values.";
   // Wine reads WINE_CPU_TOPOLOGY from the [environment] section; [debug] env does not take WINE_ names.
@@ -1533,10 +1552,18 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   // [runtime] version 2: the title takes the driver's defaults. Without the line the profile is version 1.
   const auto& cpu = OptionalValue(settings, "cpu");
   const bool translator = cpu.available && cpu.value == "translator";
-  if (settings.profile_version == 2 || translator) {
+  // A locale left on Wine's default (en-US) writes nothing, so a game that keeps it gets the same profile as before.
+  const auto locale_line = [&](const char* id) {
+    const auto& locale = OptionalValue(settings, id);
+    return locale.available && !locale.value.empty() && locale.value != "en-US" ? locale.value : std::string();
+  };
+  const std::string system_locale = locale_line("system_locale"), user_locale = locale_line("locale");
+  if (settings.profile_version == 2 || translator || !system_locale.empty() || !user_locale.empty()) {
     text += "\n[runtime]\n";
     if (settings.profile_version == 2) text += "version = 2\n";
     if (translator) text += "cpu = translator\n";
+    if (!system_locale.empty()) text += "system_locale = " + system_locale + "\n";
+    if (!user_locale.empty()) text += "user_locale = " + user_locale + "\n";
   }
   if (value("logging") == "verbose") text += std::string("\n[debug]\nwinedebug = ") + kVerboseWinedebug + "\n";
   if (value("logging") == "input") text += std::string("\n[debug]\nwinedebug = ") + kInputWinedebug + "\n";
@@ -1682,6 +1709,7 @@ bool RenderProsperoProfile(const GameRecipe& recipe, const EffectiveSettings& se
   features.display_fps_counter = fps_counter;
   features.input_playstation = value("controller") == "playstation";
   features.runtime_version = settings.profile_version == 2;
+  features.runtime_locale = !system_locale.empty() || !user_locale.empty();
   // BuildEffectiveSettings let arguments past 512 bytes through only for a runtime that takes them; such a runtime
   // also takes a profile up to 16384 bytes with short arguments.
   features.long_arguments = settings.long_profile || settings.arguments.size() > kProsperoMaxArgumentBytes;
@@ -4115,6 +4143,7 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
   kit.driver_threads = has(kKitDriverThreads);
   kit.game_root_usb_search = has(kKitGameRootUsbSearch);
   kit.steam_library_path = has(kKitSteamLibraryPath);
+  kit.windows_locale = has(kKitWindowsLocale);
   kit.display_120hz = has(kKitDisplay120Hz);
   kit.profile_version_2 = has(kKitProfileVersion2);
   kit.input_rumble = has(kKitInputRumble);
@@ -4148,6 +4177,11 @@ KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_curre
   if (!title_runtime_current && kit.steam_library_path) {
     kit.steam_library_path = false;
     kit.steam_library_path_needs_update = true;
+  }
+  // Nor [runtime] system_locale and user_locale: an older title refuses the keys.
+  if (!title_runtime_current && kit.windows_locale) {
+    kit.windows_locale = false;
+    kit.windows_locale_needs_update = true;
   }
   if (!title_runtime_current && kit.display_120hz) {
     kit.display_120hz = false;
@@ -4367,7 +4401,7 @@ bool IsProgramRow(std::string_view id) {
 
 bool IsPersonalSettingRow(std::string_view id) {
   return id == "extra_arguments" || id == "start_check" || id == "logging" || id == "performance_overlay" ||
-         id == "overlay_detail" || id == "steam_sign_in" || id == "game_invites";
+         id == "overlay_detail" || id == "steam_sign_in" || id == "game_invites" || id == "locale";
 }
 
 CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const EffectiveSettings& before,

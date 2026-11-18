@@ -66,6 +66,10 @@ struct KitCapabilities {
   // library folder row is Steam's folder. Counts only for a title that runs this kit's runtime, like display_120hz.
   bool steam_library_path = false;
   bool steam_library_path_needs_update = false;
+  // [runtime] system_locale and user_locale (kKitWindowsLocale): the Language and region and System locale rows.
+  // Counts only for a title that runs this kit's runtime, like display_120hz.
+  bool windows_locale = false;
+  bool windows_locale_needs_update = false;
   bool game_root_unowned = false;  // games start from drives that record no file owners (exFAT)
   bool bottle_profile_shared = false;  // the bottle's 4 folders to its user profile may be 0711
   // The title's start check admits Playden's folders and files at any mode of its user's (#868). Counts only for a
@@ -801,8 +805,9 @@ CommunityRecipe BuildSettingsOnlyRecipe(const CommunityRecipe& base, const Effec
 // player's change to one makes a share name its program.
 bool IsProgramRow(std::string_view id);
 // The player's own rows, which no community recipe carries and a share doesn't count as a change: Extra arguments,
-// Known problems, Logging, the performance overlay, and the Steam sign-in and invites (they hand over the player's
-// Steam account). A recipe fixes the game.
+// Known problems, Logging, the performance overlay, the Steam sign-in and invites (they hand over the player's
+// Steam account), and Language and region (the player's language; System locale is the game's need). A recipe fixes
+// the game.
 bool IsPersonalSettingRow(std::string_view id);
 // A community recipe as the recipe of one installed game: recipe.app_id its runtime number, recipe.game the game.
 void BindCommunityRecipe(CommunityRecipe* community, const GameId& game, std::uint32_t runtime_number);
@@ -914,6 +919,9 @@ inline constexpr const char* kKitHelperProcess = "helper-process";
 // where some games look for themselves before they use Steam (The Talos Principle). Runtimes without it refuse a
 // profile with the section.
 inline constexpr const char* kKitSteamLibraryPath = "steam-library-path";
+// The title reads [runtime] system_locale and user_locale and sets the game's Windows system locale (its code page for
+// programs that are not Unicode) and user locale (prospero-win Wine patch 1028). Runtimes without it refuse the keys.
+inline constexpr const char* kKitWindowsLocale = "windows-locale";
 const std::vector<std::string>& SettingsKitCapabilityNames();
 
 // Settings gates from a verified kit's capabilities. bottle_access: the adapter can edit the
@@ -923,8 +931,8 @@ KitCapabilities KitCapabilitiesFromManifest(const std::vector<std::string>& capa
 // The installed kit's capabilities for one game's title. A prepared title keeps its own copy of the runtime until
 // Update, so a capability that adds profile keys counts only when the title runs this kit's runtime
 // (title_runtime_current: the title's owner markers name this kit, PackageInstaller::TitleCurrent). Otherwise
-// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation and
-// title_notify are off and their _needs_update say why.
+// display_120hz, profile_version_2, input_rumble, display_framegen, display_fps_counter, input_playstation,
+// title_notify, steam_library_path and windows_locale are off and their _needs_update say why.
 KitCapabilities KitForTitleRuntime(KitCapabilities kit, bool title_runtime_current);
 // Whether any capability the kit has counts only for a title on its runtime: whether KitForTitleRuntime would turn
 // something off for an older title. Reading the title's markers is worth it only then.
