@@ -633,7 +633,7 @@ std::string kept_name(const State& state, const LiveKeptBottle& kept) {
 // How the compatibility list names a status: "Works", "Partial", "Broken" or "Refused".
 std::string CompatStatusLabel(const std::string& status) {
     return status == "works" ? "Works" : status == "partial" ? "Partial" : status == "broken" ? "Broken"
-         : status == "refused" ? "Refused" : "Not listed";
+         : status == "refused" ? "Refused" : "Untested";
 }
 
 // The Install sheet's warning for a game the list has as Partial, Broken or Refused: what that status means, then the
@@ -848,7 +848,7 @@ std::string action_label(const std::string& key) {
         {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"}, {"heading-store", "Store"},
         {"heading-compat", "Compatibility"}, {"compat-filter-any", "Any"}, {"compat-filter-works", "Works"},
         {"compat-filter-partial", "Partial"}, {"compat-filter-broken", "Broken"}, {"compat-filter-refused", "Refused"},
-        {"compat-filter-unlisted", "Not listed"},
+        {"compat-filter-unlisted", "Untested"}, {"compat-picker", "Compatibility"}, {"store-picker", "Store"},
         {"store-filter-any", "Any"}, {"store-filter-steam", "Steam"}, {"store-filter-gog", "GOG"}, {"store-filter-imported", "Imported"},
         {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
@@ -8000,9 +8000,21 @@ void Simulation::rebuild_view() {
                 item.selected = state_.library.filters.contains(action_key.substr(7)) != hide;
                 item.value = item.selected ? "On" : "Off";
             }
-            // The Compatibility filter ticks its status, or Any. Without the list it filters nothing: the statuses can't
-            // be picked and Any says why (#976).
-            if (modal.id == "filters" && action_key.rfind("compat-filter-", 0) == 0) {
+            // The root sheet's Compatibility and Store rows say what their submenu has picked.
+            if (modal.id == "filters" && action_key == "compat-picker") {
+                const auto chosen = library_compat_filter(state_);
+                item.value = state_.community.compat && !chosen.empty() ? CompatStatusLabel(chosen) : "Any";
+                if (!state_.community.compat) item.subtitle = "List not loaded yet";
+            }
+            if (modal.id == "filters" && action_key == "store-picker") {
+                const auto stores = library_filter_stores(state_);
+                const auto chosen = library_store_filter(state_);
+                const bool known = std::find(stores.begin(), stores.end(), chosen) != stores.end();
+                item.value = known ? action_label("store-filter-" + chosen) : "Any";
+            }
+            // The Compatibility submenu ticks its status, or Any. Without the list it filters nothing: the statuses
+            // can't be picked and Any says why (#976).
+            if (modal.id == "filter-compat" && action_key.rfind("compat-filter-", 0) == 0) {
                 const auto chosen = library_compat_filter(state_);
                 const bool any = action_key == "compat-filter-any";
                 item.checked = any ? chosen.empty() || !state_.community.compat : state_.community.compat && action_key.substr(14) == chosen;
@@ -8012,7 +8024,7 @@ void Simulation::rebuild_view() {
                 }
             }
             // So does the store the Store filter picks, or Any.
-            if (modal.id == "filters" && action_key.rfind("store-filter-", 0) == 0) {
+            if (modal.id == "filter-store" && action_key.rfind("store-filter-", 0) == 0) {
                 const auto stores = library_filter_stores(state_);
                 const auto chosen = library_store_filter(state_);
                 const bool known = std::find(stores.begin(), stores.end(), chosen) != stores.end();
@@ -9200,6 +9212,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "manage-dlc") view_.legends = {"Cross Turn on or off", "L1/R1 Jump", "Circle Cancel"};
         else if (modal.id == "invite-friends") view_.legends = {"Cross Select", "Circle Cancel"};
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
+        else if (modal.id == "filter-compat" || modal.id == "filter-store") view_.legends = {"Cross Choose", "Circle Back"};
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
         else if (modal.id == "feedback")
@@ -9829,7 +9842,7 @@ void Simulation::rebuild_view() {
         // has the list: without it the page says nothing about the community.
         if (game && state_.community.compat) {
             const auto* listed = compat_listing(state_, game->id);
-            auto& cell = row("details-compat", RowKind::Status, listed ? CompatStatusLabel(listed->status) : "Not listed", "");
+            auto& cell = row("details-compat", RowKind::Status, listed ? CompatStatusLabel(listed->status) : "Untested", "");
             if (listed && listed->reports > 0)
                 cell.value = "Confirmed by " + std::to_string(listed->reports) + (listed->reports == 1 ? " player" : " players");
             cell.enabled = false;
@@ -13156,13 +13169,28 @@ void Simulation::activate() {
         for (auto filter = state_.library.filters.begin(); filter != state_.library.filters.end();)
             filter = filter->rfind("store-", 0) == 0 ? state_.library.filters.erase(filter) : std::next(filter);
         if (action_name != "store-filter-any") state_.library.filters.insert("store-" + action_name.substr(13));
-        close_modal(); reconcile_library_selection(state_); save_profile();
+        state_.navigation.modals.clear(); reconcile_library_selection(state_); save_profile();
     } else if (action_name.rfind("compat-filter-", 0) == 0) {
         // One status, or Any: the Compatibility filter is at most one "compat-<status>" filter.
         for (auto filter = state_.library.filters.begin(); filter != state_.library.filters.end();)
             filter = filter->rfind("compat-", 0) == 0 ? state_.library.filters.erase(filter) : std::next(filter);
         if (action_name != "compat-filter-any") state_.library.filters.insert("compat-" + action_name.substr(14));
-        close_modal(); reconcile_library_selection(state_); save_profile();
+        state_.navigation.modals.clear(); reconcile_library_selection(state_); save_profile();
+    } else if (action_name == "compat-picker") {
+        // The Compatibility submenu: Any, then how the community's compatibility list has a game (#977).
+        std::vector<std::string> actions{"compat-filter-any"};
+        for (const auto& status : library_compat_choices()) actions.push_back("compat-filter-" + status);
+        const auto chosen = state_.community.compat ? library_compat_filter(state_) : std::string();
+        const auto at = std::find(actions.begin(), actions.end(), "compat-filter-" + chosen);
+        open_modal({"filter-compat", "Compatibility", state_.navigation.focus_key, actions,
+                    at == actions.end() ? 0 : static_cast<int>(at - actions.begin()), false});
+    } else if (action_name == "store-picker") {
+        // The Store submenu: Any, then each store with games.
+        std::vector<std::string> actions{"store-filter-any"};
+        for (const auto& store : library_filter_stores(state_)) actions.push_back("store-filter-" + store);
+        const auto at = std::find(actions.begin(), actions.end(), "store-filter-" + library_store_filter(state_));
+        open_modal({"filter-store", "Store", state_.navigation.focus_key, actions,
+                    at == actions.end() ? 0 : static_cast<int>(at - actions.begin()), false});
     } else if (action_name.rfind("filter-", 0) == 0) {
         const auto filter = action_name.substr(7);
         if (state_.library.filters.contains(filter)) state_.library.filters.erase(filter); else state_.library.filters.insert(filter);
@@ -14450,19 +14478,13 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
             if (family) filters.push_back("filter-hide-family");
             std::vector<std::string> actions{"heading-sort"};
             actions.insert(actions.end(), sorts.begin(), sorts.end());
-            if (!filters.empty()) {
-                actions.push_back("heading-filter");
-                actions.insert(actions.end(), filters.begin(), filters.end());
-            }
-            // Compatibility: Any, then how the community's compatibility list has a game (#977).
-            actions.insert(actions.end(), {"heading-compat", "compat-filter-any"});
-            for (const auto& status : library_compat_choices()) actions.push_back("compat-filter-" + status);
-            // Store: Any, then each store with games (Steam, GOG, Imported), while the games come from more than one
-            // store or a store is picked, so it can be set back to Any.
-            if (const auto stores = library_filter_stores(state_); !stores.empty()) {
-                actions.insert(actions.end(), {"heading-store", "store-filter-any"});
-                for (const auto& store : stores) actions.push_back("store-filter-" + store);
-            }
+            // Filter: the toggles, then Compatibility (#977) and Store, each a row that opens its own list of choices.
+            // Store is there while the games come from more than one store or a store is picked, so it can be set back
+            // to Any.
+            actions.push_back("heading-filter");
+            actions.insert(actions.end(), filters.begin(), filters.end());
+            actions.push_back("compat-picker");
+            if (!library_filter_stores(state_).empty()) actions.push_back("store-picker");
             actions.insert(actions.end(), {"divider", "filters-reset", "refresh-library", "cancel"});
         open_modal({"filters", "Sort and filters", state_.navigation.focus_key, std::move(actions), 0, false});
         }

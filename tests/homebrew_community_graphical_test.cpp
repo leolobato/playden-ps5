@@ -145,8 +145,8 @@ int main(int argc, char** argv) {
                   find_row(model, "details-compat")->title == "Refused" && find_row(model, "details-compat")->value.empty(),
               "a game listed as Refused says so, without a count");
         check(model.action("details:900004") && find_row(model, "details-compat") &&
-                  find_row(model, "details-compat")->title == "Not listed",
-              "a game the list doesn't have is Not listed");
+                  find_row(model, "details-compat")->title == "Untested",
+              "a game the list doesn't have is Untested");
         {
             // Install for a game listed as Partial, Broken or Refused: a warning above Install with the list's notes,
             // and Install keeps the focus, one press away (#977).

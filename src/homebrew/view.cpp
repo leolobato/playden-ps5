@@ -4437,7 +4437,7 @@ class Render::Impl
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
             {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"}, {"share-as", "Community"},
             {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
-            {"filters", "Library"}, {"logs-controls", "Logs"}, {"setting-value", "Settings"}, {"diagnostics", "Settings"},
+            {"filters", "Library"}, {"filter-compat", "Library"}, {"filter-store", "Library"}, {"logs-controls", "Logs"}, {"setting-value", "Settings"}, {"diagnostics", "Settings"},
             {"notices", "Notifications"}, {"qr-controls", "Sign in"}, {"session-controls", "Simulation"},
             {"simulation-controls", "Simulation"}, {"scenarios", "Simulation"}};
         if (const auto found = names.find(surface); found != names.end())

@@ -1590,7 +1590,7 @@ void live_empty_filter_keeps_the_signed_in_account() {
     model.UpdateCommunityCatalog(catalog);
     model.TakeServiceActions();
     check(model.action("r1") && model.action("triangle"),"live filter modal opens");
-    activate(model,"compat-filter-works");
+    activate(model,"compat-picker");activate(model,"compat-filter-works");
     check(model.visible_games().empty(),"no game is listed as Works");
     const auto* empty=find_row(model,"library-empty");
     check(empty!=nullptr && empty->action=="filters-reset" && empty->title=="Reset filters",
@@ -1628,10 +1628,8 @@ void live_filters_only_use_available_facts() {
     const auto& actions=model.state().navigation.modals.back().action_keys;
     for(const auto& unavailable:{"sort-recent-added","sort-install-size","filter-installed","filter-genre-adventure","filter-controller-full"})
         check(std::find(actions.begin(),actions.end(),unavailable)==actions.end(),"unknown facts are not filter choices");
-    for(const auto* status:{"compat-filter-any","compat-filter-works","compat-filter-partial","compat-filter-broken",
-                            "compat-filter-refused","compat-filter-unlisted"})
-        check(std::find(actions.begin(),actions.end(),status)!=actions.end(),"the community's compatibility list is filterable");
-    check(std::find(actions.begin(),actions.end(),"heading-filter")==actions.end(),"no Filter heading without a filter under it");
+    check(std::find(actions.begin(),actions.end(),"compat-picker")!=actions.end(),"the community's compatibility list is filterable");
+    check(std::find(actions.begin(),actions.end(),"heading-filter")!=actions.end(),"the Filter heading is over Compatibility");
     check(std::find(actions.begin(),actions.end(),"filter-hide-demos")==actions.end(),"a library without demos has no Demos row");
 
     // A CM acquisition date makes "Recently added" a real fact, sorted newest first.
@@ -1666,11 +1664,18 @@ void live_compat_filter_uses_the_community_list() {
     check(model.ApplyOrganization(1,model.BeginOrganizationLoad(1),organization),"organization with Works applies");
     check(model.action("r1") && model.visible_games().size()==3,"without the list, Works hides no game");
     check(model.action("triangle"),"filter sheet opens");
+    const auto* picker=find_row(model,"compat-picker");
+    check(picker && picker->title=="Compatibility" && picker->value=="Any" && picker->subtitle=="List not loaded yet",
+          "without the list the Compatibility row says Any, and why");
+    activate(model,"compat-picker");
+    check(model.state().navigation.modals.size()==2 && model.state().navigation.modals.back().id=="filter-compat",
+          "Compatibility opens its own list");
     const auto* any=find_row(model,"compat-filter-any");
     const auto* works=find_row(model,"compat-filter-works");
     check(any && any->checked && any->subtitle=="List not loaded yet" && works && !works->enabled,
           "without the list Any is ticked, says why, and the statuses can't be picked");
-    check(model.action("circle"),"sheet closes");
+    check(model.action("circle") && model.state().navigation.modals.size()==1,"Circle goes back to Sort and filters");
+    check(model.action("circle") && model.state().navigation.modals.empty(),"sheet closes");
 
     // The list arrives: Works keeps the game it lists as Works.
     playden::homebrew::CommunityCatalog catalog;
@@ -1680,16 +1685,21 @@ void live_compat_filter_uses_the_community_list() {
     const auto ids=[&]{std::vector<playden::GameId> result;for(const auto* item:model.visible_games()) result.push_back(item->id);return result;};
     check(ids()==std::vector<playden::GameId>{SteamId(42)},"Works keeps the game listed as Works");
     check(model.action("triangle"),"filter sheet opens with the list");
+    check(find_row(model,"compat-picker")->value=="Works" && find_row(model,"compat-picker")->subtitle.empty(),
+          "the Compatibility row says Works");
+    activate(model,"compat-picker");
+    check(model.state().navigation.focus_key=="compat-filter-works","the list opens on the status in use");
     works=find_row(model,"compat-filter-works");
     check(works && works->checked && works->enabled && find_row(model,"compat-filter-any")->subtitle.empty(),"Works is ticked");
     activate(model,"compat-filter-partial");
+    check(model.state().navigation.modals.empty(),"a choice closes both sheets");
     check(ids()==std::vector<playden::GameId>{SteamId(43)} && model.ExportOrganization().filters==std::set<std::string>{"compat-partial"},
           "one status at a time: Partial replaces Works, and is saved");
     check(model.action("triangle"),"filter sheet opens again");
-    activate(model,"compat-filter-unlisted");
-    check(ids()==std::vector<playden::GameId>{SteamId(44)},"Not listed keeps the game the list doesn't have");
+    activate(model,"compat-picker");activate(model,"compat-filter-unlisted");
+    check(ids()==std::vector<playden::GameId>{SteamId(44)},"Untested keeps the game the list doesn't have");
     check(model.action("triangle"),"filter sheet opens once more");
-    activate(model,"compat-filter-any");
+    activate(model,"compat-picker");activate(model,"compat-filter-any");
     check(ids().size()==3 && model.ExportOrganization().filters.empty(),"Any shows every game");
 
     // A saved status with no list yet: the focused game may be one the list then hides. The focus moves to a game shown.
@@ -1747,10 +1757,9 @@ void live_filters_sheet_sections() {
     check(model.action("r1") && model.action("triangle"),"live filter modal opens");
     const auto& actions=model.state().navigation.modals.back().action_keys;
     check(actions==std::vector<std::string>{"heading-sort","sort-name","sort-recent-played","sort-playtime","heading-filter",
-                                           "filter-hide-demos","heading-compat","compat-filter-any","compat-filter-works",
-                                           "compat-filter-partial","compat-filter-broken","compat-filter-refused",
-                                           "compat-filter-unlisted","divider","filters-reset","refresh-library","cancel"},
-          "sorts, filters, compatibility and actions in their sections");
+                                           "filter-hide-demos","compat-picker","divider","filters-reset","refresh-library",
+                                           "cancel"},
+          "sorts, filters and actions in their sections; Compatibility is one row");
     check(model.state().navigation.focus_key=="sort-name","the sheet opens on its first sort, past the heading");
     const auto* heading=find_row(model,"heading-sort");
     const auto* divider=find_row(model,"divider");
@@ -1767,17 +1776,15 @@ void live_filters_sheet_sections() {
     const auto filter_keys=model.state().navigation.modals.back().action_keys;
     check(model.action("up") && model.state().navigation.focus_key==filter_keys.back(),"Up from the first sort goes to the last row");
     check(model.action("focus:sort-name"),"back on the first sort");
-    for(const auto* expected:{"sort-recent-played","sort-playtime","filter-hide-demos","compat-filter-any","compat-filter-works",
-                              "compat-filter-partial","compat-filter-broken","compat-filter-refused","compat-filter-unlisted",
-                              "filters-reset"})
+    for(const auto* expected:{"sort-recent-played","sort-playtime","filter-hide-demos","compat-picker","filters-reset"})
         check(model.action("down") && model.state().navigation.focus_key==expected,"down skips headings and the divider");
-    check(model.action("up") && model.state().navigation.focus_key=="compat-filter-unlisted","up goes back past the divider");
+    check(model.action("up") && model.state().navigation.focus_key=="compat-picker","up goes back past the divider");
 
     // A jump that ends on a heading or the divider goes on past it, and asking for one directly is refused.
-    check(model.action("focus:compat-filter-partial") && model.action("r2") && model.state().navigation.focus_key=="filters-reset",
+    check(model.action("focus:sort-playtime") && model.action("r2") && model.state().navigation.focus_key=="filters-reset",
           "a jump down lands past the divider");
-    check(model.action("focus:compat-filter-works") && model.action("l2") && model.state().navigation.focus_key=="sort-playtime",
-          "a jump up lands past the Filter heading");
+    check(model.action("focus:compat-picker") && model.action("l2") && model.state().navigation.focus_key=="sort-recent-played",
+          "a jump up counts the Filter heading as a row it passes");
     check(model.action("focus:sort-name") && model.action("l2") && model.state().navigation.focus_key=="sort-name",
           "a jump up from the first sort stays on it");
     check(!model.action("focus:heading-sort") && !model.action("focus:divider") && model.state().navigation.focus_key=="sort-name",
@@ -1851,8 +1858,7 @@ void live_store_filter() {
           "Steam's games load");
     check(model.action("r1") && model.action("triangle"),"live filter modal opens");
     auto keys=model.state().navigation.modals.back().action_keys;
-    check(std::find(keys.begin(),keys.end(),"heading-store")==keys.end() && find_row(model,"store-filter-any")==nullptr,
-          "Steam's games only: no Store group");
+    check(std::find(keys.begin(),keys.end(),"store-picker")==keys.end(),"Steam's games only: no Store row");
     model.action("circle");
 
     playden::homebrew::AccountUpdate gog_account;
@@ -1867,16 +1873,20 @@ void live_store_filter() {
     check(model.UpdateLibrary(gog),"GOG's games load");
     check(model.action("triangle"),"filter modal opens with two stores");
     keys=model.state().navigation.modals.back().action_keys;
-    const auto heading=std::find(keys.begin(),keys.end(),"heading-store");
-    check(heading!=keys.end() && std::vector<std::string>(heading,heading+4)==
-              std::vector<std::string>{"heading-store","store-filter-any","store-filter-steam","store-filter-gog"} &&
-              *(heading+4)=="divider",
-          "Store lists Any, Steam and GOG after the filters, before the actions");
+    const auto store_row=std::find(keys.begin(),keys.end(),"store-picker");
+    check(store_row!=keys.end() && *(store_row-1)=="compat-picker" && *(store_row+1)=="divider",
+          "Store is a row after Compatibility, before the actions");
+    const auto* store=find_row(model,"store-picker");
+    check(store && store->title=="Store" && store->value=="Any","the Store row says Any");
+    activate(model,"store-picker");
+    check(model.state().navigation.modals.back().id=="filter-store" &&
+              model.state().navigation.modals.back().action_keys==
+                  std::vector<std::string>{"store-filter-any","store-filter-steam","store-filter-gog"},
+          "Store opens its list: Any, Steam and GOG");
     const auto* any=find_row(model,"store-filter-any");
-    const auto* title=find_row(model,"heading-store");
-    check(title && title->title=="Store" && title->kind==RowKind::Separator && any && any->title=="Any" && any->checked &&
+    check(any && any->title=="Any" && any->checked &&
               !find_row(model,"store-filter-gog")->checked && find_row(model,"store-filter-gog")->title=="GOG",
-          "a Store heading, and Any has the tick");
+          "Any has the tick");
     activate(model,"store-filter-gog");
     auto visible=model.visible_games();
     check(visible.size()==2 && std::all_of(visible.begin(),visible.end(),[](const auto* item){ return item->id.store==playden::Store::kGog; }),
@@ -1884,9 +1894,11 @@ void live_store_filter() {
     check(model.ExportOrganization().filters==std::set<std::string>{"store-gog"} &&
               playden::OrganizationSnapshotIsValid(model.ExportOrganization()),
           "the Store filter is saved");
-    check(model.action("triangle") && find_row(model,"store-filter-gog")->checked && !find_row(model,"store-filter-any")->checked,
-          "the tick moves to GOG");
-    activate(model,"store-filter-steam");
+    check(model.action("triangle") && find_row(model,"store-picker")->value=="GOG","the Store row says GOG");
+    activate(model,"store-picker");
+    check(find_row(model,"store-filter-gog")->checked && !find_row(model,"store-filter-any")->checked,"the tick moves to GOG");
+    model.action("circle");
+    activate(model,"store-picker");activate(model,"store-filter-steam");
     check(model.visible_games().size()==3 && model.ExportOrganization().filters==std::set<std::string>{"store-steam"},
           "picking Steam replaces GOG");
     // With the other filters and the rail's scope.
@@ -1900,18 +1912,18 @@ void live_store_filter() {
     check(model.action("cross") && model.visible_games().empty() && has_row(model,"library-empty"),
           "the GOG scope with the Steam filter: nothing, and the empty view offers Reset filters");
     check(model.action("triangle"),"filter modal opens on the empty view");
-    activate(model,"store-filter-any");
+    activate(model,"store-picker");activate(model,"store-filter-any");
     check(model.visible_games().size()==2 && model.ExportOrganization().filters==std::set<std::string>{"hide-demos"},
           "Any lists every store's games again");
     check(model.action("triangle"),"filter modal opens again");
-    activate(model,"store-filter-gog");
+    activate(model,"store-picker");activate(model,"store-filter-gog");
     check(model.action("triangle"),"filter modal opens before Reset");
     activate(model,"filters-reset");
     check(model.ExportOrganization().filters.empty() && model.visible_games().size()==2,"Reset clears the Store filter too");
 
     // A store picked keeps its row while it is the only one with games, so it can be set back to Any.
     check(model.action("triangle"),"filter modal opens");
-    activate(model,"store-filter-steam");
+    activate(model,"store-picker");activate(model,"store-filter-steam");
     Simulation restored=make_live();
     restored.SetGogStoreEnabled(true);
     restored.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
@@ -1923,13 +1935,10 @@ void live_store_filter() {
           "the Store filter is restored");
     check(restored.action("r1") && restored.action("triangle"),"filter modal opens on one store");
     keys=restored.state().navigation.modals.back().action_keys;
-    const auto only=std::find(keys.begin(),keys.end(),"heading-store");
-    check(only!=keys.end() && std::vector<std::string>(only,only+3)==
-              std::vector<std::string>{"heading-store","store-filter-any","store-filter-steam"} &&
-              find_row(restored,"store-filter-steam")->checked,
-          "with one store, the group stays while that store is picked");
-    activate(restored,"store-filter-any");
-    check(restored.action("triangle") && find_row(restored,"store-filter-any")==nullptr,"set back to Any, the group goes");
+    check(std::find(keys.begin(),keys.end(),"store-picker")!=keys.end() && find_row(restored,"store-picker")->value=="Steam",
+          "with one store, the Store row stays while that store is picked");
+    activate(restored,"store-picker");activate(restored,"store-filter-any");
+    check(restored.action("triangle") && find_row(restored,"store-picker")==nullptr,"set back to Any, the Store row goes");
     restored.action("circle");
 
     // A store picked while the file loads replaces the file's store; Any picked meanwhile clears it.
@@ -1946,11 +1955,11 @@ void live_store_filter() {
         // Any is a change only from a store picked before the load began.
         if (picked=="any") {
             check(loading.action("triangle"),"filter modal opens");
-            activate(loading,"store-filter-steam");
+            activate(loading,"store-picker");activate(loading,"store-filter-steam");
         }
         const auto token=loading.BeginOrganizationLoad(1);
         check(loading.action("triangle"),"filter modal opens while the file loads");
-        activate(loading,"store-filter-"+picked);
+        activate(loading,"store-picker");activate(loading,"store-filter-"+picked);
         check(loading.ApplyOrganization(1,token,file),"the file applies");
         const auto expected=picked=="any" ? std::set<std::string>{"hide-demos"} : std::set<std::string>{"hide-demos","store-steam"};
         check(loading.state().library.filters==expected && playden::OrganizationSnapshotIsValid(loading.ExportOrganization()),

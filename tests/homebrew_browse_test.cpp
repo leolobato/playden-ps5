@@ -94,7 +94,7 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
     check(only("compat-partial") == std::vector<GameId>{SteamId(900002)}, "Partial keeps Partial");
     check(only("compat-broken") == std::vector<GameId>{SteamId(900003)}, "Broken keeps Broken");
     check(only("compat-refused") == std::vector<GameId>{SteamId(900005)}, "Refused keeps Refused");
-    check(only("compat-unlisted").size() == 19, "Not listed keeps the games the list doesn't have");
+    check(only("compat-unlisted").size() == 19, "Untested keeps the games the list doesn't have");
     check(only("compat-great").size() == 23, "a status this build doesn't know is Any");
     state.library.filters.clear();
     check(compat_listing(state, SteamId(900002)) && compat_listing(state, SteamId(900002))->notes == "Slow." &&
