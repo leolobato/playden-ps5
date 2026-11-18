@@ -848,7 +848,7 @@ std::string action_label(const std::string& key) {
         {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"}, {"heading-store", "Store"},
         {"heading-compat", "Compatibility"}, {"compat-filter-any", "Any"}, {"compat-filter-works", "Works"},
         {"compat-filter-partial", "Partial"}, {"compat-filter-broken", "Broken"}, {"compat-filter-refused", "Refused"},
-        {"compat-filter-unlisted", "Untested"}, {"compat-picker", "Compatibility"}, {"store-picker", "Store"},
+        {"compat-filter-unlisted", "Untested"}, {"compat-picker", "Compatibility"}, {"store-picker", "Store"}, {"compat-notes", "Compatibility notes"}, {"compat-notes-close", "Close"},
         {"store-filter-any", "Any"}, {"store-filter-steam", "Steam"}, {"store-filter-gog", "GOG"}, {"store-filter-imported", "Imported"},
         {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
@@ -7548,6 +7548,13 @@ void Simulation::rebuild_view() {
             if (const auto* mine = rt::FindMyPreset(my_presets_, my_preset_menu_id_))
                 view_.subtitle = rt::MyPresetSummary(mine->preset.settings);
         }
+        if (modal.id == "compat-notes") {
+            // The same warning the Install sheet shows, for the game the menu is for. A list refreshed meanwhile may
+            // have it as Works now, or not at all: then there is nothing to warn about.
+            const auto id = state_.navigation.selected_game_id;
+            if (compat_notes_offered(id)) view_.notice = CompatNotice(*compat_listing(state_, id));
+            else view_.subtitle = "The compatibility list has no notes for this game now.";
+        }
         if (modal.id == "install") {
             // A game the community's list has as Partial, Broken or Refused: a warning above Install, with the list's
             // notes. Install stays one press (#977).
@@ -9218,6 +9225,7 @@ void Simulation::rebuild_view() {
         else if (modal.id == "invite-friends") view_.legends = {"Cross Select", "Circle Cancel"};
         else if (modal.id == "install-language") view_.legends = {"Cross Use this language", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "filter-compat" || modal.id == "filter-store") view_.legends = {"Cross Choose", "Circle Back"};
+        else if (modal.id == "compat-notes") view_.legends = {"Cross Close", "Circle Back"};
         else if (modal.id == "install-version") view_.legends = {"Cross Use this version", "L1/R1 Jump", "Circle Back"};
         else if (modal.id == "vote-recipe") view_.legends = {"Cross Choose", "Circle Not now"};
         else if (modal.id == "feedback")
@@ -13586,6 +13594,11 @@ void Simulation::activate() {
         }
         refresh_game_settings(); save_profile();
     }
+    else if (action_name == "compat-notes") {
+        if (compat_notes_offered(state_.navigation.selected_game_id))
+            open_modal({"compat-notes", "Compatibility notes", state_.navigation.focus_key, {"compat-notes-close"}, 0, false});
+    } else if (action_name == "compat-notes-close")
+        state_.navigation.modals.clear();
     else if (action_name == "compatibility")
         open_modal({"compatibility", "Compatibility", "compatibility", {"rating-untested", "rating-works", "rating-playable", "rating-broken", "cancel"}, 0, false});
     else if (action_name == "note") start_editor("Note", state_.library.notes[state_.navigation.selected_game_id]);
@@ -16326,10 +16339,17 @@ void Simulation::UpdateCommunityCatalog(CommunityCatalog catalog) {
         it = it->second ? std::next(it) : community_objects_.erase(it);
     // Open sheets list what arrived.
     for (auto& modal : state_.navigation.modals) {
-        if (modal.id != "install" && modal.id != "preset-picker") continue;
+        if (modal.id != "install" && modal.id != "preset-picker" && modal.id != "context") continue;
         const auto focused = modal.action_keys[static_cast<std::size_t>(modal.focused_action)];
         if (modal.id == "install") modal.action_keys = install_sheet_actions(install_choice_game_);
-        else {
+        else if (modal.id == "context") {
+            // A game's menu (page or tile, whichever rows it kept) gains or loses Compatibility notes as the list changes.
+            auto& keys = modal.action_keys;
+            std::erase(keys, std::string("compat-notes"));
+            const auto rating = std::find(keys.begin(), keys.end(), "compatibility");
+            if (rating != keys.end() && compat_notes_offered(state_.navigation.selected_game_id))
+                keys.insert(rating, "compat-notes");
+        } else {
             int ignored = 0;
             modal.action_keys = chooser_actions(chooser_game_, chooser_for_install_, &ignored);
         }
@@ -16589,7 +16609,7 @@ std::vector<std::string> Simulation::tile_context_actions() {
     // What a tile keeps of the page's sheet, in the page's order. Game settings stays on the page, where Play is after
     // a change; so do the rows that open more sheets (Maintenance…, Manage DLC…, Move to…) and Start.
     static const std::set<std::string> kept{"cancel-download", "heading-library", "favorite", "collection", "note", "hide",
-                                            "heading-rating", "compatibility", "share-feedback", "divider", "uninstall",
+                                            "heading-rating", "compat-notes", "compatibility", "share-feedback", "divider", "uninstall",
                                             "import-remove", "cancel"};
     auto actions = details_context_actions();
     std::erase_if(actions, [](const std::string& action) { return !kept.contains(action); });
@@ -16628,6 +16648,11 @@ void Simulation::open_game_actions() {
     open_modal({"context", "Game actions", "details-more", actions, 0, false});
 }
 
+bool Simulation::compat_notes_offered(GameId id) const {
+    const auto* listed = compat_listing(state_, id);
+    return listed != nullptr && listed->status != "works";
+}
+
 std::vector<std::string> Simulation::details_context_actions() const {
     const auto selected = state_.navigation.selected_game_id;
     // A game Playden could not prepare opens Game settings too, to choose a program or try anyway.
@@ -16664,7 +16689,11 @@ std::vector<std::string> Simulation::details_context_actions() const {
     // A program from the game folder (its settings launcher) for one run, or Play with more logging.
     actions.push_back("heading-start");
     if (live() && game_prepared(selected)) actions.insert(actions.end(), {"run-once", "play-detailed-logs"});
-    actions.insert(actions.end(), {"heading-library", "favorite", "collection", "note", "hide", "heading-rating", "compatibility"});
+    actions.insert(actions.end(), {"heading-library", "favorite", "collection", "note", "hide", "heading-rating"});
+    // What the community's compatibility list says about a game it has as Partial, Broken or Refused: the notes the
+    // Install sheet showed, any time after (#977).
+    if (compat_notes_offered(selected)) actions.push_back("compat-notes");
+    actions.push_back("compatibility");
     // How it ran, any time: the same sheet as after a game (plan 2026-11-06, decision 1).
     // The fixture counts every game as prepared (Game settings opens for any); a report needs it installed there.
     if (live() ? set_up : in_place || is_installed(state_, selected)) actions.push_back("share-feedback");

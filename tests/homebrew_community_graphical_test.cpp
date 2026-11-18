@@ -186,6 +186,59 @@ int main(int argc, char** argv) {
             while (!model.state().navigation.modals.empty()) model.action("circle");
         }
         {
+            // After install the notes stay one menu away: More › Compatibility notes opens the same warning, for a game
+            // listed as Partial, Broken or Refused (#977).
+            auto catalog = model.state().community;
+            (*catalog.compat)[playden::GameRef::Steam(900003)] = CommunityListing{"broken", 0, "Crashes in chapter 2."};
+            model.UpdateCommunityCatalog(catalog);
+            const auto menu = [&](const char* details) {
+                while (!model.state().navigation.modals.empty()) model.action("circle");
+                check(model.action(details) && model.action("options") && model.view().surface == "context",
+                      "the game's More menu opens");
+                return model.state().navigation.modals.back().action_keys;
+            };
+            auto keys = menu("details:900003");
+            const auto notes = std::find(keys.begin(), keys.end(), "compat-notes");
+            check(notes != keys.end() && notes + 1 != keys.end() && *(notes + 1) == "compatibility" &&
+                      find_row(model, "compat-notes")->title == "Compatibility notes",
+                  "a game listed as Broken has Compatibility notes, before the player's own rating");
+            check(model.action("focus:compat-notes") && model.action("cross") && model.view().surface == "compat-notes" &&
+                      model.view().notice && model.view().notice->kind == "danger" &&
+                      model.view().notice->title == "Compatibility list: Broken" &&
+                      model.view().notice->body == "Crashes in chapter 2." &&
+                      model.state().navigation.focus_key == "compat-notes-close",
+                  "Compatibility notes shows the list's warning and notes, with Close");
+            check(model.action("cross") && model.state().navigation.modals.empty(), "Close closes the sheets");
+            // A list refreshed while the menu or the sheet is open: the row and the warning follow it.
+            const auto relist = [&](const char* status) {
+                auto updated = model.state().community;
+                if (status) (*updated.compat)[playden::GameRef::Steam(900003)] = CommunityListing{status, 0, "Crashes in chapter 2."};
+                else updated.compat->erase(playden::GameRef::Steam(900003));
+                model.UpdateCommunityCatalog(updated);
+                const auto& open = model.state().navigation.modals.back().action_keys;
+                return std::find(open.begin(), open.end(), "compat-notes") != open.end();
+            };
+            menu("details:900003");
+            check(!relist("works") && model.view().surface == "context", "the list now has it as Works: the open menu drops the row");
+            check(relist("partial"), "Partial again: the open menu offers the row again");
+            check(!relist(nullptr), "the list drops the game: the row goes");
+            relist("broken");
+            check(model.action("focus:compat-notes") && model.action("cross") && model.view().notice, "the sheet opens");
+            relist("works");
+            check(model.view().surface == "compat-notes" && !model.view().notice &&
+                      model.view().subtitle == "The compatibility list has no notes for this game now.",
+                  "listed as Works while the sheet is open: no warning, and it says why");
+            relist("broken");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            keys = menu("details:900001");
+            check(std::find(keys.begin(), keys.end(), "compat-notes") == keys.end(),
+                  "a game listed as Works has no Compatibility notes");
+            keys = menu("details:900004");
+            check(std::find(keys.begin(), keys.end(), "compat-notes") == keys.end(),
+                  "a game the list doesn't have has no Compatibility notes");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+        }
+        {
             // Without the list (not fetched yet, or an API that has none) the page says nothing about the community.
             auto catalog = model.state().community;
             catalog.compat.reset();

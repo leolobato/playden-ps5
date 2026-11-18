@@ -2417,6 +2417,8 @@ private:
     // The game page's Game actions (Options): the game's own rows, then Start, Library and Your rating under headings,
     // then Uninstall… (or Remove from library…) and Cancel below a divider.
     [[nodiscard]] std::vector<std::string> details_context_actions() const;
+    // A game the community's compatibility list has as Partial, Broken or Refused: More offers its notes (#977).
+    [[nodiscard]] bool compat_notes_offered(GameId id) const;
     // A tile's Game actions (Home and Library): the page's rows with some left out, never reordered. It fixes the game
     // Remove from library acts on.
     [[nodiscard]] std::vector<std::string> tile_context_actions();

@@ -1969,14 +1969,14 @@ class Render::Impl
         return download ? "Not installed · " + short_size(*download) : "Not installed";
     }
 
-    // reserve: room kept free at the right for the corner badges.
-    void tile_badge(const gfx::Rect &rect, std::string_view text, gfx::Color dot, float reserve = 0.0F)
+    // reserve: room kept free at the right for the corner badges; left: room kept at the left for the compatibility badge.
+    void tile_badge(const gfx::Rect &rect, std::string_view text, gfx::Color dot, float reserve = 0.0F, float left = 0.0F)
     {
         constexpr float size = 16.0F;
-        const float width = std::min(rect.w - 20.0F - reserve, fonts_.semibold.measure(text, size) + 44.0F);
-        scene_.rounded_rect({rect.x + 10.0F, rect.y + 10.0F, width, 32.0F}, 6.0F, kBackground.with_alpha(0.85F));
-        scene_.circle(rect.x + 26.0F, rect.y + 26.0F, 4.0F, dot);
-        ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, text, size, width - 44.0F), rect.x + 38.0F,
+        const float width = std::min(rect.w - 20.0F - reserve - left, fonts_.semibold.measure(text, size) + 44.0F);
+        scene_.rounded_rect({rect.x + 10.0F + left, rect.y + 10.0F, width, 32.0F}, 6.0F, kBackground.with_alpha(0.85F));
+        scene_.circle(rect.x + 26.0F + left, rect.y + 26.0F, 4.0F, dot);
+        ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, text, size, width - 44.0F), rect.x + 38.0F + left,
                  rect.y + 32.0F, size, kText);
     }
 
@@ -2005,16 +2005,15 @@ class Render::Impl
         return taken;
     }
 
-    // A game's status on the community's compatibility list, as the design system's status symbol on a dark rim:
-    // a tick for Works, a warning for Partial, a cross for Broken and Refused; a plain question mark for a game the
-    // list doesn't have (no status).
+    // A game's status on the community's compatibility list (#977), drawn quietly like the download mark: a dark circle
+    // with a thin ring and a glyph in the status colour (a tick for Works, "!" for Partial, a cross for Broken and
+    // Refused), or a plain white question mark for a game the list doesn't have (no status). The design system's filled
+    // status plates read as alarms on a tile.
     void compat_mark(const std::string &status, float cx, float cy)
     {
+        scene_.circle(cx, cy, 15.0F, kBackground.with_alpha(0.8F));
         if (status.empty())
         {
-            // Untested is not a warning: a quiet question mark like the download mark, with no coloured plate
-            // (the design system's question kind is an orange disc).
-            scene_.circle(cx, cy, 15.0F, kBackground.with_alpha(0.8F));
             const gfx::Color ink = kText.with_alpha(0.85F);
             const float hook_cy = cy - 3.5F;
             scene_.arc(cx, hook_cy, 5.0F, 2.0F, 4.712389F, 4.1F, ink);
@@ -2022,11 +2021,23 @@ class Render::Impl
             scene_.circle(cx, cy + 7.8F, 1.4F, ink);
             return;
         }
-        const ui::StatusKind kind = status == "works" ? ui::StatusKind::success
-                                  : status == "partial" ? ui::StatusKind::warning : ui::StatusKind::danger;
-        scene_.circle(cx, cy, 17.0F, kBackground.with_alpha(0.8F));
-        ui::Canvas canvas{scene_, fonts_, renderer_.glass_texture(), clock_};
-        ui::draw_status_icon(canvas, theme_, kind, cx, cy, 28.0F);
+        const gfx::Color hue = status == "works" ? kGreen : status == "partial" ? kAmber : kRed;
+        scene_.ring(cx, cy, 15.0F, 2.0F, hue);
+        if (status == "works")
+        {
+            scene_.line(cx - 5.5F, cy + 0.5F, cx - 1.5F, cy + 4.5F, 2.2F, hue);
+            scene_.line(cx - 1.5F, cy + 4.5F, cx + 6.0F, cy - 4.0F, 2.2F, hue);
+        }
+        else if (status == "partial")
+        {
+            scene_.line(cx, cy - 7.0F, cx, cy + 2.5F, 2.4F, hue);
+            scene_.circle(cx, cy + 7.0F, 1.5F, hue);
+        }
+        else
+        {
+            scene_.line(cx - 5.0F, cy - 5.0F, cx + 5.0F, cy + 5.0F, 2.2F, hue);
+            scene_.line(cx + 5.0F, cy - 5.0F, cx - 5.0F, cy + 5.0F, 2.2F, hue);
+        }
     }
 
     void download_mark(float cx, float cy, float opacity)
@@ -2119,20 +2130,20 @@ class Render::Impl
             (status.job->state == JobState::Downloading || status.job->state == JobState::Verifying ||
              status.job->state == JobState::Pausing || status.job->state == JobState::Paused);
         const bool show_download_mark = status.job == nullptr && status.installation == nullptr && !status.in_place;
-        // How the community's compatibility list has the game (#977): a status symbol always in the bottom right corner,
-        // with the download mark or the size to its left; a question mark when the list doesn't have the game. None
-        // before Playden has the list. A thumbnail has no room, and a download's progress takes the bottom.
+        // How the community's compatibility list has the game (#977), or a question mark when the list doesn't have it.
+        // None before Playden has the list, on a thumbnail, or while a download's progress shows.
         const bool compat_mark_shown = current_state_ != nullptr && current_state_->community.compat && rect.w >= 180.0F &&
                                        !downloading;
         const CommunityListing *listed = compat_mark_shown ? compat_listing(*current_state_, game.id) : nullptr;
-        const bool size_pill = status.installed && status.installation != nullptr && status.installation->installed_bytes > 0;
-        const float compat_room = compat_mark_shown ? 38.0F : 0.0F;
+        // The badge shows only on the focused tile, fading in with the focus, in its top left corner; a status label
+        // moves right to make room. The bottom keeps the title and the download mark only (no size on the tile).
+        const bool compat_badge = compat_mark_shown && amount > 0.0F;
         if (title_overlay && amount > 0.0F && !game.art_pending && !downloading)
         {
             scene_.push_opacity(amount);
             scene_.gradient_rect({rect.x, rect.y + rect.h - 105.0F, rect.w, 105.0F}, 8.0F,
                                  kBackground.with_alpha(0.0F), kBackground.with_alpha(0.92F));
-            const float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F) - compat_room;
+            const float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F);
             dynamic_text(game.title, rect.x + 14.0F, rect.y + rect.h - 40.0F, 24.0F, kText, text_width);
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(game, status), 15.0F, text_width),
                      rect.x + 14.0F, rect.y + rect.h - 17.0F, 15.0F, kSecondary);
@@ -2149,27 +2160,20 @@ class Render::Impl
         }
         const bool job_badge = status.job != nullptr && !downloading;
         const float corner = corner_badges(game, rect, job_badge || status.disconnected);
+        const float badge_room = compat_badge ? 40.0F * amount : 0.0F;
         if (job_badge)
             tile_badge(rect, JobStateText(*status.job),
-                       status.job->state == JobState::Failed ? kAmber : kSecondary, corner);
+                       status.job->state == JobState::Failed ? kAmber : kSecondary, corner, badge_room);
         else if (status.disconnected)
-            tile_badge(rect, "Drive disconnected", kAmber, corner);
+            tile_badge(rect, "Drive disconnected", kAmber, corner, badge_room);
         if (show_download_mark)
-            download_mark(rect.x + rect.w - 25.0F - compat_room, rect.y + rect.h - 25.0F, 1.0F);
-        else if (size_pill && amount < 1.0F && title_overlay)
+            download_mark(rect.x + rect.w - 25.0F, rect.y + rect.h - 25.0F, 1.0F);
+        if (compat_badge)
         {
-            const std::string size = short_size(status.installation->installed_bytes);
-            const float width = fonts_.semibold.measure(size, 16.0F) + 20.0F;
-            scene_.push_opacity(1.0F - amount);
-            scene_.rounded_rect({rect.x + rect.w - 10.0F - compat_room - width, rect.y + rect.h - 42.0F, width, 32.0F},
-                                6.0F, kBackground.with_alpha(0.85F));
-            ui::text(scene_, fonts_.semibold, size, rect.x + rect.w - 20.0F - compat_room, rect.y + rect.h - 20.0F,
-                     16.0F, kText, gfx::Align::right);
+            scene_.push_opacity(amount);
+            compat_mark(listed != nullptr ? listed->status : std::string{}, rect.x + 26.0F, rect.y + 26.0F);
             scene_.pop_opacity();
         }
-        if (compat_mark_shown)
-            compat_mark(listed != nullptr ? listed->status : std::string{}, rect.x + rect.w - 25.0F,
-                        rect.y + rect.h - 25.0F);
         if (downloading && progress >= 0.0F)
         {
             const float value = std::clamp(progress, 0.0F, 1.0F);
@@ -4493,7 +4497,7 @@ class Render::Impl
             {"download-server", "Settings"},
             {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
             {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"}, {"share-as", "Community"},
-            {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
+            {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"compat-notes", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
             {"filters", "Library"}, {"filter-compat", "Library"}, {"filter-store", "Library"}, {"logs-controls", "Logs"}, {"setting-value", "Settings"}, {"diagnostics", "Settings"},
             {"notices", "Notifications"}, {"qr-controls", "Sign in"}, {"session-controls", "Simulation"},
             {"simulation-controls", "Simulation"}, {"scenarios", "Simulation"}};
