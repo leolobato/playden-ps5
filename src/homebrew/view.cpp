@@ -2006,10 +2006,12 @@ class Render::Impl
     }
 
     // A game's status on the community's compatibility list, as the design system's status symbol on a dark rim:
-    // a tick for Works, a warning for Partial, a cross for Broken and Refused.
+    // a tick for Works, a warning for Partial, a cross for Broken and Refused, a question mark for a game the list
+    // doesn't have (no status).
     void compat_mark(const std::string &status, float cx, float cy)
     {
-        const ui::StatusKind kind = status == "works" ? ui::StatusKind::success
+        const ui::StatusKind kind = status.empty() ? ui::StatusKind::question
+                                  : status == "works" ? ui::StatusKind::success
                                   : status == "partial" ? ui::StatusKind::warning : ui::StatusKind::danger;
         scene_.circle(cx, cy, 17.0F, kBackground.with_alpha(0.8F));
         ui::Canvas canvas{scene_, fonts_, renderer_.glass_texture(), clock_};
@@ -2106,26 +2108,20 @@ class Render::Impl
             (status.job->state == JobState::Downloading || status.job->state == JobState::Verifying ||
              status.job->state == JobState::Pausing || status.job->state == JobState::Paused);
         const bool show_download_mark = status.job == nullptr && status.installation == nullptr && !status.in_place;
-        // How the community's compatibility list has the game (#977): a status symbol at the bottom right, left of the
-        // download mark or the size. A thumbnail has no room, and a download's progress takes the bottom.
-        const CommunityListing *listed = current_state_ != nullptr && rect.w >= 180.0F && !downloading ?
-                                         compat_listing(*current_state_, game.id) : nullptr;
+        // How the community's compatibility list has the game (#977): a status symbol always in the bottom right corner,
+        // with the download mark or the size to its left; a question mark when the list doesn't have the game. None
+        // before Playden has the list. A thumbnail has no room, and a download's progress takes the bottom.
+        const bool compat_mark_shown = current_state_ != nullptr && current_state_->community.compat && rect.w >= 180.0F &&
+                                       !downloading;
+        const CommunityListing *listed = compat_mark_shown ? compat_listing(*current_state_, game.id) : nullptr;
         const bool size_pill = status.installed && status.installation != nullptr && status.installation->installed_bytes > 0;
-        float compat_cx = rect.x + rect.w - 25.0F;
-        if (show_download_mark)
-            compat_cx -= 38.0F;
-        else if (size_pill && title_overlay)
-            // The size fades out as the tile takes the focus; the symbol moves into its corner with it.
-            compat_cx -= (fonts_.semibold.measure(short_size(status.installation->installed_bytes), 16.0F) + 28.0F) *
-                         (1.0F - amount);
+        const float compat_room = compat_mark_shown ? 38.0F : 0.0F;
         if (title_overlay && amount > 0.0F && !game.art_pending && !downloading)
         {
             scene_.push_opacity(amount);
             scene_.gradient_rect({rect.x, rect.y + rect.h - 105.0F, rect.w, 105.0F}, 8.0F,
                                  kBackground.with_alpha(0.0F), kBackground.with_alpha(0.92F));
-            float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F);
-            if (listed != nullptr)
-                text_width = std::min(text_width, compat_cx - 25.0F - rect.x - 14.0F);
+            const float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F) - compat_room;
             dynamic_text(game.title, rect.x + 14.0F, rect.y + rect.h - 40.0F, 24.0F, kText, text_width);
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(game, status), 15.0F, text_width),
                      rect.x + 14.0F, rect.y + rect.h - 17.0F, 15.0F, kSecondary);
@@ -2148,21 +2144,21 @@ class Render::Impl
         else if (status.disconnected)
             tile_badge(rect, "Drive disconnected", kAmber, corner);
         if (show_download_mark)
-            download_mark(rect.x + rect.w - 25.0F, rect.y + rect.h - 25.0F, 1.0F);
+            download_mark(rect.x + rect.w - 25.0F - compat_room, rect.y + rect.h - 25.0F, 1.0F);
         else if (size_pill && amount < 1.0F && title_overlay)
         {
             const std::string size = short_size(status.installation->installed_bytes);
             const float width = fonts_.semibold.measure(size, 16.0F) + 20.0F;
             scene_.push_opacity(1.0F - amount);
-            scene_.rounded_rect({rect.x + rect.w - 10.0F - width, rect.y + rect.h - 42.0F, width, 32.0F}, 6.0F,
-                                kBackground.with_alpha(0.85F));
-            ui::text(scene_, fonts_.semibold, size, rect.x + rect.w - 20.0F, rect.y + rect.h - 20.0F, 16.0F,
-                     kText, gfx::Align::right);
+            scene_.rounded_rect({rect.x + rect.w - 10.0F - compat_room - width, rect.y + rect.h - 42.0F, width, 32.0F},
+                                6.0F, kBackground.with_alpha(0.85F));
+            ui::text(scene_, fonts_.semibold, size, rect.x + rect.w - 20.0F - compat_room, rect.y + rect.h - 20.0F,
+                     16.0F, kText, gfx::Align::right);
             scene_.pop_opacity();
         }
-        // After the size, which fades out under it while the symbol moves into the corner.
-        if (listed != nullptr)
-            compat_mark(listed->status, compat_cx, rect.y + rect.h - 25.0F);
+        if (compat_mark_shown)
+            compat_mark(listed != nullptr ? listed->status : std::string{}, rect.x + rect.w - 25.0F,
+                        rect.y + rect.h - 25.0F);
         if (downloading && progress >= 0.0F)
         {
             const float value = std::clamp(progress, 0.0F, 1.0F);
