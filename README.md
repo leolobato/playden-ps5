@@ -372,6 +372,11 @@ You can import a game that plays from its folder later, with **Copy to storage**
 one in the drop folder). The PS5 adds the
 game's title to Home when Playden quits. Importing a game later keeps its saves.
 
+**A recipe in the game folder:** when the folder has a `recipe.json` at its root (a recipe exported from Playden),
+Playden asks whether to use it once the game is added. The recipe sets the game's settings, and replaces the ones a
+folder you added before brought back. A recipe Playden can't use is skipped with a notice, and the game is added
+without it. The file stays in the game folder.
+
 **Limits:**
 
 - To play from where it is, the folder's path must be plain ASCII. Otherwise, copy the game.

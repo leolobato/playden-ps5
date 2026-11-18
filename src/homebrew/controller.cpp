@@ -1298,6 +1298,8 @@ void Controller::TickRuntime() {
           continue;
         }
         if (cloud_busy_.count(*it)) { ++it; continue; }  // a move waits for saves in transit
+        // A copied game whose folder recipe question is still open waits for the answer.
+        if (model_.FolderRecipeWaiting(*it)) { ++it; continue; }
         play_after_prepare_.erase(*it);
         if (!HoldForDropFolder(*it, DropFolderNext::kPrepare)) RequestPrepare(*it);  // a drop-folder game's files open first
         it = auto_prepare_.erase(it);
@@ -2108,8 +2110,13 @@ void Controller::TickImports() {
     } else if (!outcome->ok) {
       model_.NotifyImportFailed(it->second, outcome->message);
     } else if (it->second.kind == ImportRequestKind::Add && !outcome->id.empty()) {
+      const auto game = GameId::Local(outcome->id);
+      // A recipe.json in its folder: the player is asked whether to use it (before the program is seeded, so a folder
+      // added before is told apart by the settings it brought back), or told why it can't be used.
+      if (!outcome->recipe_revision.empty()) model_.OfferFolderRecipe(game, outcome->recipe_revision);
+      else if (!outcome->recipe_problem.empty()) model_.NotifyFolderRecipeRefused(it->second, game, outcome->recipe_problem);
       // A game just added: the program chosen with it goes into its Game settings.
-      model_.SeedGameProgram(GameId::Local(outcome->id), it->second.program);
+      model_.SeedGameProgram(game, it->second.program);
       if (it->second.prepare) prepare_after_import_[GameId::Local(outcome->id)] = false;
     } else if (it->second.kind == ImportRequestKind::MoveIntoPlayden) {
       prepare_after_import_[it->second.game_id] = true;
@@ -2120,6 +2127,8 @@ void Controller::TickImports() {
   // game already prepared there). One listed that can't play (its drive gone, a name the PS5 can't
   // open) is left for the player.
   for (auto it = prepare_after_import_.begin(); it != prepare_after_import_.end();) {
+    // Not before the player said whether to use the recipe in its folder: it would prepare with other settings.
+    if (model_.FolderRecipeWaiting(it->first)) { ++it; continue; }
     const auto* location = LocationOf(it->first);
     if (!location || location->managed() != it->second) { ++it; continue; }
     if (game_roots_.count(it->first) && std::find(auto_prepare_.begin(), auto_prepare_.end(), it->first) == auto_prepare_.end())

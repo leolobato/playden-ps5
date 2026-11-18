@@ -23,36 +23,42 @@ void WebRecipeImports::SetFeatureCheck(std::function<bool(const std::string& fea
   feature_enabled_ = std::move(enabled);
 }
 
-web::RecipeImportAnswer WebRecipeImports::Import(const std::string& game, std::string file) {
+WebRecipeImports::Kept WebRecipeImports::Keep(std::string file) {
   std::string error;
   const auto imported = community::PrepareImportedRecipe(file, &error);
-  if (!imported) return {422, error};
+  if (!imported) return {{}, {422, error}};
   const auto revision = runtime::HashArtifactBytes(imported->bytes);
-  if (!revision) return {500, "Playden couldn't read the recipe."};
+  if (!revision) return {{}, {500, "Playden couldn't read the recipe."}};
   const auto feature = runtime::CommunityRecipeFeature(imported->recipe);
   Keeper keeper;
   std::shared_ptr<CommunityKeepSet> keep;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_) return {503, "Playden is closing."};
+    if (closed_) return {{}, {503, "Playden is closing."}};
     if (!feature.empty() && !(feature_enabled_ && feature_enabled_(feature)))
-      return {422, "This recipe needs an experimental feature that is off on this console (" + feature + ")."};
+      return {{}, {422, "This recipe needs an experimental feature that is off on this console (" + feature + ")."}};
     keeper = keeper_;
     keep = keep_;
     // Kept before it is written, so a refresh's garbage collection never removes it before the game uses it.
     revisions_.insert(*revision);
   }
-  if (!keeper) return {503, "Playden can't take recipes now."};
+  if (!keeper) return {{}, {503, "Playden can't take recipes now."}};
   if (keep) {
     std::lock_guard<std::mutex> lock(keep->mutex);
     if (keep->revisions) keep->revisions->insert(*revision);
   }
-  if (!keeper(imported->bytes, &error)) return {500, "Playden couldn't keep the recipe (" + error + ")."};
+  if (!keeper(imported->bytes, &error)) return {{}, {500, "Playden couldn't keep the recipe (" + error + ")."}};
+  return {*revision, {}};
+}
+
+web::RecipeImportAnswer WebRecipeImports::Import(const std::string& game, std::string file) {
+  const auto kept = Keep(std::move(file));
+  if (kept.revision.empty()) return kept.refusal;
 
   std::unique_lock<std::mutex> lock(mutex_);
   if (closed_) return {503, "Playden is closing."};
   const auto ticket = next_ticket_++;
-  tickets_[ticket] = Ticket{game, *revision};
+  tickets_[ticket] = Ticket{game, kept.revision};
   const bool done = answered_.wait_for(lock, wait_, [&] { return tickets_.at(ticket).answered; });
   const auto found = tickets_.find(ticket);
   auto result = found->second;
@@ -103,6 +109,13 @@ void WebRecipeImports::Close() {
     }
   }
   answered_.notify_all();
+}
+
+std::function<stores::local::FolderRecipeKept(std::string bytes)> FolderRecipeKeeper(std::shared_ptr<WebRecipeImports> imports) {
+  return [imports = std::move(imports)](std::string bytes) -> stores::local::FolderRecipeKept {
+    auto kept = imports->Keep(std::move(bytes));
+    return {std::move(kept.revision), std::move(kept.refusal.message)};
+  };
 }
 
 }  // namespace playden::homebrew

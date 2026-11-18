@@ -1187,6 +1187,15 @@ int main() {
         if (gog) gog->Register(stores, simulation);
         // Imported games: imports.json next to installs.json in the runtime state folder; their
         // folders in /data/playden-import and playden/import on each drive (a drive counts while mounted).
+        // Recipe files from a paired browser, and the recipe.json in a game's folder when it is added: kept through the
+        // community service.
+        auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
+        recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {
+            return service->KeepObject(bytes, error);
+        }, community_keep);
+        recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
+            return feature == "online-steam" && online_steam;
+        });
         playden::stores::local::LocalLibrarySource* local_library = nullptr;
         if (imports) {
             playden::stores::local::LocalLibraryConfig import_config;
@@ -1210,6 +1219,7 @@ int main() {
             import_config.game_program = [](const std::string& folder, const std::string& program) {
                 return playden::runtime::GameProgramInstead(folder, program);
             };
+            import_config.keep_folder_recipe = playden::homebrew::FolderRecipeKeeper(recipe_imports);
             auto source = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
             local_library = source.get();
             copy_runner->SetChanged([local_library] { local_library->Reload(); });
@@ -1255,14 +1265,6 @@ int main() {
         web_config.files.pairing.store_root = user_root + "/web-access";
         // A game's page offers its exported recipe for download.
         web_config.files.exported_recipes = (std::filesystem::path(log_root).parent_path() / playden::kExportedRecipesFolder).string();
-        // Recipe files from a paired browser: kept through the community service.
-        auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
-        recipe_imports->SetKeeper([service = community.get()](const std::string& bytes, std::string* error) {
-            return service->KeepObject(bytes, error);
-        }, community_keep);
-        recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
-            return feature == "online-steam" && online_steam;
-        });
         web_config.files.import_recipe = [recipe_imports](const std::string& game, std::string file) {
             return recipe_imports->Import(game, std::move(file));
         };

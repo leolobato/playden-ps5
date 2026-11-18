@@ -55,6 +55,21 @@ struct ImportOutcome {
   bool ok = false;
   std::string id;       // the game's import ID
   std::string message;  // a sentence for the player or the log when it failed
+  // An Add whose folder has a recipe file at its root (kFolderRecipeName): the recipe kept for the game to use
+  // (LocalLibraryConfig::keep_folder_recipe), or why it can't be used. Both empty when the folder has none.
+  std::string recipe_revision;
+  std::string recipe_problem;
+};
+
+// The recipe a packager may put at the root of a game's folder: offered to the player when the game is added.
+inline constexpr const char* kFolderRecipeName = "recipe.json";
+// The largest recipe file read from a game's folder (the recipe service's own limit).
+inline constexpr std::size_t kMaxFolderRecipeBytes = 16 << 10;
+
+// What keep_folder_recipe did with a recipe file: its revision, or a sentence for the player.
+struct FolderRecipeKept {
+  std::string revision;
+  std::string problem;
 };
 
 struct LocalSnapshot {
@@ -102,6 +117,10 @@ struct LocalLibraryConfig {
   // which the console cannot do (runtime::GameProgramInstead). Called on the worker at Add. Empty: the chosen program
   // is kept.
   std::function<std::string(const std::string& folder, const std::string& program)> game_program;
+  // Checks and keeps the recipe file found at the root of a folder being added (its bytes, at most
+  // kMaxFolderRecipeBytes), on the worker, so the game can use it later (homebrew WebRecipeImports::Keep). Empty:
+  // recipe files are not looked for.
+  std::function<FolderRecipeKept(std::string bytes)> keep_folder_recipe;
 };
 
 // The words for a game that can't play from its folder because of its name (the descriptor rule).
@@ -201,7 +220,9 @@ class LocalLibrarySource final : public LibrarySource {
   void FollowUsbDrives();  // games on a USB drive that changed places: their folder says where they are now
   void Scan();
   void Project();
-  void Outcome(const Job& job, bool ok, std::string id, std::string message);
+  void Outcome(const Job& job, bool ok, std::string id, std::string message, FolderRecipeKept recipe = {});
+  // The recipe file at the root of the folder at `path` (a console path), kept; both empty when there is none.
+  FolderRecipeKept KeepFolderRecipe(const std::string& path);
   const ImportVolume* Volume(const std::string& id) const;
   std::string HostPath(const std::string& console_path) const;
   // The empty string, or why the drop-folder game at `path` (a console path) can't be played.

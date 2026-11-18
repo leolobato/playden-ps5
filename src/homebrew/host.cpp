@@ -829,6 +829,12 @@ int main(int argc, char** argv) {
         // GOG's account and library join Steam's (gog-store line on).
         if (gog) gog->Register(*stores, simulation);
         // Imported games: <data>/playden-import is the drop folder, playden/import on each extra drive.
+        // Recipe files from a paired browser, and the recipe.json in a game's folder when it is added; where they are kept
+        // is set with the community recipes below.
+        auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
+        recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
+            return feature == "online-steam" && online_steam;
+        });
         playden::stores::local::LocalLibraryConfig import_config;
         import_config.volumes = {{playden::steam::InstallService::kPrimaryVolumeId, options->data_directory.string(),
                                   "playden-import", false}};
@@ -852,6 +858,7 @@ int main(int argc, char** argv) {
         import_config.game_program = [](const std::string& folder, const std::string& program) {
             return playden::runtime::GameProgramInstead(folder, program);
         };
+        import_config.keep_folder_recipe = playden::homebrew::FolderRecipeKeeper(recipe_imports);
         auto local_library = std::make_unique<playden::stores::local::LocalLibrarySource>(*imports, std::move(import_config));
         auto* local = local_library.get();
         copy_runner->SetChanged([local] { local->Reload(); });
@@ -862,11 +869,6 @@ int main(int argc, char** argv) {
         services->SetDownloadServers(servers.get());
         if (gog) gog->Attach(*services);
         services->SetFriends(friends.get());
-        // Recipe files from a paired browser; where they are kept is set with the community recipes below.
-        auto recipe_imports = std::make_shared<playden::homebrew::WebRecipeImports>();
-        recipe_imports->SetFeatureCheck([online_steam = features.online_steam](const std::string& feature) {
-            return feature == "online-steam" && online_steam;
-        });
         {
             // Web access on the Mac: the same page over the host's logs folder, on 127.0.0.1's network too.
             playden::web::ServiceConfig web_config;

@@ -4626,6 +4626,42 @@ void live_import_sheet_sends_requests() {
     check(model.action("circle") && model.state().navigation.modals.empty(), "the sheet closes");
 }
 
+// Live (#1034): a folder with a recipe.json added from the Import sheet. The controller hands the store's outcome over
+// (OfferFolderRecipe) before the scan names the game's ID; once the library lists the game, its page opens over the
+// sheet and the question about the recipe opens over the page.
+void live_import_folder_recipe() {
+    using playden::homebrew::ImportRequestKind;
+    using playden::homebrew::LiveImportCandidate;
+    auto model = make_live();
+    LiveImportCandidate moss;
+    moss.volume_id = "internal"; moss.folder = "playden-import/minecraft-1-20-1"; moss.path = "/data/playden-import/minecraft-1-20-1";
+    moss.title = "minecraft-1-20-1"; moss.ascii_ok = true;
+    moss.programs = {{"Minecraft.exe", 9'000'000, false}};
+    model.UpdateImportCandidates({moss}, false);
+    activate(model, "startup-import");
+    activate(model, "import-candidate-internal:playden-import/minecraft-1-20-1");
+    activate(model, "import-play-in-place");
+    const auto requests = model.TakeImportRequests();
+    check(requests.size() == 1 && requests[0].kind == ImportRequestKind::Add && requests[0].prepare, "the folder is added");
+    const auto id = playden::GameId::Local("2b7c9d1e-4f3a-4c5b-8e6d-7f8a9b0c1d2e");
+    model.OfferFolderRecipe(id, "revision-of-the-folder-recipe");
+    check(model.view().surface == "import-games" && model.FolderRecipeWaiting(id), "nothing is asked before the game is listed");
+    moss.imported = id;
+    model.UpdateImportCandidates({moss}, false);
+    LibraryUpdate imported{{game(id, "minecraft-1-20-1")}, false, {}, false, false, {}};
+    imported.source = playden::Store::kLocal;
+    check(model.UpdateLibrary(imported), "imported library");
+    check(model.state().navigation.route == Route::Details && model.state().navigation.detail_id == id,
+          "the added game's page opens");
+    check(model.view().surface == "confirmation" && model.state().navigation.modals.size() == 1 &&
+              model.state().navigation.modals.back().title == "Use the recipe in the game's folder?" &&
+              model.state().navigation.focus_key == "folder-recipe-use" && model.FolderRecipeWaiting(id),
+          "the question about its recipe opens over it");
+    check(model.action("circle") && model.state().navigation.modals.empty() && !model.FolderRecipeWaiting(id) &&
+              model.state().navigation.route == Route::Details,
+          "Circle answers Don't use it and leaves the page");
+}
+
 // Live: the add choice (play in place, copy with its drive, move), the copy or move sent once the
 // store gives the game its ID, the game's page once the library lists it, refusals said to the
 // player, and the page of an imported game (Copy/Move, progress, Remove from library).
@@ -5298,6 +5334,7 @@ int main() {
     live_download_server_picker();
     live_import_sheet_sends_requests();
     live_import_choice_and_details();
+    live_import_folder_recipe();
     store_art_follows_the_store();
     non_canonical_game_keys_select_nothing();
     live_stay_signed_in_preference_loads();

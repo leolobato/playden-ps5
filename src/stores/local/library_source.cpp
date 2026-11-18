@@ -6,7 +6,9 @@
 
 #include <cerrno>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -355,7 +357,12 @@ void LocalLibrarySource::Execute(const Job& job) {
       // Numbered here, on this worker, before the game is listed: the main thread never waits for it.
       WarmRuntimeNumber(job.number_for, added.value().id);
       ++games_revision_;
-      return Outcome(job, true, added.value().id, {});
+      // After the files were opened above: a recipe FTP wrote is readable now, and a move chosen with the add hasn't
+      // taken the folder away yet.
+      auto recipe = KeepFolderRecipe(path);
+      if (!recipe.revision.empty()) Log("import recipe id=" + added.value().id + " revision=" + recipe.revision);
+      if (!recipe.problem.empty()) Log("import recipe refused id=" + added.value().id + ": " + recipe.problem);
+      return Outcome(job, true, added.value().id, {}, std::move(recipe));
     }
     case Command::kOpen: {
       const auto game = store_.Find(job.id);
@@ -525,8 +532,41 @@ void LocalLibrarySource::WarmRuntimeNumber(const std::function<std::uint32_t(con
   if (number_for) number_for(GameId::Local(id));
 }
 
-void LocalLibrarySource::Outcome(const Job& job, bool ok, std::string id, std::string message) {
-  outcomes_.push_back({job.request, ok, std::move(id), std::move(message)});
+FolderRecipeKept LocalLibrarySource::KeepFolderRecipe(const std::string& path) {
+  if (!config_.keep_folder_recipe) return {};
+  const auto file = HostPath(Join(path, kFolderRecipeName));
+  // A link is never followed out of the game's folder.
+  const int fd = ::open(file.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0) {
+    if (errno == ENOENT) return {};
+    return {{}, "Playden couldn't read the game's recipe.json."};
+  }
+  std::string bytes;
+  struct stat info {};
+  bool too_large = false, read_ok = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
+  if (!read_ok) {
+    ::close(fd);
+    return {{}, "The game's recipe.json is not a file."};
+  }
+  char buffer[4096];
+  for (;;) {
+    const auto got = ::read(fd, buffer, sizeof(buffer));
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) { read_ok = false; break; }
+    if (got == 0) break;
+    bytes.append(buffer, static_cast<std::size_t>(got));
+    if (bytes.size() > kMaxFolderRecipeBytes) { too_large = true; break; }
+  }
+  ::close(fd);
+  if (too_large) return {{}, "The game's recipe.json is larger than 16 KB."};
+  if (!read_ok) return {{}, "Playden couldn't read the game's recipe.json."};
+  auto kept = config_.keep_folder_recipe(std::move(bytes));
+  if (kept.revision.empty() && kept.problem.empty()) kept.problem = "Playden couldn't keep the game's recipe.json.";
+  return kept;
+}
+
+void LocalLibrarySource::Outcome(const Job& job, bool ok, std::string id, std::string message, FolderRecipeKept recipe) {
+  outcomes_.push_back({job.request, ok, std::move(id), std::move(message), std::move(recipe.revision), std::move(recipe.problem)});
   if (outcomes_.size() > kMaxOutcomes) outcomes_.erase(outcomes_.begin());
   Project();
 }

@@ -1,6 +1,10 @@
 // An imported game played in place reaches the controller as an external location (import-games
 // Task 2.5) and never reaches Steam Cloud (Task 2.6), against a real RuntimeHost.
+#include "community/recipe_import.h"
+#include "community/recipe_service.h"
+#include "community/recipe_store.h"
 #include "homebrew/controller.hpp"
+#include "homebrew/web_recipe_imports.hpp"
 #include "homebrew/runtime_host.hpp"
 #include "installs/install_record.h"
 #include "installs/install_service.h"
@@ -568,6 +572,18 @@ void ImportedGamePlaysInPlace() {
                                                                 const std::function<void(const std::function<bool()>&)>&)>& body) {
     hb::Simulation model({}, {}, hb::ModelMode::Live);
     model.SetGameSettingsFile(settings_file);
+    // The recipe.json in a game's folder is kept in the community recipe store, as on the console.
+    const auto recipes_root = fixture.root / "community-recipes";
+    auto recipe_store = std::make_shared<playden::community::RecipeStore>(recipes_root);
+    model.SetCommunityRecipeLoader([recipe_store](const std::string& revision) -> std::optional<CommunityRecipe> {
+      std::string error;
+      if (!recipe_store->prepared() && !recipe_store->Prepare(&error)) return std::nullopt;
+      return playden::community::LoadStoredRecipe(*recipe_store, revision, &error);
+    });
+    auto recipe_imports = std::make_shared<hb::WebRecipeImports>();
+    recipe_imports->SetKeeper([recipe_store](const std::string& bytes, std::string* error) {
+      return (recipe_store->prepared() || recipe_store->Prepare(error)) && recipe_store->WriteObjects({bytes}, error);
+    });
     MemorySessions sessions;
     if (signed_in) sessions.value = playden::StoredSession{12345, "Synthetic account", "refresh", "access", {}};
     RestoringBackend backend;
@@ -589,6 +605,7 @@ void ImportedGamePlaysInPlace() {
       ++drop_opens;
       return opener(path);
     };
+    local_config.keep_folder_recipe = hb::FolderRecipeKeeper(recipe_imports);
     RuntimeHost host(config);
     CHECK(host.Start());
     WaitFor(host, Started);
@@ -615,6 +632,8 @@ void ImportedGamePlaysInPlace() {
                        (int)model.state().runtime, (int)model.state().import_scanning, model.state().import_candidates.size(),
                        model.state().games.size(), local_snapshot->games.size(), model.state().external_games.size(),
                        local_snapshot->outcomes.size());
+          for (const auto& modal : model.state().navigation.modals) std::fprintf(stderr, "modal %s: %s\n", modal.title.c_str(), modal.body.c_str());
+          for (const auto& notice : model.state().notices) std::fprintf(stderr, "notice %s: %s\n", notice.message.c_str(), notice.detail.c_str());
         }
         CHECK(std::chrono::steady_clock::now() < deadline);
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -915,6 +934,78 @@ void ImportedGamePlaysInPlace() {
     CHECK(launched.size() == plays_before);
   });
 
+  // A packager put a recipe.json in a drop-folder game (#1034). Added to play in place, the game is not prepared until
+  // the player answers the question about it; the recipe it names another key in is used, and the file stays.
+  const auto tundra = fixture.root / "data/playden-import/Tundra";
+  run(false, [&](hb::Simulation& model, hb::Controller&, RuntimeHost& host, local::LocalLibrarySource& source,
+                 const std::function<void(const std::function<bool()>&)>& tick_until) {
+    Write(tundra / "Game.exe", pe + std::string(4096, 'x'), 0755);
+    Write(tundra / "recipe.json", R"({
+  "recipe_id": "community-imported-tundra-1-0",
+  "recipe_version": 1,
+  "game": {"store": "imported", "key": "tundra-1-0", "name": "Tundra"},
+  "name": "Tundra",
+  "launch_entries": [{"id": "game", "label": "Game.exe", "executable": "Game.exe", "working_directory": "", "arguments": ""}],
+  "arguments": "-version 1.0",
+  "resolution_arguments": "",
+  "dll_overrides": "",
+  "architecture": "pe64",
+  "runtime": "wine-wow64",
+  "prefix": "game",
+  "graphics": "auto",
+  "defaults": {"resolution": "1920x1080"},
+  "locked": [],
+  "executable": "Game.exe",
+  "community": {"format_version": 1, "title": "", "tested_kit": "0.12", "tested_firmware": "13.60",
+                "tested_date": "2026-11-18", "status": "works", "notes": "", "author": "packager", "contributors": []}
+})", 0644);
+    CHECK(chmod(tundra.c_str(), 0755) == 0);
+    const auto opens_at_add = drop_opens.load();
+    model.RequestImport({hb::ImportRequestKind::Add, {}, "internal", "Tundra", "Game.exe", true});
+    const auto question_open = [&] {
+      const auto& modals = model.state().navigation.modals;
+      return !modals.empty() && std::find(modals.back().action_keys.begin(), modals.back().action_keys.end(),
+                                          "folder-recipe-use") != modals.back().action_keys.end();
+    };
+    tick_until([&] {
+      if (question_open()) return true;
+      // Sky's synthetic title never started: its own dialog may come up first.
+      const auto& modals = model.state().navigation.modals;
+      if (!modals.empty() && !(model.action("focus:alert-ok") && model.action("cross"))) model.action("circle");
+      return false;
+    });
+    std::string tundra_id;
+    for (const auto& imported : source.Snapshot()->games)
+      if (imported.folder == "playden-import/Tundra") tundra_id = imported.id;
+    CHECK(!tundra_id.empty());
+    const auto game = GameId::Local(tundra_id);
+    CHECK(model.state().navigation.modals.back().body.find("Tundra's folder has a recipe.json") != std::string::npos);
+    CHECK(model.FolderRecipeWaiting(game));
+    // Listed and playable in place, yet not prepared while the question is open: its files were opened at the add, and
+    // are not opened again for a preparation.
+    tick_until([&] { return external_of(model, game) && external_of(model, game)->available && model.state().runtime_games.count(game); });
+    for (int i = 0; i < 150; ++i) {
+      tick_until([] { return true; });  // one controller tick
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(drop_opens.load() == opens_at_add + 1);
+    CHECK(!host.Snapshot().preparing_app && !model.state().runtime_games.at(game).prepared);
+    CHECK(question_open());
+    CHECK(model.action("focus:folder-recipe-use") && model.action("cross"));
+    CHECK(!model.FolderRecipeWaiting(game));
+    const auto choice = model.RecipeBaseFor(game);
+    CHECK(choice && playden::community::IsImportedRecipeId(choice->id));
+    CHECK(!model.state().game_settings.at(game).overrides.count("program"));
+    // Saved before it is prepared, which then goes ahead (its files opened first).
+    {
+      std::map<GameId, GameSettingsRecord> saved;
+      std::string reason;
+      CHECK(LoadGameSettingsFile(settings_file.string(), &saved, &reason) && saved.at(game).community_recipe.id == choice->id);
+    }
+    tick_until([&] { return drop_opens.load() == opens_at_add + 2; });
+    CHECK(fs::is_regular_file(tundra / "recipe.json"));
+  });
+
   // A newer kit with 120 Hz output: Sky's title keeps the older runtime until it is updated. 120 Hz output and Frame
   // limit 120 chosen now wait for that; Maintenance › Update runtime moves the title to the kit's runtime without
   // starting the game, and publishes them.
@@ -925,7 +1016,7 @@ void ImportedGamePlaysInPlace() {
                  const std::function<void(const std::function<bool()>&)>& tick_until) {
     std::string sky_id;
     for (const auto& imported : source.Snapshot()->games)
-      if (imported.volume == "internal") sky_id = imported.id;
+      if (imported.folder == "playden-import/Sky") sky_id = imported.id;
     CHECK(!sky_id.empty());
     const auto game = GameId::Local(sky_id);
     const auto runtime_of = [&]() -> const hb::LiveRuntimeGame* {
@@ -1006,7 +1097,7 @@ void ImportedGamePlaysInPlace() {
                              const std::function<void(const std::function<bool()>&)>& tick_until) {
     std::string sky_id;
     for (const auto& imported : source.Snapshot()->games)
-      if (imported.volume == "internal") sky_id = imported.id;
+      if (imported.folder == "playden-import/Sky") sky_id = imported.id;
     CHECK(!sky_id.empty());
     const auto game = GameId::Local(sky_id);
     tick_until([&] {
@@ -1064,6 +1155,7 @@ void ImportedGamePlaysInPlace() {
     tick_until([&] { return launched.size() > plays_before; });
     (void)controller;
   });
+
 }
 
 namespace {

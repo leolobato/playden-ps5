@@ -1714,6 +1714,14 @@ static void t18_imported_game_page(const std::filesystem::path& fixtures, const 
     check(simulation.state().navigation.modals.empty() && simulation.state().jobs.back().volume_id == "internal" &&
               row("details-download") && row("details-download")->title == "Copying" && !row("details-copy"),
           "T18 the copy runs on the chosen drive and shows on the page");
+    check(simulation.scenario("import-recipe"), "T18 import-recipe scenario");
+    check(simulation.view().surface == "confirmation" && simulation.state().navigation.route == Route::Details &&
+              simulation.state().navigation.focus_key == "folder-recipe-use" &&
+              simulation.state().navigation.modals.back().title == "Use the recipe in the game's folder?",
+          "T18 a recipe.json in the folder is asked about over the game's page");
+    press("folder-recipe-skip");
+    check(simulation.state().navigation.modals.empty() && simulation.state().navigation.route == Route::Details,
+          "T18 Don't use it closes the question");
     check(simulation.scenario("import-copying"), "T18 import-copying scenario");
     check(row("details-download")->progress > 0.39F && row("details-download")->progress < 0.41F, "T18 the copy is 40% done");
     // Cancel copy: asks, then the game plays in place again.

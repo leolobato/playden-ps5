@@ -1578,10 +1578,24 @@ public:
     // The community recipe a game's settings run with now (the wanted one, when it applies); nothing
     // for Playden's own recipe. Share uses it as the recipe the game is based on.
     [[nodiscard]] std::optional<playden::runtime::CommunityRecipeChoice> RecipeBaseFor(GameId id) const;
-    // A recipe file a paired browser sent over web access, kept in the community recipe store as `revision`
-    // (community::PrepareImportedRecipe): the game uses it now, keeping the player's changes that still apply, and a
-    // notification on the TV says so. Returns the HTTP status and a sentence for the browser.
-    std::pair<int, std::string> ImportRecipe(GameId id, const std::string& revision);
+    // Where an imported recipe file came from. Web: a paired browser sent it over web access. GameFolder: the
+    // recipe.json at the root of an imported game's folder, which the player chose to use when the game was added.
+    enum class RecipeSource { Web, GameFolder };
+    // A recipe file kept in the community recipe store as `revision` (community::PrepareImportedRecipe): the game uses
+    // it now, and a notification on the TV says so. Returns the HTTP status and a sentence for the browser.
+    // From the web, it keeps the player's changes that still apply, and only the game's own recipe is taken. From the
+    // game's folder, it replaces the game's settings (Reset, then the recipe; the program the game was added with
+    // stays only when the recipe names none), and the game it names doesn't have to be this one.
+    std::pair<int, std::string> ImportRecipe(GameId id, const std::string& revision, RecipeSource source = RecipeSource::Web);
+    // Live mode: an imported game just added whose folder has a recipe.json, kept as `revision`. Once the library
+    // lists the game, a dialog asks whether to use it; it says the game's settings will be replaced when the game
+    // already has some (the folder was added before). Call before SeedGameProgram.
+    void OfferFolderRecipe(GameId id, const std::string& revision);
+    // Live mode: the recipe.json in the folder of a game just added can't be used (`problem`, a sentence): a notice
+    // says so, and the game is added without it.
+    void NotifyFolderRecipeRefused(const ImportRequest& request, GameId id, const std::string& problem);
+    // Whether the game's folder recipe question is waiting or open: its preparation waits for the answer.
+    [[nodiscard]] bool FolderRecipeWaiting(GameId id) const;
     // The game on this console a kept recipe is for (its GameRef: a Steam game's app ID, an imported game's Steam app ID
     // or name key), among the installed games and the ones whose bottle Playden kept. Nothing, with an HTTP status and a
     // sentence for the browser, when no game or more than one is.
@@ -2034,7 +2048,16 @@ private:
         GameId settings_game;
         bool launcher_hint = false;
         bool start_failed = false;  // "<game> couldn't start": titled when shown, once the library names the game
+        // "Use the recipe in the game's folder?" for settings_game: the kept recipe's revision. Titled when shown, once
+        // the library names the game.
+        std::string folder_recipe;
+        bool folder_recipe_replaces = false;  // the game had settings when it was added
     };
+    // The folder recipe question open now, until the player answers it (Circle is Don't use it). Dialogs closed without
+    // an answer (a page that clears them) put it back in the queue.
+    GameId folder_recipe_game_;
+    std::string folder_recipe_revision_;
+    bool folder_recipe_replaces_ = false;
     // Games whose start failure has its own dialog, and when (clock seconds): the runtime's "Could not start" for that
     // failure, arriving within a minute, raises no notice too. Older marks are for an outcome long past.
     std::map<GameId, std::int64_t> start_failures_told_;
@@ -2442,6 +2465,7 @@ private:
     void open_game_settings();
     void open_settings_list();
     void show_alert_prompt();
+    [[nodiscard]] bool folder_recipe_question_open() const;
     void open_live_log(const std::string& topic, GameId game_id);
     void load_live_log();
     [[nodiscard]] bool live_notices_visible() const noexcept;

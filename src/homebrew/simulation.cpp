@@ -800,7 +800,7 @@ std::string action_label(const std::string& key) {
         {"cancel", "Cancel"}, {"confirm-destructive", "Confirm"}, {"runtime-batch-free", "Free up space"}, {"ready-later", "Later"}, {"update-ready-later", "Not now"}, {"update-ready-play", "Play"}, {"alert-ok", "OK"}, {"alert-settings", "Game settings"}, {"start-failed-settings", "Change settings"},
         {"start-failed-report", "Report the problem"}, {"start-failed-logs", "Open logs"}, {"runtime-cleanup-confirm", "Clean up"}, {"quit-to-home", "Play"}, {"favorite", "Favorite"},
         {"collection", "Collections"}, {"compatibility", "Compatibility"}, {"note", "Note"}, {"verify", "Verify files"},
-        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"remove-playden-delete-saves", "Delete saves too"}, {"remove-playden-confirm", "Uninstall Playden"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"logs", "Open logs"}, {"logs-back", "Back"},
+        {"uninstall", "Uninstall…"}, {"import-remove", "Remove from library…"}, {"uninstall-delete-saves", "Delete saves too"}, {"remove-playden-delete-saves", "Delete saves too"}, {"remove-playden-confirm", "Uninstall Playden"}, {"run-once-dont-show", "Don't show again"}, {"launcher-help-dont-show", "Don't show again"}, {"launcher-help-on", "Turn on"}, {"launcher-hint-later", "Not now"}, {"launcher-hint-on", "Turn on and play"}, {"folder-recipe-skip", "Don't use it"}, {"folder-recipe-use", "Use the recipe"}, {"logs", "Open logs"}, {"logs-back", "Back"},
         {"logs-pick", "Logs"}, {"log-install", "Install log"}, {"log-auth", "Sign-in log"},
         {"log-launch", "Launch log"}, {"log-cloud", "Cloud saves log"}, {"logs-refresh", "Refresh"},
         {"cloud-sync", "Cloud saves"}, {"cloud-choose", "Cloud saves"}, {"cloud-use-cloud", "Use Cloud saves"},
@@ -3399,6 +3399,9 @@ void Simulation::close_game_modals() {
     auto& modals = state_.navigation.modals;
     modals.erase(std::remove_if(modals.begin(), modals.end(), [](const ModalEntry& modal) {
         if (modal.id == "feedback" || modal.id == "start-failed") return false;
+        // Not about the game on screen: the folder recipe question waits for its answer.
+        if (std::find(modal.action_keys.begin(), modal.action_keys.end(), "folder-recipe-use") != modal.action_keys.end())
+            return false;
         return std::none_of(modal.action_keys.begin(), modal.action_keys.end(), [](const std::string& key) {
             return key == "self-update-install" || key == "self-update-restart" || key == "release-notes-ok" ||
                    key == "kit-install" || key == "runtime-prompt-update" || key == "feedback-send-confirm";
@@ -3657,6 +3660,14 @@ void Simulation::show_alert(std::string title, std::string body, GameId settings
 // A failure dialog with OK. Like the ready-to-play prompt it waits until no other
 // dialog, sheet or keyboard is open, so it never covers what the player is doing.
 void Simulation::show_alert_prompt() {
+    // The folder recipe question was closed without an answer: it is asked again.
+    if (folder_recipe_game_.valid() && !folder_recipe_question_open()) {
+        AlertPrompt again;
+        again.settings_game = std::exchange(folder_recipe_game_, GameId{});
+        again.folder_recipe = std::exchange(folder_recipe_revision_, std::string());
+        again.folder_recipe_replaces = folder_recipe_replaces_;
+        alert_prompts_.insert(alert_prompts_.begin(), std::move(again));
+    }
     const auto route = state_.navigation.route;
     if (alert_prompts_.empty() || !state_.navigation.modals.empty() || state_.editor.active ||
         route == Route::Startup || route == Route::SignIn || route == Route::Session)
@@ -3664,16 +3675,32 @@ void Simulation::show_alert_prompt() {
     // "Couldn't start" names the game: it waits while the game's store hasn't delivered its library yet, without holding
     // up the alerts behind it, and is dropped once that library came without the game.
     const auto waiting = [this](const AlertPrompt& alert) {
-        return alert.start_failed && live() && !find_game(state_, alert.settings_game);
+        return (alert.start_failed || !alert.folder_recipe.empty()) && live() && !find_game(state_, alert.settings_game);
     };
+    // A folder recipe's game was just added: its store's library lists it once it loads again.
     std::erase_if(alert_prompts_, [&](const AlertPrompt& alert) {
-        return waiting(alert) && catalog_sources_.count(alert.settings_game.store);
+        return waiting(alert) && alert.folder_recipe.empty() && catalog_sources_.count(alert.settings_game.store);
     });
     const auto next = std::find_if_not(alert_prompts_.begin(), alert_prompts_.end(), waiting);
     if (next == alert_prompts_.end()) return;
     auto alert = std::move(*next);
     alert_prompts_.erase(next);
     alert_settings_game_ = alert.settings_game;
+    if (!alert.folder_recipe.empty()) {
+        const auto* game = find_game(state_, alert.settings_game);
+        const auto name = game ? game->title : std::string("The game");
+        folder_recipe_game_ = alert.settings_game;
+        folder_recipe_revision_ = alert.folder_recipe;
+        folder_recipe_replaces_ = alert.folder_recipe_replaces;
+        ModalEntry question{"confirmation", "Use the recipe in the game's folder?", state_.navigation.focus_key,
+                            {"folder-recipe-skip", "folder-recipe-use"}, 1, false};
+        question.body = name + "'s folder has a recipe.json. " +
+                        (alert.folder_recipe_replaces ? std::string("Using it replaces the game's current settings.")
+                                                      : std::string("Playden can set up the game with it.")) +
+                        " You can change the settings later in Game settings.";
+        open_modal(std::move(question));
+        return;
+    }
     if (alert.start_failed) {
         const auto* game = find_game(state_, alert.settings_game);
         ModalEntry failed{"start-failed", (game ? game->title : std::string("The game")) + " couldn't start",
@@ -4918,7 +4945,8 @@ bool Simulation::UpdateLibrary(LibraryUpdate update) {
     }
     captured_organization_.selected_game_id = state_.navigation.selected_game_id;
     // A prompt after a game, and "couldn't start", wait for the library to list that game (its name is the title).
-    if (std::any_of(alert_prompts_.begin(), alert_prompts_.end(), [](const AlertPrompt& alert) { return alert.start_failed; }))
+    if (std::any_of(alert_prompts_.begin(), alert_prompts_.end(),
+                    [](const AlertPrompt& alert) { return alert.start_failed || !alert.folder_recipe.empty(); }))
         show_alert_prompt();
     show_feedback_prompt();
     rebuild_view();
@@ -7225,7 +7253,7 @@ bool Simulation::scenario(const std::string& name) {
         state_.navigation.route = Route::Home;
     } else if (name == "import-empty" || name == "import-candidates" || name == "import-programs" || name == "import-choice" ||
                name == "import-storage" || name == "import-drop-choice" || name == "import-drop-storage" ||
-               name == "import-details" || name == "import-copying" || name == "import-library") {
+               name == "import-details" || name == "import-copying" || name == "import-library" || name == "import-recipe") {
         // The Import sheet over Settings › Games: nothing found yet, or the fixture's folders; then
         // a folder's programs, the wizard's two steps (a USB drive's game, a drop-folder game), and
         // the imported game's page (in place, then copying).
@@ -7241,10 +7269,18 @@ bool Simulation::scenario(const std::string& name) {
             state_.import_candidates = fixture_import_candidates();
             state_.import_candidates.front().imported = id;
         }
-        if (name == "import-details" || name == "import-copying") {
+        if (name == "import-details" || name == "import-copying" || name == "import-recipe") {
             const auto id = fixture_imported_game();
             state_.navigation.route = Route::Library;
             open_game_page(id);
+            if (name == "import-recipe") {
+                // Just added from a folder with a recipe.json: the question over its page.
+                AlertPrompt alert;
+                alert.settings_game = id;
+                alert.folder_recipe = "fixture";
+                alert_prompts_.push_back(std::move(alert));
+                show_alert_prompt();
+            }
             if (name == "import-copying") {
                 start_import_transfer(id, ImportRequestKind::CopyIntoPlayden, {});
                 auto& job = state_.jobs.back();
@@ -10596,6 +10632,12 @@ void Simulation::close_modal() {
         pending_share_as_.reset();
         if (state_.account_link.state == "linking") state_.account_link.state.clear();
     }
+    // Circle on the folder recipe question is Don't use it.
+    const auto& closing = state_.navigation.modals.back().action_keys;
+    if (std::find(closing.begin(), closing.end(), "folder-recipe-use") != closing.end()) {
+        folder_recipe_game_ = {};
+        folder_recipe_revision_.clear();
+    }
     // Back from GOG's sign-in dialog ends its sign-in.
     const bool gog_sign_in = state_.navigation.modals.back().id == "gog-sign-in";
     state_.navigation.modals.pop_back();
@@ -12660,6 +12702,18 @@ void Simulation::activate() {
     } else if (action_name == "ready-later" || action_name == "alert-ok" || action_name == "launcher-hint-later" ||
                action_name == "update-ready-later") {
         close_modal();
+    } else if (action_name == "folder-recipe-skip" || action_name == "folder-recipe-use") {
+        const auto game = std::exchange(folder_recipe_game_, GameId{});
+        const auto revision = std::exchange(folder_recipe_revision_, std::string());
+        close_modal();
+        if (action_name == "folder-recipe-use" && game.valid() && !revision.empty()) {
+            auto [status, message] = ImportRecipe(game, revision, RecipeSource::GameFolder);
+            if (status != 200) {
+                const auto* known = find_game(state_, game);
+                push_notice({"folder-recipe-" + ToKey(game), "Recipe not used", "", false, kLiveNoticeSeconds * 2, true,
+                             (known ? known->title + " · " : std::string()) + message, false});
+            }
+        }
     } else if (action_name == "launcher-hint-on") {
         const auto game = alert_settings_game_;
         close_modal();
@@ -13891,7 +13945,7 @@ void Simulation::activate() {
     }
     else if (kOfferGoBack && live() && action_name == "self-update-back-confirm") { close_modal(); request_self_update_restart("rollback"); }
     else if (action_name == "scenario-picker") open_modal({"scenarios", "Fixture scenarios", state_.navigation.focus_key,
-        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "scenario-library-steam-collections", "scenario-library-steam-collections-offline", "cancel"}, 0, false});
+        {"scenario-default", "scenario-leftover-titles", "scenario-download-servers", "scenario-first-run", "scenario-signed-out", "scenario-qr-waiting", "scenario-offline", "scenario-empty", "scenario-no-results", "scenario-delayed-art", "scenario-failed-art", "scenario-install-ready", "scenario-install-options", "scenario-update-available", "scenario-dlc-available", "scenario-dlc-manage", "scenario-updating", "scenario-unknown-size", "scenario-insufficient-space", "scenario-storage-disconnect", "scenario-paused", "scenario-download-failed", "scenario-verification-failed", "scenario-restart-recovery", "scenario-save-failure", "scenario-runtime-unavailable", "scenario-launch-failure", "scenario-crash", "scenario-stop-failure", "scenario-controller-disconnected", "scenario-reduced-motion", "scenario-stress", "scenario-import-empty", "scenario-import-candidates", "scenario-import-programs", "scenario-import-choice", "scenario-import-storage", "scenario-import-drop-choice", "scenario-import-drop-storage", "scenario-import-details", "scenario-import-copying", "scenario-import-library", "scenario-import-recipe", "scenario-gog-signed-out", "scenario-gog-sign-in", "scenario-gog-library", "scenario-library-stores", "scenario-library-steam-collections", "scenario-library-steam-collections-offline", "cancel"}, 0, false});
     else if (action_name.rfind("scenario-", 0) == 0) { state_.navigation.modals.clear(); scenario(action_name.substr(9)); }
     else if (action_name == "session-fixture-controls") open_modal({"session-controls", "Session fixture controls", state_.navigation.focus_key,
         {"advance-clock", "inject-stop-failure", "inject-crash", "cancel"}, 0, false});
@@ -15825,6 +15879,45 @@ void Simulation::set_base(GameId id, const BaseChoice& base, const std::vector<r
     }
 }
 
+void Simulation::OfferFolderRecipe(GameId id, const std::string& revision) {
+    if (!live() || !id.valid() || revision.empty()) return;
+    // A folder added before brings back its game's settings: those are what the recipe would replace.
+    const auto saved = state_.game_settings.find(id);
+    const bool replaces = saved != state_.game_settings.end() && (saved->second.revision != 0 || !saved->second.overrides.empty());
+    std::erase_if(alert_prompts_, [id](const AlertPrompt& alert) { return alert.settings_game == id && !alert.folder_recipe.empty(); });
+    AlertPrompt alert;
+    alert.settings_game = id;
+    alert.folder_recipe = revision;
+    alert.folder_recipe_replaces = replaces;
+    alert_prompts_.push_back(std::move(alert));
+    show_alert_prompt();
+    rebuild_view();
+}
+
+void Simulation::NotifyFolderRecipeRefused(const ImportRequest& request, GameId id, const std::string& problem) {
+    std::string title;
+    if (const auto* game = find_game(state_, id)) title = game->title;
+    for (const auto& candidate : state_.import_candidates)
+        if (title.empty() && candidate.volume_id == request.volume_id && candidate.folder == request.folder) title = candidate.title;
+    if (title.empty()) title = request.folder.substr(request.folder.find_last_of('/') + 1);
+    push_notice({"folder-recipe-" + ToKey(id), "Recipe not used", "", false, kLiveNoticeSeconds * 2, true,
+                 title + " was added without its recipe.json. " + problem, false});
+    rebuild_view();
+}
+
+bool Simulation::FolderRecipeWaiting(GameId id) const {
+    // Queued, open, or closed without an answer (asked again).
+    return folder_recipe_game_ == id ||
+           std::any_of(alert_prompts_.begin(), alert_prompts_.end(),
+                       [id](const AlertPrompt& alert) { return alert.settings_game == id && !alert.folder_recipe.empty(); });
+}
+
+bool Simulation::folder_recipe_question_open() const {
+    return std::any_of(state_.navigation.modals.begin(), state_.navigation.modals.end(), [](const ModalEntry& modal) {
+        return std::find(modal.action_keys.begin(), modal.action_keys.end(), "folder-recipe-use") != modal.action_keys.end();
+    });
+}
+
 std::optional<GameId> Simulation::GameForRecipe(const std::string& revision, int* status, std::string* message) {
     if (const auto cached = community_objects_.find(revision); cached != community_objects_.end() && !cached->second)
         community_objects_.erase(cached);
@@ -15853,12 +15946,14 @@ std::optional<GameId> Simulation::GameForRecipe(const std::string& revision, int
     return std::nullopt;
 }
 
-std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::string& revision) {
+std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::string& revision, RecipeSource source) {
     const auto* game = find_game(state_, id);
     if (!id.valid() || !game) return {404, "Playden doesn't know this game."};
+    const bool from_folder = source == RecipeSource::GameFolder;
     // An imported game without a Steam app ID has no GameRef of its own: it takes any game's recipe, and the choice
-    // names that game, as when the player picks another game's recipe in the chooser.
-    const auto own = community_ref(id);
+    // names that game, as when the player picks another game's recipe in the chooser. A recipe in the game's own folder
+    // is for the files beside it, whatever game it names.
+    auto own = community_ref(id);
     // The Share sheet for this game would send these settings against the recipe it opened with.
     if (share_ && share_->game == id) return {409, "The Share sheet for " + game->title + " is open on the PS5. Close it first."};
     if (live() && (settings_load_failed_ || game_settings_file_.empty()))
@@ -15870,6 +15965,7 @@ std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::strin
     const auto* object = community_object(revision, &object_state);
     if (!object) return {500, "Playden couldn't read the recipe it kept."};
     const auto name = game->title;
+    if (from_folder && own && object->game != *own) own.reset();
     // Only the game's own recipe: another game's would start a program this copy may not have.
     if (own && object->game != *own)
         return {422, "This recipe is for " + (object->game_name.empty() ? std::string("another game") : object->game_name) +
@@ -15884,14 +15980,22 @@ std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::strin
     if (!selection.community)
         return {422, selection.fallback_reason.empty() ? std::string("This game can't use the recipe.") : selection.fallback_reason};
     const BaseChoice current = base_of(id);
-    if (current == base) return {200, name + " already uses this recipe."};
     const auto saved = state_.game_settings.find(id);
-    const std::map<std::string, std::string> overrides =
+    std::map<std::string, std::string> overrides =
         saved == state_.game_settings.end() ? std::map<std::string, std::string>{} : saved->second.overrides;
+    const auto before_overrides = overrides;
+    if (from_folder) {
+        // The recipe replaces the game's settings: as Reset leaves them, and the program the game was added with goes
+        // when the recipe names its own.
+        overrides = reset_overrides(id);
+        if (!object->executable.empty() || object->recipe.defaults.count("program")) overrides.erase("program");
+    }
+    if (current == base && overrides == before_overrides) return {200, name + " already uses this recipe."};
     const auto dropped = rt::DroppedOverrides(recipe_for_base(id, current), preset_for_base(current), recipe_for_base(id, base),
                                               preset_for_base(base), overrides, kit_for(id));
     const auto had_record = state_.game_settings.count(id) > 0;
     const auto previous = had_record ? state_.game_settings.at(id) : rt::GameSettingsRecord{};
+    if (from_folder) state_.game_settings[id].overrides = overrides;
     set_base(id, base, dropped, true);
     save_profile();
     if (live() && state_.game_settings != saved_game_settings_) {
@@ -15908,7 +16012,8 @@ std::pair<int, std::string> Simulation::ImportRecipe(GameId id, const std::strin
     if (live() && game_prepared(id)) pending_maintenance_requests_.push_back({id, MaintenanceKind::ApplySettings});
     const auto title = object->title.empty() ? std::string(cm::kImportedRecipeTitle) : object->title;
     push_notice({"recipe-imported", "Recipe imported", "", false, kLiveNoticeSeconds, false,
-                 name + " now uses \u201c" + title + "\u201d, sent from web access."});
+                 name + " now uses \u201c" + title + "\u201d, " +
+                     (from_folder ? "from the recipe.json in its folder." : "sent from web access.")});
     std::string message = name + " now uses this recipe.";
     if (!dropped.empty()) message += " Some of your changes no longer apply.";
     return {200, message};

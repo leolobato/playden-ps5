@@ -1761,6 +1761,135 @@ void web_import_without_app_id(const std::filesystem::path& base) {
     check(model.ImportRecipe(kGame, own_revision).first == 422, "Darkwood refuses the imported game's recipe");
 }
 
+// The recipe.json at the root of an imported game's folder (#1034): the Local store keeps it through WebRecipeImports::Keep
+// when the game is added, and once the library lists the game the TV asks whether to use it. Using it replaces the
+// game's settings; the game it names doesn't matter; a refusal is a notice, and the game stays as it was.
+void folder_recipe(const std::filesystem::path& base) {
+    std::filesystem::create_directories(base);
+    std::filesystem::permissions(base, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const auto root = base / "community-recipes";
+    const std::string file =
+        read_text(std::filesystem::path(PLAYDEN_COMMUNITY_FIXTURES) / "hostile/export-no-slug-no-title.json");
+    check(!file.empty(), "the export fixture reads");
+
+    Simulation model("fixtures-not-used", "profile-not-used.json", ModelMode::Live);
+    set_up(model, base, false);
+    model.SetCommunityRecipeLoader(store_loader(root));
+
+    // Kept without waiting for the main thread, and kept from garbage collection until Playden closes.
+    auto keep = std::make_shared<playden::homebrew::CommunityKeepSet>();
+    keep->revisions = std::set<std::string>{};
+    playden::homebrew::WebRecipeImports imports;
+    imports.SetKeeper([store = std::make_shared<cm::RecipeStore>(root)](const std::string& bytes, std::string* error) {
+        return (store->prepared() || store->Prepare(error)) && store->WriteObjects({bytes}, error);
+    }, keep);
+    const auto keeper = playden::homebrew::FolderRecipeKeeper(std::shared_ptr<playden::homebrew::WebRecipeImports>(
+        &imports, [](playden::homebrew::WebRecipeImports*) {}));
+    const auto kept = keeper(file);
+    check(!kept.revision.empty() && kept.problem.empty(), "the folder's recipe is kept");
+    check(imports.Revisions().count(kept.revision) && keep->revisions->count(kept.revision), "and the cache keeps it");
+    const auto refused = keeper("{}");
+    check(refused.revision.empty() && !refused.problem.empty(), "a file that isn't a recipe is refused, with why");
+
+    // The game just added, not listed yet: the question waits for the library, and so does its preparation.
+    const auto game = GameId::Local("0c6f4a2e-5b1d-4c3a-9e8f-7a6b5c4d3e2f");
+    const auto question_open = [&model] {
+        const auto& modals = model.state().navigation.modals;
+        return !modals.empty() && std::find(modals.back().action_keys.begin(), modals.back().action_keys.end(),
+                                            "folder-recipe-use") != modals.back().action_keys.end();
+    };
+    model.OfferFolderRecipe(game, kept.revision);
+    check(model.FolderRecipeWaiting(game) && !question_open(), "the question waits for the game to be listed");
+    playden::GameSummary minecraft;
+    minecraft.id = game;
+    minecraft.title = "Minecraft 1.20.1";
+    check(model.UpdateLibrary({{minecraft}, false, {}, false, true, 101, playden::Store::kLocal}), "the imported game joins");
+    model.UpdateInstalls({}, {{kGame, 1024, "internal", true}, {game, 1024, "internal", true}});
+    check(question_open() && model.FolderRecipeWaiting(game), "then it is asked");
+    {
+        const auto& question = model.state().navigation.modals.back();
+        check(question.title == "Use the recipe in the game's folder?", "the question's title");
+        check(contains(question.body, "Minecraft 1.20.1's folder has a recipe.json") &&
+                  contains(question.body, "Playden can set up the game with it") && !contains(question.body, "replaces"),
+              "a new game's question says what the recipe does");
+        check(question.action_keys == std::vector<std::string>{"folder-recipe-skip", "folder-recipe-use"} &&
+                  question.focused_action == 1,
+              "Use the recipe has the focus");
+    }
+    // The controller seeds the program chosen with the add after the offer.
+    check(model.SeedGameProgram(game, "Minecraft.exe"), "the program is seeded");
+
+    // Don't use it: nothing changes, and the preparation may go on.
+    check(model.action("focus:folder-recipe-skip") && model.action("cross"), "Don't use it");
+    check(!question_open() && !model.FolderRecipeWaiting(game), "the question is answered");
+    check(!model.RecipeBaseFor(game), "the game has no recipe");
+    check(model.state().game_settings.at(game).overrides.at("program") == "Minecraft.exe", "it keeps its program");
+
+    // A library update that closes the selected game's dialogs doesn't answer it: the question stays.
+    playden::GameSummary selected;
+    selected.id = GameId::Local("5a7e1c2d-3b4f-4a6e-8d9c-0b1a2c3d4e5f");
+    selected.title = "Other Game";
+    check(model.UpdateLibrary({{minecraft, selected}, false, {}, false, true, 102, playden::Store::kLocal}), "another game joins");
+    check(model.action("select:" + playden::ToKey(selected.id)), "it is selected");
+    model.OfferFolderRecipe(game, kept.revision);
+    check(question_open(), "the question is open");
+    check(model.UpdateLibrary({{minecraft}, false, {}, false, true, 103, playden::Store::kLocal}), "the selected game leaves");
+    check(question_open() && model.FolderRecipeWaiting(game), "the question is still asked");
+
+    // Circle is Don't use it.
+    check(question_open() && model.action("circle"), "Circle on the question");
+    check(!question_open() && !model.FolderRecipeWaiting(game) && !model.RecipeBaseFor(game), "Circle uses nothing");
+    check(model.action("details:274520") && !question_open(), "and the question doesn't come back");
+
+    // The same folder added again: the game has settings, which the recipe would replace.
+    model.OfferFolderRecipe(game, kept.revision);
+    check(question_open() && contains(model.state().navigation.modals.back().body, "Using it replaces the game's current settings"),
+          "the question says the settings are replaced");
+    check(model.action("focus:folder-recipe-use") && model.action("cross"), "Use the recipe");
+    check(!question_open() && !model.FolderRecipeWaiting(game), "answered");
+    const auto choice = model.RecipeBaseFor(game);
+    check(choice && choice->revision == kept.revision && cm::IsImportedRecipeId(choice->id), "the game uses the folder's recipe");
+    // The recipe names its program: the one the game was added with no longer overrides it.
+    check(!model.state().game_settings.at(game).overrides.count("program"), "the recipe's program is used");
+    check(model.RecipeFallbackFor(game).empty(), "and the game runs with the recipe");
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(), [](const auto& notice) {
+              return notice.id == "recipe-imported" && contains(notice.detail, "from the recipe.json in its folder");
+          }),
+          "a notification says where the recipe came from");
+
+    // Another game's recipe: a Steam game refuses it from the web, and takes it from its own folder.
+    std::string other = file;
+    for (std::size_t at; (at = other.find("274520")) != std::string::npos;) other.replace(at, 6, "220");
+    const auto other_kept = keeper(other);
+    check(!other_kept.revision.empty(), "another game's recipe is kept");
+    check(model.ImportRecipe(kGame, other_kept.revision).first == 422, "from the web it is refused");
+    check(model.ImportRecipe(kGame, other_kept.revision, Simulation::RecipeSource::GameFolder).first == 200,
+          "from the game's folder the key doesn't have to match");
+    check(model.RecipeBaseFor(kGame) && model.RecipeBaseFor(kGame)->revision == other_kept.revision, "Darkwood uses it");
+
+    // Refused when it is used: a notice says why, and the game keeps its settings.
+    const auto before = model.state().game_settings.at(game);
+    model.OfferFolderRecipe(game, std::string(64, '0'));
+    check(question_open() && model.action("focus:folder-recipe-use") && model.action("cross"), "Use a recipe that is gone");
+    check(model.state().game_settings.at(game) == before, "the settings stay");
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(), [](const auto& notice) {
+              return notice.id == "folder-recipe-" + playden::ToKey(GameId::Local("0c6f4a2e-5b1d-4c3a-9e8f-7a6b5c4d3e2f")) &&
+                     notice.message == "Recipe not used" &&
+                     contains(notice.detail, "Minecraft 1.20.1") && !notice.alert;
+          }),
+          "a notice says the recipe wasn't used");
+
+    // Refused when the game was added: a notice, and no question.
+    model.NotifyFolderRecipeRefused({playden::homebrew::ImportRequestKind::Add, {}, "internal", "playden-import/minecraft-1-20-1", "Minecraft.exe"},
+                                    game, refused.problem);
+    check(!question_open() && !model.FolderRecipeWaiting(game), "a refused recipe asks nothing");
+    check(std::any_of(model.state().notices.begin(), model.state().notices.end(), [&](const auto& notice) {
+              return notice.message == "Recipe not used" && contains(notice.detail, "added without its recipe.json") &&
+                     contains(notice.detail, refused.problem);
+          }),
+          "and a notice says why");
+}
+
 // A report and a share list Library overrides only when the overrides the player or the recipe set change: the DXVK
 // entries that follow the Graphics row and vkd3d-proton's that follow Direct3D 12 are Playden's, and those rows are
 // listed on their own.
@@ -1948,6 +2077,7 @@ int main() {
     settings_only_base(base / "settings-only");
     web_import(base / "web-import");
     web_import_without_app_id(base / "web-import-no-app");
+    folder_recipe(base / "folder-recipe");
     std::filesystem::remove_all(base, ignored);
     std::puts("homebrew_sharing_test passed");
     return 0;
