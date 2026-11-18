@@ -95,7 +95,8 @@ std::vector<SettingDefinition> BuildCatalogue() {
                         {{"emulate", "Offline emulation", "Playden's Steam emulator answers the game."},
                          {"online", "Online (experimental)",
                           "Runs Steam's own client beside the game, signed in as you. Only for games you trust."},
-                         {"game", "Game's own files", "The game's Steam library, unchanged."},
+                         {"game", "Game's own files",
+                          "The game's Steam library, unchanged. Steam features and DLC are disabled."},
                          // runtime/steamworks.h kSteamClientFeature: for a game that checks its own Steam library file.
                          {"steamclient", "Offline emulation, game's library",
                           "The game's own Steam library, answered by Playden's Steam emulator."}},
