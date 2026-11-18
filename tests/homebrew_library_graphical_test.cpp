@@ -344,6 +344,23 @@ int main(int argc,char** argv) {
       assert(live.action("focus:volume-internal") && live.action("cross"));
       capture_live("install-other-drive.png");
       assert(live.TakeInstallRequests().empty());
+      {
+        // Listed as Partial with a long note (#977): the warning sits under the facts and the message, the rows move
+        // down under it, and Install keeps the focus.
+        CommunityCatalog catalog;
+        catalog.compat = std::map<playden::GameRef, CommunityListing>{{playden::GameRef::Steam(42), {"partial", 0,
+            "Default settings, DualSense. Plays, but the world can't be saved: the game sees less than 1 MB of free disk "
+            "space. (#76, firmware 13.60) On kit 0.17 a tester played for 15 minutes with USB mouse and keyboard; the "
+            "keyboard was needed at some points to start a world, and the report doesn't mention saving. (#373, firmware "
+            "12.20) A later report on kit 0.19 says the same world loads again after a restart, but anything built after "
+            "the last save is lost; set Game settings › Storage to a larger drive, then start a new world there. (#512, firmware 12.40, kit 0.19)"}}};
+        live.UpdateCommunityCatalog(catalog);
+        assert(live.view().notice && live.view().notice->kind == "warning" &&
+               live.view().notice->title == "Compatibility list: Partial");
+        assert(live.state().navigation.focus_key == "install-confirm");
+        capture_live("install-compat-warning.png");
+        live.UpdateCommunityCatalog({});
+      }
       assert(live.action("circle"));
       // Settings: kept game data is one row that opens the manager with a checkbox per game.
       live.UpdateKeptBottles({{SteamId(42), "Synthetic library title", 1700000000, 450'000'000},

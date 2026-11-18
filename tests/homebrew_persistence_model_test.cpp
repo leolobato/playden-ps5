@@ -44,7 +44,7 @@ OrganizationSnapshot SavedOrganization() {
     saved.query = "saved query";
     saved.scope = "collection-1";
     saved.sort = "playtime";
-    saved.filters = {"compat-playable"};
+    saved.filters = {"compat-works"};
     saved.selected_game_id = SteamId(20);
     return saved;
 }

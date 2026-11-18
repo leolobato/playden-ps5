@@ -280,6 +280,25 @@ void OwnVoteInCounts() {
   CHECK(list && list->count(GameRef::Steam(38410)) && list->at(GameRef::Steam(38410)) == (ListedGame{"broken", 0}));
   CHECK(list && list->count(GameRef{"gog", "1207658924"}) && !list->count(GameRef::Steam(620)));
   CHECK(ParseCompatList(R"({"recipes":{},"games":{}})") && ParseCompatList(R"({"recipes":{},"games":{}})")->empty());
+  // The list's notes (#977), optional: one line, a note that isn't a string is none, and a long one is cut on a whole
+  // character with "…". A summary with notes still reads its vote totals.
+  {
+    std::string long_note;
+    while (long_note.size() < kMaxCompatNotesBytes + 50) long_note += "é ";  // two-byte characters
+    const std::string with_notes =
+        R"({"recipes":{},"games":{"steam":{"1":{"status":"partial","notes":"Slow.\n  Saves (#76,\tfirmware 13.60) "},)"
+        R"("2":{"status":"broken","notes":7},"3":{"status":"refused","notes":")" + long_note + R"("}}}})";
+    CHECK(ParseVoteSummary(with_notes, nullptr));
+    const auto noted = ParseCompatList(with_notes);
+    CHECK(noted && noted->size() == 3);
+    CHECK(noted && noted->at(GameRef::Steam(1)).notes == "Slow. Saves (#76, firmware 13.60)");
+    CHECK(noted && noted->at(GameRef::Steam(2)) == (ListedGame{"broken", 0, ""}));
+    const std::string cut = noted ? noted->at(GameRef::Steam(3)).notes : std::string();
+    CHECK(cut.size() <= kMaxCompatNotesBytes && cut.size() > kMaxCompatNotesBytes - 8);
+    CHECK(cut.size() >= 3 && cut.compare(cut.size() - 3, 3, "\xE2\x80\xA6") == 0);
+    CHECK(cut.size() >= 5 && cut.compare(cut.size() - 5, 2, "\xC3\xA9") == 0);  // "é…": no half character
+    CHECK(list && list->at(GameRef::Steam(274520)).notes.empty());  // an API without notes: none
+  }
 
   const auto shown = [](std::uint32_t up, std::uint32_t down, const CastVote* own, std::int64_t at) {
     const auto votes = VotesWithOwn(up, down, own, at);

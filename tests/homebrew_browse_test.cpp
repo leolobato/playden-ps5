@@ -73,11 +73,50 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
     check(filtered_games(state).size() == 6, "genre token matches the fixture model");
     state.library.filters = {"controller-full"};
     check(filtered_games(state).size() == 8, "controller token matches the fixture model");
-    state.library.ratings[SteamId(900001)] = Compatibility::Works;
-    state.library.ratings[SteamId(900002)] = Compatibility::Playable;
-    state.library.ratings[SteamId(900003)] = Compatibility::Broken;
+    // #976: Playable kept only games the player rated, so it emptied a library nobody had rated. The Compatibility
+    // filter goes by the community's list instead, and hides nothing until Playden has the list.
+    state.library.ratings[SteamId(900004)] = Compatibility::Works;
     state.library.filters = {"compat-playable"};
-    check(filtered_games(state).size() == 2, "compatibility filter accepts Works and Playable only");
+    check(filtered_games(state).size() == 23, "the retired Playable filter hides nothing");
+    state.library.filters = {"compat-works"};
+    check(!state.community.compat && filtered_games(state).size() == 23,
+          "without the compatibility list the Compatibility filter hides nothing");
+    state.community.compat = std::map<playden::GameRef, CommunityListing>{
+        {playden::GameRef::Steam(900001), {"works", 3, ""}}, {playden::GameRef::Steam(900002), {"partial", 0, "Slow."}},
+        {playden::GameRef::Steam(900003), {"broken", 0, ""}}, {playden::GameRef::Steam(900005), {"refused", 0, ""}}};
+    const auto only = [&](const char* filter) {
+        state.library.filters = {filter};
+        std::vector<GameId> ids;
+        for (const Game* game : filtered_games(state)) ids.push_back(game->id);
+        return ids;
+    };
+    check(only("compat-works") == std::vector<GameId>{SteamId(900001)}, "Works keeps the games the list has as Works");
+    check(only("compat-partial") == std::vector<GameId>{SteamId(900002)}, "Partial keeps Partial");
+    check(only("compat-broken") == std::vector<GameId>{SteamId(900003)}, "Broken keeps Broken");
+    check(only("compat-refused") == std::vector<GameId>{SteamId(900005)}, "Refused keeps Refused");
+    check(only("compat-unlisted").size() == 19, "Not listed keeps the games the list doesn't have");
+    check(only("compat-great").size() == 23, "a status this build doesn't know is Any");
+    state.library.filters.clear();
+    check(compat_listing(state, SteamId(900002)) && compat_listing(state, SteamId(900002))->notes == "Slow." &&
+              !compat_listing(state, SteamId(900004)),
+          "a game's listing, with its notes; none for a game the list doesn't have");
+    {
+        // An imported game is listed by the Steam app ID set in its Game settings.
+        auto imported = state;
+        Game copy = state.games.front();
+        copy.id = GameId::Local("6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b");
+        imported.games.push_back(copy);
+        check(!compat_listing(imported, copy.id), "an imported game without a Steam app ID isn't listed");
+        imported.game_settings[copy.id].steam_app_id = 900003;
+        check(compat_listing(imported, copy.id) && compat_listing(imported, copy.id)->status == "broken",
+              "an imported game with a Steam app ID is listed as that app");
+        // The game's own steam_appid.txt wins over the one in Game settings, as for its recipes.
+        auto& runtime = imported.runtime_games[copy.id];
+        runtime.steam_app_id = 900002;
+        runtime.steam_app_from_game_file = true;
+        check(compat_listing(imported, copy.id) && compat_listing(imported, copy.id)->status == "partial",
+              "an imported game's own steam_appid.txt decides how it is listed");
+    }
 
     state.library.filters.clear();
     const auto every_game = filtered_games(state).size();
@@ -89,10 +128,10 @@ void filtering_uses_real_fixture(const std::filesystem::path& fixtures)
     check(without_demos.size() == every_game - 1 &&
               std::none_of(without_demos.begin(), without_demos.end(), [](const Game* game) { return game->demo; }),
           "hiding demos leaves the full games");
-    state.library.ratings[SteamId(900010)] = Compatibility::Works;
-    state.library.filters = {"compat-playable", "hide-demos"};
-    check(filtered_games(state).size() == 2, "hiding demos composes with Playable");
-    state.library.ratings.erase(SteamId(900010));
+    state.community.compat->emplace(playden::GameRef::Steam(900010), CommunityListing{"works", 0, ""});
+    state.library.filters = {"compat-works", "hide-demos"};
+    check(filtered_games(state).size() == 1, "hiding demos composes with the Compatibility filter");
+    state.community.compat->erase(playden::GameRef::Steam(900010));
     state.library.filters.clear();
     demo.demo = false;
     demo.family_shared = true;

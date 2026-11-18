@@ -84,7 +84,6 @@ playden::OrganizationSnapshot Example() {
   result.query = "星 café";
   result.scope = "collection-1";
   result.sort = "recent-played";
-  result.filters = {"compat-playable"};
   result.selected_game_id = SteamId(20);
   return result;
 }
@@ -386,6 +385,7 @@ void V2RoundTripsEveryStore() {
   expected.ratings[kLocalGame] = playden::CompatibilityRating::kPlayable;
   expected.notes[kLocalGame] = "Imported";
   expected.selected_game_id = kLocalGame;
+  expected.filters.insert("compat-partial");
   expected.filters.insert("hide-demos");
   expected.filters.insert("hide-family");
   Check(playden::OrganizationSnapshotIsValid(expected), "a Local game is valid organization");
@@ -399,7 +399,7 @@ void V2RoundTripsEveryStore() {
   Check(!store.SaveV1(kFirstAccount, v1_demos).ok(), "version 1 cannot hold hidden demos");
   auto three_filters = expected;
   three_filters.filters.insert("controller-full");
-  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds only Playable, hidden demos and family games, and a store");
+  Check(!store.Save(kDevice, three_filters).ok(), "version 2 holds only a status, hidden demos and family games, and a store");
   auto every_filter = expected;
   every_filter.filters.insert("store-imported");
   Check(store.Save(kDevice, every_filter).ok(), "the Store filter saves with the three others");
@@ -759,7 +759,6 @@ RawV2 ExampleRaw() {
   file.query = "星 café";
   file.scope = "collection-1";
   file.sort = "recent-played";
-  file.filters = {"compat-playable"};
   return file;
 }
 
@@ -911,9 +910,9 @@ void V2SkipsUnknownFilters() {
   TemporaryDirectory directory;
   playden::Storage storage(directory.path());
   auto file = ExampleRaw();
-  file.filters = {"newer-filter", "compat-playable", "store-epic", "hide-demos", "hide-family", "store-gog", "x"};
+  file.filters = {"newer-filter", "compat-playable", "store-epic", "hide-demos", "hide-family", "store-gog", "x", "compat-broken"};
   auto expected = Example();
-  expected.filters = {"compat-playable", "hide-demos", "hide-family", "store-gog"};
+  expected.filters = {"compat-broken", "hide-demos", "hide-family", "store-gog"};
   const auto bytes = EncodeV2(file);
   auto loaded = LoadFile(storage, bytes);
   Check(loaded.ok() && loaded.value() && *loaded.value() == expected,
@@ -926,10 +925,15 @@ void V2SkipsUnknownFilters() {
   loaded = LoadFile(storage, EncodeV2(file));
   Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "an unknown store reads as Any");
 
-  file.filters = {"compat-playable", "store-steam", "store-imported"};
-  expected.filters = {"compat-playable"};
+  file.filters = {"compat-unlisted", "store-steam", "store-imported"};
+  expected.filters = {"compat-unlisted"};
   loaded = LoadFile(storage, EncodeV2(file));
   Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "several stores read as Any");
+
+  file.filters = {"compat-works", "compat-broken", "hide-demos"};
+  expected.filters = {"hide-demos"};
+  loaded = LoadFile(storage, EncodeV2(file));
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "several statuses read as Any");
 
   file.filters.assign(64, "");
   for (std::size_t index = 0; index < file.filters.size(); ++index) file.filters[index] = "newer-" + std::to_string(index);
@@ -947,9 +951,51 @@ void V2SkipsUnknownFilters() {
   }
 }
 
+// The Playable filter of older builds (the player's own ratings, #976) is read and dropped from either version; the
+// Compatibility filter replaced it, one status at a time.
+void RetiredPlayableFilterIsDropped() {
+  TemporaryDirectory directory;
+  playden::Storage storage(directory.path());
+  playden::OrganizationStore store(storage);
+  auto v1 = Example();
+  v1.schema_version = 1;
+  v1.filters = {"compat-playable"};
+  Check(store.SaveV1(kFirstAccount, v1).ok(), "a version 1 file with Playable saves");
+  const auto from_v1 = store.LoadV1(kFirstAccount);
+  auto expected_v1 = v1;
+  expected_v1.filters.clear();
+  Check(from_v1.ok() && from_v1.value() && *from_v1.value() == expected_v1, "version 1's Playable reads as no filter");
+
+  auto file = ExampleRaw();
+  file.filters = {"compat-playable", "hide-demos"};
+  auto expected = Example();
+  expected.filters = {"hide-demos"};
+  const auto loaded = LoadFile(storage, EncodeV2(file));
+  Check(loaded.ok() && loaded.value() && *loaded.value() == expected, "version 2's Playable is skipped, not damage");
+  Check(store.Save(kDevice, *loaded.value()).ok(), "and the organization saves again without it");
+
+  auto playable = Example();
+  playable.filters = {"compat-playable"};
+  Check(!store.Save(kDevice, playable).ok(), "the writer refuses the retired Playable filter");
+  for (const std::string status : {"works", "partial", "broken", "refused", "unlisted"}) {
+    auto one = Example();
+    one.filters = {"compat-" + status};
+    Check(store.Save(kDevice, one).ok(), ("the Compatibility filter saves " + status).c_str());
+    const auto read = store.Load(kDevice);
+    Check(read.ok() && read.value() && *read.value() == one, ("and reads " + status).c_str());
+  }
+  auto two = Example();
+  two.filters = {"compat-works", "compat-partial"};
+  Check(!store.Save(kDevice, two).ok(), "the Compatibility filter picks one status");
+  auto unknown = Example();
+  unknown.filters = {"compat-great"};
+  Check(!store.Save(kDevice, unknown).ok(), "the writer refuses a status it doesn't know");
+}
+
 }  // namespace
 
 int main() {
+  RetiredPlayableFilterIsDropped();
   SelectionDoesNotConsumeAnnotationCapacity();
   SharedValidationMatchesEncodedBoundary();
   V1RoundTripAndIsolation();

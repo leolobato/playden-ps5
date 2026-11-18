@@ -94,6 +94,17 @@ bool reconcile_store_collection_scope(State& state);
 [[nodiscard]] std::string library_rail_marked_scope(const State& state);
 // The Store filter's store ("steam", "gog", "imported", from the filter "store-<store>"), or empty for Any.
 [[nodiscard]] std::string library_store_filter(const State& state);
+// The Steam app ID a game uses for Steamworks: a Steam game's own, else another store's game's steam_appid.txt (as the
+// runtime last saw it), else the one in its Game settings; 0 when none.
+[[nodiscard]] std::uint32_t game_steam_app(const State& state, const GameId& id);
+// How the community's compatibility list has a game (by MatchingGameRef: a Steam game's app ID, a GOG game's ID, an
+// imported game's Steam app ID). Null when Playden has no list yet, or the game isn't on it.
+[[nodiscard]] const CommunityListing* compat_listing(const State& state, const GameId& id);
+// The statuses the Compatibility filter offers after Any, in order: "works", "partial", "broken", "refused" and
+// "unlisted" (not on the list).
+[[nodiscard]] const std::vector<std::string>& library_compat_choices();
+// The Compatibility filter's status (from the filter "compat-<status>"), or empty for Any. Only one this build offers.
+[[nodiscard]] std::string library_compat_filter(const State& state);
 // The stores the Sort and filters sheet offers under Store, after Any: as library_store_scopes, plus the store picked
 // while it is not among them. Empty: the sheet has no Store group.
 [[nodiscard]] std::vector<std::string> library_filter_stores(const State& state);

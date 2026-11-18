@@ -148,11 +148,54 @@ int main(int argc, char** argv) {
                   find_row(model, "details-compat")->title == "Not listed",
               "a game the list doesn't have is Not listed");
         {
+            // Install for a game listed as Partial, Broken or Refused: a warning above Install with the list's notes,
+            // and Install keeps the focus, one press away (#977).
+            const auto install_sheet = [&](const char* details) {
+                while (!model.state().navigation.modals.empty()) model.action("circle");
+                return model.action(details) && model.action("focus:details-install") && model.action("cross") &&
+                       model.view().surface == "install";
+            };
+            check(install_sheet("details:900012") && model.view().notice && model.view().notice->kind == "warning" &&
+                      model.view().notice->title == "Compatibility list: Partial" &&
+                      model.view().notice->body.rfind("Plays, but the world can't be saved", 0) == 0 &&
+                      model.state().navigation.focus_key == "install-confirm",
+                  "a game listed as Partial: the Install sheet warns with the list's notes");
+            auto catalog = model.state().community;
+            const auto partial = catalog.compat->at(playden::GameRef::Steam(900012));
+            for (const char* status : {"broken", "refused"}) {
+                (*catalog.compat)[playden::GameRef::Steam(900012)] = CommunityListing{status, 0, "Needs the EA app."};
+                model.UpdateCommunityCatalog(catalog);
+                check(install_sheet("details:900012") && model.view().notice && model.view().notice->kind == "danger" &&
+                          model.view().notice->title == std::string("Compatibility list: ") +
+                              (std::string(status) == "broken" ? "Broken" : "Refused") &&
+                          model.view().notice->body == "Needs the EA app.",
+                      "a game listed as Broken or Refused: the warning is red");
+            }
+            (*catalog.compat)[playden::GameRef::Steam(900012)] = partial;
+            for (auto& [game, listed] : *catalog.compat) listed.notes.clear();
+            model.UpdateCommunityCatalog(catalog);
+            check(install_sheet("details:900012") && model.view().notice &&
+                      model.view().notice->body == "It plays, with a problem that gets in the way.",
+                  "without notes (an older API) the warning says what the status means");
+            (*catalog.compat)[playden::GameRef::Steam(900012)] = CommunityListing{"works", 3, ""};
+            model.UpdateCommunityCatalog(catalog);
+            check(install_sheet("details:900012") && !model.view().notice, "a game listed as Works: no warning");
+            catalog.compat->erase(playden::GameRef::Steam(900012));
+            model.UpdateCommunityCatalog(catalog);
+            check(install_sheet("details:900012") && !model.view().notice, "a game the list doesn't have: no warning");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+        }
+        {
             // Without the list (not fetched yet, or an API that has none) the page says nothing about the community.
             auto catalog = model.state().community;
             catalog.compat.reset();
             model.UpdateCommunityCatalog(catalog);
             check(!find_row(model, "details-compat"), "no list: no Compatibility from the community");
+            check(model.action("details:900012") && model.action("focus:details-install") && model.action("cross") &&
+                      model.view().surface == "install" && !model.view().notice,
+                  "no list: no warning on the Install sheet");
+            while (!model.state().navigation.modals.empty()) model.action("circle");
+            check(model.action("details:900004"), "back on the unlisted game's page");
         }
         // Search by game name and linked games.
         capture("recipes-imported-none", "preset-picker", "preset-playden-default");

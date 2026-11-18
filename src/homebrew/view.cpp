@@ -19,6 +19,7 @@
 #include "gfx/gl.hpp"
 #include "gfx/renderer.hpp"
 #include "ui/components/badge.hpp"
+#include "ui/components/banner.hpp"
 #include "ui/components/detail_list.hpp"
 #include "ui/components/grid.hpp"
 #include "ui/components/keyboard.hpp"
@@ -2004,6 +2005,17 @@ class Render::Impl
         return taken;
     }
 
+    // A game's status on the community's compatibility list, as the design system's status symbol on a dark rim:
+    // a tick for Works, a warning for Partial, a cross for Broken and Refused.
+    void compat_mark(const std::string &status, float cx, float cy)
+    {
+        const ui::StatusKind kind = status == "works" ? ui::StatusKind::success
+                                  : status == "partial" ? ui::StatusKind::warning : ui::StatusKind::danger;
+        scene_.circle(cx, cy, 17.0F, kBackground.with_alpha(0.8F));
+        ui::Canvas canvas{scene_, fonts_, renderer_.glass_texture(), clock_};
+        ui::draw_status_icon(canvas, theme_, kind, cx, cy, 28.0F);
+    }
+
     void download_mark(float cx, float cy, float opacity)
     {
         scene_.circle(cx, cy, 15.0F, kBackground.with_alpha(0.8F * opacity));
@@ -2094,12 +2106,26 @@ class Render::Impl
             (status.job->state == JobState::Downloading || status.job->state == JobState::Verifying ||
              status.job->state == JobState::Pausing || status.job->state == JobState::Paused);
         const bool show_download_mark = status.job == nullptr && status.installation == nullptr && !status.in_place;
+        // How the community's compatibility list has the game (#977): a status symbol at the bottom right, left of the
+        // download mark or the size. A thumbnail has no room, and a download's progress takes the bottom.
+        const CommunityListing *listed = current_state_ != nullptr && rect.w >= 180.0F && !downloading ?
+                                         compat_listing(*current_state_, game.id) : nullptr;
+        const bool size_pill = status.installed && status.installation != nullptr && status.installation->installed_bytes > 0;
+        float compat_cx = rect.x + rect.w - 25.0F;
+        if (show_download_mark)
+            compat_cx -= 38.0F;
+        else if (size_pill && title_overlay)
+            // The size fades out as the tile takes the focus; the symbol moves into its corner with it.
+            compat_cx -= (fonts_.semibold.measure(short_size(status.installation->installed_bytes), 16.0F) + 28.0F) *
+                         (1.0F - amount);
         if (title_overlay && amount > 0.0F && !game.art_pending && !downloading)
         {
             scene_.push_opacity(amount);
             scene_.gradient_rect({rect.x, rect.y + rect.h - 105.0F, rect.w, 105.0F}, 8.0F,
                                  kBackground.with_alpha(0.0F), kBackground.with_alpha(0.92F));
-            const float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F);
+            float text_width = rect.w - 28.0F - (show_download_mark ? 36.0F : 0.0F);
+            if (listed != nullptr)
+                text_width = std::min(text_width, compat_cx - 25.0F - rect.x - 14.0F);
             dynamic_text(game.title, rect.x + 14.0F, rect.y + rect.h - 40.0F, 24.0F, kText, text_width);
             ui::text(scene_, fonts_.regular, fit(fonts_.regular, tile_subtitle(game, status), 15.0F, text_width),
                      rect.x + 14.0F, rect.y + rect.h - 17.0F, 15.0F, kSecondary);
@@ -2123,7 +2149,7 @@ class Render::Impl
             tile_badge(rect, "Drive disconnected", kAmber, corner);
         if (show_download_mark)
             download_mark(rect.x + rect.w - 25.0F, rect.y + rect.h - 25.0F, 1.0F);
-        else if (status.installed && status.installation != nullptr && status.installation->installed_bytes > 0 && amount < 1.0F && title_overlay)
+        else if (size_pill && amount < 1.0F && title_overlay)
         {
             const std::string size = short_size(status.installation->installed_bytes);
             const float width = fonts_.semibold.measure(size, 16.0F) + 20.0F;
@@ -2134,6 +2160,9 @@ class Render::Impl
                      kText, gfx::Align::right);
             scene_.pop_opacity();
         }
+        // After the size, which fades out under it while the symbol moves into the corner.
+        if (listed != nullptr)
+            compat_mark(listed->status, compat_cx, rect.y + rect.h - 25.0F);
         if (downloading && progress >= 0.0F)
         {
             const float value = std::clamp(progress, 0.0F, 1.0F);
@@ -4486,6 +4515,12 @@ class Render::Impl
             subtitle_bottom = ui::paragraph(overlay_, fonts_.regular, view.subtitle, panel.x + 48.0F,
                           (view.facts.empty() ? 190.0F : 160.0F + facts_height + 32.0F) + drop, 23.0F,
                           panel.w - 96.0F, 32.0F, kSecondary, view.surface == "install" ? (view.facts.empty() ? 6 : 2) : 3);
+        // A warning above the rows (the Install sheet's for a game the compatibility list has as Partial, Broken or
+        // Refused): under the facts and the message, and the rows move down under it.
+        float notice_bottom = 0.0F;
+        if (view.notice)
+            notice_bottom = draw_sheet_notice(*view.notice, {panel.x + 40.0F,
+                std::max(subtitle_bottom, 160.0F + facts_height + drop) + 24.0F, panel.w - 80.0F});
         if (view.surface == "storage")
             draw_storage_overlay_rows(view, {panel.x + 40.0F, 246.0F, panel.w - 80.0F, 710.0F});
         else if (view.surface == "import-storage" || view.surface == "move-storage")
@@ -4504,6 +4539,8 @@ class Render::Impl
             // Join and Invite friends: the rows start under their facts and message, however long they are.
             if (view.surface == "join-lobby" || view.surface == "invite-friends")
                 rows_top = std::max(rows_top, std::max(subtitle_bottom, 160.0F + facts_height) + 36.0F - drop);
+            if (notice_bottom > 0.0F)
+                rows_top = std::max(rows_top, notice_bottom + 20.0F - drop);
             draw_overlay_rows(view, {panel.x + 40.0F, rows_top + drop, panel.w - 80.0F, 942.0F - rows_top - drop});
         }
         if (view.comparison)
@@ -4512,6 +4549,46 @@ class Render::Impl
     }
 
     struct FactsBounds { float x, y, w; };
+    // A sheet's warning as the design system's Banner, with no actions and no dismiss: it takes no input. Returns its
+    // bottom edge.
+    float draw_sheet_notice(const ViewNotice &notice, const FactsBounds &bounds)
+    {
+        sheet_notice_.style.theme = theme_;
+        sheet_notice_.style.kind = notice.kind == "warning" ? ui::StatusKind::warning : ui::StatusKind::danger;
+        sheet_notice_.style.dismissable = false;
+        sheet_notice_.style.back_dismisses = false;
+        sheet_notice_.style.slide = 0.0F;
+        sheet_notice_.style.icon_size = 34.0F;
+        sheet_notice_.style.padding = 18.0F;
+        sheet_notice_.style.min_height = 0.0F;
+        sheet_notice_.style.title_size = 23.0F;
+        sheet_notice_.style.body_size = 20.0F;
+        sheet_notice_.style.body_lines = 7;  // a note from the API is at most 600 bytes
+        sheet_notice_.title = notice.title;
+        // The Banner draws its own text, so the marks Playden draws as shapes elsewhere (drawn_mark) become plain
+        // characters here when the face lacks them: notes often say "Game settings › Program".
+        std::string body = notice.body;
+        struct Plain { std::uint32_t codepoint; std::string_view mark, plain; };
+        for (const Plain &swap : {Plain{0x203A, "\u203A", ">"}, Plain{0x2192, "\u2192", "->"}, Plain{0x2605, "\u2605", "*"},
+                                  Plain{0x26A0, "\u26A0", "!"}})
+        {
+            if (fonts_.regular.font->has_glyph(swap.codepoint))
+                continue;
+            const std::string_view mark = swap.mark, plain = swap.plain;
+            for (std::size_t at = body.find(mark); at != std::string::npos; at = body.find(mark, at + plain.size()))
+                body.replace(at, mark.size(), plain);
+        }
+        sheet_notice_.body = std::move(body);
+        sheet_notice_.set_actions({});
+        sheet_notice_.set_active(false);
+        sheet_notice_.set_bounds({bounds.x, bounds.y, bounds.w, 0.0F});
+        sheet_notice_.set_shown(true, true);
+        sheet_notice_.update(frame_dt_);
+        ui::Canvas canvas{overlay_, fonts_, renderer_.glass_texture(), clock_};
+        sheet_notice_.draw(canvas);
+        return bounds.y + sheet_notice_.height(fonts_);
+    }
+
     // A sheet's read-only labels and values, as the design system's DetailList. Returns the height they take.
     float draw_sheet_facts(const std::vector<ViewFact> &facts, const FactsBounds &bounds)
     {
@@ -5358,6 +5435,7 @@ class Render::Impl
     std::string sheet_scroll_key_;  // the sheet the scroll belongs to
     float sheet_scroll_ = 0.0F;
     ui::DetailList sheet_facts_;
+    ui::Banner sheet_notice_;  // a sheet's warning above its rows (ViewData::notice)
     std::map<std::uint64_t, ui::Avatar> avatars_;  // Friends: one per friend, so each keeps its presence dot's motion
     std::vector<ViewFact> sheet_facts_shown_;
     // Game settings: the player's changes, between the sheet's rows.

@@ -335,6 +335,32 @@ std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* e
   return totals;
 }
 
+namespace {
+
+// A note as Playden shows it: one line of at most kMaxCompatNotesBytes, control characters as spaces, runs of spaces as
+// one, cut on a whole character with "…" when it was longer.
+std::string CompatNotesText(std::string_view text) {
+  std::string line;
+  for (const char c : text) {
+    const bool space = static_cast<unsigned char>(c) < 0x20 || c == 0x7f || c == ' ';
+    if (space) {
+      if (!line.empty() && line.back() != ' ') line += ' ';
+    } else {
+      line += c;
+    }
+  }
+  while (!line.empty() && line.back() == ' ') line.pop_back();
+  if (line.size() <= kMaxCompatNotesBytes) return line;
+  static constexpr std::string_view kEllipsis = "\xE2\x80\xA6";
+  std::size_t end = kMaxCompatNotesBytes - kEllipsis.size();
+  while (end > 0 && (static_cast<unsigned char>(line[end]) & 0xC0) == 0x80) --end;  // not inside a character
+  line.resize(end);
+  while (!line.empty() && line.back() == ' ') line.pop_back();
+  return line + std::string(kEllipsis);
+}
+
+}  // namespace
+
 std::optional<CompatList> ParseCompatList(std::string_view json) {
   if (json.size() > kMaxSummaryBytes) return std::nullopt;
   steam::json::Limits limits;
@@ -358,6 +384,8 @@ std::optional<CompatList> ParseCompatList(std::string_view json) {
       if (const auto* reports = value.Find("reports"); reports && how == "works")
         if (const auto number = reports->AsUint64())
           listed.reports = static_cast<std::uint32_t>(std::min<std::uint64_t>(*number, 0xffffffffu));
+      // Notes are optional (an older API has none): anything but a string is no notes.
+      if (const auto* notes = value.Find("notes"); notes && notes->is_string()) listed.notes = CompatNotesText(notes->text());
       list[game] = std::move(listed);
     }
   }

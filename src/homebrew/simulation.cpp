@@ -630,6 +630,25 @@ std::string kept_name(const State& state, const LiveKeptBottle& kept) {
     return "Steam app " + ToKey(kept.game_id);
 }
 
+// How the compatibility list names a status: "Works", "Partial", "Broken" or "Refused".
+std::string CompatStatusLabel(const std::string& status) {
+    return status == "works" ? "Works" : status == "partial" ? "Partial" : status == "broken" ? "Broken"
+         : status == "refused" ? "Refused" : "Not listed";
+}
+
+// The Install sheet's warning for a game the list has as Partial, Broken or Refused: what that status means, then the
+// list's notes when it has them (the list's Status table says the same).
+ViewNotice CompatNotice(const CommunityListing& listed) {
+    ViewNotice notice;
+    notice.kind = listed.status == "partial" ? "warning" : "danger";
+    const std::string meaning = listed.status == "partial" ? "It plays, with a problem that gets in the way."
+                              : listed.status == "broken" ? "It starts, but doesn't reach a playable state."
+                              : "Playden refuses to prepare it and says why.";
+    notice.title = "Compatibility list: " + CompatStatusLabel(listed.status);
+    notice.body = listed.notes.empty() ? meaning : listed.notes;
+    return notice;
+}
+
 std::string kept_count(std::size_t count) {
     return std::to_string(count) + (count == 1 ? " game" : " games");
 }
@@ -827,12 +846,15 @@ std::string action_label(const std::string& key) {
         {"section-compatibility", "Compatibility"}, {"section-advanced", "Advanced"}, {"heading-game", "Game"},
         {"heading-online", "Online"}, {"heading-display", "Display"}, {"heading-controls", "Controls"}, {"heading-sound", "Sound"},
         {"heading-graphics", "Graphics"}, {"heading-steam", "Steam"}, {"heading-windows", "Windows"}, {"heading-sort", "Sort"}, {"heading-filter", "Filter"}, {"heading-store", "Store"},
+        {"heading-compat", "Compatibility"}, {"compat-filter-any", "Any"}, {"compat-filter-works", "Works"},
+        {"compat-filter-partial", "Partial"}, {"compat-filter-broken", "Broken"}, {"compat-filter-refused", "Refused"},
+        {"compat-filter-unlisted", "Not listed"},
         {"store-filter-any", "Any"}, {"store-filter-steam", "Steam"}, {"store-filter-gog", "GOG"}, {"store-filter-imported", "Imported"},
         {"divider", ""},
         {"sort-name", "Name"}, {"sort-recent-played", "Recently played"}, {"sort-recent-added", "Recently added"},
         {"sort-playtime", "Playtime"}, {"sort-install-size", "Install size"}, {"filter-installed", "Installed"},
         {"filter-genre-adventure", "Adventure"}, {"filter-controller-full", "Full controller support"},
-        {"filter-compat-playable", "Playable"}, {"filter-hide-demos", "Demos"}, {"filter-hide-family", "Family sharing"}, {"filters-reset", "Reset filters"}, {"refresh-library", "Refresh library"}, {"advance-clock", "Advance fixture clock"},
+        {"filter-hide-demos", "Demos"}, {"filter-hide-family", "Family sharing"}, {"filters-reset", "Reset filters"}, {"refresh-library", "Refresh library"}, {"advance-clock", "Advance fixture clock"},
         {"inject-download-failed", "Inject download failure"}, {"inject-verification-failed", "Inject verification failure"},
         {"inject-uninstall-failed", "Inject uninstall failure"},
         {"inject-storage-disconnect", "Disconnect storage"}, {"inject-controller-disconnect", "Disconnect controller"},
@@ -5975,6 +5997,7 @@ void Simulation::load_profile() {
     if (const auto* filters = root->get("filters"); filters && filters->array()) {
         state_.library.filters.clear();
         for (const auto& filter : *filters->array()) state_.library.filters.insert(string_value(&filter));
+        state_.library.filters.erase("compat-playable");  // the retired Playable filter (#976)
     }
     if (const auto* collections = root->get("collections"); collections && collections->array()) {
         state_.library.collections.clear();
@@ -6349,11 +6372,14 @@ void Simulation::seed_community_scenario(bool offline) {
     older.recipe.revision = std::string(64, '0');
     older.recipe.defaults.erase("button.touchpad");
     synthetic_community_[older.recipe.revision] = std::move(older);
-    // The compatibility list: the second game Works with players' confirmations, the fifth is Refused, the twelfth
-    // Partial; the fourth isn't listed.
-    catalog.compat = std::map<GameRef, CommunityListing>{{GameRef::Steam(900002), {"works", 14}},
-                                                         {GameRef::Steam(900005), {"refused", 0}},
-                                                         {GameRef::Steam(900012), {"partial", 0}}};
+    // The compatibility list: the first game Works, the second too with players' confirmations, the third is Broken,
+    // the fifth Refused, the twelfth Partial, each of the last three with the list's notes; the fourth isn't listed.
+    catalog.compat = std::map<GameRef, CommunityListing>{
+        {GameRef::Steam(900001), {"works", 0, ""}},
+        {GameRef::Steam(900002), {"works", 14, ""}},
+        {GameRef::Steam(900003), {"broken", 0, "Starts, then stops on a black screen after the intro video. (#412, firmware 12.20)"}},
+        {GameRef::Steam(900005), {"refused", 0, "Needs the EA app. (#851, firmware 12.20)"}},
+        {GameRef::Steam(900012), {"partial", 0, "Plays, but the world can't be saved: the game sees less than 1 MB of free disk space. (#76, firmware 13.60)"}}};
     state_.community = std::move(catalog);
 }
 
@@ -6958,6 +6984,10 @@ bool Simulation::scenario(const std::string& name) {
         kit_.helper_process = true;
     } else if (name == "my-presets" || name == "my-presets-save" || name == "my-presets-full") {
         seed_my_presets_scenario(name);
+    } else if (name == "compat") {
+        // The community's compatibility list: the Library's badges, its Compatibility filter and the Install sheet's
+        // warning for a game listed as Partial, Broken or Refused (#977).
+        seed_community_scenario(false);
     } else if (name.rfind("recipes-", 0) == 0) {
         // Community recipes: the chooser, the Install sheet's Settings row, a switch and Game settings.
         seed_community_scenario(name == "recipes-offline");
@@ -7518,6 +7548,13 @@ void Simulation::rebuild_view() {
             if (const auto* mine = rt::FindMyPreset(my_presets_, my_preset_menu_id_))
                 view_.subtitle = rt::MyPresetSummary(mine->preset.settings);
         }
+        if (modal.id == "install") {
+            // A game the community's list has as Partial, Broken or Refused: a warning above Install, with the list's
+            // notes. Install stays one press (#977).
+            const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
+            if (const auto* listed = compat_listing(state_, id); listed && listed->status != "works")
+                view_.notice = CompatNotice(*listed);
+        }
         if (modal.id == "install" && live()) {
             // Shown when the game does not fit as is: say why, and where it would go.
             const auto id = state_.navigation.detail_id.value_or(state_.navigation.selected_game_id);
@@ -7962,6 +7999,17 @@ void Simulation::rebuild_view() {
                 item.kind = RowKind::Toggle;
                 item.selected = state_.library.filters.contains(action_key.substr(7)) != hide;
                 item.value = item.selected ? "On" : "Off";
+            }
+            // The Compatibility filter ticks its status, or Any. Without the list it filters nothing: the statuses can't
+            // be picked and Any says why (#976).
+            if (modal.id == "filters" && action_key.rfind("compat-filter-", 0) == 0) {
+                const auto chosen = library_compat_filter(state_);
+                const bool any = action_key == "compat-filter-any";
+                item.checked = any ? chosen.empty() || !state_.community.compat : state_.community.compat && action_key.substr(14) == chosen;
+                if (!state_.community.compat) {
+                    if (any) item.subtitle = "List not loaded yet";
+                    else item.enabled = false;
+                }
             }
             // So does the store the Store filter picks, or Any.
             if (modal.id == "filters" && action_key.rfind("store-filter-", 0) == 0) {
@@ -9780,16 +9828,10 @@ void Simulation::rebuild_view() {
         // How the community's compatibility list has the game, apart from the player's own rating. Only once Playden
         // has the list: without it the page says nothing about the community.
         if (game && state_.community.compat) {
-            const auto ref = community_ref(game->id);
-            const auto listed = ref ? state_.community.compat->find(*ref) : state_.community.compat->end();
-            const bool found = listed != state_.community.compat->end();
-            const std::string& how = found ? listed->second.status : std::string();
-            auto& cell = row("details-compat", RowKind::Status,
-                             how == "works" ? "Works" : how == "partial" ? "Partial" : how == "broken" ? "Broken"
-                             : how == "refused" ? "Refused" : "Not listed", "");
-            if (found && listed->second.reports > 0)
-                cell.value = "Confirmed by " + std::to_string(listed->second.reports) +
-                             (listed->second.reports == 1 ? " player" : " players");
+            const auto* listed = compat_listing(state_, game->id);
+            auto& cell = row("details-compat", RowKind::Status, listed ? CompatStatusLabel(listed->status) : "Not listed", "");
+            if (listed && listed->reports > 0)
+                cell.value = "Confirmed by " + std::to_string(listed->reports) + (listed->reports == 1 ? " player" : " players");
             cell.enabled = false;
         }
         // Invite friends, beside Play, for a game set to Online (online-steam).
@@ -13115,6 +13157,12 @@ void Simulation::activate() {
             filter = filter->rfind("store-", 0) == 0 ? state_.library.filters.erase(filter) : std::next(filter);
         if (action_name != "store-filter-any") state_.library.filters.insert("store-" + action_name.substr(13));
         close_modal(); reconcile_library_selection(state_); save_profile();
+    } else if (action_name.rfind("compat-filter-", 0) == 0) {
+        // One status, or Any: the Compatibility filter is at most one "compat-<status>" filter.
+        for (auto filter = state_.library.filters.begin(); filter != state_.library.filters.end();)
+            filter = filter->rfind("compat-", 0) == 0 ? state_.library.filters.erase(filter) : std::next(filter);
+        if (action_name != "compat-filter-any") state_.library.filters.insert("compat-" + action_name.substr(14));
+        close_modal(); reconcile_library_selection(state_); save_profile();
     } else if (action_name.rfind("filter-", 0) == 0) {
         const auto filter = action_name.substr(7);
         if (state_.library.filters.contains(filter)) state_.library.filters.erase(filter); else state_.library.filters.insert(filter);
@@ -14387,14 +14435,14 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
             // Demos is listed while there are demos, or while they are hidden so they can be shown again.
             const bool demos = state_.library.filters.contains("hide-demos") ||
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.demo; });
-            // Sort, Filter and Store, then the actions after an untitled divider.
+            // Sort, Filter (while it has a filter), Compatibility and Store, then the actions after an untitled divider.
             std::vector<std::string> sorts = live()
                 ? (dated ? std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime"}
                          : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-playtime"})
                 : std::vector<std::string>{"sort-name", "sort-recent-played", "sort-recent-added", "sort-playtime", "sort-install-size"};
             std::vector<std::string> filters = live()
-                ? std::vector<std::string>{"filter-compat-playable"}
-                : std::vector<std::string>{"filter-installed", "filter-genre-adventure", "filter-controller-full", "filter-compat-playable"};
+                ? std::vector<std::string>{}
+                : std::vector<std::string>{"filter-installed", "filter-genre-adventure", "filter-controller-full"};
             // Family sharing likewise, for games a Steam family member shares.
             const bool family = state_.library.filters.contains("hide-family") ||
                 std::any_of(state_.games.begin(), state_.games.end(), [](const Game& game) { return game.family_shared; });
@@ -14402,8 +14450,13 @@ bool Simulation::action(const std::string& logical_action, bool repeat) {
             if (family) filters.push_back("filter-hide-family");
             std::vector<std::string> actions{"heading-sort"};
             actions.insert(actions.end(), sorts.begin(), sorts.end());
-            actions.push_back("heading-filter");
-            actions.insert(actions.end(), filters.begin(), filters.end());
+            if (!filters.empty()) {
+                actions.push_back("heading-filter");
+                actions.insert(actions.end(), filters.begin(), filters.end());
+            }
+            // Compatibility: Any, then how the community's compatibility list has a game (#977).
+            actions.insert(actions.end(), {"heading-compat", "compat-filter-any"});
+            for (const auto& status : library_compat_choices()) actions.push_back("compat-filter-" + status);
             // Store: Any, then each store with games (Steam, GOG, Imported), while the games come from more than one
             // store or a store is picked, so it can be set back to Any.
             if (const auto stores = library_filter_stores(state_); !stores.empty()) {
@@ -15335,15 +15388,7 @@ const rt::SettingsPreset* Simulation::find_preset(const std::string& id) const {
     return find_preset("playden-default");
 }
 
-std::uint32_t Simulation::steam_app_of(GameId id) const {
-    if (const auto app = id.steam_app()) return *app;
-    // Only the game's own steam_appid.txt wins over Game settings; an ID that came from settings is stale once they change.
-    if (const auto runtime = state_.runtime_games.find(id);
-        runtime != state_.runtime_games.end() && runtime->second.steam_app_from_game_file && runtime->second.steam_app_id)
-        return runtime->second.steam_app_id;
-    const auto record = state_.game_settings.find(id);
-    return record == state_.game_settings.end() ? 0 : record->second.steam_app_id;
-}
+std::uint32_t Simulation::steam_app_of(GameId id) const { return game_steam_app(state_, id); }
 
 std::optional<GameRef> Simulation::community_ref(GameId id) const { return MatchingGameRef(id, steam_app_of(id)); }
 

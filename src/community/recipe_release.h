@@ -21,6 +21,8 @@ inline constexpr std::size_t kMaxReleaseJsonBytes = 64 << 10;
 inline constexpr std::size_t kMaxIndexBytes = 256 << 10;
 inline constexpr std::size_t kMaxZipBytes = 2 << 20;
 inline constexpr std::size_t kMaxSummaryBytes = 256 << 10;
+// The most of a compatibility list note Playden keeps, in bytes; a longer one is cut and ends in "…".
+inline constexpr std::size_t kMaxCompatNotesBytes = 1024;
 inline constexpr std::size_t kMaxZipEntries = 2000;
 inline constexpr std::size_t kMaxRecipeBytes = 16 << 10;
 inline constexpr const char* kIndexAsset = "index.json";
@@ -91,10 +93,12 @@ using VoteTotals = std::map<std::string, std::map<std::string, RecipeVotes>>;
 std::optional<VoteTotals> ParseVoteSummary(std::string_view json, std::string* error, std::int64_t* generated_at = nullptr);
 
 // A game of the compatibility list, from summary.json's "games": how it is listed ("works", "partial", "broken" or
-// "refused") and how many players confirmed a game listed as Works.
+// "refused"), how many players confirmed a game listed as Works, and the list's notes for it (plain text; empty when
+// the API sends none, as before it had them).
 struct ListedGame {
   std::string status;
   std::uint32_t reports = 0;
+  std::string notes;
   bool operator==(const ListedGame&) const = default;
 };
 using CompatList = std::map<GameRef, ListedGame>;

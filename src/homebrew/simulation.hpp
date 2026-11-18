@@ -331,11 +331,12 @@ inline std::string CommunityRecipeLabel(const CommunityRecipeOffer& offer) { ret
 // Live: the community recipes Playden has (community::RecipeSnapshot, projected), by the game they are for. A library
 // game gets those of its GameRef (Simulation::community_ref: a Steam game's app ID, an imported game's Steam app ID).
 // Search by name (the chooser's "Search recipes by game name…") finds any game here that has recipes, by its name.
-// A game of the community's compatibility list: how it is listed ("works", "partial", "broken" or "refused") and how
-// many players confirmed a game listed as Works.
+// A game of the community's compatibility list: how it is listed ("works", "partial", "broken" or "refused"), how
+// many players confirmed a game listed as Works, and the list's notes for it (empty: none).
 struct CommunityListing {
     std::string status;
     std::uint32_t reports = 0;
+    std::string notes;
     bool operator==(const CommunityListing&) const = default;
 };
 struct CommunityCatalog {
@@ -1167,8 +1168,18 @@ struct ViewFact {
     bool operator==(const ViewFact& other) const { return label == other.label && value == other.value && warn == other.warn; }
 };
 
+// A warning a sheet shows above its rows (the Install sheet's for a game the compatibility list has as Partial,
+// Broken or Refused); the focus never goes there. kind: "warning" or "danger", for its colour and symbol.
+struct ViewNotice {
+    std::string kind;
+    std::string title;
+    std::string body;
+    bool operator==(const ViewNotice&) const = default;
+};
+
 struct ViewData {
     std::vector<ViewFact> facts;
+    std::optional<ViewNotice> notice;
     std::string surface;
     std::string title;
     std::string subtitle;

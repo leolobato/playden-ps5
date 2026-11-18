@@ -168,6 +168,7 @@ std::vector<const Game*> filtered_games(const State& state)
     if (store_scope && store_collection == nullptr)
         return result;
     const std::optional<Store> store_filter = rail_store(library_store_filter(state));
+    const std::string compat_filter = library_compat_filter(state);
     for (const Game& game : state.games)
     {
         if (state.library.scope == "installed" && !installed(state, game.id))
@@ -205,11 +206,12 @@ std::vector<const Game*> filtered_games(const State& state)
             continue;
         if (state.library.filters.contains("controller-full") && game.controller_support != "full")
             continue;
-        if (state.library.filters.contains("compat-playable"))
+        // The Compatibility filter: how the community's list has the game. Without the list it can't say, so it hides
+        // nothing until the list is there (#976).
+        if (!compat_filter.empty() && state.community.compat)
         {
-            const auto rating = state.library.ratings.find(game.id);
-            if (rating == state.library.ratings.end() ||
-                (rating->second != Compatibility::Playable && rating->second != Compatibility::Works))
+            const CommunityListing* listed = compat_listing(state, game.id);
+            if (compat_filter == "unlisted" ? listed != nullptr : listed == nullptr || listed->status != compat_filter)
                 continue;
         }
         result.push_back(&game);
@@ -375,6 +377,48 @@ std::string library_store_filter(const State& state)
     for (const std::string& filter : state.library.filters)
         if (filter.rfind("store-", 0) == 0)
             return filter.substr(6);
+    return {};
+}
+
+std::uint32_t game_steam_app(const State& state, const GameId& id)
+{
+    if (const auto app = id.steam_app())
+        return *app;
+    // Only the game's own steam_appid.txt wins over Game settings; an ID that came from settings is stale once they change.
+    if (const auto runtime = state.runtime_games.find(id);
+        runtime != state.runtime_games.end() && runtime->second.steam_app_from_game_file && runtime->second.steam_app_id)
+        return runtime->second.steam_app_id;
+    const auto record = state.game_settings.find(id);
+    return record == state.game_settings.end() ? 0 : record->second.steam_app_id;
+}
+
+const CommunityListing* compat_listing(const State& state, const GameId& id)
+{
+    if (!state.community.compat)
+        return nullptr;
+    const auto ref = MatchingGameRef(id, game_steam_app(state, id));
+    if (!ref)
+        return nullptr;
+    const auto listed = state.community.compat->find(*ref);
+    return listed == state.community.compat->end() ? nullptr : &listed->second;
+}
+
+const std::vector<std::string>& library_compat_choices()
+{
+    static const std::vector<std::string> choices{"works", "partial", "broken", "refused", "unlisted"};
+    return choices;
+}
+
+std::string library_compat_filter(const State& state)
+{
+    for (const std::string& filter : state.library.filters)
+        if (filter.rfind("compat-", 0) == 0)
+        {
+            const std::string status = filter.substr(7);
+            const auto& choices = library_compat_choices();
+            if (std::find(choices.begin(), choices.end(), status) != choices.end())
+                return status;
+        }
     return {};
 }
 

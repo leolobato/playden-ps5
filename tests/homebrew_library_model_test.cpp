@@ -1580,15 +1580,18 @@ void refresh_actions_preserve_authentication_and_wall_clock_is_external() {
 }
 
 void live_empty_filter_keeps_the_signed_in_account() {
-    // The Playable filter keeps only games the player rated; with no ratings the grid is empty,
-    // and its only row must undo the filter rather than start a new Steam sign-in.
+    // A Compatibility filter no game passes empties the grid, and its only row must undo the filter rather than start
+    // a new Steam sign-in.
     auto model=make_live();
     model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
     check(model.UpdateLibrary({{game(SteamId(42),"Synthetic")},false,{},false,false,{}}),"library loaded");
+    playden::homebrew::CommunityCatalog catalog;
+    catalog.compat=std::map<playden::GameRef,playden::homebrew::CommunityListing>{};
+    model.UpdateCommunityCatalog(catalog);
     model.TakeServiceActions();
     check(model.action("r1") && model.action("triangle"),"live filter modal opens");
-    activate(model,"filter-compat-playable");
-    check(model.visible_games().empty(),"no rated game passes the Playable filter");
+    activate(model,"compat-filter-works");
+    check(model.visible_games().empty(),"no game is listed as Works");
     const auto* empty=find_row(model,"library-empty");
     check(empty!=nullptr && empty->action=="filters-reset" && empty->title=="Reset filters",
           "a filtered-out library offers Reset filters, not Connect Steam");
@@ -1625,7 +1628,10 @@ void live_filters_only_use_available_facts() {
     const auto& actions=model.state().navigation.modals.back().action_keys;
     for(const auto& unavailable:{"sort-recent-added","sort-install-size","filter-installed","filter-genre-adventure","filter-controller-full"})
         check(std::find(actions.begin(),actions.end(),unavailable)==actions.end(),"unknown facts are not filter choices");
-    check(std::find(actions.begin(),actions.end(),"filter-compat-playable")!=actions.end(),"personal compatibility remains filterable");
+    for(const auto* status:{"compat-filter-any","compat-filter-works","compat-filter-partial","compat-filter-broken",
+                            "compat-filter-refused","compat-filter-unlisted"})
+        check(std::find(actions.begin(),actions.end(),status)!=actions.end(),"the community's compatibility list is filterable");
+    check(std::find(actions.begin(),actions.end(),"heading-filter")==actions.end(),"no Filter heading without a filter under it");
     check(std::find(actions.begin(),actions.end(),"filter-hide-demos")==actions.end(),"a library without demos has no Demos row");
 
     // A CM acquisition date makes "Recently added" a real fact, sorted newest first.
@@ -1643,6 +1649,60 @@ void live_filters_only_use_available_facts() {
     const auto ordered=dated.visible_games();
     check(ordered.size()==3 && ordered[0]->id==SteamId(43) && ordered[1]->id==SteamId(42) && ordered[2]->id==SteamId(44),
           "newest acquisition first, undated last");
+}
+
+// #976: the Library's old Playable filter kept only the games the player had rated Works or Playable, so on a library
+// nobody had rated it hid every game. Sort and filters › Compatibility goes by the community's compatibility list: one
+// status, or Any. Without the list it hides nothing and says why.
+void live_compat_filter_uses_the_community_list() {
+    auto model=make_live();
+    model.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    check(model.UpdateLibrary({{game(SteamId(42),"Alpha"),game(SteamId(43),"Beta"),game(SteamId(44),"Gamma")},
+                               false,{},false,false,{}}),"library loaded");
+    check(model.state().library.ratings.empty(),"nobody rated a game");
+    // (An older build's saved Playable filter is dropped when its organization file is read: library_organization.)
+    // No list yet: a status picked earlier filters nothing, and the sheet says the list hasn't loaded.
+    auto organization=model.ExportOrganization();organization.filters={"compat-works"};
+    check(model.ApplyOrganization(1,model.BeginOrganizationLoad(1),organization),"organization with Works applies");
+    check(model.action("r1") && model.visible_games().size()==3,"without the list, Works hides no game");
+    check(model.action("triangle"),"filter sheet opens");
+    const auto* any=find_row(model,"compat-filter-any");
+    const auto* works=find_row(model,"compat-filter-works");
+    check(any && any->checked && any->subtitle=="List not loaded yet" && works && !works->enabled,
+          "without the list Any is ticked, says why, and the statuses can't be picked");
+    check(model.action("circle"),"sheet closes");
+
+    // The list arrives: Works keeps the game it lists as Works.
+    playden::homebrew::CommunityCatalog catalog;
+    catalog.compat=std::map<playden::GameRef,playden::homebrew::CommunityListing>{{playden::GameRef::Steam(42),{"works",2,""}},
+                                                               {playden::GameRef::Steam(43),{"partial",0,"Slow."}}};
+    model.UpdateCommunityCatalog(catalog);
+    const auto ids=[&]{std::vector<playden::GameId> result;for(const auto* item:model.visible_games()) result.push_back(item->id);return result;};
+    check(ids()==std::vector<playden::GameId>{SteamId(42)},"Works keeps the game listed as Works");
+    check(model.action("triangle"),"filter sheet opens with the list");
+    works=find_row(model,"compat-filter-works");
+    check(works && works->checked && works->enabled && find_row(model,"compat-filter-any")->subtitle.empty(),"Works is ticked");
+    activate(model,"compat-filter-partial");
+    check(ids()==std::vector<playden::GameId>{SteamId(43)} && model.ExportOrganization().filters==std::set<std::string>{"compat-partial"},
+          "one status at a time: Partial replaces Works, and is saved");
+    check(model.action("triangle"),"filter sheet opens again");
+    activate(model,"compat-filter-unlisted");
+    check(ids()==std::vector<playden::GameId>{SteamId(44)},"Not listed keeps the game the list doesn't have");
+    check(model.action("triangle"),"filter sheet opens once more");
+    activate(model,"compat-filter-any");
+    check(ids().size()==3 && model.ExportOrganization().filters.empty(),"Any shows every game");
+
+    // A saved status with no list yet: the focused game may be one the list then hides. The focus moves to a game shown.
+    auto later=make_live();
+    later.UpdateAccount({AuthState::SignedIn,"123","Synthetic",{},{},true});
+    check(later.UpdateLibrary({{game(SteamId(42),"Alpha"),game(SteamId(43),"Beta"),game(SteamId(44),"Gamma")},
+                               false,{},false,false,{}}),"library loaded");
+    organization=later.ExportOrganization();organization.filters={"compat-partial"};
+    check(later.ApplyOrganization(1,later.BeginOrganizationLoad(1),organization),"organization with Partial applies");
+    check(later.action("r1") && later.action("focus:game-42") && later.state().navigation.focus_key=="game-42","Alpha has the focus");
+    later.UpdateCommunityCatalog(catalog);
+    check(later.visible_games().size()==1 && later.state().navigation.focus_key=="game-43",
+          "when the list arrives, the focus moves off the game it hides");
 }
 
 // Demos show by default. Sort and filters › Demos hides them, the organization keeps that, and the
@@ -1687,8 +1747,10 @@ void live_filters_sheet_sections() {
     check(model.action("r1") && model.action("triangle"),"live filter modal opens");
     const auto& actions=model.state().navigation.modals.back().action_keys;
     check(actions==std::vector<std::string>{"heading-sort","sort-name","sort-recent-played","sort-playtime","heading-filter",
-                                           "filter-compat-playable","filter-hide-demos","divider","filters-reset",
-                                           "refresh-library","cancel"},"sorts, filters and actions in their sections");
+                                           "filter-hide-demos","heading-compat","compat-filter-any","compat-filter-works",
+                                           "compat-filter-partial","compat-filter-broken","compat-filter-refused",
+                                           "compat-filter-unlisted","divider","filters-reset","refresh-library","cancel"},
+          "sorts, filters, compatibility and actions in their sections");
     check(model.state().navigation.focus_key=="sort-name","the sheet opens on its first sort, past the heading");
     const auto* heading=find_row(model,"heading-sort");
     const auto* divider=find_row(model,"divider");
@@ -1698,37 +1760,40 @@ void live_filters_sheet_sections() {
     const auto* name=find_row(model,"sort-name");
     const auto* played=find_row(model,"sort-recent-played");
     check(name && name->checked && played && !played->checked,"the sort in use has a tick");
-    const auto* playable=find_row(model,"filter-compat-playable");
-    check(playable && playable->kind==RowKind::Toggle && !playable->selected && playable->value=="Off","Playable is a toggle, off");
+    const auto* demos=find_row(model,"filter-hide-demos");
+    check(demos && demos->kind==RowKind::Toggle && demos->selected && demos->value=="On","Demos is a toggle, on");
 
     // Up from the first sort goes round to the last row; down goes past the Filter heading and the divider.
     const auto filter_keys=model.state().navigation.modals.back().action_keys;
     check(model.action("up") && model.state().navigation.focus_key==filter_keys.back(),"Up from the first sort goes to the last row");
     check(model.action("focus:sort-name"),"back on the first sort");
-    for(const auto* expected:{"sort-recent-played","sort-playtime","filter-compat-playable","filter-hide-demos","filters-reset"})
+    for(const auto* expected:{"sort-recent-played","sort-playtime","filter-hide-demos","compat-filter-any","compat-filter-works",
+                              "compat-filter-partial","compat-filter-broken","compat-filter-refused","compat-filter-unlisted",
+                              "filters-reset"})
         check(model.action("down") && model.state().navigation.focus_key==expected,"down skips headings and the divider");
-    check(model.action("up") && model.state().navigation.focus_key=="filter-hide-demos","up goes back past the divider");
+    check(model.action("up") && model.state().navigation.focus_key=="compat-filter-unlisted","up goes back past the divider");
 
     // A jump that ends on a heading or the divider goes on past it, and asking for one directly is refused.
-    check(model.action("focus:sort-playtime") && model.action("r2") && model.state().navigation.focus_key=="filters-reset",
+    check(model.action("focus:compat-filter-partial") && model.action("r2") && model.state().navigation.focus_key=="filters-reset",
           "a jump down lands past the divider");
-    check(model.action("l2") && model.state().navigation.focus_key=="sort-playtime","a jump up lands past the Filter heading");
+    check(model.action("focus:compat-filter-works") && model.action("l2") && model.state().navigation.focus_key=="sort-playtime",
+          "a jump up lands past the Filter heading");
     check(model.action("focus:sort-name") && model.action("l2") && model.state().navigation.focus_key=="sort-name",
           "a jump up from the first sort stays on it");
     check(!model.action("focus:heading-sort") && !model.action("focus:divider") && model.state().navigation.focus_key=="sort-name",
           "a heading or the divider can't be focused directly");
     // The last action can be reached, past everything else.
     // Held, Down stops on the last action; a new press goes round to the first sort, and Up held stops there.
-    for(int step=0;step<12;++step) model.action("down",true);
+    for(int step=0;step<20;++step) model.action("down",true);
     check(model.state().navigation.focus_key=="cancel","held down stops on the last action");
     check(model.action("down") && model.state().navigation.focus_key=="sort-name","down from the last action goes to the first sort");
     check(model.action("up",true) && model.state().navigation.focus_key=="sort-name","held up stops on the first sort");
     check(model.action("down",true) && model.action("focus:cancel"),"back on the last action");
 
-    activate(model,"filter-compat-playable");
+    activate(model,"filter-hide-demos");
     check(model.action("triangle"),"filter modal opens again");
-    playable=find_row(model,"filter-compat-playable");
-    check(playable && playable->selected && playable->value=="On","Playable shows on");
+    demos=find_row(model,"filter-hide-demos");
+    check(demos && !demos->selected && demos->value=="Off","Demos shows off");
     activate(model,"sort-recent-played");
     check(model.action("triangle"),"filter modal opens once more");
     check(find_row(model,"sort-recent-played")->checked && !find_row(model,"sort-name")->checked,"the tick follows the sort");
@@ -3760,7 +3825,7 @@ void live_queue_shows_downloads_and_preparations() {
     activate(model, "prep-13");
     check(has_row(model, "prep-next-13"), "a later waiting game offers Prepare next");
     activate(model, "prep-next-13");
-    check(model.TakePrepareNextRequests() == std::vector<GameId>{SteamId(13)}, "Prepare next reaches the runtime");
+    check(model.TakePrepareNextRequests() == std::vector<playden::GameId>{SteamId(13)}, "Prepare next reaches the runtime");
     check((queue_keys(model) == std::vector<std::string>{"queue-downloads", "job-20", "queue-preparation", "prep-active-10",
                                                          "prep-13", "prep-11", "prep-12", "prep-done-14-2000"}),
           "the game moves first, the others keep their order, the game being prepared stays");
@@ -3942,7 +4007,7 @@ void live_queue_lists_preparations_needing_attention() {
     activate(model, "prep-attn-31");
     check(has_row(model, "prep-retry-31"), "a failed preparation can be tried again");
     activate(model, "prep-retry-31");
-    check(model.TakeRuntimePrepareRequests() == std::vector<GameId>{SteamId(31)}, "Try again asks for it");
+    check(model.TakeRuntimePrepareRequests() == std::vector<playden::GameId>{SteamId(31)}, "Try again asks for it");
     activate(model, "prep-attn-30");
     check(!has_row(model, "prep-retry-30"), "a game waiting for the PS5 is not prepared again from here");
     model.action("circle");
@@ -4411,8 +4476,8 @@ void live_details_prepare_next() {
               find_row(model, "details-hint")->title == "2 of 2 waiting. Setup starts when First is ready.",
           "a later game names the game right ahead and its place");
     activate(model, "details-prepare-next");
-    check(model.TakePrepareNextRequests() == std::vector<GameId>{SteamId(42)} &&
-              (model.state().preparation_queue.waiting == std::vector<GameId>{SteamId(42), SteamId(41)}), "Prepare next from the game page");
+    check(model.TakePrepareNextRequests() == std::vector<playden::GameId>{SteamId(42)} &&
+              (model.state().preparation_queue.waiting == std::vector<playden::GameId>{SteamId(42), SteamId(41)}), "Prepare next from the game page");
     check(find_row(model, "details-setup")->value == "Waiting for Busy" && !has_row(model, "details-prepare-next"),
           "now it is next");
 }
@@ -5367,6 +5432,7 @@ int main() {
     live_saves_upload_all();
     live_store_without_cloud_never_asks_the_cloud();
     live_filters_only_use_available_facts();
+    live_compat_filter_uses_the_community_list();
     live_demos_filter_defaults_on();
     live_family_shared_projected();
     live_family_filter_defaults_on();

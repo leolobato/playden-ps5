@@ -543,7 +543,7 @@ void Controller::TickCommunity() {
     catalog.names = snapshot->game_names;
     if (snapshot->compat) {
       auto& list = catalog.compat.emplace();
-      for (const auto& [game, listed] : *snapshot->compat) list[game] = CommunityListing{listed.status, listed.reports};
+      for (const auto& [game, listed] : *snapshot->compat) list[game] = CommunityListing{listed.status, listed.reports, listed.notes};
     }
     // By the game they are for: the model gives each library game the recipes of its GameRef (a Steam game's app ID,
     // an imported game's Steam app ID), so a Steam app ID set later finds them without a new catalog.

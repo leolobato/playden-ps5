@@ -135,11 +135,21 @@ bool StoreFilter(const std::string& value) {
   return value == "store-steam" || value == "store-gog" || value == "store-imported";
 }
 
-// Version 1 knows only Playable; version 2 also keeps demos and family-shared games hidden (they show by default), and
-// the Store filter.
+// The Compatibility filter: how the community's compatibility list has a game, or "unlisted".
+bool CompatFilter(const std::string& value) {
+  return value == "compat-works" || value == "compat-partial" || value == "compat-broken" || value == "compat-refused" ||
+         value == "compat-unlisted";
+}
+
+// The Playable filter of older builds (the player's own ratings), which version 1 can hold. It is read and dropped:
+// the Compatibility filter replaced it (#976), and a version 2 reader skips it as a filter it doesn't know.
+constexpr char kRetiredPlayableFilter[] = "compat-playable";
+
+// Version 1 knows only Playable; version 2 keeps demos and family-shared games hidden (they show by default), the
+// Store filter and the Compatibility filter.
 bool ValidFilter(const std::string& value, std::uint16_t version) {
-  return value == "compat-playable" ||
-         (version != kVersion1 && (value == "hide-demos" || value == "hide-family" || StoreFilter(value)));
+  return version == kVersion1 ? value == kRetiredPlayableFilter
+                              : value == "hide-demos" || value == "hide-family" || StoreFilter(value) || CompatFilter(value);
 }
 
 // Version 1 stores Steam app IDs only; version 2 any valid game.
@@ -205,8 +215,9 @@ bool Validate(const OrganizationSnapshot& snapshot, std::uint16_t version) {
   for (const auto& filter : snapshot.filters) {
     if (!ValidText(filter, kMaximumFilterBytes, false) || !ValidFilter(filter, version)) return false;
   }
-  // The Store filter picks one store, or none (Any).
-  return std::count_if(snapshot.filters.begin(), snapshot.filters.end(), StoreFilter) <= 1;
+  // The Store filter picks one store, or none (Any); the Compatibility filter one status, or none.
+  return std::count_if(snapshot.filters.begin(), snapshot.filters.end(), StoreFilter) <= 1 &&
+         std::count_if(snapshot.filters.begin(), snapshot.filters.end(), CompatFilter) <= 1;
 }
 
 std::uint32_t Checksum(const Bytes& bytes, std::size_t size) {
@@ -413,6 +424,7 @@ Loaded DecodeV1(const Bytes& bytes, std::uint64_t account_id) {
   }
   if (reader.offset() != reader.limit() || !Validate(snapshot, kVersion1))
     return InvalidLoad("trailing or semantic data");
+  snapshot.filters.erase(kRetiredPlayableFilter);
   return Loaded::Success(std::move(snapshot));
 }
 
@@ -563,10 +575,11 @@ Loaded DecodeV2(const Bytes& bytes) {
       return InvalidLoad("filter");
     if (ValidFilter(filter, kVersion2)) snapshot.filters.insert(std::move(filter));
   }
-  // More than one store (a newer build letting several be picked) reads as Any.
-  if (std::count_if(snapshot.filters.begin(), snapshot.filters.end(), StoreFilter) > 1) {
+  // More than one store (a newer build letting several be picked) reads as Any; so does more than one status.
+  for (const auto group : {StoreFilter, CompatFilter}) {
+    if (std::count_if(snapshot.filters.begin(), snapshot.filters.end(), group) <= 1) continue;
     for (auto filter = snapshot.filters.begin(); filter != snapshot.filters.end();)
-      filter = StoreFilter(*filter) ? snapshot.filters.erase(filter) : std::next(filter);
+      filter = group(*filter) ? snapshot.filters.erase(filter) : std::next(filter);
   }
   // A scope this build doesn't know (a newer rail, or a removed collection) reads as "all". Only the
   // reader is lenient: Validate, and so the writer, still refuse it. An empty or invalid scope stays damage.
