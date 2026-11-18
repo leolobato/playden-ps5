@@ -8745,6 +8745,7 @@ void Simulation::rebuild_view() {
                                 : action_key == "maintenance-backup" ? MaintenanceKind::BackupSaves
                                 : action_key == "maintenance-recreate" ? MaintenanceKind::RecreateBottle
                                 : action_key == "maintenance-update" ? MaintenanceKind::UpdateRuntime
+                                : action_key == "maintenance-register" ? MaintenanceKind::RegisterAgain
                                                                        : MaintenanceKind::ApplySettings;
                 std::string closed_reason;
                 const bool closed = game_closed(settings_game, &closed_reason);
@@ -8774,11 +8775,14 @@ void Simulation::rebuild_view() {
                 } else {
                     item.title = kind == MaintenanceKind::Repair ? "Repair…"
                                : kind == MaintenanceKind::ClearShaderCache ? "Clear shader cache…"
-                               : kind == MaintenanceKind::BackupSaves ? "Back up saves…" : "Recreate bottle…";
+                               : kind == MaintenanceKind::BackupSaves ? "Back up saves…"
+                               : kind == MaintenanceKind::RegisterAgain ? "Register PS5 title again…" : "Recreate bottle…";
                     item.subtitle = kind == MaintenanceKind::Repair ? "Fixes the files the game needs to start and writes its settings again."
                                   : kind == MaintenanceKind::ClearShaderCache ? "Shaders compile again on the next start."
                                   : kind == MaintenanceKind::BackupSaves ? "Copies the Windows user folders aside."
-                                                                          : "Makes the Windows environment again, keeping saves and settings.";
+                                  : kind == MaintenanceKind::RegisterAgain
+                                      ? "Frees the 337 MB download area older titles keep. The PS5 play time starts again."
+                                      : "Makes the Windows environment again, keeping saves and settings.";
                     item.badge = kind == MaintenanceKind::RecreateBottle ? "Prepares bottle" : "Game must be closed";
                     item.enabled = closed && !busy;
                     if (!closed) item.subtitle = closed_reason;
@@ -8792,7 +8796,8 @@ void Simulation::rebuild_view() {
                 }
                 // A title waiting for recovery: only Recreate bottle (or the title's Resume) gets it out.
                 if ((kind == MaintenanceKind::Repair || kind == MaintenanceKind::ClearShaderCache ||
-                     kind == MaintenanceKind::BackupSaves) && runtime && runtime->status == "Needs recovery") {
+                     kind == MaintenanceKind::BackupSaves || kind == MaintenanceKind::RegisterAgain) &&
+                    runtime && runtime->status == "Needs recovery") {
                     item.enabled = false;
                     item.subtitle = "Finish the PS5 title's recovery first, or use Recreate bottle.";
                 }
@@ -13043,6 +13048,7 @@ void Simulation::activate() {
                         : chosen == "maintenance-backup" ? MaintenanceKind::BackupSaves
                         : chosen == "maintenance-recreate" ? MaintenanceKind::RecreateBottle
                         : chosen == "maintenance-update" ? MaintenanceKind::UpdateRuntime
+                        : chosen == "maintenance-register" ? MaintenanceKind::RegisterAgain
                                                            : MaintenanceKind::ApplySettings;
         if (chosen == "maintenance-reset") {
             auto& record = state_.game_settings[state_.navigation.selected_game_id];
@@ -13311,6 +13317,11 @@ void Simulation::activate() {
         } else if (action_name == "maintenance-shader") {
             heading = "Clear the shader cache?";
             body = "DXVK's shader cache for " + title + " is deleted. Shaders compile again on the next start, which may stutter at first.";
+        } else if (action_name == "maintenance-register") {
+            heading = "Register the PS5 title again?";
+            body = "The PS5 removes " + title + "'s title and registers it again with the parameters Playden writes now, "
+                   "so it no longer keeps a 337 MB download area. The PS5 forgets the title's play time and may move it on "
+                   "Home. It is back on Home once you close Playden. Saves, settings and game files are not touched.";
         } else if (action_name == "maintenance-backup") {
             heading = "Back up saves?";
             body = "The Windows user folders of " + title + " are copied aside on this console. Playden keeps the newest 3 backups. Saves the game keeps in its own folder are not included.";
@@ -16680,6 +16691,7 @@ void Simulation::open_setup_programs() {
 std::vector<std::string> Simulation::maintenance_actions() const {
     // Manage DLC… and Move to… are on Game actions.
     return {"heading-fix", "maintenance-repair", "maintenance-update", "maintenance-recreate", "maintenance-shader",
+            "maintenance-register",
             "heading-settings-saves", "maintenance-reset", "maintenance-backup", "divider", "cancel"};
 }
 
@@ -16732,7 +16744,8 @@ void Simulation::request_maintenance(GameId id, MaintenanceKind kind) {
                           : kind == MaintenanceKind::Repair ? "Repaired"
                           : kind == MaintenanceKind::BackupSaves ? "Saves backed up"
                           : kind == MaintenanceKind::RecreateBottle ? "Bottle recreated"
-                          : kind == MaintenanceKind::UpdateRuntime ? "Runtime kit updated" : "Settings applied";
+                          : kind == MaintenanceKind::UpdateRuntime ? "Runtime kit updated"
+                          : kind == MaintenanceKind::RegisterAgain ? "PS5 title registered again" : "Settings applied";
         push_notice({"maintenance-" + ToKey(id), words, "", false, kLiveNoticeSeconds, false, "Simulated"});
         return;
     }

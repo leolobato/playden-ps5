@@ -1848,6 +1848,39 @@ void RestoredNameIsDropped() {
   CHECK(!installer.CustomTitleName(setup.record) && !std::filesystem::exists(setup.metadata / "custom/title-name"));
   CHECK(Read(setup.metadata / "custom/icon0.png") == "steamgriddb-icon-png");
 }
+
+// A title an older Playden made asks for a download-data area; ArtSwap kept that line when it renamed it. Playden's
+// parameters no longer ask for one (#1001): the next metadata write and refresh put them in with the player's name
+// and art, so the request goes and nothing the player chose is lost.
+void OlderRequestGoesWithThePlayersName() {
+  Setup setup;
+  const auto with_request = [](std::string text, const std::string& line_after) {
+    const auto at = text.find(line_after);
+    CHECK(at != std::string::npos);
+    return text.insert(at, line_after.substr(0, line_after.find('"')) + "\"downloadDataSize\":" +
+                               (line_after[0] == '\t' ? "\t" : " ") + "256,\n");
+  };
+  const auto old_param = with_request(kOwnParam, "  \"localizedParameters\"");
+  Write(setup.title / "sce_sys/param.json", old_param, 0644);
+  Write(setup.metadata / "sce_sys/param.json", old_param, 0600);
+  std::filesystem::remove(setup.metadata / ".installed");
+  setup.ArtSwap();
+  Write(setup.title / "sce_sys/param.json", with_request(ArtSwapParam("BL2 GOTY"), "\t\"localizedParameters\""), 0666);
+  auto installer = setup.fixture.Installer();
+  CHECK(installer.TitleMetadataCurrent(setup.record));
+  CHECK(installer.AdoptCustomTitleArt(setup.record).state == PackageActionState::kComplete);
+  CHECK(installer.CustomTitleName(setup.record) == std::string("BL2 GOTY"));
+  // What RuntimeHost::WriteTitleMetadata now writes: the kit's parameters without the request, the player's name.
+  std::string ours = kOwnParam;
+  ours.replace(ours.find("Borderlands 2"), std::string("Borderlands 2").size(), "BL2 GOTY");
+  CHECK(installer.WriteTitleMetadata(setup.record, ours, std::string("game-icon"), "").state == PackageActionState::kComplete);
+  CHECK(!installer.TitleMetadataCurrent(setup.record));
+  CHECK(installer.RefreshTitle(setup.record).state == PackageActionState::kComplete);
+  CHECK(Read(setup.title / "sce_sys/param.json") == ours);
+  CHECK(installer.TitleMetadataCurrent(setup.record) && installer.CustomTitleName(setup.record) == std::string("BL2 GOTY"));
+  CHECK(Read(setup.title / "sce_sys/icon0.png") == "steamgriddb-icon-png");
+  CHECK(Read(setup.title / "sce_sys/pic0.dds") == "steamgriddb-background");
+}
 }  // namespace custom_art
 
 int main() {
@@ -1858,6 +1891,7 @@ int main() {
   custom_art::ParametersStayPlaydens();
   custom_art::InterruptedStageKeepsArt();
   custom_art::RestoredNameIsDropped();
+  custom_art::OlderRequestGoesWithThePlayersName();
   StatusQueriesDoNotRecheckTheKitList();
   CloudSaveFoldersAreMadeInTheProfile();
   TemplateCopyReportsProgress();

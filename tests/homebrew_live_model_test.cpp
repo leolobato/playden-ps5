@@ -791,13 +791,13 @@ void live_settings_follow_the_prepared_title(const std::filesystem::path& base) 
         model.UpdateRuntime(playden::homebrew::RuntimeState::Ready, {recovering});  // the console's answer
         const auto* recreate = find_row(model, "maintenance-recreate");
         check(recreate && recreate->enabled, "Recreate bottle can run while the title waits for recovery");
-        for (const char* key : {"maintenance-repair", "maintenance-shader", "maintenance-backup"}) {
+        for (const char* key : {"maintenance-repair", "maintenance-shader", "maintenance-backup", "maintenance-register"}) {
             const auto* blocked = find_row(model, key);
             check(blocked && !blocked->enabled &&
                       blocked->subtitle == "Finish the PS5 title's recovery first, or use Recreate bottle.",
-                  "Repair, Clear shader cache and Back up saves wait for the title's recovery");
+                  "Repair, Clear shader cache, Back up saves and Register again wait for the title's recovery");
         }
-        for (const char* key : {"maintenance-repair", "maintenance-shader", "maintenance-backup"}) {
+        for (const char* key : {"maintenance-repair", "maintenance-shader", "maintenance-backup", "maintenance-register"}) {
             (void)model.action(std::string("focus:") + key);
             (void)model.action("cross");
         }

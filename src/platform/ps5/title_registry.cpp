@@ -62,6 +62,14 @@ TitleRegistration TitleRegistry::Query(const std::string& title) {
         Flag(game, "installed") == false && Flag(game, "mounted") == false &&
         Flag(game, "source_available") == false)
       continue;
+    // A title just unregistered with its folder kept (registered again, #1001): ShadowMount lists the folder as
+    // unmanaged until its next scan, which registers the folder again. That scan waits while any title runs,
+    // Playden included. The coordinator still checks the folder is Playden's.
+    if (!*managed && path == source && Text(game, "runtime_path") == path && Text(game, "source_type") == "folder" &&
+        Flag(game, "installed") == false && Flag(game, "mounted") == false && Flag(game, "source_available") == true) {
+      result = {RegistrationState::kPending, path, {}};
+      continue;
+    }
     if (path != source || !*managed)
       result = {RegistrationState::kCollision, path, {}};
     else {

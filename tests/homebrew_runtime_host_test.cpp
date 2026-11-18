@@ -64,7 +64,7 @@ RuntimeKit AnyTitleKit(const fs::path& kit, const std::string& attribute3 = "64"
   const auto param = kit / "titles/variant/sce_sys/param.json";
   Write(param,
         "{\n  \"attribute3\": " + attribute3 + ",\n  \"conceptId\": \"78000\",\n  \"contentId\": \"UP9000-FAKE78000_00-PROSPEROWIN00001\",\n"
-        "  \"localizedParameters\": {\n    \"en-US\": {\n      \"titleName\": \"Prospero Win\"\n    }\n  },\n"
+        "  \"downloadDataSize\": 256,\n  \"localizedParameters\": {\n    \"en-US\": {\n      \"titleName\": \"Prospero Win\"\n    }\n  },\n"
         "  \"titleId\": \"FAKE78000\"\n}\n", 0644);
   for (auto& file : admitted.view.files)
     if (file.path == "titles/variant/sce_sys/param.json") {
@@ -136,6 +136,209 @@ void TitleAttribute3FollowsTheKit(const std::string& kit_value, bool first_vrr, 
   CHECK(written.find("\"attribute3\": " + second + ",") != std::string::npos);
   CHECK(written.find(R"("titleName": "Half-Life \"2\"")") != std::string::npos);
   host.Shutdown();
+}
+
+// A game title asks for no download-data area: the system would keep a 256 MiB download0.dat for it, which no game
+// uses (#1001). A title an older Playden made with the shell's request stays current: only registering it again
+// would free the file, so Update would change nothing.
+void GameTitleAsksForNoDownloadData() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = AnyTitleKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-00000000000") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.write_title_allow_list = [](const std::string&, std::string*) { return true; };
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  const auto param = fixture.root / "data/homebrew/FAKE78001/sce_sys/param.json";
+  std::string install_id;
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) ||
+          (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    CHECK(!done.refusals.count(220) && done.installs[0].title_current);
+    install_id = done.installs[0].install_id;
+    const auto written = Read(param);
+    CHECK(written.find("downloadDataSize") == std::string::npos);
+    // The rest of the shell's parameters are there, the title's own in place of the shell's.
+    CHECK(written.find("\"attribute3\": 64,\n  \"conceptId\": \"78001\",\n  \"contentId\": "
+                       "\"UP9000-FAKE78001_00-PROSPEROWIN00001\",\n  \"localizedParameters\"") != std::string::npos);
+    CHECK(written.find("\"titleId\": \"FAKE78001\"") != std::string::npos);
+    host.Shutdown();
+  }
+  // As an older Playden wrote it: the shell's request in the title and in Playden's copy of its metadata.
+  const auto with_request = [](const fs::path& path) {
+    auto text = Read(path);
+    const auto at = text.find("  \"localizedParameters\"");
+    CHECK(at != std::string::npos);
+    text.insert(at, "  \"downloadDataSize\": 256,\n");
+    std::error_code ignored;
+    fs::permissions(path, fs::perms::owner_write, fs::perm_options::add, ignored);
+    Write(path, text, 0600);
+  };
+  const auto stored = fixture.root / "data/playden/games" / install_id / "title-metadata/sce_sys/param.json";
+  const auto mode = fs::status(param).permissions();
+  with_request(param);
+  fs::permissions(param, mode);
+  with_request(stored);
+  CHECK(Read(param) == Read(stored));
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  const auto started = WaitFor(host, Started);
+  CHECK(!started.installs.empty() && started.installs[0].title_current);
+  CHECK(Read(param).find("\"downloadDataSize\": 256,") != std::string::npos);
+  host.Shutdown();
+}
+
+// Register PS5 title again (#1001): an older title keeps the download-data area it was registered with until the
+// console registers it again. The title gets Playden's parameters first, the record waits for ShadowMountPlus's
+// next scan as a new game does, and the folder, the bottle and its saves stay. A remover that fails leaves it Ready.
+void RegisterTitleAgainFreesTheDownloadArea() {
+  Fixture fixture;
+  auto config = fixture.Config();
+  config.host_namespace_prefix = fixture.root;
+  config.package_paths.console_data_root = "/data";
+  config.package_paths.host_data_root = fixture.root / "data";
+  config.package_operations.hash_file = HashArtifactFile;
+  config.package_operations.hash_bytes = HashArtifactBytes;
+  config.package_operations.free_space_unverifiable = true;
+  config.package_operations.validate_bottle = [](const fs::path& bottle) {
+    return fs::is_regular_file(bottle / "system.reg") && fs::is_regular_file(bottle / "user.reg");
+  };
+  const auto kit = AnyTitleKit(fixture.root / "kit");
+  config.admit_kit = [&kit](std::string*) { return std::optional<RuntimeKit>(kit); };
+  unsigned uuids = 0;
+  config.uuid = [&uuids]() -> std::optional<std::string> {
+    ++uuids; return std::string("00000000-0000-4000-8000-0000000000") + (uuids < 10 ? "0" : "") + std::to_string(uuids);
+  };
+  config.unix_time = [] { return std::int64_t{1760000000}; };
+  config.write_title_allow_list = [](const std::string&, std::string*) { return true; };
+  config.removal_confirm_polls = 3;
+  config.removal_poll_interval = std::chrono::milliseconds(1);
+  Write(fixture.root / "data/homebrew/FAKE77031/games/220/hl2.exe", "existing-game", 0644);
+  const auto param = fixture.root / "data/homebrew/FAKE78001/sce_sys/param.json";
+  const auto bottle = fixture.root / "data/playden/games/steam-220";
+  const auto save = bottle / "library/prefixes/game/drive_c/users/steamuser/AppData/Roaming/Game/save.dat";
+  {
+    RuntimeHost host(config);
+    CHECK(host.Start());
+    CHECK(WaitFor(host, Started).kit_available);
+    host.Prepare(Hl2());
+    const auto done = WaitFor(host, [](const RuntimeSnapshot& s) {
+      return !s.preparing_app && (s.refusals.count(220) ||
+          (!s.installs.empty() && s.installs[0].state == PreparationState::kReady));
+    }, 60);
+    CHECK(!done.refusals.count(220) && done.installs[0].title_current);
+    host.Shutdown();
+  }
+  // As an older Playden registered it: the shell's request in the title and in Playden's copy.
+  const auto stored = bottle / "title-metadata/sce_sys/param.json";
+  for (const auto& path : {param, stored}) {
+    auto text = Read(path);
+    text.insert(text.find("  \"localizedParameters\""), "  \"downloadDataSize\": 256,\n");
+    const auto mode = fs::status(path).permissions();
+    fs::permissions(path, fs::perms::owner_write, fs::perm_options::add);
+    Write(path, text, 0600);
+    fs::permissions(path, mode);
+  }
+  Write(save, "player-save", 0600);
+  // The console as measured (FW 13.60, ShadowMountPlus 1.7): after the uninstall ShadowMountPlus lists the folder
+  // unmanaged and app.db has no title; its next scan, postponed while any title runs, registers the folder again.
+  enum class Console { kRegistered, kUnregistered } console = Console::kRegistered;
+  bool scans_run = false;
+  int mutations = 0;
+  config.native.database = [&console](const std::string& title) {
+    if (console != Console::kRegistered) return TitleDatabaseObservation{TitleAvailability::kFree, {}};
+    return TitleDatabaseObservation{TitleAvailability::kOccupied,
+        InstalledTitleIdentity{title, "UP9000-FAKE78001_00-PROSPEROWIN00001", "/user/app/FAKE78001/sce_sys"}};
+  };
+  config.registry_transport = [&](const std::string& route, const std::string&) -> std::optional<std::string> {
+    if (route != "/api/v1/games") {
+      ++mutations;
+      if (scans_run) console = Console::kRegistered;
+      return R"({"status":0})";
+    }
+    if (console == Console::kRegistered)
+      return R"({"status":0,"games":[{"title_id":"FAKE78001","installed":true,"managed":true,"mounted":false,)"
+             R"("source_available":true,"source_type":"folder","runtime_path":"/data/homebrew/FAKE78001","path":"/data/homebrew/FAKE78001"}]})";
+    return R"({"status":0,"games":[{"title_id":"FAKE78001","installed":false,"managed":false,"mounted":false,)"
+           R"("source_available":true,"source_type":"folder","runtime_path":"/data/homebrew/FAKE78001","path":"/data/homebrew/FAKE78001"}]})";
+  };
+  int removals = 0;
+  std::optional<std::uint32_t> remover_code = 0;
+  config.unregister_title = [&](const std::string& title, const std::string& nonce) {
+    ++removals;
+    CHECK(title == "FAKE78001" && nonce.size() == 36);
+    if (remover_code == std::optional<std::uint32_t>(0)) console = Console::kUnregistered;
+    return TitleRemoverResult{true, remover_code, "answered"};
+  };
+  RuntimeHost host(config);
+  CHECK(host.Start());
+  auto started = WaitFor(host, Started);
+  CHECK(started.installs[0].state == PreparationState::kReady && started.installs[0].title_current);
+  host.SetTitleNames({{220, "Half-Life 2"}});
+  const auto maintain = [&host]() {
+    const auto before = host.Snapshot().maintenance_handled;
+    host.Maintain(220, RuntimeMaintenance::kRegisterAgain);
+    return WaitFor(host, [before](const RuntimeSnapshot& s) { return s.maintenance_handled > before; }, 60);
+  };
+
+  // Never while the game runs.
+  fixture.activity->store(static_cast<int>(NativeActivity::kActive));
+  auto result = maintain();
+  CHECK(!result.maintenance.at(220).ok && result.maintenance.at(220).message == "Close the game first." && removals == 0);
+  fixture.activity->store(static_cast<int>(NativeActivity::kStopped));
+
+  // The console refuses the uninstall: the title is still registered, and the game Ready again.
+  remover_code = 0x80990001u;
+  result = maintain();
+  if (result.maintenance.at(220).ok) std::fprintf(stderr, "refused: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(!result.maintenance.at(220).ok && result.maintenance.at(220).message.find("refused") != std::string::npos);
+  CHECK(removals == 1 && result.installs[0].state == PreparationState::kReady && !result.installs[0].recovery_pending);
+
+  // Registered again: Playden's parameters first, then the uninstall, then the wait for the next scan.
+  remover_code = 0;
+  result = maintain();
+  if (!result.maintenance.at(220).ok) std::fprintf(stderr, "register again: %s\n", result.maintenance.at(220).message.c_str());
+  CHECK(result.maintenance.at(220).ok && removals == 2);
+  CHECK(result.maintenance.at(220).message.find("once you close Playden") != std::string::npos);
+  CHECK(result.installs[0].awaiting_registration && result.installs[0].state == PreparationState::kRegistering);
+  CHECK(Read(param).find("downloadDataSize") == std::string::npos);
+  CHECK(Read(param).find("\"titleName\": \"Half-Life 2\"") != std::string::npos);
+  CHECK(Read(save) == "player-save" && fs::exists(fixture.root / "data/homebrew/FAKE78001/eboot.bin"));
+
+  // Playden closes, ShadowMountPlus scans: at the next start the title is Ready, the same bottle in place.
+  host.Shutdown();
+  scans_run = true;
+  console = Console::kRegistered;
+  RuntimeHost restarted(config);
+  CHECK(restarted.Start());
+  CHECK(WaitFor(restarted, Started).installs[0].awaiting_registration);
+  restarted.Prepare(Hl2());  // what the controller asks for a title waiting for the PS5 at startup
+  const auto ready = WaitFor(restarted, [](const RuntimeSnapshot& s) {
+    return !s.preparing_app && !s.installs.empty() && (s.refusals.count(220) || s.installs[0].state == PreparationState::kReady);
+  }, 60);
+  if (ready.refusals.count(220)) std::fprintf(stderr, "after scan: %s\n", ready.refusals.at(220).c_str());
+  CHECK(!ready.refusals.count(220) && ready.installs[0].title_current && !ready.installs[0].awaiting_registration);
+  CHECK(Read(save) == "player-save" && removals == 2);
+  restarted.Shutdown();
 }
 
 void DisplayVrrKitDeclaresTheTitleVrrSupported() {
@@ -9791,6 +9994,8 @@ int main(int argc, char** argv) {
   TitleRefusalNamesTheSourceThatCannotAnswer();
   AnyTitleKitMakesTheGameItsOwnTitle();
   DisplayVrrKitDeclaresTheTitleVrrSupported();
+  GameTitleAsksForNoDownloadData();
+  RegisterTitleAgainFreesTheDownloadArea();
   PreparationEndsAwaitingRegistration();
   FinishSetupHandsOverForHome();
   PreparesGameWithoutShippedRecipe();

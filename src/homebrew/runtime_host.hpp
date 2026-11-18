@@ -263,6 +263,7 @@ enum class RuntimeMaintenance {
   kClearShaderCache,  // delete DXVK's pipeline cache for the launch program
   kRepair,            // fix the bottle's start files, then apply the settings
   kBackupSaves,       // copy the bottle's Windows user folders aside
+  kRegisterAgain,     // unregister the PS5 title and register it again with the parameters Playden writes now
 };
 
 // The newest maintenance request for one game.
@@ -801,6 +802,8 @@ class RuntimeHost {
   std::string MaintenanceRefusal(Composition& composition, const runtime::RuntimeInstall& record);
   // Runs one maintenance action; empty message on refusal means none; *ok tells success.
   std::string RunMaintenance(Composition& composition, std::uint32_t runtime_number, RuntimeMaintenance action, bool* ok);
+  // RuntimeMaintenance::kRegisterAgain for a Ready, stopped record.
+  std::string RegisterTitleAgain(Composition& composition, const runtime::RuntimeInstall& record, bool* ok);
   std::filesystem::path SaveBackupRoot(const std::string& install_id) const;
   // The preset a saved record names: a built-in one or one of the player's. One of the player's that is gone plays as
   // Playden default: *record loses its preset_id (its own changes stay), logged once per preset.

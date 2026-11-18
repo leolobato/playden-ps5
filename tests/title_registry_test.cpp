@@ -29,6 +29,26 @@ int main() {
   CHECK(registry.Query("FAKE78000").state == RegistrationState::kAbsent);
   CHECK(registry.Register("FAKE78000").ok);
   CHECK(requests[requests.size()-2] == "/api/v1/manual/add {\"path\":\"/data/homebrew/FAKE78000\"}");
+  // Unregistered with its folder kept, before ShadowMount's next scan registers it again (#1001): pending, as
+  // measured on the console. Mounted, installed, elsewhere or with a field missing, it is still a collision.
+  const std::string unregistered = R"({"title_id":"FAKE78000","installed":false,"managed":false,"mounted":false,"source_available":true,"source_type":"folder","runtime_path":"/data/homebrew/FAKE78000","path":"/data/homebrew/FAKE78000"})";
+  response = "{\"status\":0,\"games\":[" + unregistered + "]}";
+  CHECK(registry.Query("FAKE78000").state == RegistrationState::kPending);
+  const auto pending_before = requests.size();
+  CHECK(registry.Register("FAKE78000").ok && requests.size() == pending_before + 1);  // only the query: never submitted
+  for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{
+           {"\"mounted\":false", "\"mounted\":true"}, {"\"installed\":false", "\"installed\":true"},
+           {"\"runtime_path\":\"/data/homebrew/FAKE78000\"", "\"runtime_path\":\"/mnt/other\""},
+           {"\"source_type\":\"folder\"", "\"source_type\":\"image\""}}) {
+    auto other = unregistered;
+    other.replace(other.find(from), from.size(), to);
+    response = "{\"status\":0,\"games\":[" + other + "]}";
+    CHECK(registry.Query("FAKE78000").state != RegistrationState::kPending);
+  }
+  auto partial = unregistered;
+  partial.erase(partial.find("\"mounted\":false,"), std::string("\"mounted\":false,").size());
+  response = "{\"status\":0,\"games\":[" + partial + "]}";
+  CHECK(registry.Query("FAKE78000").state == RegistrationState::kCollision);
   for (const auto* flag : {"installed", "managed", "mounted", "source_available"}) {
     auto live = removed;
     const std::string field = "\"" + std::string(flag) + "\":false";

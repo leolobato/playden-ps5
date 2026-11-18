@@ -650,9 +650,9 @@ void t08b_settings_sheet_rules(const std::filesystem::path& fixtures, const std:
           "T08b maintenance lists clear shader cache");
     check(find_row(simulation, "maintenance-recreate")->badge == "Prepares bottle", "T08b recreate prepares the bottle");
     simulation.action("r1");
-    check(simulation.state().navigation.modals.back().focused_action == 6 &&
+    check(simulation.state().navigation.modals.back().focused_action == 7 &&
               simulation.state().navigation.focus_key == "maintenance-reset",
-          "T08b R1 jumps five rows in maintenance, from Repair (under Fix problems) to Reset settings");
+          "T08b R1 jumps five rows in maintenance, from Repair (under Fix problems) past its heading to Reset settings");
     simulation.action("l1");
     check(simulation.view().legends.size() == 3 && simulation.view().legends[1] == "L1/R1 Jump", "T08b maintenance names the jump");
     activate(simulation, "maintenance-shader");

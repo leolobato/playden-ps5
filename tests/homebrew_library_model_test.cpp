@@ -4186,7 +4186,7 @@ void live_game_menus_regrouped() {
     // Maintenance: Fix problems, then Settings and saves; no Manage DLC… or Move to…
     activate(model, "game-maintenance");
     check(keys() == std::vector<std::string>{"heading-fix", "maintenance-repair", "maintenance-update", "maintenance-recreate",
-                                             "maintenance-shader", "heading-settings-saves", "maintenance-reset",
+                                             "maintenance-shader", "maintenance-register", "heading-settings-saves", "maintenance-reset",
                                              "maintenance-backup", "divider", "cancel"},
           "menus: Maintenance in two groups");
     check(model.state().navigation.focus_key == "maintenance-repair", "menus: Maintenance opens on Repair, past its heading");

@@ -4078,6 +4078,12 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
   const bool variable_refresh = KitDeclaresVariableRefresh(c);
   if (!rt::SetTitleVariableRefresh(&param, variable_refresh))
     Log("title metadata app=" + std::to_string(record.runtime_number) + " keeps the kit's attribute3: unexpected layout");
+  // No download-data area: a game title never uses /download0, and the system would keep a 256 MiB
+  // download0.dat per title for it (#1001).
+  const bool download_data_removed = rt::RemoveTitleDownloadData(&param);
+  if (!download_data_removed)
+    Log("title metadata app=" + std::to_string(record.runtime_number) +
+        " keeps the kit's downloadDataSize: unexpected layout");
   std::filesystem::path program;
   if (auto launch = record.launch_path; !launch.empty() && !record.install_path.empty()) {
     std::replace(launch.begin(), launch.end(), '\\', '/');
@@ -4091,7 +4097,7 @@ rt::PackageActionResult RuntimeHost::WriteTitleMetadata(Composition& c, const rt
                                        : std::nullopt;
   Log("title metadata app=" + std::to_string(record.runtime_number) + " name=" + name + " icon=" +
       (icon ? std::to_string(icon->size()) + "B" : std::string("kit")) + (icon_file.empty() ? "" : " icon-file=" + icon_file) +
-      " vrr=" + (variable_refresh ? "1" : "0"));
+      " vrr=" + (variable_refresh ? "1" : "0") + " download-data=" + (download_data_removed ? "none" : "kit"));
   return c.installer->WriteTitleMetadata(record, param, icon, IconSourceOf(icon_file));
 }
 
@@ -5426,6 +5432,75 @@ std::string RuntimeHost::MaintenanceRefusal(Composition& c, const rt::RuntimeIns
   return {};
 }
 
+// The console keeps the parameters a title was registered with (its download-data area, #1001) until it is
+// registered again. The title folder, the bottle, the record and the settings stay; the PS5 forgets the title's
+// play time and Home places it again. The record goes through the preparation's registration steps from
+// query-native, saved before the title is unregistered, so an interrupted run resumes like any registration.
+std::string RuntimeHost::RegisterTitleAgain(Composition& c, const rt::RuntimeInstall& ready, bool* ok) {
+  const auto app = std::to_string(ready.runtime_number);
+  if (!config_.unregister_title) return "Registering a PS5 title again is not available in this build.";
+  // Everything registration checks must hold now: the steps never stage the title or the bottle again.
+  if (!TitleRuntimeCurrent(c, ready) || FilesChanged(ready) ||
+      rt::AdmissionNeedsRepair(c.installer->AdmissionDiagnostic(ready)))
+    return "Update the game first: press Update on the game page.";
+  const auto native = c.coordinator->Query(ready);
+  if (!native.available) return "The PS5's list of titles can't be read right now. Try again in a moment.";
+  if (native.collision || !native.installed || !native.source_available || !native.owned_manifest_matches)
+    return "The PS5 title is not registered as Playden's game; Repair it first.";
+  const auto package = c.installer->Inspect(ready);
+  if (!package.known || !package.template_owned || !package.mutable_bottle_present || !package.mutable_bottle_owned)
+    return "The game's bottle is not in place; Repair it first.";
+  // The title gets the parameters Playden writes now, with the player's own art and name (#213).
+  if (const auto adopted = c.installer->AdoptCustomTitleArt(ready); ArtNotKept(adopted)) return adopted.message;
+  std::string name;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (const auto found = title_names_.find(ready.runtime_number); found != title_names_.end()) name = found->second;
+  }
+  if (name.empty()) name = InstalledTitleName(ready).value_or(std::string());
+  if (const auto written = WriteTitleMetadata(c, ready, name); written.state != rt::PackageActionState::kComplete)
+    return written.message;
+  if (!c.installer->TitleMetadataCurrent(ready)) {
+    const auto refreshed = c.installer->RefreshTitle(ready);
+    Log("register again app=" + app + " refresh state=" + std::to_string(static_cast<int>(refreshed.state)) +
+        " code=" + refreshed.code);
+    if (refreshed.state != rt::PackageActionState::kComplete) return refreshed.message;
+  }
+  const auto parameters = InstalledTitleParameters(ready);
+  if (!parameters || rt::TitleRequestsDownloadData(*parameters))
+    return "The PS5 title's parameters could not be written without a download area.";
+  const auto nonce = config_.uuid();
+  if (!nonce) return "No secure random source for the title remover.";
+  auto record = ready;
+  record.state = rt::PreparationState::kRegistering;
+  record.journal = rt::PreparationJournal{"prepare-" + record.install_id, "prepare", "query-native"};
+  record.last_failure.reset();
+  if (const auto armed = c.repository.Update(record); !armed.ok())
+    return "Registering the PS5 title again could not be recorded: " + armed.message();
+  PublishInstalls(c, record.install_id);
+  Log("register again app=" + app + " title=" + record.title_id + " unregister");
+  const auto unregistered = UnregisterTitle(c, record.title_id, *nonce);
+  // Registration takes over from query-native: a title still registered is Ready again at once, one gone is
+  // submitted, and ShadowMountPlus registers it at its next scan, once no title runs (Playden included).
+  rt::InstallServiceResult step = rt::InstallServiceResult::Success();
+  for (int round = 0; round < 4 && !Stopping(); ++round) {
+    step = c.service->Step(record.install_id);
+    const auto current = c.records.Find(record.install_id);
+    if (!step.ok() || !current || !current->journal || current->journal->step == "await-native") break;
+  }
+  PublishInstalls(c, record.install_id);
+  const auto after = c.records.Find(record.install_id);
+  Log("register again app=" + app + " unregistered=" + std::to_string(!unregistered) + " step_ok=" +
+      std::to_string(step.ok()) + " state=" + (after ? std::to_string(static_cast<int>(after->state)) : std::string("-")) +
+      " to=" + (after && after->journal ? after->journal->step : std::string()) + " message=" + step.message);
+  if (unregistered) return unregistered->message;
+  const bool pending = !step.ok() && step.error() == rt::InstallServiceError::kRegistrationPending;
+  if (!step.ok() && !pending) return step.message;
+  *ok = true;
+  if (after && after->state == rt::PreparationState::kReady) return "The PS5 title is registered again.";
+  return "The PS5 title is registered again once you close Playden. Its play time on the PS5 starts from zero.";
+}
+
 std::filesystem::path RuntimeHost::SaveBackupRoot(const std::string& install_id) const {
   return HostPath(config_.package_paths.console_data_root + "/playden/games") / (install_id + kSaveBackupSuffix);
 }
@@ -5494,6 +5569,8 @@ std::string RuntimeHost::RunMaintenance(Composition& c, std::uint32_t app, Runti
         return "Repaired. The PS5 title also has an update: press Update on the game page.";
       return "Repaired. The game's start files and settings are in place.";
     }
+    case RuntimeMaintenance::kRegisterAgain:
+      return RegisterTitleAgain(c, *record, ok);
     case RuntimeMaintenance::kBackupSaves: {
       const auto users = HostPath(record->data_root) / "library/prefixes/game/drive_c/users";
       struct stat info{};

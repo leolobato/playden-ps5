@@ -1145,6 +1145,7 @@ void Controller::TickRuntime() {
       runtime_->Maintain(app, kind == MaintenanceKind::ClearShaderCache ? RuntimeMaintenance::kClearShaderCache
                            : kind == MaintenanceKind::Repair ? RuntimeMaintenance::kRepair
                            : kind == MaintenanceKind::BackupSaves ? RuntimeMaintenance::kBackupSaves
+                           : kind == MaintenanceKind::RegisterAgain ? RuntimeMaintenance::kRegisterAgain
                                                                   : RuntimeMaintenance::kApplySettings);
     });
   // Uninstall Playden (#868): asked for in Settings, or a removal the worker resumed at its start (uninstall.json).
@@ -1785,6 +1786,7 @@ void Controller::TickRuntime() {
       game.maintenance = action == RuntimeMaintenance::kClearShaderCache ? MaintenanceKind::ClearShaderCache
                        : action == RuntimeMaintenance::kRepair ? MaintenanceKind::Repair
                        : action == RuntimeMaintenance::kBackupSaves ? MaintenanceKind::BackupSaves
+                       : action == RuntimeMaintenance::kRegisterAgain ? MaintenanceKind::RegisterAgain
                                                                     : MaintenanceKind::ApplySettings;
       game.maintenance_running = found->second.running;
       game.maintenance_ok = found->second.ok;
