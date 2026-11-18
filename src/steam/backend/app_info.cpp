@@ -598,6 +598,7 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
 
   // Every listed depot once: the game's in listing order, then each DLC app's in listofdlc order.
   std::vector<DepotInfo> listed;
+  std::string conflict;  // the first depot two listings disagree on, for the log
   const auto add = [&](const DepotInfo& raw, std::uint32_t source, std::uint32_t owner) -> bool {
     DepotInfo depot = raw;
     depot.source_app = source;
@@ -613,7 +614,16 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
       return true;
     }
     const std::uint64_t a = same->manifest_gid.value_or(0), b = depot.manifest_gid.value_or(0);
-    if (a != 0 && b != 0 && a != b) return false;
+    if (a != 0 && b != 0 && a != b) {
+      // The game's own listing is kept, as DepotDownloader reads only the game's depots section: a DLC app's copy
+      // can name an older manifest (Chicory's art book, #1042). Between two DLC apps' copies nothing says which
+      // one, nor within one app.
+      if (same->source_app != app.app_id || source == app.app_id) {
+        if (conflict.empty())
+          conflict = std::to_string(depot.id) + " (apps " + std::to_string(same->source_app) + " and " + std::to_string(source) + ")";
+        return false;
+      }
+    }
     // The listing with a manifest on the branch is the one installed (a DLC app can list a copy of the
     // game's depot with the branch's manifest when the game's own listing has none). The first listing
     // keeps its place, the mounting order, and says whose content it is.
@@ -641,7 +651,7 @@ bool SelectDepots(const AppInfo& app, const std::vector<AppInfo>& dlc_apps, cons
     for (const DepotInfo& depot : dlc->depots) consistent &= add(depot, dlc->app_id, dlc->app_id);
   if (!consistent) {
     out.rejected.clear();
-    out.reason = "This game lists conflicting depots.";
+    out.reason = "This game lists conflicting manifests for depot " + conflict + ".";
     return false;
   }
 

@@ -498,6 +498,82 @@ void AppInfoBecomesWindowsEstimate() {
   assert(none.available && !none.windows_installable && !none.install_bytes);
 }
 
+// Chicory: A Colorful Tale's appinfo (trimmed, issue #1042). The game lists its art book DLC's depot with one manifest and
+// the DLC's own app with an older one. The game's listing is kept; the whole game read as "No Windows version to
+// install". UNBEATABLE's appinfo has the same shape (#837).
+void GameListingWinsOverDlcAppCopy() {
+  const std::string buffer = R"("appinfo"
+{
+  "appid" "1123450"
+  "common" { "name" "Chicory: A Colorful Tale" "type" "Game" "oslist" "windows,macos" "osarch" "64" }
+  "extended" { "listofdlc" "2446380" }
+  "config"
+  {
+    "installdir" "Chicory A Colorful Tale"
+    "launch"
+    {
+      "0" { "executable" "PC/Chicory.exe" "type" "none" "config" { "oslist" "windows" } }
+      "1" { "executable" "Mac/Chicory_A_Colorful_Tale.app/Contents/MacOS/Mac_Runner" "type" "default" "config" { "oslist" "macos" } }
+      "2" { "executable" "monsterball/monsterball.exe" "type" "none" "description" "MONSTERBALL"
+            "config" { "betakey" "gregs_cool_and_fun_secret" "oslist" "windows" } }
+    }
+  }
+  "depots"
+  {
+    "1123451" { "config" { "oslist" "windows" } "manifests" { "public" { "gid" "3968246222362590880" "size" "1491132487" "download" "1129297024" } } }
+    "1123452" { "config" { "oslist" "macos" } "manifests" { "public" { "gid" "2911755491900749576" "size" "1497265374" "download" "1196889792" } } }
+    "2446380" { "dlcappid" "2446380" "manifests" { "public" { "gid" "6455313017870902760" "size" "46033787" "download" "41238096" } } }
+    "baselanguages" "english"
+    "hasdepotsindlc" "1"
+    "branches" { "public" { "buildid" "13534773" } }
+  }
+})";
+  const auto art_book = ParseAppInfo(2446380, R"("appinfo"
+{
+  "appid" "2446380"
+  "common" { "name" "Chicory: Official Art Book" "type" "DLC" "parent" "1123450" }
+  "extended" { "dlcforappid" "1123450" }
+  "depots"
+  {
+    "2446380" { "dlcappid" "2446380" "manifests" { "public" { "gid" "6147808531808534855" "size" "46033787" "download" "41238096" } } }
+    "branches" { "public" { "buildid" "11289412" } }
+  }
+})");
+  assert(art_book);
+  const auto details = DetailsFromAppInfo(1123450, buffer, std::nullopt, kDefaultContentLanguage, std::nullopt, {*art_book});
+  assert(details.available && details.windows_installable && details.reason.empty());
+  assert(details.install_bytes == 1491132487u);
+  assert(details.launches.size() == 1 && details.launches[0].executable == "PC/Chicory.exe");
+  // With the art book owned, an install takes the game's manifest of its depot, and an update compares with that one.
+  const LicensedDepots::Grant grant{{1123450, 2446380}, {1123451, 2446380}};
+  installs::InstalledRecord record;
+  record.version = 2;
+  record.app_id = 1123450;
+  record.depots = {{1123451, 3968246222362590880ull, 1123450, 1123450}, {2446380, 6455313017870902760ull, 2446380, 1123450}};
+  auto installed = DetailsFromAppInfo(1123450, buffer, grant, kDefaultContentLanguage, record, {*art_book});
+  assert(installed.windows_installable && !installed.update.available());
+  record.depots[1].gid = 6147808531808534855ull;  // the DLC app's manifest: not the one kept
+  installed = DetailsFromAppInfo(1123450, buffer, grant, kDefaultContentLanguage, record, {*art_book});
+  assert(installed.update.newer);
+  const auto to_update = DepotsToUpdate(1123450, buffer, grant, record, {*art_book});
+  assert(to_update.size() == 2 && to_update[1].id == 2446380 && to_update[1].manifest_gid == 6455313017870902760ull &&
+         to_update[1].source_app == 1123450 && to_update[1].owner_app == 2446380);
+}
+
+// Why a Steam game can't be installed stays in its details, for the log: the page shows its own text.
+void NotInstallableKeepsTheReason() {
+  const std::string mac_only = R"("appinfo" { "depots" { "1" { "config" { "oslist" "macos" } "manifests" { "public" { "gid" "1" } } } } })";
+  const auto content = DetailsFromAppInfo(440, mac_only);
+  assert(!content.windows_installable && content.reason == "No Windows content to install: This game has no downloadable Windows content.");
+  const std::string no_launch = R"("appinfo"
+{
+  "config" { "launch" { "0" { "executable" "game" "config" { "oslist" "macos" } } } }
+  "depots" { "1" { "manifests" { "public" { "gid" "1" "size" "10" } } } }
+})";
+  const auto launch = DetailsFromAppInfo(440, no_launch);
+  assert(launch.available && !launch.windows_installable && launch.reason == "No Windows launch configuration: The game has no valid Windows launch configuration.");
+}
+
 // Half-Life 2's appinfo since its 20th anniversary update (trimmed): the public branch's Windows launch option is tagged
 // betakey "default", and the other Windows options belong to the steam_legacy and test branches (issue #10).
 void DefaultBetaKeyIsThePublicBranch() {
@@ -938,6 +1014,8 @@ int main() {
   UnreachableSteamFailsTheCheck();
   AppInfoBecomesWindowsEstimate();
   DefaultBetaKeyIsThePublicBranch();
+  GameListingWinsOverDlcAppCopy();
+  NotInstallableKeepsTheReason();
   OtherBranchOptionsAreCandidates();
   ImpossibleDownloadSizeFallsBackToInstallSize();
   SizesFollowTheContentLanguage();

@@ -706,11 +706,17 @@ void TestDlcAppDepots() {
   CHECK((Ids(result.depots) == U32s{5001, 5023, 5011}));
   CHECK(RejectedAs(result, 5003) == "licence" && RejectedAs(result, 5021) == "licence");
 
-  // Two manifests for one depot fail the selection.
+  // A DLC app's copy of the game's depot names another manifest (Chicory's art book, #1042): the game's listing is
+  // kept, and the copy stays out.
   std::vector<AppInfo> conflicting = dlc;
   conflicting[1].depots[0].manifest_gid = 99;
-  CHECK(!SelectDepots(base, conflicting, {5000, 5001, 5002}, std::nullopt, german, &result));
-  CHECK(result.reason.find("conflicting") != std::string::npos && result.depots.empty());
+  CHECK(SelectDepots(base, conflicting, {5000, 5001, 5002}, std::nullopt, german, &result));
+  CHECK((Ids(result.depots) == U32s{5001, 5003, 5021, 5023, 5011}));
+  CHECK(result.depots[0].manifest_gid == base.depots[0].manifest_gid && result.depots[0].manifest_gid != 99u &&
+        result.depots[0].source_app == 5000 && result.depots[0].owner_app == 5000);
+  const auto stale = std::find_if(result.rejected.begin(), result.rejected.end(),
+                                  [](const SelectionResult::Rejected& rejected) { return rejected.id == 5001; });
+  CHECK(stale != result.rejected.end() && stale->reason == "duplicate" && stale->source_app == 5002);
 
   // The game's listing has no manifest on the branch, a DLC app's copy has: that copy is installed, asked
   // for under the DLC app, in the game's place and still the game's content.
@@ -723,12 +729,20 @@ void TestDlcAppDepots() {
   const auto dropped = std::find_if(result.rejected.begin(), result.rejected.end(),
                                     [](const SelectionResult::Rejected& rejected) { return rejected.id == 5001; });
   CHECK(dropped != result.rejected.end() && dropped->source_app == 5000);
-  // Still two usable manifests that differ: conflicting.
+  // Two DLC apps name different manifests and the game none: nothing says which one Steam installs. The reason
+  // names the depot, for the log.
   conflicting = dlc;
   conflicting[0].depots.push_back(dlc[1].depots[0]);
   conflicting[0].depots.back().manifest_gid = 99;
   CHECK(!SelectDepots(unlisted, conflicting, {5000, 5001, 5002}, std::nullopt, german, &result));
-  CHECK(result.reason.find("conflicting") != std::string::npos);
+  CHECK(result.reason.find("conflicting") != std::string::npos && result.reason.find("5001") != std::string::npos);
+  CHECK(result.reason.find("apps 5002 and 5001") != std::string::npos);
+  // One app listing a depot twice with two manifests: conflicting, the game's own too.
+  AppInfo twice = base;
+  twice.depots.push_back(base.depots[0]);
+  twice.depots.back().manifest_gid = 99;
+  CHECK(!SelectDepots(twice, dlc, {5000, 5001, 5002}, std::nullopt, german, &result));
+  CHECK(result.reason.find("apps 5000 and 5000") != std::string::npos);
 }
 
 // DLC alone is no version of the game (an update to it would delete the game); content the game takes

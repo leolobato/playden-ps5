@@ -111,7 +111,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
     apps = owned;
     depots_owned.reset();
     if (!SelectDepots(*app, dlc_apps, owned, std::nullopt, selection, &selected)) {
-      details.reason = "No Windows content to install.";
+      details.reason = "No Windows content to install: " + selected.reason;
       return details;
     }
   }
@@ -192,7 +192,7 @@ AppDetails DetailsFromAppInfo(std::uint32_t id, const std::string& buffer,
     for (const auto& depot : installed->depots)
       if (depot.owner != 0) startable.insert(depot.owner);
   details.windows_installable = EligibleLaunches(*app, startable, branch, &launches, &reason, &details.launches_any_branch);
-  if (!details.windows_installable) details.reason = "No Windows launch configuration.";
+  if (!details.windows_installable) details.reason = "No Windows launch configuration: " + reason;
   details.install_dir = app->install_dir;
   for (const auto& launch : launches)
     details.launches.push_back({launch.executable, launch.arguments, launch.working_directory,
@@ -264,6 +264,9 @@ std::vector<AppDetails> CmAppDetailsSource::Fetch(const StoredSession& session,
     if (free_dlc_memory_) refused = LoadFreeDlcMemory(*free_dlc_memory_, session.steam_id);
     result.push_back(DetailsFromAppInfo(id, found->second, licensed_ ? licensed_->Get(session.steam_id) : std::nullopt, language, record,
                                         dlc_apps, &refused));
+    // The page shows its own text for a Steam game it can't install: why stays in the log, for reports (#1042).
+    if (log_ && result.back().available && !result.back().windows_installable)
+      log_(id, "details", "uninstallable", "dlc_apps=" + std::to_string(dlc_apps.size()) + " why=" + result.back().reason);
   }
   return result;
 }
