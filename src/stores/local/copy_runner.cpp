@@ -1,3 +1,9 @@
+// Linux port: glibc spells the stat timestamps st_*tim, BSD (and the PS5) st_*timespec.
+#if defined(__linux__) && !defined(st_mtimespec)
+#define st_mtimespec st_mtim
+#define st_atimespec st_atim
+#define st_ctimespec st_ctim
+#endif
 #include "stores/local/copy_runner.h"
 
 #include "platform/directory_walk.h"
