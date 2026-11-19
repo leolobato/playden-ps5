@@ -1692,6 +1692,8 @@ private:
     [[nodiscard]] bool download_server_test_allowed() const;
     std::string self_update_prompted_;   // "available 0.3.0" or "staged 0.3.0": each prompt shows once
     std::string pending_update_prompt_;  // a prompt waiting for the open dialog to close
+    std::string self_update_offered_;    // the version the open "is available" dialog shows
+    std::string self_update_skipped_;    // the version "Skip this version" asked for, until the service saved it
     bool kit_prompted_ = false;          // the kit was offered since its last check (a cancel doesn't offer it again)
     void show_update_prompt();
     void sync_self_update_job();

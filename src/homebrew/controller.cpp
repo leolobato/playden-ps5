@@ -3546,6 +3546,12 @@ void Controller::TickSelfUpdate() {
     else if (request == "kit-check") self_update_->CheckKit();
     else if (request == "kit-install") self_update_->InstallKit();
     else if (request == "kit-cancel") self_update_->Cancel();
+    else if (request.rfind("skip ", 0) == 0) self_update_skip_pending_ = request.substr(5);
+  }
+  // A skip waits for the worker like a check: a busy worker would drop it.
+  if (!self_update_skip_pending_.empty()) {
+    const auto version = update::ParseVersion(self_update_skip_pending_);
+    if (!version || self_update_->SkipAvailable(*version)) self_update_skip_pending_.clear();
   }
   // Retain checks across busy downloads and occupied worker queues, including opt-out then cancel.
   if (self_update_check_pending_ && !self_update_->Busy()) {

@@ -377,6 +377,28 @@ void UpdateService::FindPrevious() {
   });
 }
 
+bool UpdateService::SkipAvailable(const Version& version) {
+  if (Busy()) return false;
+  const auto snapshot = Snapshot();
+  // Another version found since the dialog showed this one, or already skipped: nothing to save.
+  if (snapshot.phase != UpdatePhase::kAvailable || snapshot.available != version || snapshot.quiet) return true;
+  Run([this, version] { DoSkip(version); });
+  return true;
+}
+
+// The same file going back writes: the check reads it and finds that version quietly.
+void UpdateService::DoSkip(const Version& version) {
+  if (!PrepareWorkRoot() ||
+      !WriteFileAtomically(config_.work_root + "/declined-version", version.ToString() + "\n")) {
+    Log("could not save the skipped version " + version.ToString());
+    return;
+  }
+  Log("version " + version.ToString() + " skipped: Settings lists it, no dialog offers it");
+  Set([&](UpdateSnapshot& s) {
+    if (s.phase == UpdatePhase::kAvailable && s.available == version) s.quiet = true;
+  });
+}
+
 void UpdateService::RequestRestart() {
   Set([&](UpdateSnapshot& s) {
     if (s.phase == UpdatePhase::kStaged) s.restart_requested = true;

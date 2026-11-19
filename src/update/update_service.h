@@ -118,7 +118,8 @@ struct UpdateSnapshot {
   // The version kept from the last update, which "go back" restores; empty when there is none.
   std::string previous;
   bool rollback_requested = false;
-  // The available version is one the player went back from: Settings lists it, no dialog offers it.
+  // The available version is one the player went back from or skipped: Settings lists it, no dialog
+  // offers it. A newer version is offered again.
   bool quiet = false;
   // One-shot result of the previous run's update ("Playden was updated to 0.3.0."), shown once.
   std::string finished_message;
@@ -149,6 +150,11 @@ class UpdateService {
   // Downloads the kit CheckKit found and puts it in place at once (the installed one, if any, is
   // moved aside). In the background.
   void InstallKit();
+  // Stops offering `version` in a dialog (it stays in Settings): saved in the work root, so it holds
+  // after a restart, until a newer version is published. Only while it is the available version. In
+  // the background; refused while the worker is busy, so the caller asks again once Busy() is false.
+  // Returns whether it was taken (or there is nothing to do).
+  bool SkipAvailable(const Version& version);
   // Marks a staged update to be applied when Playden quits.
   void RequestRestart();
   // Marks the previous version (and its kit) to be put back when Playden quits.
@@ -178,6 +184,7 @@ class UpdateService {
   void Run(std::function<void()> work);
   void DoCheck(bool user_asked);
   void DoInstall();
+  void DoSkip(const Version& version);
   void ConfirmApplied(const std::string& state);
   bool RollBackAtQuit();
   // Why going back to `to` is refused (it can't read the 0.6 data layout), or empty.

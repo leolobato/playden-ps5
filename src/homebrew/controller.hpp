@@ -254,6 +254,7 @@ class Controller {
   std::optional<std::chrono::steady_clock::time_point> license_refresh_at_;
   update::UpdateService* self_update_ = nullptr;
   bool self_update_check_pending_ = false;
+  std::string self_update_skip_pending_;  // the version "Skip this version" named, saved once the worker is free
   std::uint64_t self_update_revision_ = ~0ull;
   steam::DownloadRate self_update_rate_;
   std::string self_update_rate_part_;

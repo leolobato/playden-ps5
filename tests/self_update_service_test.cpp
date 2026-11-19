@@ -215,6 +215,49 @@ void Installed(const std::string& root) {
 }  // namespace
 
 int main() {
+  // Skip this version (#1085): saved, so a later start finds it quietly; it still installs; a newer one isn't quiet.
+  {
+    Fixture fixture;
+    fixture.root = zip_fixture::TempFolder("skip-version");
+    Installed(fixture.root);
+    Publish(fixture.server, "v0.3.0");
+    // A busy worker takes no skip: the caller asks again later.
+    std::atomic<bool> hold{true};
+    auto held = fixture.Config({0, 2, 0});
+    held.fetch = [&](const HttpRequest& request, const std::atomic<bool>&) {
+      while (hold) usleep(1000);
+      return fixture.server(request);
+    };
+    UpdateService busy(held);
+    busy.Check(false);
+    const Version shown{0, 3, 0};
+    CHECK(busy.Busy() && !busy.SkipAvailable(shown));
+    hold = false;
+    Wait(busy);
+    CHECK(busy.Snapshot().phase == UpdatePhase::kAvailable && !busy.Snapshot().quiet);
+    CHECK(!Exists(fixture.root + "/playden/self-update/declined-version"));
+    // A skip of another version than the available one (the dialog showed an older offer) saves nothing.
+    CHECK(busy.SkipAvailable(Version{0, 2, 5}));
+    Wait(busy);
+    CHECK(!busy.Snapshot().quiet && !Exists(fixture.root + "/playden/self-update/declined-version"));
+    CHECK(busy.SkipAvailable(shown));
+    Wait(busy);
+    CHECK(busy.Snapshot().quiet && Read(fixture.root + "/playden/self-update/declined-version") == "0.3.0\n");
+    busy.Shutdown();
+    UpdateService later(fixture.Config({0, 2, 0}));
+    later.Check(false); Wait(later);
+    CHECK(later.Snapshot().phase == UpdatePhase::kAvailable && later.Snapshot().quiet);
+    CHECK(later.SkipAvailable(shown));  // already skipped: nothing to do
+    later.Install(); Wait(later);
+    CHECK(later.Snapshot().phase == UpdatePhase::kStaged);
+    later.Shutdown();
+    Publish(fixture.server, "v0.4.0", "0.2.0", "00.004.000");
+    UpdateService newer(fixture.Config({0, 2, 0}));
+    newer.Check(false); Wait(newer);
+    CHECK(newer.Snapshot().phase == UpdatePhase::kAvailable && newer.Snapshot().available.ToString() == "0.4.0" &&
+          !newer.Snapshot().quiet);
+    newer.Shutdown();
+  }
   // Opt-in selects by version, never GitHub list order; disabling never downgrades.
   {
     Fixture fixture;

@@ -2181,6 +2181,74 @@ void live_self_update(const std::filesystem::path& base) {
     declined.UpdateSelfUpdate(quiet);
     check(declined.state().navigation.modals.empty(), "update: no dialog for a version gone back from");
 
+    // Skip this version (#1085): the offer stops, Settings keeps it, a newer version is offered again.
+    auto skipping = make_live(base);
+    skipping.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(skipping.UpdateLibrary({{}, false, {}, false, true, 100}), "update: library delivered");
+    LiveSelfUpdate offer;
+    offer.current = "0.2.0";
+    offer.phase = "available";
+    offer.available = "0.3.0";
+    offer.download_bytes = 500000000;
+    skipping.UpdateSelfUpdate(offer);
+    check(!skipping.state().navigation.modals.empty() &&
+              skipping.state().navigation.modals.back().action_keys ==
+                  std::vector<std::string>{"self-update-install", "ready-later", "self-update-skip"} &&
+              skipping.state().navigation.modals.back().focused_action == 0,
+          "update: the offer can skip its version, with Download and install focused");
+    check(skipping.action("right") && skipping.action("right") && skipping.action("cross") &&
+              skipping.state().navigation.modals.empty() &&
+              skipping.TakeSelfUpdateRequests() == std::vector<std::string>{"skip 0.3.0"},
+          "update: Skip this version asks the service to skip it");
+    offer.quiet = true;  // the service saved it
+    skipping.UpdateSelfUpdate(offer);
+    check(skipping.state().navigation.modals.empty() &&
+              std::any_of(skipping.state().notices.begin(), skipping.state().notices.end(),
+                          [](const Notice& notice) {
+                              return notice.id == "self-update-skipped" && notice.message == "Playden 0.3.0 skipped";
+                          }),
+          "update: the skip is confirmed in a notice, without a dialog");
+    for (int i = 0; i < 6 && skipping.state().navigation.route != Route::Settings; ++i) skipping.action("r1");
+    check(find_row(skipping, "settings-update") && find_row(skipping, "settings-update")->value == "0.3.0 available",
+          "update: Settings still lists the skipped version");
+    activate(skipping, "settings-update");
+    check(!skipping.state().navigation.modals.empty() &&
+              skipping.state().navigation.modals.back().title == "Playden 0.3.0 is available" &&
+              skipping.state().navigation.modals.back().action_keys ==
+                  std::vector<std::string>{"self-update-install", "ready-later"},
+          "update: Settings opens the skipped version's offer, without the skip");
+    check(skipping.action("cross") && skipping.TakeSelfUpdateRequests() == std::vector<std::string>{"install"},
+          "update: a skipped version still installs from Settings");
+    // A check finds a newer version while the dialog shows an older one: Skip names the one shown.
+    auto racing = make_live(base);
+    racing.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(racing.UpdateLibrary({{}, false, {}, false, true, 100}), "update: library delivered");
+    LiveSelfUpdate shown = offer;
+    shown.quiet = false;
+    racing.UpdateSelfUpdate(shown);
+    LiveSelfUpdate found = shown;
+    found.available = "0.3.1";
+    racing.UpdateSelfUpdate(found);
+    check(!racing.state().navigation.modals.empty() &&
+              racing.state().navigation.modals.back().title == "Playden 0.3.0 is available" &&
+              racing.action("focus:self-update-skip") && racing.action("cross") &&
+              racing.TakeSelfUpdateRequests() == std::vector<std::string>{"skip 0.3.0"},
+          "update: Skip this version names the version its dialog showed");
+    // A start after the skip: the saved version is found quietly, so no dialog.
+    auto restarted = make_live(base);
+    restarted.UpdateAccount({AuthState::SignedIn, "account", "Owner", {}, {}, false});
+    check(restarted.UpdateLibrary({{}, false, {}, false, true, 100}), "update: library delivered");
+    restarted.UpdateSelfUpdate(offer);
+    check(restarted.state().navigation.modals.empty() && restarted.state().notices.empty(),
+          "update: a skipped version stays quiet after a restart");
+    LiveSelfUpdate newer = offer;
+    newer.available = "0.4.0";
+    newer.quiet = false;
+    restarted.UpdateSelfUpdate(newer);
+    check(!restarted.state().navigation.modals.empty() &&
+              restarted.state().navigation.modals.back().title == "Playden 0.4.0 is available",
+          "update: a newer version is offered again");
+
     // After an update: "What's new" with the notes and the release page as a QR link, once; the notes
     // stay in Settings › Release notes.
     auto updated = make_live(base);

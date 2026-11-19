@@ -870,7 +870,7 @@ std::string action_label(const std::string& key) {
         {"gog-signout-confirm", "Sign out…"}, {"gog-web-on", "Turn on web access"}, {"gog-stay", "Stay signed in"},
         {"gog-back", "Back"}, {"gog-retry", "Try again"}, {"job-resume-all", "Resume all"}, {"job-clear-completed", "Clear completed"},
         {"prep-clear-completed", "Clear completed"}, {"prep-cancel-all", "Cancel all"}, {"prep-pause-all", "Pause all"}, {"prep-resume-all", "Resume all"}, {"storage-close", "Close"}, {"collection-new", "New collection…"}, {"collection-manage", "Manage collections"},
-        {"about-version", "Version"}, {"self-update-install", "Download and install"},
+        {"about-version", "Version"}, {"self-update-install", "Download and install"}, {"self-update-skip", "Skip this version"},
         {"self-update-restart", "Restart Playden"}, {"self-update-cancel", "Cancel update"},
         {"kit-install", "Download"}, {"kit-cancel", "Cancel download"},
         {"self-update-back-confirm", "Go back"}, {"release-notes-ok", "OK"},
@@ -3277,6 +3277,10 @@ void Simulation::UpdateSelfUpdate(const LiveSelfUpdate& update) {
     }
     if (update.phase == "available" && update.quiet) {
         self_update_prompted_ = "available " + update.available;  // Settings still lists it
+        if (!self_update_skipped_.empty() && self_update_skipped_ == update.available)
+            push_notice({"self-update-skipped", "Playden " + update.available + " skipped", "", false, kLiveNoticeSeconds,
+                         false, "You can still install it from Settings. Playden asks again when a newer version is out."});
+        self_update_skipped_.clear();
     } else if (update.phase == "available" && self_update_prompted_ != "available " + update.available) {
         self_update_prompted_ = "available " + update.available;
         pending_update_prompt_ = "available";
@@ -3341,13 +3345,17 @@ void Simulation::show_update_prompt() {
                       size + "You can sign in and keep using Playden while it downloads.";
         open_modal(std::move(prompt));
     } else if (pending_update_prompt_ == "available" && update.phase == "available") {
+        // A version already skipped (or gone back from) opens from Settings without the skip.
+        std::vector<std::string> actions{"self-update-install", "ready-later"};
+        if (!update.quiet) actions.push_back("self-update-skip");
         ModalEntry prompt{"confirmation", "Playden " + version_label(update.available) + " is available", state_.navigation.focus_key,
-                          {"self-update-install", "ready-later"}, 0, false};
+                          std::move(actions), 0, false};
         prompt.body = (update.notes.empty() ? std::string() : update.notes + "\n\n") + "The download is " +
                       format_bytes(update.download_bytes) +
                       (update.kit_needed ? ", with a new runtime kit." : ".") +
                       " You can keep using Playden while it downloads.";
         prompt.link = update.notes_url;
+        self_update_offered_ = update.available;
         open_modal(std::move(prompt));
     } else if (pending_update_prompt_ == "staged" && update.phase == "staged") {
         ModalEntry prompt{"confirmation", "Playden " + update.available + " is ready", state_.navigation.focus_key,
@@ -13982,6 +13990,12 @@ void Simulation::activate() {
         } else if (phase != "checking") self_update_requests_.push_back("check");
     }
     else if (live() && action_name == "self-update-install") { close_modal(); self_update_requests_.push_back("install"); }
+    else if (live() && action_name == "self-update-skip") {
+        close_modal();
+        // The version the dialog showed, even if a check found another since.
+        self_update_skipped_ = self_update_offered_;
+        if (!self_update_skipped_.empty()) self_update_requests_.push_back("skip " + self_update_skipped_);
+    }
     else if (live() && action_name == "kit") {
         const auto& phase = state_.self_update.kit_phase;
         if (phase == "available") { pending_update_prompt_ = "kit"; show_update_prompt(); }

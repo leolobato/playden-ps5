@@ -185,6 +185,20 @@ int main(int argc,char** argv) {
       updating.UpdateSelfUpdate(offer);
       assert(!updating.state().navigation.modals.empty() && !updating.state().navigation.modals.back().link.empty());
       capture_update("update-available.png");
+      {
+        // Skip this version: the offer closes and a notice says where the version stays.
+        Simulation skipping({}, {}, ModelMode::Live);
+        skipping.SetWallClock(1700000000);
+        skipping.UpdateAccount({AuthState::SignedIn,"123","Synthetic account",{},{},true});
+        assert(skipping.UpdateLibrary({backend.games,false,{},false,false,{}}));
+        skipping.UpdateSelfUpdate(offer);
+        assert(skipping.action("focus:self-update-skip") && skipping.action("cross"));
+        LiveSelfUpdate skipped=offer; skipped.quiet=true;
+        skipping.UpdateSelfUpdate(skipped);
+        assert(skipping.state().navigation.modals.empty() && !skipping.state().notices.empty());
+        for(int i=0;i<16;++i) renderer.draw(skipping,1920,1080);
+        assert(renderer.capture_png(output/"update-skipped.png",1920,1080));
+      }
       assert(updating.action("cross"));
       offer.phase="downloading"; offer.part="kit"; offer.done=208'000'000; offer.total=437'000'000;
       offer.bytes_per_second=26'400'000; offer.eta_seconds=8;
