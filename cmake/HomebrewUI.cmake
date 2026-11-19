@@ -201,6 +201,7 @@ target_include_directories(playden_hui PUBLIC
     "${PLAYDEN_HUI_SOURCE_DIR}/third_party/stb")
 
 add_library(playden_homebrew_model STATIC
+    "${CMAKE_SOURCE_DIR}/src/homebrew/i18n.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/simulation.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/storage_sim.cpp"
     "${CMAKE_SOURCE_DIR}/src/homebrew/queue_layout.cpp"

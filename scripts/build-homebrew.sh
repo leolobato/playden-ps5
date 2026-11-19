@@ -47,6 +47,9 @@ while IFS='|' read -r input output glyphs; do
         glyphs="european,text=$root/fixtures/ui-comparison/catalog.json"
     elif [[ $glyphs == catalog ]]; then
         glyphs="text=$root/fixtures/ui-comparison/catalog.json"
+    elif [[ $glyphs == catalog-european-zh ]]; then
+        # The CJK fallback face also carries the characters the Chinese interface needs.
+        glyphs="european,text=$root/fixtures/ui-comparison/catalog.json,text=$root/assets/fonts/zh-interface-charset.txt"
     fi
     "$baker" "$root/fixtures/ui-comparison/assets/fonts/$input" \
         "$font_dir/$output" 56 8 2048 "$glyphs" >/dev/null
@@ -56,7 +59,7 @@ Barlow-Medium.ttf|barlow-medium.huifont|european
 Barlow-SemiBold.ttf|barlow-semibold.huifont|european
 BarlowCondensed-Medium.ttf|barlow-condensed-medium.huifont|european
 BarlowCondensed-SemiBold.ttf|barlow-condensed-semibold.huifont|european
-NotoSansCJKsc-Regular.otf|noto-cjk-fallback.huifont|catalog-european
+NotoSansCJKsc-Regular.otf|noto-cjk-fallback.huifont|catalog-european-zh
 NotoSansArabic.ttf|noto-arabic-fallback.huifont|catalog
 FONTS
 

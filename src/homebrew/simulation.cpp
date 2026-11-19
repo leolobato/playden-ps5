@@ -4,12 +4,13 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 
+#include "homebrew/i18n.hpp"
+#include "app/diagnostic_log.h"
 #include "homebrew/simulation.hpp"
 #include "platform/random_id.h"
 #include "platform/usb_mount.h"
 #include "runtime/game_probe.h"
 
-#include "app/diagnostic_log.h"
 #include "community/recipe_import.h"
 #include "homebrew/browse.hpp"
 #include "homebrew/json.hpp"
@@ -623,6 +624,12 @@ constexpr const char* uninstall_batch_body_kept = "Their files and PS5 titles ar
                                                   "settings are kept, and installing a game again brings them back.";
 constexpr const char* uninstall_batch_body_deleted = "Their files, PS5 titles and saves and settings on this console are deleted.";
 
+// A count of games, in the language the interface speaks: Chinese has no plural, so the
+// English "1 game / N games" branch collapses into one form.
+std::string games_count(std::size_t count) {
+    return std::to_string(count) + tr(" 个游戏");
+}
+
 // The name kept game data is shown with: the game's name, else the library's, else its app id.
 std::string kept_name(const State& state, const LiveKeptBottle& kept) {
     if (!kept.name.empty()) return kept.name;
@@ -631,7 +638,7 @@ std::string kept_name(const State& state, const LiveKeptBottle& kept) {
 }
 
 std::string kept_count(std::size_t count) {
-    return std::to_string(count) + (count == 1 ? " game" : " games");
+    return games_count(count);
 }
 
 // Saves are small: "84 KB", "1.2 MB".
@@ -856,7 +863,7 @@ std::string action_label(const std::string& key) {
         {"about-kit", "Runtime kit in use"}, {"about-kit-source", "Kit built from"},
         {"about-back", "Back"}, {"inject-library-refresh", "Refresh library fixture"},
         {"inject-startup-loading", "Show startup loading"}};
-    if (const auto found = labels.find(key); found != labels.end()) return found->second;
+    if (const auto found = labels.find(key); found != labels.end()) return playden::homebrew::tr(found->second);
     // Per-job actions carry the job id after the verb.
     for (const auto& [prefix, label] : std::initializer_list<std::pair<const char*, const char*>>{
              {"job-pause-", "Pause download"}, {"job-resume-", "Resume download"}, {"job-retry-", "Retry download"},
@@ -1431,7 +1438,7 @@ void Simulation::UpdateDriveUpdates(std::size_t done, std::size_t total, std::si
     if (!live() || total == 0 || (done == drive_updates_done_ && total == drive_updates_total_)) return;
     drive_updates_done_ = done;
     drive_updates_total_ = total;
-    const auto of = std::to_string(total) + (total == 1 ? " game" : " games");
+    const auto of = games_count(total);
     if (done >= total) {
         if (failed > 0 && failed <= total) {
             push_notice({"drive-updates", "Drive change updated with problems", "", false, kLiveNoticeSeconds, false,
@@ -2125,7 +2132,7 @@ void Simulation::runtime_batch_step() {
     const auto done = runtime_batch_total_ - runtime_batch_.size();
     if (runtime_batch_.empty()) {
         const auto good = runtime_batch_total_ - runtime_batch_failed_;
-        const auto of = std::to_string(runtime_batch_total_) + (runtime_batch_total_ == 1 ? " game" : " games");
+        const auto of = games_count(runtime_batch_total_);
         push_notice({"runtime-batch", runtime_batch_failed_ ? "Runtime kit updated with problems" : "Runtime kit updated", "",
                      false, kLiveNoticeSeconds, false,
                      runtime_batch_failed_ ? std::to_string(good) + " of " + of + " · the rest stay on the Runtimes tab" : of});
@@ -2137,7 +2144,7 @@ void Simulation::runtime_batch_step() {
     if (state_.preparation_paused) {
         Notice notice{"runtime-batch", "Runtime kit update paused", "", false, kUntilItEnds, false,
                       std::to_string(done) + " of " + std::to_string(runtime_batch_total_) +
-                          (runtime_batch_total_ == 1 ? " game" : " games") + " · Resume all in Queue continues"};
+                          tr(" 个游戏") + tr(" · Resume all in Queue continues")};
         notice.progress = static_cast<float>(done) / static_cast<float>(runtime_batch_total_);
         push_notice(std::move(notice));
         UpdatePreparationQueue(runtime_queue_);
@@ -2166,7 +2173,7 @@ void Simulation::runtime_batch_step() {
     runtime_batch_sent_at_ = state_.clock_ticks;
     request_maintenance(runtime_batch_current_->first, runtime_batch_current_->second);
     Notice notice{"runtime-batch", "Updating to the new runtime kit", "", false, kUntilItEnds, false,
-                  std::to_string(done) + " of " + std::to_string(runtime_batch_total_) + (runtime_batch_total_ == 1 ? " game" : " games")};
+                  std::to_string(done) + " of " + games_count(runtime_batch_total_)};
     notice.progress = static_cast<float>(done) / static_cast<float>(runtime_batch_total_);
     push_notice(std::move(notice));
     UpdatePreparationQueue(runtime_queue_);
@@ -2635,17 +2642,17 @@ void Simulation::build_manage_games_view() {
         view_.subtitle = !manage_message_.empty() ? manage_message_ : "Saves and settings are kept · free up space on your drives";
     } else if (check.checking) {
         const auto names = update_check_names([](const StoreUpdateCheck& store) { return store.pending; });
-        view_.subtitle = check.total > 0 ? "Checking " + names + " · " + std::to_string(std::min(check.answered, check.total)) +
+        view_.subtitle = check.total > 0 ? tr("Checking ") + names + " · " + std::to_string(std::min(check.answered, check.total)) +
                                                " of " + std::to_string(check.total)
-                                         : "Checking " + names + "…";
+                                         : tr("Checking ") + names + "…";
     } else if (check.failed) {
         std::int64_t checked_at = 0;
         const auto names = update_check_names([](const StoreUpdateCheck& store) { return store.failed; }, &checked_at);
         const auto when = checked_at > 0 ? time_ago(now, checked_at) : std::string();
-        view_.subtitle = "Couldn't check " + names + (when.empty() ? std::string() : " · last checked " + when);
+        view_.subtitle = tr("Couldn't check ") + names + (when.empty() ? std::string() : " · last checked " + when);
     } else if (check.checked_at > 0) {
         const auto when = time_ago(now, check.checked_at);
-        view_.subtitle = (when.empty() ? std::string("Checked") : "Checked " + when) + " · only games with an update or new DLC";
+        view_.subtitle = (when.empty() ? std::string(tr("Checked")) : tr("Checked ") + when) + tr(" · only games with an update or new DLC");
     } else {
         view_.subtitle = "Not checked yet";
     }
@@ -2718,11 +2725,11 @@ void Simulation::build_manage_games_view() {
             const std::string where = volume ? " · " + volume->label : std::string();
             if (game_runtime && (game_runtime->maintenance == MaintenanceKind::UpdateRuntime || game_runtime->maintenance == MaintenanceKind::Repair) &&
                 !game_runtime->maintenance_running && !game_runtime->maintenance_ok && !game_runtime->maintenance_message.empty()) {
-                item.subtitle = "Failed: " + game_runtime->maintenance_message;
+                item.subtitle = tr("Failed: ") + game_runtime->maintenance_message;
                 item.tone = "problem";
             } else if (const auto refused = state_.preparation_queue.refused.find(id); refused != state_.preparation_queue.refused.end()) {
                 // Listed with the reason, and it can go again: some refusals pass, such as a game that was still closing.
-                item.subtitle = "Refused: " + refused->second;
+                item.subtitle = tr("Refused: ") + refused->second;
                 item.tone = "problem";
             } else {
                 item.subtitle = (game_runtime ? game_runtime->status : std::string()) + where;
@@ -2730,7 +2737,7 @@ void Simulation::build_manage_games_view() {
             }
         } else if (const auto* stopped = updates || moves ? nullptr : uninstall_stop(id)) {
             // Its uninstall stopped: the reason stays until it goes again or is dismissed in Queue.
-            item.subtitle = "Stopped: " + stopped->stopped;
+            item.subtitle = tr("Stopped: ") + stopped->stopped;
             item.tone = "problem";
         } else if (update != check.games.end()) {
             const auto& found = update->second;
@@ -2772,7 +2779,7 @@ void Simulation::build_manage_games_view() {
                              " didn't answer. Check for updates to try again.";
         } else if (check.checked_at == 0) {
             empty.title = "Not checked";
-            empty.subtitle = "Check for updates to ask " + update_check_names([](const StoreUpdateCheck&) { return true; }) +
+            empty.subtitle = tr("Check for updates to ask ") + update_check_names([](const StoreUpdateCheck&) { return true; }) +
                              " about your installed games.";
         } else {
             empty.title = "Up to date";
@@ -2826,7 +2833,7 @@ void Simulation::build_manage_games_view() {
             view_.footer += free_words;
         }
     }
-    view_.legends = {"Cross Select", "Square " + select_title,
+    view_.legends = {"Cross Select", std::string("Square ") + tr(select_title),
                      updates || runtimes ? "Triangle Update selected" : moves ? "Triangle Move selected" : "Triangle Uninstall selected",
                      "L1/R1 Switch tab", "Circle Close"};
 }
@@ -4622,7 +4629,7 @@ Simulation::UpdateCheck Simulation::update_check(GameId id) const {
     if (runtime != state_.runtime_games.end() &&
         (runtime->second.activity == TitleActivity::Running || runtime->second.play_status == "Playing" ||
          runtime->second.play_status == "Starting…")) {
-        check.reason = "Quit " + game->title + " first";
+        check.reason = tr("Quit ") + game->title + " first";
         return check;
     }
     check.allowed = true;
@@ -7314,6 +7321,47 @@ std::vector<const Game*> Simulation::visible_games() const {
     return filtered_games(state_);
 }
 
+
+namespace {
+
+// Draws what the view model hands the UI, so the catalog is consulted once, when the screen is
+// built, instead of at every draw call. Keys the catalog lacks (a game's name, a size) pass
+// through untouched.
+void translate_row(playden::homebrew::ViewRow &row) {
+    row.title = playden::homebrew::tr(row.title);
+    row.subtitle = playden::homebrew::tr(row.subtitle);
+    row.value = playden::homebrew::tr(row.value);
+    row.badge = playden::homebrew::tr(row.badge);
+    row.aside = playden::homebrew::tr(row.aside);
+    for (std::string &line : row.lines) line = playden::homebrew::tr(line);
+}
+
+void translate_view(playden::homebrew::ViewData &view) {
+    static int seen = 0;
+    if (seen < 3) {
+        ++seen;
+        std::fprintf(stderr, "[zh-model] lang=%s rows=%zu title=%s first=%s\n",
+                     playden::homebrew::i18n::selected().c_str(), view.rows.size(),
+                     playden::homebrew::tr(view.title).c_str(),
+                     view.rows.empty() ? "-" : playden::homebrew::tr(view.rows[0].title).c_str());
+    }
+    view.title = playden::homebrew::tr(view.title);
+    view.subtitle = playden::homebrew::tr(view.subtitle);
+    view.eyebrow = playden::homebrew::tr(view.eyebrow);
+    view.aside = playden::homebrew::tr(view.aside);
+    view.footer = playden::homebrew::tr(view.footer);
+    for (auto &row : view.rows) translate_row(row);
+    for (auto &row : view.tabs) translate_row(row);
+    for (auto &row : view.actions) translate_row(row);
+    for (auto &shelf : view.shelves) {
+        shelf.title = playden::homebrew::tr(shelf.title);
+        for (auto &row : shelf.items) translate_row(row);
+    }
+    for (std::string &legend : view.legends) legend = playden::homebrew::tr(legend);
+}
+
+}  // namespace
+
 void Simulation::rebuild_view() {
     if (!rebuilding_overlay_) {
         // GOG's sign-in dialog shows what web access and the account say now; one that left the screen some other way
@@ -7377,7 +7425,7 @@ void Simulation::rebuild_view() {
         if (state_.editor.purpose == "Search") view_.subtitle += " · " + std::to_string(visible_games().size()) + " results";
         if (state_.editor.purpose == "Search recipes") {
             const auto found = SearchRecipeGames(chooser_game_, state_.editor.value).size();
-            view_.subtitle += " · " + std::to_string(found) + (found == 1 ? " game" : " games") + " with recipes";
+            view_.subtitle += " · " + games_count(found) + " with recipes";
         }
         row("keyboard-done", RowKind::Action, "Done", "editor-done");
         row("keyboard-cancel", RowKind::Action, "Cancel", "editor-cancel");
@@ -7472,7 +7520,7 @@ void Simulation::rebuild_view() {
                 : "One base for the game's settings. Your changes stay when you switch to or from a community recipe; between presets they are cleared." + source;
             // The search: only games that have community recipes, by name; another game's recipe links that game.
             if (chooser_query_ && chooser_browse_)
-                view_.subtitle = "Recipes for " + recipe_game_label(*chooser_browse_) +
+                view_.subtitle = tr("Recipes for ") + recipe_game_label(*chooser_browse_) +
                                  ". Choosing one links that game: its recipes and updates show beside this game's own.";
             else if (chooser_query_)
                 view_.subtitle = "Games that have community recipes, by name. Choose one to see its recipes.";
@@ -7596,7 +7644,7 @@ void Simulation::rebuild_view() {
                 const auto* chosen = import_program_chosen_ ? import_candidate(import_programs_key_) : nullptr;
                 if (chosen && import_program_index_ < chosen->programs.size()) {
                     const auto& path = chosen->programs[import_program_index_].path;
-                    view_.subtitle = "Starts with " + path.substr(path.find_last_of('/') + 1) +
+                    view_.subtitle = tr("Starts with ") + path.substr(path.find_last_of('/') + 1) +
                                      ", which you can change in Game settings. " + kImportChoiceText;
                 } else {
                     view_.subtitle = kImportChoiceText;
@@ -7630,7 +7678,7 @@ void Simulation::rebuild_view() {
             if (draft.nothing_new)
                 view_.subtitle = name + " uses \u201c" + draft.vote_title + "\u201d without changes.";
             else if (draft.decision.kind == cm::ShareKind::kAskPlayer)
-                view_.subtitle = "Based on \u201c" + draft.base_title + "\u201d" + (draft.base_author.empty() ? "" : " by " + draft.base_author) + ".";
+                view_.subtitle = tr("Based on \u201c") + draft.base_title + "\u201d" + (draft.base_author.empty() ? "" : " by " + draft.base_author) + ".";
             else if (draft.decision.kind == cm::ShareKind::kUpdateOwn)
                 view_.subtitle = in_review ? "Your update to your recipe" + quoted + " is still in review."
                                            : "An update to your recipe" + quoted + ", sent for review.";
@@ -7654,7 +7702,7 @@ void Simulation::rebuild_view() {
             if (!draft.error.empty()) view_.subtitle = draft.error;
         } else if (modal.id == "vote-recipe" && vote_) {
             view_.eyebrow = "Community recipes";
-            view_.subtitle = "With the recipe \u201c" + vote_->recipe_title + "\u201d. Your vote helps other players pick.";
+            view_.subtitle = tr("With the recipe \u201c") + vote_->recipe_title + "\u201d. Your vote helps other players pick.";
             if (state_.recipe_votes == playden::RecipeVotesPreference::kUnset)
                 view_.subtitle += " A vote sends the recipe, your vote and reason, the runtime kit, firmware and Playden versions and a random "
                                   "sharing ID; no Steam ID or account name.";
@@ -7742,7 +7790,7 @@ void Simulation::rebuild_view() {
                 }
             }
             if (action_key == "runtime-prompt-update")
-                item.title = "Update " + std::to_string(runtime_prompt_games_) + (runtime_prompt_games_ == 1 ? " game" : " games");
+                item.title = tr("Update ") + games_count(runtime_prompt_games_);
             // The preparation sheet's own Cancel takes the game out of the queue; its last row only closes it.
             if ((modal.id == "prep-actions" || modal.id == "game-settings") && action_key == "cancel") item.title = "Close";
             if (modal.id == "game-settings-list" && action_key == "cancel") item.title = "Back";
@@ -7772,7 +7820,7 @@ void Simulation::rebuild_view() {
                     if (download_server_cancel_pending_) item.title = "Canceling test…";
                     else if (download_servers_.phase == "testing" && !download_servers_.servers.empty()) {
                         const auto index = std::min(download_servers_.testing_index, download_servers_.servers.size() - 1);
-                        item.title = "Testing " + download_servers_.servers[index].name + " (" + std::to_string(index + 1) +
+                        item.title = tr("Testing ") + download_servers_.servers[index].name + " (" + std::to_string(index + 1) +
                                      " of " + std::to_string(download_servers_.servers.size()) + ")…";
                     }
                     if (state_.account(Store::kSteam).authentication != AuthState::SignedIn || download_servers_.needs_sign_in)
@@ -7832,7 +7880,7 @@ void Simulation::rebuild_view() {
                     for (const auto& version : game->versions)
                         if (version.name == name) {
                             item.subtitle = version.description;
-                            if (version.time_updated > 0) item.value = "Built " + version_date(version.time_updated);
+                            if (version.time_updated > 0) item.value = tr("Built ") + version_date(version.time_updated);
                         }
                 const auto* chosen = install_version(id);
                 item.selected = chosen ? chosen->name == name : name == "public";
@@ -8209,7 +8257,7 @@ void Simulation::rebuild_view() {
                     if (preset.id == id) { item.title = preset.name; item.subtitle = preset.try_when; item.value = preset.short_hint; }
                 if (id == "playden-default")
                     if (const auto detected = rt::DetectedLabel(own_recipe(settings_game).detected); !detected.empty())
-                        item.subtitle = "Detected: " + detected;
+                        item.subtitle = tr("Detected: ") + detected;
                 item.selected = current.community.id.empty() && (id == "playden-default" ? current.preset_id.empty() : current.preset_id == id);
                 if (item.selected) item.badge = chooser_for_install_ ? "Selected" : settings_custom ? "Current · changed" : "Current";
             } else if (settings_ready && modal.id == "preset-picker" && action_key.rfind("mypreset-my-", 0) == 0) {
@@ -8222,7 +8270,7 @@ void Simulation::rebuild_view() {
                     const auto counts = MyPresetUseCounts();
                     std::size_t others = counts.count(id) ? counts.at(id) : 0;
                     if (settings_record != state_.game_settings.end() && settings_record->second.preset_id == id && others > 0) --others;
-                    if (others > 0) item.value = std::to_string(others) + (others == 1 ? " game" : " games");
+                    if (others > 0) item.value = games_count(others);
                 }
                 const auto current = chooser_current(settings_game);
                 item.selected = current.community.id.empty() && current.preset_id == id;
@@ -8340,12 +8388,12 @@ void Simulation::rebuild_view() {
                 if (modal.id == "button-mapping") item.subtitle.clear();  // the sheet title says it once
                 if (id == "graphics" && value.source == rt::ValueSource::kRecipe) {
                     const auto detected = rt::DetectedLabel(RecipeFor(settings_game).detected);
-                    if (!detected.empty()) item.subtitle = "Chosen from the game's files: " + detected + ".";
+                    if (!detected.empty()) item.subtitle = tr("Chosen from the game's files: ") + detected + ".";
                 }
                 if (id == "launch_option") {
                     item.value = settings_values.launch ? settings_values.launch->label : "Choose a program";
                     if (settings_values.launch && settings_values.launch->id == rt::kProgramEntryId)
-                        item.subtitle = "From the game folder: " + settings_values.launch->executable + ".";
+                        item.subtitle = tr("From the game folder: ") + settings_values.launch->executable + ".";
                     else if (rt::ProgramInsteadOfSteamDefault(RecipeFor(settings_game), settings_values.launch))
                         item.subtitle = "Found in the game's files: Steam's default program only starts the game.";
                     else if (!settings_values.launch) item.subtitle = "Pick the game's program from its folder.";
@@ -8465,7 +8513,7 @@ void Simulation::rebuild_view() {
                 item.action.clear();
                 item.enabled = false;
                 if (action_key == "summary-none") {
-                    item.title = "Every setting follows";
+                    item.title = tr("Every setting follows");
                     item.value = base_name(settings_game, base_of(settings_game));
                 } else {
                     for (const auto& line : summary())
@@ -8492,7 +8540,7 @@ void Simulation::rebuild_view() {
                 } else if (modal.setting_id.rfind("button.", 0) == 0) {
                     value = common_bindings()[index].first;
                     item.title = common_bindings()[index].second;
-                    if (index == 0) item.subtitle = "Use the preset or game binding: " + binding_label(inherited.value) + ".";
+                    if (index == 0) item.subtitle = tr("Use the preset or game binding: ") + binding_label(inherited.value) + ".";
                 } else {
                     const auto& choice = rt::FindSetting(modal.setting_id)->choices[index];
                     value = choice.value;
@@ -8527,7 +8575,7 @@ void Simulation::rebuild_view() {
             } else if (settings_ready && action_key == "update-my-preset") {
                 const auto* mine = settings_record == state_.game_settings.end()
                                        ? nullptr : rt::FindMyPreset(my_presets_, settings_record->second.preset_id);
-                item.title = "Update \u201c" + (mine ? mine->preset.name : std::string("my preset")) + "\u201d";
+                item.title = tr("Update \u201c") + (mine ? mine->preset.name : std::string("my preset")) + "\u201d";
                 item.subtitle = "Every game using it changes too.";
             } else if (modal.id == "mypreset-menu" && action_key == "my-preset-update") {
                 // The sheet is narrow: a short reason when it can't, and the Delete question says the rest.
@@ -8610,7 +8658,7 @@ void Simulation::rebuild_view() {
                 const auto* game = find_game(state_, settings_game);
                 const std::string title = game && !game->title.empty() ? game->title : "the game";
                 item.enabled = blocker.empty();
-                if (blocker == "Playing") item.subtitle = "Quit " + title + " to change its DLC.";
+                if (blocker == "Playing") item.subtitle = tr("Quit ") + title + " to change its DLC.";
                 else if (blocker == "In Queue") item.subtitle = "Wait for its job in Queue to finish.";
                 else if (!blocker.empty()) item.subtitle = blocker + ".";
                 else item.subtitle = "Install DLC you left out or bought later, or remove DLC to free space.";
@@ -8632,8 +8680,8 @@ void Simulation::rebuild_view() {
                                     (runtime_game->second.activity == TitleActivity::Unknown ||
                                      move_activity_asked_.contains(settings_game));
                 item.enabled = blocker.empty() && !asking && move_volumes().size() >= 2;
-                if (blocker.empty() && asking) item.subtitle = "Checking whether " + title + " is running…";
-                else if (blocker == "Playing") item.subtitle = "Quit " + title + " to move it.";
+                if (blocker.empty() && asking) item.subtitle = tr("Checking whether ") + title + " is running…";
+                else if (blocker == "Playing") item.subtitle = tr("Quit ") + title + " to move it.";
                 else if (blocker == "In Queue") item.subtitle = "Wait for its job in Queue to finish.";
                 else if (!blocker.empty()) item.subtitle = blocker + ".";
                 else if (!item.enabled) item.subtitle = "Connect another drive to move the game.";
@@ -8772,7 +8820,7 @@ void Simulation::rebuild_view() {
                         item.enabled = false;
                     } else if (const auto failure = import_failures_.find(action_key);
                                !candidate->imported.valid() && failure != import_failures_.end()) {
-                        item.subtitle = "Not added · " + failure->second;
+                        item.subtitle = tr("Not added · ") + failure->second;
                     }
                 }
             }
@@ -8826,7 +8874,7 @@ void Simulation::rebuild_view() {
                     item.title = kept_name(state_, kept);
                     item.value = format_bytes(kept.bytes);
                     // The console has no gmtime_r: the date is the log timestamp's day.
-                    if (kept.kept_at > 0) item.subtitle = "Kept " + playden::app::FormatLogTimestamp(kept.kept_at).substr(0, 10);
+                    if (kept.kept_at > 0) item.subtitle = tr("Kept ") + playden::app::FormatLogTimestamp(kept.kept_at).substr(0, 10);
                     item.selected = kept_selected_.contains(id);
                 }
             }
@@ -8989,7 +9037,7 @@ void Simulation::rebuild_view() {
                 } else if (action_key == "about-kit") {
                     item.value = kit.kit_id + (kit.version.empty() ? "" : " " + kit.version) + " · " + short_hash(kit.manifest_sha256);
                     if (kit.manifest_sha256 != kit.expected_manifest_sha256)
-                        item.subtitle = "This version of Playden expects " + short_hash(kit.expected_manifest_sha256);
+                        item.subtitle = tr("This version of Playden expects ") + short_hash(kit.expected_manifest_sha256);
                 } else {
                     item.value = "prospero-win " + kit.prospero_win_revision.substr(0, 7);
                     if (kit.source_dirty) item.subtitle = "Includes uncommitted changes";
@@ -9070,21 +9118,21 @@ void Simulation::rebuild_view() {
                     const auto found = std::find_if(state_.library.collections.begin(), state_.library.collections.end(), [&id](const Collection& value) { return value.id == id; });
                     if (found == state_.library.collections.end()) continue;
                     const auto count = found->members.size();
-                    const std::string games = std::to_string(count) + (count == 1 ? " game" : " games");
+                    const std::string games = games_count(count);
                     if (index == 0) {
                         item.kind = RowKind::Toggle;
                         item.title = found->name;
                         item.value = games;
                         item.selected = found->members.contains(state_.navigation.selected_game_id);
                     } else if (index == 1) {
-                        item.title = "Rename \u201c" + found->name + "\u201d\u2026";
+                        item.title = tr("Rename \u201c") + found->name + "\u201d\u2026";
                         item.value = games;
                     } else if (index == 2) {
-                        item.title = "Pin \u201c" + found->name + "\u201d on Home";
+                        item.title = tr("Pin \u201c") + found->name + "\u201d on Home";
                         item.selected = found->pinned;
                         item.value = found->pinned ? "On" : "Off";
                     } else {
-                        item.title = "Delete \u201c" + found->name + "\u201d\u2026";
+                        item.title = tr("Delete \u201c") + found->name + "\u201d\u2026";
                         item.dangerous = true;
                     }
                 }
@@ -9145,7 +9193,7 @@ void Simulation::rebuild_view() {
         view_.title = std::move(problem.title);
         view_.subtitle = std::move(problem.subtitle);
         if (problem.show_detail && !state_.root_access_detail.empty())
-            row("root-detail", RowKind::Status, "Startup error: " + state_.root_access_detail, "").enabled = false;
+            row("root-detail", RowKind::Status, tr("Startup error: ") + state_.root_access_detail, "").enabled = false;
         row("root-quit", RowKind::Action, "Quit to Home", "root-quit");
         view_.legends = {"Cross Quit to Home"};
     } else if (state_.navigation.route == Route::Startup && startup_undecided()) {
@@ -9288,7 +9336,7 @@ void Simulation::rebuild_view() {
         view_.title = "Library";
         const auto games = visible_games();
         view_.total_count = games.size();
-        view_.subtitle = std::to_string(games.size()) + " games";
+        view_.subtitle = games_count(games.size());
         if (state_.library_loading) view_.subtitle += live() ? " · Refreshing library…" : " · Refreshing fixture library…";
         else if (live() && state_.library_offline) view_.subtitle += " · Cached library";
         if (live() && !state_.account().error.empty()) view_.subtitle += " · " + state_.account().error;
@@ -9418,14 +9466,14 @@ void Simulation::rebuild_view() {
                 } else if (!installation->available) {
                     const auto* volume = find_volume(state_, installation->volume_id);
                     auto& status = row("details-installed", RowKind::Status, "Storage disconnected", "");
-                    status.subtitle = "Connect " + (volume ? volume->label : std::string("its storage")) + " to use this game";
+                    status.subtitle = tr("Connect ") + (volume ? volume->label : std::string("its storage")) + " to use this game";
                     status.enabled = false;
                 }
                 if (const auto also = state_.also_on_drives.find(game->id); installation->available && also != state_.also_on_drives.end()) {
                     const auto* here = find_volume(state_, installation->volume_id);
                     const auto* other = find_volume(state_, also->second);
                     auto& status = row("details-also-on", RowKind::Status, "On two drives", "");
-                    status.subtitle = "Playden uses the copy on " + (here ? here->label : std::string("this drive")) + ". Delete the one on " +
+                    status.subtitle = tr("Playden uses the copy on ") + (here ? here->label : std::string("this drive")) + ". Delete the one on " +
                                       (other ? other->label : std::string("the other drive")) + " so the PS5 can't mix them up.";
                     status.enabled = false;
                 }
@@ -9564,7 +9612,7 @@ void Simulation::rebuild_view() {
                 auto& install = row("details-install", RowKind::Action, "Install", "");
                 install.value = "…";  // narrower than any size, so the button keeps its width
                 install.enabled = false;
-                row("details-checking", RowKind::Status, "Checking " + std::string(Traits(game->id.store).name) + "…", "")
+                row("details-checking", RowKind::Status, tr("Checking ") + std::string(Traits(game->id.store).name) + "…", "")
                     .enabled = false;
             }
             // Saves kept when the game was uninstalled: Install brings them back.
@@ -9614,7 +9662,7 @@ void Simulation::rebuild_view() {
                 // Where it plays from, under the buttons.
                 for (const auto& candidate : state_.import_candidates)
                     if (candidate.imported == game->id && installation->available) {
-                        auto& folder = row("details-folder", RowKind::Status, "Plays from " + candidate.path, "");
+                        auto& folder = row("details-folder", RowKind::Status, tr("Plays from ") + candidate.path, "");
                         folder.enabled = false;
                     }
             } else if (installed) {
@@ -9752,7 +9800,7 @@ void Simulation::rebuild_view() {
                              how == "works" ? "Works" : how == "partial" ? "Partial" : how == "broken" ? "Broken"
                              : how == "refused" ? "Refused" : "Not listed", "");
             if (found && listed->second.reports > 0)
-                cell.value = "Confirmed by " + std::to_string(listed->second.reports) +
+                cell.value = tr("Confirmed by ") + std::to_string(listed->second.reports) +
                              (listed->second.reports == 1 ? " player" : " players");
             cell.enabled = false;
         }
@@ -9869,12 +9917,12 @@ void Simulation::rebuild_view() {
         const auto& job = state_.saves_job;
         if (job.kind != SavesJobKind::None) {
             const auto* current = find_game(state_, job.current);
-            view_.subtitle = std::string(job.stopping ? "Stopping after this game" : job.kind == SavesJobKind::SyncAll ? "Syncing" : "Checking") +
-                             " " + std::to_string(std::min(job.done + 1, job.total)) + " of " + std::to_string(job.total) +
-                             (job.kind == SavesJobKind::QuickCheck ? " games that may have changed" : "") +
+            view_.subtitle = std::string(job.stopping ? tr("Stopping after this game") : job.kind == SavesJobKind::SyncAll ? tr("Syncing") : tr("Checking")) +
+                             " " + std::to_string(std::min(job.done + 1, job.total)) + tr(" of ") + std::to_string(job.total) +
+                             (job.kind == SavesJobKind::QuickCheck ? tr(" games that may have changed") : "") +
                              (current ? " · " + current->title : std::string());
         } else {
-            view_.subtitle = std::to_string(all.size()) + (all.size() == 1 ? " game · " : " games · ") + save_size(total) + " of saves";
+            view_.subtitle = games_count(all.size()) + " · " + save_size(total) + tr(" of saves");
         }
         for (std::size_t index = 0; index < kSavesFilters.size(); ++index) {
             auto& chip = row("saves-filter-" + std::to_string(index), RowKind::Choice, kSavesFilters[index], "saves-filter");
@@ -9917,7 +9965,7 @@ void Simulation::rebuild_view() {
             const auto now = state_.clock_ticks;
             if (cloud && cloud->after_play) item.badge = "";
             else if (cloud && cloud->status == CloudStatus::Failed) item.badge = cloud->last_sync > 0 ? "Last sync " + time_ago(now, cloud->last_sync) : "";
-            else if (cloud && cloud->last_sync > 0) item.badge = "Synced " + time_ago(now, cloud->last_sync);
+            else if (cloud && cloud->last_sync > 0) item.badge = tr("Synced ") + time_ago(now, cloud->last_sync);
             else if (cloud && cloud->status == CloudStatus::Conflict && cloud->first_sync) item.badge = "Never synced";
         }
         if (view_.rows.size() == kSavesFilters.size() + 1)
@@ -9926,7 +9974,7 @@ void Simulation::rebuild_view() {
         if (job.kind == SavesJobKind::None && !saves_awaiting_account().empty())
             view_.legends.insert(view_.legends.begin() + 2, "Square Upload all");
     } else if (state_.navigation.route == Route::Friends) {
-        view_.title = "Friends";
+        view_.title = tr("Friends");
         static constexpr std::array<const char*, 3> sections = {"Online", "In my games", "All"};
         auto& section = state_.navigation.friends_filter;
         section = std::clamp(section, 0, 2);
@@ -9979,7 +10027,7 @@ void Simulation::rebuild_view() {
         } else if (focused != view_.rows.end() && focused->kind == RowKind::Choice) {
             view_.legends.push_back("Cross Select");
         }
-        view_.legends.push_back(state_.steam_invisible ? "Triangle Appear online" : "Triangle Appear invisible");
+        view_.legends.push_back(state_.steam_invisible ? std::string("Triangle ") + tr("Appear online") : std::string("Triangle ") + tr("Appear invisible"));
         view_.legends.push_back("Circle Back");
     } else if (state_.navigation.route == Route::SaveDetails) {
         const auto id = state_.navigation.save_id;
@@ -10129,7 +10177,7 @@ void Simulation::rebuild_view() {
             const auto updates = manage_list(ManageTab::Updates);
             const auto all = update_check_names([](const StoreUpdateCheck&) { return true; });
             const bool several = check.stores.size() > 1;
-            item.subtitle = check.checked_at > 0 ? (when.empty() ? std::string("Checked") : "Checked " + when)
+            item.subtitle = check.checked_at > 0 ? (when.empty() ? std::string(tr("Checked")) : tr("Checked ") + when)
                                                  : all + (several ? " are" : " is") + " checked once a day when you open it";
             if (state_.installations.empty()) {
                 item.kind = RowKind::Status; item.action.clear(); item.enabled = false; item.value = "None";
@@ -10137,7 +10185,7 @@ void Simulation::rebuild_view() {
             } else if (!check.loaded) {
                 item.value.clear();
             } else if (check.checking) {
-                item.value = check.total > 0 ? "Checking " + std::to_string(std::min(check.answered, check.total)) + " of " +
+                item.value = check.total > 0 ? tr("Checking ") + std::to_string(std::min(check.answered, check.total)) + " of " +
                                                    std::to_string(check.total) + "…"
                                              : "Checking…";
             } else if (check.failed) {
@@ -10262,14 +10310,14 @@ void Simulation::rebuild_view() {
             } else if (shown.state == "on") {
                 toggle.subtitle = "Playden's logs and game files on the local network while Playden is open.";
                 auto& address = add("settings-web-address", RowKind::Status, "Address unknown", "");
-                address.value = "port " + std::to_string(shown.port);
+                address.value = tr("port ") + std::to_string(shown.port);
                 address.subtitle = "Open the console's IP address shown in the PS5's network settings, port " +
                                    std::to_string(shown.port) + ", on a phone or computer on the same network.";
                 address.enabled = false;  // nothing to do on it: focus stays on the switch
             } else if (shown.state == "failed") {
                 toggle.subtitle = "Playden's logs and game files on the local network while Playden is open.";
                 auto& problem = add("settings-web-problem", RowKind::Status, "Web access is not open", "");
-                problem.subtitle = "Web access could not start: " + shown.error + ". Turn it off and on to try again.";
+                problem.subtitle = tr("Web access could not start: ") + shown.error + ". Turn it off and on to try again.";
                 problem.enabled = false;  // nothing to do on it: focus stays on the switch
             } else {
                 toggle.subtitle = "Starting…";
@@ -10297,7 +10345,7 @@ void Simulation::rebuild_view() {
                 item.subtitle = "Looking for a newer Playden on GitHub";
             } else if (update.phase == "available") {
                 item.value = update.available + " available";
-                item.subtitle = "Download " + format_bytes(update.download_bytes);
+                item.subtitle = tr("Download ") + format_bytes(update.download_bytes);
             } else if (update.phase == "downloading" || update.phase == "unpacking") {
                 item.value = update.total ? std::to_string(update.done * 100 / update.total) + "%" : "Working…";
                 item.subtitle = update.phase == "downloading" ? "Downloading Playden " + update.available
@@ -10324,7 +10372,7 @@ void Simulation::rebuild_view() {
         }
         if (live() && !state_.self_update.current_notes_url.empty()) {
             auto& notes = add("settings-release-notes", RowKind::Action, "Release notes", "self-update-notes");
-            notes.subtitle = "What changed in Playden " + version_label(state_.self_update.current);
+            notes.subtitle = tr("What changed in Playden ") + version_label(state_.self_update.current);
         }
         if (kOfferGoBack && live() && !state_.self_update.previous.empty() &&
             state_.self_update.phase != "downloading" && state_.self_update.phase != "unpacking") {
@@ -10564,6 +10612,8 @@ void Simulation::rebuild_view() {
         settings_focus_index_ = view_.focused_row;
         settings_focus_section_ = view_.rows[static_cast<std::size_t>(view_.focused_row)].section;
     }
+    // Before the screen under a sheet is copied, so both copies are translated.
+    translate_view(view_);
     if (!has_overlay) route_view_ = view_;
 }
 
@@ -11485,7 +11535,7 @@ void Simulation::UpdateSavesJob(LiveSavesJob job) {
             need += facts.needs_you ? 1 : 0;
         }
         push_notice({"saves-sync-all", "Sync all finished", "", false, kLiveNoticeSeconds, false,
-                     std::to_string(in_sync) + (in_sync == 1 ? " game" : " games") + " in sync" +
+                     games_count(in_sync) + " in sync" +
                          (need > 0 ? " · " + std::to_string(need) + " need you" : std::string())});
     }
     rebuild_view();
@@ -13243,7 +13293,7 @@ void Simulation::activate() {
         }
     } else if (action_name == "my-preset-delete") {
         if (const auto* mine = rt::FindMyPreset(my_presets_, my_preset_menu_id_)) {
-            ModalEntry confirmation{"confirmation", "Delete \u201c" + mine->preset.name + "\u201d?", action_name,
+            ModalEntry confirmation{"confirmation", tr("Delete \u201c") + mine->preset.name + "\u201d?", action_name,
                                     {"cancel", "my-preset-delete-confirm"}, 0, true};
             confirmation.body = "Games using it go back to Playden default and keep their own changes.";
             open_modal(std::move(confirmation));
@@ -16081,7 +16131,7 @@ void Simulation::refresh_gog_sign_in() {
         dialog->link_caption = account.challenge_url.substr(0, account.challenge_url.find('#'));
         actions = {"gog-stay", "gog-back"};
     } else if (shown.state == "failed") {
-        dialog->body = "Web access could not start: " + shown.error + ". Turn it off and on in Settings to try again.";
+        dialog->body = tr("Web access could not start: ") + shown.error + ". Turn it off and on in Settings to try again.";
         actions = {"gog-stay", "gog-back"};
     } else {
         dialog->body = "Playden can't find its network address. Trying again…";
@@ -16522,18 +16572,18 @@ bool Simulation::game_closed(GameId id, std::string* reason) const {
     const std::string title = game ? game->title : "the game";
     if (!live()) {
         const bool closed = state_.session == SessionState::Idle || state_.session_game_id != id;
-        if (!closed && reason) *reason = "Quit " + title + " to change this.";
+        if (!closed && reason) *reason = tr("Quit ") + title + " to change this.";
         return closed;
     }
     const auto found = state_.runtime_games.find(id);
     if (found == state_.runtime_games.end()) { if (reason) *reason = "Prepare the game first."; return false; }
     const auto& value = found->second;
     if (value.activity == TitleActivity::Running || value.play_status == "Playing" || value.play_status == "Starting…") {
-        if (reason) *reason = "Quit " + title + " to change this.";
+        if (reason) *reason = tr("Quit ") + title + " to change this.";
         return false;
     }
     if (value.activity == TitleActivity::Unknown) {
-        if (reason) *reason = "Checking whether " + title + " is running…";
+        if (reason) *reason = tr("Checking whether ") + title + " is running…";
         return false;
     }
     return true;

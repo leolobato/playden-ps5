@@ -1,4 +1,5 @@
 #include "homebrew/controller.hpp"
+#include "homebrew/i18n.hpp"
 #include "homebrew/program_icon.hpp"
 #include "runtime/kit_version.h"
 #include "diagnostics/redaction.h"
@@ -341,7 +342,7 @@ void Controller::AdvanceClear() {
   } else {
     phase_=Phase::Idle;begin_after_clear_=false;
     Update(model_.state().account().id.empty()?AuthState::Failed:established_auth_,
-           "Sign-out failed. Your saved library remains. Retry sign-out in Settings.");
+           tr("Sign-out failed. Your saved library remains. Retry sign-out in Settings."));
   }
 }
 void Controller::BeginOrganizationClear() {
@@ -356,7 +357,7 @@ void Controller::AdvanceOrganizationClear() {
   else {
     phase_=Phase::Idle;begin_after_clear_=false;
     Update(model_.state().account().id.empty()?AuthState::Failed:established_auth_,
-           "Sign-out failed. Your saved organization remains. Retry sign-out in Settings.");
+           tr("Sign-out failed. Your saved organization remains. Retry sign-out in Settings."));
   }
 }
 void Controller::Tick() {
@@ -417,7 +418,7 @@ void Controller::Tick() {
           if(library_) {
             if(established_auth_==AuthState::Offline || library_->NeedsRenewal()) Restore();
             else library_->Refresh();
-          } else model_.UpdateLibrary({{},false,"Library sync is unavailable. Try again later.",
+          } else model_.UpdateLibrary({{},false,tr("Library sync is unavailable. Try again later."),
                                         model_.state().library_offline,model_.state().account().cache_available,{}});
         } else if (library_ && model_.state().account().id.empty()) {
           // Without Steam, the other stores' libraries still refresh.
@@ -808,7 +809,7 @@ void Controller::TickCloud() {
       if (const auto stopped = uninstalls_.CloudRefused(id); stopped.kind == UninstallAction::Kind::kStop)
         StopUninstall(id, stopped.reason);
       if (sync_before_play_.erase(id)) {
-        play_notes_[id] = "The game's PS5 title may still be running. Close it, then press Play.";
+        play_notes_[id] = tr("The game's PS5 title may still be running. Close it, then press Play.");
         ++play_notes_revision_;
       }
     }
@@ -963,11 +964,11 @@ void Controller::TickCloud() {
       case CloudStatus::Conflict:
       case CloudStatus::NeedsAccount:
         // Like Steam's "Play anyway": a second Play starts on this console's saves and changes nothing in the Cloud.
-        play_notes_[id] = "Choose which Cloud saves to keep, or press Play again to start without syncing.";
+        play_notes_[id] = tr("Choose which Cloud saves to keep, or press Play again to start without syncing.");
         play_without_sync_.insert(id);
         break;
       default:
-        play_notes_[id] = "Cloud saves could not be checked. Press Play again to start without syncing.";
+        play_notes_[id] = tr("Cloud saves could not be checked. Press Play again to start without syncing.");
         play_without_sync_.insert(id);
         break;
     }
@@ -1250,7 +1251,7 @@ void Controller::TickRuntime() {
               !view->title_icon_current);
     };
     // A record left before Ready by an earlier session, with no journal to resume, is what the
-    // game page calls "Not prepared": Play prepares it too, instead of asking the launcher.
+    // game page calls tr("Not prepared"): Play prepares it too, instead of asking the launcher.
     const auto unprepared = [](const RuntimeInstallView* view) {
       using runtime::PreparationState;
       return !view || ((view->state == PreparationState::kDownloaded || view->state == PreparationState::kPreparing ||
@@ -1274,7 +1275,7 @@ void Controller::TickRuntime() {
           !play_after_prepare_.count(id)) {
         auto& pending = play_after_prepare_[id];
         if (const auto* view = record_of(id); moved(view))
-          pending.words = "Preparing the game on its new drive…";
+          pending.words = tr("Preparing the game on its new drive…");
         else if (needs_work(view)) {
           pending.words = !view->title_current ? "Updating runtime kit…"
                           : runtime::AdmissionNeedsRepair(view->admission) ? "Repairing game setup…"
@@ -1374,14 +1375,14 @@ void Controller::TickRuntime() {
           finish(false, failure->second);
           continue;
         }
-        if (record_of(id)) { finish(false, "The PS5 title could not be removed."); continue; }
+        if (record_of(id)) { finish(false, tr("The PS5 title could not be removed.")); continue; }
         pending.prepare_submitted = true;
         pending.refusal = refusal_of(id);
         pending.submitted_at = std::chrono::steady_clock::now();
         if (!HoldForDropFolder(id, DropFolderNext::kRecreate)) {
           SubmitPrepare(id);
         } else if (!drop_folder_opens_.count(id)) {
-          finish(false, "Playden is busy. Try again in a moment.");
+          finish(false, tr("Playden is busy. Try again in a moment."));
           continue;
         }
         ++it;
@@ -1395,10 +1396,10 @@ void Controller::TickRuntime() {
       if (!pending.seen_preparing && !unseen_too_long) { ++it; continue; }
       const auto* record = record_of(id);
       if (record && (ready(record) || record->awaiting_registration))
-        finish(true, record->awaiting_registration ? "Bottle recreated. The PS5 adds the game to Home when Playden quits."
-                                                   : "Bottle recreated with the saves and settings brought back.");
+        finish(true, record->awaiting_registration ? tr("Bottle recreated. The PS5 adds the game to Home when Playden quits.")
+                                                   : tr("Bottle recreated with the saves and settings brought back."));
       else
-        finish(false, refusal_of(id).empty() ? "The game could not be prepared again; press Prepare on the game page."
+        finish(false, refusal_of(id).empty() ? tr("The game could not be prepared again; press Prepare on the game page.")
                                               : refusal_of(id));
     }
     // Update runtime: done when its preparation ends, with the title on the kit's runtime or with the refusal.
@@ -1453,11 +1454,11 @@ void Controller::TickRuntime() {
           unseen_too_long) {
         if (game_roots_.count(id) && !record_of(id)) {
           const auto refusal = refusal_of(id);
-          model_.NotifyPlayStopped(id, refusal.empty() ? "The game could not be prepared." : refusal);
+          model_.NotifyPlayStopped(id, refusal.empty() ? tr("The game could not be prepared.") : refusal);
         } else if (const auto* record = record_of(id); record && !record->awaiting_registration) {
           model_.NotifyPlayStopped(id, !refusal_of(id).empty() ? refusal_of(id)
                                        : !record->failure.empty() ? record->failure
-                                                                  : "The game could not be prepared.");
+                                                                  : tr("The game could not be prepared."));
         }
         it = play_after_prepare_.erase(it);
         ++play_notes_revision_;
@@ -1473,7 +1474,7 @@ void Controller::TickRuntime() {
     const bool cloud_known = CloudCapable(id) && game_roots_.count(id) && !saves_root_.empty() && model_.state().cloud_saves_auto;
     if (cloud_known && !play_without_sync_.erase(id)) {
       sync_before_play_[id] = false;
-      play_notes_[id] = "Checking Cloud saves before starting…";
+      play_notes_[id] = tr("Checking Cloud saves before starting…");
       ++play_notes_revision_;
       continue;
     }
@@ -1602,7 +1603,7 @@ void Controller::TickRuntime() {
   std::vector<LiveRuntimeGame> games;
   for (const auto& [id, root] : game_roots_) {
     LiveRuntimeGame game; game.game_id = id;
-    // The Steam app ID its Steamworks emulator was given, for Game settings' "Steam app ID".
+    // The Steam app ID its Steamworks emulator was given, for Game settings' tr("Steam app ID").
     if (const auto steam_app = snapshot.steamworks_apps.find(NumberIn(snapshot, id)); steam_app != snapshot.steamworks_apps.end()) {
       game.steam_app_id = steam_app->second.app_id;
       game.steam_app_from_game_file = steam_app->second.source == SteamworksAppView::Source::kGameFile;
@@ -1622,58 +1623,58 @@ void Controller::TickRuntime() {
         failure != snapshot.recipe_switch_failures.end())
       game.recipe_switch_failure = failure->second;
     if (snapshot.status == RuntimeHostStatus::kStarting) {
-      game.status = "Checking";
+      game.status = tr("Checking");
     } else if (snapshot.status != RuntimeHostStatus::kReady) {
-      game.status = "Unavailable"; game.detail = snapshot.reason;
+      game.status = tr("Unavailable"); game.detail = snapshot.reason;
     } else if (IsNumber(snapshot, snapshot.removing_app, id)) {
-      game.status = "Removing"; game.detail = "Removing the game's PS5 title";
+      game.status = tr("Removing"); game.detail = tr("Removing the game's PS5 title");
     } else if (IsNumber(snapshot, snapshot.preparing_app, id) && record && record->moving) {
       // Prepare removes the title made for the game's old folder (installed again on another drive).
-      game.status = "Preparing"; game.detail = "Removing the PS5 title made for the game's old drive";
+      game.status = tr("Preparing"); game.detail = tr("Removing the PS5 title made for the game's old drive");
     } else if (record && record->moving) {
       // That removal stopped part way: Play or Prepare finishes the move, never an uninstall of the new download.
-      game.status = "Needs repair"; game.can_prepare = usable; game.moving = true;
-      game.detail = "Play finishes moving the PS5 title to the game's new drive.";
+      game.status = tr("Needs repair"); game.can_prepare = usable; game.moving = true;
+      game.detail = tr("Play finishes moving the PS5 title to the game's new drive.");
     } else if (record && record->state == runtime::PreparationState::kRemoving) {
-      game.status = "Removal incomplete"; game.can_prepare = true;
-      game.detail = record->failure.empty() ? "Retry finishes removing the PS5 title, then uninstalls the game."
+      game.status = tr("Removal incomplete"); game.can_prepare = true;
+      game.detail = record->failure.empty() ? tr("Retry finishes removing the PS5 title, then uninstalls the game.")
                                             : record->failure;
     } else if (IsNumber(snapshot, snapshot.preparing_app, id)) {
-      game.status = "Preparing"; game.detail = PreparationProgressWords(record != nullptr, record ? record->step : std::string{});
+      game.status = tr("Preparing"); game.detail = PreparationProgressWords(record != nullptr, record ? record->step : std::string{});
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
                !record->title_current) {
       game.status = "Runtime kit update available"; game.can_prepare = usable;
-      game.detail = "Play updates the runtime kit first; the game and its saves stay as they are";
+      game.detail = tr("Play updates the runtime kit first; the game and its saves stay as they are");
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending &&
                runtime::AdmissionNeedsRepair(record->admission)) {
-      game.status = "Needs repair"; game.can_prepare = usable;
+      game.status = tr("Needs repair"); game.can_prepare = usable;
       game.detail = "Play repairs the game's setup first (" + record->admission + ")";
     } else if (record && record->state == runtime::PreparationState::kReady && !record->recovery_pending) {
-      game.status = "Ready"; game.detail = record->title_id; game.ready = true;
+      game.status = tr("Ready"); game.detail = record->title_id; game.ready = true;
     } else if (record && record->awaiting_registration) {
       // Staged and submitted: ShadowMountPlus registers it as soon as Playden quits,
       // so the game is ready to play from Home. Checking only asks the console.
-      game.status = "Waiting for the PS5"; game.awaiting_registration = true;
-      game.detail = "Waiting for the PS5, which adds the game to Home when Playden quits";
+      game.status = tr("Waiting for the PS5"); game.awaiting_registration = true;
+      game.detail = tr("Waiting for the PS5, which adds the game to Home when Playden quits");
       game.can_prepare = usable;
     } else if (record && record->recovery_pending &&
                (record->step == "register" || record->step == "await-native" || record->step == "query-native")) {
       // The registration was submitted but not confirmed. Checking only asks the
       // console; an uncertain registration is never submitted again.
-      game.status = "Registration pending";
+      game.status = tr("Registration pending");
       game.detail = "The console has not confirmed " + record->title_id +
                     " yet. Check again only asks the console; Playden never registers a title twice.";
       game.can_prepare = usable;
     } else if (record && record->recovery_pending) {
-      game.status = "Needs recovery";
-      game.detail = record->failure.empty() ? "Resume continues the saved preparation." : record->failure;
+      game.status = tr("Needs recovery");
+      game.detail = record->failure.empty() ? tr("Resume continues the saved preparation.") : record->failure;
       game.can_prepare = usable;
     } else if (record && (record->state == runtime::PreparationState::kFailed ||
                           record->state == runtime::PreparationState::kUnavailable)) {
-      game.status = "Failed"; game.detail = record->failure; game.can_prepare = usable;
+      game.status = tr("Failed"); game.detail = record->failure; game.can_prepare = usable;
     } else {
-      game.status = usable ? "Not prepared" : "No runtime kit";
-      game.detail = usable ? "Play prepares it: a private bottle and the game's own PS5 title" : snapshot.kit_reason;
+      game.status = usable ? tr("Not prepared") : "No runtime kit";
+      game.detail = usable ? tr("Play prepares it: a private bottle and the game's own PS5 title") : snapshot.kit_reason;
       game.can_prepare = usable;
     }
     // Preparation and its recovery checks require the kit. Keep actions that
@@ -1695,13 +1696,13 @@ void Controller::TickRuntime() {
     if (launching) {
       using runtime::LaunchState;
       switch (snapshot.launch->state) {
-        case LaunchState::kWaitingForCloud: game.play_status = "Waiting for Cloud"; break;
+        case LaunchState::kWaitingForCloud: game.play_status = tr("Waiting for Cloud"); break;
         case LaunchState::kReadyToHandoff:
-        case LaunchState::kLaunching: game.play_status = "Starting…"; break;
-        case LaunchState::kRunning: game.play_status = "Playing"; break;
-        case LaunchState::kExited: game.play_detail = "The last session ended."; break;
+        case LaunchState::kLaunching: game.play_status = tr("Starting…"); break;
+        case LaunchState::kRunning: game.play_status = tr("Playing"); break;
+        case LaunchState::kExited: game.play_detail = tr("The last session ended."); break;
         case LaunchState::kFailed:
-          game.play_detail = snapshot.launch->message.empty() ? "The game could not start."
+          game.play_detail = snapshot.launch->message.empty() ? tr("The game could not start.")
                                                               : "Could not start: " + snapshot.launch->message;
           break;
         case LaunchState::kIdle: break;
@@ -1732,7 +1733,7 @@ void Controller::TickRuntime() {
     game.can_play = game.ready && !busy && !IsNumber(snapshot, snapshot.preparing_app, id) && !cloud_busy_.count(id) &&
                     play_queued_.empty() && !sync_before_play_.count(id);
     if (const auto note = play_notes_.find(id); note != play_notes_.end() && !launching) game.play_detail = note->second;
-    if (sync_before_play_.count(id)) game.play_status = "Checking saves…";
+    if (sync_before_play_.count(id)) game.play_status = tr("Checking saves…");
     if (const auto physx = snapshot.physx_needed.find(NumberIn(snapshot, id)); physx != snapshot.physx_needed.end())
       game.physx_needed = physx->second;
     // Play's own work before the launch (a game moved in 0.6 is republished first).
@@ -1749,7 +1750,7 @@ void Controller::TickRuntime() {
     }
     // A retry is in flight: do not republish its previous refusal as a new outcome.
     if (play_queued_.count(id) || sync_before_play_.count(id)) game.play_detail.clear();
-    if (game.ready && cloud_busy_.count(id) && game.play_detail.empty()) game.play_detail = "Waiting for Cloud saves to finish.";
+    if (game.ready && cloud_busy_.count(id) && game.play_detail.empty()) game.play_detail = tr("Waiting for Cloud saves to finish.");
     if (snapshot.work_progress && (IsNumber(snapshot, snapshot.preparing_app, id) || IsNumber(snapshot, snapshot.removing_app, id) ||
                                    !game.play_work.empty()))
       game.progress = snapshot.work_progress;
@@ -1904,15 +1905,15 @@ std::string Controller::UninstallStatus(GameId id) const {
   const auto step = uninstalls_.Step(id);
   if (!step) return {};
   // Only the uninstalls at work say what they do; the others wait their turn.
-  if (!uninstalls_.Started(id, files_deleting_)) return "Waiting to uninstall";
+  if (!uninstalls_.Started(id, files_deleting_)) return tr("Waiting to uninstall");
   switch (*step) {
-    case UninstallStep::kSync: return "Syncing saves…";
-    case UninstallStep::kRemoveTitle: return "Removing PS5 title…";
+    case UninstallStep::kSync: return tr("Syncing saves…");
+    case UninstallStep::kRemoveTitle: return tr("Removing PS5 title…");
     case UninstallStep::kRemoveDownload: break;
   }
   // An imported game played from its drive leaves the library; its files stay.
   const auto* location = LocationOf(id);
-  return location && !location->managed() ? "Removing from Playden…" : "Deleting files…";
+  return location && !location->managed() ? tr("Removing from Playden…") : tr("Deleting files…");
 }
 void Controller::TickUninstalls() {
   if (!runtime_) return;
@@ -1971,7 +1972,7 @@ void Controller::TickUninstalls() {
               import_requests_[number] = {ImportRequestKind::Remove, id};
             } else {
               uninstalls_.Abandon(id);
-              StopUninstall(id, "Playden could not take the game out of the library now. Uninstall again to try again.");
+              StopUninstall(id, tr("Playden could not take the game out of the library now. Uninstall again to try again."));
             }
           }
         } else if (installs_) {
@@ -2093,7 +2094,7 @@ void Controller::TickImports() {
         if (std::any_of(snapshot->games.begin(), snapshot->games.end(),
                         [&id](const stores::local::ImportEntry& entry) { return GameId::Local(entry.id) == id; })) {
           uninstalls_.Abandon(id);
-          StopUninstall(id, "Playden could not take the game out of the library. Uninstall again to try again.");
+          StopUninstall(id, tr("Playden could not take the game out of the library. Uninstall again to try again."));
         }
         it = import_requests_.erase(it);
         continue;
@@ -2188,7 +2189,7 @@ bool Controller::HoldForDropFolder(GameId id, DropFolderNext next) {
   if (!open.request) {
     // The Local store is busy: the caller stops (a Recreate bottle loop finishes its own entry).
     drop_folder_opens_.erase(id);
-    if (asked) model_.NotifyPlayStopped(id, "Playden is busy. Press Play again in a moment.");
+    if (asked) model_.NotifyPlayStopped(id, tr("Playden is busy. Press Play again in a moment."));
     return true;
   }
   switch (next) {
@@ -2198,7 +2199,7 @@ bool Controller::HoldForDropFolder(GameId id, DropFolderNext next) {
     case DropFolderNext::kRegistrationCheck: open.registration_check = true; break;
   }
   if (asked) {
-    play_notes_[id] = "Opening the game's files…";
+    play_notes_[id] = tr("Opening the game's files…");
     ++play_notes_revision_;
   }
   return true;
@@ -2217,7 +2218,7 @@ void Controller::ReleaseDropFolderOpens(std::vector<GameId>& plays, std::vector<
     const auto& open = it->second;
     if (play_notes_.erase(id)) ++play_notes_revision_;
     if (timed_out || !outcome->ok) {
-      const auto message = timed_out ? std::string("Playden couldn't open the game's folder in time.") : outcome->message;
+      const auto message = timed_out ? std::string(tr("Playden couldn't open the game's folder in time.")) : outcome->message;
       if (open.play || open.prepare) model_.NotifyPlayStopped(id, message);
       if (open.recreate) {
         recreate_results_[id] = {false, message};
@@ -3086,11 +3087,11 @@ void Controller::SubmitPrepare(GameId id, bool announce) {
   if (const auto folder = steam_install_dirs_.find(id); steam && folder != steam_install_dirs_.end())
     request.steam_install_dir = folder->second;
   if (!steam) {
-    if (!from_record) request.launch_reason = "Choose the program that starts this game in Game settings.";
+    if (!from_record) request.launch_reason = tr("Choose the program that starts this game in Game settings.");
   } else if (const auto reason = launch_options_reason_.find(id); reason != launch_options_reason_.end()) {
     request.launch_reason = "Playden could not read how to start this game from Steam: " + reason->second;
   } else if (!launch_options_.count(id)) {
-    request.launch_reason = "Sign in to Steam so Playden can read how to start this game.";
+    request.launch_reason = tr("Sign in to Steam so Playden can read how to start this game.");
   }
   // After a failed answer, ask Steam again so a later Prepare can use the options.
   if (auto* details = Details(id.store); steam && details && !launch_options_.count(id))
@@ -3392,7 +3393,7 @@ void Controller::Apply(const steam::SteamEvent& event) {
       update.authentication = established_auth_;
       update.id = std::to_string(event.steam_id); update.display_name = event.account_name;
       update.clear_library = model_.state().account().id!=update.id;
-      if(!library_) update.error = "Library sync is unavailable. Try again later.";
+      if(!library_) update.error = tr("Library sync is unavailable. Try again later.");
       if (signed_in) update.signed_in_with_password = password_sign_in_;
       model_.UpdateAccount(std::move(update));
       if(persistence_) persistence_->Activate(event.steam_id);
@@ -3450,24 +3451,24 @@ void Controller::Apply(const steam::SteamEvent& event) {
           if (!volumes.empty()) space = steam::QueryVolumeSpace(volumes.front().games_root, steam::kConsoleSystemReserve);
         }
         if (space && space->free_bytes == 0)
-          Update(AuthState::Failed, "Playden can't save your sign-in. Uninstall games to free up space; it signs in again on its own.",
+          Update(AuthState::Failed, tr("Playden can't save your sign-in. Uninstall games to free up space; it signs in again on its own."),
                  false, {}, SignInStep::Qr, nullptr, true, true);
         else
-          Update(AuthState::Failed, "Account storage is unavailable. Retrying your saved sign-in…", false, {}, SignInStep::Qr,
+          Update(AuthState::Failed, tr("Account storage is unavailable. Retrying your saved sign-in…"), false, {}, SignInStep::Qr,
                  nullptr, false, true);
         break;
       }
       retry_saved_session_ = false;
       if(!clearing) { established_auth_=AuthState::SignedOut;if(library_)library_->Reset();if(persistence_)persistence_->Reset(); }
       if (clearing) Update(model_.state().account().id.empty() ? AuthState::Failed : established_auth_,
-                           "Sign-out failed. Your saved account remains. Retry sign-out in Settings.");
+                           tr("Sign-out failed. Your saved account remains. Retry sign-out in Settings."));
       else if (restoring && event.error == steam::AuthError::kNoSession) Update(AuthState::SignedOut,{},true);
       else if (restoring && (event.error == steam::AuthError::kRejected || event.error == steam::AuthError::kCredentialsRevoked)) {
         // Steam no longer accepts the saved session: show a new QR code right away
         // instead of a failure the player can only retry. With another store's games to play,
         // Playden stays on Home and says so; Sign in is in Settings.
         if (model_.HasGamesBeyondSteam()) {
-          Update(AuthState::SignedOut,"Steam ended your saved sign-in. Sign in again from Settings.",true,{},
+          Update(AuthState::SignedOut,tr("Steam ended your saved sign-in. Sign in again from Settings."),true,{},
                  SignInStep::Qr,nullptr,false,true);
         } else {
           Update(AuthState::SignedOut,{},true);

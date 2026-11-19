@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "homebrew/render.hpp"
+#include "homebrew/i18n.hpp"
 #include "homebrew/artwork_backend.hpp"
 #include "homebrew/program_icon.hpp"
 #include "homebrew/simulation.hpp"
@@ -432,6 +433,9 @@ int main(int argc, char** argv) {
 
     const auto mode = options->simulation ? playden::homebrew::ModelMode::Simulation
                                           : playden::homebrew::ModelMode::Live;
+    // Before the view model builds its first screen: what it hands the UI is translated when it
+    // is built, not when it is drawn.
+    playden::homebrew::i18n::initialise(PLAYDEN_HOMEBREW_ASSETS_DIR);
     playden::homebrew::Simulation simulation(
         options->simulation ? std::filesystem::path(PLAYDEN_HOMEBREW_FIXTURES_DIR)
                             : std::filesystem::path{},

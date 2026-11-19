@@ -1,6 +1,8 @@
 // ps5.cpp - Direct Hui comparison lifecycle and controller adapter.
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
+#include "homebrew/i18n.hpp"
+#include "homebrew/json.hpp"
 #include "homebrew/render.hpp"
 #include "homebrew/artwork_backend.hpp"
 #include "homebrew/simulation.hpp"
@@ -222,6 +224,7 @@ void show_root_access_missing(hui::ps5::Display& display, const playden::ps5::Na
     const char* what = access.granted ? "runtime data unusable after the grant" : "root access missing";
     hui::sys::log("Playden %s: %s", what, access.error.c_str());
     playden::app::AppendLogLine("/app0/logs", "launch.log", std::string(what) + ": " + access.error);
+    playden::homebrew::i18n::initialise(access.launcher_ready ? access.paths.assets_root : std::string("/app0/assets"));
     // The pad belongs to a user; the bootstrap may have stopped before UserService started.
     sceUserServiceInitialize(nullptr);
     playden::homebrew::Simulation simulation({}, {}, playden::homebrew::ModelMode::Live);
@@ -329,6 +332,12 @@ int main() {
                                                         " height=" + std::to_string(display.height()));
     if (!native_access.runtime_ready)
         hui::sys::log("Playden native runtime unavailable: %s", native_access.error.c_str());
+    // Catalogs before the view model builds its first screen: what it hands the UI is translated
+    // when it is built, not when it is drawn, so loading them later leaves the first screen English.
+    const std::size_t catalog_count = playden::homebrew::i18n::initialise(paths.assets_root);
+    playden::app::AppendLogLine(log_root, "launch.log",
+                                "i18n language=" + playden::homebrew::i18n::selected() +
+                                    " catalogs=" + std::to_string(catalog_count));
     {
 #if PLAYDEN_UI_SIMULATION
         mkdir((paths.title_root + "/playden-hui-comparison").c_str(), 0777);

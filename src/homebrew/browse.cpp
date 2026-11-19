@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Playden contributors
 // SPDX-License-Identifier: MIT
 
+#include "homebrew/i18n.hpp"
 #include "homebrew/browse.hpp"
 #include "library/query.h"
 
@@ -201,7 +202,7 @@ std::vector<const Game*> filtered_games(const State& state)
         if (store_filter && game.id.store != *store_filter)
             continue;
         if (state.library.filters.contains("genre-adventure") &&
-            std::find(game.genres.begin(), game.genres.end(), "Adventure") == game.genres.end())
+            std::find(game.genres.begin(), game.genres.end(), tr("Adventure")) == game.genres.end())
             continue;
         if (state.library.filters.contains("controller-full") && game.controller_support != "full")
             continue;
@@ -259,7 +260,7 @@ std::vector<Shelf> shelves(const State& state)
     if (!catalog_available(state))
         return result;
 
-    Shelf continued{"continue", "Continue playing", {}};
+    Shelf continued{"continue", tr("Continue playing"), {}};
     std::vector<const Game*> played;
     for (const Game& game : state.games)
         if (!state.library.hidden.contains(game.id) && game.playtime_minutes.value_or(0) > 0)
@@ -278,7 +279,7 @@ std::vector<Shelf> shelves(const State& state)
     }
     append_shelf(result, std::move(continued));
 
-    Shelf downloading{"downloading", "Downloading", {}};
+    Shelf downloading{"downloading", tr("Downloading"), {}};
     std::vector<const Job*> jobs;
     for (const Job& job : state.jobs)
         if (job.state != JobState::Cancelled && job.state != JobState::Downloaded)
@@ -291,7 +292,7 @@ std::vector<Shelf> shelves(const State& state)
         append_known(state, downloading, job->game_id, seen);
     append_shelf(result, std::move(downloading));
 
-    Shelf recent{"installed", "Recently installed", {}};
+    Shelf recent{"installed", tr("Recently installed"), {}};
     seen.clear();
     // Newest install first (a move keeps the game's time); without times, the latest listed first.
     std::vector<const Installation*> installed;
@@ -317,7 +318,7 @@ std::vector<Shelf> shelves(const State& state)
         append_known(state, recent, game->id, seen);
     append_shelf(result, std::move(recent));
 
-    Shelf favorites{"favorites", "Favorites", {}};
+    Shelf favorites{"favorites", tr("Favorites"), {}};
     for (const Game& game : state.games)
         if (state.library.favorites.contains(game.id) && !state.library.hidden.contains(game.id))
             favorites.game_ids.push_back(game.id);
@@ -502,7 +503,7 @@ std::vector<RailEntry> library_rail_entries(const State& state)
             result.push_back({name, RailEntryKind::kScope, {}, false, true});
     }
     // 2A: one store has every game, so there is no store section; its collections get a folder there, without an
-    // "All" row (All lists the same games).
+    // tr("All") row (All lists the same games).
     if (stores.empty())
         if (const auto store = only_store(state); store && store_has_collections(state, *store))
             add_folder(store_name(*store), *store, false);
@@ -602,7 +603,7 @@ bool reconcile_store_collection_scope(State& state)
     const auto known = rail_store(store);
     if (!known || !state.store_collections_known.contains(*known))
         return false;  // the list may still come: the grid waits, as for the library
-    // The store's own games while it has any (its "All" row, its scope row, or All itself when it has every game).
+    // The store's own games while it has any (its tr("All") row, its scope row, or All itself when it has every game).
     state.library.scope = has_store_games(state, *known) ? store : "all";
     return true;
 }
@@ -636,7 +637,7 @@ bool move_browser(State& state, int delta_x, int delta_y)
         state.navigation.home_shelf_focus[shelf.key] = child;
         if (child == static_cast<int>(shelf.game_ids.size()))
         {
-            // The "More" cell: no game is selected there.
+            // The tr("More") cell: no game is selected there.
             state.navigation.selected_game_id = {};
             state.navigation.selected_index = child;
             state.navigation.focus_key = shelf_more_key(shelf);

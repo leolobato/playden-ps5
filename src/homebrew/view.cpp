@@ -7,6 +7,7 @@
 
 #include "homebrew/browse.hpp"
 #include "homebrew/focus_motion.hpp"
+#include "homebrew/i18n.hpp"
 #include "homebrew/qr.hpp"
 #include "homebrew/queue_layout.hpp"
 #include "homebrew/simulation.hpp"
@@ -81,8 +82,8 @@ ui::Theme playden_theme()
     ui::Theme theme{};
     theme.id = "playden";
     theme.name = "Playden";
-    theme.family = "Warm console";
-    theme.summary = "Warm near-black surfaces with restrained orange focus";
+    theme.family = tr("Warm console").c_str();
+    theme.summary = tr("Warm near-black surfaces with restrained orange focus").c_str();
     theme.backdrop.mode = gfx::BackdropMode::gradient;
     theme.backdrop.colors[0] = kBackground;
     theme.backdrop.colors[1] = kBackground;
@@ -204,7 +205,7 @@ const Game *game_by_id(const State &state, GameId id)
 std::string byte_count(std::optional<std::uint64_t> bytes)
 {
     if (!bytes)
-        return "Unknown";
+        return tr("Unknown");
     // Decimal units, as the rest of Playden (game pages, sheets, storage) and macOS show sizes.
     constexpr double mib = 1000.0 * 1000.0;
     constexpr double gib = 1000.0 * mib;
@@ -214,18 +215,18 @@ std::string byte_count(std::optional<std::uint64_t> bytes)
     {
         const int written = std::snprintf(value.data(), value.size(), "%.0f KB",
                                           std::max(1.0, static_cast<double>(*bytes) / 1000.0));
-        return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : "Unknown";
+        return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : tr("Unknown");
     }
     // Below a gigabyte, megabytes: "0.2 GB" says little about a small game.
     if (*bytes < static_cast<std::uint64_t>(gib))
     {
         const int written = std::snprintf(value.data(), value.size(), "%.0f MB", static_cast<double>(*bytes) / mib);
-        return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : "Unknown";
+        return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : tr("Unknown");
     }
     const int precision = *bytes >= static_cast<std::uint64_t>(10.0 * gib) ? 0 : 1;
     const int written = std::snprintf(value.data(), value.size(), "%.*f GB", precision,
                                       static_cast<double>(*bytes) / gib);
-    return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : "Unknown";
+    return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : tr("Unknown");
 }
 
 // Sizes as macOS shows files (decimal units), matching the model's labels: megabytes below a gigabyte.
@@ -236,13 +237,13 @@ std::string short_size(std::uint64_t bytes)
     const double amount = static_cast<double>(bytes);
     const int written = amount >= 1e9 ? std::snprintf(value.data(), value.size(), "%.1f GB", amount / 1e9)
                                       : std::snprintf(value.data(), value.size(), "%.0f MB", std::max(1.0, amount / 1e6));
-    return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : std::string("Unknown");
+    return written > 0 ? std::string(value.data(), static_cast<std::size_t>(written)) : std::string(tr("Unknown"));
 }
 
 std::string join_words(const std::vector<std::string> &words)
 {
     if (words.empty())
-        return "Unknown";
+        return tr("Unknown");
     std::string result;
     for (const std::string &word : words)
     {
@@ -256,7 +257,7 @@ std::string join_words(const std::vector<std::string> &words)
 std::string playtime_label(std::optional<std::uint64_t> minutes)
 {
     if (!minutes)
-        return "Unknown";
+        return tr("Unknown");
     if (*minutes < 60)
         return std::to_string(*minutes) + " min";
     return std::to_string(*minutes / 60) + " h " + std::to_string(*minutes % 60) + " min";
@@ -265,10 +266,10 @@ std::string playtime_label(std::optional<std::uint64_t> minutes)
 std::string relative_time(std::optional<std::int64_t> timestamp, std::int64_t now)
 {
     if (!timestamp)
-        return "Unknown";
+        return tr("Unknown");
     const std::int64_t seconds = std::max<std::int64_t>(0, now - *timestamp);
     if (seconds < 3600)
-        return "Less than an hour ago";
+        return tr("Less than an hour ago");
     if (seconds < 86400)
         return std::to_string(seconds / 3600) + " h ago";
     if (seconds < 30 * 86400)
@@ -285,7 +286,7 @@ std::string relative_time(std::optional<std::int64_t> timestamp, std::int64_t no
     const std::int64_t shifted_month = (5 * day_of_year + 2) / 153;  // 0 is March
     const std::int64_t month = shifted_month < 10 ? shifted_month + 3 : shifted_month - 9;
     const std::int64_t year = year_of_era + era * 400 + (month <= 2 ? 1 : 0);
-    return std::string(kMonths[month - 1]) + " " + std::to_string(year);
+    return tr(kMonths[month - 1]) + " " + std::to_string(year);
 }
 
 std::size_t utf8_boundary(std::string_view text, std::size_t offset)
@@ -302,15 +303,15 @@ const char *rating_label(Compatibility rating)
     switch (rating)
     {
     case Compatibility::Untested:
-        return "Untested";
+        return tr("Untested").c_str();
     case Compatibility::Works:
-        return "Works · user rating";
+        return tr("Works · user rating").c_str();
     case Compatibility::Playable:
-        return "Playable · user rating";
+        return tr("Playable · user rating").c_str();
     case Compatibility::Broken:
-        return "Broken · user rating";
+        return tr("Broken · user rating").c_str();
     }
-    return "Untested";
+    return tr("Untested").c_str();
 }
 
 const char* job_stage_label(JobStage stage)
@@ -318,15 +319,15 @@ const char* job_stage_label(JobStage stage)
     switch (stage)
     {
     case JobStage::Download:
-        return "Download";
+        return tr("Download").c_str();
     case JobStage::Verify:
-        return "Verification";
+        return tr("Verification").c_str();
     case JobStage::Install:
-        return "Install";
+        return tr("Install").c_str();
     case JobStage::Uninstall:
-        return "Removal";
+        return tr("Removal").c_str();
     }
-    return "Transfer";
+    return tr("Transfer").c_str();
 }
 
 ui::Button legend_button(std::string_view legend, std::size_t index)
@@ -345,15 +346,15 @@ ui::Button legend_button(std::string_view legend, std::size_t index)
         return ui::Button::touchpad;
     if (legend.rfind("Left ", 0) == 0)
         return ui::Button::dpad;
-    if (legend.find("Favorite") != std::string_view::npos)
+    if (legend.find(tr("Favorite")) != std::string_view::npos)
         return ui::Button::square;
     if (legend.find("Backspace") != std::string_view::npos)
         return ui::Button::square;
     if (legend.find("Sort") != std::string_view::npos || legend.find("Filter") != std::string_view::npos)
         return ui::Button::triangle;
-    if (legend.find("More") != std::string_view::npos || legend.find("Action") != std::string_view::npos)
+    if (legend.find(tr("More")) != std::string_view::npos || legend.find("Action") != std::string_view::npos)
         return ui::Button::options;
-    if (legend.find("Back") != std::string_view::npos || legend.find("Cancel") != std::string_view::npos)
+    if (legend.find(tr("Back")) != std::string_view::npos || legend.find(tr("Cancel")) != std::string_view::npos)
         return ui::Button::circle;
     if (legend.find("Previous") != std::string_view::npos)
         return ui::Button::l1;
@@ -362,7 +363,7 @@ ui::Button legend_button(std::string_view legend, std::size_t index)
     return index == 0 ? ui::Button::cross : ui::Button::circle;
 }
 
-// The glyph already names the button, so "Cross Open" reads "Open" beside it.
+// The glyph already names the button, so tr("Cross Open") reads "Open" beside it.
 const char *legend_text(const std::string &legend)
 {
     for (const std::string_view button : {"Cross ", "Circle ", "Square ", "Triangle ", "Options ", "Touchpad ", "Left "})
@@ -375,9 +376,9 @@ const char *legend_text(const std::string &legend)
 
 ui::Status progress_status(const ViewRow &row)
 {
-    if (row.dangerous || row.badge.find("Failed") != std::string::npos)
+    if (row.dangerous || row.badge.find(tr("Failed")) != std::string::npos)
         return ui::Status::danger;
-    if (row.badge.find("Paused") != std::string::npos || row.badge.find("Offline") != std::string::npos)
+    if (row.badge.find(tr("Paused")) != std::string::npos || row.badge.find("Offline") != std::string::npos)
         return ui::Status::warning;
     if (row.progress >= 1.0F)
         return ui::Status::success;
@@ -441,6 +442,8 @@ class Render::Impl
     explicit Impl(std::filesystem::path assets_directory, ArtworkService* artwork)
         : assets_(std::move(assets_directory)), theme_(playden_theme()), texture_backend_(renderer_)
     {
+        // Catalogs for a front end that did not load them before the view model started.
+        i18n::initialise(assets_.string());
         initialise(artwork == nullptr);
         if (artwork) live_artwork_ = std::make_unique<LiveArtworkCache>(*artwork, texture_backend_);
     }
@@ -654,6 +657,14 @@ class Render::Impl
         if (!load_face(&greek_face_, &greek_, {"noto-greek-fallback.huifont"}))
             return false;
         load_face(&cjk_face_, &cjk_, {"noto-cjk-fallback.huifont"});
+        if (cjk_.font != nullptr)
+        {
+            // The interface font carries Latin, Greek and Cyrillic; Chinese, Japanese and Korean
+            // come from the baked fallback face, one glyph at a time, from its own atlas.
+            regular_.add_fallback(cjk_.font, cjk_.texture);
+            semibold_.add_fallback(cjk_.font, cjk_.texture);
+            display_.add_fallback(cjk_.font, cjk_.texture);
+        }
         load_face(&arabic_face_, &arabic_, {"noto-arabic-fallback.huifont"});
         return true;
     }
@@ -873,7 +884,7 @@ class Render::Impl
         tabs_.style.track = false;
         tabs_.style.focus_ring = false;
         tabs_.style.on_page = true;
-        tabs_.set_tabs({{"Home"}, {"Library"}, {"Queue", 1}, {"Settings"}});
+        tabs_.set_tabs({{tr("Home")}, {tr("Library")}, {tr("Queue"), 1}, {tr("Settings")}});
         tabs_.set_bounds({96.0F, 54.0F, 760.0F, 56.0F});
 
         grid_.style.theme = theme_;
@@ -1005,9 +1016,9 @@ class Render::Impl
         for (int tab = 0; tab < static_cast<int>(routes.size()); ++tab)
         {
             const Route tab_route = routes[static_cast<std::size_t>(tab)];
-            const char *name = tab_route == Route::Home ? "Home" : tab_route == Route::Library ? "Library"
-                             : tab_route == Route::Downloads ? "Queue" : tab_route == Route::Saves ? "Saves"
-                             : tab_route == Route::Friends ? "Friends" : "Settings";
+            const std::string_view name = tab_route == Route::Home ? tr("Home") : tab_route == Route::Library ? tr("Library")
+                             : tab_route == Route::Downloads ? tr("Queue") : tab_route == Route::Saves ? tr("Saves")
+                             : tab_route == Route::Friends ? tr("Friends") : tr("Settings");
             const bool active = tab == selected;
             const bool saves_tab = tab_route == Route::Saves;
             const bool friends_tab = tab_route == Route::Friends;
@@ -1268,9 +1279,9 @@ class Render::Impl
         else
             scene_.gradient_rect({1050.0F, 268.0F, 600.0F, 360.0F}, 12.0F,
                                  kAccent.with_alpha(0.25F), kPanel);
-        ui::text(scene_, fonts_.display, "YOUR GAMES", 1100.0F, 704.0F, 48.0F, kText);
+        ui::text(scene_, fonts_.display, tr("YOUR GAMES"), 1100.0F, 704.0F, 48.0F, kText);
         ui::text(scene_, fonts_.regular,
-                 state.persistence_available ? "Ready when you are." : "Browsing can continue without saving.",
+                 state.persistence_available ? tr("Ready when you are.") : tr("Browsing can continue without saving."),
                  1100.0F, 752.0F, 25.0F, state.persistence_available ? kSecondary : kAmber);
     }
 
@@ -1376,7 +1387,7 @@ class Render::Impl
         const SignInForm &form = state.sign_in;
         const gfx::Rect panel{1036.0F, 224.0F, 640.0F, 430.0F};
         scene_.rounded_rect(panel, 14.0F, kPanel);
-        const char *title = "Account name and password";
+        const char *title = tr("Account name and password").c_str();
         const char *detail = state.stay_signed_in
             ? "Playden sends your password to Steam, encrypted, and never saves it. It keeps Steam's sign-in token "
               "on this PS5 so you stay signed in."
@@ -1384,19 +1395,19 @@ class Render::Impl
               "only until you close Playden. You will sign in again next time.";
         if (form.step == SignInStep::Submitting)
         {
-            title = "Signing in";
-            detail = "Waiting for Steam to check your account name and password.";
+            title = tr("Signing in").c_str();
+            detail = tr("Waiting for Steam to check your account name and password.").c_str();
         }
         else if (form.step == SignInStep::Approval && !form.code_entry)
         {
-            title = "Check your phone";
-            detail = form.code_allowed ? "Approve the sign-in in the Steam Mobile app, or type its code instead."
-                                       : "Approve the sign-in when Steam asks you to.";
+            title = tr("Check your phone").c_str();
+            detail = form.code_allowed ? tr("Approve the sign-in in the Steam Mobile app, or type its code instead.").c_str()
+                                       : tr("Approve the sign-in when Steam asks you to.").c_str();
         }
         else if (form.step != SignInStep::Password)
         {
             title = "Steam Guard";
-            detail = "Steam asks for a code to confirm that it is you. Codes have five letters or digits.";
+            detail = tr("Steam asks for a code to confirm that it is you. Codes have five letters or digits.").c_str();
         }
         ui::text(scene_, fonts_.display, title, panel.x + 48.0F, panel.y + 96.0F, 40.0F, kText);
         ui::paragraph(scene_, fonts_.regular, detail, panel.x + 48.0F, panel.y + 156.0F, 25.0F,
@@ -1404,7 +1415,7 @@ class Render::Impl
         if (state.simulation_mode)
         {
             scene_.rounded_rect({1185.0F, 678.0F, 292.0F, 42.0F}, 21.0F, kAmber.with_alpha(0.18F));
-            ui::text(scene_, fonts_.semibold, "SIMULATED SIGN-IN", 1331.0F, 706.0F, 18.0F, kAmber,
+            ui::text(scene_, fonts_.semibold, tr("SIMULATED SIGN-IN"), 1331.0F, 706.0F, 18.0F, kAmber,
                      gfx::Align::center);
         }
     }
@@ -1412,7 +1423,7 @@ class Render::Impl
     void draw_sign_in(ui::Canvas &, const ViewData &view, const State &state)
     {
         const bool storage_full = state.account().authentication == AuthState::Failed && state.account().storage_full;
-        section_label(storage_full ? "Console storage" : "Connect Steam", 96.0F, 78.0F);
+        section_label(storage_full ? tr("Console storage") : tr("Connect Steam"), 96.0F, 78.0F);
         draw_title(view, 96.0F, 272.0F, 720.0F);
         // Four buttons fit above the footer; a fifth (the password form) lifts the column by one.
         const auto buttons = std::count_if(view.rows.begin(), view.rows.end(), [](const ViewRow &row) {
@@ -1432,64 +1443,64 @@ class Render::Impl
         } else if (state.account().authentication == AuthState::Waiting &&
                    state.account().challenge_url.empty()) {
             draw_qr_placeholder(qr_x, qr_y, static_cast<float>(qr_side),
-                                "Preparing QR code", "Waiting for a secure challenge…");
+                                tr("Preparing QR code"), tr("Waiting for a secure challenge…"));
         } else if (state.account().authentication == AuthState::Syncing) {
             draw_qr_placeholder(qr_x, qr_y, static_cast<float>(qr_side),
-                                "Sign-in approved", "Loading your library…");
+                                tr("Sign-in approved"), tr("Loading your library…"));
         } else if (state.account().authentication == AuthState::Expired) {
             draw_qr_placeholder(qr_x, qr_y, static_cast<float>(qr_side),
-                                "QR code expired", "Refresh to continue");
+                                tr("QR code expired"), tr("Refresh to continue"));
         } else if (storage_full) {
             draw_qr_placeholder(qr_x, qr_y, static_cast<float>(qr_side),
-                                "Storage is full", "Uninstall games to sign in");
+                                tr("Storage is full"), tr("Uninstall games to sign in"));
         } else if (state.account().authentication == AuthState::Failed) {
             draw_qr_placeholder(qr_x, qr_y, static_cast<float>(qr_side),
-                                "Connection failed", "Retry the connection");
+                                tr("Connection failed"), tr("Retry the connection"));
         } else if (!cached_qr_error_.empty() || !draw_encoded_qr(qr_x, qr_y, qr_side)) {
             draw_qr_placeholder(qr_x, qr_y, static_cast<float>(qr_side),
-                                "QR code unavailable", "Retry the connection");
+                                tr("QR code unavailable"), tr("Retry the connection"));
         }
         if (state.simulation_mode) {
             scene_.rounded_rect({1185.0F, 678.0F, 292.0F, 42.0F}, 21.0F,
                                 kAmber.with_alpha(0.18F));
-            ui::text(scene_, fonts_.semibold, "SIMULATED QR — NOT LIVE", 1331.0F, 706.0F,
+            ui::text(scene_, fonts_.semibold, tr("SIMULATED QR — NOT LIVE"), 1331.0F, 706.0F,
                      18.0F, kAmber, gfx::Align::center);
         }
         const char *status = !state.simulation_mode && state.account().challenge_url.empty() ?
-            "Connecting securely" : "Waiting for approval";
+            tr("Connecting securely").c_str() : tr("Waiting for approval").c_str();
         gfx::Color color = kAccent;
         if (!cached_qr_error_.empty())
         {
-            status = "QR code unavailable · Retry connection";
+            status = tr("QR code unavailable · Retry connection").c_str();
             color = kRed;
         }
         else if (state.account().authentication == AuthState::Expired)
         {
-            status = "Challenge expired";
+            status = tr("Challenge expired").c_str();
             color = kAmber;
         }
         else if (storage_full)
         {
-            status = "Console storage is full · Retrying";
+            status = tr("Console storage is full · Retrying").c_str();
             color = kRed;
         }
         else if (state.account().authentication == AuthState::Failed)
         {
-            status = state.account().error.empty() ? "Connection failed" : state.account().error.c_str();
+            status = state.account().error.empty() ? tr("Connection failed").c_str() : state.account().error.c_str();
             color = kRed;
         }
         else if (state.account().authentication == AuthState::Syncing)
         {
-            status = state.simulation_mode ? "Approved · Syncing library" : "Approved · Loading library";
+            status = state.simulation_mode ? tr("Approved · Syncing library").c_str() : tr("Approved · Loading library").c_str();
             color = kGreen;
         }
         else if (state.account().authentication == AuthState::Restoring)
         {
-            status = state.simulation_mode ? "Restoring fixture state" : "Restoring your accounts";
+            status = state.simulation_mode ? tr("Restoring fixture state").c_str() : tr("Restoring your accounts").c_str();
         }
         else if (state.account().authentication == AuthState::SigningOut)
         {
-            status = "Signing out securely";
+            status = tr("Signing out securely").c_str();
         }
         scene_.circle(1198.0F, 772.0F, 7.0F, color);
         ui::text(scene_, fonts_.regular, status, 1220.0F, 780.0F, 25.0F, kText);
@@ -1501,7 +1512,7 @@ class Render::Impl
         const State &state = simulation.state();
         if (view.shelves.empty())
         {
-            section_label(view.title.empty() ? "Home" : view.title, 96.0F, 168.0F);
+            section_label(view.title.empty() ? tr("Home") : view.title, 96.0F, 168.0F);
             ViewData copy = view;
             draw_title(copy, 96.0F, 360.0F, 820.0F);
             draw_actions(copy, 96.0F, 560.0F, 520.0F);
@@ -1559,7 +1570,7 @@ class Render::Impl
                     scene_.rounded_rect(art, 8.0F, kText.with_alpha(0.06F));
                     scene_.bordered_rect(art, 8.0F, kBackground.with_alpha(0.0F), 2.0F, kText.with_alpha(0.2F));
                     ui::text(scene_, fonts_.display, cell.value, art.cx(), art.cy() + 4.0F, 56.0F, kText, gfx::Align::center);
-                    ui::text(scene_, fonts_.display, "Library", art.cx(), art.cy() + 52.0F, 26.0F, kSecondary,
+                    ui::text(scene_, fonts_.display, tr("Library"), art.cx(), art.cy() + 52.0F, 26.0F, kSecondary,
                              gfx::Align::center);
                     focus_ring(scene_, art, amount);
                     if (amount > 0.0F)
@@ -1658,10 +1669,10 @@ class Render::Impl
 
         if (games.empty())
         {
-            ui::text(scene_, fonts_.display, view.title.empty() ? "No games here" : view.title,
+            ui::text(scene_, fonts_.display, view.title.empty() ? tr("No games here") : view.title,
                      1134.0F, 434.0F, 56.0F, kText, gfx::Align::center);
             ui::paragraph(scene_, fonts_.regular,
-                          view.subtitle.empty() ? "Clear the search or choose another library view."
+                          view.subtitle.empty() ? tr("Clear the search or choose another library view.")
                                                 : view.subtitle,
                           784.0F, 486.0F, 26.0F, 700.0F, 36.0F, kSecondary, 3,
                           gfx::Align::center);
@@ -1705,7 +1716,7 @@ class Render::Impl
         {
             scene_.rounded_rect({1398.0F, 86.0F, 426.0F, 48.0F}, 8.0F, kPanel);
             scene_.circle(1424.0F, 110.0F, 6.0F, kAccent);
-            ui::text(scene_, fonts_.regular, "Refreshing library · focus preserved", 1444.0F,
+            ui::text(scene_, fonts_.regular, tr("Refreshing library · focus preserved"), 1444.0F,
                      119.0F, 20.0F, kSecondary);
         }
     }
@@ -1767,21 +1778,21 @@ class Render::Impl
                     entry.title = collection->name, entry.value = std::to_string(store_collection_count(state, *collection));
             }
             else if (scope == "installed")
-                entry.title = "Installed", entry.value = std::to_string(installed);
+                entry.title = tr("Installed"), entry.value = std::to_string(installed);
             else if (scope == "all")
-                entry.title = "All", entry.value = std::to_string(state.games.size());
+                entry.title = tr("All"), entry.value = std::to_string(state.games.size());
             else if (scope == "favorites")
-                entry.title = "Favorites", entry.value = std::to_string(state.library.favorites.size());
+                entry.title = tr("Favorites"), entry.value = std::to_string(state.library.favorites.size());
             else if (scope == "hidden")
-                entry.title = "Hidden", entry.value = std::to_string(state.library.hidden.size());
+                entry.title = tr("Hidden"), entry.value = std::to_string(state.library.hidden.size());
             else if (scope == "steam")
                 entry.title = "Steam", entry.value = store_count(Store::kSteam);
             else if (scope == "gog")
                 entry.title = "GOG", entry.value = store_count(Store::kGog);
             else if (scope == "imported")
-                entry.title = "Imported", entry.value = store_count(Store::kLocal);
+                entry.title = tr("Imported"), entry.value = store_count(Store::kLocal);
             else if (scope == "new-collection")
-                entry.title = "New collection", entry.value = "+", entry.selected = false;
+                entry.title = tr("New collection"), entry.value = "+", entry.selected = false;
             else
                 for (const Collection &collection : state.library.collections)
                     if (collection.id == scope)
@@ -1948,24 +1959,24 @@ class Render::Impl
         if (status.job != nullptr)
         {
             if (status.job->state == JobState::Downloading && status.job->checking_licenses)
-                return "Checking licenses";
+                return tr("Checking licenses");
             if (status.job->state == JobState::Downloading && status.job->total_bytes > 0)
                 return std::to_string(static_cast<int>(100.0 * status.job->completed_bytes / status.job->total_bytes)) +
                        "% · " + JobStateText(*status.job);
             return JobStateText(*status.job);
         }
         if (status.disconnected)
-            return "Reconnect its drive";
+            return tr("Reconnect its drive");
         if (status.installed)
         {
             const std::uint64_t bytes = status.installation != nullptr ? status.installation->installed_bytes :
                                         game.install_bytes.value_or(0);
             const std::string size = bytes > 0 ? short_size(bytes) + " · " : std::string{};
             return size + (game.playtime_minutes && *game.playtime_minutes > 0 ?
-                               playtime_label(game.playtime_minutes) + " played" : std::string("Installed"));
+                               playtime_label(game.playtime_minutes) + " played" : std::string(tr("Installed")));
         }
         const auto download = default_download_bytes(game);
-        return download ? "Not installed · " + short_size(*download) : "Not installed";
+        return download ? "Not installed · " + short_size(*download) : tr("Not installed");
     }
 
     // reserve: room kept free at the right for the corner badges.
@@ -2078,7 +2089,7 @@ class Render::Impl
             const bool words_fit = rect.w >= 120.0F;
             if (words_fit && game.art_pending)
             {
-                ui::text(scene_, fonts_.display, "Artwork loading", rect.cx(), rect.y + rect.h * 0.52F,
+                ui::text(scene_, fonts_.display, tr("Artwork loading"), rect.cx(), rect.y + rect.h * 0.52F,
                          25.0F, kText, gfx::Align::center);
             }
             else if (words_fit)
@@ -2120,7 +2131,7 @@ class Render::Impl
             tile_badge(rect, JobStateText(*status.job),
                        status.job->state == JobState::Failed ? kAmber : kSecondary, corner);
         else if (status.disconnected)
-            tile_badge(rect, "Drive disconnected", kAmber, corner);
+            tile_badge(rect, tr("Drive disconnected"), kAmber, corner);
         if (show_download_mark)
             download_mark(rect.x + rect.w - 25.0F, rect.y + rect.h - 25.0F, 1.0F);
         else if (status.installed && status.installation != nullptr && status.installation->installed_bytes > 0 && amount < 1.0F && title_overlay)
@@ -2221,7 +2232,7 @@ class Render::Impl
     void draw_queue(ui::Canvas &canvas, const ViewData &view, const State &state)
     {
         const QueueLayout layout = BuildQueueLayout(state);
-        section_label("Downloads and preparation", kSafeX, 160.0F);
+        section_label(tr("Downloads and preparation"), kSafeX, 160.0F);
         ui::text(scene_, fonts_.semibold, fit(fonts_.semibold, view.subtitle, 22.0F, 1000.0F), 1824.0F, 161.0F, 22.0F,
                  kSecondary, gfx::Align::right);
         // While a sheet is open the row it came from stays in view.
@@ -2283,8 +2294,8 @@ class Render::Impl
 
         if (layout.nothing())
         {
-            ui::text(scene_, fonts_.display, "Nothing in the queue", kWidth * 0.5F, 500.0F, 56.0F, kText, gfx::Align::center);
-            ui::paragraph(scene_, fonts_.regular, "Downloads and game preparation show here. Install a game from its details to start.",
+            ui::text(scene_, fonts_.display, tr("Nothing in the queue"), kWidth * 0.5F, 500.0F, 56.0F, kText, gfx::Align::center);
+            ui::paragraph(scene_, fonts_.regular, tr("Downloads and game preparation show here. Install a game from its details to start."),
                           kWidth * 0.5F, 552.0F, 26.0F, 800.0F, 36.0F, kSecondary, 2, gfx::Align::center);
         }
 
@@ -2363,7 +2374,7 @@ class Render::Impl
                     {
                         // Large accounts take a minute here, before Steam gives the download size (issue #47).
                         spinner(text_x + 10.0F, top + 92.0F, 8.0F, kBlue);
-                        ui::text(scene_, fonts_.regular, "Checking your Steam licenses…", text_x + 30.0F, top + 99.0F, 21.0F, kText);
+                        ui::text(scene_, fonts_.regular, tr("Checking your Steam licenses…"), text_x + 30.0F, top + 99.0F, 21.0F, kText);
                     }
                     else if (job->update && job->state == JobState::Downloading && !job->state_text.empty())
                     {
@@ -2390,14 +2401,14 @@ class Render::Impl
                 {
                     // Preparing or uninstalling: the actual step, with a spinner; no percentage or time is made up.
                     // A paused queue's card says it pauses after this game.
-                    const std::string label = entry->leftover ? "Deleting title" : entry->uninstall ? "Uninstalling"
-                                            : entry->status.empty() ? "Preparing" : entry->status;
+                    const std::string label = entry->leftover ? "Deleting title" : entry->uninstall ? tr("Uninstalling")
+                                            : entry->status.empty() ? tr("Preparing") : entry->status;
                     const float status_width = fonts_.semibold.measure(label, 24.0F);
                     spinner(right - status_width - 22.0F, top + 36.0F, 9.0F, kBlue);
                     ui::text(scene_, fonts_.semibold, label, right, top + 44.0F, 24.0F, kBlue, gfx::Align::right);
-                    ui::text(scene_, fonts_.regular, fit(fonts_.regular, entry->note.empty() ? "Starting…" : entry->note, 24.0F, 1100.0F),
+                    ui::text(scene_, fonts_.regular, fit(fonts_.regular, entry->note.empty() ? tr("Starting…") : entry->note, 24.0F, 1100.0F),
                              text_x, top + 88.0F, 24.0F, kText);
-                    ui::text(scene_, fonts_.regular, entry->leftover || entry->uninstall ? "Removing from this PS5" : "Setting up for this PS5", right,
+                    ui::text(scene_, fonts_.regular, entry->leftover || entry->uninstall ? tr("Removing from this PS5") : tr("Setting up for this PS5"), right,
                              top + 88.0F, 21.0F, kSecondary, gfx::Align::right);
                 }
                 focus_ring(scene_, box, amount, true);
@@ -2441,7 +2452,7 @@ class Render::Impl
                 if (entry->completed)
                 {
                     // The files are here; preparing them is the Preparation section's.
-                    value = job->game_id.store == Store::kLocal ? "Copied" : job->update ? "Updated" : "Downloaded";
+                    value = job->game_id.store == Store::kLocal ? tr("Copied") : job->update ? "Updated" : tr("Downloaded");
                     tone = "good";
                     // An update that only deleted files (a DLC removed) downloaded nothing to count.
                     aside = job->update && job->total_bytes == 0 ? std::string() : byte_count(job->total_bytes);
@@ -2492,8 +2503,8 @@ class Render::Impl
     {
         constexpr float line_y = 902.0F, baseline = 946.0F;
         scene_.rounded_rect({kSafeX, line_y, 1824.0F - kSafeX, 1.5F}, 0.0F, kText.with_alpha(0.12F));
-        ui::text(scene_, fonts_.display, ui::upper("Storage"), kSafeX, baseline, 22.0F, kSecondary, gfx::Align::left, 2.6F);
-        const float first_x = kSafeX + fonts_.display.measure(ui::upper("Storage"), 22.0F) + 2.6F * 7.0F + 36.0F;
+        ui::text(scene_, fonts_.display, ui::upper(tr("Storage")), kSafeX, baseline, 22.0F, kSecondary, gfx::Align::left, 2.6F);
+        const float first_x = kSafeX + fonts_.display.measure(ui::upper(tr("Storage")), 22.0F) + 2.6F * 7.0F + 36.0F;
         struct Drive { const ViewRow *row; const Volume *volume; std::string free; float width; };
         std::vector<Drive> drives;
         int focused = -1;
@@ -2565,11 +2576,11 @@ class Render::Impl
     static std::string drive_free_words(const Volume &volume)
     {
         if (!volume.available)
-            return "Disconnected";
+            return tr("Disconnected");
         if (!volume.writable)
-            return "No write access";
+            return tr("No write access");
         if (!volume.capacity_known)
-            return "Free space unknown";
+            return tr("Free space unknown");
         const std::uint64_t unused = volume.capacity_bytes - std::min(volume.used_bytes, volume.capacity_bytes);
         return short_size(unused - std::min(volume.reserved_bytes, unused)) + " free";
     }
@@ -2607,30 +2618,30 @@ class Render::Impl
         if (named)
             ui::text(list, fonts_.display, volume.label, x, y, 30.0F, kText);
         ui::text(list, fonts_.regular,
-                 volume.available ? (volume.writable ? (is_default ? "Default · Available" : "Available") : "No write access")
-                                  : "Disconnected",
+                 volume.available ? (volume.writable ? (is_default ? tr("Default · Available") : tr("Available")) : tr("No write access"))
+                                  : tr("Disconnected"),
                  named ? right : x, y, 22.0F, volume.available && volume.writable ? kSecondary : kAmber,
                  named ? gfx::Align::right : gfx::Align::left);
         if (!volume.capacity_known)
         {
             // A failed space query leaves capacity unknown: show only what Playden knows.
-            ui::text(list, fonts_.regular, "Used by games  " + short_size(volume.games_bytes), x, y + 42.0F, 22.0F,
+            ui::text(list, fonts_.regular, tr("Used by games  ") + short_size(volume.games_bytes), x, y + 42.0F, 22.0F,
                      kSecondary);
             // Space held for queued downloads, only when there is some.
             if (volume.reserved_bytes > 0)
-                ui::text(list, fonts_.regular, "Reserved by queue  " + short_size(volume.reserved_bytes), right,
+                ui::text(list, fonts_.regular, tr("Reserved by queue  ") + short_size(volume.reserved_bytes), right,
                          y + 42.0F, 22.0F, kSecondary, gfx::Align::right);
             return;
         }
         const std::uint64_t unused = volume.capacity_bytes - std::min(volume.used_bytes, volume.capacity_bytes);
         const std::uint64_t free = unused - std::min(volume.reserved_bytes, unused);
         draw_usage_bar(list, volume, x, y + 28.0F, width, 12.0F);
-        ui::text(list, fonts_.regular, "Capacity  " + short_size(volume.capacity_bytes), x, y + 76.0F, 22.0F, kSecondary);
-        ui::text(list, fonts_.regular, "Used  " + short_size(volume.used_bytes), x, y + 106.0F, 22.0F, kSecondary);
+        ui::text(list, fonts_.regular, tr("Capacity  ") + short_size(volume.capacity_bytes), x, y + 76.0F, 22.0F, kSecondary);
+        ui::text(list, fonts_.regular, tr("Used  ") + short_size(volume.used_bytes), x, y + 106.0F, 22.0F, kSecondary);
         if (volume.reserved_bytes > 0)
-            ui::text(list, fonts_.regular, "Reserved  " + short_size(volume.reserved_bytes), right, y + 76.0F, 22.0F,
+            ui::text(list, fonts_.regular, tr("Reserved  ") + short_size(volume.reserved_bytes), right, y + 76.0F, 22.0F,
                      kSecondary, gfx::Align::right);
-        ui::text(list, fonts_.semibold, "Free  " + short_size(free), right, y + 106.0F, 22.0F,
+        ui::text(list, fonts_.semibold, tr("Free  ") + short_size(free), right, y + 106.0F, 22.0F,
                  volume.available ? kText : kMuted, gfx::Align::right);
     }
 
@@ -2848,7 +2859,7 @@ class Render::Impl
                 ui::text(scene_, fonts_.regular, line, bar_x, line_y, 22.0F, kSecondary);
                 // A drive that is gone or read-only says so, as in Downloads.
                 if (!usage->available || !usage->writable)
-                    ui::text(scene_, fonts_.regular, usage->available ? "No write access" : "Disconnected", bar_x + bar_w,
+                    ui::text(scene_, fonts_.regular, usage->available ? tr("No write access") : tr("Disconnected"), bar_x + bar_w,
                              line_y, 22.0F, kAmber, gfx::Align::right);
             }
             focus_ring(scene_, card, amount);
@@ -3068,7 +3079,7 @@ class Render::Impl
     // The Saves tab: filter chips and Sync all over one list of games with saves on this console.
     void draw_saves(const ViewData &view, const State &state)
     {
-        section_label("Game saves on this console", kSafeX, 160.0F);
+        section_label(tr("Game saves on this console"), kSafeX, 160.0F);
         const bool busy = state.saves_job.kind != SavesJobKind::None;
         float summary_x = 1824.0F;
         if (busy)
@@ -3470,7 +3481,7 @@ class Render::Impl
                                            [id](const Installation &item) { return item.game_id == id; });
         scene_.gradient_rect({0.0F, 0.0F, kWidth, 380.0F}, 0.0F, id_color(id), kBackground);
         ui::draw_button(scene_, fonts_, ui::GlyphStyle::mono(kText, kBackground), ui::Button::circle, kSafeX, 74.0F, 36.0F);
-        ui::text(scene_, fonts_.semibold, "Saves", kSafeX + 48.0F, 82.0F, 22.0F, kText);
+        ui::text(scene_, fonts_.semibold, tr("Saves"), kSafeX + 48.0F, 82.0F, 22.0F, kText);
         save_art(state, id, {kSafeX, 170.0F, 120.0F, 180.0F});
         dynamic_text(view.title, kSafeX + 150.0F, 262.0F, 64.0F, kText, 1500.0F);
         // The status, from the same row the Saves list shows.
@@ -3484,7 +3495,7 @@ class Render::Impl
         const float left = kSafeX, cloud_x = kSafeX + 300.0F, here_x = kSafeX + 680.0F, right = kSafeX + 1060.0F;
         float y = 420.0F;
         ui::text(scene_, fonts_.display, ui::upper("Steam Cloud"), cloud_x, y, 22.0F, label, gfx::Align::left, 2.6F);
-        ui::text(scene_, fonts_.display, ui::upper("This console"), here_x, y, 22.0F, label, gfx::Align::left, 2.6F);
+        ui::text(scene_, fonts_.display, ui::upper(tr("This console")), here_x, y, 22.0F, label, gfx::Align::left, 2.6F);
         const bool has_cloud = cloud != nullptr && cloud->status != CloudStatus::Unsupported && cloud->status != CloudStatus::None;
         const bool conflict = cloud != nullptr && cloud->status == CloudStatus::Conflict;
         const auto when = [&](std::int64_t time) -> std::string {
@@ -3517,52 +3528,52 @@ class Render::Impl
         const std::uint64_t local_bytes = state.save_sizes.count(id) ? state.save_sizes.at(id) : 0;
         if (has_cloud)
         {
-            line("Files", std::to_string(cloud->remote_files), std::to_string(cloud->local_files), kText, kText);
-            line("Size", size(cloud->remote_bytes), size(cloud->local_bytes), kText, kText);
+            line(tr("Files").c_str(), std::to_string(cloud->remote_files), std::to_string(cloud->local_files), kText, kText);
+            line(tr("Size").c_str(), size(cloud->remote_bytes), size(cloud->local_bytes), kText, kText);
             const bool cloud_newer = cloud->remote_latest > cloud->local_latest;
-            line("Newest change", when(static_cast<std::int64_t>(cloud->remote_latest)), when(static_cast<std::int64_t>(cloud->local_latest)),
+            line(tr("Newest change").c_str(), when(static_cast<std::int64_t>(cloud->remote_latest)), when(static_cast<std::int64_t>(cloud->local_latest)),
                  conflict && cloud_newer ? newer : kText, conflict && !cloud_newer ? newer : kText);
             // Synced before Playden kept the time: unknown, not never.
-            line("Last sync", cloud->last_sync > 0 ? when(cloud->last_sync) : cloud->first_sync ? "Never" : "—", "",
+            line(tr("Last sync").c_str(), cloud->last_sync > 0 ? when(cloud->last_sync) : cloud->first_sync ? tr("Never").c_str() : "—", "",
                  cloud->last_sync > 0 ? kText : absent, kText);
         }
         else
         {
-            line("Size", "No Steam Cloud", local_bytes > 0 ? size(local_bytes) : "—", absent, kText);
+            line(tr("Size").c_str(), tr("No Steam Cloud").c_str(), local_bytes > 0 ? size(local_bytes) : "—", absent, kText);
         }
         if (!installed && kept != nullptr)
         {
-            line("Other data", "—", short_size(kept->bytes) + " (Windows folder, caches)", absent, kText);
+            line(tr("Other data").c_str(), "—", short_size(kept->bytes) + " (Windows folder, caches)", absent, kText);
         }
 
         // What is going on, at the right.
         std::string note;
         const auto status = cloud == nullptr ? CloudStatus::None : cloud->status;
         if (cloud != nullptr && (status == CloudStatus::Checking || status == CloudStatus::Syncing || cloud->queued))
-            note = "Playden is checking this game with Steam Cloud. Its actions come back when that is done; you can leave this page meanwhile.";
+            note = tr("Playden is checking this game with Steam Cloud. Its actions come back when that is done; you can leave this page meanwhile.");
         else if (cloud != nullptr && cloud->after_play)
-            note = "The game may be running. Playden syncs its saves once it stops.";
+            note = tr("The game may be running. Playden syncs its saves once it stops.");
         else if (status == CloudStatus::Conflict)
-            note = cloud->first_sync ? "Never synced on this PS5, and both sides already have saves. Pick which to keep; the other side is backed up first."
+            note = cloud->first_sync ? tr("Never synced on this PS5, and both sides already have saves. Pick which to keep; the other side is backed up first.")
                    : cloud->first_overwrite
-                       ? "Saves here would replace the ones in Steam Cloud, and this PS5 hasn't uploaded any for this game before. If the game didn't show your progress, keep the Cloud saves. Either side is backed up first."
-                       : "Both changed since the last sync. Pick which saves to keep; saves replaced here are backed up first.";
+                       ? tr("Saves here would replace the ones in Steam Cloud, and this PS5 hasn't uploaded any for this game before. If the game didn't show your progress, keep the Cloud saves. Either side is backed up first.")
+                       : tr("Both changed since the last sync. Pick which saves to keep; saves replaced here are backed up first.");
         else if (status == CloudStatus::NeedsAccount)
-            note = "Saves here were never synced with this Steam account. Confirm to upload them.";
+            note = tr("Saves here were never synced with this Steam account. Confirm to upload them.");
         else if (status == CloudStatus::Failed)
             note = cloud->message + " Playden tries again on the next check.";
         else if (status == CloudStatus::Synced || status == CloudStatus::UpToDate)
-            note = "Matches Steam Cloud.";
+            note = tr("Matches Steam Cloud.");
         else if (status == CloudStatus::Unsupported)
-            note = "This game doesn't use Steam Cloud. Its saves exist only on this PS5.";
+            note = tr("This game doesn't use Steam Cloud. Its saves exist only on this PS5.");
         else if (status == CloudStatus::Waiting)
             note = installed ? cloud->message + ". Steam Cloud has saves this console doesn't; Sync now or Play brings them down."
-                             : "Steam Cloud has newer saves. They come down when you reinstall the game or press Sync now.";
+                             : tr("Steam Cloud has newer saves. They come down when you reinstall the game or press Sync now.");
         else
-            note = "Not checked yet. Opening Saves or Sync now checks it.";
+            note = tr("Not checked yet. Opening Saves or Sync now checks it.");
         if (!installed)
             note = "The game was uninstalled; its saves and settings were kept. " + note;
-        ui::text(scene_, fonts_.display, ui::upper("What's going on"), 1240.0F, 420.0F, 22.0F, label, gfx::Align::left, 2.6F);
+        ui::text(scene_, fonts_.display, ui::upper(tr("What's going on")), 1240.0F, 420.0F, 22.0F, label, gfx::Align::left, 2.6F);
         ui::paragraph(scene_, fonts_.regular, note, 1240.0F, 470.0F, 25.0F, 584.0F, 36.0F, kText.with_alpha(0.9F), 6);
 
         // Actions in a row.
@@ -3623,8 +3634,8 @@ class Render::Impl
 
         // Where Circle returns, over the hero.
         const Route origin = state.navigation.detail_origin;
-        const char *back = origin == Route::Home ? "Home" : origin == Route::Downloads ? "Queue" :
-                           origin == Route::Settings ? "Settings" : origin == Route::Friends ? "Friends" : "Library";
+        const std::string_view back = origin == Route::Home ? tr("Home") : origin == Route::Downloads ? tr("Queue")
+                           : origin == Route::Settings ? tr("Settings") : origin == Route::Friends ? tr("Friends") : tr("Library");
         ui::draw_button(scene_, fonts_, ui::GlyphStyle::mono(kText, kBackground), ui::Button::circle, kSafeX, 74.0F, 36.0F);
         ui::text(scene_, fonts_.semibold, back, kSafeX + 48.0F, 82.0F, 22.0F, kText);
 
@@ -3662,9 +3673,9 @@ class Render::Impl
             const bool primary = row.key == "details-install" || row.key == "details-play" ||
                                  row.key == "details-download";
             const bool favorite = row.key == "details-favorite";
-            const std::string label = favorite ? (row.selected ? "Favorited" : "Favorite") : row.title;
+            const std::string label = favorite ? (row.selected ? tr("Favorited") : tr("Favorite")) : row.title;
             // A download shows its percentage from the start ("0%" before the first bytes), and Play
-            // while it prepares a known amount; other job states read as words ("Queued", "Paused").
+            // while it prepares a known amount; other job states read as words (tr("Queued"), tr("Paused")).
             const bool percent = (row.key == "details-download" && (row.progress > 0.0F || row.value == "downloading")) ||
                                  (row.key == "details-play" && row.progress > 0.0F);
             std::string detail = percent ? std::to_string(static_cast<int>(row.progress * 100.0F)) + "%" : row.value;
@@ -3678,7 +3689,7 @@ class Render::Impl
                 return fonts_.semibold.measure(a, 22.0F) >= fonts_.semibold.measure(b, 22.0F) ? a : b;
             };
             const std::string widest = percent ? std::string("100%")
-                                     : row.key == "details-install" ? wider(detail, "999.9 GB") : detail;
+                                     : row.key == "details-install" ? wider(detail, tr("999.9 GB")) : detail;
             const float width = favorite ? height :
                 fonts_.display.measure(label, 26.0F) +
                     (widest.empty() ? 0.0F : fonts_.semibold.measure(widest, 22.0F) + 18.0F) + 56.0F;
@@ -3775,7 +3786,7 @@ class Render::Impl
                 if (row.key == "details-download")
                 {
                     if (row.progress > 0.0F && row.value != "downloading" && row.value != "copying")
-                        note = row.title + " " + row.value;  // "Download paused", "Copying paused"
+                        note = row.title + " " + row.value;  // tr("Download paused"), tr("Copying paused")
                     break;
                 }
             }
@@ -3832,11 +3843,11 @@ class Render::Impl
             }
             if (friends.size() > 3)
                 ui::text(scene_, fonts_.regular, std::to_string(first + 1) + "–" + std::to_string(std::min(friends.size(), first + 3)) +
-                             " of " + std::to_string(friends.size()), kSafeX + 1128.0F, y + 28.0F, 18.0F, kMuted, gfx::Align::right);
+                             tr(" of ") + std::to_string(friends.size()), kSafeX + 1128.0F, y + 28.0F, 18.0F, kMuted, gfx::Align::right);
             y += 48.0F + 96.0F + 24.0F;
         }
         const std::string description = game == nullptr || game->description.empty() ?
-                                            "Description unavailable." : game->description;
+                                            tr("Description unavailable.") : game->description;
         const auto detail_scroll = state.navigation.scroll_offsets.find("details-content");
         // Keep description pagination aligned with the model and above the footer hints.
         constexpr float column_bottom = 975.0F;
@@ -3865,7 +3876,7 @@ class Render::Impl
             y = std::max(y + 20.0F + 37.0F, text_bottom) + 18.0F;
             if (description.size() > page_size)
             {
-                ui::text(scene_, fonts_.regular, "L2/R2 Read more · page " + std::to_string(page + 1) + " of " +
+                ui::text(scene_, fonts_.regular, tr("L2/R2 Read more · page ") + std::to_string(page + 1) + tr(" of ") +
                              std::to_string(max_page + 1), kSafeX, y + 6.0F, 18.0F, kMuted);
                 y += 30.0F;
             }
@@ -3895,16 +3906,16 @@ class Render::Impl
             });
         if (found_installation != state.installations.end())
             installation = &*found_installation;
-        std::string location = "Not installed";
+        std::string location = tr("Not installed");
         // An imported game playing from its folder: the drive it is on, as the Import sheet names it.
         const auto external = std::find_if(state.external_games.begin(), state.external_games.end(),
                                            [&game](const LiveExternalGame &item) { return item.game_id == game->id; });
         if (installation == nullptr && external != state.external_games.end())
         {
             static const std::map<std::string, std::string> drives = {
-                {"usb0", "USB drive"}, {"usb1", "USB drive 2"}, {"usb2", "USB drive 3"}, {"usb3", "USB drive 4"},
+                {"usb0", tr("USB drive")}, {"usb1", tr("USB drive 2")}, {"usb2", "USB drive 3"}, {"usb3", "USB drive 4"},
                 {"usb4", "USB drive 5"}, {"usb5", "USB drive 6"}, {"usb6", "USB drive 7"}, {"usb7", "USB drive 8"},
-                {"m2", "M.2 SSD"}, {"extended", "Extended storage"}, {"internal", "Console drop folder"}};
+                {"m2", tr("M.2 SSD")}, {"extended", tr("Extended storage")}, {"internal", tr("Console drop folder")}};
             const auto drive = drives.find(external->volume_id);
             location = drive == drives.end() ? external->volume_id : drive->second;
             if (!external->available)
@@ -3930,9 +3941,9 @@ class Render::Impl
         const auto bare_bytes = uninstalled_size(*game, state.jobs);
         const std::string size = installed ? short_size(installation->installed_bytes) :
             install_row != view.rows.end() && !install_row->value.empty() && install_row->value != "Size unknown" ? install_row->value :
-            bare_bytes ? short_size(*bare_bytes) : std::string("Unknown");
+            bare_bytes ? short_size(*bare_bytes) : std::string(tr("Unknown"));
         const std::string playtime = game->playtime_minutes && *game->playtime_minutes > 0 ?
-            playtime_label(game->playtime_minutes) : std::string("Never played");
+            playtime_label(game->playtime_minutes) : std::string(tr("Never played"));
         // The player's own rating, apart from how the community's list has the game.
         std::string own_rating = rating_label(compatibility);
         if (const auto dot = own_rating.find(" · "); dot != std::string::npos)
@@ -3942,7 +3953,7 @@ class Render::Impl
         const auto listed = std::find_if(view.rows.begin(), view.rows.end(),
                                          [](const ViewRow &row) { return row.key == "details-compat"; });
         const bool has_listed = listed != view.rows.end();
-        std::string controller = game->controller_support.empty() ? "Unknown" : game->controller_support;
+        std::string controller = game->controller_support.empty() ? tr("Unknown") : game->controller_support;
         controller.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(controller.front())));
         constexpr float left = 1304.0F;
         constexpr float right = 1584.0F;
@@ -3967,18 +3978,18 @@ class Render::Impl
         const float rating_row = has_listed ? 76.0F + count_line : 0.0F;
         const float facts_top = (setup == view.rows.end() ? 754.0F : setup_detail.empty() ? 694.0F : 662.0F) -
                                 (setup == view.rows.end() && !has_listed ? 0.0F : recipe_line) - rating_row;
-        detail_cell("Playtime", playtime, left, facts_top, 240.0F);
-        detail_cell("Size", size, right, facts_top, 240.0F);
+        detail_cell(tr("Playtime"), playtime, left, facts_top, 240.0F);
+        detail_cell(tr("Size"), size, right, facts_top, 240.0F);
         // A game a Steam family member shares comes from Steam Families, not the account's own library.
-        const std::string store = game->id.store == Store::kLocal ? std::string("Imported") :
+        const std::string store = game->id.store == Store::kLocal ? std::string(tr("Imported")) :
                                   game->id.store == Store::kGog ? std::string("GOG") :
                                   game->family_shared ? std::string("Steam Family") :
                                   game->source.empty() ? std::string("Steam") : game->source;
-        detail_cell("Store", store, left, facts_top + 76.0F, 240.0F);
-        detail_cell("Location", location, right, facts_top + 76.0F, 240.0F);
+        detail_cell(tr("Store"), store, left, facts_top + 76.0F, 240.0F);
+        detail_cell(tr("Location"), location, right, facts_top + 76.0F, 240.0F);
         if (has_listed)
         {
-            detail_cell("Compatibility", listed->title, left, facts_top + 152.0F, 240.0F);
+            detail_cell(tr("Compatibility"), listed->title, left, facts_top + 152.0F, 240.0F);
             if (!listed->value.empty())
                 ui::text(scene_, fonts_.regular, fonts_.regular.font->fit(listed->value, 20.0F, 270.0F), left,
                          facts_top + 152.0F + 82.0F, 20.0F, kSecondary);
@@ -4001,13 +4012,13 @@ class Render::Impl
                      kAccent, gfx::Align::left, 1.2F);
         }
         if (game->last_played && setup == view.rows.end())
-            detail_cell("Last played", relative_time(game->last_played, state.clock_ticks), right,
+            detail_cell(tr("Last played"), relative_time(game->last_played, state.clock_ticks), right,
                         facts_top + 152.0F, 240.0F);
         else
-            detail_cell("Controller", controller, right, facts_top + 152.0F, 240.0F);
+            detail_cell(tr("Controller"), controller, right, facts_top + 152.0F, 240.0F);
         if (setup != view.rows.end()) {
             const gfx::Color tone = setup->tone.empty() || setup->tone == "quiet" ? kText : save_tone(setup->tone);
-            detail_cell("Setup", setup_step, left, facts_top + 228.0F + recipe_line + rating_row, 520.0F, tone);
+            detail_cell(tr("Setup"), setup_step, left, facts_top + 228.0F + recipe_line + rating_row, 520.0F, tone);
             if (!setup_detail.empty()) {
                 const ui::FontRef &face = font_for(setup_detail, fonts_.regular);
                 ui::text(scene_, face, face.font->fit(setup_detail, 24.0F, 520.0F), left, facts_top + 228.0F + recipe_line + rating_row + 84.0F,
@@ -4023,7 +4034,7 @@ class Render::Impl
                          kText.with_alpha(0.42F));
         scene_.rounded_rect({0.0F, 0.0F, 1920.0F, 1080.0F}, 0.0F, kBackground.with_alpha(0.68F));
         const Game *game = game_by_id(state, state.session_game_id);
-        section_label("Simulated game session", 96.0F, 82.0F);
+        section_label(tr("Simulated game session"), 96.0F, 82.0F);
         dynamic_text(game == nullptr ? std::string_view(view.title) : std::string_view(game->title),
                      96.0F, 256.0F, 64.0F, kText, 1000.0F);
         ui::text(scene_, fonts_.display, view.subtitle, 96.0F, 320.0F, 34.0F,
@@ -4031,9 +4042,9 @@ class Render::Impl
         draw_actions(view, 96.0F, 428.0F, 540.0F);
 
         scene_.rounded_rect({1210.0F, 226.0F, 614.0F, 540.0F}, 16.0F, kPanel.with_alpha(0.94F));
-        ui::text(scene_, fonts_.display, "Session controls", 1254.0F, 294.0F, 44.0F, kText);
+        ui::text(scene_, fonts_.display, tr("Session controls"), 1254.0F, 294.0F, 44.0F, kText);
         ui::paragraph(scene_, fonts_.regular,
-                      state.session_error.empty() ? "This is a deterministic fixture. No game process is launched."
+                      state.session_error.empty() ? tr("This is a deterministic fixture. No game process is launched.")
                                                   : state.session_error,
                       1254.0F, 352.0F, 25.0F, 522.0F, 36.0F,
                       state.session_error.empty() ? kSecondary : kAmber, 5);
@@ -4072,23 +4083,23 @@ class Render::Impl
     }
 
     // The hint row for the view's legends. `shoulder` adds L1/R1 (Sections unless a legend gives
-    // them another job, "L1/R1 Jump").
+    // them another job, tr("L1/R1 Jump")).
     std::vector<ui::Hint> legend_hints(const ViewData &view, std::string &shoulder, bool with_shoulder)
     {
         const std::vector<std::string> &labels = view.legends;
         std::vector<ui::Hint> hints;
         hints.reserve(std::max<std::size_t>(labels.size(), 2) + 1);
-        shoulder = "Sections";
+        shoulder = tr("Sections");
         if (labels.empty())
         {
-            hints.push_back({ui::Button::cross, "Select"});
-            hints.push_back({ui::Button::circle, "Back"});
+            hints.push_back({ui::Button::cross, tr("Select").c_str()});
+            hints.push_back({ui::Button::circle, tr("Back").c_str()});
         }
         else
         {
             for (std::size_t index = 0; index < labels.size() && hints.size() < 5; ++index)
             {
-                if (labels[index].find("Sections") != std::string::npos)
+                if (labels[index].find(tr("Sections")) != std::string::npos)
                     continue;
                 if (labels[index].rfind("L1/R1 ", 0) == 0)
                 {
@@ -4097,13 +4108,13 @@ class Render::Impl
                 }
                 hints.push_back({legend_button(labels[index], index), legend_text(labels[index])});
             }
-            // Circle is already spoken for by "Circle …" legends ("Circle Clear search") and Back/Cancel ones.
+            // Circle is already spoken for by "Circle …" legends (tr("Circle Clear search")) and Back/Cancel ones.
             const bool has_back = std::any_of(labels.begin(), labels.end(), [](const std::string &label) {
-                return label.rfind("Circle", 0) == 0 || label.find("Back") != std::string::npos ||
-                       label.find("Cancel") != std::string::npos;
+                return label.rfind("Circle", 0) == 0 || label.find(tr("Back")) != std::string::npos ||
+                       label.find(tr("Cancel")) != std::string::npos;
             });
             if (!has_back)
-                hints.push_back({ui::Button::circle, "Back"});
+                hints.push_back({ui::Button::circle, tr("Back").c_str()});
         }
         if (with_shoulder)
             hints.push_back({ui::Button::l1, shoulder.c_str(), ui::Button::r1});
@@ -4124,7 +4135,7 @@ class Render::Impl
 
     void draw_footer(ui::Canvas &, const ViewData &view)
     {
-        // "Root access is missing" has one action: no Back or Sections.
+        // tr("Root access is missing") has one action: no Back or Sections.
         if (current_state_ && current_state_->root_access_missing)
         {
             std::vector<ui::Hint> hints;
@@ -4142,7 +4153,7 @@ class Render::Impl
         if (view.show_simulation_label)
         {
             scene_.rounded_rect({1652.0F, 989.0F, 172.0F, 34.0F}, 17.0F, kText.with_alpha(0.08F));
-            ui::text(scene_, fonts_.semibold, "UI SIMULATION", 1738.0F, 1012.0F, 16.0F, kSecondary,
+            ui::text(scene_, fonts_.semibold, tr("UI SIMULATION"), 1738.0F, 1012.0F, 16.0F, kSecondary,
                      gfx::Align::center, 1.2F);
         }
     }
@@ -4237,7 +4248,7 @@ class Render::Impl
             return result;
         };
         ui::KeyboardKey show;
-        show.label = revealed ? "Hide" : "Show";
+        show.label = revealed ? tr("Hide") : tr("Show");
         ui::KeyboardLayout letters = ui::KeyboardLayout::letters();
         letters.rows.back() = {key(ui::KeyKind::shift, 2), key(ui::KeyKind::layout, 1), key(ui::KeyKind::space, 2), show,
                                key(ui::KeyKind::backspace, 2), key(ui::KeyKind::done, 2)};
@@ -4252,7 +4263,7 @@ class Render::Impl
         overlay_.rounded_rect({0.0F, 0.0F, kWidth, kHeight}, 0.0F, gfx::Color::rgb(0x000000, 0.68F));
         overlay_.rounded_rect({420.0F, 116.0F, 1080.0F, 820.0F}, 16.0F, kPanel);
         ui::text(overlay_, fonts_.display,
-                 state.editor.purpose.empty() ? "Enter text" : state.editor.purpose,
+                 state.editor.purpose.empty() ? tr("Enter text") : state.editor.purpose,
                  476.0F, 188.0F, 46.0F, kText);
         ui::Painter painter(overlay_, fonts_, theme_, renderer_.glass_texture());
         const gfx::Rect field{476.0F, 232.0F, 968.0F, 76.0F};
@@ -4316,16 +4327,16 @@ class Render::Impl
             std::string label = overlay_label(view.rows[index]);
             if (view.rows[index].action == "confirm-destructive")
             {
-                if (modal.title.find("Uninstall") != std::string::npos)
-                    label = "Uninstall";
+                if (modal.title.find(tr("Uninstall")) != std::string::npos)
+                    label = tr("Uninstall");
                 else if (modal.title.find("download") != std::string::npos)
-                    label = "Cancel download";
+                    label = tr("Cancel download");
                 else if (modal.title == "Cancel the move?")
                     label = "Cancel move";
                 else if (modal.title == "Update anyway?")
                     label = "Update anyway";
                 else
-                    label = "Confirm";
+                    label = tr("Confirm");
             }
             const gfx::Rect button{panel.x + 48.0F + index * (button_width + 16.0F), panel.y + 388.0F,
                                    button_width, 68.0F};
@@ -4333,7 +4344,7 @@ class Render::Impl
             const bool toggle = view.rows[index].kind == RowKind::Toggle;
             mac_button(overlay_, button, label, view.rows[index].dangerous,
                        control_focus("modal-" + view.rows[index].key, static_cast<int>(index) == view.focused_row),
-                       !view.rows[index].enabled, toggle ? (view.rows[index].selected ? "On" : "Off") : "", false,
+                       !view.rows[index].enabled, toggle ? (view.rows[index].selected ? tr("On") : tr("Off")) : "", false,
                        kPanel);
         }
     }
@@ -4382,7 +4393,7 @@ class Render::Impl
         const float block_h = 30.0F + (address_lines ? 14.0F : 0.0F) + address_lines * address_line;
         const float block_y = y + (qr_side - block_h) * 0.5F;
         // What the code leads to: the release notes, or a shared recipe's pull request.
-        ui::text(overlay_, fonts_.semibold, modal.link_caption.empty() ? std::string("Scan for the full release notes") : modal.link_caption,
+        ui::text(overlay_, fonts_.semibold, modal.link_caption.empty() ? std::string(tr("Scan for the full release notes")) : modal.link_caption,
                  text_x, block_y + 24.0F, 26.0F, kText);
         if (!address.empty())
             ui::paragraph(overlay_, fonts_.regular, address, text_x, block_y + 30.0F + 14.0F + 21.0F, address_size,
@@ -4398,7 +4409,7 @@ class Render::Impl
             const bool toggle = view.rows[index].kind == RowKind::Toggle;
             mac_button(overlay_, button, overlay_label(view.rows[index]), view.rows[index].dangerous,
                        control_focus("modal-" + view.rows[index].key, static_cast<int>(index) == view.focused_row),
-                       !view.rows[index].enabled, toggle ? (view.rows[index].selected ? "On" : "Off") : "", false, kPanel);
+                       !view.rows[index].enabled, toggle ? (view.rows[index].selected ? tr("On") : tr("Off")) : "", false, kPanel);
         }
     }
 
@@ -4406,20 +4417,20 @@ class Render::Impl
     static std::string sheet_eyebrow(const std::string &surface)
     {
         static const std::map<std::string, std::string> names = {
-            {"choice-picker", "Game settings"}, {"preset-picker", "Game settings"}, {"button-mapping", "Game settings"}, {"controller-tuning", "Game settings"},
-            {"game-settings", "Playden"}, {"game-settings-list", "Game settings"}, {"game-maintenance", "Playden"}, {"kept-data", "Settings"}, {"leftover-titles", "Settings"},
-            {"download-server", "Settings"},
-            {"import-games", "Library"}, {"import-programs", "Import games"}, {"steam-programs", "Setup"}, {"import-choice", "Import games"},
-            {"import-storage", "Import games"}, {"move-storage", "Move game"}, {"share-recipe", "Game settings"}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"}, {"share-as", "Community"},
-            {"job-actions", "Downloads"}, {"prep-actions", "Preparation"}, {"storage-details", "Storage"}, {"context", "Game"}, {"compatibility", "Game"}, {"collections", "Game"}, {"collections-manage", "Library"},
-            {"filters", "Library"}, {"logs-controls", "Logs"}, {"setting-value", "Settings"}, {"diagnostics", "Settings"},
-            {"notices", "Notifications"}, {"qr-controls", "Sign in"}, {"session-controls", "Simulation"},
-            {"simulation-controls", "Simulation"}, {"scenarios", "Simulation"}};
+            {"choice-picker", tr("Game settings")}, {"preset-picker", tr("Game settings")}, {"button-mapping", tr("Game settings")}, {"controller-tuning", tr("Game settings")},
+            {"game-settings", "Playden"}, {"game-settings-list", tr("Game settings")}, {"game-maintenance", "Playden"}, {"kept-data", tr("Settings")}, {"leftover-titles", tr("Settings")},
+            {"download-server", tr("Settings")},
+            {"import-games", tr("Library")}, {"import-programs", tr("Import games")}, {"steam-programs", tr("Setup")}, {"import-choice", tr("Import games")},
+            {"import-storage", tr("Import games")}, {"move-storage", "Move game"}, {"share-recipe", tr("Game settings")}, {"vote-recipe", "Community recipes"}, {"feedback", "Feedback"}, {"share-as", "Community"},
+            {"job-actions", tr("Downloads")}, {"prep-actions", tr("Preparation")}, {"storage-details", tr("Storage")}, {"context", tr("Game")}, {"compatibility", tr("Game")}, {"collections", tr("Game")}, {"collections-manage", tr("Library")},
+            {"filters", tr("Library")}, {"logs-controls", tr("Logs")}, {"setting-value", tr("Settings")}, {"diagnostics", tr("Settings")},
+            {"notices", tr("Notifications")}, {"qr-controls", tr("Sign in")}, {"session-controls", tr("Simulation")},
+            {"simulation-controls", tr("Simulation")}, {"scenarios", tr("Simulation")}};
         if (const auto found = names.find(surface); found != names.end())
             return found->second;
         std::string label = surface;
         std::replace(label.begin(), label.end(), '-', ' ');
-        return label;
+        return tr(label);
     }
 
     // A drive from Queue's storage line: the same usage block Settings shows, and how reserved space counts.
@@ -4437,7 +4448,7 @@ class Render::Impl
             y += 150.0F;
             if (volume->reserved_bytes > 0)
             {
-                ui::paragraph(overlay_, fonts_.regular, "Reserved space is part of the free space, set aside for the downloads still queued.",
+                ui::paragraph(overlay_, fonts_.regular, tr("Reserved space is part of the free space, set aside for the downloads still queued."),
                               panel.x + 48.0F, y, 22.0F, panel.w - 96.0F, 32.0F, kSecondary, 3);
                 y += 90.0F;
             }
@@ -4579,8 +4590,8 @@ class Render::Impl
         const float current_x = card.x + 48.0F + name_w;
         const float arrow_x = current_x + column_w + 20.0F;
         const float preset_x = arrow_x + 20.0F;
-        ui::text(overlay_, fonts_.semibold, "SETTING", card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
-        ui::text(overlay_, fonts_.semibold, "CURRENT", current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        ui::text(overlay_, fonts_.semibold, tr("SETTING"), card.x + 48.0F, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
+        ui::text(overlay_, fonts_.semibold, tr("CURRENT"), current_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         ui::text(overlay_, fonts_.semibold, ui::upper(comparison.column), preset_x, y, 14.0F, kMuted, gfx::Align::left, 1.4F);
         y += 16.0F;
         // A community recipe's start changes (program, arguments, registry) sit between the table and the note.
@@ -4687,17 +4698,17 @@ class Render::Impl
             const bool wizard = view.surface == "import-storage" || view.surface == "move-storage";
             const bool is_default = !wizard && !current_state_->simulation_mode && volume.id == current_state_->default_volume_id;
             const bool warn = wizard ? row.tone == "warn" : !row.enabled;
-            ui::text(overlay_, fonts_.regular, is_default && row.enabled ? "Default · " + row.subtitle : row.subtitle,
+            ui::text(overlay_, fonts_.regular, is_default && row.enabled ? tr("Default · ") + row.subtitle : row.subtitle,
                      card.x + card.w - 22.0F, card.y + 38.0F, 18.0F, warn ? kAmber : row.enabled ? kSecondary : kMuted,
                      gfx::Align::right);
             if (!volume.capacity_known)
             {
-                ui::text(overlay_, fonts_.regular, "Used by games  " + short_size(volume.games_bytes),
+                ui::text(overlay_, fonts_.regular, tr("Used by games  ") + short_size(volume.games_bytes),
                          card.x + 22.0F, card.y + 98.0F, 17.0F, kSecondary);
                 if (volume.reserved_bytes > 0)
-                    ui::text(overlay_, fonts_.regular, "Reserved by queue  " + short_size(volume.reserved_bytes),
+                    ui::text(overlay_, fonts_.regular, tr("Reserved by queue  ") + short_size(volume.reserved_bytes),
                              card.x + card.w - 22.0F, card.y + 98.0F, 17.0F, kSecondary, gfx::Align::right);
-                ui::text(overlay_, fonts_.regular, "Free space unavailable",
+                ui::text(overlay_, fonts_.regular, tr("Free space unavailable"),
                          card.x + 22.0F, card.y + 128.0F, 17.0F, kMuted);
                 if (dimmed)
                     overlay_.pop_opacity();
@@ -4711,15 +4722,15 @@ class Render::Impl
             overlay_.rounded_rect({card.x + 22.0F, card.y + 58.0F,
                                    (card.w - 44.0F) * std::clamp(fraction, 0.0F, 1.0F), 8.0F},
                                   4.0F, volume.available ? kAccent : kMuted);
-            ui::text(overlay_, fonts_.regular, "Capacity  " + short_size(volume.capacity_bytes),
+            ui::text(overlay_, fonts_.regular, tr("Capacity  ") + short_size(volume.capacity_bytes),
                      card.x + 22.0F, card.y + 98.0F, 17.0F, kSecondary);
-            ui::text(overlay_, fonts_.regular, "Used  " + short_size(volume.used_bytes),
+            ui::text(overlay_, fonts_.regular, tr("Used  ") + short_size(volume.used_bytes),
                      card.x + 22.0F, card.y + 128.0F, 17.0F, kSecondary);
             if (volume.reserved_bytes > 0)
-                ui::text(overlay_, fonts_.regular, "Reserved  " + short_size(volume.reserved_bytes),
+                ui::text(overlay_, fonts_.regular, tr("Reserved  ") + short_size(volume.reserved_bytes),
                          card.x + card.w - 22.0F, card.y + 98.0F, 17.0F, kSecondary,
                          gfx::Align::right);
-            ui::text(overlay_, fonts_.semibold, "Free  " + short_size(free),
+            ui::text(overlay_, fonts_.semibold, tr("Free  ") + short_size(free),
                      card.x + card.w - 22.0F, card.y + 128.0F, 17.0F, kText,
                      gfx::Align::right);
             if (dimmed)
@@ -4750,7 +4761,7 @@ class Render::Impl
         if (state.log_state == LogState::Loading)
         {
             overlay_.circle(viewport.x + 34.0F, viewport.y + 44.0F, 7.0F, kAccent);
-            ui::text(overlay_, fonts_.semibold, "Loading fixture logs…", viewport.x + 58.0F,
+            ui::text(overlay_, fonts_.semibold, tr("Loading fixture logs…"), viewport.x + 58.0F,
                      viewport.y + 52.0F, 22.0F, kText);
             overlay_.rounded_rect({viewport.x + 24.0F, viewport.y + 78.0F,
                                    viewport.w - 48.0F, 5.0F}, 2.5F, kText.with_alpha(0.12F));
@@ -4760,13 +4771,13 @@ class Render::Impl
         }
         else if (state.log_state == LogState::Failed)
         {
-            ui::text(overlay_, fonts_.display, "Logs unavailable", viewport.x + 24.0F,
+            ui::text(overlay_, fonts_.display, tr("Logs unavailable"), viewport.x + 24.0F,
                      viewport.y + 54.0F, 30.0F, kRed);
             const auto error = std::find_if(view.rows.begin(), view.rows.end(), [](const ViewRow &row) {
                 return row.key == "logs-error";
             });
             const std::string_view message = error == view.rows.end() || error->subtitle.empty() ?
-                                                 (state.simulation_mode ? std::string_view("The simulated log source failed.")
+                                                 (state.simulation_mode ? std::string_view(tr("The simulated log source failed."))
                                                                         : std::string_view(state.log_context)) :
                                                  std::string_view(error->subtitle);
             dynamic_overlay_text(message, viewport.x + 24.0F, viewport.y + 96.0F, 20.0F,
@@ -4774,11 +4785,11 @@ class Render::Impl
         }
         else if (state.log_lines.empty())
         {
-            ui::text(overlay_, fonts_.display, "No log entries", viewport.cx(),
+            ui::text(overlay_, fonts_.display, tr("No log entries"), viewport.cx(),
                      viewport.y + viewport.h * 0.48F, 34.0F, kSecondary, gfx::Align::center);
             ui::text(overlay_, fonts_.regular,
-                     state.simulation_mode ? "This fixture has no lines for the current context."
-                                           : "Nothing has been logged here yet.",
+                     state.simulation_mode ? tr("This fixture has no lines for the current context.")
+                                           : tr("Nothing has been logged here yet."),
                      viewport.cx(), viewport.y + viewport.h * 0.48F + 38.0F, 19.0F, kMuted,
                      gfx::Align::center);
         }
@@ -4800,7 +4811,7 @@ class Render::Impl
                 y += 52.0F;
             }
             const std::string range = std::to_string(begin + 1) + "–" + std::to_string(end) +
-                                      " of " + std::to_string(state.log_lines.size());
+                                      tr(" of ") + std::to_string(state.log_lines.size());
             ui::text(overlay_, fonts_.regular, range, viewport.x + viewport.w - 24.0F,
                      viewport.y + viewport.h - 18.0F, 16.0F, kMuted, gfx::Align::right);
             if (state.log_lines.size() > visible_lines)
@@ -4841,7 +4852,7 @@ class Render::Impl
         const ControllerState input = current_state_ == nullptr ? ControllerState{} :
                                                                   current_state_->controller;
         overlay_.rounded_rect(bounds, 12.0F, kBackground.with_alpha(0.52F));
-        ui::text(overlay_, fonts_.display, connected ? "Controller connected" : "Controller disconnected",
+        ui::text(overlay_, fonts_.display, connected ? tr("Controller connected") : tr("Controller disconnected"),
                  bounds.x + bounds.w * 0.5F, bounds.y + 54.0F, 31.0F,
                  connected ? kGreen : kAmber, gfx::Align::center);
         const gfx::Color shell = connected ? kText.with_alpha(0.12F) : kMuted.with_alpha(0.10F);
@@ -4885,9 +4896,9 @@ class Render::Impl
                               input.options ? kAccent : kBackground.with_alpha(0.72F));
         ui::text(overlay_, fonts_.semibold, "OPTIONS", cx, cy + 3.0F, 12.0F, kText,
                  gfx::Align::center, 0.8F);
-        ui::text(overlay_, fonts_.regular, "Left stick", cx - 112.0F, cy + 122.0F, 16.0F,
+        ui::text(overlay_, fonts_.regular, tr("Left stick"), cx - 112.0F, cy + 122.0F, 16.0F,
                  kSecondary, gfx::Align::center);
-        ui::text(overlay_, fonts_.regular, "Right stick", cx + 72.0F, cy + 122.0F, 16.0F,
+        ui::text(overlay_, fonts_.regular, tr("Right stick"), cx + 72.0F, cy + 122.0F, 16.0F,
                  kSecondary, gfx::Align::center);
         draw_overlay_rows(view, {bounds.x + 20.0F, bounds.y + bounds.h - 104.0F,
                                  bounds.w - 40.0F, 84.0F});
@@ -4902,7 +4913,7 @@ class Render::Impl
 
     void section_overlay(std::string_view value, float x, float y)
     {
-        ui::text(overlay_, fonts_.display, upper_latin(value), x, y, 20.0F, kSecondary,
+        ui::text(overlay_, fonts_.display, upper_latin(tr(value)), x, y, 20.0F, kSecondary,
                  gfx::Align::left, 2.4F);
     }
 
@@ -4910,7 +4921,7 @@ class Render::Impl
     {
         // A sheet that only shows things says Close or Back on its cancel row.
         if (row.action == "cancel")
-            return row.title == "Close" || row.title == "Back" || row.title == "Not now" ? row.title : "Cancel";
+            return row.title == "Close" || row.title == "Back" || row.title == "Not now" ? row.title : tr("Cancel");
         // Titles come labeled from the model; only a bare action key needs its dashes softened.
         std::string label = row.title.empty() ? row.action : row.title;
         if (row.title.empty())
@@ -5080,7 +5091,7 @@ class Render::Impl
                 continue;
             if (settings_sheet && row.kind == RowKind::Heading)
             {
-                // Collapsible section header: focusable, shows "Show n" or "Hide", and the changes inside when closed.
+                // Collapsible section header: focusable, shows "Show n" or tr("Hide"), and the changes inside when closed.
                 const gfx::Rect rect{bounds.x, y, bounds.w, row.subtitle.empty() ? 54.0F : 84.0F};
                 const float amount = control_focus("sheet-" + row.key, index == view.focused_row);
                 focus_glow(overlay_, rect, amount);
